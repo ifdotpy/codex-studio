@@ -1,6 +1,6 @@
 # Shared UI foundation
 
-Import primitives from `./components/ui/primitives`. Preserve each caller's
+Import primitives from `./primitives.tsx`. Preserve each caller's
 labels, shortcuts, disabled states, and callbacks.
 
 ## Text and size tokens

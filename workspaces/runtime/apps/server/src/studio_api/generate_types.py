@@ -5,7 +5,6 @@ import argparse
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -35,6 +34,8 @@ SCHEMA_OUTPUT = WEB_ROOT / "src" / "generated" / "apiSchema.ts"
 DEFAULT_CACHE_ROOT = Path.home() / ".cache"
 CACHE_ROOT_ENV = "XDG_CACHE_HOME"
 OPENAPI_TEMP_DIRECTORY = "codex-studio-openapi-types"
+GENERATOR_PATH = ROOT / "node_modules" / ".bin" / "openapi-typescript"
+FORMATTER_PATH = ROOT / "node_modules" / ".bin" / "oxfmt"
 JSON_VALUE_TS_ALIAS = (
     "export type JsonValue = null | boolean | number | string | JsonValue[] "
     "| { [key: string]: JsonValue };"
@@ -85,13 +86,11 @@ def render(document: dict[str, JsonValue]) -> str:
             json.dumps(document, ensure_ascii=False, separators=(",", ":")) + "\n",
             encoding="utf-8",
         )
-        if shutil.which("pnpm") is None:
+        if not GENERATOR_PATH.is_file():
             raise FileNotFoundError("Run `pnpm install --frozen-lockfile` at the repository root to install pinned API tools")
         subprocess.run(
             [
-                "pnpm",
-                "exec",
-                "openapi-typescript",
+                str(GENERATOR_PATH),
                 str(input_path),
                 "--output",
                 str(output_path),
@@ -109,14 +108,14 @@ def render(document: dict[str, JsonValue]) -> str:
     generated += "\n\n" + JSON_VALUE_TS_ALIAS + _entity_aliases(
         entities, include_sync_entity_payload
     ) + "\n"
+    if not FORMATTER_PATH.is_file():
+        raise FileNotFoundError("Run `pnpm install --frozen-lockfile` at the repository root to install pinned API tools")
     with tempfile.TemporaryDirectory(prefix="format-", dir=temp_root) as temp_name:
         output_path = Path(temp_name) / "api.ts"
         output_path.write_text(generated, encoding="utf-8")
         subprocess.run(
             [
-                "pnpm",
-                "exec",
-                "oxfmt",
+                str(FORMATTER_PATH),
                 "--write",
                 f"--config={ROOT / '.oxfmtrc.json'}",
                 str(output_path),

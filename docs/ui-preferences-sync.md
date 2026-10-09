@@ -48,7 +48,7 @@ Server preferences stay on their own server.
 | Runtime and cost caches                                                     | Sync database identity, transcript cache, progress cache, session cost cache                                                            | Device                                                                        |
 | Account, model, permission and worker concurrency choices                   | Existing server APIs and their entities                                                                                                 | Server, already synced; not UI preference fields                              |
 
-`web/src/servers/storage.ts` adds the server namespace to local keys in server views.
+`workspaces/client/apps/web/src/servers/storage.ts` adds the server namespace to local keys in server views.
 The offline cache retains the previous local keys for the first render.
 
 ## Storage and delivery

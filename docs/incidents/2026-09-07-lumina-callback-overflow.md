@@ -30,7 +30,7 @@ uses the pipe receive timestamp for delayed quota notifications. Older queued
 notifications cannot overwrite newer reads. Rejected stale samples remain in
 analytics with their receive and processing timestamps.
 
-`tests/limits-refresh-contract.py` covers stale notification age, read ordering,
+`workspaces/runtime/apps/server/tests/limits-refresh-contract.py` covers stale notification age, read ordering,
 retained analytics, account isolation, and timeout recovery.
 
 ## Recovery boundary

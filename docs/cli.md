@@ -5,7 +5,7 @@ Use `codex app-server` for a separate process, durable workers, or a host withou
 Delegate only when the user or applicable instructions authorize delegation.
 This skill does not itself require extra workers for every task.
 
-Run examples from this project root, or use the installed commands without the `scripts/` prefix.
+Run examples from this project root or through the installed command names on `PATH`.
 The protocol uses JSON Lines on stdio, without Content-Length framing.
 Keep runtime state outside the project checkout.
 The scripts require Node.js and Python 3.11 or later on macOS or Linux.
@@ -13,10 +13,10 @@ The scripts require Node.js and Python 3.11 or later on macOS or Linux.
 ## Managed teams
 
 For a lead that must resume after worker or command completion, use the managed
-canvas runtime. Run `scripts/codex-canvas`, open the local page, and create a lead.
+canvas runtime. Run `codex-canvas`, open the local page, and create a lead.
 The lead uses `orchestration_spawn` and `orchestration_monitor`. The server owns
 queues, concurrency limits, command waits and automatic parent continuation.
-Use `scripts/codex-control` for terminal access to the same runtime.
+Use `codex-control` for terminal access to the same runtime.
 Recover an uncertain tool result with `codex-control requests AGENT_ID REQUEST_ID`.
 Omit `REQUEST_ID` to list recent requests. This command only reads receipts.
 The CLI requires the current Studio HTTP protocol. Missing receipts remain `unknown`.
@@ -25,15 +25,15 @@ the enclosing tool outcome remains unknown. It does not prove that a subsequent
 statement in the caller's script executed.
 The equivalent route is `GET /api/tool-requests?agent=AGENT_ID&request_id=REQUEST_ID`.
 Authenticated `POST /api/tool-requests/cancel` accepts `agent` and `request_id`.
-See [Managed Codex teams](ORCHESTRATION.md) for limits, permissions and recovery.
+See [Managed Codex teams](orchestration.md) for limits, permissions and recovery.
 
 ## Mode
 
-| Mode | Use |
-|---|---|
-| One worker | One bounded bug, module, review, or measurement |
-| Implementer + reviewer | One change needing independent review |
-| Wave | Independent tasks, separate files and worktrees |
+| Mode                   | Use                                             |
+| ---------------------- | ----------------------------------------------- |
+| One worker             | One bounded bug, module, review, or measurement |
+| Implementer + reviewer | One change needing independent review           |
+| Wave                   | Independent tasks, separate files and worktrees |
 
 - Do not split sequential reasoning across workers; do not assign one file to two workers.
 - The orchestrator owns boundaries, steering, review, merges.
@@ -45,7 +45,7 @@ The remaining sections describe app-server mode unless they explicitly mention n
 ## Paths and protocol
 
 - State dir: `$CODEX_AGENTS_STATE_DIR`, else `$XDG_STATE_HOME/codex-agents`, else `~/.local/state/codex-agents`. Scripts create it.
-- `CODEX_HOME` selects the Codex login (default `~/.codex`). Install commands with `python3 scripts/install-cli.py`.
+- `CODEX_HOME` selects the Codex login (default `~/.codex`). Install commands with `python3 workspaces/runtime/apps/server/src/install-cli.py`.
 - Codex state and profile directories must resolve outside `.claude`. Scripts reject these paths and do not discover legacy Claude job directories.
 - Move historical state only with explicit authorization. Preserve messages.
 - Schemas move; before depending on a protocol field: `codex --version; codex app-server generate-json-schema --experimental --out /tmp/codex-schema` (drop `--experimental` if it fails; read `v2`). Goal methods need `capabilities.experimentalApi: true` at `initialize`.
@@ -53,7 +53,7 @@ The remaining sections describe app-server mode unless they explicitly mention n
 ## Model
 
 Honor an explicit model request. Native agents inherit the parent model unless the task requires an authorized override.
-`scripts/codex-models` lists available app-server models and efforts.
+`codex-models` lists available app-server models and efforts.
 The app-server wave default is `CODEX_MODEL=gpt-5.6-luna`, `CODEX_EFFORT=max`.
 Check availability instead of guessing from a local config file.
 
@@ -81,16 +81,22 @@ Do not report an unchanged monitored condition as a new failure.
 Write `codex-tasks.<wave>.json` in the state dir (or set `CODEX_TASKS`). Unique names and paths; default role `implementer`.
 
 ```json
-[{"name": "parser-fix", "role": "implementer",
-  "cwd": "/abs/worktree", "branch": "codex/parser-fix",
-  "objective": "Correct the parser error and prove it.",
-  "prompt": "Correct one parser error. Add a regression test. Run the parser gate. Commit."}]
+[
+  {
+    "name": "parser-fix",
+    "role": "implementer",
+    "cwd": "/abs/worktree",
+    "branch": "codex/parser-fix",
+    "objective": "Correct the parser error and prove it.",
+    "prompt": "Correct one parser error. Add a regression test. Run the parser gate. Commit."
+  }
+]
 ```
 
 ```bash
 export CODEX_MODEL=gpt-5.6-luna CODEX_EFFORT=max CODEX_BUDGET=1000000
-scripts/codex-daemon start --wave parser    # detached, portable (macOS/Linux), logs to codex-daemon.<wave>.log
-scripts/codex-daemon status --wave parser
+codex-daemon start --wave parser    # detached, portable (macOS/Linux), logs to codex-daemon.<wave>.log
+codex-daemon status --wave parser
 ```
 
 - The daemon inherits the caller's environment; it refuses to start without the task file (no fallback) and surfaces an immediate launcher death with its cause.
@@ -101,8 +107,8 @@ scripts/codex-daemon status --wave parser
 ## Monitor
 
 ```bash
-scripts/codex-watch --wave parser
-scripts/codex-report --wave parser [worker --answers]
+codex-watch --wave parser
+codex-report --wave parser [worker --answers]
 ```
 
 - The watcher pins the first run id, waits for the launch-complete marker, and exits nonzero on failed, blocked, interrupted, abandoned, paused, stalled, or replaced runs.
@@ -112,8 +118,8 @@ scripts/codex-report --wave parser [worker --answers]
 
 ## Studio, chats, and creator connections
 
-Build the interface with `npm ci && npm run build` in `web/`.
-Run `scripts/codex-canvas` and open `http://127.0.0.1:4620`.
+Install dependencies from the repository root with `pnpm install --frozen-lockfile`; build the interface from the web app with `pnpm run build`.
+Run `codex-canvas` and open `http://127.0.0.1:4620`.
 Use `--port PORT` to select another port. The server uses Python's standard library and listens only on the local machine.
 Keep its terminal session alive while Studio is in use.
 
@@ -149,10 +155,10 @@ Update the same record after host notifications change its status.
 Only attach `--thread` when the host provides a real local Codex thread identity.
 
 ```bash
-scripts/codex-graph agent --id HOST_PARENT_ID --name "Lead" --status running
-scripts/codex-graph agent --id HOST_CHILD_ID --name "Parser" --parent HOST_PARENT_ID --status running
-scripts/codex-graph agent --id HOST_CHILD_ID --name "Parser" --parent HOST_PARENT_ID --status completed
-scripts/codex-graph list
+codex-graph agent --id HOST_PARENT_ID --name "Lead" --status running
+codex-graph agent --id HOST_CHILD_ID --name "Parser" --parent HOST_PARENT_ID --status running
+codex-graph agent --id HOST_CHILD_ID --name "Parser" --parent HOST_PARENT_ID --status completed
+codex-graph list
 ```
 
 Reuse the same parent and thread values on updates. They are part of the identity.
@@ -168,13 +174,13 @@ The same commands work while the web server is closed.
 Use the exact agent IDs from `codex-graph list` for connections.
 
 ```bash
-scripts/codex-chat create "Runtime discussion"
-scripts/codex-chat connect CHAT_ID --agent AGENT_ID
-scripts/codex-chat disconnect CHAT_ID --agent AGENT_ID
-scripts/codex-chat list
-scripts/codex-chat read CHAT_ID
-scripts/codex-chat post CHAT_ID "Result or question" --owner "$CODEX_AGENT_OWNER"
-scripts/codex-chat post CHAT_ID "Native agent reply" --agent HOST_CHILD_ID
+codex-chat create "Runtime discussion"
+codex-chat connect CHAT_ID --agent AGENT_ID
+codex-chat disconnect CHAT_ID --agent AGENT_ID
+codex-chat list
+codex-chat read CHAT_ID
+codex-chat post CHAT_ID "Result or question" --owner "$CODEX_AGENT_OWNER"
+codex-chat post CHAT_ID "Native agent reply" --agent HOST_CHILD_ID
 ```
 
 Use `--id UUID` on create or post to reuse an operation identity after a lost response.
@@ -192,7 +198,7 @@ The canvas creates managed leads and their workers. Legacy waves still use the l
 ## Steer a worker
 
 ```bash
-scripts/codex-steer --wave parser parser-fix "Limit the change to the parser module."
+codex-steer --wave parser parser-fix "Limit the change to the parser module."
 ```
 
 - One message enters the run inbox. The launcher uses `turn/steer` on an active turn and `turn/start` on a terminal turn.
@@ -223,19 +229,19 @@ scripts/codex-steer --wave parser parser-fix "Limit the change to the parser mod
 
 ## Commands
 
-| Command | Function |
-|---|---|
-| `codex-models` | Model ids and efforts |
-| `codex-swarm.mjs` | The wave launcher |
-| `codex-daemon` | Start/stop/status of a detached launcher |
-| `codex-watch` | Exit-on-terminal watcher |
-| `codex-report` | Bounded status and answers |
-| `codex-steer` | Mailbox message to one worker |
-| `codex-stop` | Verified launcher stop |
-| `luna` | Explorer and mailbox: dashboard, `ls --all`, `show NAME`, `tail NAME`, `say NAME "text"`, `waves`, `watch` |
-| `codex-canvas` | Lead conversations, global canvas, agent chats, approvals, and command monitors |
-| `codex-chat` | Create chat nodes, connect members, read messages, or post replies |
-| `codex-graph` | Register native agents and actual creator relationships |
+| Command           | Function                                                                                                   |
+| ----------------- | ---------------------------------------------------------------------------------------------------------- |
+| `codex-models`    | Model ids and efforts                                                                                      |
+| `codex-swarm.mjs` | The wave launcher                                                                                          |
+| `codex-daemon`    | Start/stop/status of a detached launcher                                                                   |
+| `codex-watch`     | Exit-on-terminal watcher                                                                                   |
+| `codex-report`    | Bounded status and answers                                                                                 |
+| `codex-steer`     | Mailbox message to one worker                                                                              |
+| `codex-stop`      | Verified launcher stop                                                                                     |
+| `luna`            | Explorer and mailbox: dashboard, `ls --all`, `show NAME`, `tail NAME`, `say NAME "text"`, `waves`, `watch` |
+| `codex-canvas`    | Lead conversations, global canvas, agent chats, approvals, and command monitors                            |
+| `codex-chat`      | Create chat nodes, connect members, read messages, or post replies                                         |
+| `codex-graph`     | Register native agents and actual creator relationships                                                    |
 
 `luna say` writes through `codex-steer`; other commands only read existing state.
 For `show`, `tail`, and `say`, use `--wave NAME` when worker names repeat.
@@ -249,11 +255,11 @@ An unfinished worker whose launcher ended is `abandoned`.
 Run from the project root:
 
 ```bash
-node tests/portable-smoke.mjs
-node tests/state-contract-smoke.mjs
-python3 -B tests/daemon-contract.py
-node tests/sandbox-smoke.mjs
-python3 -B tests/canvas-contract.py
+node workspaces/runtime/apps/server/tests/portable-smoke.mjs
+node workspaces/runtime/apps/server/tests/state-contract-smoke.mjs
+python3 -B workspaces/runtime/apps/server/tests/daemon-contract.py
+node workspaces/runtime/apps/server/tests/sandbox-smoke.mjs
+python3 -B workspaces/runtime/apps/server/tests/canvas-contract.py
 ```
 
 The first three checks use fixtures and mocks; they do not call a model.
@@ -261,7 +267,7 @@ The sandbox check needs a local Codex binary and tests real sandboxed commands, 
 Run these checks after changes to state schemas, paths, lifecycle, or message delivery.
 Mock protocol tests do not prove compatibility with every app-server version.
 
-For canvas client changes, run `npm --prefix . ci` and `npm --prefix . test` from `web/`.
+For canvas client changes, run `pnpm run test` from the web app directory after installing dependencies once at the repository root.
 Build the React client before starting the canvas server. The built client does not require a Node.js server.
 The client checks use headless Chrome and a local fixture server.
 They verify rendered behavior without model inference.

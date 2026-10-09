@@ -37,7 +37,7 @@ or force the page to scroll. Long desktop drafts also scroll inside the field. T
 viewport hook continues to keep the composer inside the visible screen. Mobile
 model and account information shares one row so it does not push the send
 controls and usage footer below the keyboard.
-`tests/mobile/mobile-keyboard-ui.spec.mjs` checks simulated viewport
+`workspaces/client/apps/web/tests/mobile/mobile-keyboard-ui.spec.mjs` checks simulated viewport
 changes with Android and iPhone identities in Chromium and WebKit; it does not
 open a real operating-system language picker.
 

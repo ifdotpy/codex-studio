@@ -7,8 +7,8 @@ or account notices. Dispatch enters `runtime.db()` to receive a SQLite
 connection and transaction, which it uses to update runtime rows. It does not
 configure database storage, connect to Codex, submit requests, or decide whether
 a tool is allowed. The runtime owns storage and account connections. Focused
-dispatch checks live in `tests/`; cross-component runtime contracts remain in
-the repository `tests/` directory.
+dispatch checks live in `workspaces/runtime/apps/server/tests/`; cross-component runtime contracts remain in
+the repository `workspaces/runtime/apps/server/tests/` directory.
 
 ### How the route works
 
@@ -36,14 +36,14 @@ connection and thread still match. Turn errors remain owned by
 Run the focused package checks from the repository root:
 
 ```sh
-python3 scripts/native_notifications/tests/test_dispatch.py
-python3 scripts/native_notifications/benchmarks/benchmark.py --check
+python3 workspaces/runtime/apps/server/src/native_notifications/tests/test_dispatch.py
+python3 workspaces/runtime/apps/server/src/native_notifications/benchmarks/benchmark.py --check
 ```
 
 For timings at several database sizes:
 
 ```sh
-python3 scripts/native_notifications/benchmarks/benchmark.py --rows 1000 10000 50000 --rounds 100
+python3 workspaces/runtime/apps/server/src/native_notifications/benchmarks/benchmark.py --rows 1000 10000 50000 --rounds 100
 ```
 
 The benchmark inserts synthetic agent rows into a temporary database, calls

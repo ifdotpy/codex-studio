@@ -13,11 +13,31 @@ uncertain outcomes, active user work, and the existing client protocols. No
 second backend may open an occupied state directory. A package extraction must
 include its callers, packaging, tests, and documentation.
 
-Status: **v1.1 proposal, ready for approval with the stated assumptions**. This document
-and the proposed GitHub checklist authorize no implementation or deployment.
-Source inspection: `58c1914d`, 2026-10-09; no runtime verification was performed.
-Revision v1.1 adds the requested fast hypothesis-testing contract and proposes
-pnpm in place of npm workspace consolidation. Neither tool migration is applied.
+Status: **v1.1 approved by the maintainer on 2026-10-09**. [Issue #37](https://github.com/ifdotpy/codex-studio/issues/37)
+owns completion status and evidence links; this specification owns requirements,
+decisions, and acceptance criteria. Source inspection: `58c1914d`, 2026-10-09;
+no runtime verification was performed.
+
+Sequencing: PR 1 relocates the source tree and migrates npm to pnpm. Just and the
+first Rust member (M-01) follow next. Requirement, decision, and acceptance IDs
+remain stable.
+
+### Source path mapping
+
+The relocation keeps Python module names and moves source roots as follows:
+
+| Former path                           | Current path                                                          |
+| ------------------------------------- | --------------------------------------------------------------------- |
+| `scripts/` implementation             | `workspaces/runtime/apps/server/src/`                                 |
+| `scripts/claude_bridge/`              | `workspaces/providers/apps/claude-bridge/`                            |
+| `tests/` server and runtime contracts | `workspaces/runtime/apps/server/tests/`                               |
+| `tests/client/`                       | `workspaces/client/apps/web/tests/`                                   |
+| `web/`                                | `workspaces/client/apps/web/`                                         |
+| `desktop/`                            | `workspaces/client/apps/desktop/`                                     |
+| `vm/guest/`                           | `workspaces/runtime/apps/vm-guest/`                                   |
+| `prompts/`                            | `workspaces/runtime/apps/server/prompts/`                             |
+| `scripts/check-code.mjs`              | `workspaces/tooling/apps/repository-checks/check-code.mjs`            |
+| `tests/pre-commit-hook.mjs`           | `workspaces/tooling/apps/repository-checks/tests/pre-commit-hook.mjs` |
 
 ## Outcome and scope
 
@@ -26,7 +46,7 @@ while keeping Studio usable, dividing the repository into domain workspaces
 with independently testable apps and packages, generated interface types, and
 matching concise documentation.
 
-The final Rust scope is proposed decision D-01, not an already approved fact.
+The final Rust scope is approved decision D-01.
 Implementation is delivered through small reviewed changes with observable
 callers, never an unused parallel implementation counted as completion.
 
@@ -56,30 +76,30 @@ that invalidate a migrated flow's acceptance cannot be carried past its gate.
 
 Verified from source:
 
-- `scripts/codex_runtime.py` coordinates mutable records, SQLite transactions,
+- `workspaces/runtime/apps/server/src/codex_runtime.py` coordinates mutable records, SQLite transactions,
   native provider processes, delivery, and recovery. Its migration is behavioral.
-- `scripts/studio_api/` owns strict HTTP models and the offline OpenAPI generator;
-  `web/src/generated/` contains generated TypeScript and schema identity.
-- Root, web, desktop, and Claude bridge currently have separate npm manifests and
-  lockfiles. Packaging and launchers contain explicit relative source paths.
-- `tests/server/run.py` isolates suite directories but holds a per-user lock over
+- `workspaces/runtime/apps/server/src/studio_api/` owns strict HTTP models and the offline OpenAPI generator;
+  `workspaces/client/apps/web/src/generated/` contains generated TypeScript and schema identity.
+- Root, web, desktop, and Claude bridge previously had separate npm manifests
+  and lockfiles. Packaging and launchers contain explicit relative source paths.
+- `workspaces/runtime/apps/server/tests/server/run.py` isolates suite directories but holds a per-user lock over
   an entire run. Parallel suites do not imply independent concurrent runners.
-- `tests/KNOWN-FAILURES.md` records unresolved failures and environment limits.
+- `workspaces/runtime/apps/server/tests/KNOWN-FAILURES.md` records unresolved failures and environment limits.
   The current suite is not a uniformly green migration oracle.
 - Supervisor update evaluation already belongs to
   [issue #9](https://github.com/ifdotpy/codex-studio/issues/9). Its proposal is
   measurement-only; production restart safety has not been established here.
 - No `.github/workflows/` directory exists at the inspected revision.
 
-| ID   | Proposed decision                                                                                                                                                                                | Status / consequence                                                                                                |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
-| D-01 | Eventually migrate the owned production Python backend, supervisor, and CLI to Rust; retain React/Electron and the required Node SDK bridge; Python may remain in development/testing.           | Assumption for approval. Core-only would change the completion criteria.                                            |
-| D-02 | Domain source workspaces share one root Cargo workspace and one root pnpm workspace, with one lockfile per ecosystem.                                                                            | Assumption for approval. Domain independence means independent checks/ownership, not independent release universes. |
-| D-03 | Permit a bounded UI reconnect during supervisor-backed backend replacement, preserving active work; approve the outage bound after isolated measurement and before rollout.                      | Assumption for approval. Not permission to restart the user's backend.                                              |
-| D-04 | Use pinned Just as a thin command facade; keep Cargo, pnpm, and the existing Python runner as execution owners.                                                                                  | Proposed assumption for approval; no new build scheduler or cloud cache.                                            |
-| D-05 | Keep Pydantic/OpenAPI authoritative initially; transfer each migrated HTTP domain's schema authority to Rust with compatibility checks and one composed API schema.                              | Proposed assumption for approval; no simultaneous handwritten authorities.                                          |
-| D-06 | Preserve current Linux, macOS, WSL, and Windows-specific behavior where currently supported; report the actual checked platform matrix.                                                          | Compatibility assumption; this does not promise new platform support.                                               |
-| D-07 | During the first orchestration-core Rust slice, use a private, versioned local subprocess protocol; Python retains writes and effects. Retire the bridge as ownership moves to the Rust backend. | Proposed assumption for approval; no public listener or language FFI initially.                                     |
+| ID   | Approved decision                                                                                                                                                                                | Status / consequence                                                                                 |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| D-01 | Eventually migrate the owned production Python backend, supervisor, and CLI to Rust; retain React/Electron and the required Node SDK bridge; Python may remain in development/testing.           | Approved. Core-only would change the completion criteria.                                            |
+| D-02 | Domain source workspaces share one root Cargo workspace and one root pnpm workspace, with one lockfile per ecosystem.                                                                            | Approved. Domain independence means independent checks/ownership, not independent release universes. |
+| D-03 | Permit a bounded UI reconnect during supervisor-backed backend replacement, preserving active work; approve the outage bound after isolated measurement and before rollout.                      | Approved. Not permission to restart the user's backend.                                              |
+| D-04 | Use pinned Just as a thin command facade; keep Cargo, pnpm, and the existing Python runner as execution owners.                                                                                  | Approved for the later M-01 stage; no new build scheduler or cloud cache.                            |
+| D-05 | Keep Pydantic/OpenAPI authoritative initially; transfer each migrated HTTP domain's schema authority to Rust with compatibility checks and one composed API schema.                              | Approved; no simultaneous handwritten authorities.                                                   |
+| D-06 | Preserve current Linux, macOS, WSL, and Windows-specific behavior where currently supported; report the actual checked platform matrix.                                                          | Approved compatibility requirement; this does not promise new platform support.                      |
+| D-07 | During the first orchestration-core Rust slice, use a private, versioned local subprocess protocol; Python retains writes and effects. Retire the bridge as ownership moves to the Rust backend. | Approved; no public listener or language FFI initially.                                              |
 
 **P-01: update-contract opportunity.** D-03 changes the live-update contract.
 Issue #9 records a historical inventory of 27 patch modules and 17 related test
@@ -109,23 +129,24 @@ Sources: [Just manual](https://just.systems/man/en/),
 [Cargo workspaces](https://doc.rust-lang.org/cargo/reference/workspaces.html),
 [npm workspaces](https://docs.npmjs.com/cli/v11/using-npm/workspaces/).
 
-**P-03: JavaScript package-manager opportunity.** Replace the proposed npm
-workspace consolidation with pnpm. The expected benefit is better visibility of
+**P-03: JavaScript package-manager decision.** D-02 selects pnpm for the root
+workspace and lockfile. The expected benefit is better visibility of
 undeclared dependencies, local-only `workspace:` links, package/dependent
 selection, and a recorded dependency patch replacing manual RxDB mutation.
 These support independent LLM iterations; no installation-speed improvement has
-been measured here. The existing npm configuration remains unchanged.
+been measured here. PR 1 owns the migration evidence and any dependency-version
+differences.
 
 Upstream pnpm is active; release v12.10.1 was published 2026-10-06, with an MIT
 license. The documented supported platforms include Linux, macOS, and Windows;
-the npm installer requires Node 22.13+, compatible with this repository's
+pnpm installation requires Node 22.13+, compatible with this repository's
 stated minimum. Pin and verify the chosen tool artifact and lockfile; review
 allowed dependency build scripts. This adds a development/package-build tool,
 not a production service or hosted account. Existing registry requests continue;
 no project source upload is needed. Transitive security/license checks and actual
 Electron/bridge installation compatibility remain unverified until M-01.
 
-Migration must replace hardcoded `web/node_modules` tool paths, materialize
+Migration must replace hardcoded `workspaces/client/apps/web/node_modules` tool paths, materialize
 self-contained bridge dependencies for packaging, and turn the RxDB workaround
 into a pinned patch without losing its behavior tests. Do not mutate pnpm's
 linked dependency files in place. Do not enable broad public hoisting merely to
@@ -151,34 +172,35 @@ focused checks do. All domain directories share the native workspace roots.
 
 ## Target hierarchy and dependency rules
 
-Names below are proposed ownership boundaries, not a requirement to create
-empty packages. Extract a package only with an actual caller and a focused test.
+The target hierarchy below matches the layout created by PR 1. Empty packages
+are not retained; extract one only with an actual caller and a focused test.
 
 ```text
-Cargo.toml / Cargo.lock / rust-toolchain.toml
 package.json / pnpm-workspace.yaml / pnpm-lock.yaml
-justfile
 README.md / AGENTS.md
 docs/                         cross-domain explanations and migration decisions
 workspaces/
   runtime/
     README.md
-    apps/                     server, supervisor, cli
-    packages/                 domain, operations, storage, scheduler,
-                              process-control, http-api, sync, workspace-files
+    apps/server/              Python backend, supervisor, and CLI
+      src/                    flat Python import root
+      tests/                  server and runtime contracts
+      prompts/                runtime prompts
+    apps/vm-guest/            Linux guest service
   providers/
     README.md
-    apps/                     claude-bridge (Node SDK process)
-    packages/                 provider-protocol, codex-adapter, claude-adapter
+    apps/claude-bridge/       Node SDK process
   client/
     README.md
-    apps/                     web, desktop
-    packages/                 api-client (generated), sync-client, ui
+    apps/web/                 React renderer
+    apps/desktop/             Electron host
   tooling/
     README.md
-    apps/                     repository-checks, contract-generation tools
-    packages/                 test-support, provider-fixtures
+    apps/repository-checks/   staged-content and repository checks
 ```
+
+Cargo workspace manifests and the pinned Just facade belong to the next M-01
+stage and are not part of this relocated layout.
 
 - **R-09.** Apps assemble packages and own startup/shutdown, deployment, and
   user entry points. Packages never import apps. Cross-package imports use
@@ -253,7 +275,7 @@ and shutdown.
 ## Contract generation and transitional interfaces
 
 **R-24.** Every published schema/type has one authority and an explicit owner.
-Initially keep `scripts/studio_api/schema.py` and `generate_types.py` as the
+Initially keep `workspaces/runtime/apps/server/src/studio_api/schema.py` and `generate_types.py` as the
 source pipeline. Generate without opening user state or starting providers.
 
 For the first Rust slice, define a small internal request/response contract with
@@ -434,7 +456,7 @@ or live result. No package is split merely to create more agent tasks.
 | AC-10 | Under isolated supervisor update, native process identities and active work survive, journals reconcile, and UI reconnect meets the separately approved bound on relevant platforms. Updating the supervisor itself has a proven safe boundary.                                               |
 | AC-11 | Rollback after new operations preserves their receipts and prevents replay; incompatible state blocks downgrade visibly.                                                                                                                                                                      |
 | AC-12 | Reports name source revision, commands, platform, fixture/live class, failures, skips, and known-failure disposition; no hidden retries or blanket xfail additions.                                                                                                                           |
-| AC-13 | Final owned production backend/CLI/supervisor run without Python; remaining Python is documented dev/test tooling. Depends on D-01 approval.                                                                                                                                                  |
+| AC-13 | Final owned production backend/CLI/supervisor run without Python; remaining Python is documented dev/test tooling. Depends on approved D-01.                                                                                                                                                  |
 | AC-14 | A tracking checkbox has a linked reviewed change plus relevant acceptance evidence; creation of a folder, stub, or mock alone cannot complete it.                                                                                                                                             |
 
 Additional acceptance criteria for v1.1:
@@ -458,16 +480,16 @@ stages; this document deliberately does not duplicate completion status.
 
 | Stage | Deliverable and gate                                                                                                                                                                                                                                                                 | Dependencies                                        |
 | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------- |
-| M-00  | Approve exact specification, record platform/failure baseline and owners, and publish the tracking issue.                                                                                                                                                                            | D-01–D-07                                           |
-| M-01  | Add pinned Just and root workspace policies with a real first Rust member: the read-only diagnostics CLI. Preserve its installed command, flags, output, and HTTP caller; validate packaging. Wrap current checks; introduce CI discovery and dependency policy.                     | M-00                                                |
-| M-02  | Move source by bounded domains with compatibility launchers; fix packaging, installs, inventories, imports, test discovery, and docs together.                                                                                                                                       | M-01; unrelated domains may proceed in parallel     |
+| M-00  | Approve the exact specification, record platform/failure baseline and owners, and publish the tracking issue.                                                                                                                                                                        | D-01–D-07                                           |
+| M-02  | Relocate the source tree and migrate npm to pnpm with compatibility launchers; fix packaging, installs, inventories, imports, test discovery, and docs together.                                                                                                                     | M-00                                                |
+| M-01  | Add pinned Just and root Cargo workspace policies with a real first Rust member: the read-only diagnostics CLI. Preserve its installed command, flags, output, and HTTP caller; validate packaging. Wrap current checks; introduce CI discovery and dependency policy.               | M-02                                                |
 | M-03  | Independently runnable package tests, deterministic contract generation, boundary checks, and migration fixtures.                                                                                                                                                                    | M-01; proceed incrementally alongside M-02          |
 | M-04  | First Rust operation-lifecycle package plus private evaluator bridge; compare decisions without effects, then connect one real fixture-backed caller. Python still owns writes/effects.                                                                                              | Relevant M-02/M-03 slices                           |
 | M-05  | Transfer operation decisions/execution and recovery ownership for one complete slice using the single database owner. Move physical storage ownership only with an exclusive handoff and access through its transaction interface; migrate remaining operation domains individually. | M-04; AC-06–AC-08, AC-11                            |
 | M-06  | Isolated supervisor update measurements and decision under #9; implement safe backend replacement only after its gate.                                                                                                                                                               | M-00 baseline; research may run alongside M-01–M-05 |
 | M-07  | Migrate scheduler, process control, provider adapters, workspace/move/federation operations, and remaining stateful services, one caller-complete slice at a time.                                                                                                                   | M-05 and relevant M-06 lifecycle evidence           |
 | M-08  | Transfer HTTP domain authorities and CLI assembly, finish Rust production packaging, remove obsolete Python owners and transitional bridges.                                                                                                                                         | Corresponding M-07 slices and M-03 contracts        |
-| M-09  | Validate target platform/install/update/rollback matrix; retire superseded tests/docs only with replacement evidence; meet AC-13.                                                                                                                                                    | M-06–M-08                                           |
+| M-09  | Validate target platform/install/update/rollback matrix; retire superseded code and docs only with replacement evidence; meet AC-13.                                                                                                                                                 | M-06–M-08                                           |
 
 Ordering is by ownership and safety, not percentage of translated lines. An
 unchanged historical failure may be recorded outside the slice; a failure in
@@ -476,21 +498,15 @@ dual execution of real commands, or permanent double-write database mode.
 
 ## Tracking and approval
 
-Issue items use `M-xx.y` IDs and reference `R-xx` / `AC-xx`. Keep IDs when rewording
-items. If a task is split, retain its parent and add child IDs. Check a box only
+Issue #37 owns completion status and evidence links. Issue items use `M-xx.y`
+IDs and reference `R-xx` / `AC-xx`. Keep IDs when rewording items. If a task is
+split, retain its parent and add child IDs. Check a box only
 after the relevant reviewed integration and evidence exist; unchecked native/live
-gates remain visible. PRs report package owner, dependency impact, tests/skips,
+gates remain visible. PRs report package owner, dependency impact, workspaces/runtime/apps/server/tests/skips,
 rollback consequences, and docs changes. This plan does not automatically close
 #9 or treat a measurement proposal as permission to restart production.
 
-This complete proposal selects D-01–D-07 as explicit assumptions. Approval of
-v1.1 accepts those decisions together; requested changes produce a revised version
-for approval. Approval must name this exact specification version. Publication of the requested GitHub tracker is part of the
-specification task; implementation, dependency installation, source relocation,
-and production changes remain separate work. Approval of the plan alone does
-not instruct an agent to begin the entire migration.
-
-Readiness: **ready with stated assumptions** — D-01–D-07 are the proposed
-contract and await explicit approval of v1.1. Rollout budgets remain an explicit
-later measurement gate, not a reason to block preparatory modularization after
-approval.
+This approved specification selects D-01–D-07. Issue #37 owns checklist status
+and links to reviewed evidence. Approval authorizes the staged plan; each stage
+still requires its named review, checks, and safety gates. Rollout budgets remain
+an explicit later measurement gate.
