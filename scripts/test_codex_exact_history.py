@@ -1,5 +1,6 @@
 """Exact native bytes, inherited boundaries, and hostile archive checks."""
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -148,6 +149,66 @@ class ExactHistory(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'changed|prefix'):
                 extend_codex_history(native, self.home, thread, imported, backup)
         self.assertEqual(old.read_bytes(), before + appended)
+
+    def test_review_unlocked_append_at_publication_is_never_erased(self) -> None:
+        old = self.rollout()
+        thread = json.loads(old.read_bytes().splitlines()[0])['payload']['id']
+        before = old.read_bytes()
+        concurrent = b'{"type":"response_item","payload":"unlocked writer"}\n'
+        suffix = b'{"type":"response_item","payload":"moved turn"}\n'
+        imported = self.root / 'incoming.jsonl'
+        imported.write_bytes(before + suffix)
+        backup = self.root / 'backup.jsonl'
+        native = Mock()
+        native.call.return_value = {'thread': {'path': str(old), 'status': {'type': 'idle'}}}
+        original_replace, original_write = os.replace, os.write
+        injected = False
+        def inject() -> None:
+            nonlocal injected
+            if not injected:
+                injected = True
+                with old.open('ab') as writer:
+                    writer.write(concurrent)
+        def replace(source: str | Path, destination: str | Path) -> None:
+            if Path(str(destination)).resolve() == old.resolve():
+                inject()
+            original_replace(source, destination)
+        def write(fd: int, data: bytes) -> int:
+            if os.fstat(fd).st_ino == old.stat().st_ino:
+                inject()
+            return original_write(fd, data)
+        with patch('codex_exact_history.os.replace', replace), patch('codex_exact_history.os.write', write):
+            try:
+                extend_codex_history(native, self.home, thread, imported, backup)
+            except ValueError:
+                pass
+        self.assertTrue(injected)
+        self.assertIn(concurrent, old.read_bytes())
+        self.assertTrue(old.read_bytes().startswith(before))
+        self.assertEqual(backup.read_bytes(), before)
+
+    def test_review_changed_size_refuses_before_suffix_write(self) -> None:
+        old = self.rollout()
+        before = old.read_bytes()
+        concurrent = b'{"type":"response_item","payload":"before suffix"}\n'
+        imported = self.root / 'incoming.jsonl'
+        imported.write_bytes(before + b'{"type":"response_item","payload":"moved turn"}\n')
+        native = Mock()
+        native.call.return_value = {'thread': {'path': str(old), 'status': {'type': 'idle'}}}
+        thread = json.loads(before.splitlines()[0])['payload']['id']
+        original = os.fstat
+        reads = 0
+        def stat(fd: int) -> os.stat_result:
+            nonlocal reads
+            reads += 1
+            if reads == 2:
+                with old.open('ab') as writer:
+                    writer.write(concurrent)
+            return original(fd)
+        with patch('codex_exact_history.os.fstat', stat):
+            with self.assertRaisesRegex(ValueError, 'changed before append'):
+                extend_codex_history(native, self.home, thread, imported, self.root / 'backup.jsonl')
+        self.assertEqual(old.read_bytes(), before + concurrent)
 
 
 if __name__ == '__main__':

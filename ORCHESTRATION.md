@@ -1050,7 +1050,9 @@ A move refuses other active tools, native background commands, command monitors,
 and pending child spawns. Stop or finish them before the move.
 A queued model or reasoning change must finish before a move.
 A missing target folder, account, or model also prevents acceptance.
-The transfer deadline is 300 seconds. Native history has a 256 MiB limit.
+The transfer and automatic recovery deadline is 300 seconds.
+After this deadline, the move stays unknown and stops automatic recovery.
+Studio refuses late activation on the target. Native history has a 256 MiB limit.
 Codex ancestry has a 1024-file limit. Native settings have a 240 KiB limit.
 Studio refuses excess size and does not shorten history or instructions.
 

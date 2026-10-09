@@ -213,23 +213,18 @@ def extend_codex_history(native: Any, home: Path, thread: str, imported: Path, b
     # session; native paginated metadata still requires its indexed file path.
     native.call('thread/archive', {'threadId': thread}, timeout=20)
     path = current()
-    _replace_indexed_history(path, data, backup)
+    _append_indexed_history(path, data, backup)
     native.call('thread/unarchive', {'threadId': thread}, timeout=20)
 
 
-def _replace_indexed_history(path: Path, data: bytes, backup: Path) -> None:
-    """Guard the archived file, preserve exactly the bytes that get replaced."""
+def _append_indexed_history(path: Path, data: bytes, backup: Path) -> None:
+    """Append the missing suffix; never erase another writer's bytes."""
     if os.name != 'posix':
         raise ValueError('The native history writer lock is unavailable on this platform')
     import fcntl
-    fd, name = tempfile.mkstemp(dir=path.parent, prefix='.move-')
-    temporary = Path(name)
+    fd = os.open(path, os.O_RDWR | os.O_APPEND)
     try:
-        with os.fdopen(fd, 'wb') as output:
-            output.write(data)
-            output.flush()
-            os.fsync(output.fileno())
-        with path.open('rb') as current:
+        with os.fdopen(fd, 'rb', closefd=False) as current:
             fcntl.flock(current.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             old = current.read()
             if not data.startswith(old):
@@ -242,12 +237,19 @@ def _replace_indexed_history(path: Path, data: bytes, backup: Path) -> None:
             if (len(observed) != len(old) or hashlib.sha256(observed).digest() != hashlib.sha256(old).digest()
                     or (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
                     != (indexed.st_dev, indexed.st_ino, len(old), indexed.st_mtime_ns)):
-                raise ValueError('The destination native history changed before replacement; no bytes were replaced')
-            # Archive has stopped Studio's native writer. The inode lock excludes
-            # cooperating writers; this final byte check detects other appends.
-            os.replace(temporary, path)
+                raise ValueError('The destination native history changed before append; no bytes were written')
+            suffix = data[len(old):]
+            if os.fstat(fd).st_size != len(old):
+                raise ValueError('The destination native history changed before append; no bytes were written')
+            # O_APPEND preserves even a writer that ignores the advisory lock.
+            # A concurrent append can change order, so hold that import unknown.
+            written = os.write(fd, suffix)
+            os.fsync(fd)
+            current.seek(0)
+            if written != len(suffix) or current.read() != data:
+                raise ValueError('The destination native history changed during append; all written bytes were preserved')
     finally:
-        temporary.unlink(missing_ok=True)
+        os.close(fd)
 
 
 def export_claude(path: Path, destination: Path) -> None:

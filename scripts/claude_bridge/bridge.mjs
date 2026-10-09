@@ -852,7 +852,7 @@ async function startSession(s, active, p) {
     yield* active.input;
   }
   try {
-    const mode = s.moveProof?.options.permissionMode || permissionMode(s, p);
+    const mode = permissionMode(s, p);
     const q = query({
       prompt: prompt(),
       options: {

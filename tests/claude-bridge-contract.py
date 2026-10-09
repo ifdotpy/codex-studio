@@ -242,6 +242,31 @@ class Bridge(unittest.TestCase):
         self.thread = self.call('thread/start', {'cwd':str(root),'dynamicTools':[{'name':'echo','description':'Echo',
             'inputSchema':{'type':'object','properties':{'text':{'type':'string'}},'required':['text']}}]})['thread']['id']
 
+    def moved_permission(self, source_mode):
+        self.thread = self.call('thread/start', {'cwd': str(self.root), 'model': 'default',
+            'approvalPolicy': 'never', 'claude': {'permissionMode': source_mode}, 'dynamicTools': []})['thread']['id']
+        self.turn('hello', 'permission-source')
+        self.completed()
+        projects = self.root / 'native-config' / 'projects' / 'source'
+        projects.mkdir(parents=True)
+        native = projects / (self.thread + '.jsonl')
+        native.write_text(json.dumps({'type': 'attachment', 'sessionId': self.thread,
+            'attachment': {'type': 'prompt_snapshot', 'systemPrompt': ['Frozen instructions'],
+                           'tools': [{'name': 'Bash', 'input_schema': {'type': 'object'}}]}}) + '\n')
+        exported = self.call('claude/moveExport', {'threadId': self.thread})
+        self.call('claude/moveImport', {'session': exported['session'], 'cwd': str(self.root), 'path': str(native)})
+        self.call('thread/resume', {'threadId': self.thread, 'claude': {'permissionMode': 'default'}})
+        self.turn('hello', 'permission-target')
+        self.completed()
+        query = json.loads((self.root / '.queries').read_text().splitlines()[-1])
+        self.assertEqual(query['permissionMode'], 'default')
+
+    def test_review_moved_bypass_permission_can_be_downgraded(self):
+        self.moved_permission('bypassPermissions')
+
+    def test_review_moved_default_permission_stays_default(self):
+        self.moved_permission('default')
+
     def test_move_native_history_import_has_no_model_input_and_resumes_the_same_session(self):
         self.thread = self.call('thread/start', {'cwd': str(self.root), 'model': 'default',
                                                 'dynamicTools': []})['thread']['id']

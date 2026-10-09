@@ -524,6 +524,72 @@ class Moves(f.SignedIntegration):
         f.fixture.f.eventually(lambda: not service.running)
         self.assertEqual(self.a.runtime.agent(actor['id'])['movedTo']['server'], self.b.server_id)
 
+    def test_review_every_uncertain_phase_stops_at_the_recovery_deadline(self):
+        service = self.a.runtime.multi_server().moves()
+        accepted = service.start(self.lead, {'server': self.b.server_id, 'cwd': str(self.b.folder),
+            'request_id': 'recovery-deadline'}, 'recovery-deadline')
+        with self.a.runtime.db() as db:
+            operation = service._get(db, accepted['requestId'])
+        for phase in ('waiting', 'exported', 'importing', 'prepared', 'redirected'):
+            with self.subTest(phase=phase):
+                operation.update(phase='unknown', uncertainPhase=phase, deadline=time.time() - 1)
+                with self.a.runtime.db() as db:
+                    service._save(db, operation)
+                with patch.object(service, '_exchange', return_value={'phase': 'ready'}) as exchange, \
+                     patch.object(service, '_run') as run:
+                    service._reconcile(operation)
+                    exchange.assert_not_called()
+                    run.assert_not_called()
+                with self.a.runtime.read_db() as db:
+                    held = service._get(db, operation['id'])
+                self.assertTrue(held.get('recoveryExpiredAt'))
+                self.assertEqual(held['phase'], 'unknown')
+                self.assertIn('deadline', held['error'])
+
+    def test_review_expired_target_cannot_accept_late_activation(self):
+        service = self.a.runtime.multi_server().moves()
+        original = service._exchange
+        def before_activation(server, action, payload, key):
+            if action == 'move_activate':
+                raise TimeoutError('Hold the activation receipt')
+            return original(server, action, payload, key)
+        accepted = service.start(self.lead, {'server': self.b.server_id, 'cwd': str(self.b.folder),
+            'request_id': 'late-activation'}, 'late-activation')
+        with patch.object(service, '_exchange', side_effect=before_activation):
+            service.tick()
+            f.fixture.f.eventually(lambda: not service.running, timeout=DEADLINE)
+        target = self.b.runtime.multi_server().moves()
+        from codex_multi_server_orchestration import identity
+        with self.b.runtime.db() as db:
+            operation = target._get(db, identity(accepted['requestId'], 'target'))
+            self.assertEqual(operation['phase'], 'ready')
+            operation['deadline'] = time.time() - 1
+            target._save(db, operation)
+        target.tick()
+        with self.assertRaisesRegex(ValueError, 'deadline'):
+            original(self.b.server_id, 'move_activate', {'move': accepted['requestId']},
+                     identity(accepted['requestId'], 'activate'))
+        self.assertEqual(self.b.runtime.agent(self.lead['id'])['executionMove']['phase'], 'unknown')
+        self.assertFalse(self.b.runtime.agent(self.lead['id'])['autoWake'])
+        self.assertFalse([1 for method, _ in self.b.runtime.server.calls if method == 'turn/start'])
+
+    def test_review_expired_source_never_resumes_any_transfer_phase(self):
+        service = self.a.runtime.multi_server().moves()
+        accepted = service.start(self.lead, {'server': self.b.server_id, 'cwd': str(self.b.folder),
+            'request_id': 'expired-source'}, 'expired-source')
+        with self.a.runtime.read_db() as db:
+            operation = service._get(db, accepted['requestId'])
+        for phase in ('waiting', 'exported', 'importing', 'prepared', 'redirected'):
+            with self.subTest(phase=phase):
+                operation.update(phase=phase, deadline=time.time() - 1)
+                with self.a.runtime.db() as db:
+                    service._save(db, operation)
+                with patch.object(service, '_export') as export, patch.object(service, '_exchange') as exchange:
+                    service._run(operation['id'])
+                    export.assert_not_called()
+                    exchange.assert_not_called()
+                self.assertEqual(self.a.runtime.agent(self.lead['id'])['executionMove']['phase'], 'unknown')
+
     def test_source_turn_deadline_holds_the_move_without_target_input(self):
         source = self.a.runtime.server
         turn = source.call('turn/start', {'threadId': self.lead['threadId'], 'input': []})['turn']

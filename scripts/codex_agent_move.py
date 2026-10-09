@@ -6,6 +6,7 @@ import copy
 from concurrent.futures import Future
 import hashlib
 import json
+import math
 from pathlib import Path
 import platform
 import threading
@@ -45,6 +46,42 @@ class AgentMoves:
     def _save(self, db: Any, record: dict[str, Any]) -> None:
         db.execute('INSERT INTO runtime_agent_moves VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record',
                    (record['id'], encoded(record)))
+
+    def _check_deadline(self, operation: dict[str, Any]) -> None:
+        deadline = operation.get('deadline', operation['created'] + DEADLINE)
+        if (not isinstance(deadline, (int, float)) or isinstance(deadline, bool)
+                or not math.isfinite(deadline) or time.time() >= deadline):
+            raise ValueError('The move recovery deadline expired after 300 seconds. The outcome stays unknown; no input was repeated')
+
+    def _check_target_deadline(self, operation: dict[str, Any]) -> None:
+        if operation['phase'] == 'active':
+            return
+        try:
+            self._check_deadline(operation)
+        except ValueError as error:
+            with self.runtime.lock, self.runtime.db() as db:
+                current = self._get(db, operation['id'])
+                if current and current['phase'] != 'active':
+                    current.update(phase='unknown', recoveryExpiredAt=time.time(), error=str(error))
+                    self._save(db, current)
+                    agent_id = current['descriptor']['agent']['id']
+                    if db.execute('SELECT 1 FROM runtime_agents WHERE id=?', (agent_id,)).fetchone():
+                        agent = self.runtime.agent(agent_id, db)
+                        if agent.get('moveImportPending') and agent.get('executionMove', {}).get('id') == current['move']:
+                            agent['executionMove']['phase'] = 'unknown'
+                            agent['error'] = str(error)
+                            self.runtime.put(db, 'agents', agent)
+                    self.runtime.changed.set()
+            raise
+
+    def _expire(self, operation: dict[str, Any]) -> bool:
+        try:
+            self._check_deadline(operation)
+        except ValueError as error:
+            operation['recoveryExpiredAt'] = time.time()
+            self._hold(operation, str(error))
+            return True
+        return False
 
     def _folder(self, key: str) -> Path:
         uuid.UUID(key)
@@ -332,6 +369,15 @@ class AgentMoves:
 
     def tick(self) -> None:
         with self.runtime.read_db() as db:
+            imports = [json.loads(row[0]) for row in db.execute(
+                "SELECT record FROM runtime_agent_moves WHERE json_extract(record,'$.side')='target' "
+                "AND json_extract(record,'$.phase') NOT IN ('active','unknown','failed')")]
+        for operation in imports:
+            try:
+                self._check_target_deadline(operation)
+            except ValueError:
+                pass
+        with self.runtime.read_db() as db:
             pending_reviews = [json.loads(row[0]) for row in db.execute(
                 "SELECT record FROM runtime_agents WHERE json_extract(record,'$.moveReviewPending')=1")]
         for child in pending_reviews:
@@ -351,7 +397,9 @@ class AgentMoves:
         for operation in uncertain:
             key = operation['id']
             with self.lock:
-                if key in self.running or self.runtime.closed:
+                if key in self.running or self.runtime.closed or operation.get('recoveryExpiredAt'):
+                    continue
+                if self._expire(operation):
                     continue
                 self.running.add(key)
             self.runtime.delivery_executor().submit(self._reconcile, operation)
@@ -364,11 +412,11 @@ class AgentMoves:
             with self.lock:
                 if key in self.running or self.runtime.closed:
                     continue
+                if self._expire(operation):
+                    continue
                 if operation['phase'] == 'waiting':
                     agent = self.runtime.agent(operation['agent'])
                     if agent.get('inFlight') or agent.get('turnId'):
-                        if time.time() > operation['deadline']:
-                            self._hold(operation, 'The source turn did not finish within 300 seconds. No target turn was started')
                         continue
                 self.running.add(key)
             self.runtime.delivery_executor().submit(self._run, key)
@@ -386,6 +434,8 @@ class AgentMoves:
     def _reconcile(self, operation: dict[str, Any]) -> None:
         key = operation['id']
         try:
+            if self._expire(operation):
+                return
             # A fresh read identity observes newer state; it cannot resume or start input.
             target = self._exchange(operation['server'], 'move_status', {'move': key},
                                     identity(key, 'status', str(int(time.time() // 20))))
@@ -415,7 +465,9 @@ class AgentMoves:
 
     def _hold(self, operation: dict[str, Any], message: str) -> None:
         with self.runtime.lock, self.runtime.db() as db:
-            operation.update(uncertainPhase=operation['phase'], phase='unknown', error=message)
+            if operation['phase'] != 'unknown':
+                operation['uncertainPhase'] = operation['phase']
+            operation.update(phase='unknown', error=message)
             self._save(db, operation)
             agent = self.runtime.agent(operation['agent'], db)
             if agent.get('executionMove', {}).get('id') == operation['id']:
@@ -470,7 +522,7 @@ class AgentMoves:
             if field.startswith(('imageWorkspace', 'workerBase', 'worktree')) or field in {'cwd', 'sourceCwd'}}
         archived_agent.setdefault('executionArchives', []).append({'move': operation['id'], 'server': self.service.server_id,
             'threadId': agent['threadId'], 'accountKey': agent.get('accountKey', 'default'), 'workspace': workspace_archive, 'at': operation['created']})
-        descriptor = {'move': operation['id'], 'fingerprint': operation['fingerprint'], 'acceptedResult': operation['result'], 'agent': archived_agent,
+        descriptor = {'move': operation['id'], 'deadline': operation['deadline'], 'fingerprint': operation['fingerprint'], 'acceptedResult': operation['result'], 'agent': archived_agent,
                       'workspaceArchive': workspace_archive,
                       'nativeThread': agent['threadId'], 'nativeParameters': parameters, 'bridgeSession': bridge_session,
                       'target': operation['target'], 'preflight': operation['preflight'],
@@ -489,12 +541,14 @@ class AgentMoves:
                 operation = self._get(db, key)
             if operation is None or operation['phase'] in _TERMINAL:
                 return
+            self._check_deadline(operation)
             if operation['phase'] == 'waiting':
                 descriptor = self._export(operation)
                 operation.update(phase='exported', descriptor=descriptor)
                 with self.runtime.db() as db:
                     self._save(db, operation)
             if operation['phase'] == 'exported':
+                self._check_deadline(operation)
                 descriptor = operation['descriptor']
                 self._exchange(operation['server'], 'move_begin', descriptor, identity(key, 'begin'))
                 folder = self._folder(key)
@@ -513,19 +567,23 @@ class AgentMoves:
                 with self.runtime.db() as db:
                     self._save(db, operation)
             if operation['phase'] == 'importing':
+                self._check_deadline(operation)
                 self._exchange(operation['server'], 'move_prepare', {'move': key}, identity(key, 'prepare'))
                 operation['phase'] = 'prepared'
                 with self.runtime.db() as db:
                     self._save(db, operation)
             if operation['phase'] == 'prepared':
+                self._check_deadline(operation)
                 descriptor = operation['descriptor']
                 origin = descriptor['agent'].get('remoteOrigin')
                 if origin and operation['server'] not in {self.service.server_id, origin['home']}:
                     self._exchange(origin['home'], 'move_home_relocate',
                         {'agent': operation['agent'], 'epoch': operation['epoch'], 'link': origin['link'],
                          'controlEpoch': descriptor['agent'].get('remoteControlEpoch', 0),
-                         'move': key, 'target': operation['server'], 'newLink': descriptor['link']}, identity(key, 'home-relocate'))
+                         'move': key, 'target': operation['server'], 'newLink': descriptor['link'],
+                         'deadline': operation['deadline']}, identity(key, 'home-relocate'))
                 with self.runtime.lock, self.runtime.db() as db:
+                    self._check_deadline(operation)
                     agent = self.runtime.agent(operation['agent'], db)
                     if agent['epoch'] != operation['epoch'] or not agent['autoWake']:
                         raise ValueError('The source agent was stopped before move activation')
@@ -545,6 +603,7 @@ class AgentMoves:
                     self._save(db, operation)
                     self.service.queue(db, operation['server'], 'move_activate', {'move': key}, identity(key, 'activate'))
             if operation['phase'] == 'redirected':
+                self._check_deadline(operation)
                 self._exchange(operation['server'], 'move_activate', {'move': key}, identity(key, 'activate'))
                 with self.runtime.lock, self.runtime.db() as db:
                     agent = self.runtime.agent(operation['agent'], db)
@@ -616,6 +675,7 @@ class AgentMoves:
         if action == 'move_home_validate':
             return {'link': old_link}
         new_link = payload['newLink']
+        self._check_deadline({'deadline': payload['deadline'], 'created': time.time()})
         expected = {**old_link, 'id': identity(payload['move'], 'link'), 'workers': [agent['id']]}
         expected.pop('side', None)
         expected.pop('server', None)
@@ -624,6 +684,7 @@ class AgentMoves:
         self._exchange(target, 'move_route_ready', {'agent': agent['id'], 'move': payload['move'], 'link': new_link['id']},
                        identity(payload['move'], 'route-ready'))
         with self.runtime.lock, self.runtime.db() as db:
+            self._check_deadline({'deadline': payload['deadline'], 'created': time.time()})
             agent, _old = self._home_owner(db, principal, payload)
             aliases = agent.setdefault('executionRouteAliases', [])
             alias = {'server': principal, 'link': old_link['id']}
@@ -686,6 +747,7 @@ class AgentMoves:
         with self.runtime.lock, self.runtime.db() as db:
             operation = self._get(db, identity(move, 'target'))
             if action == 'move_begin':
+                self._check_deadline({'deadline': payload['deadline'], 'created': time.time()})
                 if payload.get('link', {}).get('home') != payload.get('preflight', {}).get('routeHome'):
                     raise PermissionError('The source move identity differs from the paired server')
                 if payload['preflight']['sourceServer'] != principal:
@@ -702,7 +764,8 @@ class AgentMoves:
                             or previous.get('inFlight') or previous.get('turnId')):
                         raise ValueError('The destination already has this Studio identity')
                 operation = {'id': identity(move, 'target'), 'move': move, 'side': 'target', 'principal': principal,
-                             'descriptor': copy.deepcopy(payload), 'phase': 'receiving', 'created': time.time()}
+                             'descriptor': copy.deepcopy(payload), 'phase': 'receiving', 'created': time.time(),
+                             'deadline': min(payload['deadline'], time.time() + DEADLINE)}
                 self._save(db, operation)
                 return {'phase': 'receiving'}
             if operation is None and action == 'move_status':
@@ -710,7 +773,8 @@ class AgentMoves:
             if operation is None or operation['principal'] != principal:
                 raise PermissionError('The move belongs to another source server')
             if action == 'move_status':
-                return {'phase': operation['phase'], 'firstTurnCache': operation.get('firstTurnCache')}
+                return {'phase': operation['phase'], 'error': operation.get('error'), 'firstTurnCache': operation.get('firstTurnCache')}
+        self._check_target_deadline(operation)
         if action == 'move_chunk':
             if operation['phase'] != 'receiving':
                 raise ValueError('The move no longer accepts history chunks')
@@ -748,6 +812,7 @@ class AgentMoves:
     def _prepare(self, operation: dict[str, Any]) -> dict[str, Any]:
         if operation['phase'] in {'ready', 'active'}:
             return {'phase': operation['phase']}
+        self._check_target_deadline(operation)
         if operation['phase'] != 'receiving':
             raise RuntimeError('The native import outcome is unknown. It was not repeated')
         descriptor = operation['descriptor']
@@ -782,6 +847,7 @@ class AgentMoves:
                      lastCompletedTurn=None, lastCompletedTurnStatus=None)
         if self._capabilities(agent) != descriptor['preflight']['capabilities']:
             raise ValueError('The native tools or version changed after preflight')
+        self._check_target_deadline(operation)
         if agent.get('provider') == 'claude':
             params = {'session': descriptor['bridgeSession'], 'cwd': agent['cwd'], 'path': str(folder / 'incoming-native.zip')}
             method = 'claude/moveImport'
@@ -800,12 +866,14 @@ class AgentMoves:
             self._save(db, operation)
         # A saved submission is never repeated after a missing native receipt.
         native = self.runtime.connect_agent(agent)
+        self._check_target_deadline(operation)
         if (agent.get('provider') != 'claude' and previous_home
                 and previous_home.get('accountKey', 'default') == account['id']):
             extend_codex_history(native, self.runtime.accounts.home(account['id']), descriptor['nativeThread'],
                                  copied, folder / 'previous-native.jsonl')
             params.pop('path')
         result = native.call(method, params, timeout=30)
+        self._check_target_deadline(operation)
         if result['thread']['id'] != descriptor['nativeThread']:
             raise RuntimeError('The native import returned a different conversation identity')
         if not agent.get('isLead') and operation['principal'] != self.service.server_id and not returning_home:
@@ -861,6 +929,7 @@ class AgentMoves:
                 return {'phase': 'active', 'agentId': current['descriptor']['agent']['id']}
             if not current or current['phase'] != 'ready':
                 raise RuntimeError('The native import is not confirmed. No target turn was started')
+            self._check_deadline(current)
             descriptor = current['descriptor']
             agent = self.runtime.agent(descriptor['agent']['id'], db)
             if agent['epoch'] != current['preparedEpoch'] or agent.get('deletedAt') or agent.get('inFlight'):
