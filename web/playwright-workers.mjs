@@ -10,7 +10,11 @@ export const measuredFixtureScratchBytes = 18 * 1024 * 1024;
 const minimumWorkerMemoryProfileSamples = 5;
 const maximumMemoryFraction = 0.7;
 const minimumAvailableMemoryReserveBytes = 4 * 1024 * 1024 * 1024;
-const minimumCpuWorkerFraction = 0.25;
+// Mean process-tree CPU seconds / wall seconds / workers from a non-saturated
+// 2-worker calibration (four client cases; /proc CPU-time deltas sampled 0.5 s).
+const measuredWorkerCpuCores = 0.54;
+const workerCpuSafetyFactor = 2;
+const maximumWorkerCpuFraction = 0.5;
 const runnableSampleCount = 11;
 const runnableSampleIntervalMs = 500;
 
@@ -299,9 +303,15 @@ export function choosePlaywrightWorkerCount({
   override,
 }) {
   const availableCpus = Math.max(1, Math.floor(cpuLimit - competingRunnable));
-  const cpuFloor = Math.max(1, Math.ceil(cpuLimit * minimumCpuWorkerFraction));
-  const loadLimitedCpus = Math.min(cpuLimit, availableCpus);
-  const cpuWorkers = Math.max(cpuFloor, loadLimitedCpus);
+  const cpuBudgetCores = Math.max(
+    1,
+    Math.floor(availableCpus * maximumWorkerCpuFraction),
+  );
+  const plannedWorkerCpuCores = measuredWorkerCpuCores * workerCpuSafetyFactor;
+  const cpuWorkerSlots = Math.max(
+    1,
+    Math.floor(cpuBudgetCores / plannedWorkerCpuCores),
+  );
   if (override !== undefined) {
     const workers = Number(override);
     if (!Number.isSafeInteger(workers) || workers < 1)
@@ -309,22 +319,27 @@ export function choosePlaywrightWorkerCount({
     return {
       workers,
       availableCpus,
-      cpuFloor,
+      cpuBudgetCores,
+      cpuWorkerSlots,
+      measuredWorkerCpuCores,
+      workerCpuSafetyFactor,
+      maximumWorkerCpuFraction,
+      plannedWorkerCpuCores,
       bound: "override",
       memorySafeToStart: memoryWorkers > 0 && workers <= memoryWorkers,
     };
   }
-  const workers = Math.min(cpuWorkers, memoryWorkers);
+  const workers = Math.min(cpuWorkerSlots, memoryWorkers);
   return {
     workers,
     availableCpus,
-    cpuFloor,
-    bound:
-      memoryWorkers < cpuWorkers
-        ? "memory"
-        : loadLimitedCpus < cpuFloor
-          ? "cpu-floor"
-          : "cpu-median",
+    cpuBudgetCores,
+    cpuWorkerSlots,
+    measuredWorkerCpuCores,
+    workerCpuSafetyFactor,
+    maximumWorkerCpuFraction,
+    plannedWorkerCpuCores,
+    bound: memoryWorkers < cpuWorkerSlots ? "memory" : "cpu-capacity",
     memorySafeToStart: memoryWorkers > 0,
   };
 }
@@ -382,7 +397,9 @@ function workerSelection(environment = process.env) {
     memoryWorkers: memoryLimit,
     minimumAvailableMemoryReserveBytes,
     maximumMemoryFraction,
-    minimumCpuWorkerFraction,
+    measuredWorkerCpuCores,
+    workerCpuSafetyFactor,
+    maximumWorkerCpuFraction,
     measuredWorkerPssBytes,
     workerMemoryProfileRunId: memoryProfile?.runId,
     workerMemoryProfileSamples: memoryProfile?.workerCount ?? 0,

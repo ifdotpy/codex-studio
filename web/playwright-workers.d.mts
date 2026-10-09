@@ -3,19 +3,23 @@ export function availablePlaywrightWorkers(
 ): number;
 export function getPlaywrightWorkerSelection(environment?: NodeJS.ProcessEnv): {
   workers: number;
-  bound: "cpu-median" | "cpu-floor" | "memory" | "override";
+  bound: "cpu-capacity" | "memory" | "override";
   overridden: boolean;
   cpus: number;
   runnableSamples: number[];
   competingRunnable: number;
   availableCpus: number;
-  cpuFloor: number;
+  cpuBudgetCores: number;
+  cpuWorkerSlots: number;
+  measuredWorkerCpuCores: number;
+  workerCpuSafetyFactor: number;
+  maximumWorkerCpuFraction: number;
+  plannedWorkerCpuCores: number;
   memoryAvailableBytes: number;
   memoryBudgetBytes: number;
   memoryWorkers: number;
   minimumAvailableMemoryReserveBytes: number;
   maximumMemoryFraction: number;
-  minimumCpuWorkerFraction: number;
   measuredWorkerPssBytes: number;
   measuredFixtureScratchBytes: number;
   measuredWorkerMemoryBytes: number;
@@ -64,8 +68,13 @@ export function choosePlaywrightWorkerCount(input: {
 }): {
   workers: number;
   availableCpus: number;
-  cpuFloor: number;
-  bound: "cpu-median" | "cpu-floor" | "memory" | "override";
+  cpuBudgetCores: number;
+  cpuWorkerSlots: number;
+  measuredWorkerCpuCores: number;
+  workerCpuSafetyFactor: number;
+  maximumWorkerCpuFraction: number;
+  plannedWorkerCpuCores: number;
+  bound: "cpu-capacity" | "memory" | "override";
   memorySafeToStart: boolean;
 };
 export function estimateWorkerMemoryBytes(input: {

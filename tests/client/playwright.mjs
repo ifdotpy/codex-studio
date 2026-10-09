@@ -20,6 +20,12 @@ import {
 import { choosePlaywrightScratchRoot } from "./scratch-root.mjs";
 import { browserExecutablePath } from "./browser-executable.mjs";
 import {
+  registerFixtureProcessGroup,
+  signalFixtureProcessGroup,
+  stopFixtureProcessGroup,
+  unregisterFixtureProcessGroup,
+} from "./fixture-process-group.mjs";
+import {
   persistWorkerMemorySample,
   sampleProcessTreeMemory,
 } from "../../web/playwright-workers.mjs";
@@ -52,6 +58,10 @@ const require = createRequire(
 const { test: baseTest, expect } = require("@playwright/test");
 export const playwrightScratchRoot = playwrightScratch.root;
 const fixtureViteCaches = new Set();
+const fixtureProcessGroupRegistry = join(
+  playwrightScratch.root,
+  "fixture-process-groups",
+);
 process.once("exit", () => {
   for (const cacheDir of fixtureViteCaches)
     rmSync(cacheDir, { recursive: true, force: true });
@@ -442,13 +452,8 @@ async function waitForChildStart(child) {
 async function stopFixtureChild(child) {
   await waitForChildStart(child);
   if (child.pid === undefined) return;
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  child.kill("SIGTERM");
+  await stopFixtureProcessGroup(child);
   await waitForChildExit(child);
-  if (child.exitCode === null && child.signalCode === null) {
-    child.kill("SIGKILL");
-    await waitForChildExit(child);
-  }
   if (child.exitCode === null && child.signalCode === null)
     throw new Error(`Fixture process ${child.pid} did not exit after SIGKILL`);
 }
@@ -742,6 +747,7 @@ export function spawnFixture(command, args, options) {
     args,
     {
       ...options,
+      detached: process.platform !== "win32",
       env: {
         ...process.env,
         ...options?.env,
@@ -755,6 +761,16 @@ export function spawnFixture(command, args, options) {
       },
     },
   );
+  const childKill = child.kill.bind(child);
+  child.kill = (signal) =>
+    signalFixtureProcessGroup(child, signal) || childKill(signal);
+  child.once("spawn", () => {
+    try {
+      registerFixtureProcessGroup(fixtureProcessGroupRegistry, child.pid);
+    } catch (error) {
+      scope.errors.push(error);
+    }
+  });
   let scratchFailure = "";
   child.stderr?.on("data", (chunk) => {
     const text = String(chunk);
@@ -827,7 +843,17 @@ export function spawnFixture(command, args, options) {
     if (/** @type {NodeJS.ErrnoException} */ (error).code !== "ESRCH")
       scope.errors.push(error);
   });
-  child.once("close", (code, signal) => {
+  child.once("close", async (code, signal) => {
+    if (child.pid !== undefined) {
+      try {
+        // A descendant may outlive the direct fixture after it closes its
+        // pipes. Keep the group registered until every process has exited.
+        await stopFixtureProcessGroup(child);
+        unregisterFixtureProcessGroup(fixtureProcessGroupRegistry, child.pid);
+      } catch (error) {
+        scope.errors.push(error);
+      }
+    }
     scope.children.delete(child);
     if (scratchFailure)
       scope.errors.push(

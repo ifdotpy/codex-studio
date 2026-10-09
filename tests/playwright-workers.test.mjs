@@ -153,7 +153,7 @@ test("worker memory uses measured p90 or conservative fallback without double-co
   );
 });
 
-test("CPU median determines workers when memory has room", () => {
+test("measured per-worker CPU demand limits workers when memory has room", () => {
   assert.deepEqual(
     choosePlaywrightWorkerCount({
       cpuLimit: 32,
@@ -161,16 +161,21 @@ test("CPU median determines workers when memory has room", () => {
       memoryWorkers: 32,
     }),
     {
-      workers: 24,
+      workers: 11,
       availableCpus: 24,
-      cpuFloor: 8,
-      bound: "cpu-median",
+      cpuBudgetCores: 12,
+      cpuWorkerSlots: 11,
+      measuredWorkerCpuCores: 0.54,
+      workerCpuSafetyFactor: 2,
+      maximumWorkerCpuFraction: 0.5,
+      plannedWorkerCpuCores: 1.08,
+      bound: "cpu-capacity",
       memorySafeToStart: true,
     },
   );
 });
 
-test("CPU floor prevents a transient runnable spike from selecting two", () => {
+test("the available CPU count has a one-worker floor", () => {
   assert.deepEqual(
     choosePlaywrightWorkerCount({
       cpuLimit: 32,
@@ -178,19 +183,24 @@ test("CPU floor prevents a transient runnable spike from selecting two", () => {
       memoryWorkers: 32,
     }),
     {
-      workers: 8,
+      workers: 1,
       availableCpus: 2,
-      cpuFloor: 8,
-      bound: "cpu-floor",
+      cpuBudgetCores: 1,
+      cpuWorkerSlots: 1,
+      measuredWorkerCpuCores: 0.54,
+      workerCpuSafetyFactor: 2,
+      maximumWorkerCpuFraction: 0.5,
+      plannedWorkerCpuCores: 1.08,
+      bound: "cpu-capacity",
       memorySafeToStart: true,
     },
   );
 });
 
-test("memory remains a hard cap below the CPU floor", () => {
+test("memory bound takes priority below the CPU capacity plan", () => {
   const selection = choosePlaywrightWorkerCount({
     cpuLimit: 32,
-    competingRunnable: 30,
+    competingRunnable: 8,
     memoryWorkers: 3,
   });
   assert.equal(selection.workers, 3);

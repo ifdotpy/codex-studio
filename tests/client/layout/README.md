@@ -45,10 +45,17 @@ Spawned fixture `TMPDIR`, `HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`, and test
 state directories stay under this scratch root.
 
 The CPU limit is the smaller of `os.availableParallelism()` and the cgroup CPU
-quota. The runner samples `/proc/stat` ten times across about two seconds,
+quota. The runner samples `/proc/stat` eleven times across five seconds,
 subtracts its own process from each `procs_running` sample, and subtracts the
-80th-percentile competing count from the CPU limit. The memory budget is the
-smaller of 70% of available memory and available memory minus a 4 GiB reserve.
+median competing count from the CPU limit. The CPU plan uses a 0.54-core mean
+demand per worker measured as process-tree CPU seconds divided by wall time and
+worker count in a non-saturated two-worker run. It doubles that measurement for
+startup and workload variance, then budgets at most half of currently available
+CPU capacity for the browser suite. This leaves headroom for fixture startup
+and short CPU bursts; the run's spawn-to-port median is the startup health
+signal.
+The memory budget is the smaller of 70% of available memory and available
+memory minus a 4 GiB reserve.
 Each worker is sized by its measured p90 process tree PSS, which already
 includes Chromium and fixture children. Until at least five worker samples
 exist, the selector uses a conservative 2.1 GiB tree-PSS default. If headroom
