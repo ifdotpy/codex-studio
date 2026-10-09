@@ -435,6 +435,11 @@ class WorkspaceMixin:
         if db is None:
             with self.lock, self.db() as connection:
                 return self.project_account(cwd, db=connection)
+        if str(cwd).startswith('project:'):
+            row = db.execute('SELECT record FROM runtime_projects WHERE id=?', (str(cwd),)).fetchone()
+            if not row:
+                raise ValueError('Select an existing project')
+            return str(json.loads(row[0]).get('accountKey') or self.accounts.default())
         directory = Path(self.project_directory(cwd, require_existing=False))
         matches = [p for p in self.records(db, "projects")
                    if p.get("accountKey") and directory.is_relative_to(Path(p["path"]).expanduser().resolve())]
@@ -446,6 +451,11 @@ class WorkspaceMixin:
         if db is None:
             with self.lock, self.db() as connection:
                 return self.project_worker_base(cwd, db=connection)
+        if str(cwd).startswith('project:'):
+            row = db.execute('SELECT record FROM runtime_projects WHERE id=?', (str(cwd),)).fetchone()
+            if not row:
+                raise ValueError('Select an existing project')
+            return json.loads(row[0]).get('workerBaseRef')
         directory = Path(self.project_directory(cwd, require_existing=False))
         matches = [p for p in self.records(db, "projects")
                    if p.get("workerBaseRef") and directory.is_relative_to(
@@ -473,6 +483,12 @@ class WorkspaceMixin:
                     return self.projects(db=connection)
             return {"items": sorted(self.records(db, "projects"), key=lambda p: (p["created"], p["id"]))}
         action = data.get("action", "register")
+        if action == "register" and data.get("server"):
+            from codex_project_locations import create as create_remote_project
+            return create_remote_project(self, data)
+        if action in {"add_location", "remove_location"}:
+            from codex_project_locations import request as location_request
+            return location_request(self, data)
         if action == "reorder":
             from codex_project_folders import reorder_sidebar
             return reorder_sidebar(self, data)  # type: ignore[arg-type]  # typed-narrowing: workspace host protocol supplies the project-folder runtime interface
@@ -487,7 +503,8 @@ class WorkspaceMixin:
             return set_project_default(self, data)
         if action not in ("register", "remove", "set_account", "set_worker_base"):
             raise ValueError("Unknown project action")
-        path = self.project_directory(data.get("path"), require_existing=action == "register")
+        from codex_project_locations import project_key
+        path = project_key(self, data.get("path"), require_existing=action == "register")
         name = text_field(data["name"], "a project name", 255) if "name" in data else Path(path).name or path
         if action == "set_account":
             revision = data.get("expected_revision")

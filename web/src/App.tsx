@@ -194,6 +194,13 @@ import SharedChatCreate, {
   sharedCreationKey,
 } from "./components/SharedChatCreate";
 import ProjectDirectoryPicker from "./components/ProjectDirectoryPicker";
+import ProjectServerCards from "./components/ProjectServerCards";
+import ProjectFoldersDialog from "./components/ProjectFoldersDialog";
+import {
+  readProjectServers,
+  registerProject,
+  type ProjectServerChoice,
+} from "./servers/projectLocations";
 import "./desktop";
 import "./components/team-navigation.css";
 import WorkerCard from "./components/agents/WorkerCard";
@@ -1213,6 +1220,7 @@ export default function App() {
     cwd?: string,
     projectFolder?: string,
     retryId?: string,
+    projectBinding?: { projectId: string; homeServerId: string },
   ) => {
     if (creationLock.current) return null;
     if (!retryId && !cwd) {
@@ -1224,6 +1232,78 @@ export default function App() {
             undefined
           : undefined);
       projectFolder = lead?.projectFolder || undefined;
+    }
+    if (!retryId && !projectBinding) {
+      const project = data?.runtime?.projects?.find(
+        (row) => row.path === cwd || row.id === cwd,
+      );
+      if (project?.locations?.length && project.path && project.name) {
+        let servers: ProjectServerChoice[];
+        try {
+          servers = await readProjectServers();
+        } catch (failure) {
+          notify(errorText(failure));
+          return null;
+        }
+        setModal({
+          title: "New chat",
+          body: (
+            <ProjectServerCards
+              project={{ ...project, path: project.path, name: project.name }}
+              servers={servers}
+              lastServer={
+                saved<string>(`project-last-server:${project.id}`, "") ||
+                [...leads]
+                  .filter(
+                    (chat) =>
+                      chat.projectId === project.id ||
+                      chat.cwd === project.path,
+                  )
+                  .sort(
+                    (a, b) =>
+                      (b.updated || b.created || 0) -
+                      (a.updated || a.created || 0),
+                  )[0]?.serverId ||
+                "local"
+              }
+              onChoose={(location) => {
+                save(`project-last-server:${project.id}`, location.serverId);
+                setModal(null);
+                const binding = {
+                  projectId: project.id,
+                  homeServerId: project.homeServerId || "",
+                };
+                if (location.serverId === "local")
+                  void newChat(
+                    location.path,
+                    projectFolder,
+                    undefined,
+                    binding,
+                  );
+                else if (window.parent !== window)
+                  window.parent.postMessage(
+                    {
+                      kind: "studio-project-new-chat",
+                      serverId: serverViewId,
+                      target: location.serverId,
+                      path: location.path,
+                      projectId: project.id,
+                      projectServerId: project.homeServerId,
+                    },
+                    serverParentOrigin,
+                  );
+                else
+                  notify(
+                    "Open the paired server workspace to create this chat.",
+                  );
+              }}
+              onAdd={(server) => openProjectFolders(project.id, server)}
+              onCancel={() => setModal(null)}
+            />
+          ),
+        });
+        return null;
+      }
     }
     try {
       const pending = pendingChatCreations(creationKey);
@@ -1239,7 +1319,11 @@ export default function App() {
                 (request.cwd ||
                   leads.find((item) => item.id === request.previous)?.cwd) ===
                   cwd &&
-                (request.project_folder || undefined) === projectFolder,
+                (request.project_folder || undefined) === projectFolder &&
+                (request.project_id || undefined) ===
+                  projectBinding?.projectId &&
+                (request.project_server_id || undefined) ===
+                  projectBinding?.homeServerId,
             )) || null;
       setPendingCreations(pending);
       if (retryId && !creation.current)
@@ -1260,11 +1344,18 @@ export default function App() {
           title: "Choose project folder",
           body: (
             <ProjectDirectoryPicker
-              onSelect={async (path) => {
-                await post("/api/projects", { path });
+              onSelect={async (path, server) => {
+                const registered = await registerProject(
+                  path,
+                  server,
+                  crypto.randomUUID(),
+                );
                 setModal(null);
                 await refresh();
-                await newChat(path);
+                if (server === "local") await newChat(path);
+                else if ("projectId" in registered) {
+                  await openProjectFolders(registered.projectId);
+                }
               }}
             />
           ),
@@ -1281,8 +1372,15 @@ export default function App() {
       previous: lead?.id || null,
       reuse_empty: false,
       ...(cwd ? { cwd } : {}),
+      ...(projectBinding
+        ? {
+            project_id: projectBinding.projectId,
+            project_server_id: projectBinding.homeServerId,
+          }
+        : {}),
       ...(projectFolder ? { project_folder: projectFolder } : {}),
-      ...(cwd &&
+      ...(!projectBinding &&
+      cwd &&
       data?.runtime?.projects?.find((project) => project.path === cwd)
         ?.accountKey
         ? {
@@ -1644,6 +1742,43 @@ export default function App() {
         </>
       ),
     });
+  const openAddProject = () => {
+    setSidebar(false);
+    setModal({
+      title: "Add project",
+      body: (
+        <ProjectDirectoryPicker
+          onSelect={async (path, server) => {
+            await registerProject(path, server, crypto.randomUUID());
+            setModal(null);
+            await refresh();
+          }}
+        />
+      ),
+    });
+  };
+  const openProjectFolders = async (projectId: string, server?: string) => {
+    let projects;
+    try {
+      projects = await get("/api/projects");
+    } catch (error) {
+      notify(errorText(error));
+      return;
+    }
+    const project = projects.items.find((row) => row.id === projectId);
+    if (!project?.path || !project.name) return;
+    setSidebar(false);
+    setModal({
+      title: "Project settings",
+      body: (
+        <ProjectFoldersDialog
+          project={{ ...project, path: project.path, name: project.name }}
+          initialServer={server}
+          saved={refresh}
+        />
+      ),
+    });
+  };
   const folders = (target: Agent) => {
     setSidebar(false);
     setModal({
@@ -1651,6 +1786,8 @@ export default function App() {
       body: (
         <ProjectDirectoryPicker
           initialPath={target.cwd ?? undefined}
+          serverChoices={[{ id: "local", label: "This Mac" }]}
+          showServerSelector={false}
           onSelect={async (cwd) => {
             await post("/api/conversation", { id: target.id, cwd });
             setModal(null);
@@ -1729,7 +1866,21 @@ export default function App() {
       if (command.action === "open") {
         open(command.id, command.messageId);
         document.documentElement.removeAttribute("data-server-projects");
-      } else if (command.action === "new-chat") void newChat(command.path);
+      } else if (command.action === "new-chat")
+        void newChat(
+          command.path,
+          undefined,
+          undefined,
+          command.projectId && command.projectServerId
+            ? {
+                projectId: command.projectId,
+                homeServerId: command.projectServerId,
+              }
+            : undefined,
+        );
+      else if (command.action === "add-project") openAddProject();
+      else if (command.action === "project-folders")
+        openProjectFolders(command.projectId, command.server);
       else if (command.action === "settings") {
         setStudioSettingsTab(command.tab || "accounts");
         setStudioSettingsOpen(true);
@@ -1966,22 +2117,9 @@ export default function App() {
           setSidebar(false);
           setSharedCreate({ path });
         }}
-        addProject={() => {
-          setSidebar(false);
-          setModal({
-            title: "Add project",
-            body: (
-              <ProjectDirectoryPicker
-                onSelect={async (path) => {
-                  await post("/api/projects", { path });
-                  setModal(null);
-                  await refresh();
-                }}
-              />
-            ),
-          });
-        }}
+        addProject={openAddProject}
         changeProject={folders}
+        projectFolders={(path) => openProjectFolders(path)}
         projectAccount={(path) => {
           setSidebar(false);
           setModal({

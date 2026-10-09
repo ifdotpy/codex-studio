@@ -196,6 +196,8 @@ class TransferRequestReceipt(ResponseModel):
 
 
 class CreateLeadRequest(ContractModel):
+    project_id: str | None = Field(default=None, min_length=1, max_length=4096)
+    project_server_id: str | None = Field(default=None, min_length=1, max_length=128)
     id: str | None = Field(default=None, min_length=1, max_length=200)
     previous: str | None = Field(default=None, max_length=200)
     reuse_empty: bool | None = None

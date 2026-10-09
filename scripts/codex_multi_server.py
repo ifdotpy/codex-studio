@@ -310,6 +310,10 @@ class MultiServerService:
         CREATE TABLE IF NOT EXISTS runtime_access_audit (
           seq INTEGER PRIMARY KEY AUTOINCREMENT, client TEXT NOT NULL, actor TEXT NOT NULL,
           action TEXT NOT NULL, created REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS runtime_access_local_alias (
+          id INTEGER PRIMARY KEY CHECK(id=1), alias TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS runtime_access_alias_requests (
+          id TEXT PRIMARY KEY, server TEXT NOT NULL, alias TEXT NOT NULL);
         """)
         if "actor" not in {row[1] for row in db.execute("PRAGMA table_info(runtime_access_audit)")}:
             db.execute("ALTER TABLE runtime_access_audit ADD COLUMN actor TEXT NOT NULL DEFAULT 'local'")
@@ -432,6 +436,7 @@ class MultiServerService:
         return result
 
     def servers(self) -> list[dict[str, Any]]:
+        self.server_aliases()
         with self.runtime.read_db() as db:
             rows = db.execute("SELECT record FROM runtime_access_clients WHERE json_extract(record,'$.kind')='server'").fetchall()
         return self.discovery().servers([self._public(cast(dict[str, Any], _record(row))) for row in rows])
@@ -449,9 +454,43 @@ class MultiServerService:
     @staticmethod
     def _public(client: dict[str, Any]) -> dict[str, Any]:
         return {key: client.get(key) for key in ("id", "clientId", "serverId", "label", "kind", "origin", "publicKey",
-                                                "tailscaleUser", "status", "created", "lastAccess", "revoked")}
+                                                "tailscaleUser", "status", "created", "lastAccess", "revoked", "alias")}
+
+    def server_aliases(self) -> dict[str, str]:
+        from codex_server_aliases import ensure_aliases
+        identity = self.identity()
+        with self._write() as db:
+            return ensure_aliases(db, identity)
+
+    def set_server_alias(self, server_id: str, alias: str, request_id: str, actor: str) -> dict[str, Any]:
+        from codex_server_aliases import ensure_aliases
+        _id(server_id, "server ID")
+        _id(request_id, "request ID")
+        if not re.fullmatch(r"[A-Z]{1,3}", alias):
+            raise AccessError(400, "invalid_alias", "Use 1 to 3 uppercase letters.")
+        identity = self.identity()
+        target = "local" if server_id in ("local", identity["serverId"]) else server_id
+        with self._write() as db:
+            saved = db.execute("SELECT server,alias FROM runtime_access_alias_requests WHERE id=?", (request_id,)).fetchone()
+            if saved and (saved[0], saved[1]) != (target, alias):
+                raise AccessError(409, "request_conflict", "The request ID has different content.")
+            if not saved:
+                aliases = ensure_aliases(db, identity)
+                if target not in aliases:
+                    raise AccessError(404, "server_not_found", "Select a paired server.")
+                if any(value == alias and key not in (target, identity["serverId"] if target == "local" else target)
+                       for key, value in aliases.items()):
+                    raise AccessError(409, "alias_conflict", "This alias belongs to another server.")
+                if target == "local":
+                    db.execute("INSERT INTO runtime_access_local_alias VALUES(1,?) ON CONFLICT(id) DO UPDATE SET alias=excluded.alias", (alias,))
+                else:
+                    db.execute("UPDATE runtime_access_clients SET record=json_set(record,'$.alias',?) WHERE id=?", (alias, target))
+                db.execute("INSERT INTO runtime_access_alias_requests VALUES(?,?,?)", (request_id, target, alias))
+                self._audit(db, target, "alias", actor)
+        return self.snapshot()
 
     def snapshot(self) -> dict[str, Any]:
+        aliases = self.server_aliases()
         with self.runtime.read_db() as db:
             clients = [self._public(cast(dict[str, Any], _record(row))) for row in db.execute("SELECT record FROM runtime_access_clients ORDER BY id")]
             invites = []
@@ -459,7 +498,8 @@ class MultiServerService:
                 record = cast(dict[str, Any], _record(row))
                 invites.append({key: record.get(key) for key in ("inviteId", "expires", "created", "status")})
         return {"protocol": PROTOCOL, "identity": self.identity(), "clients": clients,
-                "servers": self.servers(), "invites": invites, "settings": {"autoPair": self.discovery().enabled()}}
+                "servers": self.servers(), "invites": invites,
+                "settings": {"autoPair": self.discovery().enabled(), "aliases": aliases}}
 
     def create_invite(self, body: dict[str, Any], actor: str = "local") -> dict[str, Any]:
         request_id = _id(body.get("requestId"), "request ID")

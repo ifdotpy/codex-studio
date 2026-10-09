@@ -1,10 +1,16 @@
 import { isolatedServerView, serverParentOrigin } from "./environment";
+import {
+  defaultServerAlias,
+  LOCAL_ALIAS_KEY,
+  validateServerAlias,
+} from "./serverAliases";
 export type StudioServer = {
   id: string;
   label: string;
   origin: string;
   credentialId?: string;
   workspaceId?: string;
+  alias?: string;
 };
 export const SERVER_REGISTRY_KEY = "studio-paired-servers-v1";
 export const SERVER_REGISTRY_EVENT = "studio-server-registry";
@@ -32,6 +38,14 @@ export function readServers(storage = globalThis.localStorage): StudioServer[] {
   if (!Array.isArray(value))
     throw new Error("The saved server list is invalid.");
   const ids = new Set<string>();
+  const localAlias = storage.getItem(LOCAL_ALIAS_KEY) || "MAC";
+  const aliases = new Set<string>([localAlias]);
+  for (const item of value) {
+    if (item?.alias !== undefined) {
+      validateServerAlias(item.alias, aliases);
+      aliases.add(item.alias);
+    }
+  }
   return value.map((item) => {
     if (
       !item ||
@@ -47,11 +61,14 @@ export function readServers(storage = globalThis.localStorage): StudioServer[] {
     )
       throw new Error("The saved server list is invalid.");
     ids.add(item.id);
+    const alias = item.alias || defaultServerAlias(item, aliases);
+    aliases.add(alias);
     return {
       id: item.id,
       label: item.label,
       origin: serveOrigin(item.origin),
       credentialId: item.credentialId,
+      alias,
       ...(typeof item.workspaceId === "string"
         ? { workspaceId: item.workspaceId }
         : {}),
@@ -62,12 +79,41 @@ export function writeServers(
   servers: StudioServer[],
   storage = globalThis.localStorage,
 ) {
-  storage.setItem(SERVER_REGISTRY_KEY, JSON.stringify(servers));
+  const aliases = new Set([storage.getItem(LOCAL_ALIAS_KEY) || "MAC"]);
+  for (const server of servers) {
+    if (server.alias) {
+      validateServerAlias(server.alias, aliases);
+      aliases.add(server.alias);
+    }
+  }
+  const normalized = servers.map((server) => {
+    const alias = server.alias || defaultServerAlias(server, aliases);
+    aliases.add(alias);
+    return { ...server, alias };
+  });
+  storage.setItem(SERVER_REGISTRY_KEY, JSON.stringify(normalized));
   if (typeof window !== "undefined")
     window.dispatchEvent(new Event(SERVER_REGISTRY_EVENT));
 }
 export function localServer(): StudioServer {
-  return { id: "local", label: "This computer", origin: location.origin };
+  return {
+    id: "local",
+    label: "This computer",
+    origin: location.origin,
+    alias: localStorage.getItem(LOCAL_ALIAS_KEY) || "MAC",
+  };
+}
+export function readServerAliases(): Record<string, string> {
+  try {
+    return Object.fromEntries(
+      [localServer(), ...readServers()].map((server) => [
+        server.id,
+        server.alias || "MAC",
+      ]),
+    );
+  } catch {
+    return { local: localServer().alias || "MAC" };
+  }
 }
 export function viewServer(id: string): StudioServer {
   if (isolatedServerView) {

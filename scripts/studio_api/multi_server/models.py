@@ -45,8 +45,10 @@ class AccessClient(ContractModel):
     created: float
     lastAccess: float | None
     revoked: float | None
+    reachability: Literal["reachable", "unreachable", "unknown"] | None = None
     lastSeen: float | None = None
     autoPair: bool | None = None
+    alias: str | None = None
 
 
 class InviteSummary(ContractModel):
@@ -58,6 +60,7 @@ class InviteSummary(ContractModel):
 
 class AccessSettings(ContractModel):
     autoPair: bool
+    aliases: dict[str, str] = Field(default_factory=dict)
 
 
 class DiscoveryIdentity(ServerIdentity, ResponseModel):
@@ -78,7 +81,7 @@ class AccessAudit(ContractModel):
     sequence: int
     clientId: str
     actorId: str
-    action: Literal["create_invite", "pair", "revoke", "accept_invite", "auto_pair", "unrevoke", "settings"]
+    action: Literal["create_invite", "pair", "revoke", "accept_invite", "auto_pair", "unrevoke", "settings", "alias"]
     created: float
 
 
@@ -121,6 +124,13 @@ class SetAccessSettings(ContractModel):
     requestId: str | None = Field(default=None, min_length=1, max_length=128)
 
 
+class SetServerAlias(ContractModel):
+    action: Literal["alias"]
+    serverId: str = Field(min_length=1, max_length=128)
+    alias: str = Field(min_length=1, max_length=3, pattern=r"^[A-Z]{1,3}$")
+    requestId: str = Field(min_length=1, max_length=128)
+
+
 class UnrevokeServer(ContractModel):
     action: Literal["unrevoke"]
     clientId: str = Field(min_length=1, max_length=128)
@@ -136,7 +146,7 @@ class AutoPairRequest(ContractModel):
     requestId: str = Field(min_length=1, max_length=128)
 
 
-ManagementRequest: TypeAlias = Annotated[CreateInvite | RevokeClient | AcceptInvite | DiscoverServers | UiInvite | SetAccessSettings | UnrevokeServer, Field(discriminator="action")]
+ManagementRequest: TypeAlias = Annotated[CreateInvite | RevokeClient | AcceptInvite | DiscoverServers | UiInvite | SetAccessSettings | UnrevokeServer | SetServerAlias, Field(discriminator="action")]
 
 
 class DevicePairRequest(ContractModel):
