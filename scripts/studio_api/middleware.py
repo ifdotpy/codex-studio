@@ -200,9 +200,12 @@ class RequestBoundary:
             await send({"type": "http.response.body", "body": b""})
             return
         if frame_account_origin:
-            raw_send = send
+            downstream_send = send
 
-            async def frame_cors_send(message: Message) -> None:
+            async def frame_cors_send(
+                message: Message,
+                downstream: Send = downstream_send,
+            ) -> None:
                 if message["type"] == "http.response.start":
                     existing = [
                         (name, value)
@@ -214,7 +217,7 @@ class RequestBoundary:
                         (b"vary", b"Origin"),
                     ])
                     message = {**message, "headers": existing}
-                await raw_send(message)
+                await downstream(message)
 
             send = frame_cors_send
         if not self._trusted(scope, headers, write=write, federation=federation):
@@ -259,9 +262,12 @@ class RequestBoundary:
                 schema_hash = None
 
             if schema_hash is not None:
-                raw_send = send
+                downstream_send = send
 
-                async def send_with_schema_hash(message: Message) -> None:
+                async def send_with_schema_hash(
+                    message: Message,
+                    downstream: Send = downstream_send,
+                ) -> None:
                     if message["type"] == "http.response.start":
                         response_headers = [
                             (name, value)
@@ -272,7 +278,7 @@ class RequestBoundary:
                             (API_SCHEMA_HASH_HEADER.lower().encode(), schema_hash.encode())
                         )
                         message = {**message, "headers": response_headers}
-                    await raw_send(message)
+                    await downstream(message)
 
                 send = send_with_schema_hash
 

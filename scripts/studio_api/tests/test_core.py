@@ -363,11 +363,61 @@ class CoreResponseTests(unittest.TestCase):
             (b"host", b"127.0.0.1:46000"),
         ]))
         self.assertEqual(mismatched_host[0]["status"], 403)
+        wrong_token = asyncio.run(invoke("POST", "/api/accounts/claude/login/code", [
+            (b"x-canvas-token", b"wrong-token"),
+        ]))
+        self.assertEqual(wrong_token[0]["status"], 403)
+        workspace_preflight = asyncio.run(invoke(
+            "OPTIONS",
+            "/api/accounts/claude/login/code",
+            [
+                (b"access-control-request-method", b"POST"),
+                (b"access-control-request-headers", b"content-type,x-canvas-token,x-canvas-workspace"),
+            ],
+        ))
+        self.assertEqual(workspace_preflight[0]["status"], 403)
         forwarded = asyncio.run(invoke("POST", "/api/accounts/claude/login/code", [
             (b"x-forwarded-host", b"studio-ojsw233umu.localhost:46000"),
         ]))
         self.assertEqual(forwarded[0]["status"], 403)
         self.assertEqual(delegated, ["called"])
+
+    def test_production_frame_middleware_allows_same_origin_account_mutation(self) -> None:
+        from fastapi import FastAPI
+
+        context = ApiContext.for_schema()
+        context.api_schema_hash = "frame-schema"
+        context.remote = SimpleNamespace(request_origin=lambda *_args: None)
+        app = FastAPI()
+        app.add_middleware(RequestBoundary, context=context)
+
+        @app.post("/api/accounts/claude/add", response_model=JsonValue)
+        async def add_account(request: Request) -> Response:
+            return context.send(request, {"requestId": "frame-add", "status": "pending"})
+
+        origin = "http://studio-ojsw233umu.localhost:46000"
+        with TestClient(
+            app,
+            base_url=origin,
+            client=("127.0.0.1", 50000),
+            raise_server_exceptions=False,
+        ) as client:
+            response = client.post(
+                "/api/accounts/claude/add",
+                json={"login_id": "frame-add", "label": "Frame"},
+                headers={
+                    "Origin": origin,
+                    "X-Canvas-Token": context.token,
+                    API_SCHEMA_HASH_HEADER: "frame-schema",
+                    "X-Studio-Request-Id": "frame-add",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["requestId"], "frame-add")
+        self.assertEqual(response.headers["access-control-allow-origin"], origin)
+        self.assertEqual(response.headers[API_SCHEMA_HASH_HEADER.lower()], "frame-schema")
+        self.assertIn("connect-src 'self'", response.headers["content-security-policy"])
 
     def test_actual_loopback_frame_alias_loads_html_but_cannot_read_local_session(self) -> None:
         from codex_remote import RemoteAccess
