@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import signal
 import sys
+import tempfile
 from typing import Any
 
 from host_exec_protocol import HostExecError, atomic, conflicts, inside, key, require
@@ -33,8 +34,10 @@ class HostSlotHandlers:
             os.killpg(child.pid, signal.SIGKILL)
             await child.wait()
             raise HostExecError("outcome_unknown", "The layr slot operation exceeded its deadline") from exc
-        require(child.returncode == 0, "layr slot failed: " + stderr.decode(errors="replace")[-2000:], "layr_failed")
-        return stdout.decode(errors="replace")
+        output = stdout.decode(errors="replace")
+        merge_conflict = args[1] == "collect" and child.returncode == 1 and "conflicts (the line also changed these paths):" in output
+        require(child.returncode == 0 or merge_conflict, "layr slot failed: " + (stderr.decode(errors="replace") + output)[-2000:], "layr_failed")
+        return output
 
     async def io(self, context: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
         child = await asyncio.create_subprocess_exec(sys.executable, str(Path(__file__).with_name("host_exec_slot_io.py")),
@@ -116,10 +119,27 @@ class HostSlotHandlers:
             require(isinstance(paths, list) and len(paths) <= 128, "The collect path count exceeds its limit")
             for path in paths:
                 inside(source, path)
+            path_list = parent / (key(operation) + ".collect.json")
+            all_paths = json.loads(path_list.read_text()) if path_list.exists() else []
+            all_paths = sorted(set(all_paths) | set(paths))
+            atomic(path_list, all_paths)
+            if not params.get("final"):
+                return {"output": "", "paths": len(all_paths), "conflicts": []}
             entries = (await self.io(context, {"action": "manifest", "root": str(source)}))["entries"]
             require(not conflicts(list(entries)), "The guest slot names conflict", "name_conflict")
-            output = await self.layr(context, ["slot", "collect", str(source), *paths])
-            if params.get("final"):
-                lease.unlink()
-            return {"output": output}
+            # One layr collect preserves the complete stale path set for the next sync.
+            fd, filename = tempfile.mkstemp(dir=parent, prefix="collect-")
+            try:
+                with os.fdopen(fd, "w") as stream:
+                    stream.write("".join(path + "\n" for path in all_paths))
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.chmod(filename, 0o444)
+                output = await self.layr(context, ["slot", "collect", str(source), "--paths-from", filename])
+            finally:
+                Path(filename).unlink(missing_ok=True)
+            marker = "conflicts (the line also changed these paths):"
+            merge_conflicts = [line.strip() for line in output.split(marker, 1)[1].splitlines() if line.strip()] if marker in output else []
+            lease.unlink()
+            return {"output": output, "conflicts": merge_conflicts}
         raise HostExecError("invalid_params", "Unknown host slot method")

@@ -85,7 +85,7 @@ def scan(root: Path) -> dict[str, dict[str, Any]]:
                 with path.open("rb") as stream:
                     checksum = hashlib.file_digest(stream, "sha256").hexdigest()
                 result[rel] = {"kind": "file", "bytes": info.st_size,
-                               "mode": stat.S_IMODE(info.st_mode), "sha256": checksum}
+                               "mode": stat.S_IMODE(info.st_mode) & 0o777, "sha256": checksum}
             elif stat.S_ISDIR(info.st_mode):
                 result[rel] = {"kind": "directory"}
             else:

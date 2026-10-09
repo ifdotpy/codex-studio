@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -50,7 +51,9 @@ class Slots(HostSlotHandlers):
                 return "not copied (names differ only in case or Unicode form):\n\tReadme\n\tREADME\n"
             return "slot holds state fixture"
         if args[1] == "collect":
-            for relative in args[3:]:
+            paths = Path(args[4]).read_text().splitlines() if args[3:4] == ["--paths-from"] else args[3:]
+            self.collect_batches.append(paths)
+            for relative in paths:
                 src, dst = source / relative, line / relative
                 if dst.is_symlink() or dst.is_file():
                     dst.unlink()
@@ -85,6 +88,7 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         layr.mkdir()
         self.slots = Slots(self.state, layr, Agents(context))
         self.slots.bad_names = False
+        self.slots.collect_batches = []
         async def host_context(agent):
             return await self.slots.agents.dispatch("context", "agent.context", {"agentId": agent})
         self.guest = HostExec(SimpleNamespace(state=self.state, host_context=host_context))
@@ -245,6 +249,42 @@ class Contract(unittest.IsolatedAsyncioTestCase):
             'pathlib.Path(os.environ["HOST_EXEC_DERIVED_DATA"],"large").write_bytes(b"x"*128*1024);time.sleep(20)')
         self.assertEqual(result["reason"], "disk_budget")
         self.assertTrue(result["collected"])
+
+    async def test_collection_uses_one_complete_path_set(self):
+        result = await self.execute("many-edits", 'import pathlib;'
+            '[pathlib.Path("edit-%03d" % index).write_text("from Mac") for index in range(140)]')
+        self.assertTrue(result["collected"])
+        self.assertEqual(len(self.slots.collect_batches), 1)
+        self.assertEqual(len(self.slots.collect_batches[0]), 140)
+
+    async def test_layr_merge_conflict_report_survives_code_one(self):
+        marker = "conflicts (the line also changed these paths):\n\tmain.swift (content: markers written)\n"
+        child = SimpleNamespace(returncode=1, communicate=AsyncMock(return_value=(marker.encode(), b"")))
+        with patch("host_exec_slot.asyncio.create_subprocess_exec", return_value=child) as launch:
+            report = await HostSlotHandlers.layr(self.slots, self.slots.agents.context,
+                ["slot", "collect", str(self.line)])
+        self.assertEqual(report, marker)
+        self.assertEqual(launch.call_args.kwargs["user"], os.getuid())
+        self.assertEqual(launch.call_args.kwargs["group"], os.getgid())
+        child.communicate = AsyncMock(return_value=(b"other failure", b"error"))
+        with patch("host_exec_slot.asyncio.create_subprocess_exec", return_value=child):
+            with self.assertRaises(HostExecError) as caught:
+                await HostSlotHandlers.layr(self.slots, self.slots.agents.context,
+                    ["slot", "collect", str(self.line)])
+        self.assertEqual(caught.exception.code, "layr_failed")
+
+    async def test_guest_result_reports_collection_conflicts(self):
+        original = self.slots.layr
+        async def conflict(context, args):
+            output = await original(context, args)
+            if args[1] == "collect":
+                output += "\nconflicts (the line also changed these paths):\n\tmain.swift (content: markers written)\n"
+            return output
+        self.slots.layr = conflict
+        result = await self.execute("merge-conflict", 'import pathlib;pathlib.Path("main.swift").write_text("host edit")')
+        self.assertEqual(result["state"], "conflicted")
+        self.assertTrue(result["collected"])
+        self.assertEqual(result["collectionConflicts"], ["main.swift (content: markers written)"])
 
     async def test_lost_owner_retains_lease(self):
         op = await self.guest.call("acquire", {"operationId": "lost-owner", "agentId": "agent", "projectId": "project", "linePath": str(self.line)}, "acquire")

@@ -182,10 +182,13 @@ class HostExec:
             await self.broker("host.slot.artifact", {**slot, "action": "commit", "path": path}, "artifact-commit:" + key(path))
             artifact_files.append({"path": receipt["absolutePath"], "hostPath": str(Path(op["artifactsPath"]) / relative(path)), **entry})
         reports = []
+        merge_conflicts = []
         for offset in range(0, max(1, len(paths)), 128):
             report = await self.broker("host.slot.collect", {**slot, "paths": paths[offset:offset + 128],
                 "final": offset + 128 >= len(paths)}, "collect:" + str(offset))
             reports.append(report["output"])
+            merge_conflicts.extend(report.get("conflicts", []))
         await self.call("release", {**common, "collected": True}, "release")
-        return {**final, "collected": True, "collectOutput": "".join(reports), "transferredBytes": sent,
+        return {**final, "state": "conflicted" if merge_conflicts else final["state"], "collected": True,
+                "collectOutput": "".join(reports), "collectionConflicts": merge_conflicts, "transferredBytes": sent,
                 "artifacts": artifact_files, "lastSeq": after_seq}
