@@ -118,6 +118,28 @@ class ReaderContract(unittest.TestCase):
 
     def assert_reaped(self):
         pid = int((self.home / 'pid').read_text())
+        if os.name == 'nt':
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+            kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+            kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel32.CloseHandle.restype = wintypes.BOOL
+            handle = kernel32.OpenProcess(0x1000, False, pid)
+            if not handle:
+                self.assertIn(ctypes.get_last_error(), (87, 1168))
+                return
+            try:
+                exit_code = wintypes.DWORD()
+                self.assertTrue(kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)))
+                self.assertNotEqual(exit_code.value, 259, 'catalog process is still active')
+            finally:
+                kernel32.CloseHandle(handle)
+            return
         with self.assertRaises(ChildProcessError):
             os.waitpid(pid, os.WNOHANG)
         with self.assertRaises(ProcessLookupError):

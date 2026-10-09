@@ -7,7 +7,7 @@ import hashlib
 import secrets
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import queue
 import sys
@@ -54,7 +54,8 @@ def expire_tool_output(result: dict[str, Any]) -> dict[str, Any]:
 
 def validate(payload: dict[str, Any]) -> dict[str, Any]:
     cwd, command = payload.get('cwd'), payload.get('command')
-    if not isinstance(cwd, str) or '\0' in cwd or not Path(cwd).is_absolute():
+    if (not isinstance(cwd, str) or '\0' in cwd
+            or not (Path(cwd).is_absolute() or PureWindowsPath(cwd).is_absolute())):
         raise ValueError('Supply an absolute cwd on the selected server')
     if isinstance(command, str):
         if not command or '\0' in command or len(command.encode()) > 128 * 1024:

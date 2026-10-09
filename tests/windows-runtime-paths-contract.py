@@ -27,7 +27,11 @@ Path(tempfile.tempdir).mkdir(parents=True, exist_ok=True)
 
 
 def _junction(link, target):
-    result = subprocess.run(["cmd.exe", "/c", f'mklink /J "{link}" "{target}"'],
+    def literal(path):
+        return "'" + str(path).replace("'", "''") + "'"
+
+    command = f"New-Item -ItemType Junction -Path {literal(link)} -Target {literal(target)} | Out-Null"
+    result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
                             capture_output=True, text=True, timeout=15)
     if result.returncode:
         raise AssertionError(result.stderr or result.stdout)
