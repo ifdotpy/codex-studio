@@ -5,7 +5,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { fixture } from "../tests/client/servers/multi-server-fixture.mjs";
+import { fixture } from "../web/tests/servers/multi-server-fixture.mjs";
 const folder = await mkdtemp(path.join(tmpdir(), "studio-ms-memory-"));
 const servers = await Promise.all([
   fixture("Remote", true),

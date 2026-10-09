@@ -20,8 +20,7 @@ and terminal canvas cells require separate checks.
 Run the detector regression test with one worker:
 
 ```sh
-cd web
-npx playwright test --config playwright.config.ts --project=client --workers=1 text-clipping.spec.mjs
+pnpm --filter codex-agents-web exec playwright test --config playwright.config.ts --project=client --workers=1 text-clipping.spec.mjs
 ```
 
 The scene runner is `/tmp/ui-compare/clip-audit/run.mjs`. See its README for the

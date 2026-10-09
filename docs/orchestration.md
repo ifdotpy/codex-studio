@@ -790,11 +790,9 @@ do not run a fresh save to discover whether the previous one applied.
 ## Verification
 
 ```bash
-cd web
 pnpm install --frozen-lockfile
-pnpm test
-pnpm run format:check
-cd ..
+pnpm --filter codex-agents-web test
+pnpm --filter codex-agents-web run format:check
 python3 workspaces/runtime/apps/server/tests/runtime-contract.py
 python3 workspaces/runtime/apps/server/tests/turn-start-contract.py
 python3 workspaces/runtime/apps/server/tests/prepare-steer-contract.py

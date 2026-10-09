@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
-import { readTestState } from "../tests/client/playwright.mjs";
+import { readTestState } from "../web/tests/playwright.mjs";
 const require = createRequire(import.meta.url);
 const { ensureBackend, identity } = require("./backend.cjs");
 const root = path.dirname(fileURLToPath(import.meta.url));

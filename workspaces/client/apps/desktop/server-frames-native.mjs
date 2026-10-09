@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { fixture } from "../tests/client/servers/multi-server-fixture.mjs";
+import { fixture } from "../web/tests/servers/multi-server-fixture.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const folder = await mkdtemp(path.join(tmpdir(), "studio-native-frames-"));
