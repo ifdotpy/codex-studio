@@ -21,6 +21,7 @@ test("progress-fit-browser", async ({ browser, page }) => {
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-progress-fit-"));
   const entry = join(root, "progress-fit-fixture.tsx");
   const streams = new Set();
+  const resourceEvents = [];
   let resourceRevision = 0;
   const server = await createServer({
     configFile: false,
@@ -87,6 +88,8 @@ test("progress-fit-browser", async ({ browser, page }) => {
             if (agentId) {
               const resource = { kind: "panel", agentId };
               const revision = ++resourceRevision;
+              const deliveredTo = streams.size;
+              resourceEvents.push({ revision, agentId, deliveredTo });
               for (const stream of streams)
                 stream.write(
                   `event: resources\ndata: ${JSON.stringify({
@@ -99,6 +102,9 @@ test("progress-fit-browser", async ({ browser, page }) => {
                     resourceVersions: [{ resource, revision }],
                   })}\n\n`,
                 );
+              res.setHeader("Content-Type", "application/json");
+              res.end(JSON.stringify({ revision, deliveredTo }));
+              return;
             }
             res.statusCode = 204;
             res.end();
@@ -107,6 +113,16 @@ test("progress-fit-browser", async ({ browser, page }) => {
             res.setHeader("Content-Type", "text/html");
             res.end(
               '<div id="root"></div><script type="module" src="/progress-fit-fixture.tsx"></script>',
+            );
+          });
+          server.middlewares.use("/fixture/diagnostics", (_req, res) => {
+            res.setHeader("Content-Type", "application/json");
+            res.end(
+              JSON.stringify({
+                resourceRevision,
+                activeStreams: streams.size,
+                resourceEvents,
+              }),
             );
           });
         },
@@ -161,10 +177,10 @@ test("progress-fit-browser", async ({ browser, page }) => {
         window.changeProgress = (text) => {
           markdown = text;
           revision = String(Number(revision) + 1);
-          fetch(
+          window.lastPanelChange = fetch(
             "/fixture/panel-change?agent=" +
               encodeURIComponent(window.currentAgent || "first"),
-          );
+          ).then((response) => response.json());
           return revision;
         };
         window.reportMode = (value) => {
@@ -466,11 +482,33 @@ test("progress-fit-browser", async ({ browser, page }) => {
         (value) => window.changeProgress(value),
         text,
       );
-      await page.waitForFunction(
-        (revision) =>
-          reports.some((report) => report.body.revision === revision),
-        revision,
-      );
+      const delivery = await page.evaluate(() => window.lastPanelChange);
+      try {
+        await page.waitForFunction(
+          (revision) =>
+            reports.some((report) => report.body.revision === revision),
+          revision,
+          { timeout: 8_000 },
+        );
+      } catch (error) {
+        const client = await page.evaluate(() => ({
+          revision: window.revision,
+          currentAgent: window.currentAgent,
+          reportRevisions: reports.map((report) => report.body.revision),
+          panelRevision: document
+            .querySelector(".agent-panel")
+            ?.getAttribute("data-panel-revision"),
+          panelAgent: document
+            .querySelector(".agent-panel")
+            ?.getAttribute("data-agent"),
+        }));
+        const server = await page.evaluate(async () =>
+          fetch("/fixture/diagnostics").then((response) => response.json()),
+        );
+        throw new Error(
+          `No report for revision ${revision}; delivery=${JSON.stringify(delivery)} client=${JSON.stringify(client)} server=${JSON.stringify(server)}; ${error.message}`,
+        );
+      }
       return revision;
     };
     await page.evaluate(() => {

@@ -236,38 +236,28 @@ export function installApiSchemaFixtureHeaders(target) {
         !new URL(request.url()).pathname.startsWith("/api/")
       )
         return handler(route, request);
-      return handler(
-        new Proxy(route, {
-          get(routeTarget, property) {
-            if (property === "fulfill")
-              return (response = {}) => {
-                const originalHeaders =
-                  typeof response.response?.headers === "function"
-                    ? response.response.headers()
-                    : {};
-                const headers = new Headers(originalHeaders);
-                new Headers(response.headers).forEach((value, key) =>
-                  headers.set(key, value),
-                );
-                if (!headers.has(API_SCHEMA_HASH_HEADER))
-                  headers.set(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
-                const normalizedHeaders = {};
-                headers.forEach((value, key) => {
-                  normalizedHeaders[key] = value;
-                });
-                return routeTarget.fulfill({
-                  ...response,
-                  headers: normalizedHeaders,
-                });
-              };
-            const value = Reflect.get(routeTarget, property, routeTarget);
-            return typeof value === "function"
-              ? value.bind(routeTarget)
-              : value;
-          },
-        }),
-        request,
-      );
+      const originalFulfill = route.fulfill.bind(route);
+      const decoratedFulfill = (response = {}) => {
+        const originalHeaders =
+          typeof response.response?.headers === "function"
+            ? response.response.headers()
+            : {};
+        const headers = new Headers(originalHeaders);
+        new Headers(response.headers).forEach((value, key) =>
+          headers.set(key, value),
+        );
+        if (!headers.has(API_SCHEMA_HASH_HEADER))
+          headers.set(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
+        const normalizedHeaders = {};
+        headers.forEach((value, key) => {
+          normalizedHeaders[key] = value;
+        });
+        return originalFulfill({ ...response, headers: normalizedHeaders });
+      };
+      route.fulfill = decoratedFulfill;
+      // Keep the decorator on this Route after the handler returns: fixtures
+      // may intentionally hold a route and fulfill it after a later UI event.
+      return handler(route, request);
     };
     wrappedHandlers.push({ url, handler, wrappedHandler });
     return registerRoute(url, wrappedHandler, options);
