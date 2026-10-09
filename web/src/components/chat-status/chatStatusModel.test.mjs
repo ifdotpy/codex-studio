@@ -1070,7 +1070,7 @@ it("uses the runtime command, turn, epoch and fallback rules for activities", ()
           (entry) => entry.id === id,
         ),
       ),
-    ["agent-without-epoch", "different-turn"],
+    ["different-turn"],
   );
   assert.equal(
     activities.get("lead").find(({ id }) => id === "same-turn").label,

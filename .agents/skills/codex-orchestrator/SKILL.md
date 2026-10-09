@@ -39,6 +39,18 @@ with `high` reasoning by default. Override both fields in `orchestration_spawn`
 when the task needs another choice. Codex and Claude workers can share a team.
 Honor the user's explicit model or account constraints.
 
+Choose `workspace` per implementer when isolation matters. Use `image` for
+isolated edits that need uncommitted changes. macOS uses ASIF; Linux uses an
+overlay. Use `worktree` for a fast task from a committed Git base. Use `shared`
+only for deliberate edits in the selected folder. Omit the field to keep current
+defaults. Reviewers use the shared folder with read-only access. Use
+`environment: "linux"` for Linux toolchains. Use `server` to run work on another
+paired machine, with an absolute remote `cwd`.
+
+Read the badge in each worker chat: `ASIF` is a macOS image, `VM` is a Linux
+virtual machine, `WT` is a Git worktree, and `SHARED` is the selected folder.
+Hover or focus the badge to read the full name and workspace path.
+
 Define each implementation assignment with:
 
 - The required behavior and its actual caller or user flow.
@@ -135,6 +147,10 @@ within the user's existing instructions or need the user's answer.
 
 Use `orchestration_complaint action=submit` for a decision that the user must record.
 Use `orchestration_message target=user` for an action that the user must perform.
+Use these managed tools for conversational questions. They do not pause the current
+tool while the user decides. Continue authorized work that does not need the answer.
+Wait for the answer before you perform a dependent action.
+Native question tools, such as `AskUserQuestion`, wait inside the current turn.
 If you forward a subagent's request, explain the issue and the decision the user must make.
 Do not forward each request automatically.
 

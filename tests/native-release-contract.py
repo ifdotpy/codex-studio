@@ -6,12 +6,14 @@ isolate_supervisor_environment()
 
 import importlib.util
 import concurrent.futures
+import copy
 import json
 from pathlib import Path
 import sys
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -200,6 +202,118 @@ class NativeReleaseContract(unittest.TestCase):
         submitted = [params for method, params in self.rt.server.calls
                      if method == "turn/start" and params.get("clientUserMessageId") == "release-race"]
         self.assertEqual(len(submitted), 1)
+
+    def retained_released_lead(self):
+        lead = self.lead()
+        self.rt.server.supervisor_mode = True
+        self.rt.server.proc = SimpleNamespace(root=self.rt.root, handle="account:default", generation=7)
+        self.age(lead, IDLE_SECONDS + 60)
+        self.assertEqual(release_agent(self.rt, lead["id"])["status"], "released")
+        self.rt.connection_ids["default"] = "retained-reconnect"
+        self.rt.server._notify = lambda message: self.rt.notification(message, "default", "retained-reconnect")
+        return self.rt.agent(lead["id"])
+
+    def test_delayed_release_close_after_retained_reconnect_delivers_input_once(self):
+        lead = self.retained_released_lead()
+        resume = concurrent.futures.Future()
+        original_submit = self.rt.server.submit
+        def submit(method, params):
+            if method == "thread/resume":
+                self.rt.server.calls.append((method, params))
+                return resume
+            return original_submit(method, params)
+        self.rt.server.submit = submit
+        self.rt.send(lead["id"], "Continue after retained reconnect", "retained-release-race")
+        self.rt.dispatch()
+        fixture.eventually(lambda: any(method == "thread/resume" for method, _ in self.rt.server.calls))
+        operation = self.rt.preparations[lead["id"]]
+        self.rt.server.notify({"method": "thread/closed", "params": {"threadId": lead["threadId"]}})
+        fixture.eventually(lambda: self.rt.agent(lead["id"])["nativeRelease"].get("closedAt"))
+        self.assertFalse(self.rt.agent(lead["id"])["startAttempt"]["submitted"])
+        self.assertFalse(any(method == "turn/start" and params.get("clientUserMessageId") == "retained-release-race"
+                             for method, params in self.rt.server.calls))
+        resume.set_result({"thread": {"id": lead["threadId"]}, "model": lead["model"]})
+        fixture.eventually(lambda: operation["future"].done())
+        self.assertIsNone(operation["future"].exception())
+        self.assertFalse(operation.get("unloaded"))
+        self.assertEqual(operation.get("nativeReleaseId"), lead["nativeRelease"]["id"])
+        self.assertEqual(lead["nativeRelease"]["supervisorIdentity"],
+                         {"stateDir": str(self.rt.root.resolve()), "handle": "account:default", "generation": 7})
+        fixture.eventually(lambda: self.rt.delivery_receipt("retained-release-race")["status"] == "delivered")
+        submitted = [params for method, params in self.rt.server.calls if method == "turn/start"
+                     and params.get("clientUserMessageId") == "retained-release-race"]
+        self.assertEqual(len(submitted), 1)
+        self.assertEqual(self.rt.agent(lead["id"])["threadId"], lead["threadId"])
+        self.assertEqual(self.rt.agent(lead["id"])["status"], "running")
+
+    def test_reconnect_close_cannot_use_release_from_another_child_or_agent_scope(self):
+        lead = self.retained_released_lead()
+        initial_turns = sum(method == "turn/start" for method, _ in self.rt.server.calls)
+        original_submit = self.rt.server.submit
+        cases = (("supervisor", "generation", 8), ("supervisor", "generation", True),
+                 ("supervisor", "handle", "account:other"), ("supervisor", "root", self.rt.root / "other"),
+                 ("release", "accountKey", "other"), ("release", "targetEpoch", lead["epoch"] + 1),
+                 ("release", "targetEpoch", False), ("release", "threadId", "other-thread"),
+                 ("release", "targetRootId", "other-root"), ("release", "targetParentId", "other-parent"),
+                 ("release", "supervisorIdentity", None), ("release", "closedAt", 0))
+        self.rt.preparation_wait_seconds = .01
+        for target, field, value in cases:
+            with self.subTest(target=target, field=field, value=value):
+                self.rt.server.proc = SimpleNamespace(root=self.rt.root, handle="account:default", generation=7)
+                current = copy.deepcopy(lead)
+                if target == "supervisor":
+                    setattr(self.rt.server.proc, field, value)
+                else:
+                    current["nativeRelease"][field] = value
+                with self.rt.lock, self.rt.db() as db:
+                    self.rt.put(db, "agents", current)
+                    self.rt.loaded.discard(lead["id"])
+                resume = concurrent.futures.Future()
+                def submit(method, params):
+                    if method == "thread/resume":
+                        return resume
+                    return original_submit(method, params)
+                self.rt.server.submit = submit
+                with self.assertRaises(PreparationPending):
+                    self.rt.prepare(self.rt.agent(lead["id"]))
+                operation = self.rt.preparations[lead["id"]]
+                self.assertIsNone(operation.get("nativeReleaseId"))
+                self.rt.server.notify({"method": "thread/closed", "params": {"threadId": lead["threadId"]}})
+                fixture.eventually(lambda: bool(operation.get("unloaded")))
+                resume.set_result({"thread": {"id": lead["threadId"]}, "model": lead["model"]})
+                fixture.eventually(lambda: operation["future"].done())
+                self.assertEqual(str(operation["future"].exception()),
+                                 "Thread preparation belongs to an earlier agent state")
+        self.assertEqual(sum(method == "turn/start" for method, _ in self.rt.server.calls), initial_turns)
+
+    def test_stop_before_retained_resume_receipt_keeps_input_cancelled(self):
+        lead = self.retained_released_lead()
+        resume = concurrent.futures.Future()
+        original_submit = self.rt.server.submit
+        def submit(method, params):
+            if method == "thread/resume":
+                self.rt.server.calls.append((method, params))
+                return resume
+            return original_submit(method, params)
+        self.rt.server.submit = submit
+        self.rt.send(lead["id"], "This input must stay cancelled", "stopped-retained-resume")
+        self.rt.dispatch()
+        fixture.eventually(lambda: any(method == "thread/resume" for method, _ in self.rt.server.calls))
+        operation = self.rt.preparations[lead["id"]]
+        self.assertEqual(operation.get("nativeReleaseId"), lead["nativeRelease"]["id"])
+        self.rt.stop(lead["id"])
+        self.rt.server.notify({"method": "thread/closed", "params": {"threadId": lead["threadId"]}})
+        resume.set_result({"thread": {"id": lead["threadId"]}, "model": lead["model"]})
+        fixture.eventually(lambda: operation["future"].done())
+        self.assertIsInstance(operation["future"].exception(), ValueError)
+        fixture.eventually(lambda: self.rt.delivery_receipt("stopped-retained-resume")["status"] == "cancelled")
+        actual = self.rt.agent(lead["id"])
+        self.assertEqual(actual["epoch"], lead["epoch"] + 1)
+        self.assertEqual(actual["status"], "paused")
+        self.assertFalse(actual["autoWake"])
+        self.assertNotIn(lead["id"], self.rt.loaded)
+        self.assertFalse(any(method == "turn/start" and params.get("clientUserMessageId") == "stopped-retained-resume"
+                             for method, params in self.rt.server.calls))
 
     def test_release_starting_during_preparation_is_blocked(self):
         lead = self.lead()

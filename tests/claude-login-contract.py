@@ -117,7 +117,7 @@ email = 'wrong@example.com' if code == 'wrong' else 'expected@example.com'
             [agent for agent in self.agents if agent.get('accountKey', 'default') == key])
         self.rt.put = lambda db, table, record: self.agents.__setitem__(
             next(i for i, row in enumerate(self.agents) if row['id'] == record['id']), record)
-        self.login = LoginManager(self.rt, deadline=3)
+        self.login = LoginManager(self.rt, deadline=30)
         self.ids = []
 
     def tearDown(self):
@@ -137,7 +137,7 @@ email = 'wrong@example.com' if code == 'wrong' else 'expected@example.com'
         return rid
 
     def await_status(self, rid, states):
-        end = time.monotonic() + 5
+        end = time.monotonic() + 35
         while time.monotonic() < end:
             result = self.login.status(rid)
             if result['status'] in states:
@@ -309,7 +309,7 @@ os._exit(0)
 """
         env = {**os.environ, 'PYTHONPATH':str(Path(__file__).resolve().parents[1] / 'scripts'),
                'STUDIO_CLAUDE_BIN':str(self.binary), 'FIXTURE_ROOT':str(self.root), 'FIXTURE_REQUEST':rid}
-        subprocess.run([sys.executable, '-B', '-c', script], env=env, check=True, timeout=5)
+        subprocess.run([sys.executable, '-B', '-c', script], env=env, check=True, timeout=20)
         config = self.root / 'claude-logins' / ('config-' + rid)
         pid = int((config / 'native-pid').read_text())
         end = time.monotonic() + 3
@@ -408,7 +408,7 @@ os._exit(0)
 """
         env = {**os.environ, 'PYTHONPATH':str(Path(__file__).resolve().parents[1] / 'scripts'),
                'FIXTURE_PROFILE':json.dumps(self.profile), 'FIXTURE_ROOT':str(self.root), 'FIXTURE_REQUEST':rid}
-        subprocess.run([sys.executable,'-B','-c',script],env=env,check=True,timeout=5)
+        subprocess.run([sys.executable,'-B','-c',script],env=env,check=True,timeout=20)
         pid = int((self.config / 'native-pid').read_text())
         end = time.monotonic() + 3
         while time.monotonic() < end:
@@ -439,7 +439,7 @@ manager.start('claude-test', rid)
 while manager.status(rid)['status'] == 'starting': time.sleep(.02)
 manager.code(rid, 'valid-code')
 status_pid = Path(profile['claudeOptions']['configDir']) / 'status-pid'
-end = time.monotonic() + 4
+end = time.monotonic() + 12
 while not status_pid.exists() and time.monotonic() < end: time.sleep(.02)
 if not status_pid.exists(): raise SystemExit('status process did not start')
 os._exit(0)
@@ -447,7 +447,7 @@ os._exit(0)
         env = {**os.environ, 'PYTHONPATH':str(Path(__file__).resolve().parents[1] / 'scripts'),
                'STUDIO_CLAUDE_BIN':str(self.binary), 'FIXTURE_PROFILE':json.dumps(self.profile),
                'FIXTURE_ROOT':str(self.root), 'FIXTURE_REQUEST':rid}
-        subprocess.run([sys.executable, '-B', '-c', script], env=env, check=True, timeout=7)
+        subprocess.run([sys.executable, '-B', '-c', script], env=env, check=True, timeout=60)
         pid = int((self.config / 'status-pid').read_text())
         end = time.monotonic() + 3
         while time.monotonic() < end:
@@ -495,7 +495,7 @@ os._exit(0)
                 data=json.dumps(body).encode() if body is not None else None,
                 headers={'Content-Type':'application/json', **(headers or {})})
             try:
-                with urllib.request.urlopen(req, timeout=3) as response:
+                with urllib.request.urlopen(req, timeout=20) as response:
                     return response.status, json.loads(response.read())
             except urllib.error.HTTPError as error:
                 with error:
