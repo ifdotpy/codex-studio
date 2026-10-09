@@ -36,7 +36,8 @@ def set_project_default(runtime, data):
     revision = data.get("expected_revision")
     if type(revision) is not int or revision < 0:
         raise ValueError("Supply the current worker environment revision")
-    path = runtime.project_directory(data.get("path"), require_existing=True)
+    from codex_project_locations import project_key
+    path = project_key(runtime, data.get("path"), require_existing=True)
     with runtime.lock, runtime.db() as db:
         db.execute("BEGIN IMMEDIATE")
         row = db.execute("SELECT record FROM runtime_projects WHERE id=?", (path,)).fetchone()

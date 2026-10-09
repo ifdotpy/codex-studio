@@ -64,14 +64,16 @@ def folder_for(runtime, db, path, folder_id):
 
 def organize_project(runtime, data):
     action = data['action']
-    path = runtime.project_directory(data.get('path'), require_existing=False)
+    from codex_project_locations import project_key
+    path = project_key(runtime, data.get('path'))
     revision = data.get('expected_revision')
     if type(revision) is not int or revision < 0:
         raise ValueError("Supply the current project revision")
     name = text_field(data.get('name'), 'a name', 255) if action != 'remove_folder' else None
     with runtime.lock, runtime.db() as db:
         db.execute('BEGIN IMMEDIATE')
-        project = runtime.ensure_project(path, runtime.project_account(path, db=db), db)
+        row = db.execute("SELECT record FROM runtime_projects WHERE id=?", (path,)).fetchone()
+        project = json.loads(row[0]) if row else runtime.ensure_project(path, runtime.project_account(path, db=db), db)
         current = project.get('organizationRevision', 0)
         folders = project.get('folders', [])
         target = None

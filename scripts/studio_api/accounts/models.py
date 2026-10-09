@@ -9,6 +9,7 @@ from pydantic import AfterValidator, ConfigDict, Field, StrictBool, StrictInt
 
 from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel
 from studio_api.sync.models import RoomEntityDto, RoomRadio, RoomRadioActive, SidebarOrderDto
+from studio_api.multi_server.models import ServerOperationResponse
 
 
 def _uuid_string(value: str) -> str:
@@ -130,7 +131,24 @@ class PeerTeam(ContractModel):
     members: list[str]
 
 
+class ProjectLocation(ContractModel):
+    serverId: str
+    path: str
+    projectId: str
+    gitOrigin: str | None = None
+
+
+class ProjectAlias(ContractModel):
+    serverId: str
+    projectId: str
+    name: str
+
+
 class Project(ContractModel):
+    homeServerId: str | None = None
+    locations: list[ProjectLocation] | None = None
+    locationsRevision: int | None = None
+    projectAliases: list[ProjectAlias] | None = None
     id: str
     path: str
     name: str
@@ -163,7 +181,11 @@ class SidebarOrderResponse(SidebarOrderDto, ResponseModel):
     pass
 
 
-ProjectMutationResponse = ProjectMutationRecord | ProjectRemovalResponse | SidebarOrderResponse
+class RemoteProjectRegistrationResponse(ServerOperationResponse):
+    projectId: str
+
+
+ProjectMutationResponse = ProjectMutationRecord | ProjectRemovalResponse | SidebarOrderResponse | RemoteProjectRegistrationResponse | ServerOperationResponse
 
 
 class ProjectReadResponse(ResponseModel):
@@ -629,7 +651,37 @@ class SidebarReorderRequest(ContractModel):
     migration: bool | None = None
 
 
+class ProjectLocationQuery(ContractModel):
+    action: Literal["info", "matches"] = "info"
+    project: str = Field(min_length=1, max_length=4096)
+    server: str = Field(min_length=1, max_length=128)
+    path: str | None = Field(default=None, max_length=4096)
+    request_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class ProjectLocationMatch(ContractModel):
+    projectId: str
+    path: str
+    name: str
+
+
+class ProjectLocationQueryResponse(ResponseModel):
+    gitHead: str | None = None
+    gitOrigin: str | None = None
+    matches: list[ProjectLocationMatch] = Field(default_factory=list)
+
+
+class ProjectLocationRequest(ContractModel):
+    action: Literal["add_location", "remove_location"]
+    project: str = Field(min_length=1, max_length=4096)
+    server: str = Field(min_length=1, max_length=128)
+    path: str | None = Field(default=None, max_length=4096)
+    request_id: str = Field(min_length=1, max_length=128)
+
+
 class ProjectWriteRequest(ContractModel):
+    server: str | None = Field(default=None, max_length=128)
+    request_id: str | None = Field(default=None, min_length=1, max_length=128)
     action: Literal["register", "remove", "set_account", "set_worker_base", "set_worker_environment", "set_accounts",
                     "rename", "add_folder", "rename_folder", "remove_folder"] | None = None
     path: str = Field(min_length=1)

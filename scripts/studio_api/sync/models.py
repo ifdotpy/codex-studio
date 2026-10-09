@@ -524,6 +524,9 @@ class RemoteParentLinkDto(ContractModel):
 
 
 class AgentEntityDto(ContractModel):
+    projectId: str | None = None
+    projectServerId: str | None = None
+    serverId: str | None = None
     remoteWorker: RemoteWorkerLinkDto | None = None
     remoteOrigin: RemoteParentLinkDto | None = None
     remoteAnchor: RemoteParentLinkDto | None = None
@@ -889,7 +892,24 @@ class ProjectPeerTeamDto(ContractModel):
     members: list[str]
 
 
+class ProjectLocationDto(ContractModel):
+    serverId: str
+    path: str
+    projectId: str
+    gitOrigin: str | None = None
+
+
+class ProjectAliasDto(ContractModel):
+    serverId: str
+    projectId: str
+    name: str
+
+
 class ProjectEntityDto(ContractModel):
+    homeServerId: str | None = None
+    locations: list[ProjectLocationDto] | None = None
+    locationsRevision: int | None = None
+    projectAliases: list[ProjectAliasDto] | None = None
     id: str
     path: str | None = None
     name: str | None = None

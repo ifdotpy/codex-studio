@@ -1813,6 +1813,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.recover_monitor_receipts(db)
             self.report_unresolved_rule_checks(db)
             startup_memory_mark("monitor-receipt-recovery")
+        from codex_project_locations import migrate as migrate_project_locations
+        migrate_project_locations(self)
         startup_memory_mark("runtime-migrations-complete")
         self.prepare_runtime_worker_schema()
         for key in monitor_recovery["acknowledge"]:
@@ -3256,6 +3258,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     ) -> dict[str, object]:
         # Preserve renderer-facing source and team fields on every entity write.
         view = dict(record)
+        remote = record.get("remoteWorker") or {}
+        view["serverId"] = remote.get("server") or getattr(self, "_project_server_id", None)
         block = native_thread_block(record)  # type: ignore[no-untyped-call]
         view.update(kind="agent", source="managed", canSend=not bool(block),
                     launcherAlive=not self.closed,
@@ -3331,6 +3335,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def put(self, db: sqlite3.Connection, table: str, record: "AgentRecord | WorkRecord | PlanRecord | AnnotationRecord | CheckpointRecord | ComplaintRecord | ProjectRecord | AccountTransferRecord | WorkspaceOperationRecord | RoomRecord | RequestRecord | NativeSafetyRetryRecord | NativeNoticeRecord | RuleRecord | ToolRequestRecord | dict[str, JsonValue]", *, sync_rooms: bool = True) -> None: ...
 
     def put(self, db: sqlite3.Connection, table: str, record: Any, *, sync_rooms: bool = True) -> None:
+        if table == "projects" and "_project_server_id" in self.__dict__:
+            from codex_project_locations import normalize as normalize_project_locations
+            normalize_project_locations(self, record)
         if table in {"checkpoints", "tool_requests"}:
             from codex_payloads import externalize_record
             record = externalize_record(self.root, db, table, record)
@@ -4670,7 +4677,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if catalog is not None:
                 a["nativeEffort"] = native_effort
             if draft:
-                a.update(quickCreate=True, quickCreateRequest=data.get("_creationSignature"))
+                a.update(quickCreate=True, quickCreateRequest=data.get("_creationSignature"), **data.get("_projectBinding", {}))
                 if data.get('_projectFolder') is not None:
                     a['projectFolder'] = data['_projectFolder']
                     a['projectFolderRevision'] = 1
@@ -4698,6 +4705,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             settings["reuse_empty"] = data["reuse_empty"]
         if 'project_folder' in data:
             settings['project_folder'] = data['project_folder']
+        for field in ("project_id", "project_server_id"):
+            if field in data:
+                settings[field] = data[field]
         if "yolo_mode" in data:
             settings["yolo_mode"] = data["yolo_mode"]
         requested_cwd = self.project_directory(data["cwd"]) if "cwd" in data else None
@@ -4761,6 +4771,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if self.accounts.get(account_key).get("disconnected"):
                     raise ValueError("Reconnect this account before creating a chat")
                 from codex_project_folders import folder_for
+                from codex_project_locations import chat_binding
+                binding = chat_binding(self, db, cwd, data.get('project_id'), data.get('project_server_id'))
                 project_folder = folder_for(self, db, cwd, data.get('project_folder'))
                 if previous and data.get("reuse_empty", True) and self.empty_lead(db, previous) and previous.get("provider", "codex") == self.accounts.get(account_key).get("provider", "codex"):
                     if data.get("model"):
@@ -4782,7 +4794,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         previous.pop("pendingSettingsAccountKey", None)
                         if previous.get("workerDefaults"):
                             previous["workerDefaults"].update(daybreakEnabled=False, cyberAccessProgram="standard")
-                    previous.update(accountKey=account_key, cwd=cwd)
+                    if not binding:
+                        previous.pop('projectId', None)
+                        previous.pop('projectServerId', None)
+                    previous.update(accountKey=account_key, cwd=cwd, **binding)
                     previous['projectFolder'] = project_folder  # type: ignore[call-arg]  # typed-update
                     self.ensure_project(cwd, account_key, db)
                     self.put(db, "agents", previous)
@@ -4791,7 +4806,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     return previous  # type: ignore[call-arg]  # typed-update
             created = self.create({"id": key or uid(), "name": "New chat", "prompt": "", "cwd": cwd,
                                 "_projectFolder": project_folder,
-                                "_creationSignature": signature, "account_key": account_key,
+                                "_creationSignature": signature, "_projectBinding": binding, "account_key": account_key,
                                 "yolo_mode": data.get("yolo_mode", previous.get("yoloMode") is not False if previous else True),
                                 **({"model": data["model"]} if data.get("model") else {})}, draft=True, _catalog=catalog)
             # Each new team starts with Studio defaults, independent of the previous chat.
