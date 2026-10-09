@@ -330,6 +330,20 @@ class Contract(unittest.IsolatedAsyncioTestCase):
             run_tool(runtime, {"id": "agent"}, {"action": "execute", "command": "true"}, "tool")
         self.assertEqual(tool_definition()["name"], "host_exec")
 
+    def test_reviewer_gate(self):
+        runtime = SimpleNamespace(agent=lambda actor: {"executionMode": "vm"})
+        with patch("codex_linux_workspaces.client") as client:
+            for action in ("execute", "status", "cancel"):
+                with self.subTest(action=action), self.assertRaises(PermissionError):
+                    run_tool(runtime, {"id": "agent", "role": "reviewer"},
+                             {"action": action, "command": "true", "operation_id": "existing"}, "tool")
+            client.assert_not_called()
+            for role in ("implementer", "orchestrator"):
+                client.return_value.stream.return_value = iter([{"result": {"state": "done"}}])
+                result = run_tool(runtime, {"id": "agent", "cwd": "/line", "role": role},
+                                  {"action": "execute", "command": "true"}, "tool")
+                self.assertEqual(result["state"], "done")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

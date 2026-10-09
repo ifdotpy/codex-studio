@@ -79,6 +79,8 @@ def configure_guest(client: GuestClient) -> None:
 
 
 def run_tool(runtime: Any, actor: dict[str, Any], args: dict[str, Any], request_id: str) -> dict[str, Any]:
+    if actor.get("role") == "reviewer":
+        raise PermissionError("host_exec is unavailable to read-only reviewers")
     from codex_linux_workspaces import client
     root = runtime.agent(actor.get("rootId") or actor["id"])
     if root.get("executionMode") != "vm" or actor.get("executionMode", "vm") != "vm":
