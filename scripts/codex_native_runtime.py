@@ -131,19 +131,21 @@ class NativeRuntimeUpdates:
     def _save(self):
         with self.lock:
             state = copy.deepcopy(self.state)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = None
-        try:
-            with tempfile.NamedTemporaryFile(mode='w', dir=self.path.parent, prefix='.status-', delete=False) as stream:
-                temporary = stream.name
-                json.dump(state, stream)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, self.path)
+            # State changes and publications use the same lock. An older save
+            # cannot publish after a newer close receipt.
+            self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = None
-        finally:
-            if temporary:
-                Path(temporary).unlink(missing_ok=True)
+            try:
+                with tempfile.NamedTemporaryFile(mode='w', dir=self.path.parent, prefix='.status-', delete=False) as stream:
+                    temporary = stream.name
+                    json.dump(state, stream)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, self.path)
+                temporary = None
+            finally:
+                if temporary:
+                    Path(temporary).unlink(missing_ok=True)
 
     def maybe_check(self):
         with self.lock:
@@ -387,10 +389,11 @@ class NativeRuntimeUpdates:
             with self.lock:
                 prior = copy.deepcopy(self.state['accounts'].get(account, {}).get('rotation'))
             recovery = bool(prior and prior.get('phase') in {'closing', 'closed'})
-            if (getattr(server, 'native_binary', None) or {}).get('bundleSha256') == selected['bundleSha256']:
-                if not recovery:
-                    self._account(account, 'current', server, selected)
-                    return
+            running = getattr(server, 'native_binary', None) or {}
+            if not recovery and running.get('bundleSha256') == selected['bundleSha256']:
+                self._account(account, 'current', server, selected)
+                return
+            if recovery and running.get('bundleSha256') == prior.get('targetBundle'):
                 saved = supervisor_launch_snapshot(rt.root, handle)
                 if (saved and saved['closed_at'] is None and saved['pid'] == _pid(server)
                         and saved['identity_pid'] == saved['pid']
@@ -399,7 +402,10 @@ class NativeRuntimeUpdates:
                         and process_start_time(saved['pid']) == saved['start_time']):
                     # Runtime.connect already adopted the selected child after a
                     # crash. Report it without detaching an active target turn.
-                    self._complete_supervised(account, server, selected, prior)
+                    self._complete_supervised(account, server, prior.get('target') or selected, prior)
+                    if running['bundleSha256'] != selected['bundleSha256']:
+                        self._account(account, 'waiting', server, selected, 'Waiting to apply the later selected version')
+                        self._save()
                     if rt.__dict__.get('_native_runtime_reservations', {}).get(account) == prior['id']:
                         rt._native_runtime_reservations.pop(account)
                     return
@@ -429,6 +435,7 @@ class NativeRuntimeUpdates:
                 expected = {key: saved[key] for key in keys}
                 rotation = {'id': token, 'handle': handle, 'old': expected,
                             'sourceVersion': _version(server), 'targetBundle': selected['bundleSha256'],
+                            'target': copy.deepcopy(selected),
                             'phase': 'checking'}
             reservations[account] = token
         try:
@@ -442,6 +449,7 @@ class NativeRuntimeUpdates:
             # never close it with the old generation's identity.
             reattach = (recovery and rotation['phase'] == 'closed' and not same
                         and saved['generation'] > expected['generation'])
+            launch = rotation['target'] if reattach else selected
             if not closed and not reattach:
                 if not same:
                     raise ValueError('The supervisor process identity changed')
@@ -464,18 +472,33 @@ class NativeRuntimeUpdates:
                             or not observed or any(observed.get(key) != saved.get(key)
                                                    for key in (*keys, 'closed_at'))):
                         raise ValueError(reason or 'The account changed during its update check')
+                    if not closed and not reattach:
+                        if observed.get('sequence') is None or observed['sequence'] != observed.get('acknowledged'):
+                            raise ValueError('Waiting for the supervisor journal to be acknowledged')
+                        rotation['phase'] = 'closing'
+                        with self.lock:
+                            self.state['accounts'][account]['rotation'] = rotation
+                        try:
+                            self._save()  # Save intent before invalidating old callbacks.
+                            observed = supervisor_launch_snapshot(rt.root, handle)
+                            current, reason = _local_idle(rt, db, account, server)
+                            if (reason or not observed or any(observed.get(key) != expected[key] for key in keys)
+                                    or observed['closed_at'] is not None or observed.get('sequence') is None
+                                    or observed['sequence'] != observed.get('acknowledged')):
+                                raise ValueError(reason or 'Waiting for the supervisor journal to be acknowledged')
+                        except BaseException:
+                            # No close was submitted. Keep the old connection usable.
+                            rotation['phase'] = 'checking'
+                            raise
                     next_connection = str(uuid.uuid4())
                     rt.connection_ids[account] = next_connection
+                    if not closed and not reattach:
+                        uncertain = True
                 # Admissions remain reserved. Do not retain start_lock across a
                 # later Runtime.lock acquisition (connect uses the other order).
                 rt.start_lock.release()
                 gate = False
             if not closed and not reattach:
-                rotation['phase'] = 'closing'
-                with self.lock:
-                    self.state['accounts'][account]['rotation'] = rotation
-                self._save()  # Save exact identity before the close can take effect.
-                uncertain = True
                 try:
                     admin_close_handle(rt.root, handle, expected['pid'], expected['start_time'],
                                        expected['signature'], request_id=token)
@@ -488,7 +511,7 @@ class NativeRuntimeUpdates:
                         or process_start_time(expected['pid']) == expected['start_time']):
                     raise RuntimeError('The supervisor close outcome is unknown; the account remains reserved')
                 uncertain = False
-            rotation.update(phase='closed', targetBundle=selected['bundleSha256'])
+            rotation.update(phase='closed', targetBundle=launch['bundleSha256'], target=copy.deepcopy(launch))
             with self.lock:
                 self.state['accounts'].setdefault(account, {})['rotation'] = rotation
             self._account(account, 'updating', None, selected)
@@ -504,8 +527,8 @@ class NativeRuntimeUpdates:
                 lambda message: rt.request(message, account, next_connection),
                 lambda: rt.disconnected(account, next_connection),
             )
-            replacement = self.spawn(account, selected, callbacks)
-            replacement.native_binary = dict(selected)
+            replacement = self.spawn(account, launch, callbacks)
+            replacement.native_binary = dict(launch)
             models = replacement.call('model/list', {'limit': 100}, timeout=10)
             if not isinstance(models.get('data'), list) or replacement.proc.poll() is not None:
                 raise ValueError('Replacement app-server returned an invalid model catalog')
@@ -518,7 +541,10 @@ class NativeRuntimeUpdates:
                 if account == 'default':
                     rt.server, rt.offline = replacement, False
                 published = True
-            self._complete_supervised(account, replacement, selected, rotation)
+            self._complete_supervised(account, replacement, launch, rotation)
+            if launch['bundleSha256'] != selected['bundleSha256']:
+                self._account(account, 'waiting', replacement, selected, 'Waiting to apply the later selected version')
+                self._save()
         except Exception as error:
             waiting = uncertain or rotation['phase'] == 'checking'
             self._account(account, 'waiting' if waiting else 'failed',

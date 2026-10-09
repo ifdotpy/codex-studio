@@ -902,6 +902,39 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertEqual(server.proc.native_pid, int(self.pid_file.read_text()))
         self.assertEqual(server.call('model/list', {})['data'][0]['model'], 'fake')
 
+    def test_review_rotation_recovers_opened_version_before_a_later_selected_version(self):
+        rt, old, version_b, manager = self.rotation_runtime()
+        real_spawn, opened = manager.spawn, []
+        class BackendCrash(BaseException):
+            pass
+        def crash(*args):
+            child = real_spawn(*args)
+            opened.append(child)
+            child.close()
+            raise BackendCrash()
+        manager.spawn = crash
+        with self.assertRaises(BackendCrash):
+            manager.check()
+        pid_b = opened[0].proc.native_pid
+        version_c = dict(version_b, path=str(self.root / 'third-native'), version='0.3.0', bundleSha256='third-bundle')
+        Path(version_c['path']).write_text(self.binary.read_text() + '\n# version C\n')
+        Path(version_c['path']).chmod(0o700)
+        manager = rotation_fixture.NativeRuntimeUpdates(rt, discover=lambda: [{'path': version_c['path']}],
+            approve=lambda *_: version_c, spawn=real_spawn)
+        self.addCleanup(manager.close)
+        wait_for(lambda: not old.pending and not old.callbacks.unfinished_tasks)
+        with patch.object(process_supervisor, 'admin_close_handle', wraps=process_supervisor.admin_close_handle) as close:
+            manager.check()
+        close.assert_not_called()
+        self.assertEqual(rt.server.proc.native_pid, pid_b, manager.status())
+        self.assertEqual(rt.server.native_binary['bundleSha256'], version_b['bundleSha256'])
+        account = manager.status()['accounts']['default']
+        self.assertEqual((account['status'], account['version'], account['targetVersion']), ('waiting', '0.2.0', '0.3.0'))
+        self.assertEqual(manager.selected(), version_c)
+        methods = [json.loads(line)['method'] for line in (self.root / 'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(methods.count('initialize'), 2)
+        self.assertNotIn('turn/start', methods)
+
     def test_operator_close_requires_exact_identity_and_closes_verified_fixture(self):
         server = self.server(handle='test:operator-close')
         live = next(row for row in status(self.root)['handles'] if row['id'] == 'test:operator-close')

@@ -153,7 +153,8 @@ class Contract(unittest.TestCase):
     def supervised(self, *, close_error=None):
         self.old.pid = 101
         state = {'signature': 'accepted-launch', 'pid': 101, 'identity_pid': 101,
-                 'start_time': 'exact-start', 'generation': 1, 'closed_at': None}
+                 'start_time': 'exact-start', 'generation': 1, 'closed_at': None,
+                 'sequence': 0, 'acknowledged': 0}
         closes = []
 
         def close(root, handle, pid, started, signature, **kwargs):
@@ -334,6 +335,81 @@ class Contract(unittest.TestCase):
         self.assertEqual(current.close_count, 0)
         self.assertEqual(current.calls, [])
         self.assertEqual(len(closes), 1)
+
+    def test_review_final_journal_fence_refuses_unread_or_unacknowledged_events(self):
+        for sequence, acknowledged in ((2, 0), (2, 1)):
+            with self.subTest(sequence=sequence, acknowledged=acknowledged), self.supervised() as (state, closes):
+                self.old.after_events = lambda callback: (state.update(sequence=sequence, acknowledged=acknowledged), callback())
+                self.manager.check()
+                self.assertEqual(closes, [])
+                self.assertEqual(self.spawned, [])
+                self.assertEqual(self.rt.connection_ids['default'], 'connection-1')
+                self.assertIs(self.rt.server, self.old)
+                self.assertIn('journal', self.manager.status()['accounts']['default']['reason'])
+
+    def test_review_close_intent_save_failure_preserves_the_old_connection(self):
+        save = self.manager._save
+        failed = []
+        def fail_intent():
+            rotation = self.manager.state['accounts'].get('default', {}).get('rotation', {})
+            if rotation.get('phase') == 'closing' and not failed:
+                failed.append(True)
+                raise OSError('The close intent could not be saved')
+            return save()
+        with self.supervised() as (_, closes), patch.object(self.manager, '_save', side_effect=fail_intent):
+            self.manager.check()
+        self.assertEqual(failed, [True])
+        self.assertEqual(self.rt.connection_ids['default'], 'connection-1')
+        self.assertEqual(closes, [])
+        self.assertEqual(self.spawned, [])
+        self.assertFalse(native_tools.account_reserved(self.rt, 'default'))
+        self.assertIs(ProductionRuntime.connect(self.rt, 'default'), self.old)
+
+    def test_review_concurrent_save_cannot_restore_an_older_phase(self):
+        entered, release, second_attempt, second_done = (threading.Event() for _ in range(4))
+        errors = []
+        replace = os.replace
+        self.manager.state['accounts']['default'] = {'rotation': {'phase': 'closing'}}
+        def delayed(source, destination):
+            if Path(destination) == self.manager.path and threading.current_thread().name == 'older-save':
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError('The test did not release the older save')
+            return replace(source, destination)
+        def older():
+            try:
+                self.manager._save()
+            except BaseException as error:
+                errors.append(error)
+        def newer():
+            second_attempt.set()
+            try:
+                with self.manager.lock:
+                    self.manager.state['accounts']['default']['rotation']['phase'] = 'closed'
+                self.manager._save()
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                second_done.set()
+        with patch('codex_native_runtime.os.replace', side_effect=delayed):
+            first = threading.Thread(target=older, name='older-save')
+            second = threading.Thread(target=newer, name='newer-save')
+            first.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                second.start()
+                self.assertTrue(second_attempt.wait(2))
+                second_done.wait(1)
+            finally:
+                release.set()
+                first.join(3)
+                if second.ident is not None:
+                    second.join(3)
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(errors, [])
+        saved = json.loads(self.manager.path.read_text())
+        self.assertEqual(saved['accounts']['default']['rotation']['phase'], 'closed')
 
     def test_idle_swap_preserves_chat_native_identity_history_and_receipts(self):
         before = self.rt.agent("chat-1")
