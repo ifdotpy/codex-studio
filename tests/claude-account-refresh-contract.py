@@ -36,6 +36,10 @@ class FreshAccount(f.PreAdmission):
     def setUp(self):
         if self._testMethodName == 'test_passive_read_and_background_refresh_never_spawn_a_query':
             self.catalog_refresh_ms = 40
+        if self._testMethodName.startswith('test_expired_passive_'):
+            self.catalog_ttl_ms = 100
+        if self._testMethodName == 'test_expired_passive_refresh_timeout_preserves_the_live_turn':
+            self.passive_timeout_ms = 40
         before = f.SDK
         f.SDK = (SDK.replace('reinitialize:async()=>', 'unavailableReinitialize:async()=>')
                  if self._testMethodName == 'test_sdk_without_fresh_control_keeps_not_applied' else SDK)
@@ -77,6 +81,56 @@ class FreshAccount(f.PreAdmission):
     def accounts(self, cached, fresh):
         (self.root / '.cached-account.json').write_text(json.dumps(cached))
         (self.root / '.fresh-account.json').write_text(json.dumps(fresh))
+
+    def test_expired_passive_read_refreshes_the_live_query_without_new_input(self):
+        self.call('model/list', {})
+        self.accounts(NORMAL, NORMAL)
+        self.turn('steer', 'held-input')
+        self.wait_file(self.root / '.admitted-inputs')
+        time.sleep(.15)
+        queries = (self.root / '.all-queries').read_text()
+        probes = (self.root / 'state' / '.all-queries').read_text()
+        refreshes = len(self.refreshes())
+        proof = self.call('account/read', {'passive': True})
+        self.assertEqual(proof['account']['email'], NORMAL['email'])
+        self.assertGreater(len(self.refreshes()), refreshes)
+        self.assertEqual((self.root / '.all-queries').read_text(), queries)
+        self.assertEqual((self.root / 'state' / '.all-queries').read_text(), probes)
+        self.assertEqual(len(self.admissions()), 1)
+
+    def test_expired_passive_read_without_a_live_query_cannot_start_a_cli(self):
+        self.call('model/list', {})
+        probes = (self.root / 'state' / '.all-queries').read_text()
+        time.sleep(.15)
+        with self.assertRaisesRegex(ValueError, 'No live Claude query'):
+            self.call('account/read', {'passive': True})
+        self.assertEqual((self.root / 'state' / '.all-queries').read_text(), probes)
+        self.assertFalse((self.root / '.all-queries').exists())
+        self.assertEqual(self.admissions(), [])
+
+    def test_expired_passive_refresh_timeout_preserves_the_live_turn(self):
+        self.call('model/list', {})
+        self.accounts(NORMAL, NORMAL)
+        self.turn('steer', 'held-input')
+        self.wait_file(self.root / '.admitted-inputs')
+        time.sleep(.15)
+        (self.root / '.refresh-hang').touch()
+        probes = (self.root / 'state' / '.all-queries').read_text()
+        self.sequence += 1
+        request = self.sequence
+        self.write({'id': request, 'method': 'account/read', 'params': {'passive': True}})
+        while True:
+            response = self.read()
+            if response.get('id') == request:
+                break
+            self.notifications.append(response)
+        error = response['error']['data']
+        self.assertEqual(error['claudePreparationPhase'], 'catalog_account_reinitialize')
+        self.assertGreaterEqual(error['claudePreparationElapsedMs'], self.passive_timeout_ms - 5)
+        self.assertEqual(len((self.root / '.all-queries').read_text().splitlines()), 1)
+        self.assertEqual((self.root / 'state' / '.all-queries').read_text(), probes)
+        self.assertEqual(len(self.admissions()), 1)
+        self.assertTrue(self.call('claude/state', {'threadId': self.thread})['turns'])
 
     def refreshes(self):
         p = self.root / '.account-refreshes'

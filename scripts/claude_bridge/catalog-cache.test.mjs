@@ -28,8 +28,10 @@ function fixture() {
     clearTimer(timer) {
       timers.delete(timer);
     },
-    load: () =>
-      new Promise((resolve, reject) => calls.push({ resolve, reject, at })),
+    load: (background) =>
+      new Promise((resolve, reject) =>
+        calls.push({ resolve, reject, at, background }),
+      ),
   });
   return {
     cache,
@@ -212,4 +214,41 @@ test("different bridge accounts do not share cached proof", async () => {
   assert.equal((await b.cache.read()).account, "b");
   a.cache.close();
   b.cache.close();
+});
+
+test("an expired passive read refreshes existing queries and shares its proof", async () => {
+  const f = fixture();
+  await f.prime();
+  f.activity(false);
+  f.move(300000);
+  const a = f.cache.readPassive();
+  const b = f.cache.readPassive();
+  assert.equal(a, b);
+  await settle();
+  assert.equal(f.calls.length, 2);
+  assert.equal(f.calls[1].background, true);
+  const value = { account: "fresh" };
+  f.calls[1].resolve(value);
+  assert.equal(await a, value);
+  assert.equal(await f.cache.readPassive(), value);
+  assert.equal(f.timers.size, 0);
+  f.cache.close();
+});
+
+test("a passive read cannot create its initial proof or accept a rejected account", async () => {
+  const f = fixture();
+  await assert.rejects(f.cache.readPassive(), /Fresh Claude account proof/);
+  assert.equal(f.calls.length, 0);
+  await f.prime();
+  f.move(240000);
+  await settle();
+  f.calls[1].reject(
+    Object.assign(new Error("account changed"), {
+      claudeAccountValidationFailed: true,
+    }),
+  );
+  await settle();
+  await assert.rejects(f.cache.readPassive(), /Fresh Claude account proof/);
+  assert.equal(f.calls.length, 2);
+  f.cache.close();
 });

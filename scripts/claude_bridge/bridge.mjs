@@ -92,6 +92,7 @@ const queries = new Map(),
   pending = new Map();
 const pendingTurnReceipts = new Set();
 const PREPARATION_TIMEOUT_MS = 20_000;
+const PASSIVE_ACCOUNT_TIMEOUT_MS = 8_000;
 // A cold Claude process can need more than 20 seconds under launchd limits.
 // Retained query controls keep their shorter, shared deadline.
 const INITIALIZATION_TIMEOUT_MS = 60_000;
@@ -405,7 +406,11 @@ const catalogCache = createCatalogCache({
     if (live) {
       const q = live.q;
       const startedAt = Date.now();
-      const deadline = startedAt + PREPARATION_TIMEOUT_MS;
+      const deadline =
+        startedAt +
+        (background
+          ? Math.min(PREPARATION_TIMEOUT_MS, PASSIVE_ACCOUNT_TIMEOUT_MS)
+          : PREPARATION_TIMEOUT_MS);
       const prior = live.accountProof;
       if (!prior || live.accountProofQuery !== q)
         throw new Error("Verified Claude query metadata is pending");
@@ -416,8 +421,8 @@ const catalogCache = createCatalogCache({
         () => q.reinitialize(),
         deadline,
         () => {},
-        startedAt,
         "catalog_account_reinitialize",
+        startedAt,
       );
       checkAccount(fresh?.account);
       if (
@@ -1506,7 +1511,7 @@ async function handle(method, p) {
     return {
       userAgent: "studio-claude-bridge",
       platform: process.platform,
-      capabilities: { claudeVersion: 22, passiveAccountRead: true },
+      capabilities: { claudeVersion: 23, passiveAccountRead: true },
     };
   if (method === "initialized") return {};
   if (method === "model/list") {
@@ -1549,7 +1554,7 @@ async function handle(method, p) {
   }
   if (method === "account/read") {
     const { account } =
-      p.passive === true ? catalogCache.peek() : await catalog();
+      p.passive === true ? await catalogCache.readPassive() : await catalog();
     return {
       account: {
         type: "claude",
