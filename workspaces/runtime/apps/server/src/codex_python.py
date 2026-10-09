@@ -14,6 +14,7 @@ import tempfile
 from typing import Mapping, Sequence
 
 from codex_cache_paths import cache_dir
+from codex_layout import REPOSITORY_ROOT, SERVER_APP_ROOT, SERVER_SOURCE_ROOT
 
 API_IMPORT_CHECK = "import fastapi, httpx, pydantic, uvicorn, watchdog"
 MINIMUM_PYTHON = (3, 11)
@@ -25,9 +26,11 @@ def cache_root(environment: Mapping[str, str] | None = None) -> Path:
 
 
 def requirements_file(scripts: Path, development: bool = False) -> Path:
-    """Return the API lock shipped beside the scripts directory."""
+    """Return the API lock at the repository or packaged workspace root."""
     name = "requirements-dev.txt" if development else "requirements.txt"
-    return scripts.resolve().parent / name
+    scripts = scripts.resolve()
+    root = REPOSITORY_ROOT if scripts == SERVER_SOURCE_ROOT.resolve() else scripts.parent
+    return root / name
 
 
 def requirements_digest(scripts: Path, development: bool = False) -> str:
@@ -104,7 +107,7 @@ def _publish_environment(
             f"The managed Python environment at {environment_dir} exists "
             "but is unusable. After confirming no app process uses it, "
             "remove that cache directory and rerun `python3 "
-            "scripts/install-cli.py`."
+            "workspaces/runtime/apps/server/src/install-cli.py`."
         ) from error
     return python
 
@@ -148,7 +151,7 @@ def resolve_python(
             return candidate
     raise RuntimeError(
         "No Python 3.11+ interpreter has FastAPI, Pydantic, Uvicorn, and HTTPX. "
-        "Run `python3 scripts/install-cli.py` to prepare the managed "
+        "Run `python3 workspaces/runtime/apps/server/src/install-cli.py` to prepare the managed "
         "environment, or set CODEX_AGENTS_PYTHON to an equipped interpreter."
     )
 
@@ -157,7 +160,12 @@ def prepare_environment(
     project: Path, python: Path | None = None, development: bool = False
 ) -> Path:
     """Create and populate the digest-keyed venv during explicit setup."""
-    scripts = project / "scripts"
+    project = project.resolve()
+    scripts = (
+        SERVER_SOURCE_ROOT
+        if project in {REPOSITORY_ROOT.resolve(), SERVER_APP_ROOT.resolve()}
+        else project / "scripts"
+    )
     lockfile = requirements_file(scripts, development)
     digest = requirements_digest(scripts, development)
     target = managed_python(scripts, development=development)
@@ -208,7 +216,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scripts", type=Path, default=Path(__file__).parent)
+    parser.add_argument("--scripts", type=Path, default=SERVER_SOURCE_ROOT)
     parser.add_argument("--prepare", action="store_true")
     parser.add_argument("--dev", action="store_true")
     parser.add_argument("--mypy", action="store_true")
@@ -225,14 +233,14 @@ def main(arguments: Sequence[str] | None = None) -> int:
             if not python.is_file() or not interpreter_has_api(python):
                 raise RuntimeError(
                     "The API typing environment is missing. Run `python3 "
-                    "scripts/install-cli.py --dev` during setup."
+                    "workspaces/runtime/apps/server/src/install-cli.py --dev` during setup."
                 )
         else:
             python = resolve_python(scripts)
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         parser.exit(1, f"codex Python: {error}\n")
     if options.mypy:
-        project = scripts.parent
+        project = REPOSITORY_ROOT
         return subprocess.run(
             [
                 str(python),
