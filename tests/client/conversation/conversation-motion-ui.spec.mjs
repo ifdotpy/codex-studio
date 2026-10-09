@@ -619,8 +619,48 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
         .locator(rootSelector)
         .evaluate((e) => e.scrollTop);
       await transcriptRoot.evaluate((root) => delete root.dataset.motionRoot);
-      if (width < 700) await page.locator("#sidebar-toggle").click();
-      await page.locator(`[data-chat="${other.id}"]`).click();
+      if (width < 700) {
+        await page.locator("#sidebar-toggle").click();
+        await page
+          .locator(".mantine-Drawer-overlay[data-fixed='true']")
+          .waitFor({ state: "visible" });
+        const navigationStarted = await page.evaluate(() => performance.now());
+        await page.locator(`[data-chat="${other.id}"]`).click();
+        await page.waitForFunction(
+          (name) =>
+            document
+              .querySelector("#conversation-title")
+              ?.textContent?.includes(name),
+          other.name,
+        );
+        const atTitleChange = await page.evaluate(
+          (started) => ({
+            titleChangeMs: performance.now() - started,
+            overlayPresent: !!document.querySelector(
+              ".mantine-Drawer-overlay[data-fixed='true']",
+            ),
+          }),
+          navigationStarted,
+        );
+        let drawerClosedMs = null;
+        try {
+          await page.waitForFunction(
+            () =>
+              !document.querySelector(
+                ".mantine-Drawer-overlay[data-fixed='true']",
+              ),
+            undefined,
+            { timeout: 1000 },
+          );
+          drawerClosedMs = await page.evaluate(
+            (started) => performance.now() - started,
+            navigationStarted,
+          );
+        } catch {}
+        console.log(
+          `MOTION_MOBILE_DRAWER_NAVIGATION ${JSON.stringify({ atTitleChange, drawerClosedMs })}`,
+        );
+      } else await page.locator(`[data-chat="${other.id}"]`).click();
       await emitTranscript(other.id, {
         agent: other,
         items: [],
