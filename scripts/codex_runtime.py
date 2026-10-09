@@ -6197,6 +6197,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             backfill_turn_item_links(db)
 
     def runtime_maintenance_tick(self):
+        from codex_task_recovery import queue_task_recovery
+        queue_task_recovery(self)
         from codex_claude_auth_wait import tick as claude_auth_wait_tick
         claude_auth_wait_tick(self)
         from codex_linux_vm_credentials import tick as linux_credentials_tick

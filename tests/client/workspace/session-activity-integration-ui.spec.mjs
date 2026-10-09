@@ -1,8 +1,10 @@
 import {
   readTestState,
   syncIdentityFixture,
-  entityPullFixtureForRequest,
+  syncProtocolFixture,
+  stubEntityState,
   test,
+  expect,
   browserExecutablePath,
   spawnFixture as spawn,
 } from "../playwright.mjs";
@@ -105,17 +107,9 @@ test("Session activity integration", async () => {
       await fetch(`${origin}/api/sync/identity`)
     ).json();
     const identityResponse = syncIdentityFixture(backendIdentity.workspaceId);
-    const workspaceId = identityResponse.workspaceId;
-    await page.route("**/api/sync/identity", (r) =>
-      r.fulfill({ json: identityResponse }),
-    );
-    await page.route("**/api/sync/pull?*", (r) => {
-      return r.fulfill({
-        json: {
-          workspaceId,
-          ...entityPullFixtureForRequest(entityState, r.request().url()),
-        },
-      });
+    const entities = await stubEntityState(page, entityState, {
+      identity: identityResponse,
+      protocol: syncProtocolFixture(),
     });
     await page.route("**/api/transcript/stream?*", (r) =>
       r.fulfill({ status: 404, json: { error: "Polling fixture" } }),
@@ -131,15 +125,18 @@ test("Session activity integration", async () => {
       detailReads.push(id);
       return r.fulfill({
         json: {
-          ...state.runtime.tasks.find((t) => t.id === id),
+          ...entityState.runtime.tasks.find((t) => t.id === id),
           tail: "The command remains active.",
         },
       });
     });
-    let historyTasks = [
-      task,
-      { ...task, id: "newer-command", created: Date.now() / 1000 },
-    ];
+    const historyTasks = Array.from({ length: 100 }, (_, index) => ({
+      ...task,
+      id: `recent-completed-${index}`,
+      status: "completed",
+      created: Date.now() / 1000 + index,
+      finished: Date.now() / 1000 + index,
+    }));
     let taskFeedReads = 0;
     await page.route("**/api/workspace/tasks?*", (r) => {
       taskFeedReads++;
@@ -183,34 +180,37 @@ test("Session activity integration", async () => {
       const before = detailReads.length;
       await row.click();
       await page.getByRole("dialog", { name: /Current activity/ }).waitFor();
+      await page.getByText("2 active", { exact: true }).waitFor();
+      assert.equal(await page.locator("[data-task]").count(), 2);
       await page.waitForFunction(
         () =>
           document.querySelector(".tasks-content.show-task-detail") !== null,
       );
-      for (let n = 0; n < 100 && detailReads.length === before; n++)
-        await new Promise((r) => setTimeout(r, 30));
-      assert.equal(
-        detailReads[before],
-        task.id,
-        "Open the exact older task, not the newest default",
-      );
+      await expect
+        .poll(() => detailReads[before], {
+          timeout: 12000,
+          message: "Open the exact older task, not the newest default",
+        })
+        .toBe(task.id);
       await page.keyboard.press("Escape");
       await page
         .getByRole("dialog", { name: /Current activity/ })
         .waitFor({ state: "hidden" });
     }
     await page.setViewportSize({ width: 1280, height: 900 });
-    historyTasks = [
-      { ...task, id: "newer-command", command: "second active command" },
-    ];
-    const beforeMissingTaskFeed = taskFeedReads;
     await row.click();
     await page.getByRole("dialog", { name: /Current activity/ }).waitFor();
-    for (let n = 0; n < 120 && taskFeedReads === beforeMissingTaskFeed; n++)
-      await new Promise((r) => setTimeout(r, 50));
-    assert.ok(taskFeedReads > beforeMissingTaskFeed);
-    state.runtime.tasks = state.runtime.tasks.filter(
+    const token = await (await fetch(`${origin}/api/session`)).json();
+    const publish = { origin, token: token.token };
+    const otherTasks = entityState.runtime.tasks.filter(
       (item) => item.id !== task.id,
+    );
+    await entities.update(
+      {
+        ...entityState,
+        runtime: { ...entityState.runtime, tasks: otherTasks },
+      },
+      publish,
     );
     await page
       .getByText("The selected task is no longer active in this chat.", {
@@ -221,17 +221,18 @@ test("Session activity integration", async () => {
       !detailReads.includes("newer-command"),
       "Missing explicit selection must not open another task",
     );
-    historyTasks = [task];
-    const beforeLateHistory = taskFeedReads;
-    for (let n = 0; n < 120 && taskFeedReads === beforeLateHistory; n++)
-      await new Promise((r) => setTimeout(r, 50));
-    assert.ok(taskFeedReads > beforeLateHistory);
+    await entities.update(entityState, publish);
     await page
       .locator(`[data-task="${task.id}"][aria-pressed="true"]`)
       .waitFor();
     assert(
       !detailReads.includes("newer-command"),
-      "Late history restores the original selection",
+      "A later entity update restores the original selection",
+    );
+    assert.equal(
+      taskFeedReads,
+      0,
+      "Current activity does not read a bounded history page",
     );
     await page.keyboard.press("Escape");
     await page

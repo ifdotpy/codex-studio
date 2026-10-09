@@ -39,11 +39,11 @@ import {
 import type { paths } from "../../generated/api";
 import "./background-controls.css";
 import type { Agent, JsonValue, Monitor, Request, Snapshot } from "../../types";
-import { useWorkspaceTaskFeed } from "../useWorkspaceTaskFeed";
 import { watchResourceReads } from "../watchResourceReads";
 import { copyText } from "../../clipboard/clipboard";
 import {
   activeTask,
+  backgroundTasks,
   projectTaskForRenderer,
   type DisplayBackgroundTask,
 } from "../backgroundTaskModel";
@@ -177,7 +177,6 @@ export default function BackgroundTasks({
     } | null>(null),
     [mobileDetail, setMobileDetail] = useState(false),
     [now, setNow] = useState(Date.now() / 1000);
-  const taskFeed = useWorkspaceTaskFeed(opened, leadId);
   const appliedFocus = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (!opened) return;
@@ -185,14 +184,7 @@ export default function BackgroundTasks({
     return () => clearInterval(timer);
   }, [opened]);
   const agents = data.threads,
-    tasks = [
-      ...data.runtime.monitors
-        .map(monitorTask)
-        .filter((task): task is DisplayBackgroundTask => task !== null),
-      ...(taskFeed?.tasks ?? data.runtime.tasks)
-        .map((task) => projectTaskForRenderer(task, "task"))
-        .filter((task): task is DisplayBackgroundTask => task !== null),
-    ].filter(activeTask),
+    tasks = backgroundTasks(data).filter(activeTask),
     owner = (id: string) => agents.find((a) => a.id === id);
   const scoped = tasks.filter(
     (t) =>
@@ -315,11 +307,6 @@ export default function BackgroundTasks({
               }}
             />
           </div>
-          {taskFeed?.error && (
-            <p role="alert" className="task-error">
-              {taskFeed.error}
-            </p>
-          )}
           <div className="tasks-rows">
             {(
               [
