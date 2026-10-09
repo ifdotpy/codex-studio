@@ -1,4 +1,8 @@
 import {
+  bootstrapPreferenceCache,
+  applyCachedPreferenceAppearance,
+} from "./sync/uiPreferenceStore";
+import {
   DesktopServerCredentials,
   nativeCredentialBridge,
 } from "./servers/desktopCredentials";
@@ -21,6 +25,8 @@ import "./appearance.css";
 import "./studio-preferences.css";
 import "./visual-activity.css";
 
+bootstrapPreferenceCache();
+applyCachedPreferenceAppearance();
 const nativeCredentials = nativeCredentialBridge();
 setServerCredentialAdapter(
   nativeCredentials

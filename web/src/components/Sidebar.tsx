@@ -1,3 +1,5 @@
+import { writePreferenceEdit } from "../sync/uiPreferenceStore";
+import { useSyncedVisualState } from "../sync/useSyncedVisualState";
 import { serverLocalStorage as localStorage } from "../servers/storage";
 import {
   Fragment,
@@ -28,7 +30,7 @@ import {
   Plus,
   X,
 } from "lucide-react";
-import { post, errorText, save, saved } from "../api";
+import { post, errorText, saved } from "../api";
 import type { paths } from "../generated/api";
 import "./sidebar-projects.css";
 import { useSidebarOrder } from "./useSidebarOrder";
@@ -156,13 +158,12 @@ export default function Sidebar(p: Props) {
     setConversion(null);
   };
   const compactKey = `codex-project-compact:${p.data.stateDir}`;
-  const [compactProjects, setCompactProjects] = useState<
+  const [compactProjects, setCompactProjects] = useSyncedVisualState<
     Record<string, boolean>
-  >(() => saved(compactKey, {}));
+  >(compactKey, {});
   const setCompactProject = (path: string, value: boolean) => {
     const next = { ...compactProjects, [path]: value };
-    save(compactKey, next);
-    setCompactProjects(next);
+    setCompactProjects(writePreferenceEdit(compactKey, compactProjects, next));
   };
   const [teamDialog, setTeamDialog] = useState<{
     path: string;
@@ -227,14 +228,13 @@ export default function Sidebar(p: Props) {
   const folderKey = (path: string, id: string) =>
     JSON.stringify([path, "folder", id]);
   const projectKey = `codex-project-tree:${p.data.stateDir}`;
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() =>
-    saved(projectKey, {}),
-  );
+  const [collapsed, setCollapsed] = useSyncedVisualState<
+    Record<string, boolean>
+  >(projectKey, {});
 
   const toggleProject = (path: string) => {
     const next = { ...collapsed, [path]: !collapsed[path] };
-    setCollapsed(next);
-    save(projectKey, next);
+    setCollapsed(writePreferenceEdit(projectKey, collapsed, next));
   };
   // Pin and archive show at once; the next snapshot confirms them.
   const [overrides, setOverrides] = useState<
@@ -319,7 +319,24 @@ export default function Sidebar(p: Props) {
     [archive, sharedRooms, projects, query],
   );
   const selectedFolder = catalog.byId.get(p.opened || "")?.projectFolder;
+  const initialSelection = useRef<{
+    opened: string;
+    folder: typeof selectedFolder;
+  } | null>(null);
   useEffect(() => {
+    if (!initialSelection.current) {
+      if (p.opened)
+        initialSelection.current = { opened: p.opened, folder: selectedFolder };
+      return;
+    }
+    if (
+      initialSelection.current.opened === p.opened &&
+      initialSelection.current.folder === selectedFolder
+    )
+      return;
+    initialSelection.current = p.opened
+      ? { opened: p.opened, folder: selectedFolder }
+      : null;
     if (
       agents.some((a) => a.id === p.opened) ||
       sharedRooms.some((r) => r.id === p.opened)
@@ -331,8 +348,7 @@ export default function Sidebar(p: Props) {
         sharedRooms.find((r) => r.id === p.opened)?.projectPath;
       if (path && collapsed[path]) {
         const next = { ...collapsed, [path]: false };
-        setCollapsed(next);
-        save(projectKey, next);
+        setCollapsed(writePreferenceEdit(projectKey, collapsed, next));
       }
       const folders =
         projects.find((project) => project.path === path)?.folders || [];
@@ -344,8 +360,7 @@ export default function Sidebar(p: Props) {
       }
       if (path && Object.keys(ancestors).length) {
         const next = { ...collapsed, [path]: false, ...ancestors };
-        setCollapsed(next);
-        save(projectKey, next);
+        setCollapsed(writePreferenceEdit(projectKey, collapsed, next));
       }
     }
   }, [p.opened, selectedFolder]);
@@ -395,8 +410,7 @@ export default function Sidebar(p: Props) {
               parent =
                 project.folders?.find((f) => f.id === parent?.parentId) || null;
             }
-            save(projectKey, next);
-            return next;
+            return writePreferenceEdit(projectKey, previous, next);
           });
           setCompactProject(project.path, false);
           sorting.announce(
@@ -1027,8 +1041,7 @@ export default function Sidebar(p: Props) {
             </Menu.Item>
             <Menu.Item
               onClick={() => {
-                setCollapsed({});
-                save(projectKey, {});
+                setCollapsed(writePreferenceEdit(projectKey, collapsed, {}));
                 setProjectsOpen(true);
               }}
             >

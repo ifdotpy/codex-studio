@@ -107,6 +107,11 @@ def create_app(context: ApiContext) -> FastAPI:
             return context.send(request, data, content_type=mime, compressed=compressed,
                                 cache_control="private, max-age=31536000, immutable")
         data = asset.read_bytes()
+        if relative == "index.html" and context.runtime is not None:
+            from studio_api.sync.preferences import bootstrap_preferences
+            with context.runtime.db() as db:
+                seed = bootstrap_preferences(db, context.workspace_id())
+            data = data.replace(b"</head>", seed + b"</head>", 1)
         if relative == "studio-renderer.json":
             return context.send(request, json.loads(data), cache_control="no-store")
         return context.send(request, data, content_type=mime,

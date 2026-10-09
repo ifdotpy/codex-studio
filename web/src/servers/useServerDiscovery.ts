@@ -1,3 +1,7 @@
+import {
+  capturePreferenceWrite,
+  readPreferenceFields,
+} from "../sync/uiPreferenceStore";
 import { ServerManagementRequests } from "./managementRequests";
 import { useEffect, useRef, useState } from "react";
 import { errorText, refreshSession, serverAccess } from "../api";
@@ -111,7 +115,18 @@ export function useServerDiscovery(
     const next = discoverySnapshot(state);
     if (!active.current) return;
     if (next?.aliases) {
-      const aliases = next.aliases;
+      const aliases = { ...next.aliases };
+      const fields = readPreferenceFields("user");
+      for (const id of ["local", ...readServers().map((server) => server.id)]) {
+        const identity = localStorage.getItem(
+          `studio-server-workspace-id:${id}`,
+        );
+        const value =
+          identity &&
+          fields[JSON.stringify([`server-alias:${identity}`])]?.value;
+        if (typeof value === "string") aliases[id] = value;
+      }
+      next.aliases = aliases;
       if (aliases.local) localStorage.setItem(LOCAL_ALIAS_KEY, aliases.local);
       const paired = readServers().map((server) =>
         aliases[server.id] ? { ...server, alias: aliases[server.id] } : server,
@@ -180,6 +195,21 @@ export function useServerDiscovery(
     try {
       await management.run(request);
       confirmed = true;
+      if (request.action === "alias") {
+        const identity = localStorage.getItem(
+          `studio-server-workspace-id:${request.serverId}`,
+        );
+        if (identity) {
+          const key = `server-alias:${identity}`;
+          const previous =
+            readPreferenceFields("user")[JSON.stringify([key])]?.value;
+          capturePreferenceWrite(
+            key,
+            JSON.stringify(request.alias),
+            JSON.stringify(previous ?? null),
+          );
+        }
+      }
       // A retry receipt contains the original snapshot. Read the current state.
       if (loading.current) await loading.current;
       await load();

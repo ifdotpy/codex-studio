@@ -15,6 +15,8 @@ import type {
   WorkEntityDto,
   WorkspaceEntityDto,
 } from "../generated/api";
+import type { components } from "../generated/api";
+type UiPreferencesDto = components["schemas"]["UiPreferencesDto"];
 import type { Snapshot } from "../types";
 
 export type EntityRow = {
@@ -40,6 +42,7 @@ const ENTITY_COLLECTIONS = new Set<string>([
   "event",
   "work",
   "workspace",
+  "uiPreferences",
 ]);
 type EntityFor<C extends EntityCollection> = Extract<
   SyncEntityPayload,
@@ -78,6 +81,7 @@ function emptyEntityValues(): EntityValues {
     event: new Map<string, EventEntityDto>(),
     work: new Map<string, WorkEntityDto>(),
     workspace: new Map<string, WorkspaceEntityDto>(),
+    uiPreferences: new Map<string, UiPreferencesDto>(),
   };
 }
 
@@ -318,6 +322,9 @@ export function applyEntityChanges(
         break;
       case "work":
         state.values.work.set(payload.id, payload.value);
+        break;
+      case "uiPreferences":
+        state.values.uiPreferences.set(payload.id, payload.value);
         break;
       case "workspace":
         state.values.workspace.set(payload.id, payload.value);

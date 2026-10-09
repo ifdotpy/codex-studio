@@ -28,6 +28,7 @@ from studio_api.sync.models import (
     WorkspaceEntityDto,
     SyncEntityPayload,
 )
+from studio_api.sync.preferences import UiPreferencesDto
 from codex_records import AgentRecord, JsonObject, RoomRecord
 from studio_api.models import JsonValue, _validate_finite_json
 
@@ -57,6 +58,7 @@ _DTO_MODELS = {
     "event": EventEntityDto,
     "work": WorkEntityDto,
     "workspace": WorkspaceEntityDto,
+    "uiPreferences": UiPreferencesDto,
 }
 AGENT_FIELDS = frozenset(AgentEntityDto.model_fields)
 COLLECTION_FIELDS = {
@@ -174,7 +176,7 @@ def project(collection: str, record: JsonValue) -> JsonValue | None:
         return None
     fields = AGENT_FIELDS if collection == "agent" else COLLECTION_FIELDS[collection]
     result = {
-        key: _bounded(value, key)
+        key: value if collection == "uiPreferences" else _bounded(value, key)
         for key, value in record.items()
         if key in fields and not (
             collection == "agent"

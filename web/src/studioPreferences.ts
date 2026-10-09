@@ -125,3 +125,36 @@ export function formatSidebarShortcut(value: string): string {
     )
     .join("+");
 }
+
+export function applyStudioPreferences(
+  value: StudioPreferences,
+  root: HTMLElement,
+) {
+  root.dataset.studioTypography = value.typography;
+  root.dataset.studioContentLayout = value.contentLayout;
+  root.style.setProperty(
+    "--studio-content-width-ratio",
+    String(value.contentWidth / 100),
+  );
+  if (value.typography === "original") {
+    for (const name of [
+      "--studio-font-family",
+      "--studio-sidebar-font-size",
+      "--studio-main-font-size",
+    ])
+      root.style.removeProperty(name);
+  } else {
+    root.style.setProperty(
+      "--studio-font-family",
+      fontFamilies[value.fontFamily].css,
+    );
+    root.style.setProperty(
+      "--studio-sidebar-font-size",
+      `${value.sidebarFontSize}px`,
+    );
+    root.style.setProperty(
+      "--studio-main-font-size",
+      `${value.mainFontSize}px`,
+    );
+  }
+}

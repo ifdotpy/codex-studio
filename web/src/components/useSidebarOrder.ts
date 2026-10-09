@@ -6,7 +6,7 @@ import {
   type DragEvent,
   type KeyboardEvent,
 } from "react";
-import { post, ApiError, errorText, saved, type PostBody } from "../api";
+import { post, ApiError, errorText, saved, save, type PostBody } from "../api";
 
 import type { components } from "../generated/api";
 
@@ -42,7 +42,10 @@ export function useSidebarOrder(
     if (!server) return;
     if (server.revision > revision.current) {
       revision.current = server.revision;
-      if (server.groups !== null) setOrder(server.groups);
+      if (server.groups !== null) {
+        setOrder(server.groups);
+        save(key, server.groups);
+      }
     }
     if (busy.current) return;
     const pending = saved<Pending | null>(pendingKey, null);
@@ -77,6 +80,7 @@ export function useSidebarOrder(
       if (result.revision >= revision.current) {
         revision.current = result.revision;
         setOrder(result.groups || {});
+        save(key, result.groups || {});
       }
       void refresh?.().catch((error) =>
         notify?.(`Could not refresh sidebar order: ${errorText(error)}`),
