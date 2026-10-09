@@ -174,6 +174,7 @@ test("a rollback without a schema header shows Update instead of stale chat data
     await expect(page.getByRole("button", { name: "Update" })).toBeVisible();
     assert.equal(messageWrites, 0);
   } finally {
+    await page.unrouteAll({ behavior: "wait" });
     fixture.kill();
   }
 });
@@ -264,6 +265,7 @@ test("a warm server rollback preserves the draft and stops the stale stream", as
     ).toBeDisabled();
     assert.equal(messageWrites, 0);
   } finally {
+    await page.unrouteAll({ behavior: "wait" });
     fixture.kill();
   }
 });
