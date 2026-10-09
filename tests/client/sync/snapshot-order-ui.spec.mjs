@@ -185,9 +185,95 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
     exact: true,
   });
   const label = answer.locator(".mantine-Button-inner");
-  // Finish the browser scroll before measuring the loading transition.
+  // Record every frame around the transition so a geometry failure tells us
+  // whether the answer fields, preceding content, or transcript scroll moved.
+  await page.evaluate(() => {
+    window.__snapshotOrderLabelFrames = {
+      phase: "scrolling",
+      stableFrames: 0,
+      previous: null,
+      frames: [],
+    };
+    const sample = () => {
+      const record = window.__snapshotOrderLabelFrames;
+      const label = document.querySelector(
+        '[data-request="async-question"] .request-answer-actions .mantine-Button-inner',
+      );
+      const card = document.querySelector('[data-request="async-question"]');
+      const form = card?.querySelector(".request-answer-form");
+      const fields = form?.querySelector(".request-answer-fields");
+      const actions = form?.querySelector(".request-answer-actions");
+      if (!record || !label || !card || !form || !fields || !actions) return;
+      const rect = (element) => {
+        const bounds = element.getBoundingClientRect();
+        return {
+          y: bounds.y,
+          width: bounds.width,
+          height: bounds.height,
+          className:
+            typeof element.className === "string" ? element.className : "",
+        };
+      };
+      const priorSiblings = [];
+      for (
+        let node = actions;
+        node && node !== card;
+        node = node.parentElement
+      ) {
+        for (
+          let sibling = node.previousElementSibling;
+          sibling;
+          sibling = sibling.previousElementSibling
+        )
+          priorSiblings.push(rect(sibling));
+      }
+      const current = {
+        phase: record.phase,
+        label: rect(label),
+        fields: rect(fields),
+        actions: rect(actions),
+        form: rect(form),
+        card: rect(card),
+        transcriptScrollTop: document.querySelector("#messages")?.scrollTop,
+        priorSiblings,
+      };
+      if (
+        record.previous &&
+        Math.abs(record.previous.label.y - current.label.y) < 0.1 &&
+        Math.abs(record.previous.label.height - current.label.height) < 0.1 &&
+        Math.abs(record.previous.label.width - current.label.width) < 0.1
+      )
+        record.stableFrames += 1;
+      else record.stableFrames = 0;
+      record.previous = current;
+      record.frames.push(current);
+      if (record.frames.length > 100) record.frames.shift();
+    };
+    const tick = () => {
+      const record = window.__snapshotOrderLabelFrames;
+      if (!record || record.phase === "done") return;
+      sample();
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+  // Wait for the label's y, width, and height to settle across two frames.
   await answer.scrollIntoViewIfNeeded();
+  await page.evaluate(() => {
+    const record = window.__snapshotOrderLabelFrames;
+    record.phase = "settling";
+    record.stableFrames = 0;
+    record.previous = null;
+  });
+  await page.waitForFunction(
+    () => window.__snapshotOrderLabelFrames?.stableFrames >= 1,
+    undefined,
+    { timeout: 5000 },
+  );
   const before = await label.boundingBox();
+  await page.evaluate(() => {
+    window.__snapshotOrderLabelFrames.phase = "loading";
+  });
   await answer.click();
   await waitFor(() => pendingAnswer, "Answer request reaches the held route");
   await page.waitForFunction(() =>
@@ -201,11 +287,41 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
     "Loading keeps the inner button transform unset",
   );
   const during = await label.boundingBox();
+  const geometryFrames = await page.evaluate(() => {
+    const record = window.__snapshotOrderLabelFrames;
+    record.phase = "done";
+    return record.frames;
+  });
+  console.log(
+    `SNAPSHOT_ORDER_LABEL_GEOMETRY ${JSON.stringify(
+      geometryFrames.map(
+        ({
+          phase,
+          label,
+          fields,
+          actions,
+          form,
+          card,
+          transcriptScrollTop,
+          priorSiblings,
+        }) => ({
+          phase,
+          label,
+          fields,
+          actions,
+          form,
+          card,
+          transcriptScrollTop,
+          priorSiblings,
+        }),
+      ),
+    )}`,
+  );
 
   for (const key of ["x", "y", "width", "height"])
     assert.ok(
       Math.abs(before[key] - during[key]) <= 1,
-      `Loading label ${key} stays stable`,
+      `Loading label ${key} stays stable; before=${JSON.stringify(before)}, during=${JSON.stringify(during)}, frames=${JSON.stringify(geometryFrames)}`,
     );
   const requestId = pendingAnswer.request().postDataJSON().id;
   const serverAnswer = await pendingAnswer.fetch();
