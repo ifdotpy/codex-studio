@@ -100,6 +100,16 @@ def move_tools(tool: Any, text: dict[str, Any]) -> list[dict[str, Any]]:
          'accept_cache_loss': {'type': 'boolean', 'description': 'Explicit approval for this move to a different Codex account. The provider prompt cache will be lost.'}}, ['server', 'cwd'])]
 
 
+def teleport_definition(legacy: dict[str, Any]) -> dict[str, Any]:
+    """New sessions use the new name; do not edit the legacy definition."""
+    current = copy.deepcopy(legacy)
+    current['name'] = 'orchestration_teleport'
+    current['description'] = current['description'].replace('Move your own', 'Teleport your own').replace('a move', 'a teleport')
+    current['inputSchema']['properties']['accept_cache_loss']['description'] = (
+        'Explicit approval for this teleport to a different Codex account. The provider prompt cache will be lost.')
+    return current
+
+
 class AgentMoves:
     def __init__(self, service: Any) -> None:
         self.service = service
@@ -281,7 +291,9 @@ class AgentMoves:
             if agent.get(field):
                 raise ValueError('Finish the active context, account, settings, or workspace operation before a move')
         other_tools = [tool for tool in agent.get('activeTools', [])
-                       if tool.get('name') not in {'orchestration_move', 'mcp__studio__orchestration_move'} and tool.get('id') != key.rsplit(':', 1)[-1]]
+                       if tool.get('name') not in {'orchestration_move', 'mcp__studio__orchestration_move',
+                                                  'orchestration_teleport', 'mcp__studio__orchestration_teleport'}
+                       and tool.get('id') != key.rsplit(':', 1)[-1]]
         if other_tools:
             raise ValueError('Finish the other active tools before a move')
         if db.execute("SELECT 1 FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? "

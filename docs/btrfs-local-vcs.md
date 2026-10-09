@@ -33,6 +33,9 @@ so models learn it quickly, and it has equal convenience. It does not take the n
    overlayfs on Linux) and [Linux VM workspaces](linux-vm-workspaces.md) (git status change
    detector). The utility later replaces their internals behind the same public API.
 8. No staged rollout: all parts of the utility are built together.
+9. All agents run in the VM: the lead, workers and reviewers. The Mac is reached only through the
+   general `host_exec` tool, for work that needs macOS (Xcode builds and tests, signing, simulators).
+   This replaces the earlier decision of the same day to keep the lead on the Mac.
 
 ## Data model
 
@@ -139,24 +142,39 @@ it can be undone too.
 
 ## Main line on macOS
 
-The main line of a Linux project lives on btrfs in the Studio VM. For now the lead and reviewers run
-on the Mac host (decision 2026-10-09):
+The main line of every project lives on btrfs in the Studio VM. All agents work in the VM, in
+their own lines, with `layr` and Linux builds and tests running natively. No agent writes on the
+Mac directly. The Mac gets two kinds of copies:
 
-- The lead's working folder is the mirror of the main line. The lead reads code there. Its sandbox
-  does not allow writes to the mirror: Codex uses `workspaceWrite` with writable roots for its own
-  build and temporary folders only, and Claude uses permission rules that deny `Edit` and `Write`
-  for the mirror path.
-- The lead writes only through one general tool: command execution in the VM. It is the existing
-  `orchestration_servers` action `exec` with the VM as a server, backed by the guest `exec` call
-  (`scripts/codex_linux_vm_exec.py`). Studio does not know what the command does.
-- Through it the lead runs `layr apply-patch` (the `apply_patch` format on stdin), `layr diff`,
-  `layr show`, `layr merge`, `layr log`, `layr restore`, and Linux builds and tests.
-- Builds for macOS run on the Mac: Xcode reads the mirror and writes only to the lead's own folders,
-  with a fixed `DerivedData` path so the build stays warm.
+- the mirror of the main line, for the user (below);
+- build slots, for `host_exec`.
 
-Changes needed in the guest `exec`: a longer or background mode than the 300 s timeout, a target
-line (main line, a worker line or a temporary snapshot) instead of an agent folder, and a reply
-only after the mirror has applied a change of the main line.
+### `host_exec`: macOS commands for agents in the VM
+
+One general tool. Studio does not know what the command does.
+
+1. Each agent that needs macOS gets a fixed slot on the Mac: a folder at a stable path, plus its own
+   `DerivedData` and package folders next to it. A stable path keeps Xcode builds warm: Xcode does
+   not reuse `DerivedData` at another path (measured in the research document).
+2. Before the command, the utility syncs the agent line to the slot: the change list since the
+   last synced state (`btrfs send --no-data`), then only those files. The first use copies the
+   whole line.
+3. The command runs on the Mac in the slot, in the user's session, so GUI tools and simulators are
+   available.
+4. After the command, the Mac side lists files that the command changed in the slot (FSEvents or a
+   compare with the start marker, on the Mac itself; the VM's view of a shared folder can have
+   stale attributes). Changed sources go back into the agent line. Build outputs stay outside the
+   slot folder. Artifacts are returned as files.
+5. Output paths are mapped from the slot path to the line path in the VM, including the short
+   forms of macOS path aliases (`/tmp` is `/private/tmp`). Slots should use a path without
+   aliases.
+6. One command at a time per slot. The agent waits for the result, so there is one writer.
+
+The channel is a request from the guest to the host. The VM helper today only connects from the
+host to the guest (`connect(toPort: 4050)` in `desktop/native/linux-vm/main.swift`). The guest side
+needs either a Virtualization.framework listener for guest connections (`setSocketListener`) or
+reverse requests on the existing connection, with request ids and receipts like the other guest
+calls.
 
 One-way mirror, VM to Mac:
 
@@ -194,13 +212,13 @@ Mirror rules for differences between btrfs and APFS:
 
 ## Review
 
-| Step             | How                                                                                                                                                    |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| see the diff     | `layr diff <worker base>..<worker line>` in the VM: the btrfs change list plus a unified diff of those files                                           |
-| read whole files | a review copy on the Mac: a clone of the mirror plus the worker's changed files, read-only, removed after the decision; or `layr show <line>:<path>`   |
-| run tests        | Linux: in a temporary writable snapshot of the worker line, deleted afterwards, so the worker line does not change. macOS: in the review copy          |
-| decide           | accept: `layr merge <worker line>` into the main line. Return: a message to the worker through the existing Studio messages                            |
-| conflicts        | the merge result is a state with conflict markers and a conflict list. The lead fixes them with `layr apply-patch`, and the next state clears the list |
+| Step             | How                                                                                                                                                                      |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| see the diff     | `layr diff <worker base>..<worker line>` in the VM: the btrfs change list plus a unified diff of those files                                                             |
+| read whole files | directly in the worker state folder in the VM, or `layr show <line>:<path>`                                                                                              |
+| run tests        | Linux: in a temporary writable snapshot of the worker line, deleted afterwards, so the worker line does not change. macOS: `host_exec` in a slot synced to that snapshot |
+| decide           | accept: `layr merge <worker line>` into the main line. Return: a message to the worker through the existing Studio messages                                              |
+| conflicts        | the merge result is a state with conflict markers and a conflict list. The lead fixes the files, and the next state clears the list                                      |
 
 Reviewer agents use the same steps with read-only access. No branches, fetches or worktrees are
 used for review.
@@ -340,6 +358,28 @@ Git object store as a nested subvolume:
 | incremental stream                               | 10 MiB (132 MiB with git data inside)                                                                                                      |
 | machine B                                        | no `.git` placeholder at all; history by `git fetch` into a new repository and index from HEAD: 9.67 s; worktree equal to the agent commit |
 
+## `host_exec` prototype (2026-10-09)
+
+Throwaway OrbStack machine with btrfs. The OrbStack `mac` command stood in for the reverse channel,
+and the OrbStack shared folder stood in for the file transfer. Project: a copy of
+`CallScribe.xcodeproj` (52 files, 6 remote Swift packages). One run per step.
+
+| Step                                                               | Result                                                             |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------ |
+| call overhead (`mac true`)                                         | 0.05 s                                                             |
+| first copy of the line to the slot                                 | 0.02 s                                                             |
+| cold build with package resolve                                    | 92.15 s, once per slot                                             |
+| build without changes                                              | 2.99 s                                                             |
+| snapshot + change list + copy of 3 changed Swift files to the slot | 0.24 s                                                             |
+| build after the 3 edits                                            | 4.10 s                                                             |
+| a Mac command changes sources, copy back into the line             | 0.04 s + 0.02 s                                                    |
+| compile error output                                               | path mapped to `/data/line/CallScribe/UI/MenuBarView.swift:179:19` |
+
+Findings: the edit to build cycle is about 4.3 s, and about 0.3 s of it is the sync. Change
+detection must run on the Mac: the VM's view of the shared folder returned a stale modification
+time. The compiler printed `/tmp/...`, so path mapping must handle aliases. Not tested: large Xcode
+projects, simulators and UI tests through `host_exec`, the real vsock channel.
+
 ## Prior art and what this design takes from it
 
 | Project                                                                                         | What it does                                                                                              | Taken                                                                          |
@@ -355,13 +395,25 @@ replication between machines.
 
 ## Open items
 
-- Index emulation details for partial `add` (hunks, `add -p`).
-- Which git porcelain and plumbing commands the utility implements first, and which use passthrough.
-- The passthrough repository needs an index for the current state; build it on demand and cache it
-  per state.
-- Measure the one-way mirror at chromium scale: first write, update after a merge, and the
-  background verification.
-- Directory-level merge cases listed above.
+Design:
+
+- The reverse guest to host channel for `host_exec`, and slot management (create, reuse, remove,
+  disk budget).
+- Index emulation for partial `add` (hunks, `add -p`).
+- The first set of git verbs that `layr` implements.
+- Directory-level merge cases: rename against change, folder delete against a new file inside,
+  symlinks, file modes.
+- The access model in the VM: agents own their lines; the `layr` service owns states, the log and
+  metadata.
+
+Measurements:
+
+- `host_exec` with simulators, UI tests and a large Xcode project.
+- The one-way mirror at chromium scale: first write, update after a merge, background verification.
+- The loop-file option on a real ext4 host.
+
+Later:
+
 - Replace overlayfs with writable snapshots for Linux workspaces
   ([image workspaces](workspace-images.md) uses overlayfs today).
 - APFS backend (deferred).

@@ -3,6 +3,7 @@
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 import copy
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -107,8 +108,8 @@ class Moves(f.SignedIntegration):
         self.lead = self.a.runtime.create({'name': 'Lead', 'prompt': '', 'cwd': str(self.a.folder), 'concurrency': 4}, draft=True)
         self.lead = self.a.runtime.prepare(self.lead)
 
-    def finish_move(self, actor, key='move-one'):
-        reply = self.tool(self.a, actor, 'orchestration_move', {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': key}, key)
+    def finish_move(self, actor, key='move-one', tool='orchestration_move'):
+        reply = self.tool(self.a, actor, tool, {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': key}, key)
         self.assertEqual(reply['status'], 'accepted')
         self.assertTrue(self.a.runtime.agent(actor['id']).get('executionMove'))
         self.a.runtime.multi_server().moves().tick()
@@ -123,6 +124,117 @@ class Moves(f.SignedIntegration):
             target = self.b.runtime.agent(actor['id'])
             self.fail({name: target.get(name) for name in ('status', 'error', 'startAttempt', 'remoteOrigin', 'provider', 'epoch', 'autoWake')})
         return self.b.runtime.agent(actor['id'])
+
+    def test_new_native_session_keeps_teleport_name_and_exact_role_after_resume_and_move(self):
+        source = self.a.runtime.agent(self.lead['id'])
+        self.assertEqual(source['nativeTeleportTool'], 'orchestration_teleport')
+        original = self.a.runtime.tool_definitions(source)
+        names = [tool['name'] for tool in original]
+        self.assertIn('orchestration_teleport', names)
+        self.assertNotIn('orchestration_move', names)
+        guidance = self.a.runtime.role_guidance(source)
+        self.assertIn('orchestration_teleport', guidance)
+        self.a.runtime.loaded.discard(source['id'])
+        resumed = self.a.runtime.prepare(source)
+        self.assertEqual(resumed['nativeRoleGuidance'], guidance)
+        moved = self.finish_move(resumed, 'teleport-name', tool='orchestration_teleport')
+        self.assertEqual(moved['nativeTeleportTool'], 'orchestration_teleport')
+        self.assertEqual(self.b.runtime.tool_definitions(moved), original)
+        self.assertEqual(self.b.runtime.role_guidance(moved), guidance)
+        receipt = self.tool(self.b, moved, 'orchestration_request',
+            {'action': 'get', 'request_id': 'teleport-name'}, 'teleport-name-receipt')
+        self.assertEqual(receipt['outcome'], 'applied')
+        self.assertEqual(receipt['tool'], 'orchestration_teleport')
+        self.assertEqual(receipt['move']['phase'], 'active')
+
+    def test_legacy_session_keeps_its_name_and_request_receipt_after_move(self):
+        with self.a.runtime.lock, self.a.runtime.db() as db:
+            old = self.a.runtime.agent(self.lead['id'], db)
+            old.pop('nativeTeleportTool', None)
+            old.pop('nativeRoleGuidance', None)
+            self.a.runtime.put(db, 'agents', old)
+        original = self.a.runtime.tool_definitions(old)
+        from codex_native_tools import mark_current
+        mark_current(old, original)
+        with self.a.runtime.db() as db:
+            self.a.runtime.put(db, 'agents', old)
+        self.assertIn('orchestration_move', [tool['name'] for tool in original])
+        path = self.a.runtime.server.histories[old['threadId']]
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        rows[0]['payload']['dynamic_tools'] = original
+        rows[1]['payload']['developer_instructions'] = self.a.runtime.new_thread_params(old)['developerInstructions']
+        path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+        self.a.runtime.loaded.discard(old['id'])
+        old = self.a.runtime.prepare(self.a.runtime.agent(old['id']))
+        guidance = self.a.runtime.role_guidance(old)
+        moved = self.finish_move(old, 'legacy-name', tool='orchestration_move')
+        self.assertEqual(moved['nativeTeleportTool'], 'orchestration_move')
+        self.assertEqual(self.b.runtime.tool_definitions(moved), original)
+        self.assertEqual(self.b.runtime.role_guidance(moved), guidance)
+        receipt = self.tool(self.b, moved, 'orchestration_request',
+            {'action': 'get', 'request_id': 'legacy-name'}, 'legacy-name-receipt')
+        self.assertEqual(receipt['outcome'], 'applied')
+        self.assertEqual(receipt['tool'], 'orchestration_move')
+
+    def test_legacy_tool_catalog_and_role_text_are_byte_identical_to_020fc8a2(self):
+        # Captured from the unmodified method at 020fc8a2, with a fixed cwd.
+        fingerprints = {
+            ('codex', True): '15576daaee9852acc40fd01fa9e95ebc74f640a61f43f26ff388c5f27ea9ac8c',
+            ('codex', False): 'c8fe5c59737ccf9200f8e2e69a5ed4ab4ddb1ecc7c1ab961112ba12644097fb2',
+            ('claude', True): '60fc0115e5b574a0fcdcd54b66df4a673ede2a40032482fba535dcc9c5a2417b',
+            ('claude', False): '8593db37dd80986902c5137d54675a17b4f9692eca55e1640a87581c07afe87d',
+        }
+        for (provider, lead), expected in fingerprints.items():
+            with self.subTest(provider=provider, lead=lead):
+                actor = {**self.lead, 'provider': provider, 'isLead': lead, 'cwd': '/fixture/project'}
+                actor.pop('nativeTeleportTool', None)
+                actor.pop('nativeRoleGuidance', None)
+                definitions = self.a.runtime.tool_definitions(actor)
+                wire = json.dumps(definitions, separators=(',', ':'), ensure_ascii=False).encode()
+                self.assertEqual(hashlib.sha256(wire).hexdigest(), expected)
+                params = self.a.runtime.new_thread_params(actor)
+                self.assertEqual(params['dynamicTools'], definitions)
+                self.assertEqual(actor['nativeTeleportTool'], 'orchestration_move')
+                if lead:
+                    role = actor['nativeRoleGuidance']
+                    body = role.split('\n', 3)[3].removesuffix('\n[End Studio role skill]')
+                    self.assertEqual(hashlib.sha256(body.encode()).hexdigest(),
+                        '7d2fead8ce2a05e17c7edc20b3dd63c9aecbb6f24ecddf0a9ed38c15b68f9125')
+                    self.assertIn('/codex-orchestrator/SKILL.md\n', role)
+                    self.assertNotIn('legacy-move-role.md', role)
+
+    def test_saved_role_text_does_not_read_a_later_role_revision(self):
+        original = self.a.runtime.new_thread_params(self.lead)
+        with patch.object(self.a.runtime, 'role_guidance', return_value='Later role revision') as guidance:
+            resumed = self.a.runtime.new_thread_params(self.a.runtime.agent(self.lead['id']))
+        guidance.assert_not_called()
+        self.assertEqual(resumed['developerInstructions'], original['developerInstructions'])
+        self.assertEqual(resumed['dynamicTools'], original['dynamicTools'])
+
+    def test_session_name_and_role_are_saved_before_native_creation(self):
+        rt = self.a.runtime
+        draft = rt.create({'name': 'New session', 'prompt': '', 'cwd': str(self.a.folder)}, draft=True)
+        submit = rt.submit_reserved
+        observed = []
+        def check(server, method, params, **kwargs):
+            if method == 'thread/start':
+                saved = rt.agent(draft['id'])
+                self.assertEqual(saved['nativeTeleportTool'], 'orchestration_teleport')
+                self.assertIn(saved['nativeRoleGuidance'], params['developerInstructions'])
+                observed.append(saved['nativeTeleportTool'])
+            return submit(server, method, params, **kwargs)
+        with patch.object(rt, 'submit_reserved', side_effect=check):
+            rt.prepare(draft)
+        self.assertEqual(observed, ['orchestration_teleport'])
+
+    def test_old_and_new_teleport_request_keys_use_the_same_recovery_namespace(self):
+        keys = []
+        for name in ('orchestration_move', 'orchestration_teleport'):
+            keys.append(self.a.runtime.tool_request_key({'id': name, 'params': {
+                'threadId': self.lead['threadId'], 'callId': name, 'tool': name,
+                'arguments': {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': 'same-request'}}}))
+        self.assertEqual(keys[0], keys[1])
+        self.assertTrue(keys[0].endswith('move:same-request'))
 
     def third_server(self):
         executable = self.folder / 'bin' / 'tailscale'
