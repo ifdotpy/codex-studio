@@ -23,6 +23,24 @@ live model request or a real reset-credit redemption.
 Commit named files. Preserve unrelated work and build outputs. Do not publish the
 repository or change its license without explicit authorization.
 
+Write everything in this repository in English: code, comments, commit messages,
+pull requests, issues, and documentation.
+
+Run the tests before you open a pull request against `main` or merge into `main`.
+Use the server and client suites in [docs/testing.md](docs/testing.md), and state
+the results in the pull request.
+
+## Load testing
+
+Keep load, stress, and performance-under-contention runs separate from ordinary
+checks. An ordinary test, suite, or script must not start synthetic CPU, memory,
+disk, or network load. Run a load test only as its own explicitly selected run,
+never alongside the ordinary checks of other agents or the user's work on the
+same machine. State its duration and resource budget before it starts, and tell
+the team. Its owner stops every load generator when the run ends or fails; do not
+leave detached generators. Results of ordinary checks taken while a load run was
+active are not valid evidence.
+
 ## Code checks
 
 Run `npm run typecheck:runtime` (or `python3 scripts/codex_python.py --mypy`) to run the strict mypy ratchet across the runtime. It is intentionally not part of the pre-commit hook.
