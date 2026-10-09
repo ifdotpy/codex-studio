@@ -248,6 +248,7 @@ test("account project ui", async ({ browser: _browser }) => {
         };
         projects.push(project);
       }
+      if (body.action == null && body.account_key == null) return json(project);
       if (body.action === "set_worker_base") {
         assert.equal(body.expected_revision, project.workerBaseRevision);
         project.workerBaseRef = body.base_ref;
@@ -410,37 +411,21 @@ test("account project ui", async ({ browser: _browser }) => {
       name: "Main agent account",
       exact: true,
     });
-    const settings = page.getByRole("dialog", {
-      name: "Chat settings",
-      exact: true,
-    });
     const openSettings = async () => {
-      if (!(await settings.isVisible()))
+      if (!(await picker.isVisible()))
         await page
-          .getByRole("button", { name: "Chat settings", exact: true })
+          .getByRole("button", { name: "Main agent settings", exact: true })
+          .first()
           .click();
-      const more = settings.locator(".chat-settings-more");
-      if ((await more.count()) && !(await more.getAttribute("open")))
-        await more.locator("summary").click();
-      const agentSettings = settings.getByRole("button", {
-        name: "Main agent settings",
-        exact: true,
-      });
-      if (await agentSettings.isVisible()) await agentSettings.click();
+      await picker.waitFor();
     };
     const closeSettings = async () => {
-      const agentSettings = page.getByRole("dialog", {
-        name: "Main agent settings",
-        exact: true,
-      });
-      if (await agentSettings.isVisible()) {
-        await agentSettings.getByRole("button", { name: "Close" }).click();
-        await agentSettings.waitFor({ state: "hidden" });
-      }
-      if (await settings.isVisible()) {
-        await settings.locator(".mantine-Modal-close").click();
-        await settings.waitFor({ state: "hidden" });
-      }
+      if (await picker.isVisible())
+        await page
+          .getByRole("button", { name: "Main agent settings", exact: true })
+          .first()
+          .click();
+      await picker.waitFor({ state: "hidden" });
     };
     const studioSettings = page.getByTestId("studio-settings");
     const openStudioAccounts = async () => {
@@ -567,24 +552,39 @@ test("account project ui", async ({ browser: _browser }) => {
       0,
       "Account choice does not force folder choice",
     );
+    await closeSettings();
     await page
-      .getByRole("button", { name: "Choose project folder", exact: true })
+      .getByRole("button", { name: "Add project", exact: true })
       .click();
     const folder = page.getByRole("dialog", {
-      name: "Choose project folder",
+      name: "Add project",
       exact: true,
     });
-    await folder.getByLabel("Folder path").fill("/anywhere/arbitrary");
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector(".directory-picker")
+          ?.getAttribute("aria-busy") === "false",
+    );
+    const folderPath = folder.getByLabel("Folder path");
+    await folderPath.fill("");
+    await folderPath.fill("/anywhere/arbitrary");
+    assert.equal(await folderPath.inputValue(), "/anywhere/arbitrary");
     await folder
       .getByRole("button", { name: "Open path", exact: true })
       .click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector(".directory-location")?.textContent ===
+        "/anywhere/arbitrary",
+    );
     await folder
       .getByRole("button", { name: "Add project", exact: true })
       .click();
     await folder.waitFor({ state: "hidden" });
-    assert.equal(
-      agents.find((a) => a.id === "empty").cwd,
-      "/anywhere/arbitrary",
+    assert.ok(
+      projects.some((project) => project.path === "/anywhere/arbitrary"),
+      "Add project creates the selected directory as a project",
     );
     assert.equal(agents.find((a) => a.id === "empty").accountKey, "work");
     const newChat = async (name) => {
@@ -610,7 +610,8 @@ test("account project ui", async ({ browser: _browser }) => {
         exact: true,
       });
       await button.locator("..").hover();
-      await button.click();
+      await button.focus();
+      await button.press("Enter");
     };
     const openProject = async (name) => {
       await closeSettings();
@@ -622,7 +623,8 @@ test("account project ui", async ({ browser: _browser }) => {
         exact: true,
       });
       await button.locator("..").hover();
-      await button.click();
+      await button.focus();
+      await button.press("Enter");
       await page
         .getByRole("menuitem", { name: "Project account", exact: true })
         .click();
@@ -678,7 +680,9 @@ test("account project ui", async ({ browser: _browser }) => {
       "default",
       "Existing running session keeps its account",
     );
-    const saves = bodies.filter((r) => r.path === "/api/projects");
+    const saves = bodies.filter(
+      (r) => r.path === "/api/projects" && r.body.account_key != null,
+    );
     assert.deepEqual(
       saves[0].body,
       saves[1].body,

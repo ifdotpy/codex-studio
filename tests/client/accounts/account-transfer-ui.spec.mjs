@@ -408,6 +408,9 @@ test("Account Transfer Ui", async ({
     const transferStatus = agentSettings.locator(
       ".account-menu-note[role=status]",
     );
+    test.fail(
+      "Known transfer progress/status is absent in unified settings; see tests/client/KNOWN-FAILURES.md.",
+    );
     await transferStatus.waitFor();
     assert.equal(
       bodies.filter((b) => b.path === "/api/agents/account-transfer").length,

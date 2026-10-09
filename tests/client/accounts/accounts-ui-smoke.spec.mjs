@@ -84,6 +84,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
   let notifyEntityResources = () => {};
   let claudeQueue = [];
   let stateReads = 0;
+  let lastStateReadAt = Date.now();
   let failClaudeSettings = false;
   const claudeSession = {
     version: "2.1.fixture",
@@ -222,11 +223,16 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       handleEntitySyncFixtureRequest(req, res, {
         snapshot: stateForEntities,
         workspaceId: syncWorkspaceId,
+        versionedResources: mode === "benchmark",
+        epoch: mode === "benchmark" ? "accounts-ui-smoke" : undefined,
         onStreamReady(notify) {
           notifyEntityResources = notify;
         },
         onPull: () => {
-          stateReads++;
+          if (url.searchParams.get("scope") === "state:entities:v1") {
+            stateReads++;
+            lastStateReadAt = Date.now();
+          }
         },
       })
     )
@@ -490,6 +496,10 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         ...makeLead("claude-chat", "Claude conversation", "claude", false),
         provider: "claude",
         model: "default",
+        subagentConcurrencyVersion: 2,
+        concurrency: 8,
+        agentModeRevision: 0,
+        agentModeSupported: true,
       };
       for (let i = 0; i < 260; i++)
         agents.push(
@@ -601,32 +611,15 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       );
       await login.getByRole("button", { name: "Close", exact: true }).click();
       await login.waitFor({ state: "hidden" });
-      await page
-        .getByRole("button", { name: "Chat settings", exact: true })
-        .click();
-      const chatSettings = page.getByRole("dialog", {
-        name: "Chat settings",
-        exact: true,
-      });
-      const more = chatSettings.locator(".chat-settings-more");
-      if ((await more.count()) && !(await more.getAttribute("open")))
-        await more.locator("summary").click();
-      await chatSettings
+      const mainAgentSettings = page
         .getByRole("button", { name: "Main agent settings", exact: true })
-        .click();
+        .first();
+      if ((await mainAgentSettings.getAttribute("aria-expanded")) !== "true")
+        await mainAgentSettings.click();
       await page
         .getByRole("group", { name: "Main agent account", exact: true })
         .waitFor();
-      const agentSettings = page.getByRole("dialog", {
-        name: "Main agent settings",
-        exact: true,
-      });
-      await agentSettings.getByRole("button", { name: "Close" }).click();
-      await agentSettings.waitFor({ state: "hidden" });
-      await chatSettings
-        .getByRole("button", { name: "Close", exact: true })
-        .click();
-      await chatSettings.waitFor({ state: "hidden" });
+      await mainAgentSettings.click();
       await page.getByRole("button", { name: "Studio settings" }).click();
       const studio = page.getByRole("dialog", {
         name: "Studio settings",
@@ -711,6 +704,18 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         .getByRole("button", { name: "Close", exact: true })
         .click();
       await studioSettings.waitFor({ state: "hidden" });
+      const claudeStreamReconfigured = page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        if (!url.pathname.endsWith("/api/sync/stream")) return false;
+        const resources = JSON.parse(url.searchParams.get("resources") || "[]");
+        return resources.some(
+          (resource) =>
+            resource.kind === "session-cost" &&
+            resource.agentId === benchAgent.id,
+        );
+      });
+      await page.locator(`[data-chat="${benchAgent.id}"]`).click();
+      await page.getByRole("heading", { name: benchAgent.name }).waitFor();
       await page
         .getByRole("button", { name: "Chat settings", exact: true })
         .click();
@@ -718,10 +723,22 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         name: "Chat settings",
         exact: true,
       });
+      const more = settings.locator(".chat-settings-more");
+      const settingsSavedResponse = () =>
+        page.waitForResponse(
+          (response) =>
+            response.url().endsWith("/api/claude/session") &&
+            response.request().postDataJSON()?.action === "settings",
+        );
       const claude = settings.getByRole("region", {
         name: "Claude settings",
         exact: true,
       });
+      await more.waitFor();
+      if ((await more.count()) && !(await more.getAttribute("open")))
+        await more.locator(":scope > summary").click();
+      await expect(more).toHaveAttribute("open", "");
+      await claude.waitFor({ state: "attached" });
       await claude.getByLabel("Permission mode", { exact: true }).waitFor();
       await page.waitForFunction(
         () =>
@@ -729,7 +746,12 @@ async function runAccountsUi(mode, { page: fixturePage }) {
             .querySelector('[aria-label="Claude settings"]')
             ?.getAttribute("aria-busy") === "false",
       );
+      await claudeStreamReconfigured;
+      const stateReadsQuiet = Date.now() + 500;
+      while (Date.now() < stateReadsQuiet || Date.now() - lastStateReadAt < 250)
+        await new Promise((resolve) => setTimeout(resolve, 50));
       await page.setViewportSize({ width: 390, height: 844 });
+      await page.screenshot({ path: join(evidence, "chat-settings-390.png") });
       await page.setViewportSize({ width: 320, height: 760 });
       assert.ok(
         await page.evaluate(
@@ -741,15 +763,35 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         await settings.evaluate(
           (element) => element.scrollWidth <= element.clientWidth + 1,
         ),
-        "The settings dialog must not scroll horizontally at 320px",
+        `The settings dialog must not scroll horizontally at 320px: ${JSON.stringify(
+          await settings.evaluate((element) => ({
+            clientWidth: element.clientWidth,
+            scrollWidth: element.scrollWidth,
+            overflowing: [...element.querySelectorAll("*")]
+              .map((node) => ({
+                element: node.tagName.toLowerCase(),
+                className:
+                  typeof node.className === "string" ? node.className : "",
+                label: node.getAttribute("aria-label"),
+                text: node.textContent?.trim().slice(0, 50),
+                clientWidth: node.clientWidth,
+                scrollWidth: node.scrollWidth,
+                rectWidth: node.getBoundingClientRect().width,
+              }))
+              .filter((node) => node.scrollWidth > node.clientWidth + 1)
+              .slice(0, 12),
+          })),
+        )}`,
       );
       await page.setViewportSize({ width: 1440, height: 1000 });
+      await page.screenshot({ path: join(evidence, "chat-settings-1440.png") });
       const snapshotsBefore = stateReads;
       const savedAt = performance.now();
+      const permissionModeSaved = settingsSavedResponse();
       await claude
         .getByLabel("Permission mode", { exact: true })
         .selectOption("plan");
-      await claude.getByText("Saved", { exact: true }).waitFor();
+      assert.ok((await permissionModeSaved).ok());
       const saveMs = Number((performance.now() - savedAt).toFixed(1));
       assert.equal(
         stateReads,
@@ -767,26 +809,17 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       assert.match(saveRequest.body.request_id, /^[0-9a-f-]{36}$/);
       await page.setViewportSize({ width: 390, height: 844 });
       await page.setViewportSize({ width: 1440, height: 1000 });
-      const settingsSavedResponse = () =>
-        page.waitForResponse(
-          (response) =>
-            response.url().endsWith("/api/claude/session") &&
-            response.request().postDataJSON()?.action === "settings",
-        );
       let saveResponse = settingsSavedResponse();
       await claude
         .getByRole("switch", { name: /^Extended thinking/ })
         .uncheck();
       assert.ok((await saveResponse).ok());
-      await claude.getByText("Saved", { exact: true }).waitFor();
-      await claude.locator(".claude-advanced > summary").click();
       saveResponse = settingsSavedResponse();
       await claude
         .getByLabel("Auto-compact token limit", { exact: true })
         .fill("250000");
-      await settings.getByLabel("Permission mode", { exact: true }).focus();
+      await claude.getByLabel("Permission mode", { exact: true }).focus();
       assert.ok((await saveResponse).ok());
-      await claude.getByText("Saved", { exact: true }).waitFor();
       const finalSettings = bodies
         .filter(
           (request) =>
@@ -828,10 +861,11 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         failedRequestId,
         "An unconfirmed setting keeps its exact request identity in localStorage",
       );
+      saveResponse = settingsSavedResponse();
       await claude
         .getByLabel("Permission mode", { exact: true })
         .selectOption("default");
-      await claude.getByText("Saved", { exact: true }).waitFor();
+      assert.ok((await saveResponse).ok());
       const retriedRequestId = bodies
         .filter(
           (request) =>
@@ -844,6 +878,14 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         failedRequestId,
         "A rejected setting must retry with its saved request identity",
       );
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.screenshot({
+        path: join(evidence, "chat-settings-saved-390.png"),
+      });
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      await page.screenshot({
+        path: join(evidence, "chat-settings-saved-1440.png"),
+      });
       assert.ok(
         roundedOpenMs < 150,
         `Studio settings open was ${roundedOpenMs} ms, expected under 150 ms`,
@@ -890,31 +932,32 @@ async function runAccountsUi(mode, { page: fixturePage }) {
             .click();
         }
       }
-      const more = settings.locator(".chat-settings-more");
-      if ((await more.count()) && !(await more.getAttribute("open")))
-        await more.locator("summary").click();
       const agentSettings = settings.getByRole("button", {
         name: "Main agent settings",
         exact: true,
       });
-      if (await agentSettings.isVisible()) await agentSettings.click();
+      await agentSettings.waitFor();
+      if ((await agentSettings.getAttribute("aria-expanded")) !== "true")
+        await agentSettings.click();
       await picker.waitFor();
     };
     const closeSettings = async () => {
-      const agentSettings = page.getByRole("dialog", {
+      const agentSettings = settings.getByRole("button", {
         name: "Main agent settings",
         exact: true,
       });
-      if (await agentSettings.isVisible()) {
-        await agentSettings.getByRole("button", { name: "Close" }).click();
-        await agentSettings.waitFor({ state: "hidden" });
-      }
+      if (
+        (await agentSettings.count()) &&
+        (await agentSettings.getAttribute("aria-expanded")) === "true"
+      )
+        await agentSettings.click();
       if (await settings.isVisible())
         await settings
           .getByRole("button", { name: "Close", exact: true })
           .click();
       if (await settings.isVisible())
         await settings.waitFor({ state: "hidden" });
+      await picker.waitFor({ state: "hidden" });
     };
     const openStudioAccounts = async () => {
       await closeSettings();
@@ -979,7 +1022,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     await page.locator('[data-chat="empty"]').click();
     await openSettings();
     await waitForAccountTiles();
-    await page.keyboard.press("Escape");
+    await closeSettings();
     await settings.waitFor({ state: "hidden" });
     const details = page.getByRole("region", {
       name: "Account limits details",
@@ -1497,20 +1540,40 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     Object.assign(claude, { status: "completed", inFlight: false });
     await page.reload();
     await page.locator(`[data-chat="${claude.id}"]`).click();
-    await openSettings();
+    const reloadChatSettingsButton = page.getByRole("button", {
+      name: "Chat settings",
+      exact: true,
+    });
+    if (await reloadChatSettingsButton.isVisible())
+      await reloadChatSettingsButton.click();
+    else {
+      await page.getByRole("button", { name: "Chat actions" }).click();
+      await page
+        .getByRole("menuitem", { name: "Chat settings", exact: true })
+        .click();
+    }
+    await settings.waitFor({ state: "visible" });
+    const more = settings.locator(".chat-settings-more");
+    await more.waitFor();
+    if (!(await more.getAttribute("open")))
+      await more.locator(":scope > summary").click();
     const claudeSettings = settings.getByRole("region", {
       name: "Claude settings",
       exact: true,
     });
+    const permissionModeSaved = page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/claude/session") &&
+        response.request().postDataJSON()?.action === "settings",
+    );
     await claudeSettings
       .getByLabel("Permission mode", { exact: true })
       .selectOption("plan");
-    await claudeSettings.getByText("Saved", { exact: true }).waitFor();
+    assert.ok((await permissionModeSaved).ok());
     await claudeSettings
       .getByRole("switch", { name: /^Extended thinking/ })
       .uncheck();
     await claudeSettings.getByText("Saved", { exact: true }).waitFor();
-    await claudeSettings.locator(".claude-advanced > summary").click();
     await claudeSettings
       .getByLabel("Auto-compact token limit", { exact: true })
       .fill("250000");
@@ -1575,19 +1638,36 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     await closeSettings();
     await page.reload();
     await page.locator(`[data-chat="${claude.id}"]`).click();
-    await openSettings();
-    await claudeSettings.locator(".claude-advanced > summary").click();
-    await claudeSettings
+    const directChatSettings = page.getByRole("button", {
+      name: "Chat settings",
+      exact: true,
+    });
+    if (await directChatSettings.isVisible()) await directChatSettings.click();
+    else {
+      await page.getByRole("button", { name: "Chat actions" }).click();
+      await page
+        .getByRole("menuitem", { name: "Chat settings", exact: true })
+        .click();
+    }
+    await settings.waitFor({ state: "visible" });
+    const reloadMore = settings.locator(".chat-settings-more");
+    if (!(await reloadMore.getAttribute("open")))
+      await reloadMore.locator(":scope > summary").click();
+    const reloadClaudeSettings = settings.getByRole("region", {
+      name: "Claude settings",
+      exact: true,
+    });
+    await reloadClaudeSettings
       .getByText("Claude Code 2.1.fixture", { exact: true })
       .waitFor();
     assert.equal(
-      await claudeSettings
+      await reloadClaudeSettings
         .getByLabel("Permission mode", { exact: true })
         .inputValue(),
       "plan",
     );
     assert.equal(
-      await claudeSettings
+      await reloadClaudeSettings
         .getByRole("switch", { name: /^Extended thinking/ })
         .isChecked(),
       false,

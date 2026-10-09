@@ -268,11 +268,18 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
     .click();
   await page
     .getByRole("dialog", { name: "Main agent settings", exact: true })
+    .waitFor();
+  const chatAccountBeforeStudioSettings = await accountTileGroup(
+    page,
+    "Main agent account",
+  ).getAttribute("data-value");
+  await page
+    .getByRole("dialog", { name: "Main agent settings", exact: true })
     .getByRole("group", { name: "Agent role", exact: true })
     .getByRole("button", { name: "Worker", exact: true })
     .click();
   const defaults = page.getByRole("dialog", {
-    name: "Subagent defaults",
+    name: "Main agent settings",
     exact: true,
   });
   const subagentAccount = accountTileGroup(page, "Subagent account");
@@ -284,7 +291,7 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
   const originalSubagentAccount =
     await subagentAccount.getAttribute("data-value");
   await accountTileButton(page, "Subagent account", "Work").click();
-  await defaults.locator(".execution-error[role=alert]").waitFor();
+  await defaults.getByRole("alert").waitFor();
   assert.equal(transferCalls, 2, "the account choice transfers without a save");
   assert.equal(
     await subagentAccount.getAttribute("data-value"),
@@ -307,11 +314,10 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
   assert.equal(transferRequests[2].scope, "subagents");
   assert.equal(await subagentAccount.getAttribute("data-value"), "work");
   await page.keyboard.press("Escape");
-  await page.keyboard.press("Escape");
-  const chatAccountBeforeStudioSettings = await accountTileGroup(
-    page,
-    "Account",
-  ).getAttribute("data-value");
+  await page
+    .getByRole("dialog", { name: "Chat settings", exact: true })
+    .getByRole("button", { name: "Close", exact: true })
+    .click();
   await page
     .getByRole("button", { name: "Studio settings", exact: true })
     .click();
@@ -335,8 +341,9 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
   await manager.getByRole("button", { name: "Back to accounts" }).click();
   const work = manager.locator('[data-account="work"]');
   await work
-    .getByRole("button", { name: "Disconnect account", exact: true })
+    .getByRole("button", { name: "Actions for work@example.invalid" })
     .click();
+  await page.getByRole("menuitem", { name: "Disconnect account" }).click();
   const disconnect = page.getByRole("dialog", {
     name: "Disconnect account",
     exact: true,
@@ -347,22 +354,30 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
     .getByRole("button", { name: "Disconnect account", exact: true })
     .click();
   await work
-    .getByRole("button", { name: "Reconnect account", exact: true })
-    .waitFor();
+    .getByRole("button", { name: "Actions for work@example.invalid" })
+    .click();
+  await page.getByRole("menuitem", { name: "Reconnect account" }).waitFor();
   assert.equal(disconnectCalls, 1);
   await work
-    .getByRole("button", { name: "Reconnect account", exact: true })
+    .getByRole("button", { name: "Actions for work@example.invalid" })
     .click();
+  await page.getByRole("menuitem", { name: "Reconnect account" }).click();
   await work
-    .getByRole("button", { name: "Disconnect account", exact: true })
-    .waitFor();
+    .getByRole("button", { name: "Actions for work@example.invalid" })
+    .click();
+  await page.getByRole("menuitem", { name: "Disconnect account" }).waitFor();
+  await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
   await page
     .getByRole("button", { name: "Chat settings", exact: true })
     .click();
+  await page
+    .getByRole("dialog", { name: "Chat settings", exact: true })
+    .getByRole("button", { name: "Main agent settings", exact: true })
+    .click();
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(
-    await accountTileButton(page, "Account", "Work").getAttribute(
+    await accountTileButton(page, "Main agent account", "Work").getAttribute(
       "aria-pressed",
     ),
     "true",
@@ -374,6 +389,10 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
     ),
   );
   await page.keyboard.press("Escape");
+  await page
+    .getByRole("dialog", { name: "Chat settings", exact: true })
+    .getByRole("button", { name: "Close", exact: true })
+    .click();
   await page
     .getByRole("button", { name: "Studio settings", exact: true })
     .click();
@@ -404,29 +423,45 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
   const studioManager = studioSettings.locator(".accounts-manager-inline");
   const workRow = studioManager.locator('[data-account="work"]');
   await workRow
-    .getByRole("button", { name: "Use work@example.invalid by default" })
+    .getByRole("button", { name: "Actions for work@example.invalid" })
+    .click();
+  await page
+    .getByRole("menuitem", {
+      name: "Use work@example.invalid by default",
+    })
     .click();
   await workRow.getByText("Application default", { exact: true }).waitFor();
   assert.equal(defaultAccountCalls, 1);
   assert.equal(defaultAccountKey, "work");
-  await page.keyboard.press("Escape");
+  await studioSettings.getByRole("button", { name: "Close" }).click();
   await page.getByRole("button", { name: "Chat actions", exact: true }).click();
   await page
     .getByRole("menuitem", { name: "Chat settings", exact: true })
     .click();
+  await page
+    .getByRole("dialog", { name: "Chat settings", exact: true })
+    .getByRole("button", { name: "Main agent settings", exact: true })
+    .click();
   assert.equal(
-    await accountTileGroup(page, "Account").getAttribute("data-value"),
+    await accountTileGroup(page, "Main agent account").getAttribute(
+      "data-value",
+    ),
     chatAccountBeforeStudioSettings,
     "Changing the application default preserves the chat's selected account",
   );
   await page.keyboard.press("Escape");
   await page
+    .getByRole("dialog", { name: "Chat settings", exact: true })
+    .getByRole("button", { name: "Close", exact: true })
+    .click();
+  await page
     .getByRole("button", { name: "Studio settings", exact: true })
     .click();
   const personal = studioManager.locator('[data-account="default"]');
   await personal
-    .getByRole("button", { name: "Delete account", exact: true })
+    .getByRole("button", { name: "Actions for personal@example.invalid" })
     .click();
+  await page.getByRole("menuitem", { name: "Delete account" }).click();
   const deletion = page.getByRole("dialog", {
     name: "Delete account",
     exact: true,
@@ -468,8 +503,9 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
   const reopenedManager = reopenedSettings.locator(".accounts-manager-inline");
   const reopenedPersonal = reopenedManager.locator('[data-account="default"]');
   await reopenedPersonal
-    .getByRole("button", { name: "Delete account", exact: true })
+    .getByRole("button", { name: "Actions for personal@example.invalid" })
     .click();
+  await page.getByRole("menuitem", { name: "Delete account" }).click();
   const reopenedDeletion = page.getByRole("dialog", {
     name: "Delete account",
     exact: true,

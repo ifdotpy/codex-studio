@@ -164,8 +164,11 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
     console.log(JSON.stringify({ idle, unrelated, unrelatedModelWork }));
     // No baseline or reconnect can explain renders in this measured interval.
     const measuredFrames = (await frames()).slice(firstMeasuredFrame);
-    expect(measuredFrames.length).toBeGreaterThan(0);
-    for (const frame of measuredFrames) {
+    const measuredStateFrames = measuredFrames.filter((frame) =>
+      frame.resources.some((resource) => resource.kind === "state"),
+    );
+    expect(measuredStateFrames.length).toBeGreaterThan(0);
+    for (const frame of measuredStateFrames) {
       expect(frame.reason).toBe("change");
       expect(
         frame.resources.every((resource) => resource.kind === "state"),

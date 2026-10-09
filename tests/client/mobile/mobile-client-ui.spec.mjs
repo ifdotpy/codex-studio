@@ -74,10 +74,51 @@ test("Mobile client ui", async ({
     };
     const openChatSettings = async () => {
       await (await openChatActions()).click();
+      const chatSettings = page.getByRole("dialog", {
+        name: "Chat settings",
+        exact: true,
+      });
+      await chatSettings.waitFor();
+      await chatSettings
+        .getByRole("button", { name: "Main agent settings", exact: true })
+        .click();
+      await page
+        .getByRole("dialog", { name: "Main agent settings", exact: true })
+        .waitFor();
+    };
+    const closeChatSettings = async () => {
+      const mainSettings = page.getByRole("dialog", {
+        name: "Main agent settings",
+        exact: true,
+      });
+      if (await mainSettings.isVisible()) {
+        await page.keyboard.press("Escape");
+        await mainSettings.waitFor({ state: "hidden" });
+      }
+      const chatSettings = page.getByRole("dialog", {
+        name: "Chat settings",
+        exact: true,
+      });
+      if (await chatSettings.isVisible()) {
+        await chatSettings
+          .getByRole("button", { name: "Close", exact: true })
+          .click();
+        await chatSettings.waitFor({ state: "hidden" });
+      }
+    };
+    const closeMainAgentSettings = async () => {
+      const mainSettings = page.getByRole("dialog", {
+        name: "Main agent settings",
+        exact: true,
+      });
+      if (await mainSettings.isVisible()) {
+        await page.keyboard.press("Escape");
+        await mainSettings.waitFor({ state: "hidden" });
+      }
     };
     const selectedAccount = () =>
       page
-        .getByRole("dialog", { name: "Chat settings", exact: true })
+        .getByRole("dialog", { name: "Main agent settings", exact: true })
         .locator('.setup-account[data-selected="true"]');
     const inspectConversationTools = async (hasUsage) => {
       const menu = page.locator(".conversation-header-tools-menu");
@@ -186,7 +227,7 @@ test("Mobile client ui", async ({
       await page.getByRole("button", { name: /Add account/ }).count(),
       0,
     );
-    await page.keyboard.press("Escape");
+    await closeChatSettings();
     const mainSettingsTrigger = page
       .locator(".composer-context-row")
       .getByRole("button", { name: "Main agent settings", exact: true });
@@ -235,6 +276,7 @@ test("Mobile client ui", async ({
       mobileComposerFontSize >= 16,
       `Mobile composer font size should stay at least 16px (got ${mobileComposerFontSize}px)`,
     );
+    await closeMainAgentSettings();
     let originalBody, created;
     let confirmServerCreation;
     const serverCreated = new Promise((resolve) => {
@@ -293,7 +335,7 @@ test("Mobile client ui", async ({
     await page.locator("#message").waitFor();
     await openChatSettings();
     assert.equal(await selectedAccount().isEnabled(), true);
-    await page.keyboard.press("Escape");
+    await closeChatSettings();
     // Use the real runtime to create another chat while the previous chat is empty.
     const post = async (path, body) => {
       const response = await fetch(url + path, {
@@ -339,6 +381,7 @@ test("Mobile client ui", async ({
       "data-account-key",
       alternate.id,
     );
+    await closeMainAgentSettings();
     const nextResponse = page.waitForResponse(
       (response) =>
         response.url() === url + "/api/leads" &&

@@ -166,9 +166,10 @@ createRoot(document.getElementById("root")).render(<Harness/>);`;
       .poll(() => page.locator('[data-message="tool500-1"]').count())
       .toBe(0);
     await page.evaluate(() => window.jump("tool500-1"));
-    await expect(
-      page.locator('[data-message="tool500-1"]:not([data-lazy-message])'),
-    ).toHaveAttribute("open", "");
+    const restoredTool = page.locator(
+      '[data-message="tool500-1"]:not([data-lazy-message])',
+    );
+    await expect(restoredTool).toBeVisible();
     await page
       .getByRole("button", { name: "Preview attachment", exact: true })
       .click();

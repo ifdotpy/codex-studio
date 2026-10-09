@@ -1211,7 +1211,7 @@ export function accountTileButton(page, label, accountName) {
  * Serve the same sync routes from a small Node HTTP fixture backend.
  * @param {import("node:http").IncomingMessage} request
  * @param {import("node:http").ServerResponse} response
- * @param {{ snapshot: EntityFixtureState, workspaceId: string, unixSocket?: boolean, onPull?: () => void, onStreamReady?: (notify: (resources: ResourceRef[]) => void) => void }} fixture
+ * @param {{ snapshot: EntityFixtureState, workspaceId: string, unixSocket?: boolean, versionedResources?: boolean, epoch?: string, onPull?: () => void, onStreamReady?: (notify: (resources: ResourceRef[]) => void) => void }} fixture
  * @returns {boolean} whether this was an /api/sync route
  */
 export function handleEntitySyncFixtureRequest(request, response, fixture) {
@@ -1262,12 +1262,20 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
     return true;
   }
   if (url.pathname === "/api/sync/stream") {
-    const epoch = randomUUID().replaceAll("-", "");
+    const epoch = fixture.epoch || randomUUID().replaceAll("-", "");
     const requestedResources = JSON.parse(
       url.searchParams.get("resources") || "[]",
     );
     let revision = 0;
     let eventId = 0;
+    const resourceRevisions = new Map();
+    const withResourceVersions = (resources, advance = false) =>
+      resources.map((resource) => {
+        const key = JSON.stringify(resource);
+        const next = (resourceRevisions.get(key) || 0) + (advance ? 1 : 0);
+        resourceRevisions.set(key, next || 1);
+        return { resource, revision: next || 1 };
+      });
     response.writeHead(200, {
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
@@ -1290,7 +1298,9 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
       reason: "initial",
       resources: requestedResources,
       // No per-resource versions: the page must always pull after a fixture frame.
-      resourceVersions: [],
+      resourceVersions: fixture.versionedResources
+        ? withResourceVersions(requestedResources)
+        : [],
       revision: ++revision,
       workspaceId: identity.workspaceId,
     };
@@ -1327,7 +1337,9 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
         protocol: RESOURCE_STREAM_PROTOCOL,
         reason: "change",
         resources,
-        resourceVersions: [],
+        resourceVersions: fixture.versionedResources
+          ? withResourceVersions(resources, true)
+          : [],
         revision: ++revision,
         workspaceId: identity.workspaceId,
       };

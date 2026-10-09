@@ -502,7 +502,6 @@ async function runMessageReceiptScenario(
         ),
       );
 
-      test.fail();
       try {
         await until(
           async () => {
@@ -694,10 +693,6 @@ async function runMessageReceiptScenario(
 }
 
 test("Message receipt pagination browser", async ({ browser, context }) => {
-  test.fixme(
-    true,
-    "Intermittent product defect: receipt reconciliation is skipped once transcript observation retires the local copy; see tests/client/status/msg-known-failures.md (message receipt pagination, A).",
-  );
   test.setTimeout(45_000);
   await runMessageReceiptScenario({ browser, context }, false);
 });
