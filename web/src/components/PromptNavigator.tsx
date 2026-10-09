@@ -174,9 +174,11 @@ export default function PromptNavigator({
             onClick={() => setOpened(!opened)}
             leftSection={<ListTree size={14} />}
           >
-            {prompts.length
-              ? `${index + 1} / ${prompts.length}`
-              : "Search chat"}
+            <span className="prompt-history-toggle-label">
+              {prompts.length
+                ? `${index + 1} / ${prompts.length}`
+                : "Search chat"}
+            </span>
           </Button>
         </Popover.Target>
         <Popover.Dropdown

@@ -38,19 +38,41 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
     const lead = initial.threads.find(
       (agent) => agent.name === "Other project",
     );
-    const originalTranscript = await (
-      await fetch(`${origin}/api/transcript?id=${lead.id}`)
-    ).json();
+    const emptyWorker = initial.threads.find(
+      (agent) => agent.name === "Standalone reviewer",
+    );
+    assert.ok(lead, "fixture provides an empty managed lead chat");
+    assert.ok(emptyWorker, "fixture provides an empty managed reviewer chat");
     browser = fixtureBrowser;
     const measurements = [];
     for (const width of [1440, 900, 390]) {
+      const openedChat = width === 390 ? lead : emptyWorker;
+      const originalTranscript = await (
+        await fetch(`${origin}/api/transcript?id=${openedChat.id}`)
+      ).json();
       const transcript = structuredClone(originalTranscript);
       const page = await browser.newPage({
         viewport: { width: 1440, height: 960 },
       });
       pages.add(page);
       page.setDefaultTimeout(12000);
+      await page.addInitScript(
+        ({ stateDir, chatId }) => {
+          localStorage.setItem(
+            `codex-desktop-opened:${stateDir}`,
+            JSON.stringify(chatId),
+          );
+          localStorage.setItem("codex-mobile-opened", JSON.stringify(chatId));
+        },
+        { stateDir: initial.stateDir, chatId: openedChat.id },
+      );
       let queue = [],
+        queueResponseGate = null,
+        resolveQueueResponse,
+        resolveQueueRequested,
+        queueRequested = new Promise((resolve) => {
+          resolveQueueRequested = resolve;
+        }),
         pendingSend,
         pendingStop,
         resolveSendCapture,
@@ -75,9 +97,12 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       await page.route("**/api/transcript?*", (route) =>
         route.fulfill({ json: transcript }),
       );
-      await page.route("**/api/queue?*", (route) =>
-        route.fulfill({ json: { items: queue } }),
-      );
+      await page.route("**/api/queue?*", async (route) => {
+        resolveQueueRequested?.();
+        resolveQueueRequested = null;
+        if (queueResponseGate) await queueResponseGate;
+        await route.fulfill({ json: { items: queue } });
+      });
       await page.route("**/api/messages", (route) => {
         pendingSend = route;
         resolveSendCapture?.();
@@ -88,12 +113,42 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       });
       await page.setViewportSize({ width, height: 960 });
       await page.goto(origin);
-      if (width <= 760)
-        await page
-          .getByRole("button", { name: "Toggle conversations" })
-          .click();
-      await page.locator(`[data-chat="${lead.id}"]`).click();
       await page.locator("#composer").waitFor();
+      const chatStorageKey =
+        width <= 760
+          ? "codex-mobile-opened"
+          : `codex-desktop-opened:${initial.stateDir}`;
+      const openedChatId = await page.evaluate((key) => {
+        const value = localStorage.getItem(key);
+        return value ? JSON.parse(value) : null;
+      }, chatStorageKey);
+      const openedTranscript = openedChatId
+        ? await (
+            await fetch(`${origin}/api/transcript?id=${openedChatId}`)
+          ).json()
+        : { items: [] };
+      console.log(
+        "Composer stability fixture:",
+        JSON.stringify({
+          width,
+          openedChatId,
+          requestedChatId: openedChat.id,
+          transcriptItemCount: openedTranscript.items.length,
+        }),
+      );
+      assert.equal(
+        openedChatId,
+        openedChat.id,
+        `${width}px fixture opened the explicitly selected chat`,
+      );
+      await expect(page.locator("#conversation-title")).toContainText(
+        openedChat.name,
+      );
+      await page
+        .locator(
+          width === 390 ? ".empty-chat-settings" : ".composer-context-row",
+        )
+        .waitFor();
       assert.equal(
         await page.locator("#stop").count(),
         0,
@@ -131,9 +186,18 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
           }
           return result;
         }, width <= 760);
-      const baseline = await boxes();
+      const selectors = [
+        "#composer",
+        "#messages",
+        ...(width <= 760 ? [] : ["#conversation-title"]),
+        "#message",
+        ".composer-bar",
+        ".attach-button",
+        ...(width <= 760 ? [] : [".dictation-trigger"]),
+        "#send",
+        ...(width <= 760 ? [] : [".usage-footer"]),
+      ];
       const waitForStableGeometry = async () => {
-        const selectors = Object.keys(baseline);
         await page.evaluate(() => {
           window.composerGeometryFrame = null;
         });
@@ -150,16 +214,44 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
           return stable;
         }, selectors);
       };
-      const stable = async (label) => {
+      await waitForStableGeometry();
+      let baseline = await boxes();
+      const emptyPhoneStart =
+        width === 390 &&
+        (await page.locator(".empty-chat-settings").count()) > 0;
+      const promptHistoryToggle = page.locator(
+        "#conversation-header-tools .prompt-history-toggle",
+      );
+      const hadPromptHistoryToggle = (await promptHistoryToggle.count()) > 0;
+      // 81bc27a5 introduced the phone layout swap: the empty-chat settings
+      // panel below the composer gives way to the context row inside it after
+      // the first message, so only this one position transition is expected.
+      if (emptyPhoneStart)
+        assert.equal(
+          transcript.items.length,
+          0,
+          "390px empty-chat transition starts from the selected empty chat",
+        );
+      const stable = async (
+        label,
+        { allowFirstPromptTitleResize = false } = {},
+      ) => {
         await waitForStableGeometry();
         const current = await boxes();
         measurements.push({ width, label, boxes: current });
         for (const [selector, box] of Object.entries(baseline))
           for (const key of ["x", "y", "width", "height"])
-            assert.ok(
-              Math.abs(current[selector][key] - box[key]) <= 1,
-              `${width}px ${label} ${selector}.${key}: ${box[key]} -> ${current[selector][key]}`,
-            );
+            if (
+              allowFirstPromptTitleResize &&
+              selector === "#conversation-title" &&
+              key === "width"
+            )
+              continue;
+            else
+              assert.ok(
+                Math.abs(current[selector][key] - box[key]) <= 1,
+                `${width}px ${label} ${selector}.${key}: ${box[key]} -> ${current[selector][key]}`,
+              );
         assert.equal(
           await page.evaluate(
             () => document.documentElement.scrollWidth > innerWidth,
@@ -184,7 +276,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         fixture.stdin.write(
           JSON.stringify({
             method: "fixture/agent-status",
-            params: { agent: lead.id, status: next },
+            params: { agent: openedChat.id, status: next },
           }) + "\n",
         );
         await page.evaluate(() => window.dispatchEvent(new Event("online")));
@@ -206,12 +298,103 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
           ).some((node) => node.textContent.includes("Sending"));
           return composerState.includes("Sending") || messageState;
         });
-      await page.locator("#send").click();
+      const pageScrollY = emptyPhoneStart
+        ? await page.evaluate(() => window.scrollY)
+        : null;
+      if (emptyPhoneStart) {
+        await page.locator("#message").focus();
+        await page.evaluate(() => {
+          window.composerTextareaBefore = document.querySelector("#message");
+          window.composerTransitionSamples = [];
+          window.composerTransitionSampling = true;
+          const sample = () => {
+            if (!window.composerTransitionSampling) return;
+            const box = document
+              .querySelector("#composer")
+              .getBoundingClientRect();
+            window.composerTransitionSamples.push({
+              y: box.y,
+              height: box.height,
+            });
+            requestAnimationFrame(sample);
+          };
+          requestAnimationFrame(sample);
+        });
+        await page.waitForFunction(
+          () => window.composerTransitionSamples.length > 0,
+        );
+      }
+      if (emptyPhoneStart)
+        await page.locator("#send").evaluate((button) => button.click());
+      else await page.locator("#send").click();
       await waitForSend();
       // The composer releases its lock when the durable outbox owns the request.
       // At that point the message row shows the in-flight state.
       await waitForSendingUI();
-      await stable("sending");
+      if (emptyPhoneStart) {
+        await waitForStableGeometry();
+        const transition = await page.evaluate(() => {
+          window.composerTransitionSampling = false;
+          return window.composerTransitionSamples;
+        });
+        const current = await boxes();
+        const positions = [
+          ...new Set(transition.map((sample) => Math.round(sample.y))),
+        ];
+        assert.equal(
+          positions.length,
+          2,
+          "390px first-send transition has exactly one layout change and no intermediate composer position",
+        );
+        assert.equal(
+          positions[0],
+          Math.round(baseline["#composer"].y),
+          "390px transition starts at the empty-chat composer position",
+        );
+        assert.equal(
+          positions[1],
+          Math.round(current["#composer"].y),
+          "390px transition ends at the non-empty composer position",
+        );
+        assert.equal(
+          await page.evaluate(() => window.scrollY),
+          pageScrollY,
+          "390px first-send transition does not scroll the page",
+        );
+        assert.equal(
+          await page.evaluate(
+            () =>
+              document.querySelector("#message") ===
+                window.composerTextareaBefore &&
+              document.querySelector("#message")?.isConnected &&
+              document.activeElement === document.querySelector("#message"),
+          ),
+          true,
+          "390px first-send transition keeps the focused textarea mounted",
+        );
+        baseline = current;
+      } else {
+        const fullHeaderTools = await page
+          .locator(
+            "#conversation-header-tools .conversation-header-tools-menu[data-compact='no']",
+          )
+          .count();
+        const firstPromptNavigationAppeared =
+          !hadPromptHistoryToggle && (await promptHistoryToggle.count()) > 0;
+        const firstFullHeaderPromptNavigation =
+          fullHeaderTools > 0 && firstPromptNavigationAppeared;
+        if (firstFullHeaderPromptNavigation)
+          await expect(promptHistoryToggle).toBeVisible();
+        await stable("sending", {
+          allowFirstPromptTitleResize: firstFullHeaderPromptNavigation,
+        });
+        if (firstFullHeaderPromptNavigation) {
+          // e4ef04aa places prompt navigation in the header tools. That
+          // navigation mounts after the first prompt, and the flexible title
+          // yields width to its prompt history control once.
+          baseline = measurements.at(-1).boxes;
+        }
+      }
       await pendingSend.fulfill({
         json: { id: pendingSend.request().postDataJSON().id, status: "sent" },
       });
@@ -235,6 +418,13 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       await page.locator("#send").click();
       await waitForSend();
       await stable("sending before failed delivery");
+      if (emptyPhoneStart)
+        for (const key of ["y", "height"])
+          assert.equal(
+            measurements.at(-1).boxes["#composer"][key],
+            baseline["#composer"][key],
+            `390px subsequent non-empty send preserves composer ${key}`,
+          );
       assert.equal(
         pendingSend.request().postDataJSON().delivery,
         "after_tool",
@@ -265,12 +455,24 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
           status: "queued",
         },
       ];
+      queueRequested = new Promise((resolve) => {
+        resolveQueueRequested = resolve;
+      });
+      queueResponseGate = new Promise((resolve) => {
+        resolveQueueResponse = resolve;
+      });
       await page.reload();
-      if (width <= 760)
-        await page
-          .getByRole("button", { name: "Toggle conversations" })
-          .click();
-      await page.locator(`[data-chat="${lead.id}"]`).click();
+      await page.locator("#composer").waitFor();
+      await expect(page.locator("#conversation-title")).toContainText(
+        openedChat.name,
+      );
+      await queueRequested;
+      await waitForStableGeometry();
+      // Reload restores the running turn before queue rendering; establish the
+      // post-reload geometry, then verify the queue response itself is stable.
+      baseline = await boxes();
+      resolveQueueResponse();
+      queueResponseGate = null;
       await page
         .getByRole("button", { name: "Delete queued message 1", exact: true })
         .waitFor();
