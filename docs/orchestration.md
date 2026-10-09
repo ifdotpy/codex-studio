@@ -1,6 +1,6 @@
 # Managed Codex teams
 
-Use the [Electron desktop app](desktop/README.md), or build the [React interface](web/README.md), start `scripts/codex-canvas`, and open <http://127.0.0.1:4620>.
+Use the [Electron desktop app](../workspaces/client/apps/desktop/README.md), or build the [React interface](../workspaces/client/apps/web/README.md), start `codex-canvas`, and open <http://127.0.0.1:4620>.
 Use the new-chat action inside a project. The server creates an empty lead conversation immediately.
 If the current lead chat is empty, it reuses that chat and preserves the draft.
 Write the task in the conversation. The lead generates its title with `orchestration_title`.
@@ -77,7 +77,7 @@ answer still blocks its agent. **Deferred questions** restores the card.
 Secret values remain hidden there. An uncertain native reply cannot be sent again
 under the same request identity.
 
-The microphone button opens [recoverable dictation](desktop/README.md#recoverable-dictation).
+The microphone button opens [recoverable dictation](../workspaces/client/apps/desktop/README.md#recoverable-dictation).
 Audio stays in this browser profile and chat. Transcription runs through macOS Speech;
 **Insert into message** adds the text to the draft without sending it.
 Use **Team** to inspect worker status and open a worker chat.
@@ -213,7 +213,7 @@ Each managed conversation displays its agent's plain `PROGRESS.md` between the
 transcript and composer. The file path is `<stateDir>/progress/<agentId>/PROGRESS.md`.
 Studio supplies the exact path in runtime instructions and through
 `orchestration_context topic=panel`, together with the bundled
-[progress guide](.agents/skills/codex-workspace/references/panel.md).
+[progress guide](../.agents/skills/codex-workspace/references/panel.md).
 The file remains outside Git. Agents that share a working directory have separate
 files. A project's own `PROGRESS.md` does not control this display.
 
@@ -251,7 +251,7 @@ The visible client reports measured dimensions to `POST /api/panel/layout`.
 The server writes revision-specific, expiring feedback to `PROGRESS.layout.json`
 beside the source file. Separate clients retain separate results. Agents use the
 check command in their runtime instructions after edits. The
-[progress guide](.agents/skills/codex-workspace/references/panel.md) defines this workflow.
+[progress guide](../.agents/skills/codex-workspace/references/panel.md) defines this workflow.
 An absent or stale measurement means unmeasured, not success.
 
 `/compact`, `/review`, `/stop`, and `/stop-team` are local commands.
@@ -497,7 +497,7 @@ credits, and individual limits when available. Reads share a 30-second cache.
 Missing or failed account data is explicit. These are account limits, not a separate
 allowance for each agent.
 
-[Context analytics](ANALYTICS.md) retains response usage and tool measurements
+[Context analytics](analytics.md) retains response usage and tool measurements
 separately from the latest context indicator. The report supports agent, team,
 and all-agent scopes, a period filter, call details, and JSON export.
 
@@ -590,7 +590,7 @@ Only one runtime can own the state directory. SQLite uses write-ahead logging.
 After a server restart, queued input and verified interrupted work can resume.
 Continuation requires the original permission and authoritative native evidence.
 An unacknowledged delivery stays uncertain and is not replayed. Command watches
-without a definitive result remain lost. See [restart recovery](docs/restart-recovery.md)
+without a definitive result remain lost. See [restart recovery](restart-recovery.md)
 for the persistence contract and exact limits.
 
 ## Codex features
@@ -681,7 +681,7 @@ Codex 0.153.4 kills the shell's process group. Interactive jobs can use other
 groups in the same session. Studio therefore retains session cleanup, using the
 PID recorded by its child bootstrap. The bootstrap no longer allocates a PTY.
 This migration removes direct PTY I/O but does not reduce the total adapter size.
-See [terminal checks](tests/terminals-contract.py).
+See [terminal checks](../workspaces/runtime/apps/server/tests/terminals-contract.py).
 
 Voice uses Codex 0.153.4's native `thread/realtime/start` with v3 WebRTC
 and ChatGPT sign-in. Studio enables `features.realtime_conversation` for leads.
@@ -696,7 +696,7 @@ cancellation tombstone. Connection loss preserves the transcript without replay.
 `appendSpeech` provides speakable context, not an exact-playback receipt.
 The browser never converts a native transcript into a second Studio message.
 The old REST voice and TTS paths are removed. Legacy transcripts remain readable.
-See [voice lifecycle checks](tests/native-voice-contract.py).
+See [voice lifecycle checks](../workspaces/runtime/apps/server/tests/native-voice-contract.py).
 
 The installed Codex 0.155.1 accepts `turn/start` into an active or idle turn.
 Repeating an active `turn/start` with the same `clientUserMessageId` adds duplicate model input.
@@ -705,7 +705,7 @@ The `delivery` request field accepts legacy values and has no effect.
 The outbox holds input for a stopped agent, account move, context repair,
 native Review or Compact action, new turn slot wait, or active shared radio turn.
 Private input held during a radio turn enters the native delivery path after that turn ends.
-See [native integration checks](tests/native-primitives-integration.py).
+See [native integration checks](../workspaces/runtime/apps/server/tests/native-primitives-integration.py).
 
 Import copies visible user and assistant messages from at most the last 20 turns,
 limited to 24,000 characters, into a new managed lead. It does not take ownership
@@ -717,7 +717,7 @@ The original Codex conversation remains available.
 Each chat owns one parallelism setting. Zero selects Single agent; a positive
 value selects Multi agent. There is no application default setting or per-chat
 override hierarchy. The numeric bounds and new-chat default belong to the
-[server's agent configuration](scripts/codex_agent_modes.py).
+[server's agent configuration](../workspaces/runtime/apps/server/src/codex_agent_modes.py).
 
 All descendants of one lead share the limit, including reviewers and workers
 on another account or provider. The lead does not occupy a subagent slot.
@@ -753,7 +753,7 @@ The UI requires the backend's numeric concurrency capability and a valid
 projected value before enabling the control. With an older backend, it shows
 the existing mode and an update explanation, keeps the numeric input disabled,
 and preserves pending requests. Building the frontend does not reload the
-running backend. Activate backend changes through a verified [live update](docs/live-updates.md)
+running backend. Activate backend changes through a verified [live update](live-updates.md)
 or a restart when no active work will be interrupted.
 
 Existing Single agent chats migrate to zero. Existing Multi agent chats retain
@@ -769,16 +769,16 @@ parallelism; the queue reports their blockers.
 app-server process. Set `CODEX_CANVAS_URL` or pass `--url` for another local port.
 
 ```bash
-scripts/codex-control models
-scripts/codex-control create 'Review the project and delegate independent checks' \
+codex-control models
+codex-control create 'Review the project and delegate independent checks' \
   --cwd /absolute/project --name Lead --concurrency 32 --max-agents 64
-scripts/codex-control list
-scripts/codex-control send AGENT_ID 'Inspect the worker results and continue'
-scripts/codex-control monitor AGENT_ID 'your-command' --timeout-minutes 60
-scripts/codex-control transcript AGENT_ID
-scripts/codex-control stop LEAD_ID
-scripts/codex-control configure LEAD_ID --concurrency 12
-scripts/codex-control configure LEAD_ID --token-budget 2000000
+codex-control list
+codex-control send AGENT_ID 'Inspect the worker results and continue'
+codex-control monitor AGENT_ID 'your-command' --timeout-minutes 60
+codex-control transcript AGENT_ID
+codex-control stop LEAD_ID
+codex-control configure LEAD_ID --concurrency 12
+codex-control configure LEAD_ID --token-budget 2000000
 ```
 
 Change concurrency separately from the stored-team and token limits. The command
@@ -791,17 +791,17 @@ do not run a fresh save to discover whether the previous one applied.
 
 ```bash
 cd web
-npm ci
-npm test
-npm run format:check
+pnpm install --frozen-lockfile
+pnpm test
+pnpm run format:check
 cd ..
-python3 tests/runtime-contract.py
-python3 tests/turn-start-contract.py
-python3 tests/prepare-steer-contract.py
-python3 tests/monitor-lifecycle-contract.py
-python3 tests/harness-response-contract.py
-python3 tests/canvas-contract.py
-node tests/portable-smoke.mjs
+python3 workspaces/runtime/apps/server/tests/runtime-contract.py
+python3 workspaces/runtime/apps/server/tests/turn-start-contract.py
+python3 workspaces/runtime/apps/server/tests/prepare-steer-contract.py
+python3 workspaces/runtime/apps/server/tests/monitor-lifecycle-contract.py
+python3 workspaces/runtime/apps/server/tests/harness-response-contract.py
+python3 workspaces/runtime/apps/server/tests/canvas-contract.py
+node workspaces/runtime/apps/server/tests/portable-smoke.mjs
 ```
 
 `runtime-contract.py` exercises a 40-worker team, bounded concurrency, parent wakeup,
@@ -815,17 +815,17 @@ is a fixture; this test does not call a live model.
 The optional live check uses the configured account and model:
 
 ```bash
-python3 tests/runtime-live.py --run
+python3 workspaces/runtime/apps/server/tests/runtime-live.py --run
 ```
 
 It requires one lead, two reviewers, one successful command watch and all three
 completion events delivered to the lead. The test prints its evidence directory.
 
-See [UI and tool evidence](UI-AND-TOOLS.md) for the interface decisions and Codex tool checks.
+See [UI and tool evidence](ui-and-tools.md) for the interface decisions and Codex tool checks.
 
 ## Desktop, time, and local costs
 
-The [desktop host](desktop/README.md) provides native file and folder dialogs,
+The [desktop host](../workspaces/client/apps/desktop/README.md) provides native file and folder dialogs,
 Finder actions, external links, and optional notifications. Closing its window
 preserves the backend and agent work. Existing SQLite chats use the same state
 directory. Historical Canvas positions remain browser-profile data.
@@ -836,7 +836,7 @@ Reopening the UI restores that view. Download saved output reads the archive. A 
 recreate their processes. Input with uncertain delivery pauses until the user
 reconnects and never retries the same keystrokes automatically.
 
-[Time awareness](TIME-AWARENESS.md) uses the native Codex clock plus durable
+[Time awareness](time-awareness.md) uses the native Codex clock plus durable
 message acceptance times. New timestamps do not rewrite earlier input.
 
 Account limits show Codex before Spark, the remaining allowance, reset countdowns,
@@ -992,7 +992,7 @@ Agent tools accept a unique ID prefix of at least eight characters among agents
 visible to the caller. Ambiguous and unknown IDs return candidate full IDs.
 
 The shared Studio skill documents the workspace bridge for existing native threads.
-Tests: `tests/agent-management-contract.py`.
+Tests: `workspaces/runtime/apps/server/tests/agent-management-contract.py`.
 
 ### Linux VM workers
 
@@ -1012,7 +1012,7 @@ the worker paused. Studio shutdown keeps native guest processes alive.
 A VM disconnect leaves native outcomes unknown. Do not repeat an uncertain
 operation with a new request ID. `maintenance_report` includes VM disk and
 memory data. Set VM limits in Studio Settings, Linux VM, while the VM is stopped.
-See [Linux VM workspaces](docs/linux-vm-workspaces.md) for the protocol and limits.
+See [Linux VM workspaces](linux-vm-workspaces.md) for the protocol and limits.
 
 ### Teleport your execution to another server
 

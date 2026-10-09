@@ -22,22 +22,22 @@ and the affected integration contracts before delivery.
 - Other benchmark scenarios remain available at commit `3507feea`.
 - `codex_canvas.py`: HTTP entry point and request handling.
 - `codex_runtime.py`: agent lifecycle and provider coordination.
-- [Root README](../README.md#checks): backend and application checks.
-- [Live updates](../docs/live-updates.md): source publication and runtime verification.
+- [Root README](../../../../../README.md): backend and application checks.
+- [Live updates](../../../../../docs/live-updates.md): source publication and runtime verification.
 
 Set `CODEX_CANVAS_STARTUP_MEMORY=1` to log current RSS and peak RSS at startup
 stage checkpoints. Add `CODEX_CANVAS_STARTUP_TRACEMALLOC=1` to log the top Python
 allocation sites at those checkpoints.
 
 New component folders should have an explicit import path, a short README, and
-focused `tests/`. Add component-local benchmarks only when there is a repeatable
+focused `workspaces/runtime/apps/server/tests/`. Add component-local benchmarks only when there is a repeatable
 workload worth measuring. Import production functions directly; do not copy them
 into tests or benchmarks. Package `__init__.py` files should not assemble a
 second public API.
 
 Move a bounded responsibility together with its callers and checks. Do not create
 empty layers or reorganize unrelated modules. Keep cross-component contracts in
-the root `tests/` directory. Production package sources must participate in the
+the root `workspaces/runtime/apps/server/tests/` directory. Production package sources must participate in the
 backend identity and live-update source checks; test and benchmark files do not.
 
 Keep benchmark environments, results, temporary databases, and other runtime

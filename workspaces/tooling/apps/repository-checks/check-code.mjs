@@ -146,6 +146,7 @@ function main() {
         [
           "--check",
           "--disable-nested-config",
+          "--no-error-on-unmatched-pattern",
           ...formatPaths.map((relativePath) =>
             path.join(temporaryRoot, relativePath),
           ),

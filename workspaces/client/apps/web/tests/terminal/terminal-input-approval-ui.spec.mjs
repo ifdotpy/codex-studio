@@ -46,7 +46,7 @@ createRoot(document.getElementById('root')).render(React.createElement(MantinePr
 `;
   const server = await createServer({
     configFile: false,
-    root: join(root, "web"),
+    root: join(root, "workspaces/client/apps/web"),
     cacheDir: join(temporary, "vite"),
     plugins: [
       {

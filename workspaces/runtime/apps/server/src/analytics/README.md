@@ -21,7 +21,7 @@ exactly how many tokens that tool cost.
 Think of analytics as a record keeper. It observes what happened and prepares
 measurements for Studio's **Context analytics** report. Reading old history does
 not ask the model to work again. The full explanation of the report and its limits
-belongs to [Context analytics](../../ANALYTICS.md).
+belongs to [Context analytics](../../../../../../docs/analytics.md).
 
 This folder currently contains one part of that system: **the rollout parser**.
 A rollout is a local session journal, with one JSON record per line. A parser is
@@ -78,12 +78,12 @@ parts of them, so callers must not edit those parts.
 From the repository root, using only Python's standard library:
 
 ```sh
-python3 -B -m unittest discover -s scripts/analytics/tests -v
-python3 -B tests/analytics-history-contract.py
-python3 -B tests/budget-contract.py
-python3 -B tests/analytics-delta-batch-contract.py
-python3 -B scripts/analytics/benchmarks/bench_delta_batch.py
-python3 -B scripts/analytics/benchmarks/bench_rollout.py --check
+python3 -B -m unittest discover -s workspaces/runtime/apps/server/src/analytics/tests -v
+python3 -B workspaces/runtime/apps/server/tests/analytics-history-connection-reuse-contract.py
+python3 -B workspaces/runtime/apps/server/tests/budget-runtime-contract.py
+python3 -B workspaces/runtime/apps/server/tests/analytics-delta-batch-contract.py
+python3 -B workspaces/runtime/apps/server/src/analytics/benchmarks/bench_delta_batch.py
+python3 -B workspaces/runtime/apps/server/src/analytics/benchmarks/bench_rollout.py --check
 ```
 
 The local tests answer “Did we translate the record correctly?” They need no
@@ -103,10 +103,10 @@ example commands use a new temporary directory; retain its path for comparisons:
 ```sh
 bench_dir=$(mktemp -d "${TMPDIR:-/tmp}/studio-analytics-bench.XXXXXX")
 python3 -m venv "$bench_dir/venv"
-"$bench_dir/venv/bin/python" -m pip install -r scripts/analytics/benchmarks/requirements.txt
-"$bench_dir/venv/bin/python" -B scripts/analytics/benchmarks/bench_rollout.py -o "$bench_dir/before.json"
+"$bench_dir/venv/bin/python" -m pip install -r workspaces/runtime/apps/server/src/analytics/benchmarks/requirements.txt
+"$bench_dir/venv/bin/python" -B workspaces/runtime/apps/server/src/analytics/benchmarks/bench_rollout.py -o "$bench_dir/before.json"
 # After changing the implementation, use the same environment and machine:
-"$bench_dir/venv/bin/python" -B scripts/analytics/benchmarks/bench_rollout.py -o "$bench_dir/after.json"
+"$bench_dir/venv/bin/python" -B workspaces/runtime/apps/server/src/analytics/benchmarks/bench_rollout.py -o "$bench_dir/after.json"
 "$bench_dir/venv/bin/python" -m pyperf compare_to "$bench_dir/before.json" "$bench_dir/after.json" --table
 ```
 

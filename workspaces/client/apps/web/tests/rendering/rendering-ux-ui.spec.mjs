@@ -49,7 +49,7 @@ test("rendering ux ui", async ({ page: runnerPage }) => {
       `<html><body><div id="root"></div><script type="module" src="/${name}.tsx"></script></body></html>`,
     );
     server = await createServer({
-      root: join(root, "web"),
+      root: join(root, "workspaces/client/apps/web"),
       configFile: false,
       server: { host: "127.0.0.1", port: 0 },
     });

@@ -46,7 +46,7 @@ test("message retry http browser", async ({ page: runnerPage }) => {
     );
     server = await createServer({
       configFile: false,
-      root: join(root, "web"),
+      root: join(root, "workspaces/client/apps/web"),
       server: {
         host: "127.0.0.1",
         port: 0,

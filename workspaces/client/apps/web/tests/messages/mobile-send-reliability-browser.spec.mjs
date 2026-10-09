@@ -64,7 +64,7 @@ test("Mobile Send Reliability Browser", async ({
         },
       },
     ],
-    root: join(root, "web"),
+    root: join(root, "workspaces/client/apps/web"),
     cacheDir: join(temporary, "vite"),
     optimizeDeps: { include: ["react", "react-dom/client"] },
     server: { host: "127.0.0.1", port: 0, hmr: false },

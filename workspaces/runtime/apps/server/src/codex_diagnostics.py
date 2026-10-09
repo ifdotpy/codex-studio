@@ -14,7 +14,8 @@ from codex_sqlite import diagnostics as sqlite_diagnostics
 
 def _kind(command):
     executable = command.split(None, 1)[0].rsplit("/", 1)[-1] if command else ""
-    if "claude_bridge/bridge.mjs" in command:
+    if ("claude_bridge/bridge.mjs" in command
+            or "workspaces/providers/apps/claude-bridge/bridge.mjs" in command):
         return "claude_bridge"
     if "codex-code-mode-host" in command:
         return "code_mode_host"

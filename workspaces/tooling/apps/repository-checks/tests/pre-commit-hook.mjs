@@ -215,6 +215,13 @@ try {
 
   {
     const root = fixture();
+    stage(root, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+    const result = runHook(root);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  }
+
+  {
+    const root = fixture();
     stage(root, "README.md", "# Heading #\n");
     const result = runHook(root);
     assert.notEqual(

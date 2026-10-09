@@ -7,7 +7,7 @@ sys.dont_write_bytecode = True
 from codex_python import resolve_python
 selected_python: Path = resolve_python(Path(__file__).resolve().parent)
 if Path(os.path.abspath(selected_python)) != Path(os.path.abspath(sys.executable)):
-    os.execv(str(selected_python), [str(selected_python), "-B", *sys.argv])
+    os.execv(str(selected_python), [str(selected_python), "-B", str(Path(__file__).resolve()), *sys.argv[1:]])
 from codex_startup_memory import mark as startup_memory_mark
 startup_memory_mark("backend-entry")
 from codex_canvas import main

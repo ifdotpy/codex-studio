@@ -7,10 +7,9 @@ Linux filesystem. Windows Subsystem for Linux (WSL) uses the same setup.
 From the checkout:
 
 ```sh
-npm ci
-python3 scripts/install-cli.py
-npm --prefix web ci
-npm --prefix web run build
+pnpm install --frozen-lockfile
+python3 workspaces/runtime/apps/server/src/install-cli.py
+pnpm --filter codex-agents-web run build
 ```
 
 Add `~/.local/bin` and the provider CLI directory to `PATH`. Select one idle

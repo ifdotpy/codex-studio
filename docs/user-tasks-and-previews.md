@@ -18,7 +18,7 @@ until complete. HTML runs in a static isolated frame with no application access.
 Invalid diagrams show an error and their source.
 
 Verification: isolated runtime and HTTP tests, native tool schema check, browser
-render and isolation tests, and desktop/narrow-screen inspection.
+render and isolation tests, and workspaces/client/apps/desktop/narrow-screen inspection.
 
 Status: implemented, verified, integrated into local main, and deployed at http://127.0.0.1:4620.
 
@@ -34,7 +34,7 @@ Status: implemented, verified, integrated into local main, and deployed at http:
   controls pass their existing isolated checks with no external model request.
 - Independent review found SVG animation navigation and lost document attributes.
   Both are corrected and covered by browser regressions. The parent inspected
-  the source changes and desktop/mobile screenshots.
+  the source changes and workspaces/client/apps/desktop/mobile screenshots.
 
 The requesting agent uses `orchestration_user_task`. Existing native threads use
 its documented `orchestration_send` workspace route. The user completion endpoint
@@ -53,7 +53,6 @@ Latest browser evidence:
 
 - `/var/folders/29/8pytxrvn6qlcm4384bmy9n6m0000gn/T/codex-rich-preview-ui-FDUJ73`
 - `/var/folders/29/8pytxrvn6qlcm4384bmy9n6m0000gn/T/codex-user-tasks-ui-3B5Jha`
-
 
 ## Local deployment
 

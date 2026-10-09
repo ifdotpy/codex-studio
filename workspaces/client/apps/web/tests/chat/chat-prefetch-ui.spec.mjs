@@ -124,7 +124,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     );
     server = await createServer({
       configFile: false,
-      root: join(repo, "web"),
+      root: join(repo, "workspaces/client/apps/web"),
       server: { host: "127.0.0.1", port: 0 },
       plugins: [
         {
