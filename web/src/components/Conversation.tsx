@@ -1593,9 +1593,12 @@ export default function Conversation(p: {
               variant="subtle"
               size="compact-sm"
               loading={pageLoading}
-              onClick={() =>
-                void newer().catch((error) => p.notify(errorText(error)))
-              }
+              onClick={() => {
+                const anchorId = getAnchorId();
+                setFollow(false);
+                setPageAnchor(anchorId);
+                void newer().catch((error) => p.notify(errorText(error)));
+              }}
             >
               Later messages
             </Button>

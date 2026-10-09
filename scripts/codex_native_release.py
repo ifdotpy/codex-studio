@@ -19,6 +19,34 @@ MAX_SCAN_PER_TICK = 32
 ACTIVE = {"queued", "starting", "running", "approval"}
 
 
+def preparation_release_id(rt: "Runtime", agent: "AgentRecord", connection: str | None,
+                           server: Any) -> str | None:
+    """Match a delayed unsubscribe close to the same retained native child."""
+    release = agent.get("nativeRelease") or {}
+    if (release.get("phase") != "released" or release.get("threadId") != agent.get("threadId")
+            or release.get("closedAt")):
+        return None
+    if release.get("connectionId") == connection:
+        return release.get("id")
+    from codex_connection_recovery import supervisor_identity
+    identity = supervisor_identity(server)
+    saved = release.get("supervisorIdentity")
+    account = agent.get("accountKey", "default")
+    if (not connection or not release.get("connectionId") or "closedAt" in release
+            or not isinstance(saved, dict) or type(saved.get("generation")) is not int
+            or identity is None or saved != identity
+            or rt.server_for(account, connection) is not server
+            or not rt.connection_current(account, connection)
+            or type(release.get("targetEpoch")) is not int
+            or release.get("targetEpoch") != agent["epoch"]
+            or release.get("accountKey") != account
+            or release.get("targetRootId") != agent.get("rootId")
+            or "targetParentId" not in release
+            or release.get("targetParentId") != agent.get("parentId")):
+        return None
+    return release.get("id")
+
+
 def _idle_since(agent: "AgentRecord") -> float:
     value = agent.get("lastEvent")
     if value:
@@ -291,6 +319,8 @@ def release_agent(rt: "Runtime", agent_id: str, *, reason: str | None = None,
                        "threadId": identity[1], "accountKey": account, "connectionId": identity[3], "at": now,
                        "targetEpoch": identity[0], "targetRootId": agent.get("rootId"),
                        "targetParentId": agent.get("parentId")}
+            from codex_connection_recovery import supervisor_identity
+            release["supervisorIdentity"] = supervisor_identity(server)
             if reason is not None:
                 release.update(resetReason=reason, resetBy=actor_id, resetPending=True,  # type: ignore[call-arg]  # typed-update
                                inspectionPhase="inspecting",

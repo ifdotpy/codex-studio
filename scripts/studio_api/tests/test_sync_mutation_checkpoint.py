@@ -9,12 +9,14 @@ from types import SimpleNamespace
 from typing import cast
 
 from starlette.requests import Request
+from codex_sync_entities import MAX_MUTATION_SYNC_ENTITIES
 from studio_api.context import ApiContext
 from studio_api.models import ResponseModel
 
 
 class TestResponse(ResponseModel):
     paired: bool
+    concurrency: int | None = None
 
 
 class MutationCheckpointResponseTests(unittest.TestCase):
@@ -23,6 +25,7 @@ class MutationCheckpointResponseTests(unittest.TestCase):
         rows: list[tuple[str, str, int, str, int]],
         floor: int,
         after: int = 5,
+        concurrency: int | None = None,
     ) -> dict[str, object]:
         request = Request(
             {
@@ -55,7 +58,10 @@ class MutationCheckpointResponseTests(unittest.TestCase):
                 _dump_json=ApiContext._dump_json,
                 _accepts_gzip=ApiContext._accepts_gzip,
             )
-            result = ApiContext.send(cast(ApiContext, context), request, {"paired": True})
+            value: dict[str, object] = {"paired": True}
+            if concurrency is not None:
+                value["concurrency"] = concurrency
+            result = ApiContext.send(cast(ApiContext, context), request, value)
             return cast(dict[str, object], json.loads(bytes(result.body)))
 
     def test_response_uses_sampled_entity_high_when_rows_fit(self) -> None:
@@ -83,10 +89,29 @@ class MutationCheckpointResponseTests(unittest.TestCase):
         self.assertNotIn("_syncEntitiesAfter", body)
 
     def test_response_omits_checkpoint_when_batch_exceeds_cap(self) -> None:
-        rows = [("agent", str(index), 6 + index, "{}", 0) for index in range(501)]
+        rows = [("agent", str(index), 6 + index, "{}", 0)
+                for index in range(MAX_MUTATION_SYNC_ENTITIES + 1)]
         body = self.response(rows, 5)
-        self.assertEqual(len(cast(list[object], body["_syncEntities"])), 501)
+        self.assertEqual(len(cast(list[object], body["_syncEntities"])), MAX_MUTATION_SYNC_ENTITIES)
         self.assertNotIn("_syncEntitiesAfter", body)
+
+    def test_overflow_preserves_canonical_response_without_covering_omitted_target(self) -> None:
+        rows = [("agent", str(index), 6 + index, "{}", 0)
+                for index in range(MAX_MUTATION_SYNC_ENTITIES)]
+        rows.append(("agent", "target", 6 + MAX_MUTATION_SYNC_ENTITIES, '{"concurrency":7}', 0))
+        body = self.response(rows, 5, concurrency=7)
+        entities = cast(list[dict[str, object]], body["_syncEntities"])
+        self.assertEqual(body["concurrency"], 7)
+        self.assertEqual(len(entities), MAX_MUTATION_SYNC_ENTITIES)
+        self.assertNotIn("entity:agent:target", [row["id"] for row in entities])
+        self.assertNotIn("_syncEntitiesAfter", body)
+
+    def test_response_at_cap_keeps_contiguous_checkpoint(self) -> None:
+        rows = [("agent", str(index), 6 + index, "{}", 0)
+                for index in range(MAX_MUTATION_SYNC_ENTITIES)]
+        body = self.response(rows, 5)
+        self.assertEqual(len(cast(list[object], body["_syncEntities"])), MAX_MUTATION_SYNC_ENTITIES)
+        self.assertEqual(body["_syncEntitiesAfter"], 5)
 
     def test_response_without_entity_rows_has_neither_field(self) -> None:
         body = self.response([], 5)

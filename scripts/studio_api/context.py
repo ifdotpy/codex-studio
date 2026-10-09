@@ -472,11 +472,13 @@ class ApiContext:
         else:
             raise TypeError("Non-JSON response bodies must be bytes")
         if status < 400 and isinstance(body_value, dict) and sync_after is not None and "_syncEntities" not in body_value:
+            from codex_sync_entities import MAX_MUTATION_SYNC_ENTITIES
+
             with self.sync().connect() as db:
                 rows = db.execute(
                     """SELECT collection,id,seq,payload,deleted FROM sync_entities
-                       WHERE seq>? AND collection NOT LIKE 'transcript:%' ORDER BY seq""",
-                    (sync_after,),
+                       WHERE seq>? AND collection NOT LIKE 'transcript:%' ORDER BY seq LIMIT ?""",
+                    (sync_after, MAX_MUTATION_SYNC_ENTITIES + 1),
                 ).fetchall()
                 floor_row = db.execute(
                     "SELECT value FROM sync_entity_meta WHERE key='entity_tombstone_floor'",
@@ -487,10 +489,10 @@ class ApiContext:
                 body_value = dict(body_value)
                 body_value["_syncEntities"] = [
                     {"id": f"entity:{row[0]}:{row[1]}", "seq": row[2], "payload": row[3], "_deleted": bool(row[4])}
-                    for row in rows
+                    for row in rows[:MAX_MUTATION_SYNC_ENTITIES]
                 ]
-                from codex_sync_entities import MAX_MUTATION_SYNC_ENTITIES
-
+                # A truncated batch cannot claim contiguous coverage. The
+                # renderer keeps its pull checkpoint and fetches omitted rows.
                 if len(rows) <= MAX_MUTATION_SYNC_ENTITIES and tombstone_floor <= sync_after:
                     body_value["_syncEntitiesAfter"] = sync_after
         if content_type.startswith(JSON_CONTENT_TYPE):

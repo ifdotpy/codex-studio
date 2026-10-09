@@ -2846,6 +2846,10 @@ export interface components {
       usageResume?: components["schemas"]["AgentEntityUsageResumeDto"] | null;
       voiceState?: components["schemas"]["JsonValue"] | null;
       workerDefaults?: components["schemas"]["WorkerDefaultsDto"] | null;
+      /** Workspacebackend */
+      workspaceBackend?: ("asif" | "vm") | null;
+      /** Workspacemode */
+      workspaceMode?: ("image" | "worktree" | "shared") | null;
       /** Workspaceoperation */
       workspaceOperation?: string | null;
       /** Worktree */
@@ -3179,6 +3183,10 @@ export interface components {
       usageResume?: components["schemas"]["AgentEntityUsageResumeDto"] | null;
       voiceState?: components["schemas"]["JsonValue"] | null;
       workerDefaults?: components["schemas"]["WorkerDefaultsDto"] | null;
+      /** Workspacebackend */
+      workspaceBackend?: ("asif" | "vm") | null;
+      /** Workspacemode */
+      workspaceMode?: ("image" | "worktree" | "shared") | null;
       /** Workspaceoperation */
       workspaceOperation?: string | null;
       /** Worktree */
@@ -4587,6 +4595,10 @@ export interface components {
       usageResume?: components["schemas"]["AgentEntityUsageResumeDto"] | null;
       voiceState?: components["schemas"]["JsonValue"] | null;
       workerDefaults?: components["schemas"]["WorkerDefaultsDto"] | null;
+      /** Workspacebackend */
+      workspaceBackend?: ("asif" | "vm") | null;
+      /** Workspacemode */
+      workspaceMode?: ("image" | "worktree" | "shared") | null;
       /** Workspaceoperation */
       workspaceOperation?: string | null;
       /** Worktree */

@@ -87,9 +87,11 @@ export default function RadioChat({
         getDraft(room.id) === next.body.text
       )
         setDraft("");
-      await refresh();
+      if (next.rejected) await refresh();
       messages.reload();
       remember(null);
+      if (next.acknowledged)
+        void refresh().catch((error) => notify(errorText(error)));
     } catch (e) {
       if (
         !next.acknowledged &&

@@ -5,6 +5,43 @@ export const MAX_TRANSCRIPT_PAGE_BYTES = 4_000_000;
 export const MAX_TRANSCRIPT_CACHE_ITEMS = 1_200;
 export const MAX_TRANSCRIPT_CACHE_BYTES = 12_000_000;
 
+export function boundTranscriptPage(
+  items: Message[],
+  sizeOf: (item: Message) => number,
+  direction: "older" | "newer" | "around" | "latest",
+  cursors: {
+    before: string | null;
+    after: string | null;
+    nextBefore: string | null;
+    nextAfter: string | null;
+  },
+  anchorId?: string,
+) {
+  const bounded = boundTranscriptItems(
+    items,
+    sizeOf,
+    direction === "older" ? "oldest" : "newest",
+    direction === "newer" ? undefined : anchorId,
+  );
+  let before = direction === "newer" ? cursors.before : cursors.nextBefore;
+  let after = cursors.nextAfter;
+  if (bounded.droppedOldest) before = bounded.items[0]?.id || before;
+  if (direction === "older")
+    after =
+      bounded.droppedNewest || cursors.after
+        ? bounded.items.at(-1)?.id || null
+        : null;
+  else if (direction === "newer") {
+    if (cursors.nextAfter) after = bounded.items.at(-1)?.id || null;
+    before =
+      bounded.droppedOldest || cursors.before
+        ? bounded.items[0]?.id || null
+        : null;
+  } else if (direction === "around" && bounded.droppedNewest)
+    after = bounded.items.at(-1)?.id || null;
+  return { ...bounded, before, after };
+}
+
 export function boundTranscriptItems(
   items: Message[],
   sizeOf: (item: Message) => number,

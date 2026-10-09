@@ -262,6 +262,7 @@ test.each([false, true])(
       const initial = await configureRecovery({
         ...data,
         enabled: true,
+        restartEnvironment: { CODEX_BIN: "/usr/bin/true" },
         run: async () => {},
       });
       const saved = JSON.parse(readFileSync(initial.config, "utf8"));
@@ -284,6 +285,17 @@ test.each([false, true])(
       });
       const updated = JSON.parse(readFileSync(initial.config, "utf8"));
       assert.equal(updated.python, nextPython);
+      assert.equal(updated.environment.CODEX_HOME, undefined);
+      assert.ok(updated.unsetEnvironment.includes("CODEX_HOME"));
+      assert.equal(updated.environment.PATH, saved.environment.PATH);
+      assert.equal(
+        updated.environment.CODEX_AGENTS_PYTHON,
+        explicit ? nextPython : undefined,
+      );
+      assert.equal(
+        updated.unsetEnvironment.includes("CODEX_AGENTS_PYTHON"),
+        !explicit,
+      );
       assert.equal(
         readFileSync(initial.plist, "utf8").includes(nextPython),
         true,
@@ -299,6 +311,43 @@ test.each([false, true])(
     }
   },
 );
+
+test("a verified backend Python selection overrides the attaching desktop", async () => {
+  const data = fixture();
+  try {
+    const initial = await configureRecovery({
+      ...data,
+      enabled: true,
+      run: async () => {},
+    });
+    const saved = JSON.parse(readFileSync(initial.config, "utf8"));
+    const nextDirectory = path.join(data.root, "another Python");
+    mkdirSync(nextDirectory);
+    const nextPython = path.join(nextDirectory, "python3");
+    symlinkSync(saved.python, nextPython);
+    await configureRecovery({
+      ...data,
+      env: {
+        ...data.env,
+        CODEX_AGENTS_PYTHON: nextPython,
+        PATH: `${nextDirectory}${path.delimiter}${data.env.PATH}`,
+      },
+      restartEnvironment: {
+        CODEX_BIN: "/usr/bin/true",
+        CODEX_AGENTS_PYTHON: saved.python,
+      },
+      enabled: true,
+      run: async () => {},
+    });
+    const updated = JSON.parse(readFileSync(initial.config, "utf8"));
+    assert.equal(updated.python, saved.python);
+    assert.equal(updated.environment.CODEX_AGENTS_PYTHON, saved.python);
+    assert.equal(updated.environment.CODEX_HOME, undefined);
+    assert.ok(updated.unsetEnvironment.includes("CODEX_HOME"));
+  } finally {
+    rmSync(data.root, { recursive: true, force: true });
+  }
+});
 
 test.each([false, true])(
   "a lost bootstrap response preserves registration or restores the previous service (%s)",
@@ -617,9 +666,73 @@ test("a graceful desktop exit always withdraws open intent", async () => {
   }
 });
 
+test("an attaching desktop preserves the saved restart environment and explicit absence", async () => {
+  const data = fixture();
+  try {
+    const initial = await configureRecovery({
+      ...data,
+      enabled: true,
+      restartEnvironment: {
+        CODEX_BIN: "/usr/bin/true",
+        CODEX_CANVAS_CWD: "/saved-workspace",
+      },
+      run: async () => {},
+    });
+    const before = JSON.parse(readFileSync(initial.config));
+    await configureRecovery({ ...data, enabled: true, run: async () => {} });
+    const after = JSON.parse(readFileSync(initial.config));
+    assert.deepEqual(after.environment, before.environment);
+    assert.deepEqual(after.unsetEnvironment, before.unsetEnvironment);
+    assert.equal(after.environment.CODEX_HOME, undefined);
+    assert.ok(after.unsetEnvironment.includes("CODEX_HOME"));
+    assert.equal(after.environment.CODEX_CANVAS_CWD, "/saved-workspace");
+  } finally {
+    rmSync(data.root, { recursive: true, force: true });
+  }
+});
+
+test("recovery rejects an invalid saved launch environment before changing it", async () => {
+  const data = fixture();
+  const files = recoveryPaths(data.env, data.home);
+  const valid = {
+    version: 1,
+    stateDir: files.state,
+    environment: { CODEX_BIN: "/usr/bin/true", PATH: data.env.PATH },
+    unsetEnvironment: ["CODEX_HOME"],
+  };
+  try {
+    for (const invalid of [
+      { ...valid, version: 2 },
+      { ...valid, stateDir: path.join(data.root, "another-state") },
+      { ...valid, environment: [] },
+      { ...valid, environment: { CODEX_HOME: 1 } },
+      { ...valid, environment: { OPENAI_API_KEY: "unexpected" } },
+      { ...valid, unsetEnvironment: "CODEX_HOME" },
+      { ...valid, unsetEnvironment: ["PATH"] },
+      { ...valid, unsetEnvironment: ["CODEX_BIN"] },
+    ]) {
+      const before = JSON.stringify(invalid);
+      writeFileSync(files.config, before);
+      await assert.rejects(
+        configureRecovery({
+          ...data,
+          enabled: true,
+          run: async () =>
+            assert.fail("Invalid state must not reach launchctl"),
+        }),
+        /saved restart environment/i,
+      );
+      assert.equal(readFileSync(files.config, "utf8"), before);
+    }
+  } finally {
+    rmSync(data.root, { recursive: true, force: true });
+  }
+});
+
 test("backend restart environment overrides the attaching desktop and preserves absent keys", async () => {
   const data = fixture();
   try {
+    await configureRecovery({ ...data, enabled: true, run: async () => {} });
     const result = await configureRecovery({
       ...data,
       enabled: true,

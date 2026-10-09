@@ -267,6 +267,94 @@ test("saved supervisor mode attaches consistently when Finder supplies no variab
   }
 });
 
+test.each([true, false])(
+  "a fresh backend restores saved values or keeps first-install defaults (saved=%s)",
+  async (hasSavedEnvironment) => {
+    const root = realpathSync(
+      mkdtempSync(path.join(tmpdir(), "studio-launch-env-")),
+    );
+    const canonicalState = path.join(root, "state");
+    mkdirSync(canonicalState);
+    mkdirSync(path.join(root, "scripts"));
+    mkdirSync(path.join(root, "web/dist"), { recursive: true });
+    writeFileSync(path.join(root, "web/dist/index.html"), "fixture");
+    writeFileSync(
+      path.join(root, "scripts/codex-canvas"),
+      `
+import http.server, json, os, sys
+from pathlib import Path
+state = os.environ["CODEX_AGENTS_STATE_DIR"]
+Path(state, "fixture.pid").write_text(str(os.getpid()))
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = json.dumps({"application": "codex-agents", "protocol": 1,
+            "backendBuild": "b" * 64, "pid": os.getpid(), "stateDir": state,
+            "restartEnvironment": {key: os.environ[key] for key in
+                ("CODEX_HOME", "CODEX_CANVAS_CWD") if key in os.environ}}).encode()
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(body)
+http.server.HTTPServer(("127.0.0.1", int(sys.argv[-1])), Handler).serve_forever()
+`,
+    );
+    const portServer = createServer();
+    await new Promise((resolve) => portServer.listen(0, "127.0.0.1", resolve));
+    const port = portServer.address().port;
+    await new Promise((resolve) => portServer.close(resolve));
+    const python =
+      process.env.CODEX_AGENTS_PYTHON ||
+      execFileSync("python3", ["-c", "import sys; print(sys.executable)"], {
+        encoding: "utf8",
+      }).trim();
+    const saved = {
+      version: 1,
+      stateDir: canonicalState,
+      supervisorEnabled: false,
+      environment: {
+        CODEX_CANVAS_CWD: "/saved-workspace",
+        CODEX_BIN: "/usr/bin/true",
+        CODEX_AGENTS_PYTHON: python,
+        PATH: process.env.PATH,
+      },
+      unsetEnvironment: ["CODEX_HOME"],
+    };
+    const config = path.join(canonicalState, "background-recovery.json");
+    if (hasSavedEnvironment) writeFileSync(config, JSON.stringify(saved));
+    const env = {
+      ...process.env,
+      CODEX_AGENTS_STATE_DIR: canonicalState,
+      CODEX_AGENTS_PYTHON: python,
+      CODEX_HOME: "/foreign-command-executor",
+      CODEX_CANVAS_CWD: "/attaching-desktop",
+      CODEX_BIN: "/usr/bin/true",
+    };
+    try {
+      const result = await ensureBackend({ resources: root, port, env });
+      assert.equal(result.owned, true);
+      assert.deepEqual(
+        result.restartEnvironment,
+        hasSavedEnvironment
+          ? { CODEX_CANVAS_CWD: "/saved-workspace" }
+          : {
+              CODEX_CANVAS_CWD: "/attaching-desktop",
+              CODEX_HOME: "/foreign-command-executor",
+            },
+      );
+      assert.equal(env.CODEX_HOME, "/foreign-command-executor");
+      if (hasSavedEnvironment)
+        assert.deepEqual(JSON.parse(readFileSync(config)), saved);
+    } finally {
+      try {
+        const pid = Number(
+          readFileSync(path.join(canonicalState, "fixture.pid"), "utf8"),
+        );
+        process.kill(pid, "SIGTERM");
+      } catch {}
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
 test("recovery and desktop attach to the same independently launched supervisor", async () => {
   const root = mkdtempSync(path.join(tmpdir(), "srr-"));
   const canonicalState = path.join(root, "state");

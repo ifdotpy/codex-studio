@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button, Checkbox, Switch, Textarea, TextInput } from "@mantine/core";
-import { post, type PostBody, type PostResult } from "../api";
+import { errorText, post, type PostBody, type PostResult } from "../api";
 import type { Agent } from "../types";
 
 type FederationResponse = PostResult<"/api/federation">;
@@ -60,7 +60,7 @@ export function FederationSettings({
     try {
       const result = await post("/api/federation", body);
       if ("peers" in result) setState(result);
-      await refresh();
+      void refresh().catch((error) => notify(errorText(error)));
       return result;
     } catch (error) {
       notify(error instanceof Error ? error.message : String(error));

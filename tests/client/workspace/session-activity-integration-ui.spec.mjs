@@ -1,9 +1,10 @@
 import {
   readTestState,
   syncIdentityFixture,
-  entityPullFixtureForRequest,
   installApiSchemaFixtureHeaders,
   apiSchemaHeaders,
+  syncProtocolFixture,
+  stubEntityState,
   test,
   spawnFixture as spawn,
 } from "../playwright.mjs";
@@ -77,6 +78,14 @@ test("Session activity integration", async ({ browser }) => {
             command: "second active command",
             created: Date.now() / 1000,
           },
+          {
+            id: "hidden-question-tool",
+            agent: child.id,
+            status: "running",
+            kind: "tool",
+            name: "AskUserQuestion",
+            created: task.created - 1,
+          },
         ],
         monitors: [],
         requests: [],
@@ -95,17 +104,9 @@ test("Session activity integration", async ({ browser }) => {
       await fetch(`${origin}/api/sync/identity`)
     ).json();
     const identityResponse = syncIdentityFixture(backendIdentity.workspaceId);
-    const workspaceId = identityResponse.workspaceId;
-    await page.route("**/api/sync/identity", (r) =>
-      r.fulfill({ json: identityResponse }),
-    );
-    await page.route("**/api/sync/pull?*", (r) => {
-      return r.fulfill({
-        json: {
-          workspaceId,
-          ...entityPullFixtureForRequest(entityState, r.request().url()),
-        },
-      });
+    const entities = await stubEntityState(page, entityState, {
+      identity: identityResponse,
+      protocol: syncProtocolFixture(),
     });
     await page.route("**/api/transcript/stream?*", (r) =>
       r.fulfill({ status: 404, json: { error: "Polling fixture" } }),
@@ -121,15 +122,18 @@ test("Session activity integration", async ({ browser }) => {
       detailReads.push(id);
       return r.fulfill({
         json: {
-          ...state.runtime.tasks.find((t) => t.id === id),
+          ...entityState.runtime.tasks.find((t) => t.id === id),
           tail: "The command remains active.",
         },
       });
     });
-    let historyTasks = [
-      task,
-      { ...task, id: "newer-command", created: Date.now() / 1000 },
-    ];
+    let historyTasks = Array.from({ length: 100 }, (_, index) => ({
+      ...task,
+      id: `recent-completed-${index}`,
+      status: "completed",
+      created: Date.now() / 1000 + index,
+      finished: Date.now() / 1000 + index,
+    }));
     let taskFeedReads = 0;
     await page.route("**/api/workspace/tasks?*", (r) => {
       taskFeedReads++;
@@ -149,6 +153,10 @@ test("Session activity integration", async ({ browser }) => {
     const strip = page.getByRole("region", { name: "Session activity" });
     const row = strip.locator('[data-activity-id="old-live-command"]');
     await row.waitFor();
+    assert.equal(
+      await strip.locator('[data-activity-id="hidden-question-tool"]').count(),
+      0,
+    );
     assert.match(await row.innerText(), /webcrypto-globals/);
     assert.match(await row.innerText(), /14h/);
     assert.equal(await row.locator("code").count(), 0);
@@ -172,34 +180,37 @@ test("Session activity integration", async ({ browser }) => {
       const before = detailReads.length;
       await row.click();
       await page.getByRole("dialog", { name: /Current activity/ }).waitFor();
+      await page.getByText("2 active", { exact: true }).waitFor();
+      assert.equal(await page.locator("[data-task]").count(), 2);
       await page.waitForFunction(
         () =>
           document.querySelector(".tasks-content.show-task-detail") !== null,
       );
-      for (let n = 0; n < 100 && detailReads.length === before; n++)
-        await new Promise((r) => setTimeout(r, 30));
-      assert.equal(
-        detailReads[before],
-        task.id,
-        "Open the exact older task, not the newest default",
-      );
+      await expect
+        .poll(() => detailReads[before], {
+          timeout: 12000,
+          message: "Open the exact older task, not the newest default",
+        })
+        .toBe(task.id);
       await page.keyboard.press("Escape");
       await page
         .getByRole("dialog", { name: /Current activity/ })
         .waitFor({ state: "hidden" });
     }
     await page.setViewportSize({ width: 1280, height: 900 });
-    historyTasks = [
-      { ...task, id: "newer-command", command: "second active command" },
-    ];
-    const beforeMissingTaskFeed = taskFeedReads;
     await row.click();
     await page.getByRole("dialog", { name: /Current activity/ }).waitFor();
-    for (let n = 0; n < 120 && taskFeedReads === beforeMissingTaskFeed; n++)
-      await new Promise((r) => setTimeout(r, 50));
-    assert.ok(taskFeedReads > beforeMissingTaskFeed);
-    state.runtime.tasks = state.runtime.tasks.filter(
+    const token = await (await fetch(`${origin}/api/session`)).json();
+    const publish = { origin, token: token.token };
+    const otherTasks = entityState.runtime.tasks.filter(
       (item) => item.id !== task.id,
+    );
+    await entities.update(
+      {
+        ...entityState,
+        runtime: { ...entityState.runtime, tasks: otherTasks },
+      },
+      publish,
     );
     await page
       .getByText("The selected task is no longer active in this chat.", {
@@ -229,17 +240,79 @@ test("Session activity integration", async ({ browser }) => {
     for (let n = 0; n < 120 && taskFeedReads === beforeLateHistory; n++)
       await new Promise((r) => setTimeout(r, 50));
     assert.ok(taskFeedReads > beforeLateHistory);
+    await entities.update(entityState, publish);
     await page
       .locator(`[data-task="${task.id}"][aria-pressed="true"]`)
       .waitFor();
     assert(
       !detailReads.includes("newer-command"),
-      "Late history restores the original selection",
+      "A later entity update restores the original selection",
+    );
+    assert.equal(
+      taskFeedReads,
+      0,
+      "Current activity does not read a bounded history page",
     );
     await page.keyboard.press("Escape");
     await page
       .getByRole("dialog", { name: /Current activity/ })
       .waitFor({ state: "hidden" });
+    const question = {
+      id: "retained-native-question",
+      agent: lead.id,
+      status: "pending",
+      method: "item/tool/requestUserInput",
+      createdAt: Date.now() / 1000,
+      params: {
+        questions: [
+          {
+            id: "0",
+            question: "Which organization owner should remain?",
+            isOther: true,
+            options: [{ label: "Keep the current owner" }],
+          },
+        ],
+      },
+    };
+    let answersSent = 0;
+    await page.route("**/api/answer", (route) => {
+      answersSent++;
+      return route.fulfill({ json: { status: "answered" } });
+    });
+    await entities.update(
+      {
+        ...entityState,
+        runtime: { ...entityState.runtime, requests: [question] },
+      },
+      publish,
+    );
+    const questionCard = page.locator(`[data-request="${question.id}"]`);
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      await questionCard
+        .getByText(question.params.questions[0].question, { exact: true })
+        .waitFor();
+      await questionCard.locator("[data-answer]").click();
+      const form = questionCard.getByRole("form", {
+        name: "Reply to the agent",
+      });
+      await form
+        .getByRole("button", { name: "Keep the current owner" })
+        .waitFor();
+      assert.equal(
+        await form.getByRole("button", { name: "Send answer" }).isDisabled(),
+        true,
+      );
+      await page.screenshot({ path: join(root, `question-${width}.png`) });
+      await page.keyboard.press("Escape");
+      await form.waitFor({ state: "hidden" });
+    }
+    assert.equal(
+      answersSent,
+      0,
+      "Showing the question must not choose an answer",
+    );
+    await page.setViewportSize({ width: 1280, height: 900 });
     await page.locator(`[data-chat="${other.id}"]`).click();
     await strip.waitFor({ state: "detached" });
     assert.deepEqual(errors, []);

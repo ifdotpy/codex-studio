@@ -66,14 +66,16 @@ test("desktop and recovery lifecycle changes preserve an active supervisor owner
   writeFileSync(path.join(resources, "scripts/codex-canvas"), "fixture");
   writeFileSync(recoveryScript, "fixture v1");
   writeFileSync(updatedRecoveryScript, "fixture v2");
-  writeFileSync(
-    path.join(resources, "scripts/codex_process_supervisor.py"),
-    readFileSync(supervisorScript),
-  );
-  writeFileSync(
-    path.join(resources, "scripts/codex_open_file_limit.py"),
-    readFileSync(path.join(root, "scripts/codex_open_file_limit.py")),
-  );
+  for (const filename of [
+    "codex_process_supervisor.py",
+    "codex_open_file_limit.py",
+    "codex_file_lock.py",
+    "codex_private_paths.py",
+  ])
+    writeFileSync(
+      path.join(resources, "scripts", filename),
+      readFileSync(path.join(root, "scripts", filename)),
+    );
   writeFileSync(path.join(resources, "web/dist/index.html"), "fixture");
 
   let owner;
