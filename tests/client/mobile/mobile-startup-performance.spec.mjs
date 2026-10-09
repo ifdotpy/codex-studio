@@ -29,9 +29,10 @@ test(
     test.setTimeout(120_000);
     const repo = fileURLToPath(new URL("../../../", import.meta.url));
     const fixtureRepo = process.env.MOBILE_PERF_BACKEND || repo;
-    const { chromium } = createRequire(join(repo, "web/package.json"))(
+    const { chromium, webkit } = createRequire(join(repo, "web/package.json"))(
       "playwright-core",
     );
+    const browserType = process.env.BROWSER === "webkit" ? webkit : chromium;
     const dir = await mkdtemp(join(tmpdir(), "studio-mobile-scope-cap-"));
     const codexHome = join(dir, "codex-home");
     await mkdir(codexHome, { recursive: true });
@@ -72,9 +73,11 @@ test(
       const fixture = JSON.parse(
         await readFile(join(dir, "state/performance-fixture.json"), "utf8"),
       );
-      browser = await chromium.launch({
+      browser = await browserType.launch({
         headless: true,
-        executablePath: browserExecutablePath,
+        ...(browserType === chromium
+          ? { executablePath: browserExecutablePath }
+          : {}),
       });
       const context = await browser.newContext({
         viewport: { width: 390, height: 844 },
@@ -84,15 +87,17 @@ test(
         hasTouch: true,
       });
       const page = await context.newPage();
-      const cdp = await context.newCDPSession(page);
-      await cdp.send("Network.enable");
-      await cdp.send("Network.emulateNetworkConditions", {
-        offline: false,
-        latency: 100,
-        downloadThroughput: 200000,
-        uploadThroughput: 100000,
-      });
-      await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+      if (browserType === chromium) {
+        const cdp = await context.newCDPSession(page);
+        await cdp.send("Network.enable");
+        await cdp.send("Network.emulateNetworkConditions", {
+          offline: false,
+          latency: 100,
+          downloadThroughput: 200000,
+          uploadThroughput: 100000,
+        });
+        await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+      }
       await page.addInitScript((lead) => {
         localStorage.setItem("codex-mobile-opened", JSON.stringify(lead));
         window.mobileTranscriptScopes = [];
@@ -170,9 +175,10 @@ test(
     test.setTimeout(300_000);
     const repo = fileURLToPath(new URL("../../../", import.meta.url));
     const fixtureRepo = process.env.MOBILE_PERF_BACKEND || repo;
-    const { chromium } = createRequire(join(repo, "web/package.json"))(
+    const { chromium, webkit } = createRequire(join(repo, "web/package.json"))(
       "playwright-core",
     );
+    const browserType = process.env.BROWSER === "webkit" ? webkit : chromium;
     const dir = await mkdtemp(join(tmpdir(), "studio-mobile-boundary-"));
     const codexHome = join(dir, "codex-home");
     await mkdir(codexHome, { recursive: true });
@@ -214,9 +220,11 @@ test(
       const fixture = JSON.parse(
         await readFile(join(dir, "state/performance-fixture.json"), "utf8"),
       );
-      browser = await chromium.launch({
+      browser = await browserType.launch({
         headless: true,
-        executablePath: browserExecutablePath,
+        ...(browserType === chromium
+          ? { executablePath: browserExecutablePath }
+          : {}),
       });
       const context = await browser.newContext({
         viewport: { width: 390, height: 844 },
@@ -226,15 +234,17 @@ test(
         hasTouch: true,
       });
       page = await context.newPage();
-      const cdp = await context.newCDPSession(page);
-      await cdp.send("Network.enable");
-      await cdp.send("Network.emulateNetworkConditions", {
-        offline: false,
-        latency: 100,
-        downloadThroughput: 200000,
-        uploadThroughput: 100000,
-      });
-      await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+      if (browserType === chromium) {
+        const cdp = await context.newCDPSession(page);
+        await cdp.send("Network.enable");
+        await cdp.send("Network.emulateNetworkConditions", {
+          offline: false,
+          latency: 100,
+          downloadThroughput: 200000,
+          uploadThroughput: 100000,
+        });
+        await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+      }
       await page.addInitScript((lead) => {
         localStorage.setItem("codex-mobile-opened", JSON.stringify(lead));
       }, fixture.lead);
@@ -439,6 +449,12 @@ test(
       boundary.latestVisibleAfterReload = await latestRow.isVisible();
       if (!boundary.latestVisibleAfterReload)
         await latestRow.waitFor({ state: "visible", timeout: 30_000 });
+      boundary.latestVisibleAfterReload = await latestRow.isVisible();
+      assert.equal(
+        boundary.latestVisibleAfterReload,
+        true,
+        "Reload restores the latest fixture message",
+      );
       console.log(`Mobile history return boundary ${JSON.stringify(boundary)}`);
       test.fail(
         true,
@@ -448,7 +464,6 @@ test(
         boundary.latestVisibleAfterPaging,
         `After ${boundary.newerSteps.length} Later messages pages, the newest fixture message ${latestId} remains unreachable without reloading: ${JSON.stringify(boundary.newerSteps.at(-1))}`,
       );
-      assert.equal(boundary.latestVisibleAfterReload, true);
       await context.close();
     } finally {
       await browser?.close();

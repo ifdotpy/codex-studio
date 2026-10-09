@@ -203,7 +203,7 @@ test(
       const open = async (id, message) => {
         const chat = page.locator(`[data-chat="${id}"]`);
         const selector = `[data-message="${message}"]`;
-        const prefix = message.split("-")[0];
+        const prefix = message.slice(0, message.lastIndexOf("-"));
         await chat.evaluate((element, target) => {
           window.__chatSwitchStartedAt = undefined;
           window.__chatSwitchFirstRowsPaintAt = undefined;
@@ -450,7 +450,15 @@ test(
       const lateOther = await heldB;
       const refreshed = await open(a.id, "fresh-29");
       assert.ok(refreshed < 500, "Cache retains the newest stream");
-      await lateOther.fulfill({ json: payload(b, "late-other") });
+      const lateOtherUrl = new URL(lateOther.request().url());
+      await lateOther.fulfill({
+        json: responseFor(
+          b.id,
+          payload(b, "late-other"),
+          30,
+          Number(lateOtherUrl.searchParams.get("after") || 0),
+        ),
+      });
       await page.evaluate(
         () =>
           new Promise((resolve) =>
