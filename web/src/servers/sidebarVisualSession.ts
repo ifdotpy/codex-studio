@@ -5,9 +5,15 @@ import type { ServerSidebarSnapshot } from "./sidebarSnapshot";
 type Override = {
   value: boolean | undefined;
   sources: Map<string, ServerSidebarSnapshot>;
+  choice?: {
+    owner: string;
+    name: string;
+    kind: "compact" | "collapsed";
+    snapshot: ServerSidebarSnapshot;
+  };
 };
 
-/** Offline view changes stay in memory until a source snapshot or explicit edit. */
+/** Session views do not change saved preference records. */
 export function createSidebarVisualSession() {
   const values = new Map<string, Map<string, Override>>();
   return (
@@ -27,6 +33,16 @@ export function createSidebarVisualSession() {
       if (!overrides || !base || typeof base !== "object") return base;
       const result = { ...base } as Record<string, unknown>;
       for (const [field, override] of overrides) {
+        const choice = override.choice;
+        const source = choice && model.sourceById.get(choice.owner);
+        if (
+          choice &&
+          source?.sidebar !== choice.snapshot &&
+          source?.sidebar[choice.kind][choice.name] !== override.value
+        ) {
+          overrides.delete(field);
+          continue;
+        }
         if (
           [...override.sources].some(
             ([owner, snapshot]) =>
@@ -44,22 +60,7 @@ export function createSidebarVisualSession() {
     const owners = (kind: "compact" | "collapsed", field: string) => {
       const result = new Map<string, ServerSidebarSnapshot>();
       for (const source of model.sources) {
-        const keys = new Set(Object.keys(source.sidebar[kind]));
-        for (const project of source.sidebar.projects) {
-          const path = project.path || "";
-          keys.add(path);
-          if (kind === "collapsed") {
-            for (const folder of project.folders || [])
-              keys.add(JSON.stringify([path, "folder", folder.id]));
-            for (const team of [
-              ...(project.peerTeams || []),
-              ...source.sidebar.peerTeams.filter(
-                (team) => team.projectPath === path,
-              ),
-            ])
-              keys.add(JSON.stringify([path, "team", team.id]));
-          }
-        }
+        const keys = model.preferenceKeys.get(source.id)![kind];
         if (
           [...keys].some(
             (key) =>
@@ -75,6 +76,20 @@ export function createSidebarVisualSession() {
     return {
       ...backend,
       saved: read,
+      viewPreference(key, previous, next) {
+        const overrides = values.get(key) || new Map<string, Override>();
+        for (const field of new Set([
+          ...Object.keys(previous),
+          ...Object.keys(next),
+        ]))
+          if (previous[field] !== next[field])
+            overrides.set(field, {
+              value: next[field] as boolean | undefined,
+              sources: new Map(),
+            });
+        values.set(key, overrides);
+        return read(key, previous);
+      },
       editPreference(key, previous, next) {
         const kind = kindFor(key);
         const prior = previous as Record<string, boolean>;
@@ -86,7 +101,29 @@ export function createSidebarVisualSession() {
           : [];
         try {
           const accepted = backend.editPreference(key, previous, next);
-          for (const field of changed) values.get(key)?.delete(field);
+          const overrides = values.get(key) || new Map<string, Override>();
+          for (const field of changed) {
+            const owner = kind && model.preferenceOwner(kind, field);
+            const source = owner && model.sourceById.get(owner);
+            const name =
+              source &&
+              kind &&
+              [...model.preferenceKeys.get(source.id)![kind]].find(
+                (name) =>
+                  (kind === "compact"
+                    ? model.projectKey(source.id, name)
+                    : model.mapTreeKey(source.id, name)) === field,
+              );
+            overrides.set(field, {
+              value: value[field],
+              sources: new Map(),
+              choice:
+                source && kind && typeof name === "string"
+                  ? { owner: source.id, name, kind, snapshot: source.sidebar }
+                  : undefined,
+            });
+          }
+          values.set(key, overrides);
           return read(key, accepted);
         } catch (failure) {
           if (

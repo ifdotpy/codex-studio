@@ -31,6 +31,46 @@ function pick<T extends object, K extends keyof T>(
   return result;
 }
 
+export function sidebarAgent(agent: Agent): Agent {
+  return pick(agent, [
+    "id",
+    "name",
+    "tail",
+    "source",
+    "isLead",
+    "parentId",
+    "rootId",
+    "cwd",
+    "project",
+    "projectId",
+    "projectServerId",
+    "projectFolder",
+    "projectFolderRevision",
+    "serverId",
+    "provider",
+    "model",
+    "created",
+    "updated",
+    "pinned",
+    "archived",
+    "deletedAt",
+    "sharedRoomId",
+    "remoteAnchor",
+    "movedTo",
+    "movedFrom",
+    "moveImportPending",
+    "status",
+    "inFlight",
+    "autoWake",
+    "empty",
+    "threadId",
+    "lastCompletedTurn",
+    "lastCompletedTurnStatus",
+    "readState",
+    "readStateSupported",
+  ]);
+}
+
 /** Preserve sidebar fields and source identities without transcripts or runtime collections. */
 export function sidebarSnapshot(
   data: Snapshot,
@@ -40,45 +80,7 @@ export function sidebarSnapshot(
   const runtime = data.runtime;
   return {
     stateDir: data.stateDir,
-    threads: data.threads.map((agent) =>
-      pick(agent, [
-        "id",
-        "name",
-        "tail",
-        "source",
-        "isLead",
-        "parentId",
-        "rootId",
-        "cwd",
-        "project",
-        "projectId",
-        "projectServerId",
-        "projectFolder",
-        "projectFolderRevision",
-        "serverId",
-        "provider",
-        "model",
-        "created",
-        "updated",
-        "pinned",
-        "archived",
-        "deletedAt",
-        "sharedRoomId",
-        "remoteAnchor",
-        "movedTo",
-        "movedFrom",
-        "moveImportPending",
-        "status",
-        "inFlight",
-        "autoWake",
-        "empty",
-        "threadId",
-        "lastCompletedTurn",
-        "lastCompletedTurnStatus",
-        "readState",
-        "readStateSupported",
-      ]),
-    ),
+    threads: data.threads.map(sidebarAgent),
     projects: (runtime?.projects || []).map((project) =>
       pick(project, [
         "id",

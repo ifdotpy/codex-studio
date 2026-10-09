@@ -1,3 +1,4 @@
+import { decodeSidebarRanks } from "./sidebarOrderRanks";
 import type { Agent, PeerTeam, Project, Room, Snapshot } from "../types";
 import type { ChatIndicator } from "../components/chat-status/chatStatusModel";
 import { sidebarIdentity } from "../components/sidebar/services";
@@ -92,6 +93,7 @@ export function mergeSidebar(
     const existing = projectKeys.get(sidebarIdentity(owner, path));
     if (existing !== undefined) return existing;
     const renderKey = key(owner, path);
+    projectKeys.set(sidebarIdentity(owner, path), renderKey);
     projectReferences.set(renderKey, { owner, id: path, path });
     return renderKey;
   };
@@ -184,6 +186,7 @@ export function mergeSidebar(
           },
     );
   }
+  const projectPaths = new Set(projects.map((project) => project.path));
   const boundProject = (source: SidebarSource, chat: Agent) => {
     if (chat.projectId && chat.projectServerId) {
       const home = uiServers.get(chat.projectServerId) || chat.projectServerId;
@@ -206,13 +209,15 @@ export function mergeSidebar(
         id: chat.id,
         path: chat.cwd || "",
       });
-      if (!single && !projects.some((project) => project.path === path))
+      if (!single && !projectPaths.has(path)) {
+        projectPaths.add(path);
         projects.push({
           id: path,
           path,
           name: chat.cwd || "Other chats",
           folders: [],
         });
+      }
       threads.push(
         single
           ? chat
@@ -286,16 +291,25 @@ export function mergeSidebar(
   if (single) {
     for (const team of peerTeams) teamKey(sources[0].id, team.id);
     for (const room of rooms) chatKey(sources[0].id, room.id);
-  } else
+  } else {
+    const teamsByPath = new Map<string, PeerTeam[]>();
+    for (const team of peerTeams) {
+      const path = team.projectPath || "";
+      const rows = teamsByPath.get(path) || [];
+      rows.push(team);
+      teamsByPath.set(path, rows);
+    }
     for (const project of projects)
-      project.peerTeams = peerTeams
-        .filter((team) => team.projectPath === project.path)
-        .map((team) => ({
+      project.peerTeams = (teamsByPath.get(project.path || "") || []).map(
+        (team) => ({
           id: team.id,
           name: team.name || "Team",
           members: team.members || [],
-        }));
+        }),
+      );
+  }
   const mapTreeKey = (owner: string, value: string) => {
+    if (!value.startsWith("[")) return projectKey(owner, value);
     let parts: unknown;
     try {
       parts = JSON.parse(value);
@@ -343,6 +357,7 @@ export function mergeSidebar(
   };
   const mapOrderItem = (owner: string, group: string, value: string) => {
     if (group === "projects") return projectKey(owner, value);
+    if (!value.startsWith("[")) return chatKey(owner, value);
     try {
       const parts = JSON.parse(value);
       if (Array.isArray(parts) && ["folder", "team"].includes(parts[1]))
@@ -364,10 +379,16 @@ export function mergeSidebar(
           const parts = JSON.parse(group);
           if (
             Array.isArray(parts) &&
-            parts[0] === "combined-sidebar" &&
+            ["combined-sidebar", "combined-sidebar-ranks"].includes(parts[0]) &&
             typeof parts[1] === "string"
           ) {
-            if (!overlays.has(parts[1])) overlays.set(parts[1], items);
+            if (!overlays.has(parts[1]))
+              overlays.set(
+                parts[1],
+                parts[0] === "combined-sidebar-ranks"
+                  ? decodeSidebarRanks(items)
+                  : items,
+              );
             continue;
           }
         } catch {
@@ -406,6 +427,43 @@ export function mergeSidebar(
       ]),
     ),
   );
+  const preferenceKeys = new Map<
+    string,
+    { compact: Set<string>; collapsed: Set<string> }
+  >();
+  for (const source of sources) {
+    const compact = new Set(Object.keys(source.sidebar.compact));
+    const collapsed = new Set(Object.keys(source.sidebar.collapsed));
+    const addPath = (path: string) => {
+      compact.add(path);
+      collapsed.add(path);
+    };
+    for (const project of source.sidebar.projects) {
+      const path = project.path || "";
+      addPath(path);
+      for (const folder of project.folders || [])
+        collapsed.add(JSON.stringify([path, "folder", folder.id]));
+      for (const team of project.peerTeams || [])
+        collapsed.add(JSON.stringify([path, "team", team.id]));
+    }
+    for (const team of source.sidebar.peerTeams)
+      collapsed.add(JSON.stringify([team.projectPath || "", "team", team.id]));
+    for (const chat of source.sidebar.threads) addPath(chat.cwd || "");
+    for (const room of source.sidebar.rooms) addPath(room.projectPath || "");
+    preferenceKeys.set(source.id, { compact, collapsed });
+  }
+  const preferenceOwner = (kind: "compact" | "collapsed", field: string) => {
+    if (kind === "collapsed") {
+      try {
+        const parts = JSON.parse(field);
+        if (parts[1] === "folder") return folderReferences.get(parts[2])?.owner;
+        if (parts[1] === "team") return teamReferences.get(parts[2])?.owner;
+      } catch {
+        /* Project paths need not be JSON. */
+      }
+    }
+    return projectReferences.get(field)?.owner;
+  };
   const mergeVisual = (
     kind: "compact" | "collapsed",
     values: ReadonlyMap<string, Record<string, boolean>>,
@@ -420,25 +478,10 @@ export function mergeSidebar(
         result[mapped] = mapped in result ? result[mapped] && value : value;
       }
     if (kind === "collapsed")
-      for (const group of groups.values())
-        for (const { source, project } of group.members) {
-          const path = project.path || "";
-          const names = [
-            path,
-            ...(project.folders || []).map((folder) =>
-              JSON.stringify([path, "folder", folder.id]),
-            ),
-            ...[
-              ...(project.peerTeams || []),
-              ...source.sidebar.peerTeams.filter(
-                (team) => team.projectPath === path,
-              ),
-            ].map((team) => JSON.stringify([path, "team", team.id])),
-          ];
-          for (const name of names)
-            if (!values.get(source.id)?.[name])
-              result[mapTreeKey(source.id, name)] = false;
-        }
+      for (const source of sources)
+        for (const name of preferenceKeys.get(source.id)!.collapsed)
+          if (!values.get(source.id)?.[name])
+            result[mapTreeKey(source.id, name)] = false;
     return result;
   };
   const compact = mergeVisual(
@@ -550,6 +593,8 @@ export function mergeSidebar(
     mapOrderItem,
     mergeOrder,
     mergeVisual,
+    preferenceKeys,
+    preferenceOwner,
     wireProject,
     orderOwner,
     requireReference,
@@ -624,4 +669,13 @@ export function createMergedSidebarSelector(combined = true) {
     previous = next;
     return next;
   };
+}
+
+/** Classic mode does not construct or traverse a merged model. */
+export function selectCombinedSidebar(
+  enabled: boolean,
+  select: ReturnType<typeof createMergedSidebarSelector>,
+  sources: () => SidebarSource[],
+) {
+  return enabled ? select(sources()) : undefined;
 }

@@ -172,3 +172,58 @@ it("reports unrelated write failures without a visual override", () => {
   expect(broken.saved(key, {})).toEqual(previous);
   expect(failed).toHaveBeenCalledOnce();
 });
+
+it("selection expansion stays in the session across snapshots and never writes on reconnect", () => {
+  const { sources, writes, records, wrap } = setup();
+  sources[1].sidebar.collapsed = { "/remote": true };
+  const { model, backend } = wrap();
+  const field = model.projectKey("remote", "/remote");
+  const key = `codex-project-tree:${model.data.stateDir}`;
+  const previous = backend.saved<Record<string, boolean>>(key, {});
+  expect(
+    backend.viewPreference!(key, previous, { ...previous, [field]: false })[
+      field
+    ],
+  ).toBe(false);
+  sources[1].online = true;
+  sources[1].sidebar = { ...sources[1].sidebar };
+  expect(wrap().backend.saved<Record<string, boolean>>(key, {})[field]).toBe(
+    false,
+  );
+  expect(sources[1].sidebar.collapsed).toEqual({ "/remote": true });
+  expect(records.get("remote")?.get(`codex-project-tree:${scope}`)).toEqual({
+    '["/remote","folder","folder"]': true,
+  });
+  expect(writes).not.toHaveBeenCalled();
+});
+
+it("an explicit home collapse survives an unchanged saved value and accepts a later owner preference change", () => {
+  const { sources, writes, wrap } = setup();
+  sources[1].online = true;
+  sources[0].sidebar.collapsed = { "/local": false };
+  sources[1].sidebar.projects[0].projectAliases = [
+    { serverId: "local", projectId: "/local", name: "local" },
+  ];
+  sources[1].sidebar.collapsed = { "/remote": false };
+  const { model, backend } = wrap();
+  const field = model.projectKey("local", "/local");
+  const key = `codex-project-tree:${model.data.stateDir}`;
+  const previous = backend.saved<Record<string, boolean>>(key, {});
+  expect(
+    backend.editPreference(key, previous, { ...previous, [field]: true })[
+      field
+    ],
+  ).toBe(true);
+  expect(writes.mock.calls.map((call) => call[0])).toEqual(["local"]);
+  sources[0].sidebar = { ...sources[0].sidebar, collapsed: { "/local": true } };
+  expect(wrap().backend.saved<Record<string, boolean>>(key, {})[field]).toBe(
+    true,
+  );
+  sources[0].sidebar = {
+    ...sources[0].sidebar,
+    collapsed: { "/local": false },
+  };
+  expect(wrap().backend.saved<Record<string, boolean>>(key, {})[field]).toBe(
+    false,
+  );
+});

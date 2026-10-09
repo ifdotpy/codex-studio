@@ -1,10 +1,6 @@
-import {
-  ApiError,
-  post,
-  type PostBody,
-  type PostOptions,
-  type PostResult,
-} from "../api";
+import { sidebarAgent } from "./sidebarSnapshot";
+import type { Agent } from "../types";
+import { ApiError, post, type PostBody, type PostOptions } from "../api";
 import {
   isServerCommand,
   type ServerCommand,
@@ -173,7 +169,8 @@ export async function executeSidebarRequest(
         typeof options.requestId !== "string"))
   )
     throw new Error("Invalid sidebar request options.");
-  return post(request.path!, request.body, options) as Promise<
-    PostResult<SidebarPostPath>
-  >;
+  const result = await post(request.path!, request.body, options);
+  return request.path === "/api/organization"
+    ? sidebarAgent(result as Agent)
+    : result;
 }

@@ -2257,52 +2257,54 @@ export default function App() {
   };
   return (
     <>
-      <Sidebar
-        data={data}
-        opened={opened}
-        lead={lead}
-        open={open}
-        prepareChat={prepareChat}
-        newChat={(path, folder) => void newChat(path, folder)}
-        newSharedChat={(path) => {
-          setSidebar(false);
-          setSharedCreate({ path });
-        }}
-        addProject={openAddProject}
-        changeProject={folders}
-        projectFolders={(path) => openProjectFolders(path)}
-        projectAccount={openSidebarProjectAccount}
-        creating={creating}
-        refresh={refresh}
-        notify={notify}
-        indicators={indicators}
-        markUnread={(a) => void readState.markUnread(a)}
-        markingRead={readState.marking}
-        rename={rename}
-        remove={remove}
-        mobile={sidebar}
-        collapsed={sidebarCollapsed}
-        onSearch={() => {
-          if (isServerView) {
-            window.parent.postMessage(
-              { kind: "studio-server-search" },
-              serverParentOrigin,
-            );
-            return;
-          }
-          setSidebar(false);
-          setSearchOpen(true);
-        }}
-        close={() => {
-          if (isServerView)
-            delete document.documentElement.dataset.serverProjects;
-          if (mobileClient) setSidebar(false);
-          else {
-            setSidebarCollapsed(true);
-            save("codex-sidebar-collapsed", true);
-          }
-        }}
-      />
+      {(!isServerView || isClassicServerView) && (
+        <Sidebar
+          data={data}
+          opened={opened}
+          lead={lead}
+          open={open}
+          prepareChat={prepareChat}
+          newChat={(path, folder) => void newChat(path, folder)}
+          newSharedChat={(path) => {
+            setSidebar(false);
+            setSharedCreate({ path });
+          }}
+          addProject={openAddProject}
+          changeProject={folders}
+          projectFolders={(path) => openProjectFolders(path)}
+          projectAccount={openSidebarProjectAccount}
+          creating={creating}
+          refresh={refresh}
+          notify={notify}
+          indicators={indicators}
+          markUnread={(a) => void readState.markUnread(a)}
+          markingRead={readState.marking}
+          rename={rename}
+          remove={remove}
+          mobile={sidebar}
+          collapsed={sidebarCollapsed}
+          onSearch={() => {
+            if (isServerView) {
+              window.parent.postMessage(
+                { kind: "studio-server-search" },
+                serverParentOrigin,
+              );
+              return;
+            }
+            setSidebar(false);
+            setSearchOpen(true);
+          }}
+          close={() => {
+            if (isServerView)
+              delete document.documentElement.dataset.serverProjects;
+            if (mobileClient) setSidebar(false);
+            else {
+              setSidebarCollapsed(true);
+              save("codex-sidebar-collapsed", true);
+            }
+          }}
+        />
+      )}
       <main
         className="workspace"
         data-show-message-avatars={studioPreferences.showMessageAvatars}

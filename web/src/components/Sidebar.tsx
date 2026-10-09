@@ -438,7 +438,13 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
         sharedRooms.find((r) => r.id === p.opened)?.projectPath;
       if (path && collapsed[path]) {
         const next = { ...collapsed, [path]: false };
-        setCollapsed(writePreferenceEdit(projectKey, collapsed, next));
+        setCollapsed(
+          (services.cache.viewPreference || writePreferenceEdit)(
+            projectKey,
+            collapsed,
+            next,
+          ),
+        );
       }
       const folders =
         projects.find((project) => project.path === path)?.folders || [];
@@ -450,7 +456,13 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
       }
       if (path && Object.keys(ancestors).length) {
         const next = { ...collapsed, [path]: false, ...ancestors };
-        setCollapsed(writePreferenceEdit(projectKey, collapsed, next));
+        setCollapsed(
+          (services.cache.viewPreference || writePreferenceEdit)(
+            projectKey,
+            collapsed,
+            next,
+          ),
+        );
       }
     }
   }, [p.opened, selectedFolder, p.selectionIdentity]);
@@ -459,7 +471,10 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
   const chatGroup = (agent: Agent) =>
     catalogChatGroup(agent, teamFor(agent.id));
   const middleDrop = (event: React.DragEvent<HTMLElement>) => {
-    const box = event.currentTarget.getBoundingClientRect();
+    const title = (event.target as Element).closest(
+      ".peer-team-toggle, .project-tree-toggle",
+    );
+    const box = (title || event.currentTarget).getBoundingClientRect();
     return (
       event.clientY > box.top + box.height * 0.25 &&
       event.clientY < box.top + box.height * 0.75
@@ -475,7 +490,11 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
       (source, event) => {
         const chat = catalog.byId.get(source.id);
         return !!(
-          (!reorder.draggable || middleDrop(event)) &&
+          ((!(event.target as Element).closest(
+            ".peer-team-toggle, .project-tree-toggle",
+          ) &&
+            !reorder.draggable) ||
+            middleDrop(event)) &&
           (canOrganizeProjects || (!folder && teamFor(source.id))) &&
           !teamMove.blocked() &&
           !organizationLock.current &&
@@ -830,7 +849,11 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
         (source, event) => {
           const chat = catalog.byId.get(source.id);
           return !!(
-            (!reorder.draggable || middleDrop(event)) &&
+            ((!(event.target as Element).closest(
+              ".peer-team-toggle, .project-tree-toggle",
+            ) &&
+              !reorder.draggable) ||
+              middleDrop(event)) &&
             chat &&
             canEdit(projectTarget(group.path, undefined, team.id)) &&
             canEdit({ kind: "chat", id: chat.id }) &&

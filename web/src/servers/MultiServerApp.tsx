@@ -22,6 +22,7 @@ import App from "../App";
 import CombinedServerSidebar from "./CombinedServerSidebar";
 import {
   createMergedSidebarSelector,
+  selectCombinedSidebar,
   createSidebarSourceStore,
 } from "./mergedSidebar";
 import { createSidebarRpcClient } from "./sidebarRpc";
@@ -340,7 +341,7 @@ export default function MultiServerApp() {
   const mergedSelector = useMemo(() => createMergedSidebarSelector(), []);
   const mergedSidebar = useMemo(
     () =>
-      mergedSelector(
+      selectCombinedSidebar(combinedNavigation, mergedSelector, () =>
         sidebarSources.current.sources(
           servers.map((server) => server.id),
           new Set(
@@ -875,7 +876,7 @@ export default function MultiServerApp() {
           >
             Servers and chats
           </Button>
-          {mergedSidebar.sources.length ? (
+          {mergedSidebar?.sources.length ? (
             <CombinedServerSidebar
               model={mergedSidebar}
               backends={sidebarBackends}

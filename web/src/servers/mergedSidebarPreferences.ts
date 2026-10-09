@@ -1,3 +1,4 @@
+import { encodeSidebarRanks, decodeSidebarRanks } from "./sidebarOrderRanks";
 import type { SidebarBackend } from "../components/sidebar/services";
 import type {
   MergedSidebar,
@@ -97,6 +98,7 @@ export function mergedSidebarPreferences(
   const treeKey = treePrefix + scope;
   const orderKey = orderPrefix + scope;
   let order: SidebarOrder = model.order;
+  const explicitEdits = new Map<string, Record<string, unknown>>();
   const visualEdits = new Map<string, Record<string, boolean>>();
   const prefixFor = (key: string) =>
     key === compactKey
@@ -117,9 +119,15 @@ export function mergedSidebarPreferences(
   const read = (key: string) => {
     if (key === orderKey) return order;
     if (key === compactKey)
-      return model.mergeVisual("compact", readVisual("compact"));
+      return {
+        ...model.mergeVisual("compact", readVisual("compact")),
+        ...explicitEdits.get(key),
+      };
     if (key === treeKey)
-      return model.mergeVisual("collapsed", readVisual("collapsed"));
+      return {
+        ...model.mergeVisual("collapsed", readVisual("collapsed")),
+        ...explicitEdits.get(key),
+      };
     return undefined;
   };
   const transientKey = (key: string) => "studio-combined-ui:" + key;
@@ -171,30 +179,17 @@ export function mergedSidebarPreferences(
     for (const source of model.sources) {
       const prior = values.get(source.id)!;
       const value = { ...prior };
-      const names = new Set(Object.keys(prior));
-      for (const group of model.groups.values())
-        for (const member of group.members) {
-          if (member.source.id !== source.id) continue;
-          const path = member.project.path || "";
-          names.add(path);
-          if (kind === "collapsed") {
-            for (const folder of member.project.folders || [])
-              names.add(JSON.stringify([path, "folder", folder.id]));
-            for (const team of [
-              ...(member.project.peerTeams || []),
-              ...source.sidebar.peerTeams.filter(
-                (team) => team.projectPath === path,
-              ),
-            ])
-              names.add(JSON.stringify([path, "team", team.id]));
-          }
-        }
+      const names = model.preferenceKeys.get(source.id)![kind];
       for (const name of names) {
         const mapped =
           kind === "compact"
             ? model.projectKey(source.id, name)
             : model.mapTreeKey(source.id, name);
-        if (!changed.has(mapped)) continue;
+        if (
+          !changed.has(mapped) ||
+          model.preferenceOwner(kind, mapped) !== source.id
+        )
+          continue;
         if (mapped in next) {
           if (typeof next[mapped] !== "boolean")
             throw new Error("Invalid sidebar preference value.");
@@ -218,6 +213,12 @@ export function mergedSidebarPreferences(
         accepted,
       );
     }
+    const choices = explicitEdits.get(key) || {};
+    for (const field of changed) {
+      if (field in next) choices[field] = next[field];
+      else delete choices[field];
+    }
+    explicitEdits.set(key, choices);
     return read(key);
   };
   return {
@@ -277,13 +278,24 @@ export function sidebarOrderWrite(
   const groups = { ...original };
   for (const [group, items] of Object.entries(original)) {
     try {
-      if (JSON.parse(group)?.[0] === "combined-sidebar") continue;
+      const parts = JSON.parse(group);
+      if (parts?.[0] === "combined-sidebar") {
+        delete groups[group];
+        groups[JSON.stringify(["combined-sidebar-ranks", parts[1]])] =
+          encodeSidebarRanks(items);
+        continue;
+      }
+      if (parts?.[0] === "combined-sidebar-ranks") {
+        groups[group] = encodeSidebarRanks(decodeSidebarRanks(items));
+        continue;
+      }
     } catch {
       /* Native keys may be plain strings. */
     }
     const projected = model.mapOrderGroup(owner, group);
     const replacement = visible[projected];
     if (!replacement) continue;
+    const replacementSet = new Set(replacement);
     const wireById = new Map(
       items.map((id) => [model.mapOrderItem(owner, group, id), id]),
     );
@@ -295,7 +307,7 @@ export function sidebarOrderWrite(
         return wire === undefined ? [] : [wire];
       }),
       ...items.filter(
-        (id) => !replacement.includes(model.mapOrderItem(owner, group, id)),
+        (id) => !replacementSet.has(model.mapOrderItem(owner, group, id)),
       ),
     ];
   }
@@ -309,8 +321,15 @@ export function sidebarOrderWrite(
         const wire = wireOrderItem(model, owner, group, item);
         return wire === undefined ? [] : [wire];
       });
-    groups[JSON.stringify(["combined-sidebar", group])] = [...items];
+    delete groups[JSON.stringify(["combined-sidebar", group])];
+    groups[JSON.stringify(["combined-sidebar-ranks", group])] =
+      encodeSidebarRanks(items);
   }
+  if (
+    Object.values(groups).reduce((count, items) => count + items.length, 0) >
+    10000
+  )
+    throw new Error("The sidebar order exceeds the server limit.");
   return {
     expected_revision: source.sidebar.sidebarOrder?.revision || 0,
     groups,

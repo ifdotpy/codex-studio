@@ -1,3 +1,4 @@
+import { decodeSidebarRanks } from "./sidebarOrderRanks";
 import { describe, expect, it } from "vitest";
 import type { Agent, Project } from "../types";
 import {
@@ -520,7 +521,7 @@ describe("original saved sidebar state", () => {
         projectAliases: [{ serverId: "local", projectId: path, name: "local" }],
       },
     ]);
-    remote.online = false;
+    local.online = false;
     const a = backend(local);
     const b = backend(remote);
     const model = mergeSidebar([local, remote]);
@@ -589,9 +590,11 @@ describe("original saved sidebar state", () => {
     });
     expect(write.expected_revision).toBe(3);
     expect(write.groups[itemGroup(path)]).toEqual(["missing", "same"]);
-    expect(write.groups[JSON.stringify(["combined-sidebar", group])]).toEqual(
-      ids,
-    );
+    expect(
+      decodeSidebarRanks(
+        write.groups[JSON.stringify(["combined-sidebar-ranks", group])],
+      ),
+    ).toEqual(ids);
     expect(write.groups.projects).toEqual([path]);
     expect(JSON.stringify([local.sidebar, remote.sidebar])).toBe(original);
     const accepted = {

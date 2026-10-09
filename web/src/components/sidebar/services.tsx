@@ -25,6 +25,7 @@ export type SidebarBackend = {
   save: typeof save;
   storage: Pick<Storage, "getItem" | "setItem" | "removeItem">;
   editPreference: typeof writePreferenceEdit;
+  viewPreference?: typeof writePreferenceEdit;
   subscribePreference: (key: string, update: () => void) => () => void;
 };
 

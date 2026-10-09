@@ -182,3 +182,24 @@ it("runs prefetch and unread callbacks in the owning frame and returns its fresh
   ).toEqual(navigation);
   expect(post).not.toHaveBeenCalled();
 });
+
+it("organization replies use only the sidebar agent whitelist", async () => {
+  post.mockResolvedValue({
+    id: "same",
+    pinned: true,
+    tail: "Preview",
+    prompt: "PRIVATE_PROMPT",
+    lastAnswer: "PRIVATE_ANSWER",
+    runtime: { token: "PRIVATE_TOKEN" },
+  });
+  const result = await executeSidebarRequest(
+    {
+      action: "post",
+      path: "/api/organization",
+      body: { id: "same", pinned: true },
+    },
+    vi.fn(),
+    vi.fn(),
+  );
+  expect(result).toEqual({ id: "same", pinned: true, tail: "Preview" });
+});
