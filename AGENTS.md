@@ -23,6 +23,13 @@ live model request or a real reset-credit redemption.
 Commit named files. Preserve unrelated work and build outputs. Do not publish the
 repository or change its license without explicit authorization.
 
+Write everything in this repository in English: code, comments, commit messages,
+pull requests, issues, and documentation.
+
+Run the tests before you open a pull request against `main` or merge into `main`.
+Use the server and client suites in [docs/testing.md](docs/testing.md), and state
+the results in the pull request.
+
 ## Code checks
 
 Run `npm run typecheck:runtime` (or `python3 scripts/codex_python.py --mypy`) to run the strict mypy ratchet across the runtime. It is intentionally not part of the pre-commit hook.
