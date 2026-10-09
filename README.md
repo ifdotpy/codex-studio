@@ -19,6 +19,9 @@ describes managed tools and application workflows. No external skill repository
 is required. Standard Codex CLI delegation belongs to the independent native
 agent skill, not this application skill.
 
+The [Rust migration and workspace proposal](docs/plans/rust-workspaces.md)
+defines planned module boundaries and acceptance gates. It awaits approval.
+
 In the left sidebar, open a project's menu and select **New team** to group
 independent chats. Select at least two chats from that project. Each chat keeps
 its own tasks, history, and subagents. Team members can discover each other and
