@@ -32,6 +32,7 @@ import type { ServerCommand, ServerNavigation } from "./navigation";
 import type { ResourceConnectionState } from "../sync/resourceEvents";
 import ServerManager from "./ServerManager";
 import ServerAccountsPanel from "./ServerAccountsPanel";
+import { accountServers } from "./accountServers";
 import type { ServerAccount } from "./navigation";
 import {
   studioPreferencesStorageKey,
@@ -74,6 +75,10 @@ export default function MultiServerApp() {
   const discovery = useServerDiscovery(
     !uiOnly && ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname),
     (server) => add(server, false),
+  );
+  const accountsServers = useMemo(
+    () => accountServers(servers, discovery.snapshot?.servers || []),
+    [servers, discovery.snapshot],
   );
   const [navigation, setNavigation] = useState<
     Record<string, ServerNavigation>
@@ -339,7 +344,8 @@ export default function MultiServerApp() {
     };
   }, [unloaded, paired]);
   useEffect(() => {
-    if (!manager || managerTab !== "servers") return;
+    if (!manager || (managerTab !== "servers" && managerTab !== "accounts"))
+      return;
     const controllers = new Set<AbortController>();
     let stopped = false;
     for (const server of servers) {
@@ -519,6 +525,7 @@ export default function MultiServerApp() {
           setManager(true);
         }
       } else if (event.data.kind === "studio-server-open-settings") {
+        setManagerTab(event.data.tab === "accounts" ? "accounts" : "servers");
         setManager(true);
       } else if (event.data.kind === "studio-server-preferences") {
         try {
@@ -670,13 +677,27 @@ export default function MultiServerApp() {
         >
           <StudioSettingsTabs />
           <Tabs.Panel value="accounts" pt="md">
+            {discovery.error && <p role="alert">{discovery.error}</p>}
             <ServerAccountsPanel
-              servers={servers}
+              servers={accountsServers}
               accountsByServer={accountsByServer}
-              statuses={status}
+              statuses={{
+                ...Object.fromEntries(
+                  (discovery.snapshot?.servers || [])
+                    .filter(
+                      (peer) =>
+                        peer.status === "unreachable" ||
+                        peer.reachability === "unreachable",
+                    )
+                    .map((peer) => [peer.id, "offline"]),
+                ),
+                ...status,
+              }}
               startAccount={(id, command) => {
                 restoreManagerAfterFrameDialog.current = manager;
-                setManager(false);
+                if (servers.some((server) => server.id === id))
+                  setManager(false);
+                else discovery.addAgain(id);
                 send(id, command);
               }}
               accountAction={(id, command) => {
@@ -693,7 +714,7 @@ export default function MultiServerApp() {
       </div>
     </Modal>
   );
-  if (!uiOnly && !paired.length)
+  if (!uiOnly && !paired.length && accountsServers.length === servers.length)
     return (
       <ServerSettingsContext.Provider
         value={{

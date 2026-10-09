@@ -307,22 +307,27 @@ export default function App() {
     useState<StudioSettingsTab>("accounts");
   const serverSettings = useServerSettings();
   useEffect(() => {
-    if (studioSettingsOpen && studioSettingsTab === "servers")
-      serverSettings?.activate();
+    if (!studioSettingsOpen) return;
+    if (
+      serverViewId &&
+      window.parent !== window &&
+      (studioSettingsTab === "accounts" || studioSettingsTab === "servers") &&
+      !externalFrameAccountDialog.current
+    ) {
+      setStudioSettingsOpen(false);
+      window.parent.postMessage(
+        {
+          kind: "studio-server-open-settings",
+          serverId: serverViewId,
+          tab: studioSettingsTab,
+        },
+        serverParentOrigin,
+      );
+    } else if (studioSettingsTab === "servers") serverSettings?.activate();
   }, [studioSettingsOpen, studioSettingsTab]);
   const activateSettingsTab = (value: string | null) => {
     if (!isStudioSettingsTab(value)) return;
     setStudioSettingsTab(value);
-    if (value === "servers") {
-      if (serverSettings) serverSettings.activate();
-      else if (serverViewId && window.parent !== window) {
-        setStudioSettingsOpen(false);
-        window.parent.postMessage(
-          { kind: "studio-server-open-settings", serverId: serverViewId },
-          serverParentOrigin,
-        );
-      }
-    }
   };
   const chatActionsButton = useRef<HTMLButtonElement>(null);
   const [accountModalOpen, setAccountModalOpen] = useState(false);
