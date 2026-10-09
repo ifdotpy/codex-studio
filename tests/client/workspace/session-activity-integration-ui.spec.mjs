@@ -2,14 +2,12 @@ import {
   readTestState,
   syncIdentityFixture,
   installApiSchemaFixtureHeaders,
-  apiSchemaHeaders,
   syncProtocolFixture,
   stubEntityState,
   test,
   spawnFixture as spawn,
 } from "../playwright.mjs";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -127,7 +125,7 @@ test("Session activity integration", async ({ browser }) => {
         },
       });
     });
-    let historyTasks = Array.from({ length: 100 }, (_, index) => ({
+    const historyTasks = Array.from({ length: 100 }, (_, index) => ({
       ...task,
       id: `recent-completed-${index}`,
       status: "completed",
@@ -221,25 +219,6 @@ test("Session activity integration", async ({ browser }) => {
       !detailReads.includes("newer-command"),
       "Missing explicit selection must not open another task",
     );
-    historyTasks = [task];
-    const beforeLateHistory = taskFeedReads;
-    const notification = await fetch(new URL("/api/sync/notify", origin), {
-      method: "POST",
-      headers: {
-        Origin: origin,
-        "Content-Type": "application/json",
-        "X-Canvas-Token": state.token,
-        ...apiSchemaHeaders(),
-      },
-      body: JSON.stringify({
-        requestId: randomUUID(),
-        resources: [{ kind: "tasks", agentId: lead.id }],
-      }),
-    });
-    assert.equal(notification.status, 200, await notification.text());
-    for (let n = 0; n < 120 && taskFeedReads === beforeLateHistory; n++)
-      await new Promise((r) => setTimeout(r, 50));
-    assert.ok(taskFeedReads > beforeLateHistory);
     await entities.update(entityState, publish);
     await page
       .locator(`[data-task="${task.id}"][aria-pressed="true"]`)

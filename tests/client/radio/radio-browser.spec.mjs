@@ -25,7 +25,7 @@ test("Radio browser", async ({
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-radio-"));
   const entry = join(root, "radio-fixture.tsx");
   const streams = new Set();
-  const workspaceId = "a".repeat(32);
+  const workspaceId = "1234567890abcdef1234567890abcdef";
   const syncSnapshot = {
     stateDir: "radio-test",
     chats: [],
@@ -82,7 +82,7 @@ test("Radio browser", async ({
             res.writeHead(200, { "Content-Type": "text/event-stream" });
             res.write(apiSchemaHandshakeSse());
             res.write(
-              `event: resources\ndata: ${JSON.stringify({ protocol: 3, workspaceId: "1234567890abcdef1234567890abcdef", epoch: "radio-epoch", revision: 1, reason: "initial", resources, resourceVersions: resources.map((resource) => ({ resource, revision: 1 })) })}\n\n`,
+              `event: resources\ndata: ${JSON.stringify({ protocol: 3, workspaceId, epoch: "radio-epoch", revision: 1, reason: "initial", resources, resourceVersions: resources.map((resource) => ({ resource, revision: 1 })) })}\n\n`,
             );
           });
           s.middlewares.use("/check", (_req, res) => {
@@ -134,7 +134,7 @@ test("Radio browser", async ({
       r.fulfill({
         headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
         json: {
-          workspaceId: "1234567890abcdef1234567890abcdef",
+          workspaceId,
           syncProtocol: 2,
         },
       }),
