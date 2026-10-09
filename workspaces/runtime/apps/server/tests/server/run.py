@@ -22,31 +22,41 @@ import tempfile
 import threading
 import time
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+SERVER_APP_BOOTSTRAP = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(SERVER_APP_BOOTSTRAP / "src"))
+from codex_layout import (  # noqa: E402
+    REPOSITORY_ROOT,
+    SERVER_SOURCE_ROOT,
+    SERVER_TESTS_ROOT,
+)
+
+ROOT = REPOSITORY_ROOT
+TESTS = SERVER_TESTS_ROOT
+TESTS_REL = TESTS.relative_to(ROOT).as_posix()
+SOURCE_REL = SERVER_SOURCE_ROOT.relative_to(ROOT).as_posix()
+sys.path.insert(0, str(TESTS))
 from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
 
-ROOT = Path(__file__).resolve().parents[2]
-TESTS = ROOT / "tests"
-TERMINALS_SUITE = "tests/terminals-contract.py"
-CODEX_BIN_SUITES = frozenset({TERMINALS_SUITE, "tests/test_isolation_contract.py"})
+TERMINALS_SUITE = f"{TESTS_REL}/terminals-contract.py"
+CODEX_BIN_SUITES = frozenset({TERMINALS_SUITE, f"{TESTS_REL}/test_isolation_contract.py"})
 COMPONENT_ROOTS = (
-    "scripts/analytics/tests",
-    "scripts/sync/tests",
-    "scripts/native_notifications/tests",
-    "scripts/transcript_storage/tests",
+    f"{SOURCE_REL}/analytics/tests",
+    f"{SOURCE_REL}/sync/tests",
+    f"{SOURCE_REL}/native_notifications/tests",
+    f"{SOURCE_REL}/transcript_storage/tests",
 )
 SCENARIO_BENCHMARK_ROOTS = (
-    "scripts/sync/benchmarks/message_delivery",
-    "scripts/studio_api/benchmarks/runtime_load",
+    f"{SOURCE_REL}/sync/benchmarks/message_delivery",
+    f"{SOURCE_REL}/studio_api/benchmarks/runtime_load",
 )
-STUDIO_API_COMPONENT_ROOT = ROOT / "scripts" / "studio_api"
+STUDIO_API_COMPONENT_ROOT = SERVER_SOURCE_ROOT / "studio_api"
 LEGACY_SERVER_JS = {
-    "tests/portable-smoke.mjs": "safe",
-    "tests/state-contract-smoke.mjs": "safe",
-    "tests/swarm-retry-contract.mjs": "expensive",
-    "scripts/studio_api/benchmarks/runtime_load/test_http_outcomes.mjs": "expensive",
+    f"{TESTS_REL}/portable-smoke.mjs": "safe",
+    f"{TESTS_REL}/state-contract-smoke.mjs": "safe",
+    f"{TESTS_REL}/swarm-retry-contract.mjs": "expensive",
+    f"{SOURCE_REL}/studio_api/benchmarks/runtime_load/test_http_outcomes.mjs": "expensive",
 }
 OPT_IN = {"native", "live", "expensive", "browser", "vm"}
 DEFAULT_TIMEOUT_SECONDS = 120
@@ -103,70 +113,70 @@ def resolve_codex_executable():
 RESOLVED_CODEX_BIN = resolve_codex_executable()
 
 NATIVE_SUITES = frozenset({
-    "tests/account-transfer-native.py", "tests/agent-review-native.py",
-    "tests/claude-monitor-native.py", "tests/context-repair-native.py",
-    "tests/monitor-completion-native.py", "tests/monitor-continuation-native.py",
-    "tests/monitor-shell-native.py", "tests/native-primitives-integration.py",
-    "tests/native-safety-integration.py", "tests/native-tools-native.py",
-    "tests/portable-history-native.py", "tests/session-names-native.py",
-    "tests/spawn-recovery-native.py", "tests/time-awareness-native.py",
-    "tests/native-action-context-repair-contract.py",
-    "tests/native-action-receipts-contract.py", "tests/native-action-settings-contract.py",
-    "tests/native-binary-contract.py", "tests/native-command-controls-contract.py",
-    "tests/native-error-contract.py", "tests/native-notification-lookup-contract.py",
-    "tests/native-release-contract.py", "tests/native-runtime-updates-contract.py",
-    "tests/native-safety-contract.py", "tests/native-tools-contract.py",
-    "tests/native-tools-shutdown-contract.py", "tests/native-voice-admission-contract.py",
-    "tests/native-voice-contract.py",
-    "tests/tool-parity.py", "tests/workspace-native-turn.py",
-    "tests/workspace-protocol.py",
+    f"{TESTS_REL}/account-transfer-native.py", f"{TESTS_REL}/agent-review-native.py",
+    f"{TESTS_REL}/claude-monitor-native.py", f"{TESTS_REL}/context-repair-native.py",
+    f"{TESTS_REL}/monitor-completion-native.py", f"{TESTS_REL}/monitor-continuation-native.py",
+    f"{TESTS_REL}/monitor-shell-native.py", f"{TESTS_REL}/native-primitives-integration.py",
+    f"{TESTS_REL}/native-safety-integration.py", f"{TESTS_REL}/native-tools-native.py",
+    f"{TESTS_REL}/portable-history-native.py", f"{TESTS_REL}/session-names-native.py",
+    f"{TESTS_REL}/spawn-recovery-native.py", f"{TESTS_REL}/time-awareness-native.py",
+    f"{TESTS_REL}/native-action-context-repair-contract.py",
+    f"{TESTS_REL}/native-action-receipts-contract.py", f"{TESTS_REL}/native-action-settings-contract.py",
+    f"{TESTS_REL}/native-binary-contract.py", f"{TESTS_REL}/native-command-controls-contract.py",
+    f"{TESTS_REL}/native-error-contract.py", f"{TESTS_REL}/native-notification-lookup-contract.py",
+    f"{TESTS_REL}/native-release-contract.py", f"{TESTS_REL}/native-runtime-updates-contract.py",
+    f"{TESTS_REL}/native-safety-contract.py", f"{TESTS_REL}/native-tools-contract.py",
+    f"{TESTS_REL}/native-tools-shutdown-contract.py", f"{TESTS_REL}/native-voice-admission-contract.py",
+    f"{TESTS_REL}/native-voice-contract.py",
+    f"{TESTS_REL}/tool-parity.py", f"{TESTS_REL}/workspace-native-turn.py",
+    f"{TESTS_REL}/workspace-protocol.py",
 })
 VM_SUITES = frozenset({
-    "tests/linux-vm-auth-native.py", "tests/linux-vm-studio-native.py",
+    f"{TESTS_REL}/linux-vm-auth-native.py", f"{TESTS_REL}/linux-vm-studio-native.py",
 })
 BROWSER_SUITES = frozenset({
-    "tests/browser-backend-smoke.py", "tests/browser-lock-contract.py",
-    "tests/browser-native-contract.py", "tests/browser-recovery-contract.py",
+    f"{TESTS_REL}/browser-backend-smoke.py", f"{TESTS_REL}/browser-lock-contract.py",
+    f"{TESTS_REL}/browser-native-contract.py", f"{TESTS_REL}/browser-recovery-contract.py",
 })
-LIVE_SUITES = frozenset({"tests/runtime-live.py"})
+LIVE_SUITES = frozenset({f"{TESTS_REL}/runtime-live.py"})
 EXPENSIVE_SUITES = frozenset({
-    "tests/account-costs-contract.py", "tests/analytics-memory-contract.py",
-    "tests/analytics-usage-memory-contract.py", "tests/cost-scanner-contract.py",
-    "tests/costs-contract.py", "tests/limit-payloads-contract.py",
-    "tests/notification-load-contract.py",
-    "tests/payload-storage-contract.py", "tests/peer-conversion-scale-contract.py",
-    "tests/preparation-unload-contract.py",
-    "tests/pricing-session-cost-contract.py", "tests/provider-replay-runner.py",
-    "tests/scheduler-disk-full-contract.py",
-    "tests/session-cost-memory-contract.py", "tests/session-cost-refresh-contract.py",
-    "tests/session-cost-scan-contract.py",
-    "tests/supervisor-stream-phase-load-contract.py",
-    "tests/sync-read-latency-contract.py",
-    "tests/transcript-latency-contract.py", "tests/transcript-streaming-write-volume-contract.py",
-    "tests/swarm-retry-contract.mjs",
-    "scripts/sync/benchmarks/message_delivery/test_benchmark.py",
-    "scripts/studio_api/benchmarks/runtime_load/test_runtime_load.py",
+    f"{TESTS_REL}/account-costs-contract.py", f"{TESTS_REL}/analytics-memory-contract.py",
+    f"{TESTS_REL}/analytics-usage-memory-contract.py", f"{TESTS_REL}/cost-scanner-contract.py",
+    f"{TESTS_REL}/costs-contract.py", f"{TESTS_REL}/limit-payloads-contract.py",
+    f"{TESTS_REL}/notification-load-contract.py",
+    f"{TESTS_REL}/payload-storage-contract.py", f"{TESTS_REL}/peer-conversion-scale-contract.py",
+    f"{TESTS_REL}/preparation-unload-contract.py",
+    f"{TESTS_REL}/pricing-session-cost-contract.py", f"{TESTS_REL}/provider-replay-runner.py",
+    f"{TESTS_REL}/scheduler-disk-full-contract.py",
+    f"{TESTS_REL}/session-cost-memory-contract.py", f"{TESTS_REL}/session-cost-refresh-contract.py",
+    f"{TESTS_REL}/session-cost-scan-contract.py",
+    f"{TESTS_REL}/supervisor-stream-phase-load-contract.py",
+    f"{TESTS_REL}/sync-read-latency-contract.py",
+    f"{TESTS_REL}/transcript-latency-contract.py", f"{TESTS_REL}/transcript-streaming-write-volume-contract.py",
+    f"{TESTS_REL}/swarm-retry-contract.mjs",
+    f"{SOURCE_REL}/sync/benchmarks/message_delivery/test_benchmark.py",
+    f"{SOURCE_REL}/studio_api/benchmarks/runtime_load/test_runtime_load.py",
 })
 NON_TESTS = {
-    "tests/test_isolation.py": "shared fixture helper",
-    "tests/mobile-startup-fixture.py": "browser fixture helper",
-    "tests/mobile-usability-fixture.py": "browser fixture helper",
-    "tests/runtime-read-lock-fixture.py": "runtime fixture helper",
-    "tests/sidebar-drag-fixture.py": "browser fixture helper",
-    "tests/simple-ui-fixture.py": "browser fixture helper",
-    "tests/native-action-ui-fixture.py": "browser fixture helper",
-    "tests/provider-replay-server.py": "provider subprocess fixture, not a test entrypoint",
-    "tests/server/rpc_replay_contract.py": "shared fixture RPC allowlist",
-    "tests/server/suite_entry.py": "server suite runner entrypoint",
-    "tests/sync-live-patch-http-contract.py":
+    f"{TESTS_REL}/test_isolation.py": "shared fixture helper",
+    f"{TESTS_REL}/mobile-startup-fixture.py": "browser fixture helper",
+    f"{TESTS_REL}/mobile-usability-fixture.py": "browser fixture helper",
+    f"{TESTS_REL}/runtime-read-lock-fixture.py": "runtime fixture helper",
+    f"{TESTS_REL}/sidebar-drag-fixture.py": "browser fixture helper",
+    f"{TESTS_REL}/simple-ui-fixture.py": "browser fixture helper",
+    f"{TESTS_REL}/native-action-ui-fixture.py": "browser fixture helper",
+    f"{TESTS_REL}/provider-replay-server.py": "provider subprocess fixture, not a test entrypoint",
+    f"{TESTS_REL}/server/rpc_replay_contract.py": "shared fixture RPC allowlist",
+    f"{TESTS_REL}/server/suite_entry.py": "server suite runner entrypoint",
+    f"{TESTS_REL}/sync-live-patch-http-contract.py":
         "fixture harness requiring an injected legacy HTTP server and runtime",
-    "tests/fixtures/current_cleanup_receipts.py": "test fixture data",
-    "tests/fixtures/current_cleanup_state.py": "test fixture data",
-    "scripts/sync/benchmarks/message_delivery/benchmark.py": "manual benchmark entrypoint",
-    "scripts/studio_api/benchmarks/runtime_load/server.py": "load-test fixture server",
-    "scripts/studio_api/benchmarks/runtime_load/run.mjs": "manual load-test entrypoint",
-    "scripts/studio_api/benchmarks/runtime_load/http_outcomes.mjs": "load-test helper module",
-    "scripts/studio_api/benchmarks/runtime_load/identity.mjs": "load-test helper module",
+    f"{TESTS_REL}/fixtures/current_cleanup_receipts.py": "test fixture data",
+    f"{TESTS_REL}/fixtures/current_cleanup_state.py": "test fixture data",
+    f"{SOURCE_REL}/sync/benchmarks/message_delivery/benchmark.py": "manual benchmark entrypoint",
+    f"{SOURCE_REL}/studio_api/benchmarks/runtime_load/server.py": "load-test fixture server",
+    f"{SOURCE_REL}/studio_api/benchmarks/runtime_load/run.mjs": "manual load-test entrypoint",
+    f"{SOURCE_REL}/studio_api/benchmarks/runtime_load/http_outcomes.mjs": "load-test helper module",
+    f"{SOURCE_REL}/studio_api/benchmarks/runtime_load/identity.mjs": "load-test helper module",
 }
 
 
@@ -220,10 +230,10 @@ def inventory():
     entries = {}
     for path in TESTS.rglob("*.py"):
         relative = path.relative_to(ROOT).as_posix()
-        if relative in NON_TESTS or "tests/fixtures/" in relative:
+        if relative in NON_TESTS or f"{TESTS_REL}/fixtures/" in relative:
             continue
         if is_unittest_suite(path):
-            entries[relative] = "component" if "/tests/" in relative and relative.startswith("scripts/") else category(path)
+            entries[relative] = "component" if "/tests/" in relative and relative.startswith(f"{SOURCE_REL}/") else category(path)
     # Standalone assertion scripts do not necessarily use unittest. These
     # test-file suffixes are test-entrypoint conventions; safety is decided by
     # the explicit execution-class sets above, never by the filename itself.
@@ -240,7 +250,7 @@ def inventory():
             entries[path.relative_to(ROOT).as_posix()] = category(path)
     for path in (TESTS / "server").glob("test_*.py"):
         entries[path.relative_to(ROOT).as_posix()] = "component"
-    for path in (ROOT / "scripts").glob("test_codex_*.py"):
+    for path in (SERVER_SOURCE_ROOT).glob("test_codex_*.py"):
         if is_unittest_suite(path):
             entries[path.relative_to(ROOT).as_posix()] = "component"
     for path, kind in LEGACY_SERVER_JS.items():
@@ -641,9 +651,9 @@ def _close_windows_job(job):
 def _suite_command(relative, root):
     if relative.endswith(".mjs"):
         return ["node", str(root / relative)]
-    entry = root / "tests/server/suite_entry.py"
-    if relative.startswith("scripts/studio_api/") and relative.endswith(".py"):
-        module_name = relative[len("scripts/"):-3].replace("/", ".")
+    entry = root / f"{TESTS_REL}/server/suite_entry.py"
+    if relative.startswith(f"{SOURCE_REL}/studio_api/") and relative.endswith(".py"):
+        module_name = relative[len(f"{SOURCE_REL}/"):-3].replace("/", ".")
         return [sys.executable, "-B", str(entry), "module", module_name, "-v"]
     path = root / relative
     if is_unittest_suite(path):
@@ -711,10 +721,11 @@ def _suite_environment(root, temp_root, audit_home=False, relative=None):
     # the suite's TMPDIR, which keeps every worker's image store independent.
     environment["CODEX_AGENTS_TEST_WORKSPACE_STORE"] = str(workspace_store)
     environment["CODEX_WORKSPACE_STORE"] = str(workspace_store)
-    scripts_path = str(root / "scripts")
-    python_paths = [scripts_path]
+    source_path = str(root / SOURCE_REL)
+    tests_path = str(root / TESTS_REL)
+    python_paths = [source_path, tests_path]
     if audit_home:
-        audit_path = str(TESTS / "server" / "audit-home")
+        audit_path = str(Path(root) / TESTS_REL / "server" / "audit-home")
         python_paths.insert(0, audit_path)
         environment["CODEX_SERVER_TEST_AUDIT_HOME"] = "1"
         environment["CODEX_SERVER_TEST_REAL_HOME"] = str(Path.home())
@@ -1211,7 +1222,7 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
                 environment = _suite_environment(root, temp_root, audit_home=audit_home,
                                                  relative=relative)
                 if not relative.endswith(".mjs") and (
-                        relative.startswith("scripts/studio_api/")
+                        relative.startswith(f"{SOURCE_REL}/studio_api/")
                         or is_unittest_suite(root / relative)):
                     environment["CODEX_SERVER_TEST_RESULT_FILE"] = str(
                         _runner_artifact_root(temp_root) / "unittest-outcomes.jsonl")

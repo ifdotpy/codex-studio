@@ -2,11 +2,11 @@ import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
-import "../../web/src/studio-theme.css";
-import "../../web/src/appearance.css";
-import TerminalDock from "../../web/src/components/TerminalDock";
-import BackgroundTasks from "../../web/src/components/shell/BackgroundTasks";
-import DraftVersions from "../../web/src/components/DraftVersions";
+import "../../../../client/apps/web/src/studio-theme.css";
+import "../../../../client/apps/web/src/appearance.css";
+import TerminalDock from "../../../../client/apps/web/src/components/TerminalDock";
+import BackgroundTasks from "../../../../client/apps/web/src/components/shell/BackgroundTasks";
+import DraftVersions from "../../../../client/apps/web/src/components/DraftVersions";
 const task = (id: string, created: number, agent = "lead") => ({
   id,
   created,

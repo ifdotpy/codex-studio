@@ -17,11 +17,17 @@ import time
 import unittest
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parents[2]
-RUNNER_PATH = ROOT / "tests" / "server" / "run.py"
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
+ROOT = REPOSITORY_ROOT
+RUNNER_PATH = SERVER_TESTS_ROOT / "server" / "run.py"
 RUNNER_SPEC = importlib.util.spec_from_file_location("server_suite_runner", RUNNER_PATH)
 RUNNER = importlib.util.module_from_spec(RUNNER_SPEC)
 RUNNER_SPEC.loader.exec_module(RUNNER)
+COMPARE_PATH = SERVER_TESTS_ROOT / "server" / "compare_runs.py"
+COMPARE_SPEC = importlib.util.spec_from_file_location("server_compare_runs", COMPARE_PATH)
+COMPARE_RUNS = importlib.util.module_from_spec(COMPARE_SPEC)
+COMPARE_SPEC.loader.exec_module(COMPARE_RUNS)
 
 
 def _save_profile_in_process(profile_path, profile, start_gate):
@@ -32,6 +38,23 @@ def _save_profile_in_process(profile_path, profile, start_gate):
 
 
 class ServerSuiteRunner(unittest.TestCase):
+    def test_compare_runs_normalizes_old_and_relocated_suite_paths(self):
+        with tempfile.TemporaryDirectory(prefix="server-run-compare-") as directory:
+            old_log = Path(directory) / "old.log"
+            new_log = Path(directory) / "new.log"
+            old_log.write_text("FAIL tests/runtime-contract.py: old failure\n", encoding="utf-8")
+            new_log.write_text(
+                "FAIL workspaces/runtime/apps/server/tests/runtime-contract.py: new failure\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(COMPARE_RUNS.failures(old_log), {
+                f"{RUNNER.TESTS_REL}/runtime-contract.py": {"old failure"},
+            })
+            self.assertEqual(COMPARE_RUNS.failures(new_log), {
+                f"{RUNNER.TESTS_REL}/runtime-contract.py": {"new failure"},
+            })
+
     def test_suite_children_disable_host_git_maintenance_and_refresh(self):
         with tempfile.TemporaryDirectory(prefix="server-git-config-") as directory:
             suite_root = Path(directory) / "suite"
@@ -43,6 +66,10 @@ class ServerSuiteRunner(unittest.TestCase):
             self.assertEqual(global_config, Path(environment["HOME"]) / ".gitconfig")
             self.assertTrue(global_config.is_file())
             self.assertEqual(global_config.stat().st_size, 0)
+            self.assertEqual(
+                environment["PYTHONPATH"].split(os.pathsep)[:2],
+                [str(SERVER_SOURCE_ROOT), str(SERVER_TESTS_ROOT)],
+            )
             self.assertEqual(environment["GIT_CONFIG_COUNT"], "4")
             for index, (key, value) in enumerate((
                 ("gc.auto", "0"),
@@ -72,11 +99,15 @@ class ServerSuiteRunner(unittest.TestCase):
             )
             isolation = RUNNER._suite_environment(
                 ROOT, isolation_root, audit_home=True,
-                relative="tests/test_isolation_contract.py",
+                relative=f"{RUNNER.TESTS_REL}/test_isolation_contract.py",
             )
             ordinary = RUNNER._suite_environment(
                 ROOT, ordinary_root, audit_home=True,
-                relative="tests/runtime-contract.py",
+                relative=f"{RUNNER.TESTS_REL}/runtime-contract.py",
+            )
+            self.assertEqual(
+                Path(ordinary["PYTHONPATH"].split(os.pathsep)[0]),
+                SERVER_TESTS_ROOT / "server" / "audit-home",
             )
             if RUNNER.RESOLVED_CODEX_BIN:
                 for environment in (terminal, isolation):
@@ -94,40 +125,40 @@ class ServerSuiteRunner(unittest.TestCase):
     def test_discovers_ast_suites_and_excludes_helpers(self):
         paths = {path for path, _kind in RUNNER.inventory()}
         categories = dict(RUNNER.inventory())
-        self.assertIn("tests/test_isolation_contract.py", paths)
-        self.assertIn("tests/worker-lifecycle-scenarios-11-14.py", paths)
-        self.assertIn("scripts/test_codex_api_client.py", paths)
-        self.assertIn("scripts/test_codex_token_rate_events.py", paths)
-        self.assertIn("scripts/test_codex_resource_producers.py", paths)
-        self.assertIn("tests/portable-smoke.mjs", paths)
-        self.assertIn("tests/state-contract-smoke.mjs", paths)
-        self.assertIn("tests/swarm-retry-contract.mjs", paths)
-        self.assertIn("scripts/sync/benchmarks/message_delivery/test_benchmark.py", paths)
-        self.assertIn("scripts/studio_api/benchmarks/runtime_load/test_runtime_load.py", paths)
-        self.assertIn("scripts/studio_api/benchmarks/runtime_load/test_http_outcomes.mjs", paths)
-        self.assertEqual(categories["scripts/sync/benchmarks/message_delivery/test_benchmark.py"], "expensive")
-        self.assertEqual(categories["scripts/studio_api/benchmarks/runtime_load/test_runtime_load.py"], "expensive")
-        self.assertEqual(categories["scripts/studio_api/benchmarks/runtime_load/test_http_outcomes.mjs"], "expensive")
-        self.assertNotIn("tests/sync-live-patch-http-contract.py", paths)
-        self.assertIn("tests/sync-live-patch-http-contract.py", RUNNER.NON_TESTS)
-        self.assertEqual(categories["tests/workspace-native-turn.py"], "native")
-        self.assertEqual(categories["tests/workspace-protocol.py"], "native")
-        self.assertEqual(categories["tests/tool-parity.py"], "native")
-        self.assertEqual(categories["tests/linux-vm-auth-native.py"], "vm")
-        self.assertEqual(categories["tests/linux-vm-studio-native.py"], "vm")
-        self.assertEqual(categories["tests/linux-vm-runtime-contract.py"], "safe")
+        self.assertIn(f"{RUNNER.TESTS_REL}/test_isolation_contract.py", paths)
+        self.assertIn(f"{RUNNER.TESTS_REL}/worker-lifecycle-scenarios-11-14.py", paths)
+        self.assertIn(f"{RUNNER.SOURCE_REL}/test_codex_api_client.py", paths)
+        self.assertIn(f"{RUNNER.SOURCE_REL}/test_codex_token_rate_events.py", paths)
+        self.assertIn(f"{RUNNER.SOURCE_REL}/test_codex_resource_producers.py", paths)
+        self.assertIn(f"{RUNNER.TESTS_REL}/portable-smoke.mjs", paths)
+        self.assertIn(f"{RUNNER.TESTS_REL}/state-contract-smoke.mjs", paths)
+        self.assertIn(f"{RUNNER.TESTS_REL}/swarm-retry-contract.mjs", paths)
+        self.assertIn(f"{RUNNER.SOURCE_REL}/sync/benchmarks/message_delivery/test_benchmark.py", paths)
+        self.assertIn(f"{RUNNER.SOURCE_REL}/studio_api/benchmarks/runtime_load/test_runtime_load.py", paths)
+        self.assertIn(f"{RUNNER.SOURCE_REL}/studio_api/benchmarks/runtime_load/test_http_outcomes.mjs", paths)
+        self.assertEqual(categories[f"{RUNNER.SOURCE_REL}/sync/benchmarks/message_delivery/test_benchmark.py"], "expensive")
+        self.assertEqual(categories[f"{RUNNER.SOURCE_REL}/studio_api/benchmarks/runtime_load/test_runtime_load.py"], "expensive")
+        self.assertEqual(categories[f"{RUNNER.SOURCE_REL}/studio_api/benchmarks/runtime_load/test_http_outcomes.mjs"], "expensive")
+        self.assertNotIn(f"{RUNNER.TESTS_REL}/sync-live-patch-http-contract.py", paths)
+        self.assertIn(f"{RUNNER.TESTS_REL}/sync-live-patch-http-contract.py", RUNNER.NON_TESTS)
+        self.assertEqual(categories[f"{RUNNER.TESTS_REL}/workspace-native-turn.py"], "native")
+        self.assertEqual(categories[f"{RUNNER.TESTS_REL}/workspace-protocol.py"], "native")
+        self.assertEqual(categories[f"{RUNNER.TESTS_REL}/tool-parity.py"], "native")
+        self.assertEqual(categories[f"{RUNNER.TESTS_REL}/linux-vm-auth-native.py"], "vm")
+        self.assertEqual(categories[f"{RUNNER.TESTS_REL}/linux-vm-studio-native.py"], "vm")
+        self.assertEqual(categories[f"{RUNNER.TESTS_REL}/linux-vm-runtime-contract.py"], "safe")
         self.assertIn("vm", RUNNER.OPT_IN)
-        self.assertEqual(categories["tests/time-awareness.py"], "safe")
+        self.assertEqual(categories[f"{RUNNER.TESTS_REL}/time-awareness.py"], "safe")
         source_roots = (
-            ROOT / "tests",
-            ROOT / "scripts" / "sync" / "benchmarks" / "message_delivery",
-            ROOT / "scripts" / "studio_api" / "benchmarks" / "runtime_load",
+            SERVER_TESTS_ROOT,
+            SERVER_SOURCE_ROOT / "sync" / "benchmarks" / "message_delivery",
+            SERVER_SOURCE_ROOT / "studio_api" / "benchmarks" / "runtime_load",
         )
         for source_root in source_roots:
             for path in source_root.rglob("*.py"):
                 relative = path.relative_to(ROOT).as_posix()
                 if (RUNNER.is_unittest_suite(path) and relative not in RUNNER.NON_TESTS
-                        and "tests/fixtures/" not in relative):
+                        and f"{RUNNER.TESTS_REL}/fixtures/" not in relative):
                     self.assertIn(relative, paths, f"AST unittest suite omitted: {relative}")
 
     def test_discovers_colocated_fastapi_component_tests_recursively(self):
@@ -155,7 +186,7 @@ class ServerSuiteRunner(unittest.TestCase):
         with (contextlib.redirect_stdout(io.StringIO()),
               mock.patch.object(RUNNER, "_unix_socket_path_error", return_value=None)):
             RUNNER.run_suites(
-                [("scripts/studio_api/agents/test_router.py", "component")],
+                [(f"{RUNNER.SOURCE_REL}/studio_api/agents/test_router.py", "component")],
                 set(), 1, 1, root=ROOT, execute=execute, workers=1,
             )
 

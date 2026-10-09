@@ -1,5 +1,5 @@
 {
-  "source": "hand-authored Studio bridge protocol shape based on tests/claude-bridge-contract.py",
+  "source": "hand-authored Studio bridge protocol shape based on workspaces/runtime/apps/server/tests/claude-bridge-contract.py",
   "provider": "claude",
   "sdkEvents": [
     { "type": "system", "subtype": "init", "claude_code_version": "replay" },
