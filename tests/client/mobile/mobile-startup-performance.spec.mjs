@@ -420,11 +420,13 @@ test(
       boundary.oldestFixtureRowVisible = await oldestRow.isVisible();
       boundary.scrollRequestsBefore = await page.evaluate(
         () =>
-          performance
-            .getEntriesByType("resource")
-            .filter((entry) =>
-              entry.name.includes("/api/transcript/page?after="),
-            ).length,
+          performance.getEntriesByType("resource").filter((entry) => {
+            const url = new URL(entry.name);
+            return (
+              url.pathname === "/api/transcript/page" &&
+              url.searchParams.has("after")
+            );
+          }).length,
       );
       await scrollRoot.evaluate((root) => {
         root.scrollTop = root.scrollHeight;
@@ -434,11 +436,13 @@ test(
       boundary.latestVisibleAfterScrollDown = await latestRow.isVisible();
       boundary.scrollRequestsAfter = await page.evaluate(
         () =>
-          performance
-            .getEntriesByType("resource")
-            .filter((entry) =>
-              entry.name.includes("/api/transcript/page?after="),
-            ).length,
+          performance.getEntriesByType("resource").filter((entry) => {
+            const url = new URL(entry.name);
+            return (
+              url.pathname === "/api/transcript/page" &&
+              url.searchParams.has("after")
+            );
+          }).length,
       );
       boundary.laterButtonAfterScrollDown = await newer.isVisible();
       await page.reload({ waitUntil: "domcontentloaded" });

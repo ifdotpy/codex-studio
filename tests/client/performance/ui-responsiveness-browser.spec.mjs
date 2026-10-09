@@ -947,11 +947,13 @@ test(
       const scrollRoot = page.locator("#messages");
       const requestsBeforeScroll = await page.evaluate(
         () =>
-          performance
-            .getEntriesByType("resource")
-            .filter((entry) =>
-              entry.name.includes("/api/transcript/page?after="),
-            ).length,
+          performance.getEntriesByType("resource").filter((entry) => {
+            const url = new URL(entry.name);
+            return (
+              url.pathname === "/api/transcript/page" &&
+              url.searchParams.has("after")
+            );
+          }).length,
       );
       await scrollRoot.evaluate((root) => {
         root.scrollTop = root.scrollHeight;
@@ -962,11 +964,13 @@ test(
         .waitFor({ state: "visible" });
       const requestsAfterScroll = await page.evaluate(
         () =>
-          performance
-            .getEntriesByType("resource")
-            .filter((entry) =>
-              entry.name.includes("/api/transcript/page?after="),
-            ).length,
+          performance.getEntriesByType("resource").filter((entry) => {
+            const url = new URL(entry.name);
+            return (
+              url.pathname === "/api/transcript/page" &&
+              url.searchParams.has("after")
+            );
+          }).length,
       );
       const latestMounted = await page
         .locator('[data-message="a-live"]:not([data-lazy-message])')
