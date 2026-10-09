@@ -160,10 +160,11 @@ startup files. Codex `command/exec` still applies account environment filters an
 the selected sandbox. The harness does not replace PATH with its own value.
 The monitor loads startup files when its process starts; it does not read a
 temporary native snapshot that can disappear when the agent's turn ends.
-The bottom terminal panel shows only user shells. **Background** lists commands,
-monitors, and other tools for the current chat and its descendants. It has no
-cross-team filter. Its history keeps up to 100 completed records of each type
-within that chat, plus every active record.
+The bottom terminal panel shows only user shells. **Background** lists active commands
+and command monitors for the current chat and its descendants. Tool calls remain in
+the conversation. It has no cross-team filter.
+The workspace API retains up to 100 completed task records and 100 completed
+monitor records within that chat. Active records remain available.
 
 Inbox, workspace agent choices, and attention counts use the same lead tree.
 Two chats remain separate even when they use the same account or project folder.

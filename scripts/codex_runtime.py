@@ -1665,6 +1665,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     COALESCE(json_extract(record,'$.stallTimeoutSeconds'),1800))
                     WHERE json_extract(record,'$.status')='running';
                 CREATE TABLE IF NOT EXISTS runtime_requests (id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS runtime_request_native_question ON runtime_requests(
+                    json_extract(record,'$.agent'),json_extract(record,'$.params.itemId'),
+                    json_extract(record,'$.status'))
+                    WHERE json_valid(record) AND json_extract(record,'$.method')='item/tool/requestUserInput';
                 CREATE TABLE IF NOT EXISTS runtime_tool_results (id TEXT PRIMARY KEY, result TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_compactions (id TEXT PRIMARY KEY, agent TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_completed_turns (id TEXT PRIMARY KEY);
@@ -3948,6 +3952,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 record.pop("reattachRecovery", None)
                 self.put(db, "tasks", record)
             self.changed.set()
+        from codex_question_recovery import recover_native_questions
+        recover_native_questions(self, account_key, connection_id, agent_id=agent_id)
         self._publish_desktop_resource()
 
     def _record_supervisor_restore(self, account_key, status, reason, detail=None, *, agent_id=None):
@@ -8081,6 +8087,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             r = {"id": uid(), "rpcId": message["id"], "method": message["method"],
                  "params": p, "agent": a["id"] if a else None, "status": "pending",
                  "accountKey": account_key, "connectionId": connection_id, "createdAt": time.time()}  # type: RequestRecord
+            if a:
+                from codex_connection_recovery import supervisor_identity
+                r["epoch"] = a["epoch"]
+                r["supervisor"] = supervisor_identity(self.server_for(account_key, connection_id))
             if a and native_thread_block(a):
                 r["status"] = "blocked"
                 self.put(db, "requests", r)

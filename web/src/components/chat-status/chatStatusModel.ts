@@ -1,5 +1,6 @@
 import type { Agent, Snapshot } from "../../types";
 import type { components } from "../../generated/api";
+import { isCommandTask } from "../backgroundTaskModel";
 
 export type ChatIndicatorKind =
   | "working"
@@ -156,7 +157,11 @@ export function chatWaitState(
 }
 
 export function backgroundActivities(activities: ChatActivity[]) {
-  return activities.filter((activity) => activity.background);
+  return activities.filter(
+    (activity) =>
+      activity.background &&
+      (activity.kind === "monitor" || activity.commandTask),
+  );
 }
 
 // The visible reasons and the spinner use the same activity records.
@@ -203,23 +208,23 @@ export function chatActivities(data: Snapshot): Map<string, ChatActivity[]> {
       record.name ||
       (kind === "task" ? record.kind : undefined) ||
       undefined;
+    const commandTask = kind === "task" && isCommandTask(record);
     add(agent, {
       id: record.id,
       kind,
       agentId: agent.id,
       agentName: agent.name || "Agent",
       label:
-        kind === "monitor" || (background && record.command)
+        kind === "monitor" || (background && commandTask)
           ? "Background command"
-          : record.command
+          : commandTask
             ? "Command"
             : "Tool call",
       command,
       created: record.created ?? undefined,
       status: record.status || "",
       background,
-      commandTask:
-        kind === "task" && (!!record.command || record.kind === "command"),
+      commandTask,
     });
   }
   for (const agent of agents) {

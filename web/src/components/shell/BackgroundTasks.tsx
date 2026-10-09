@@ -279,14 +279,12 @@ export default function BackgroundTasks({
               { value: "all", label: "All" },
               { value: "command", label: "Commands" },
               { value: "monitor", label: "Monitors" },
-              { value: "tool", label: "Other tools" },
             ]}
             size="xs"
           />
         </div>
         <span className="tasks-filter-help">
-          Commands run in the chat. Monitors run in the background. Other tools
-          show tool results.
+          Commands run in the chat. Monitors run commands in the background.
         </span>
       </div>
       <div

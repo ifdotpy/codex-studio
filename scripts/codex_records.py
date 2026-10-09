@@ -501,6 +501,7 @@ class RequestRecord(TypedDict):
     params: NotRequired[JsonObject]
     accountKey: NotRequired[str]
     connectionId: NotRequired[str]
+    supervisor: NotRequired[JsonObject | None]
     epoch: NotRequired[int]
     turnId: NotRequired[str | None]
     rpcId: NotRequired[str | int]

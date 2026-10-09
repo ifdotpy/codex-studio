@@ -135,6 +135,10 @@ within the user's existing instructions or need the user's answer.
 
 Use `orchestration_complaint action=submit` for a decision that the user must record.
 Use `orchestration_message target=user` for an action that the user must perform.
+Use these managed tools for conversational questions. They do not pause the current
+tool while the user decides. Continue authorized work that does not need the answer.
+Wait for the answer before you perform a dependent action.
+Native question tools, such as `AskUserQuestion`, wait inside the current turn.
 If you forward a subagent's request, explain the issue and the decision the user must make.
 Do not forward each request automatically.
 

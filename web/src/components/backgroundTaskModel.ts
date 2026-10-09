@@ -15,16 +15,19 @@ export const activeTask = (task: DisplayBackgroundTask) =>
     task.status,
   );
 
+export function isCommandTask(task: {
+  kind?: string | null;
+  command?: string | null;
+}) {
+  return task.kind === "command" || (task.kind == null && !!task.command);
+}
+
 export function projectTaskForRenderer(
   task: Task | Monitor,
   source: "task" | "monitor" = "task",
 ): DisplayBackgroundTask | null {
   const kind =
-    source === "monitor"
-      ? "monitor"
-      : "kind" in task
-        ? (task.kind ?? "tool")
-        : "tool";
+    source === "monitor" ? "monitor" : isCommandTask(task) ? "command" : "tool";
   if (task.agent == null || task.created == null || task.status == null)
     return null;
   return {
@@ -46,6 +49,8 @@ export function backgroundTasks(
       .filter((task): task is DisplayBackgroundTask => task !== null),
     ...data.runtime.tasks
       .map((task) => projectTaskForRenderer(task, "task"))
-      .filter((task): task is DisplayBackgroundTask => task !== null),
+      .filter(
+        (task): task is DisplayBackgroundTask => task?.kind === "command",
+      ),
   ];
 }
