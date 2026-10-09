@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from fastapi.testclient import TestClient
 from codex_canvas import Canvas
 from codex_federation import _crypto, _sign
-from codex_multi_server import request_bytes
+from codex_multi_server import request_bytes, AccessError
 from studio_api.app import create_app
 from studio_api.context import ApiContext
 from codex_remote import RemoteAccess
@@ -148,6 +148,9 @@ print(json.dumps(value))
         if parsed.path == ROUTE and json.loads(raw)["action"] == self.drop_action:
             self.drop_action = None
             raise TimeoutError("The response was lost after the real route ran")
+        if parsed.path == "/api/multi-server/v1/name" and getattr(self, "drop_name", False):
+            self.drop_name = False
+            raise TimeoutError("The rename response was lost after the route ran")
         return {"status": response.status_code, "url": url,
                 "body": base64.b64encode(response.content).decode()}
 
@@ -187,6 +190,60 @@ print(json.dumps(value))
 
     def actions(self, name):
         return [row for row in self.wire if row["target"] == ROUTE and json.loads(row["raw"])["action"] == name]
+
+    def test_signed_server_name_and_peer_status_propagation(self):
+        invitation = self.a.local({"action": "create_invite", "requestId": "invite-names"})["invitation"]
+        self.b.local({"action": "accept_invite", "invitation": invitation, "requestId": "pair-names"})
+        a = self.a.runtime.paired_access()
+        b = self.b.runtime.paired_access()
+        aliases_a, aliases_b = a.server_aliases(), b.server_aliases()
+        keys_a, keys_b = a._keys().copy(), b._keys().copy()
+        request = {"action": "name", "serverId": self.b.server_id, "label": "Kukuka Windows", "requestId": "remote-name"}
+        state = self.a.local(request)
+        self.assertEqual(b.identity()["label"], "Kukuka Windows")
+        self.assertEqual(state["servers"][0]["label"], "Kukuka Windows")
+        self.a.local(request)
+        b.rename("Newer Windows", "newer-name", "local")
+        self.assertEqual(self.a.local(request)["servers"][0]["label"], "Newer Windows")
+        self.a.local({"action": "name", "serverId": "local", "label": "Lumina Mac", "requestId": "local-name"})
+        # Discovery verifies a paired peer through its signed status endpoint.
+        a_identity = {"protocol": 1, **a.identity(owner=True), "autoPair": True}
+        with patch.object(b.discovery(), "probe", return_value=a_identity):
+            b.discovery()._candidate(self.a.origin, OWNER, time.monotonic() + 10)
+        self.assertEqual(b.servers()[0]["label"], "Lumina Mac")
+        self.assertEqual(a.server_aliases(), aliases_a)
+        self.assertEqual(b.server_aliases(), aliases_b)
+        for service, keys in ((a, keys_a), (b, keys_b)):
+            self.assertEqual(service._keys()["publicKey"], keys["publicKey"])
+            self.assertEqual(service._keys()["privateKey"], keys["privateKey"])
+        names = [row for row in self.wire if row["target"] == "/api/multi-server/v1/name"]
+        self.assertEqual(len(names), 1)
+        self.assertEqual(names[0]["status"], 200)
+        self.assertTrue(any(row["target"] == "/api/multi-server/v1/status" and row["status"] == 200 for row in self.wire))
+        with self.assertRaises(AssertionError):
+            self.a.local({**request, "label": "Conflicting"})
+        # A signed response with different keys cannot change the stored label.
+        with self.assertRaises(AccessError):
+            a.refresh_peer_identity(self.b.server_id, {**b.identity(), "publicKey": keys_a["publicKey"], "label": "Wrong"})
+        self.assertEqual(a.servers()[0]["label"], "Newer Windows")
+        unsigned = {"protocol": 1, **b.identity(owner=True), "autoPair": True, "label": "Unsigned name"}
+        original_exchange = self.exchange
+        def old_server_exchange(url, method, headers, raw, timeout):
+            if url.endswith("/api/multi-server/v1/status"):
+                return {"status": 404, "url": url, "body": base64.b64encode(b'{"error":"Not found"}').decode()}
+            return original_exchange(url, method, headers, raw, timeout)
+        with patch.object(a.discovery(), "probe", return_value=unsigned), patch("codex_multi_server._exchange", side_effect=old_server_exchange):
+            a.discovery()._candidate(self.b.origin, OWNER, time.monotonic() + 10)
+        self.assertEqual(a.servers()[0]["label"], "Newer Windows")
+        self.assertEqual(a.servers()[0]["reachability"], "reachable")
+        self.drop_name = True
+        lost = {**request, "label": "Recovered Windows", "requestId": "lost-rename"}
+        with self.assertRaises(AssertionError):
+            self.a.local(lost)
+        self.assertEqual(b.identity()["label"], "Recovered Windows")
+        self.assertEqual(self.a.local(lost)["servers"][0]["label"], "Recovered Windows")
+        with self.b.runtime.read_db() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM runtime_access_audit WHERE action='name'").fetchone()[0], 3)
 
     def test_pair_spawn_native_turn_retry_task_fetch_stop_and_revocation(self):
         invitation = self.a.local({"action": "create_invite", "requestId": "invite-a"})["invitation"]

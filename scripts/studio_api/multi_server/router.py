@@ -14,7 +14,7 @@ from studio_api.multi_server.models import (
     AccessAuditResponse, AccessSnapshot, AcceptInvite, CreateInvite, DevicePairRequest,
     DevicePairResponse, InvitationResponse, ManagementRequest, RevokeClient,
     ServerOperationRequest, ServerOperationResponse, DiscoveryIdentity, AutoPairRequest,
-    DiscoverServers, UiInvite, SetAccessSettings, UnrevokeServer, SetServerAlias,
+    DiscoverServers, UiInvite, SetAccessSettings, UnrevokeServer, SetServerAlias, SetServerName, RenameServer, ServerIdentityResponse,
 )
 from studio_api.models import ErrorResponse
 
@@ -70,6 +70,14 @@ def create_router(context: ApiContext) -> APIRouter:
             service = service_for(context)
             principal = request.scope.get("studio_principal") or {}
             actor = principal.get("clientId", "local")
+            if isinstance(body, SetServerName):
+                if principal:
+                    if (principal.get("kind") != "ui" or principal.get("pairing")
+                            or body.serverId not in ("local", service.local_server_id)):
+                        raise AccessError(403, "local_session_required", "Use the owner session to rename another server.")
+                    service.rename(body.label, body.requestId, actor)
+                    return service.snapshot()
+                return service.set_server_name(body.serverId, body.label, body.requestId, actor)
             if isinstance(body, (DiscoverServers, UiInvite, SetServerAlias)):
                 if principal or any(request.headers.get(name) is not None for name in ("X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto")):
                     raise AccessError(403, "local_session_required", "This action requires the local server session")
@@ -89,6 +97,24 @@ def create_router(context: ApiContext) -> APIRouter:
             if isinstance(body, AcceptInvite):
                 return service.accept_invite(body.invitation.model_dump(), body.requestId, actor)
             raise AccessError(400, "invalid_action", "The server access action is invalid")
+        return await dispatch(request, action)
+
+    @router.get("/api/multi-server/v1/status", response_model=ServerIdentityResponse, responses=ERRORS)
+    async def server_status(request: Request) -> Response:
+        def action() -> object:
+            principal = request.scope.get("studio_principal") or {}
+            if principal.get("kind") not in {"server", "ui"} or principal.get("pairing"):
+                raise AccessError(403, "server_required", "A paired credential is required.")
+            return service_for(context).identity()
+        return await dispatch(request, action)
+
+    @router.post("/api/multi-server/v1/name", response_model=ServerIdentityResponse, responses=ERRORS)
+    async def rename_server(request: Request, body: RenameServer) -> Response:
+        def action() -> object:
+            principal = request.scope.get("studio_principal") or {}
+            if principal.get("kind") != "server" or principal.get("pairing"):
+                raise AccessError(403, "server_required", "A paired server credential is required.")
+            return service_for(context).rename(body.label, body.requestId, principal["clientId"])
         return await dispatch(request, action)
 
     @router.get("/api/multi-server/v1/identity", response_model=DiscoveryIdentity, responses=ERRORS)

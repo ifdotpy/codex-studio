@@ -25,6 +25,7 @@ import {
   type StudioServer,
 } from "./registry";
 import { LOCAL_ALIAS_KEY, defaultServerAlias } from "./serverAliases";
+import ServerNameEditor from "./ServerNameEditor";
 import ServerAliasEditor from "./ServerAliasEditor";
 import { serverCredentialAdapter } from "./transport";
 import type { ServerNavigation, ServerAccount } from "./navigation";
@@ -246,6 +247,18 @@ export default function ServerManager({
                       ? discovery.snapshot?.localOrigin || server.origin
                       : server.origin}
                   </small>
+                  {(registered || (localEnabled && peer?.paired)) &&
+                    status !== "Revoked" && (
+                      <ServerNameEditor
+                        value={
+                          server.id === "local"
+                            ? discovery.snapshot?.localLabel || server.label
+                            : server.label
+                        }
+                        disabled={busy || discovery.busy}
+                        save={(label) => discovery.setName(server.id, label)}
+                      />
+                    )}
                   {(registered || server.id === "local" || peer?.paired) && (
                     <ServerAliasEditor
                       value={
