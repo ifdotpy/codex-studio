@@ -10,6 +10,7 @@ import signal
 import sys
 import threading
 import time
+from codex_layout import CLAUDE_BRIDGE_ROOT
 
 _lock = threading.Lock()
 _cache = {}
@@ -240,11 +241,11 @@ def node_executable() -> str | None:
 def transport(root, profile=None):
     executable = installed(profile)
     node = node_executable()
-    bridge = Path(__file__).resolve().parent / 'claude_bridge/bridge.mjs'
+    bridge = CLAUDE_BRIDGE_ROOT / 'bridge.mjs'
     if not executable or not node:
         raise ValueError('Install Node.js and Claude Code, then run claude auth login')
     if not (bridge.parent / 'node_modules/@anthropic-ai/claude-agent-sdk/package.json').is_file():
-        raise ValueError('Claude support is missing. Run npm ci in scripts/claude_bridge')
+        raise ValueError('Claude support is missing. Run `pnpm install --frozen-lockfile` at the repository root.')
     env = subscription_env(profile)
     expected = (profile or {}).get('accountId')
     if (profile or {}).get('_nativeAuthPending') is True:

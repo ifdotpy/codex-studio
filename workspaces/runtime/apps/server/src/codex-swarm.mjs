@@ -21,29 +21,39 @@ import {
 } from "node:fs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
-const PROJECT_DIR = dirname(SCRIPT_DIR);
+// This file lives in server/src in a checkout and workspace/scripts in a package.
+const PROMPTS_ROOT = resolve(SCRIPT_DIR, "..", "prompts");
 const CODEX_BIN = process.env.CODEX_BIN || "codex";
 const MODEL = process.env.CODEX_MODEL || "gpt-6-luna";
 const EFFORT = process.env.CODEX_EFFORT || "xhigh";
 const LOAD_LIMIT = Number(process.env.CODEX_LOAD_LIMIT || 20);
 const CAPACITY_RETRY_MAX = Number(process.env.CODEX_CAPACITY_RETRIES || 6);
-const CAPACITY_BACKOFF_MS = Number(process.env.CODEX_CAPACITY_BACKOFF_MS || 120_000);
+const CAPACITY_BACKOFF_MS = Number(
+  process.env.CODEX_CAPACITY_BACKOFF_MS || 120_000,
+);
 const RPC_TIMEOUT_MS = Number(process.env.CODEX_RPC_TIMEOUT_MS || 30_000);
 const INBOX_POLL_MS = Number(process.env.CODEX_INBOX_POLL_MS || 10_000);
 const INBOX_RETRY_MAX = Number(process.env.CODEX_INBOX_RETRIES || 5);
 const INBOX_BACKOFF_MS = Number(process.env.CODEX_INBOX_BACKOFF_MS || 5_000);
 const WAVE = process.env.CODEX_WAVE || "main";
 const RUN_ID = randomUUID();
-const ORCHESTRATOR_ID = process.env.CODEX_ORCHESTRATOR_ID || process.env.CODEX_THREAD_ID || null;
+const ORCHESTRATOR_ID =
+  process.env.CODEX_ORCHESTRATOR_ID || process.env.CODEX_THREAD_ID || null;
 const ORCHESTRATOR_NAME = process.env.CODEX_ORCHESTRATOR_NAME || "Orchestrator";
 const APPROVAL_POLICY = process.env.CODEX_APPROVAL_POLICY || null;
 const IMPLEMENTER_SANDBOX = process.env.CODEX_SANDBOX || null;
 const ROLES = new Set(["implementer", "reviewer"]);
 const APPROVAL_POLICIES = new Set(["untrusted", "on-request", "never"]);
-const SANDBOXES = new Set(["read-only", "workspace-write", "danger-full-access"]);
+const SANDBOXES = new Set([
+  "read-only",
+  "workspace-write",
+  "danger-full-access",
+]);
 
 if (!/^[A-Za-z0-9._-]+$/.test(WAVE)) {
-  throw new Error("CODEX_WAVE must contain only letters, digits, dot, underscore, or hyphen");
+  throw new Error(
+    "CODEX_WAVE must contain only letters, digits, dot, underscore, or hyphen",
+  );
 }
 if (!Number.isFinite(LOAD_LIMIT) || LOAD_LIMIT <= 0) {
   throw new Error("CODEX_LOAD_LIMIT must be a positive number");
@@ -67,20 +77,24 @@ if (!Number.isFinite(CAPACITY_BACKOFF_MS) || CAPACITY_BACKOFF_MS <= 0) {
   throw new Error("CODEX_CAPACITY_BACKOFF_MS must be a positive number");
 }
 if (APPROVAL_POLICY && !APPROVAL_POLICIES.has(APPROVAL_POLICY)) {
-  throw new Error("CODEX_APPROVAL_POLICY must be untrusted, on-request, or never");
+  throw new Error(
+    "CODEX_APPROVAL_POLICY must be untrusted, on-request, or never",
+  );
 }
 if (IMPLEMENTER_SANDBOX && !SANDBOXES.has(IMPLEMENTER_SANDBOX)) {
-  throw new Error("CODEX_SANDBOX must be read-only, workspace-write, or danger-full-access");
+  throw new Error(
+    "CODEX_SANDBOX must be read-only, workspace-write, or danger-full-access",
+  );
 }
 
 const stateBase = process.env.CODEX_AGENTS_STATE_DIR
   ? expandHome(process.env.CODEX_AGENTS_STATE_DIR)
   : join(
-    process.env.XDG_STATE_HOME
-      ? expandHome(process.env.XDG_STATE_HOME)
-      : join(homedir(), ".local", "state"),
-    "codex-agents",
-  );
+      process.env.XDG_STATE_HOME
+        ? expandHome(process.env.XDG_STATE_HOME)
+        : join(homedir(), ".local", "state"),
+      "codex-agents",
+    );
 const statePath = resolve(stateBase);
 outsideClaude(statePath);
 const CODEX_PROFILE = codexHome();
@@ -103,7 +117,8 @@ const WORKTREE_LOCK_DIR = join(STATE, "worktree-locks");
 const SUBMISSIONS = join(STATE, "codex-submissions");
 
 const budgetText = process.env.CODEX_BUDGET;
-const BUDGET = budgetText === undefined || budgetText === "" ? null : Number(budgetText);
+const BUDGET =
+  budgetText === undefined || budgetText === "" ? null : Number(budgetText);
 if (BUDGET !== null && (!Number.isInteger(BUDGET) || BUDGET <= 0)) {
   throw new Error("CODEX_BUDGET must be a positive integer");
 }
@@ -127,22 +142,30 @@ function readTasks() {
       }
     }
     if (!/^[A-Za-z0-9._-]+$/.test(task.name)) {
-      throw new Error(`Task name ${task.name} contains an unsupported character`);
+      throw new Error(
+        `Task name ${task.name} contains an unsupported character`,
+      );
     }
-    if (names.has(task.name)) throw new Error(`Duplicate task name: ${task.name}`);
+    if (names.has(task.name))
+      throw new Error(`Duplicate task name: ${task.name}`);
     names.add(task.name);
     task.role = task.role || "implementer";
     const parent = task.orchestratorId ?? ORCHESTRATOR_ID;
-    if (parent !== null && (typeof parent !== 'string' || !/^[A-Za-z0-9._:/-]{1,200}$/.test(parent))) {
+    if (
+      parent !== null &&
+      (typeof parent !== "string" || !/^[A-Za-z0-9._:/-]{1,200}$/.test(parent))
+    ) {
       throw new Error(`Task ${task.name} has an invalid orchestrator identity`);
     }
     task.orchestratorId = parent;
     if (!ROLES.has(task.role)) {
       throw new Error(`Task ${task.name} role must be implementer or reviewer`);
     }
-    if (!task.cwd.startsWith("/")) throw new Error(`Task ${task.name} needs an absolute cwd`);
+    if (!task.cwd.startsWith("/"))
+      throw new Error(`Task ${task.name} needs an absolute cwd`);
     validateWorktree(task);
-    if (worktrees.has(task.cwd)) throw new Error(`Duplicate worktree path: ${task.cwd}`);
+    if (worktrees.has(task.cwd))
+      throw new Error(`Duplicate worktree path: ${task.cwd}`);
     worktrees.add(task.cwd);
   }
   return value;
@@ -158,12 +181,19 @@ function gitOutput(cwd, args) {
 function validateWorktree(task) {
   try {
     task.cwd = realpathSync(task.cwd);
-    const root = realpathSync(gitOutput(task.cwd, ["rev-parse", "--show-toplevel"]));
+    const root = realpathSync(
+      gitOutput(task.cwd, ["rev-parse", "--show-toplevel"]),
+    );
     if (root !== task.cwd) {
       throw new Error(`cwd must be the worktree root ${root}`);
     }
 
-    const branch = gitOutput(task.cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+    const branch = gitOutput(task.cwd, [
+      "symbolic-ref",
+      "--quiet",
+      "--short",
+      "HEAD",
+    ]);
     if (branch !== task.branch) {
       throw new Error(`branch is ${branch}, task says ${task.branch}`);
     }
@@ -171,7 +201,9 @@ function validateWorktree(task) {
       throw new Error(`branch ${branch} is not a worker branch`);
     }
 
-    const gitDir = realpathSync(gitOutput(task.cwd, ["rev-parse", "--absolute-git-dir"]));
+    const gitDir = realpathSync(
+      gitOutput(task.cwd, ["rev-parse", "--absolute-git-dir"]),
+    );
     const commonDir = realpathSync(
       resolve(task.cwd, gitOutput(task.cwd, ["rev-parse", "--git-common-dir"])),
     );
@@ -179,7 +211,9 @@ function validateWorktree(task) {
       throw new Error("cwd is the primary checkout, not a linked worktree");
     }
   } catch (error) {
-    throw new Error(`Task ${task.name} has an invalid worktree: ${error.message}`);
+    throw new Error(
+      `Task ${task.name} has an invalid worktree: ${error.message}`,
+    );
   }
 }
 
@@ -187,24 +221,28 @@ const tasks = readTasks();
 const preamblePath = resolve(
   process.env.CODEX_PREAMBLE
     ? expandHome(process.env.CODEX_PREAMBLE)
-    : join(PROJECT_DIR, "prompts", "worker-preamble.md"),
+    : join(PROMPTS_ROOT, "worker-preamble.md"),
 );
 const preambleTemplate = readFileSync(preamblePath, "utf8");
 const shellLiteral = (value) => `'${String(value).replaceAll("'", `'"'"'`)}'`;
-const roleRules = (task) => task.role === "reviewer"
-  ? "Do not edit files. Do not commit. Review the assigned evidence and report exact findings."
-  : "Edit only the assigned worktree. Commit each finished part. Stage files by name. Do not use git commit -a.";
-const verificationRules = (task) => task.role === "reviewer"
-  ? "Inspect the supplied diff and evidence. Run only read-only checks. Do not run a check that writes build files."
-  : "Run the affected tests. Include one test for the new behavior and one regression test when applicable. Commit before the final report.";
-const workerPrompt = (task, agentOwner) => preambleTemplate
-  .replaceAll("{{STATE_DIR}}", shellLiteral(STATE))
-  .replaceAll("{{WORKER_NAME}}", shellLiteral(task.name))
-  .replaceAll("{{AGENT_OWNER}}", shellLiteral(agentOwner))
-  .replaceAll("{{LOAD_LIMIT}}", String(LOAD_LIMIT))
-  .replaceAll("{{ROLE_RULES}}", roleRules(task))
-  .replaceAll("{{VERIFICATION_RULES}}", verificationRules(task))
-  + "\n\n---\n\n" + task.prompt;
+const roleRules = (task) =>
+  task.role === "reviewer"
+    ? "Do not edit files. Do not commit. Review the assigned evidence and report exact findings."
+    : "Edit only the assigned worktree. Commit each finished part. Stage files by name. Do not use git commit -a.";
+const verificationRules = (task) =>
+  task.role === "reviewer"
+    ? "Inspect the supplied diff and evidence. Run only read-only checks. Do not run a check that writes build files."
+    : "Run the affected tests. Include one test for the new behavior and one regression test when applicable. Commit before the final report.";
+const workerPrompt = (task, agentOwner) =>
+  preambleTemplate
+    .replaceAll("{{STATE_DIR}}", shellLiteral(STATE))
+    .replaceAll("{{WORKER_NAME}}", shellLiteral(task.name))
+    .replaceAll("{{AGENT_OWNER}}", shellLiteral(agentOwner))
+    .replaceAll("{{LOAD_LIMIT}}", String(LOAD_LIMIT))
+    .replaceAll("{{ROLE_RULES}}", roleRules(task))
+    .replaceAll("{{VERIFICATION_RULES}}", verificationRules(task)) +
+  "\n\n---\n\n" +
+  task.prompt;
 
 function processIsAlive(pid) {
   try {
@@ -224,18 +262,23 @@ function worktreeLockPath(cwd) {
 
 function acquireWorktreeLocks() {
   mkdirSync(WORKTREE_LOCK_DIR, { recursive: true });
-  for (const task of [...tasks].sort((left, right) => left.cwd.localeCompare(right.cwd))) {
+  for (const task of [...tasks].sort((left, right) =>
+    left.cwd.localeCompare(right.cwd),
+  )) {
     const path = worktreeLockPath(task.cwd);
     while (true) {
       try {
         const handle = openSync(path, "wx");
         try {
-          writeFileSync(handle, JSON.stringify({
-            cwd: task.cwd,
-            wave: WAVE,
-            runId: RUN_ID,
-            launcherPid: process.pid,
-          }) + "\n");
+          writeFileSync(
+            handle,
+            JSON.stringify({
+              cwd: task.cwd,
+              wave: WAVE,
+              runId: RUN_ID,
+              launcherPid: process.pid,
+            }) + "\n",
+          );
         } finally {
           closeSync(handle);
         }
@@ -247,13 +290,15 @@ function acquireWorktreeLocks() {
         try {
           owner = JSON.parse(readFileSync(path, "utf8"));
         } catch (readError) {
-          throw new Error(`Cannot validate worktree lock ${path}: ${readError.message}`);
+          throw new Error(
+            `Cannot validate worktree lock ${path}: ${readError.message}`,
+          );
         }
         if (
-          owner?.cwd !== task.cwd
-          || typeof owner?.launcherPid !== "number"
-          || typeof owner?.wave !== "string"
-          || typeof owner?.runId !== "string"
+          owner?.cwd !== task.cwd ||
+          typeof owner?.launcherPid !== "number" ||
+          typeof owner?.wave !== "string" ||
+          typeof owner?.runId !== "string"
         ) {
           throw new Error(`Invalid worktree lock ${path}`);
         }
@@ -276,7 +321,8 @@ function releaseWorktreeLocks() {
   for (const path of heldWorktreeLocks) {
     try {
       const owner = JSON.parse(readFileSync(path, "utf8"));
-      if (owner.runId === RUN_ID && owner.launcherPid === process.pid) unlinkSync(path);
+      if (owner.runId === RUN_ID && owner.launcherPid === process.pid)
+        unlinkSync(path);
     } catch {
       // The lock is absent or does not belong to this launcher.
     }
@@ -301,12 +347,10 @@ function acquireLauncherPid() {
       } catch {
         priorPid = 0;
       }
-      if (
-        priorPid
-        && priorPid !== process.pid
-        && processIsAlive(priorPid)
-      ) {
-        console.error(`CODEX_SWARM_REFUSED wave=${WAVE} launcher=${priorPid} is active`);
+      if (priorPid && priorPid !== process.pid && processIsAlive(priorPid)) {
+        console.error(
+          `CODEX_SWARM_REFUSED wave=${WAVE} launcher=${priorPid} is active`,
+        );
         process.exit(2);
       }
       try {
@@ -324,9 +368,13 @@ mkdirSync(SUBMISSIONS, { recursive: true });
 for (const file of readdirSync(SUBMISSIONS)) {
   if (!file.endsWith(".json")) continue;
   const receipt = JSON.parse(readFileSync(join(SUBMISSIONS, file), "utf8"));
-  if (["submitting", "uncertain"].includes(receipt.status)
-      && tasks.some((task) => task.cwd === receipt.cwd)) {
-    throw new Error(`Unresolved native submission ${receipt.messageId} for ${receipt.cwd}; inspect ${join(SUBMISSIONS, file)} before restarting this worktree`);
+  if (
+    ["submitting", "uncertain"].includes(receipt.status) &&
+    tasks.some((task) => task.cwd === receipt.cwd)
+  ) {
+    throw new Error(
+      `Unresolved native submission ${receipt.messageId} for ${receipt.cwd}; inspect ${join(SUBMISSIONS, file)} before restarting this worktree`,
+    );
   }
 }
 
@@ -345,7 +393,9 @@ const byThread = new Map();
 function cleanupLauncher() {
   releaseWorktreeLocks();
   try {
-    if (Number(readFileSync(LAUNCHER_PID_FILE, "utf8").trim()) === process.pid) {
+    if (
+      Number(readFileSync(LAUNCHER_PID_FILE, "utf8").trim()) === process.pid
+    ) {
       unlinkSync(LAUNCHER_PID_FILE);
     }
   } catch {
@@ -363,7 +413,11 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
     shuttingDown = true;
     for (const state of byThread.values()) {
-      if (["starting", "running", "waiting", "capacity-retry", "paused"].includes(state.turnStatus)) {
+      if (
+        ["starting", "running", "waiting", "capacity-retry", "paused"].includes(
+          state.turnStatus,
+        )
+      ) {
         state.turnStatus = "interrupted";
         state.error = `launcher stopped by ${signal}`;
       }
@@ -388,7 +442,11 @@ function abortLauncher(error) {
   shuttingDown = true;
   const message = error?.message || String(error);
   for (const state of byThread.values()) {
-    if (["starting", "running", "waiting", "capacity-retry"].includes(state.turnStatus)) {
+    if (
+      ["starting", "running", "waiting", "capacity-retry"].includes(
+        state.turnStatus,
+      )
+    ) {
       state.turnStatus = "failed";
       state.error = message;
     }
@@ -427,17 +485,28 @@ function call(method, params = {}, observe = null) {
       if (!observe) pending.delete(id);
       finish(submissionError(`${method} timed out after ${RPC_TIMEOUT_MS} ms`));
     }, RPC_TIMEOUT_MS);
-    pending.set(id, { resolveCall: (value) => finish(null, value), rejectCall: finish });
+    pending.set(id, {
+      resolveCall: (value) => finish(null, value),
+      rejectCall: finish,
+    });
     if (shuttingDown || proc.stdin.destroyed || !proc.stdin.writable) {
       pending.delete(id);
-      finish(submissionError(`${method} was not written: native input is closed`, true));
+      finish(
+        submissionError(
+          `${method} was not written: native input is closed`,
+          true,
+        ),
+      );
       return;
     }
     try {
-      proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n", (error) => {
-        // A write callback error does not prove that no bytes reached native.
-        if (error) finish(submissionError(error.message));
-      });
+      proc.stdin.write(
+        JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n",
+        (error) => {
+          // A write callback error does not prove that no bytes reached native.
+          if (error) finish(submissionError(error.message));
+        },
+      );
     } catch (error) {
       finish(submissionError(error.message));
     }
@@ -460,23 +529,46 @@ function readReceipt(messageId) {
 
 function receiptForMessage(state, message) {
   const receipt = readReceipt(message.id);
-  if (receipt && (receipt.cwd !== state.cwd || receipt.name !== state.name
-      || receipt.inputHash !== createHash("sha256").update(JSON.stringify([{ type: "text", text: message.text }])).digest("hex"))) {
-    throw submissionError(`message ${message.id} conflicts with its saved submission`);
+  if (
+    receipt &&
+    (receipt.cwd !== state.cwd ||
+      receipt.name !== state.name ||
+      receipt.inputHash !==
+        createHash("sha256")
+          .update(JSON.stringify([{ type: "text", text: message.text }]))
+          .digest("hex"))
+  ) {
+    throw submissionError(
+      `message ${message.id} conflicts with its saved submission`,
+    );
   }
   return receipt;
 }
 
 async function submitTurn(state, method, params, messageId, accepted) {
-  if (state.pendingSubmission) throw submissionError(`worker ${state.name} has an unresolved native submission`);
+  if (state.pendingSubmission)
+    throw submissionError(
+      `worker ${state.name} has an unresolved native submission`,
+    );
   const previous = readReceipt(messageId);
   const { previousAttempts = [], ...previousAttempt } = previous || {};
   const receipt = {
     previousAttempts: previous ? [...previousAttempts, previousAttempt] : [],
-    version: 1, wave: WAVE, runId: RUN_ID, name: state.name, cwd: state.cwd,
-    messageId, threadId: state.threadId, expectedTurnId: params.expectedTurnId ?? null,
-    method, inputHash: createHash("sha256").update(JSON.stringify(params.input)).digest("hex"),
-    status: "submitting", submittedAt: new Date().toISOString(), requestId: nextId,
+    version: 1,
+    wave: WAVE,
+    runId: RUN_ID,
+    name: state.name,
+    cwd: state.cwd,
+    messageId,
+    threadId: state.threadId,
+    expectedTurnId: params.expectedTurnId ?? null,
+    method,
+    inputHash: createHash("sha256")
+      .update(JSON.stringify(params.input))
+      .digest("hex"),
+    status: "submitting",
+    submittedAt: new Date().toISOString(),
+    requestId: nextId,
   };
   // Persist before writing. A crash on either side of the write stays uncertain.
   writeJsonAtomic(receiptPath(messageId), receipt);
@@ -485,10 +577,22 @@ async function submitTurn(state, method, params, messageId, accepted) {
   let protocolError = null;
   await call(method, params, (error, result) => {
     const turnId = method === "turn/start" ? result?.turn?.id : result?.turnId;
-    const valid = typeof turnId === "string" && turnId
-      && (method !== "turn/steer" || turnId === receipt.expectedTurnId);
-    protocolError = !error && !valid ? submissionError(`${method} returned no exact turn receipt for ${state.name}`) : null;
-    receipt.status = error || protocolError ? (error?.notSubmitted ? "notSubmitted" : "uncertain") : "accepted";
+    const valid =
+      typeof turnId === "string" &&
+      turnId &&
+      (method !== "turn/steer" || turnId === receipt.expectedTurnId);
+    protocolError =
+      !error && !valid
+        ? submissionError(
+            `${method} returned no exact turn receipt for ${state.name}`,
+          )
+        : null;
+    receipt.status =
+      error || protocolError
+        ? error?.notSubmitted
+          ? "notSubmitted"
+          : "uncertain"
+        : "accepted";
     receipt.error = (error || protocolError)?.message ?? null;
     receipt.updatedAt = new Date().toISOString();
     if (receipt.status === "accepted") receipt.result = result;
@@ -511,7 +615,12 @@ async function submitTurn(state, method, params, messageId, accepted) {
 }
 
 function publicState(state) {
-  const { prompt, currentInput, capacityTimer, ...bounded } = state;
+  const {
+    prompt: _prompt,
+    currentInput: _currentInput,
+    capacityTimer: _capacityTimer,
+    ...bounded
+  } = state;
   return bounded;
 }
 
@@ -526,7 +635,11 @@ function flush() {
 }
 
 function appendEvent(value) {
-  appendFileSync(EVENTS, JSON.stringify({ at: new Date().toISOString(), wave: WAVE, ...value }) + "\n");
+  appendFileSync(
+    EVENTS,
+    JSON.stringify({ at: new Date().toISOString(), wave: WAVE, ...value }) +
+      "\n",
+  );
 }
 
 function sandboxPolicy(mode, cwd) {
@@ -577,24 +690,33 @@ async function startTurn(state, text, messageId = randomUUID()) {
     if (v) serviceTier = v;
   } catch {}
   try {
-    await submitTurn(state, "turn/start", {
-      threadId: state.threadId,
-      model: state.requestedModel,
-      effort: state.effort,
-      ...(serviceTier ? { serviceTier } : {}),
-      ...turnPolicy(state),
-      cwd: state.cwd,
-      runtimeWorkspaceRoots: [state.cwd],
-      ...(text === null ? {} : { clientUserMessageId: messageId }),
-      input: text === null ? [] : [{ type: "text", text }],
-    }, messageId, (result) => {
-      // Notifications can precede even a late response. Preserve newer turns.
-      state.turnId ??= result.turn.id;
-      if (state.turnStatus === "starting" && state.turnId === result.turn.id) {
-        state.turnStatus = "running";
-        state.error = null;
-      }
-    });
+    await submitTurn(
+      state,
+      "turn/start",
+      {
+        threadId: state.threadId,
+        model: state.requestedModel,
+        effort: state.effort,
+        ...(serviceTier ? { serviceTier } : {}),
+        ...turnPolicy(state),
+        cwd: state.cwd,
+        runtimeWorkspaceRoots: [state.cwd],
+        ...(text === null ? {} : { clientUserMessageId: messageId }),
+        input: text === null ? [] : [{ type: "text", text }],
+      },
+      messageId,
+      (result) => {
+        // Notifications can precede even a late response. Preserve newer turns.
+        state.turnId ??= result.turn.id;
+        if (
+          state.turnStatus === "starting" &&
+          state.turnId === result.turn.id
+        ) {
+          state.turnStatus = "running";
+          state.error = null;
+        }
+      },
+    );
   } catch (error) {
     if (state.turnStatus === "starting") {
       if (error.notSubmitted) state.turnStatus = priorStatus;
@@ -606,38 +728,68 @@ async function startTurn(state, text, messageId = randomUUID()) {
 }
 
 async function steerTurn(state, text, messageId) {
-  if (!state.turnId) throw submissionError(`worker ${state.name} has no active turn id`, true);
-  await submitTurn(state, "turn/steer", {
-    threadId: state.threadId,
-    expectedTurnId: state.turnId,
-    clientUserMessageId: messageId,
-    input: [{ type: "text", text }],
-  }, messageId, () => {
-    state.lastEvent = new Date().toISOString();
-  });
+  if (!state.turnId)
+    throw submissionError(`worker ${state.name} has no active turn id`, true);
+  await submitTurn(
+    state,
+    "turn/steer",
+    {
+      threadId: state.threadId,
+      expectedTurnId: state.turnId,
+      clientUserMessageId: messageId,
+      input: [{ type: "text", text }],
+    },
+    messageId,
+    () => {
+      state.lastEvent = new Date().toISOString();
+    },
+  );
 }
 
 async function deliverMessage(state, message) {
   const receipt = receiptForMessage(state, message);
   if (receipt?.status === "accepted") return "accepted";
   if (receipt && receipt.status !== "notSubmitted") {
-    throw submissionError(`message ${message.id} has an unresolved native submission`);
+    throw submissionError(
+      `message ${message.id} has an unresolved native submission`,
+    );
   }
-  if (state.pendingSubmission) throw submissionError(`worker ${state.name} has an unresolved native submission`);
+  if (state.pendingSubmission)
+    throw submissionError(
+      `worker ${state.name} has an unresolved native submission`,
+    );
   cancelCapacityRetry(state);
   if (state.turnStatus === "running") {
     await steerTurn(state, message.text, message.id);
     return "steered";
   }
   if (["budgetLimited", "usageLimited"].includes(state.goalStatus)) {
-    throw submissionError(`worker ${state.name} stopped at goal ${state.goalStatus}`, true);
+    throw submissionError(
+      `worker ${state.name} stopped at goal ${state.goalStatus}`,
+      true,
+    );
   }
-  if (!["waiting", "completed", "failed", "interrupted", "blocked", "paused"].includes(state.turnStatus)) {
-    throw submissionError(`worker ${state.name} cannot accept a message while ${state.turnStatus}`, true);
+  if (
+    ![
+      "waiting",
+      "completed",
+      "failed",
+      "interrupted",
+      "blocked",
+      "paused",
+    ].includes(state.turnStatus)
+  ) {
+    throw submissionError(
+      `worker ${state.name} cannot accept a message while ${state.turnStatus}`,
+      true,
+    );
   }
   if (["complete", "blocked", "paused"].includes(state.goalStatus)) {
     try {
-      await call("thread/goal/set", { threadId: state.threadId, status: "active" });
+      await call("thread/goal/set", {
+        threadId: state.threadId,
+        status: "active",
+      });
     } catch (error) {
       // No user input has been submitted at this point.
       throw submissionError(error.message, true);
@@ -656,9 +808,16 @@ function cancelCapacityRetry(state) {
 }
 
 async function retryCapacity(state, retry) {
-  if (state.capacityRetry !== retry || state.threadId !== retry.threadId
-      || state.turnId !== retry.turnId || state.turnStatus !== "capacity-retry"
-      || state.goalStatus !== "active" || state.pendingSubmission || shuttingDown) return;
+  if (
+    state.capacityRetry !== retry ||
+    state.threadId !== retry.threadId ||
+    state.turnId !== retry.turnId ||
+    state.turnStatus !== "capacity-retry" ||
+    state.goalStatus !== "active" ||
+    state.pendingSubmission ||
+    shuttingDown
+  )
+    return;
   // Claim once before the await. Native history already contains the failed input.
   cancelCapacityRetry(state);
   try {
@@ -683,8 +842,13 @@ createInterface({ input: proc.stdout }).on("line", (line) => {
     const request = pending.get(message.id);
     pending.delete(message.id);
     if (message.error) {
-      request.rejectCall(submissionError(message.error.message || JSON.stringify(message.error),
-        [-32600, -32601, -32602].includes(message.error.code) || message.error.data?.notSubmitted === true));
+      request.rejectCall(
+        submissionError(
+          message.error.message || JSON.stringify(message.error),
+          [-32600, -32601, -32602].includes(message.error.code) ||
+            message.error.data?.notSubmitted === true,
+        ),
+      );
     } else {
       request.resolveCall(message.result);
     }
@@ -707,7 +871,11 @@ createInterface({ input: proc.stdout }).on("line", (line) => {
       state.turnId = turn.id;
     }
     state.lastTurnStatus = turn.status ?? "inProgress";
-    if (!["budgetLimited", "usageLimited", "blocked", "paused"].includes(state.goalStatus)) {
+    if (
+      !["budgetLimited", "usageLimited", "blocked", "paused"].includes(
+        state.goalStatus,
+      )
+    ) {
       state.turnStatus = "running";
       state.error = null;
     }
@@ -736,40 +904,58 @@ createInterface({ input: proc.stdout }).on("line", (line) => {
   if (message.method === "turn/completed") {
     const turn = message.params?.turn || {};
     // An old completion must not replace a newer turn or schedule its retry.
-    if (typeof turn.id !== "string" || (state.turnId && state.turnId !== turn.id)) return;
+    if (
+      typeof turn.id !== "string" ||
+      (state.turnId && state.turnId !== turn.id)
+    )
+      return;
     if (state.lastCompletedTurnId === turn.id) return;
     state.lastCompletedTurnId = turn.id;
     state.turnId = turn.id;
     const error = turn.error?.message ?? null;
     state.lastTurnStatus = turn.status ?? "missing";
-    const goalStopsTurn = ["budgetLimited", "usageLimited", "blocked", "paused"].includes(
-      state.goalStatus,
-    );
+    const goalStopsTurn = [
+      "budgetLimited",
+      "usageLimited",
+      "blocked",
+      "paused",
+    ].includes(state.goalStatus);
     if (!goalStopsTurn) {
       if (turn.status === "completed" && !error) {
-        state.turnStatus = state.goalStatus === "complete" ? "completed" : "waiting";
+        state.turnStatus =
+          state.goalStatus === "complete" ? "completed" : "waiting";
         state.error = null;
       } else if (turn.status === "interrupted") {
         state.turnStatus = "interrupted";
         state.error = error || "turn interrupted";
       } else {
         state.turnStatus = "failed";
-        state.error = error || `unexpected terminal turn status: ${turn.status ?? "missing"}`;
+        state.error =
+          error ||
+          `unexpected terminal turn status: ${turn.status ?? "missing"}`;
       }
     }
     if (
-      !goalStopsTurn
-      && state.goalStatus === "active"
-      && !state.capacityRetry
-      && /at capacity/i.test(error ?? "")
-      && state.capacityRetries < CAPACITY_RETRY_MAX
+      !goalStopsTurn &&
+      state.goalStatus === "active" &&
+      !state.capacityRetry &&
+      /at capacity/i.test(error ?? "") &&
+      state.capacityRetries < CAPACITY_RETRY_MAX
     ) {
       state.capacityRetries += 1;
       state.turnStatus = "capacity-retry";
       state.error = error;
       const waitMs = CAPACITY_BACKOFF_MS * state.capacityRetries;
-      appendEvent({ name: state.name, capacityRetry: state.capacityRetries, waitMs });
-      const retry = { id: randomUUID(), threadId: state.threadId, turnId: turn.id };
+      appendEvent({
+        name: state.name,
+        capacityRetry: state.capacityRetries,
+        waitMs,
+      });
+      const retry = {
+        id: randomUUID(),
+        threadId: state.threadId,
+        turnId: turn.id,
+      };
       state.capacityRetry = retry;
       state.capacityTimer = setTimeout(() => {
         state.capacityTimer = null;
@@ -792,7 +978,11 @@ proc.on("exit", (code, signal) => {
   for (const request of pending.values()) request.rejectCall(error);
   pending.clear();
   for (const state of byThread.values()) {
-    if (["starting", "running", "waiting", "capacity-retry"].includes(state.turnStatus)) {
+    if (
+      ["starting", "running", "waiting", "capacity-retry"].includes(
+        state.turnStatus,
+      )
+    ) {
       state.turnStatus = "failed";
       state.error = error.message;
     }
@@ -815,12 +1005,14 @@ for (const task of tasks) {
     ...threadPolicy(task),
     runtimeWorkspaceRoots: [task.cwd],
     threadSource: "subagent",
-    developerInstructions: task.role === "reviewer"
-      ? `You are a read-only Codex reviewer. Work only in ${task.cwd}. Do not edit or commit.`
-      : `You are a Codex implementer. Work only in ${task.cwd}. Commit on ${task.branch}. Do not push.`,
+    developerInstructions:
+      task.role === "reviewer"
+        ? `You are a read-only Codex reviewer. Work only in ${task.cwd}. Do not edit or commit.`
+        : `You are a Codex implementer. Work only in ${task.cwd}. Commit on ${task.branch}. Do not push.`,
   });
   const threadId = started?.thread?.id;
-  if (!threadId) throw new Error(`thread/start returned no thread id for ${task.name}`);
+  if (!threadId)
+    throw new Error(`thread/start returned no thread id for ${task.name}`);
   const prompt = workerPrompt(task, agentOwner);
 
   const state = {
@@ -869,7 +1061,11 @@ for (const task of tasks) {
     await startTurn(state, prompt);
   } catch (error) {
     if (!state.pendingSubmission) throw error;
-    appendEvent({ name: state.name, submissionUncertain: state.pendingSubmission, error: error.message });
+    appendEvent({
+      name: state.name,
+      submissionUncertain: state.pendingSubmission,
+      error: error.message,
+    });
   }
 }
 
@@ -894,13 +1090,13 @@ setInterval(async () => {
     try {
       message = JSON.parse(readFileSync(path, "utf8"));
       if (
-        typeof message?.id !== "string"
-        || !message.id
-        || typeof message?.text !== "string"
-        || !message.text.trim()
-        || !Number.isInteger(message?.attempts)
-        || message.attempts < 0
-        || typeof message?.nextAttemptAt !== "number"
+        typeof message?.id !== "string" ||
+        !message.id ||
+        typeof message?.text !== "string" ||
+        !message.text.trim() ||
+        !Number.isInteger(message?.attempts) ||
+        message.attempts < 0 ||
+        typeof message?.nextAttemptAt !== "number"
       ) {
         throw new Error("invalid mailbox message");
       }
@@ -908,7 +1104,11 @@ setInterval(async () => {
       const destination = join(DEAD_LETTER, `${file}.${Date.now()}.invalid`);
       renameSync(path, destination);
       state.mailboxError = error.message;
-      appendEvent({ name, mailboxDeadLetter: destination, error: error.message });
+      appendEvent({
+        name,
+        mailboxDeadLetter: destination,
+        error: error.message,
+      });
       flush();
       continue;
     }
@@ -923,7 +1123,12 @@ setInterval(async () => {
       if (receipt?.status === "accepted") {
         unlinkSync(path);
         state.mailboxError = null;
-        appendEvent({ name, mailbox: "accepted", messageId: message.id, lateReceipt: true });
+        appendEvent({
+          name,
+          mailbox: "accepted",
+          messageId: message.id,
+          lateReceipt: true,
+        });
         flush();
       } else if (receipt?.status === "notSubmitted") {
         message.delivery = "queued";
@@ -937,7 +1142,12 @@ setInterval(async () => {
       const action = await deliverMessage(state, message);
       unlinkSync(path);
       state.mailboxError = null;
-      appendEvent({ name, mailbox: action, messageId: message.id, chars: message.text.length });
+      appendEvent({
+        name,
+        mailbox: action,
+        messageId: message.id,
+        chars: message.text.length,
+      });
       flush();
     } catch (error) {
       const errorMessage = error?.message ?? String(error);
@@ -946,7 +1156,11 @@ setInterval(async () => {
         message.lastError = errorMessage;
         state.mailboxError = errorMessage;
         writeJsonAtomic(path, message);
-        appendEvent({ name, mailboxUncertain: message.id, error: errorMessage });
+        appendEvent({
+          name,
+          mailboxUncertain: message.id,
+          error: errorMessage,
+        });
         flush();
         continue;
       }
@@ -965,7 +1179,7 @@ setInterval(async () => {
           error: errorMessage,
         });
       } else {
-        const waitMs = INBOX_BACKOFF_MS * (2 ** (message.attempts - 1));
+        const waitMs = INBOX_BACKOFF_MS * 2 ** (message.attempts - 1);
         message.nextAttemptAt = Date.now() + waitMs;
         writeJsonAtomic(path, message);
         appendEvent({
@@ -983,13 +1197,15 @@ setInterval(async () => {
   }
 }, INBOX_POLL_MS);
 
-console.log(JSON.stringify({
-  wave: WAVE,
-  runId: RUN_ID,
-  stateDir: STATE,
-  workers: [...byThread.values()].map((state) => ({
-    name: state.name,
-    threadId: state.threadId,
-    model: state.model,
-  })),
-}));
+console.log(
+  JSON.stringify({
+    wave: WAVE,
+    runId: RUN_ID,
+    stateDir: STATE,
+    workers: [...byThread.values()].map((state) => ({
+      name: state.name,
+      threadId: state.threadId,
+      model: state.model,
+    })),
+  }),
+);

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Protocol, cast, get_args, get_origin
 
 from codex_backend_identity import BACKEND_BUILD
+from codex_layout import SERVER_SOURCE_ROOT
 
 from pydantic import BaseModel, RootModel, TypeAdapter
 
@@ -154,7 +155,7 @@ def read_cached_or_compute_api_schema_hash(
 
 def compute_api_schema_hash_in_subprocess(*, low_priority: bool = False) -> str:
     """Build the canonical OpenAPI hash in a process isolated from serving GIL."""
-    scripts = Path(__file__).resolve().parents[1]
+    scripts = SERVER_SOURCE_ROOT
     lower_priority = "import os; os.nice(10); " if low_priority and os.name == "posix" else ""
     code = lower_priority + (
         "from studio_api.schema import openapi_document, api_schema_hash; "

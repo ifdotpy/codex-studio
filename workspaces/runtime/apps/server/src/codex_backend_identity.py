@@ -3,10 +3,11 @@ import hashlib
 from pathlib import Path
 
 from codex_source_inventory import source_files
+from codex_layout import SERVER_SOURCE_ROOT
 
 
 def backend_build(scripts=None):
-    scripts = Path(scripts) if scripts is not None else Path(__file__).parent
+    scripts = Path(scripts) if scripts is not None else SERVER_SOURCE_ROOT
     files = source_files(scripts)
     if not any(name == "codex-canvas" for name, _ in files):
         raise ValueError("The backend entry point is missing")

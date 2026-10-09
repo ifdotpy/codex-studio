@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import uuid
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from codex_python import prepare_environment, resolve_python
 
@@ -31,9 +32,16 @@ def install(project, destination, replace_from=None):
     project = Path(project).resolve(strict=True)
     destination = Path(destination).expanduser().absolute()
     old = Path(replace_from).expanduser().resolve() if replace_from else None
+    source_root = (
+        SERVER_SOURCE_ROOT
+        if project == REPOSITORY_ROOT.resolve()
+        else project / "workspaces/runtime/apps/server/src"
+    )
+    if not source_root.is_dir():
+        source_root = project / "scripts"
     links = []
     for name in COMMANDS:
-        source = project / "scripts" / name
+        source = source_root / name
         if not source.is_file() or not os.access(source, os.X_OK):
             raise ValueError(f"Missing executable: {source}")
         target = destination / name
@@ -43,9 +51,11 @@ def install(project, destination, replace_from=None):
                     f"Refusing to replace an existing executable: {target}"
                 )
             resolved = target.resolve()
-            if resolved != source and (
-                old is None or resolved != old / "scripts" / name
-            ):
+            old_sources = () if old is None else (
+                old / "scripts" / name,
+                old / "workspaces/runtime/apps/server/src" / name,
+            )
+            if resolved != source and all(resolved != path.resolve() for path in old_sources):
                 raise ValueError(
                     f"Refusing to replace an unrelated command link: {target}"
                 )
@@ -79,9 +89,9 @@ def main():
     )
     args = parser.parse_args()
     try:
-        project = Path(__file__).resolve().parents[1]
+        project = REPOSITORY_ROOT
         if os.environ.get("CODEX_AGENTS_PYTHON"):
-            resolve_python(project / "scripts")
+            resolve_python(SERVER_SOURCE_ROOT)
         else:
             prepare_environment(project)
         if args.dev:

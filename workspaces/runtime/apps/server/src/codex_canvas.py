@@ -21,9 +21,10 @@ from pathlib import Path
 from codex_state import state_dir, codex_home, read_threads, effective_status, process_is_alive
 from codex_sqlite import connect as sqlite_connect, assert_clean as sqlite_assert_clean, scope as sqlite_scope
 from codex_open_file_limit import raise_open_file_limit
+from codex_layout import SERVER_SOURCE_ROOT, WEB_ROOT
 
-SCRIPTS = Path(__file__).resolve().parent
-WEB = SCRIPTS.parent / "web" / "dist"
+SCRIPTS = SERVER_SOURCE_ROOT
+WEB = WEB_ROOT / "dist"
 COMPONENT = re.compile(r"[A-Za-z0-9._-]+\Z")
 AGENT_ID = re.compile(r"[A-Za-z0-9._:/-]{1,200}\Z")
 READ_LIMIT = 2 * 1024 * 1024
