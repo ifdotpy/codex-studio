@@ -1,5 +1,5 @@
 {
-  "source": "hand-authored protocol frames based on tests/runtime-contract.py FakeServer.complete",
+  "source": "hand-authored protocol frames based on workspaces/runtime/apps/server/tests/runtime-contract.py FakeServer.complete",
   "parentChildOrder": true,
   "events": [],
   "childEvents": [

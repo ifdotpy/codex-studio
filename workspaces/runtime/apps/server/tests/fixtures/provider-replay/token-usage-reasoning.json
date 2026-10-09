@@ -1,5 +1,5 @@
 {
-  "source": "hand-authored protocol frame based on tests/analytics-contract.py",
+  "source": "hand-authored protocol frame based on workspaces/runtime/apps/server/tests/analytics-contract.py",
   "events": [
     {
       "method": "thread/tokenUsage/updated",

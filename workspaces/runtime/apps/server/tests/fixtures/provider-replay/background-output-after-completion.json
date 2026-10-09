@@ -1,5 +1,5 @@
 {
-  "source": "hand-authored protocol frames based on tests/runtime-contract.py FakeServer.complete and command output",
+  "source": "hand-authored protocol frames based on workspaces/runtime/apps/server/tests/runtime-contract.py FakeServer.complete and command output",
   "events": [
     {
       "method": "item/started",

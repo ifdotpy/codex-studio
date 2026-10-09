@@ -12,7 +12,9 @@ import time
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+from codex_layout import SERVER_SOURCE_ROOT
+
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 import codex_workspace_images as images  # noqa: E402
 import codex_workspace_macos as macos  # noqa: E402
 

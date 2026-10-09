@@ -9,6 +9,12 @@ import sys
 import unittest
 from typing import Any
 
+SERVER_APP_BOOTSTRAP = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(SERVER_APP_BOOTSTRAP / "src"))
+from codex_layout import SERVER_SOURCE_ROOT  # noqa: E402
+
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
+
 RESULT_FILE: str | None = None
 
 
