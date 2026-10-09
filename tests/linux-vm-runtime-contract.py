@@ -140,7 +140,8 @@ class LinuxRuntime(unittest.TestCase):
     def test_spawn_waits_for_base_without_host_input(self):
         result = self.spawn()
         self.assertEqual(result['environment'],'linux')
-        self.assertEqual(result['workspace'],'linux')
+        self.assertEqual(result['workspace'],'image')
+        self.assertEqual(self.runtime.agent(self.worker_id)['workspaceMode'],'image')
         before = dict(self.runtime.servers)
         with self.assertRaises(PreparationPending):
             self.runtime.prepare_locked(self.runtime.agent(self.worker_id))

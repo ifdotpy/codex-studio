@@ -550,6 +550,8 @@ class AgentEntityDto(ContractModel):
     concurrency: int | None = None
     accountKey: str | None = None
     cwd: str | None = None
+    workspaceMode: Literal["image", "worktree", "shared"] | None = None
+    workspaceBackend: Literal["asif", "vm"] | None = None
     worktree: bool | str | None = None
     worktreePreparation: Literal["waiting", "preparing"] | None = None
     environment: Literal["host", "linux"] | None = None

@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import type { Agent } from "../../types";
 import ChatStatus from "../agents/ChatStatus";
 import type { ChatIndicator } from "../chat-status/chatStatusModel";
+import WorkspaceBadge from "./WorkspaceBadge";
 
 export type ConversationTitleProps = {
   title: string;
@@ -50,6 +51,7 @@ export default function ConversationTitle({
           {projectPrefix}
           {statusText}
         </span>
+        <WorkspaceBadge agent={agent} />
         {modeControl}
       </div>
     </div>
