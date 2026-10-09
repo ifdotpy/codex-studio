@@ -480,7 +480,7 @@ test("project tree ui", async ({ page: runnerPage }) => {
       exact: true,
     });
     await expect(
-      chatDialog.getByRole("button", { name: /This computer.*Active.*litos/ }),
+      chatDialog.getByRole("button", { name: /Studio server.*Active.*litos/ }),
     ).toHaveAttribute("aria-pressed", "true");
     await chatDialog
       .getByRole("button", { name: "Start chat", exact: true })

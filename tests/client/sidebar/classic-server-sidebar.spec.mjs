@@ -43,9 +43,7 @@ for (const viewport of [
       await page.goto(local.origin);
       await expect(page.getByLabel("Studio server")).toHaveValue("local");
       await expect(page.locator(".server-sidebar")).toHaveCount(0);
-      const localFrame = page.frameLocator(
-        'iframe[title="Studio on This computer"]',
-      );
+      const localFrame = page.frameLocator('iframe[title="Studio on Local"]');
       if (viewport.width < 760)
         await localFrame
           .getByRole("button", { name: "Toggle conversations" })
