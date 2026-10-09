@@ -124,7 +124,7 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         self.assertTrue(worker['worktree'])
         self.assertEqual(worker['imageWorkspacePhase'],'fallback')
 
-    def test_multi_switch_starts_the_supported_repository_base(self):
+    def test_multi_switch_defers_repository_base_until_first_worker(self):
         self.rt.image_workspace_support = lambda _repo: (True, '')
         engine = types.ModuleType('codex_workspace_images')
         def start(repo, on_done=None, retry_failed=False):
@@ -136,8 +136,17 @@ class ImageWorkspaceRuntime(unittest.TestCase):
                 'agent_mode': 'single', 'expected_mode_revision': 0, 'request_id': 'mode-single'})
             self.rt.conversation_settings(self.lead['id'], {
                 'agent_mode': 'multi', 'expected_mode_revision': 1, 'request_id': 'mode-multi'})
-        engine.start_base_build.assert_called_once_with(
-            str(self.repo), on_done=None, retry_failed=True)
+            engine.start_base_build.assert_not_called()
+            worker = self.spawn()['id']
+        self.assertEqual(self.rt.agent(worker)['imageWorkspacePhase'], 'read_only')
+        self.assertEqual(self.rt.agent(worker)['imageWorkspaceRepo'], str(self.repo))
+        self.assertEqual(engine.start_base_build.call_count, 2)
+        first, callback = engine.start_base_build.call_args_list
+        self.assertEqual((first.args, first.kwargs),
+                         ((str(self.repo),), {'on_done': None, 'retry_failed': False}))
+        self.assertEqual(callback.args, (str(self.repo),))
+        self.assertTrue(callable(callback.kwargs['on_done']))
+        self.assertFalse(callback.kwargs['retry_failed'])
 
     def test_start_image_base_passes_retry_failed_to_engine(self):
         engine = types.ModuleType('codex_workspace_images')

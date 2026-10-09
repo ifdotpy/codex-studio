@@ -4,10 +4,12 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 import copy
+from contextlib import closing
 import importlib.util
 import json
 import os
 from pathlib import Path
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -37,11 +39,104 @@ class AgentModes(unittest.TestCase):
             'expected_mode_revision': self.rt.agent(self.lead['id'])['agentModeRevision'] if revision is None else revision,
             'request_id': request or str(uuid.uuid4()), **extra})
 
-    def concurrency(self, value, revision=None, request=None):
+    def concurrency(self, value, revision=None, request=None, **extra):
         return self.rt.conversation_settings(self.lead['id'], {
             'subagent_concurrency': value,
             'expected_mode_revision': self.rt.agent(self.lead['id'])['agentModeRevision'] if revision is None else revision,
-            'request_id': request or str(uuid.uuid4())})
+            'request_id': request or str(uuid.uuid4()), **extra})
+
+    def test_positive_settings_commit_without_repository_or_image_work(self):
+        before_worker = self.rt.agent(self.worker['id'])
+        with self.rt.db() as db:
+            before_events = [dict(row) for row in db.execute('SELECT * FROM runtime_events')]
+        with patch('codex_runtime.git_toplevel', side_effect=AssertionError('Setting must not inspect Git')) as git, \
+                patch.object(self.rt, 'image_workspace_support',
+                             side_effect=AssertionError('Setting must not inspect image support')) as support, \
+                patch.object(self.rt, 'start_image_base',
+                             side_effect=AssertionError('Setting must not start a base build')) as build:
+            first = self.concurrency(7, revision=0, request='immediate-limit', expected_account_key='default')
+            # The returned value already exists in durable storage and its
+            # renderer projection, as read through a separate connection.
+            with closing(sqlite3.connect(Path(self.tmp.name) / 'canvas.sqlite3')) as db:
+                stored = json.loads(db.execute('SELECT record FROM runtime_agents WHERE id=?',
+                                               (self.lead['id'],)).fetchone()[0])
+                projected = json.loads(db.execute("SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                                                  (self.lead['id'],)).fetchone()[0])['value']
+                self.assertEqual((stored['concurrency'], stored['agentModeRevision']), (7, 1))
+                self.assertEqual((projected['concurrency'], projected['agentModeRevision']), (7, 1))
+                receipt_before = tuple(db.execute('SELECT signature,result FROM runtime_operation_receipts WHERE id=?',
+                                                  ('immediate-limit',)).fetchone())
+            self.assertEqual((first['concurrency'], first['agentModeRevision']), (7, 1))
+            self.assertEqual(self.concurrency(7, revision=0, request='immediate-limit'), first)
+            self.assertEqual(self.concurrency(7, request='noop-limit')['agentModeRevision'], 1)
+            self.assertEqual(self.mode('multi', request='legacy-positive')['concurrency'], 32)
+            configured = self.rt.configure(self.lead['id'], {
+                'concurrency': 9, 'expected_mode_revision': 2, 'request_id': 'configure-positive'})
+            self.assertEqual((configured['concurrency'], configured['agentModeRevision']), (9, 3))
+            current = self.concurrency(7, revision=0, request='immediate-limit')
+            self.assertEqual((current['concurrency'], current['agentModeRevision']), (9, 3))
+            git.assert_not_called()
+            support.assert_not_called()
+            build.assert_not_called()
+        self.assertEqual(self.rt.agent(self.worker['id']), before_worker)
+        with self.rt.db() as db:
+            self.assertEqual([dict(row) for row in db.execute('SELECT * FROM runtime_events')], before_events)
+            self.assertEqual(tuple(db.execute('SELECT signature,result FROM runtime_operation_receipts WHERE id=?',
+                                              ('immediate-limit',)).fetchone()), receipt_before)
+
+    def test_optional_account_guard_rejects_before_write_and_receipt_replay(self):
+        before = self.rt.agent(self.lead['id'])
+        for setting in ('subagent_concurrency', 'agent_mode'):
+            values = {setting: 7 if setting == 'subagent_concurrency' else 'single',
+                      'expected_mode_revision': 0, 'request_id': 'stale-' + setting,
+                      'expected_account_key': 'previous-account'}
+            with self.subTest(setting=setting), self.assertRaisesRegex(ValueError, 'account changed'):
+                self.rt.conversation_settings(self.lead['id'], values)
+            self.assertEqual(self.rt.agent(self.lead['id']), before)
+            with self.rt.db() as db:
+                self.assertIsNone(db.execute('SELECT id FROM runtime_operation_receipts WHERE id=?',
+                                             (values['request_id'],)).fetchone())
+        self.concurrency(7, revision=0, request='account-exact', expected_account_key='default')
+        with self.rt.lock, self.rt.db() as db:
+            latest = self.rt.agent(self.lead['id'], db)
+            latest['accountKey'] = 'destination'
+            self.rt.put(db, 'agents', latest)
+            receipt = tuple(db.execute('SELECT signature,result FROM runtime_operation_receipts WHERE id=?',
+                                       ('account-exact',)).fetchone())
+        with self.assertRaisesRegex(ValueError, 'account changed'):
+            self.concurrency(7, revision=0, request='account-exact', expected_account_key='default')
+        self.assertEqual(self.rt.agent(self.lead['id']), latest)
+        with self.rt.db() as db:
+            self.assertEqual(tuple(db.execute('SELECT signature,result FROM runtime_operation_receipts WHERE id=?',
+                                              ('account-exact',)).fetchone()), receipt)
+        # The account guard does not change already persisted signatures.
+        replay = self.concurrency(7, revision=0, request='account-exact', expected_account_key='destination')
+        self.assertEqual((replay['concurrency'], replay['agentModeRevision']), (7, 1))
+
+    def test_invalid_optional_account_guard_has_no_receipt(self):
+        before = self.rt.agent(self.lead['id'])
+        for value in (None, '', [], True, 1):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'identity'):
+                self.concurrency(7, request='invalid-account', expected_account_key=value)
+            self.assertEqual(self.rt.agent(self.lead['id']), before)
+        with self.rt.db() as db:
+            self.assertIsNone(db.execute("SELECT id FROM runtime_operation_receipts WHERE id='invalid-account'").fetchone())
+
+    def test_committed_limit_controls_dispatch_without_workspace_warmup(self):
+        submissions = []
+        delivery = self.rt.delivery_executor()
+        with patch('codex_runtime.git_toplevel', side_effect=AssertionError('Setting must not inspect Git')), \
+                patch.object(delivery, 'submit', side_effect=lambda fn, *args: submissions.append((fn, args))):
+            self.concurrency(0, request='dispatch-stop')
+            self.assertEqual(self.rt.dispatch_candidates(self.worker['id']), 0)
+            self.assertEqual(submissions, [])
+            resumed = self.concurrency(1, request='dispatch-resume')
+            self.assertEqual(resumed['concurrency'], 1)
+            self.assertEqual(self.rt.dispatch_candidates(self.worker['id']), 1)
+            self.assertEqual(len(submissions), 1)
+            self.assertEqual(submissions[0][1][0]['id'], self.worker['id'])
+            self.assertEqual(self.rt.dispatch_candidates(self.worker['id']), 0)
+            self.assertEqual(len(submissions), 1)
 
     def test_busy_switch_preserves_turn_workers_and_queue(self):
         with self.rt.lock, self.rt.db() as db:

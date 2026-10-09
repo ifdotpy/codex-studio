@@ -157,6 +157,7 @@ function ScopedConcurrencyControl({
   );
   const dirty = useRef(false);
   const lock = useRef(false);
+  const refreshGeneration = useRef(0);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -171,6 +172,14 @@ function ScopedConcurrencyControl({
     : undefined;
   const latest = useRef(confirmed);
   latest.current = confirmed;
+  const refreshConfirmed = (generation: number) => {
+    void Promise.resolve()
+      .then(refresh)
+      .catch((cause) => {
+        if (mounted.current && generation === refreshGeneration.current)
+          setError(`Setting saved. ${errorText(cause)}`);
+      });
+  };
 
   // Retain a newer accepted revision while snapshots catch up. Old mode-only
   // cache entries are intentionally ignored.
@@ -225,6 +234,7 @@ function ScopedConcurrencyControl({
       subagent_concurrency: validDraft ? target : confirmed.concurrency,
       expected_mode_revision: expectedRevision,
       request_id: crypto.randomUUID(),
+      expected_account_key: lead.accountKey || "default",
     };
     const pending: Stored = { confirmed, pending: request };
     try {
@@ -239,6 +249,7 @@ function ScopedConcurrencyControl({
     lock.current = true;
     setSaving(true);
     setError("");
+    const generation = ++refreshGeneration.current;
     try {
       const result = await post("/api/conversation", request, {
         workspaceId,
@@ -273,7 +284,7 @@ function ScopedConcurrencyControl({
         dirty.current = false;
         setDraft(newest.concurrency);
       }
-      await refresh();
+      refreshConfirmed(generation);
     } catch (cause) {
       const details =
         cause instanceof ApiError
@@ -302,7 +313,12 @@ function ScopedConcurrencyControl({
         } catch {
           // Keep the receipt until its confirmed rejection can be saved.
         }
-        void refresh();
+        void Promise.resolve()
+          .then(refresh)
+          .catch((failure) => {
+            if (mounted.current && generation === refreshGeneration.current)
+              setError(`${errorText(cause)} ${errorText(failure)}`);
+          });
       }
       if (mounted.current) setError(errorText(cause));
     } finally {

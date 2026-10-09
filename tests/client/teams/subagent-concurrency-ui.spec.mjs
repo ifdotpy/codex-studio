@@ -217,6 +217,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     await input.blur();
     await waitConcurrency(64);
     assert.deepEqual(Object.keys(writes.at(-1)).sort(), [
+      "expected_account_key",
       "expected_mode_revision",
       "id",
       "request_id",
@@ -224,6 +225,10 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     ]);
     assert.equal(writes.at(-1).subagent_concurrency, 64);
     assert.equal(writes.at(-1).expected_mode_revision, 0);
+    assert.equal(
+      writes.at(-1).expected_account_key,
+      lead.accountKey || "default",
+    );
     assert.equal((await currentLead()).concurrency, 64);
 
     // Zero expresses Single agent and does not interrupt accepted workers.
