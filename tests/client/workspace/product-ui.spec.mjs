@@ -499,10 +499,6 @@ test("320px long-draft send control stays inside the viewport", async ({
   const page = await setupProductMobileComposer(browser);
   try {
     const geometry = await page.locator("#send").boundingBox();
-    test.fail(
-      true,
-      "See chat-known-failures.md: 320px mobile composer send-control overflow.",
-    );
     assert.ok(
       geometry && geometry.x >= 0 && geometry.x + geometry.width <= 320,
       `long-draft send control stays inside the 320px viewport: ${JSON.stringify(geometry)}`,

@@ -637,10 +637,6 @@ test("390px mobile composer horizontal invariants", async ({ browser }) => {
       ),
       phases,
     };
-    test.fail(
-      true,
-      "See chat-known-failures.md: 390px mobile composer action overflow shifts the composer and scrolls #root.",
-    );
     assert.ok(
       result.sendInsideComposer &&
         result.sendXUnchanged &&
