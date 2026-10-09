@@ -1697,8 +1697,8 @@ p {
   }
 }
 
-/* The persistent terminal dock reserves its own screen space. */
-html body #root {
+/* Reserve space only in the document that contains the terminal dock. */
+html body #root:has(.terminal-dock) {
   height: calc(100dvh - var(--terminal-dock-height, 38px));
   min-height: 0;
 }

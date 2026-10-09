@@ -91,6 +91,7 @@ export default function MultiServerApp() {
   const discovery = useServerDiscovery(
     !uiOnly && ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname),
     (server) => add(server, false),
+    !uiOnly,
   );
   const accountsServers = useMemo(
     () => accountServers(servers, discovery.snapshot?.servers || []),
@@ -828,6 +829,7 @@ export default function MultiServerApp() {
     return (
       <ServerSettingsContext.Provider
         value={{
+          server: localServer(),
           panel: management,
           activate: () => setManager(true),
           close: () => setManager(false),

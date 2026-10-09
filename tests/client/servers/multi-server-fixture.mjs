@@ -285,10 +285,33 @@ export async function fixture(
       });
       return;
     }
+    if (url.pathname === "/api/multi-server/v1/status") {
+      json(invitation);
+      return;
+    }
     if (url.pathname === "/api/multi-server") {
       if (request.method === "POST") accessRequests.push(body);
-      if (["ui_invite", "discover", "settings", "alias"].includes(body.action))
-        assert.equal(request.headers["x-canvas-token"], snapshot.token);
+      if (
+        ["ui_invite", "discover", "settings", "alias", "name"].includes(
+          body.action,
+        )
+      )
+        if (body.action !== "name" || !request.headers["x-studio-client"])
+          assert.equal(request.headers["x-canvas-token"], snapshot.token);
+      if (body.action === "name") {
+        if (body.serverId === "local" || body.serverId === serverId)
+          invitation.label = body.label;
+        else {
+          const peer = discoveredPeers.find(
+            (row) => row.serverId === body.serverId,
+          );
+          if (!peer) {
+            json({ error: "Server not paired" }, 403);
+            return;
+          }
+          peer.label = peer.invitation.label = body.label;
+        }
+      }
       if (body.action === "alias") {
         aliases[body.serverId] = body.alias;
         if (body.serverId === "local" || body.serverId === serverId)

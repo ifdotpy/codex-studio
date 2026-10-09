@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
 import { fixture } from "../tests/client/servers/multi-server-fixture.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -69,6 +70,32 @@ try {
   await frame.getByRole("button", { name: "New chat", exact: true }).waitFor();
   await frame.getByRole("button", { name: /^Remote chat / }).click();
   await frame.locator("#message").waitFor({ state: "visible" });
+  const terminalToggle = frame.getByRole("button", {
+    name: "Show terminals",
+    exact: true,
+  });
+  await terminalToggle.waitFor({ state: "visible" });
+  const terminalBounds = await terminalToggle.boundingBox();
+  const viewportHeight = await page.evaluate(() => window.innerHeight);
+  const shellBounds = await page.locator("#root").boundingBox();
+  assert.ok(terminalBounds, "The terminal toggle must have visible bounds");
+  assert.ok(shellBounds, "The desktop shell must have visible bounds");
+  assert.ok(
+    terminalBounds.y + terminalBounds.height <=
+      shellBounds.y + shellBounds.height,
+    `The desktop shell clips the terminal toggle: ${JSON.stringify({ terminalBounds, shellBounds })}`,
+  );
+  assert.ok(
+    terminalBounds.y + terminalBounds.height <= viewportHeight,
+    `The terminal toggle is outside the window: ${JSON.stringify({ terminalBounds, viewportHeight })}`,
+  );
+  await terminalToggle.click();
+  await frame
+    .getByRole("complementary", { name: "Terminal sessions" })
+    .waitFor();
+  await frame
+    .getByRole("button", { name: "Hide terminals", exact: true })
+    .click();
   const frameURL = await page.locator("iframe").getAttribute("src");
   assert.equal(
     new URL(frameURL).searchParams.get("studio-navigation"),
@@ -87,6 +114,8 @@ try {
         "signed server data",
         "sidebar",
         "chat composer",
+        "terminal toggle inside the window",
+        "terminal panel opens and closes",
       ],
     }),
   );
@@ -94,6 +123,9 @@ try {
   if (desktop) {
     const pid = desktop.process().pid;
     let watchdog;
+    const testChildren = await desktop
+      .evaluate(({ app }) => app.getAppMetrics().map(({ pid }) => pid))
+      .catch(() => []);
     await Promise.race([
       desktop.close().catch(() => {}),
       new Promise((resolve) => {
@@ -106,6 +138,19 @@ try {
       }),
     ]);
     clearTimeout(watchdog);
+    for (const childPid of testChildren) {
+      try {
+        const args = execFileSync(
+          "ps",
+          ["-p", String(childPid), "-o", "args="],
+          {
+            encoding: "utf8",
+          },
+        );
+        if (args.includes(`--user-data-dir=${path.join(folder, "profile")} `))
+          process.kill(childPid, "SIGTERM");
+      } catch {}
+    }
   }
   await remote.close();
   await rm(folder, { recursive: true, force: true });

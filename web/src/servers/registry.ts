@@ -12,6 +12,7 @@ export type StudioServer = {
   workspaceId?: string;
   alias?: string;
 };
+export const LOCAL_NAME_KEY = "studio-local-server-name-v1";
 export const SERVER_REGISTRY_KEY = "studio-paired-servers-v1";
 export const SERVER_REGISTRY_EVENT = "studio-server-registry";
 export function serveOrigin(value: string) {
@@ -98,7 +99,7 @@ export function writeServers(
 export function localServer(): StudioServer {
   return {
     id: "local",
-    label: "This computer",
+    label: localStorage.getItem(LOCAL_NAME_KEY) || "This computer",
     origin: location.origin,
     alias: localStorage.getItem(LOCAL_ALIAS_KEY) || "MAC",
   };

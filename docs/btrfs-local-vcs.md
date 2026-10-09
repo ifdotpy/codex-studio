@@ -37,6 +37,9 @@ so models learn it quickly, and it has equal convenience. It does not take the n
 9. All agents run in the VM: the lead, workers and reviewers. The Mac is reached only through the
    general `host_exec` tool, for work that needs macOS (Xcode builds and tests, signing, simulators).
    This replaces the earlier decision of the same day to keep the lead on the Mac.
+10. Everything local goes through `layr`, reading commands included. The long-term ambition is a
+    `layrhub` that replaces GitHub for these projects.
+11. The read-only share also exposes `states/`, so the project history is browsable as folders.
 
 ## Data model
 
@@ -57,28 +60,61 @@ checkout.
 
 ## Command line: `layr`
 
-The agent skill and instructions teach `layr`. Its output uses git formats where a format exists, so
-model habits carry over. Real git stays in each line: the git object store is a nested subvolume,
-so tools that call `git rev-parse` or `git describe` keep working. A local commit made with real git
-is harmless, because `layr` keeps the states.
+The agent skill and instructions teach `layr`, and agents use it for all local work, reading
+included (user decision 2026-10-09: "everything on layr"). Its output uses git formats where a
+format exists, so model habits carry over. Real git stays in each line only for tools that call it
+themselves (for example `git describe` in a build script) and for the remote bridge: the git object
+store is a nested subvolume.
 
-| git verb                                 | Utility behavior                                                                                                                           | Cost               |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------ |
-| `status`                                 | Snapshot the line, then `btrfs send --no-data -p <base state>`. Filter ignored paths with the `.gitignore` rules.                          | O(changes), 0.03 s |
-| `diff`                                   | Unified diff only for paths in the change list.                                                                                            | O(changes)         |
-| `add`, `commit`                          | `add` records paths in a staged set. `commit` saves a state: the full line, or the parent state plus staged paths as reflink copies.       | O(1) or O(staged)  |
-| `log`, `show`                            | Read the state graph. `show <state>:<path>` reads the file from the state folder.                                                          | O(1) per record    |
-| `checkout`, `switch`, `restore`, `reset` | A whole line: a new writable snapshot of the target state. One path: a reflink copy from the state. Save the line first (snapshot rule 2). | O(1) per path      |
-| `stash`                                  | Save a state and restore the line.                                                                                                         | O(1)               |
-| `branch`, `tag`                          | Create, list or delete lines. A tag is a named state.                                                                                      | O(1)               |
-| `merge`, `cherry-pick`, `rebase`         | The merge engine (below) applies change lists onto the target line.                                                                        | O(changes)         |
-| `blame`                                  | Walk the versions of one file through the state graph, on request.                                                                         | O(history of file) |
-| `clean`                                  | Delete untracked, not ignored paths from the change list.                                                                                  | O(changes)         |
-| `fetch`, `pull`, `push`, `remote`        | The remote bridge (below).                                                                                                                 | O(changes)         |
-| other verbs                              | Not provided by `layr`. Real git keeps working in the line for tools that need it.                                                         | as git             |
+Priority comes from the git commands that agents ran on this Mac in 14 days (605 Codex and 30
+Claude sessions, 108,811 shell commands, 23.3 percent with git):
+
+| Verbs                                                                                                                     | Share of git calls | Cumulative |
+| ------------------------------------------------------------------------------------------------------------------------- | -----------------: | ---------: |
+| `diff` 23.7, `status` 18.1, `show` 12.0, `log` 8.8, `rev-parse` 8.1                                                       |              70.7% |      70.7% |
+| `add` 3.9, `fetch` 3.7, `commit` 3.6, `worktree` 2.8, `merge-base` 2.1, `merge` 1.5, `branch` 1.5, `push` 1.3, `grep` 1.0 |              21.4% |      92.1% |
+| about 30 more verbs, each below 1 percent                                                                                 |               7.9% |       100% |
+
+Frequent forms: `diff --stat`, `--check`, `--name-only`, `--cached` and ranges; `status --short`
+and `--branch`; `show <rev>`, `<rev>:<path>` and `--stat`; `log --oneline` and `--format`;
+`rev-parse HEAD`, `--short` and `--show-toplevel`. The first set of `layr` covers the first group
+with these forms, then the second group. `worktree` and `branch` map to lines.
+
+| git verb                                 | Utility behavior                                                                                                                           | Cost                      |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------- |
+| `status`                                 | Snapshot the line, then `btrfs send --no-data -p <base state>`. Filter ignored paths with the `.gitignore` rules.                          | O(changes), 0.03 s        |
+| `diff`                                   | Unified diff only for paths in the change list.                                                                                            | O(changes)                |
+| `add`, `commit`                          | `add` records paths in a staged set. `commit` saves a state: the full line, or the parent state plus staged paths as reflink copies.       | O(1) or O(staged)         |
+| `log`, `show`                            | Read the state graph. `show <state>:<path>` reads the file from the state folder.                                                          | O(1) per record           |
+| `checkout`, `switch`, `restore`, `reset` | A whole line: a new writable snapshot of the target state. One path: a reflink copy from the state. Save the line first (snapshot rule 2). | O(1) per path             |
+| `stash`                                  | Save a state and restore the line.                                                                                                         | O(1)                      |
+| `branch`, `tag`                          | Create, list or delete lines. A tag is a named state.                                                                                      | O(1)                      |
+| `merge`, `cherry-pick`, `rebase`         | The merge engine (below) applies change lists onto the target line.                                                                        | O(changes)                |
+| `blame`                                  | Walk the versions of one file through the state graph, on request.                                                                         | O(history of file)        |
+| `clean`                                  | Delete untracked, not ignored paths from the change list.                                                                                  | O(changes)                |
+| `fetch`, `pull`, `push`, `remote`        | The remote bridge (below).                                                                                                                 | O(changes)                |
+| `rev-parse`, `merge-base`, `grep`        | State ids, the line root, ancestry in the state graph, search in a state folder.                                                           | O(1) or O(files searched) |
+| other verbs                              | Added by use frequency. Until then, real git works in the line for tools that need it.                                                     | as git                    |
 
 A switch of a line replaces the working subvolume with a rename. Processes that are already
 running keep the old one.
+
+## Staging (index)
+
+The index is a writable btrfs line next to the agent line, created as a snapshot of the parent
+state.
+
+- `add <path>`: a reflink copy from the agent line into the index line.
+- Partial add: the agent passes the hunks as a patch (non-interactive form of `add -p`), and the
+  utility applies it to the index copy of the file.
+- `rm <path>`: delete in the index line.
+- `diff --cached`: the change list from the parent state to a snapshot of the index line.
+- `diff`: the change list from the index line to the agent line. Both lines changed some files
+  independently, so the candidates are confirmed by content (only the candidates).
+- `commit`: a read-only snapshot of the index line becomes the new state.
+
+Rule: a `btrfs send` change list is a candidate list. Between two snapshots where the same path was
+created independently (different inodes), confirm candidates by content.
 
 ## Snapshot rules
 
@@ -141,6 +177,18 @@ Each record also stores the line pointers before and after the operation. States
 undo of any operation only restores the previous pointers: O(1). Undo is itself a new record, so
 it can be undone too.
 
+## Access model in the VM
+
+- The `layr` service runs as root. It owns `states/`, `meta/` and the line folders: `states/` and
+  `meta/` have mode `0700`, the `lines/` folder `0711` (no listing).
+- Each agent has its own Linux user. It owns only its line (mode `0700`).
+- An agent reads history only through `layr` (`log`, `show`, `diff`), not through the state paths.
+- Creating, deleting and renaming lines and states is a `layr` operation.
+
+A state snapshot keeps the owner of the line root, so its owner could clear the read-only flag if it
+could reach the path. The `0700` root folder above `states/` is what prevents this, so it is a hard
+rule.
+
 ## Main line on macOS
 
 The main line of every project lives on btrfs in the Studio VM. All agents work in the VM, in
@@ -156,12 +204,13 @@ The user views files through a read-only network share (below).
 
 One general tool. Studio does not know what the command does.
 
-1. Each agent that needs macOS gets a fixed slot on the Mac: a folder at a stable path, plus its own
+1. Each project has a pool of slots on the Mac. A slot is a folder at a stable path, with its own
    `DerivedData` and package folders next to it. A stable path keeps Xcode builds warm: Xcode does
    not reuse `DerivedData` at another path (measured in the research document).
-2. Before the command, the utility syncs the agent line to the slot: the change list since the
-   last synced state (`btrfs send --no-data`), then only those files. The first use copies the
-   whole line.
+2. An agent leases a free slot for a command. The slot records the state it holds. Before the
+   command, the utility syncs the slot to the agent's current state: the change list between the
+   two states (`btrfs send --no-data`, also between sibling lines of one base), confirmed by
+   content, then only those files. The first use of a slot copies the whole state.
 3. The command runs on the Mac in the slot, in the user's session, so GUI tools and simulators are
    available.
 4. After the command, the Mac side lists files that the command changed in the slot (FSEvents or a
@@ -174,10 +223,15 @@ One general tool. Studio does not know what the command does.
 6. One command at a time per slot. The agent waits for the result, so there is one writer.
 
 The channel is a request from the guest to the host. The VM helper today only connects from the
-host to the guest (`connect(toPort: 4050)` in `desktop/native/linux-vm/main.swift`). The guest side
-needs either a Virtualization.framework listener for guest connections (`setSocketListener`) or
-reverse requests on the existing connection, with request ids and receipts like the other guest
-calls.
+host to the guest (`connect(toPort: 4050)` in `desktop/native/linux-vm/main.swift`).
+Recommendation (not tested): reverse requests on the existing connection. The guest sends a request
+frame with a request id; the host runs it and answers with a receipt, like the other guest calls.
+This needs no new Virtualization.framework listener, keeps one connection to supervise, and reuses
+the existing retry and receipt rules. A Virtualization.framework listener for guest connections
+(`setSocketListener`) is the alternative.
+
+Slot pool rules: a disk budget per project, least recently used slots are removed first, and a slot
+that holds a state from an older base is reset by a full copy.
 
 ### Viewing from the Mac: read-only network share
 
@@ -188,14 +242,22 @@ calls.
 - The server listens only on the VM's internal network interface, not on the local network.
 - The share is for viewing single files. Builds on the Mac use `host_exec` slots, not the share.
 - The share is available only while the VM runs.
+- The VM also shares `states/` read-only, so every state of the project is a folder in Finder.
 
 ### Export and backups
 
 - `layr export <folder>` writes a normal copy of a state to a folder on the Mac, for use without
   Studio or without the VM.
-- Backups: `btrfs send` of states to another machine, or to a btrfs disk image on an external
-  disk. Every task also goes to the remote through the remote bridge. Time Machine does not back up
-  network volumes, and the VM disk image should be excluded from it.
+- Backups are files: one full `btrfs send` stream and incremental streams after it, written once
+  into a backup folder on the Mac. Time Machine backs up that folder; the VM disk image itself is
+  excluded from Time Machine. The same files can go to another machine or later to `layrhub`.
+- Schedule: an incremental stream for every named state and at least hourly for the main line; a
+  new full stream weekly. Streams are compressed with zstd. A manifest stores the SHA-256 of each
+  stream.
+- Retention: the last two full chains.
+- Restore: check the manifest, receive the full stream, then the incremental streams in order.
+  `btrfs receive` rejects a corrupted stream (CRC32C per command) and a stream whose parent is
+  missing.
 
 ### Ownership guarantees
 
@@ -236,13 +298,24 @@ used for review.
 5. Conflicts: same region in both text versions, delete against change, and binary files changed on
    both sides. A merge never stops on a conflict. The result is a normal state that contains the
    conflicts: text files get conflict markers, and the state metadata lists each conflicted path
-   with the ids of the base, ours and theirs versions. `git status` shows these paths as unmerged.
+   with the ids of the base, ours and theirs versions. `layr status` shows these paths as unmerged.
    A later state that resolves them clears the list. Work can continue on top of a state with
    conflicts.
 6. The git object store is never merged as blocks. History goes through the remote bridge.
 
-Cases still to handle: rename against change, folder delete against a new file inside, symlinks,
-file modes, case-insensitive paths from macOS users.
+Parsing rules for the change lists:
+
+- `btrfs send` expresses a rename as `link <new> dest=<old>` followed by `unlink <old>`.
+- Deleted and new entries pass through orphan names `o<inode>-<generation>-<sequence>`. A folder
+  delete is a rename of the folder to an orphan name, then deletes inside it. The parser maps
+  orphan names back to the real path.
+- Many editors and `sed -i` write a new inode. A rename combined with such an edit is a delete and
+  an add; only a plain move is detected as a rename.
+
+Handled cases (all passed, see "Design experiments"): rename against change, folder delete against
+a new file inside, symbolic links (ours only, theirs only, both), mode against content, file to
+folder, add/add with the same and with different content, rename/rename, case-only rename, folder
+delete, edits of different lines, delete against change.
 
 ## Exploration groups
 
@@ -381,6 +454,71 @@ detection must run on the Mac: the VM's view of the shared folder returned a sta
 time. The compiler printed `/tmp/...`, so path mapping must handle aliases. Not tested: large Xcode
 projects, simulators and UI tests through `host_exec`, the real vsock channel.
 
+## Toward layrhub
+
+The ambition is a `layrhub` that later replaces GitHub for these projects. Requirements that apply
+now:
+
+- Global ids: state and record ids are UUIDv7.
+- Signed records: each machine signs its log records with Ed25519, as Studio servers already do for
+  multi-server requests.
+- Transport by streams: clone is a full stream, pull and push are incremental streams. Clients that
+  got their states from the hub share its lineage, so `send -p` works between them.
+- A client without that lineage (an outside contributor, another hub) needs a fallback transport by
+  content: the change list as files.
+- Line ownership, review records and merge decisions are log records, so the hub can show and audit
+  them.
+
+## Design experiments (2026-10-09)
+
+Throwaway OrbStack machines (Ubuntu, kernel 7.0, btrfs), root for the `layr` service, one run each.
+
+Access model (agent `igor` against the store, other agent `agent2`):
+
+| Action by the agent                                             | Result                                                                        |
+| --------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| write, delete and snapshot in its own line                      | allowed                                                                       |
+| list or read states, clear read-only on a state, delete a state | denied                                                                        |
+| remove `states/`, read or append the operation log              | denied                                                                        |
+| read or write the other agent's line                            | denied                                                                        |
+| delete or rename its own line subvolume                         | denied                                                                        |
+| `rm -rf /studio` as the agent                                   | states, log and the other line intact; the damaged line restored from a state |
+
+Staging on 200,000 files:
+
+| Step                             | Time                                      |
+| -------------------------------- | ----------------------------------------- |
+| index line from the parent state | 0.013 s                                   |
+| add a file, a new file, a delete | 0.001 to 0.002 s each                     |
+| partial add of one hunk by patch | 0.003 s                                   |
+| `diff --cached` / `diff`         | 0.017 s / 0.008 s + 0.005 s content check |
+| commit (read-only snapshot)      | 0.025 s                                   |
+
+The commit contained exactly the staged first hunk; the second hunk stayed in the line.
+
+Merge cases: 14 of 14 passed, one merge took 0.16 s.
+
+Backups on 200,000 files plus a 50 MiB binary file:
+
+| Step                                                                      | Result                                   |
+| ------------------------------------------------------------------------- | ---------------------------------------- |
+| full stream                                                               | 15.01 s, 169.1 MiB (64.1 MiB with zstd)  |
+| 5 incremental streams of 100 edited files (one also 64 KiB of the binary) | 0.03 to 0.07 s each, up to about 0.1 MiB |
+| restore: full + 5 incremental streams on another btrfs                    | 46.13 s + 4.87 s, content equal          |
+| corrupted stream / stream with a missing parent                           | rejected / rejected                      |
+
+`host_exec` slot pool (`CallScribe` copy, OrbStack `mac` as the channel):
+
+| Step                                                   | Sync            | Xcode build |
+| ------------------------------------------------------ | --------------- | ----------- |
+| empty slot: full copy and cold build                   | 0.05 s          | 63.20 s     |
+| slot to agent A                                        | 1 file, 0.28 s  | 8.59 s      |
+| slot from agent A to agent B (sibling line, same base) | 3 files, 0.26 s | 9.72 s      |
+| slot from agent B back to agent A (A changed again)    | 3 files, 0.17 s | 8.63 s      |
+| same state again                                       | 0 files, 0.05 s | 4.58 s      |
+
+The slot held exactly the target state after each switch.
+
 ## Prior art and what this design takes from it
 
 | Project                                                                                         | What it does                                                                                              | Taken                                                                          |
@@ -398,20 +536,13 @@ replication between machines.
 
 Design:
 
-- The reverse guest to host channel for `host_exec`, and slot management (create, reuse, remove,
-  disk budget).
-- Index emulation for partial `add` (hunks, `add -p`).
-- The first set of git verbs that `layr` implements.
-- Directory-level merge cases: rename against change, folder delete against a new file inside,
-  symlinks, file modes.
-- Backup target and schedule for `btrfs send` (another machine or an external disk image).
-- The access model in the VM: agents own their lines; the `layr` service owns states, the log and
-  metadata.
+- The reverse guest to host channel: implement and measure the recommended reverse requests.
+- The `layrhub` protocol: signed records, stream transport, the fallback transport by content.
 
 Measurements:
 
 - `host_exec` with simulators, UI tests and a large Xcode project.
-- The read-only share: SMB against NFS for Finder use on a large tree.
+- The read-only share: SMB against NFS for Finder use on a large tree, and the `states/` share.
 - The loop-file option on a real ext4 host.
 
 Later:

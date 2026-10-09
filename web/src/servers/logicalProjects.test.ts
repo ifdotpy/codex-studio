@@ -161,7 +161,7 @@ describe("project locations", () => {
   });
   it("disables paired but unreachable servers in frame selectors", async () => {
     const get = vi.spyOn(api, "get").mockResolvedValue({
-      identity: { serverId: "mac-id" },
+      identity: { serverId: "mac-id", label: "Lumina Mac" },
       servers: [
         {
           id: "mbp",
@@ -173,6 +173,7 @@ describe("project locations", () => {
     } as never);
     try {
       const choices = await readProjectServers();
+      expect(choices[0].label).toBe("Lumina Mac");
       expect(choices[1].disabled).toBe(true);
     } finally {
       get.mockRestore();

@@ -189,6 +189,19 @@ class ServerDiscovery:
         try:
             peer = self.probe(origin, timeout=min(PROBE_TIMEOUT, max(0.1, deadline - time.monotonic())))
             identified = True
+            with self.service.runtime.read_db() as db:
+                paired = access._record(db.execute("SELECT record FROM runtime_access_clients WHERE id=?", (peer["serverId"],)).fetchone())
+            if paired and paired.get("status") == "paired":
+                try:
+                    identity = self.service.request(peer["serverId"], "GET", "/api/multi-server/v1/status", None,
+                                                    uuid.uuid4().hex, min(PROBE_TIMEOUT, max(0.1, deadline - time.monotonic())))
+                    self.service.refresh_peer_identity(peer["serverId"], identity)
+                    peer["label"] = identity["label"]
+                except access.AccessError as error:
+                    if error.status != 404:
+                        raise
+                    # Older paired servers keep their saved name until they support signed status.
+                    peer["label"] = paired["label"]
             if peer["serverId"] == self.service.local_server_id or peer["tailscaleUser"].strip().lower() != owner:
                 return
             with self.service._write() as db:

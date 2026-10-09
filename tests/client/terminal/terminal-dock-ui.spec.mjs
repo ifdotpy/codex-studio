@@ -5,6 +5,9 @@ import {
   browserExecutablePath,
   spawnFixture as spawn,
   apiSchemaHandshakeSse,
+  syncIdentityFixture,
+  API_SCHEMA_HASH_HEADER,
+  readApiSchemaHash,
 } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -71,7 +74,8 @@ test("Terminal dock", async () => {
       const name = url.pathname;
       if (name === "/api/sync/identity") {
         res.setHeader("Content-Type", "application/json");
-        res.end(JSON.stringify({ workspaceId }));
+        res.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
+        res.end(JSON.stringify(syncIdentityFixture(workspaceId)));
         return;
       }
       if (name === "/api/sync/stream") {
@@ -704,7 +708,7 @@ test("Terminal dock", async () => {
   // The same dock also exercises real shell input and saved output through the HTTP server.
   const liveRoot = await mkdtemp(join(tmpdir(), "codex-terminal-live-"));
   const fixture = spawn(
-    "python3",
+    process.env.CODEX_AGENTS_PYTHON || "python3",
     ["-B", join(skill, "tests/simple-ui-fixture.py"), liveRoot],
     { stdio: ["pipe", "pipe", "pipe"] },
   );

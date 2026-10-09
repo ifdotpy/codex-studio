@@ -13,13 +13,21 @@ import {
   excludedServers,
   setServerExcluded,
 } from "./automaticAccessStore";
-import { readServers, writeServers, type StudioServer } from "./registry";
+import {
+  readServers,
+  writeServers,
+  LOCAL_NAME_KEY,
+  SERVER_REGISTRY_EVENT,
+  type StudioServer,
+} from "./registry";
 import { LOCAL_ALIAS_KEY } from "./serverAliases";
 import { serverCredentialAdapter } from "./transport";
+import { refreshServerName } from "./serverNames";
 export const DISCOVERY_REFRESH_EVENT = "studio-server-discovery-refresh";
 export function useServerDiscovery(
   enabled: boolean,
   add: (server: StudioServer) => void,
+  localAvailable = true,
 ) {
   const [snapshot, setSnapshot] = useState<DiscoverySnapshot | null>(null);
   const [error, setError] = useState("");
@@ -103,12 +111,34 @@ export function useServerDiscovery(
       await navigator.locks.request(name, work);
     },
     async (body) => {
+      if (!enabled && body.action === "name" && body.serverId !== "local") {
+        const server = readServers().find((row) => row.id === body.serverId);
+        if (!server) throw new Error("Select a paired server.");
+        const response = await serverCredentialAdapter().fetch(
+          server,
+          new Request(server.origin + "/api/multi-server", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...body, serverId: "local" }),
+            signal: AbortSignal.timeout(15000),
+          }),
+        );
+        if (!response.ok) {
+          const value = await response.json();
+          throw new Error(value.error || "The server refused the name.");
+        }
+        return;
+      }
       const session = await refreshSession();
       if (body.action === "revoke") controller.current?.cancel(body.clientId);
       await serverAccess(
         "POST",
         body,
-        body.action === "discover" ? 105000 : 15000,
+        body.action === "discover"
+          ? 105000
+          : body.action === "name"
+            ? 40000
+            : 15000,
         session.token,
       );
     },
@@ -116,7 +146,27 @@ export function useServerDiscovery(
   const loading = useRef<Promise<void> | null>(null);
   const apply = async (state: ServerAccessState) => {
     const next = discoverySnapshot(state);
-    if (!active.current) return;
+    if (!active.current && !localAvailable) return;
+    if (
+      next?.localLabel &&
+      localStorage.getItem(LOCAL_NAME_KEY) !== next.localLabel
+    ) {
+      localStorage.setItem(LOCAL_NAME_KEY, next.localLabel);
+      window.dispatchEvent(new Event(SERVER_REGISTRY_EVENT));
+    }
+    if (next) {
+      const rows = readServers();
+      const paired = rows.map((row) => {
+        const peer = next.servers.find(
+          (peer) => peer.id === row.id && peer.paired,
+        );
+        return peer && peer.label !== row.label
+          ? { ...row, label: peer.label }
+          : row;
+      });
+      if (paired.some((row, index) => row !== rows[index]))
+        writeServers(paired);
+    }
     if (next?.aliases) {
       const aliases = { ...next.aliases };
       const fields = readPreferenceFields("user");
@@ -139,7 +189,7 @@ export function useServerDiscovery(
     setSnapshot(next);
     setCheckedAt(Date.now() / 1000);
     setExcluded(excludedServers());
-    if (next)
+    if (next && enabled)
       void controller.current!.reconcile(next).then(
         () => {
           if (active.current) setAccessError("");
@@ -195,7 +245,8 @@ export function useServerDiscovery(
     };
   }, [enabled]);
   const run = async (request: ServerAccessRequest) => {
-    if (!enabled || busyRef.current) return false;
+    if ((!enabled && request.action !== "name") || busyRef.current)
+      return false;
     busyRef.current = true;
     setBusy(true);
     setError("");
@@ -219,8 +270,18 @@ export function useServerDiscovery(
         }
       }
       // A retry receipt contains the original snapshot. Read the current state.
-      if (loading.current) await loading.current;
-      await load();
+      if (
+        enabled ||
+        (localAvailable &&
+          request.action === "name" &&
+          request.serverId === "local")
+      ) {
+        if (loading.current) await loading.current;
+        await load();
+      } else if (request.action === "name") {
+        const server = readServers().find((row) => row.id === request.serverId);
+        if (server) await refreshServerName(server);
+      }
       return true;
     } catch (failure) {
       setError(errorText(failure));
@@ -236,7 +297,6 @@ export function useServerDiscovery(
     }
   };
   useEffect(() => {
-    if (!enabled) return;
     const update = () => {
       try {
         setPending(management.pending()[0] || null);
@@ -248,6 +308,34 @@ export function useServerDiscovery(
     window.addEventListener("storage", update);
     return () => window.removeEventListener("storage", update);
   }, [enabled]);
+  useEffect(() => {
+    if (enabled) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const refresh = async () => {
+      if (localAvailable) {
+        try {
+          await loadRef.current();
+        } catch (failure) {
+          if (!stopped) setError(errorText(failure));
+        }
+      }
+      for (const server of readServers()) {
+        if (stopped) return;
+        try {
+          await refreshServerName(server);
+        } catch {
+          /* The connection status owns errors for offline servers. */
+        }
+      }
+      if (!stopped) timer = setTimeout(refresh, 30000);
+    };
+    void refresh();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [enabled, localAvailable]);
   return {
     snapshot,
     checkedAt,
@@ -266,6 +354,8 @@ export function useServerDiscovery(
         });
       },
     },
+    setName: (serverId: string, label: string) =>
+      run({ action: "name", serverId, label, requestId: crypto.randomUUID() }),
     setAlias: (serverId: string, alias: string) =>
       run({
         action: "alias",

@@ -157,7 +157,7 @@ test("chat Accounts settings show all servers and route remote sign-in", async (
     });
     // The standalone view keeps its local account panel.
     await expect(
-      accounts.getByRole("button", { name: "✓ This computer" }),
+      accounts.getByRole("button", { name: "✓ Local" }),
     ).toBeVisible();
     await expect(
       accounts.getByRole("button", { name: "+ Remote" }),
@@ -176,9 +176,7 @@ test("chat Accounts settings show all servers and route remote sign-in", async (
     await expect(page.locator('[data-settings-server="remote"]')).toBeVisible();
     await settings.getByRole("button", { name: "Close", exact: true }).click();
 
-    const localFrame = page.frameLocator(
-      'iframe[title="Studio on This computer"]',
-    );
+    const localFrame = page.frameLocator('iframe[title="Studio on Local"]');
     const remoteFrame = page.frameLocator('iframe[title="Studio on Remote"]');
     await page
       .getByLabel("Studio server", { exact: true })
@@ -210,7 +208,7 @@ test("chat Accounts settings show all servers and route remote sign-in", async (
       settings.getByRole("tab", { name: "Accounts", exact: true }),
     ).toHaveAttribute("aria-selected", "true");
     await expect(
-      accounts.getByRole("button", { name: "✓ This computer" }),
+      accounts.getByRole("button", { name: "✓ Local" }),
     ).toBeVisible();
     await page.screenshot({
       path: testInfo.outputPath("chat-accounts-all-servers.png"),
