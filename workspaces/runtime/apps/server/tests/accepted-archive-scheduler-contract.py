@@ -524,41 +524,44 @@ class AcceptedArchiveRuntimeRestart(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix='accepted-archive-real-restart-') as directory:
             from unittest.mock import patch
+            from types import SimpleNamespace
             with patch.object(subprocess, 'Popen', side_effect=AssertionError('No native process may start')):
-                runtime = ControlledRuntime(Path(directory), fixture.FakeServer)
-                try:
-                    lead = runtime.create({'name': 'Archive restart lead', 'cwd': directory, 'prompt': ''}, draft=True)
-                    due = time.time() + 60
-                    with runtime.lock, runtime.db() as db:
-                        runtime.put(db, 'work', {
-                            'id': 'restart-task', 'rootId': lead['id'], 'owner': lead['id'],
-                            'status': 'accepted', 'decisions': [{'resultId': 'result'}],
-                            'archiveIntent': {'id': 'restart-task:result', 'status': 'pending',
-                                              'attempts': 7, 'created': time.time(), 'nextAttemptAt': due}})
-                finally:
-                    runtime.close()
-                before = time.monotonic()
-                runtime = ControlledRuntime(Path(directory), fixture.FakeServer)
-                try:
-                    self.assertLess(time.monotonic() - before, 2)
-                    runtime.accepted_archive_tick()
-                    with runtime.read_db() as db:
-                        work = json.loads(db.execute('SELECT record FROM runtime_work WHERE id=?',
-                                                     ('restart-task',)).fetchone()[0])
-                    self.assertEqual(calls, [])
-                    self.assertEqual(work['archiveIntent']['id'], 'restart-task:result')
-                    self.assertEqual(work['archiveIntent']['attempts'], 7)
-                    self.assertEqual(work['archiveIntent']['nextAttemptAt'], due)
-                    with runtime.lock, runtime.db() as db:
-                        work['archiveIntent']['nextAttemptAt'] = 0
-                        runtime.put(db, 'work', work)
-                    runtime.changed.set()
-                    self.assertTrue(archive_called.wait(30), 'archive callback did not run')
-                    self.assertEqual(len(calls), 1)
-                    self.assertEqual(calls[0][0], 'restart-task')
-                    self.assertEqual(runtime.servers, {})
-                finally:
-                    runtime.close()
+                with patch.object(fixture.Runtime, 'paired_access',
+                                  return_value=SimpleNamespace(local_server_id='fixture-server')):
+                    runtime = ControlledRuntime(Path(directory), fixture.FakeServer)
+                    try:
+                        lead = runtime.create({'name': 'Archive restart lead', 'cwd': directory, 'prompt': ''}, draft=True)
+                        due = time.time() + 60
+                        with runtime.lock, runtime.db() as db:
+                            runtime.put(db, 'work', {
+                                'id': 'restart-task', 'rootId': lead['id'], 'owner': lead['id'],
+                                'status': 'accepted', 'decisions': [{'resultId': 'result'}],
+                                'archiveIntent': {'id': 'restart-task:result', 'status': 'pending',
+                                                  'attempts': 7, 'created': time.time(), 'nextAttemptAt': due}})
+                    finally:
+                        runtime.close()
+                    before = time.monotonic()
+                    runtime = ControlledRuntime(Path(directory), fixture.FakeServer)
+                    try:
+                        self.assertLess(time.monotonic() - before, 2)
+                        runtime.accepted_archive_tick()
+                        with runtime.read_db() as db:
+                            work = json.loads(db.execute('SELECT record FROM runtime_work WHERE id=?',
+                                                         ('restart-task',)).fetchone()[0])
+                        self.assertEqual(calls, [])
+                        self.assertEqual(work['archiveIntent']['id'], 'restart-task:result')
+                        self.assertEqual(work['archiveIntent']['attempts'], 7)
+                        self.assertEqual(work['archiveIntent']['nextAttemptAt'], due)
+                        with runtime.lock, runtime.db() as db:
+                            work['archiveIntent']['nextAttemptAt'] = 0
+                            runtime.put(db, 'work', work)
+                        runtime.changed.set()
+                        self.assertTrue(archive_called.wait(30), 'archive callback did not run')
+                        self.assertEqual(len(calls), 1)
+                        self.assertEqual(calls[0][0], 'restart-task')
+                        self.assertEqual(runtime.servers, {})
+                    finally:
+                        runtime.close()
 
 
 if __name__ == '__main__':
