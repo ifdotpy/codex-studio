@@ -22,7 +22,7 @@ if ($Action -eq 'RestartBackend') {
     $config.sourceRoot = $SourceRoot
     $temporaryConfig = "$configPath.tmp"
     $config | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 -LiteralPath $temporaryConfig
-    Move-Item -Force -LiteralPath $temporaryConfig -Destination $configPath
+    [System.IO.File]::Replace($temporaryConfig, $configPath, $null, $true)
 }
 
 $requestAction = switch ($Action) {

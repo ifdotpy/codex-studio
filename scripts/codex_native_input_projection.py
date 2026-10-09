@@ -6,6 +6,7 @@ from pathlib import Path
 import sqlite3
 import stat
 import time
+from codex_private_paths import reject_reparse_path, verify_handle_within_directory
 
 READ_LIMIT = 2 * 1024 * 1024
 SCAN_LIMIT = 32 * 1024 * 1024
@@ -28,12 +29,14 @@ def _open_rollout(home, relative):
                     or getattr(info, 'st_file_attributes', 0) & 0x400):
                 raise ValueError('The native rollout path contains a reparse point')
         target = components[-1]
+        reject_reparse_path(home, target)
         info = target.lstat()
         if getattr(info, 'st_file_attributes', 0) & 0x400:
             raise ValueError('The native rollout is a reparse point')
         descriptor = os.open(target, os.O_RDONLY | getattr(os, 'O_BINARY', 0))
         try:
             opened = os.fstat(descriptor)
+            verify_handle_within_directory(descriptor, home)
             current_info = target.lstat()
             if (not stat.S_ISREG(opened.st_mode)
                     or getattr(current_info, 'st_file_attributes', 0) & 0x400

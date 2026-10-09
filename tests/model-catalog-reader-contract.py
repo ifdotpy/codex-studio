@@ -7,8 +7,10 @@ import concurrent.futures
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from types import SimpleNamespace
@@ -17,6 +19,9 @@ from unittest.mock import Mock, patch
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+if os.name == 'nt':
+    tempfile.tempdir = str(Path.home() / 'studio-dev' / 'tmp')
+    Path(tempfile.tempdir).mkdir(parents=True, exist_ok=True)
 import codex_model_catalog_reader as reader
 from codex_catalog import ModelCatalogCache, CatalogPending, runtime_catalog
 
@@ -28,7 +33,8 @@ home = Path(os.environ['CODEX_HOME'])
 (home / 'pid').write_text(str(os.getpid()))
 (home / 'environment').write_text(json.dumps({
  'home': str(home), 'apiKey': 'OPENAI_API_KEY' in os.environ,
- 'codexKey': 'CODEX_API_KEY' in os.environ, 'argv': sys.argv[1:], 'executable': sys.argv[0]}))
+ 'codexKey': 'CODEX_API_KEY' in os.environ, 'argv': sys.argv[1:],
+ 'executable': os.environ.get('CODEX_TEST_EXECUTABLE', sys.argv[0])}))
 mode = (home / 'mode').read_text()
 for line in sys.stdin:
  message = json.loads(line)
@@ -47,6 +53,14 @@ for line in sys.stdin:
    os.write(2, b'x' * 500000)
   if mode == 'large':
    os.write(1, b'x' * 3000000)
+   continue
+  if mode == 'overflow':
+   os.write(1, b'x' * 8000000)
+   time.sleep(20)
+   continue
+  if mode == 'blocked-stdin':
+   print(json.dumps({'id': message['id'], 'result': {'data': [], 'nextCursor': 'x' * 200000}}), flush=True)
+   time.sleep(20)
    continue
   if mode == 'request':
    print(json.dumps({'id': 99, 'method': 'command/exec', 'params': {}}), flush=True)
@@ -79,6 +93,20 @@ class ReaderContract(unittest.TestCase):
         selector = patch('codex_native_runtime.executable_for', return_value={'path': str(self.binary), 'sha256': 'approved'})
         self.select_executable = selector.start()
         self.addCleanup(selector.stop)
+        if os.name == 'nt':
+            original_popen = subprocess.Popen
+
+            def launch(command, *args, **kwargs):
+                if command and str(command[0]) == str(self.binary):
+                    environment = dict(kwargs.get('env') or os.environ)
+                    environment['CODEX_TEST_EXECUTABLE'] = str(self.binary)
+                    kwargs['env'] = environment
+                    command = [sys.executable, '-c', PROGRAM, *command[1:]]
+                return original_popen(command, *args, **kwargs)
+
+            self.popen_patch = patch.object(reader.subprocess, 'Popen', side_effect=launch)
+            self.popen_patch.start()
+            self.addCleanup(self.popen_patch.stop)
 
     def read(self, **kwargs):
         return reader.read_model_catalog(self.home, isolated=True, executable=str(self.binary), **kwargs)
@@ -124,9 +152,28 @@ class ReaderContract(unittest.TestCase):
         (self.home / 'mode').write_text('hang')
         started = time.monotonic()
         with self.assertRaises(TimeoutError):
-            self.read(timeout=.2)
-        self.assertLess(time.monotonic() - started, 2)
+            self.read(timeout=1)
+        self.assertLess(time.monotonic() - started, 3)
         self.assert_reaped()
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows pipe contract')
+    def test_windows_pipe_timeout_stops_all_reader_and_writer_threads(self):
+        for mode in ('overflow', 'blocked-stdin', 'hang'):
+            with self.subTest(mode=mode):
+                (self.home / 'mode').write_text(mode)
+                started = time.monotonic()
+                with self.assertRaises((TimeoutError, ValueError)):
+                    self.read(timeout=1)
+                self.assertLess(time.monotonic() - started, 3)
+                self.assert_reaped()
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline:
+                    active = [thread.name for thread in threading.enumerate()
+                              if thread.name.startswith('native-catalog-')]
+                    if not active:
+                        break
+                    time.sleep(.02)
+                self.assertEqual(active, [])
 
     def test_protocol_failures_never_return_partial_catalog(self):
         for mode in ('cycle', 'identity', 'error', 'large', 'request'):

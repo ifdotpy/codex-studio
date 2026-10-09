@@ -9,7 +9,9 @@ import json
 import os
 from pathlib import Path
 import secrets
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -22,7 +24,12 @@ fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 from codex_federation import _crypto, _sign
 from codex_multi_server import request_bytes
+from codex_multi_server import AccessError
 from codex_server_discovery import AUTO_PAIR_PATH, DISCOVERY_PORTS, IDENTITY_PATH
+
+if os.name == "nt":
+    tempfile.tempdir = str(Path.home() / "studio-dev" / "tmp")
+    Path(tempfile.tempdir).mkdir(parents=True, exist_ok=True)
 
 
 class DiscoveryContract(unittest.TestCase):
@@ -30,9 +37,10 @@ class DiscoveryContract(unittest.TestCase):
         fixture.SignedIntegration.setUp(self)
         self.status_file = self.folder / "status.json"
         self.whois_file = self.folder / "whois.json"
-        self.status = {"BackendState": "Running", "Self": {"UserID": 1},
+        self.status = {"BackendState": "Running",
+                       "Self": {"UserID": 1, "DNSName": "a.example.ts.net."},
                        "User": {"1": {"LoginName": fixture.OWNER}}, "Peer": {
-                           name: {"UserID": 1, "Online": True, "DNSName": f"{name}.example.ts.net."} for name in ("a", "b")}}
+                           "b": {"UserID": 1, "Online": True, "DNSName": "b.example.ts.net."}}}
         self.whois = {endpoint.address: {"Node": {"Name": endpoint.name + ".example.ts.net."},
                       "UserProfile": {"LoginName": fixture.OWNER}} for endpoint in (self.a, self.b)}
         self.save_identity()
@@ -99,6 +107,30 @@ print(json.dumps(value))
     def paired(self, endpoint):
         return [peer for peer in endpoint.runtime.paired_access().servers() if peer["status"] == "paired"]
 
+    @unittest.skipUnless(os.name == "nt", "Windows junction contract")
+    def test_credentials_refuse_directory_junction_before_writing(self):
+        service = self.a.runtime.paired_access()
+        service._identity = None
+        directory = self.a.state / "multi-server"
+        saved = directory.with_name("multi-server-saved")
+        outside = self.folder / "credential-outside"
+        outside.mkdir()
+        directory.rename(saved)
+        result = subprocess.run(
+            ["cmd.exe", "/c", f'mklink /J "{directory}" "{outside}"'],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode:
+            saved.rename(directory)
+            self.skipTest(result.stderr or result.stdout)
+        try:
+            with self.assertRaises(AccessError):
+                service._keys()
+            self.assertFalse((outside / "identity.json").exists())
+        finally:
+            os.rmdir(directory)
+            saved.rename(directory)
+
     def test_discovery_filters_and_real_mutual_pairing(self):
         self.status["Peer"].update({
             "other": {"UserID": 2, "Online": True, "DNSName": "other.example.ts.net."},
@@ -108,7 +140,12 @@ print(json.dumps(value))
             "non-studio": {"UserID": 1, "Online": True, "DNSName": "unknown.example.ts.net."},
         })
         self.save_identity()
-        result = self.discover()
+        discovery = self.a.runtime.paired_access().discovery()
+        with patch.object(discovery, "_candidate", wraps=discovery._candidate) as candidate:
+            result = self.discover()
+        probed_origins = {call.args[0] for call in candidate.call_args_list}
+        self.assertIn("https://a.example.ts.net:8443", probed_origins)
+        self.assertNotIn("https://a.example.ts.net", probed_origins)
         self.assertTrue(result["settings"]["autoPair"])
         self.assertEqual(self.paired(self.a)[0]["serverId"], self.b.server_id)
         self.assertEqual(self.paired(self.b)[0]["serverId"], self.a.server_id)

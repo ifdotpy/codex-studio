@@ -37,27 +37,40 @@ def read_model_catalog(home, *, executable, isolated, current=lambda: True, time
     windows_readers = os.name == "nt"
     selector = None
     output_chunks: queue.Queue[tuple[str, bytes | None]] | None = None
+    stop_readers = threading.Event()
+    reader_overflow = threading.Event()
+    windows_threads: list[threading.Thread] = []
+    writer_threads: list[threading.Thread] = []
     try:
         if windows_readers:
             output_chunks = queue.Queue(maxsize=64)
 
             def drain_pipe(stream, name, emit):
-                while True:
+                while not stop_readers.is_set():
                     try:
                         data = os.read(stream.fileno(), 65536)
                     except OSError:
                         data = b""
                     if not data:
-                        if emit:
-                            output_chunks.put((name, None))
+                        if emit and not stop_readers.is_set():
+                            try:
+                                output_chunks.put_nowait((name, None))
+                            except queue.Full:
+                                reader_overflow.set()
                         return
                     if emit:
-                        output_chunks.put((name, data))
+                        try:
+                            output_chunks.put_nowait((name, data))
+                        except queue.Full:
+                            reader_overflow.set()
+                            return
 
-            threading.Thread(target=drain_pipe, args=(proc.stdout, "stdout", True),
-                             name="native-catalog-stdout", daemon=True).start()
-            threading.Thread(target=drain_pipe, args=(proc.stderr, "stderr", False),
-                             name="native-catalog-stderr", daemon=True).start()
+            for stream, name, emit in ((proc.stdout, "stdout", True),
+                                       (proc.stderr, "stderr", False)):
+                thread = threading.Thread(target=drain_pipe, args=(stream, name, emit),
+                                          name="native-catalog-" + name, daemon=True)
+                windows_threads.append(thread)
+                thread.start()
         else:
             selector = selectors.DefaultSelector()
             selector.register(proc.stdout, selectors.EVENT_READ, "stdout")
@@ -72,8 +85,26 @@ def read_model_catalog(home, *, executable, isolated, current=lambda: True, time
             # All requests are small metadata frames. A partial write is a
             # transport failure; this isolated process is never reused.
             if windows_readers:
-                proc.stdin.write(data)
-                proc.stdin.flush()
+                result: list[BaseException] = []
+                completed = threading.Event()
+
+                def write_frame() -> None:
+                    try:
+                        proc.stdin.write(data)
+                        proc.stdin.flush()
+                    except BaseException as error:
+                        result.append(error)
+                    finally:
+                        completed.set()
+
+                thread = threading.Thread(target=write_frame, name="native-catalog-stdin", daemon=True)
+                writer_threads.append(thread)
+                thread.start()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not completed.wait(remaining):
+                    raise TimeoutError("Native model catalog timed out")
+                if result:
+                    raise RuntimeError("Native model catalog input failed") from result[0]
             elif os.write(proc.stdin.fileno(), data) != len(data):
                 raise RuntimeError("Native model catalog input did not drain")
 
@@ -110,6 +141,8 @@ def read_model_catalog(home, *, executable, isolated, current=lambda: True, time
                     return message["result"]
                 if windows_readers:
                     assert output_chunks is not None
+                    if reader_overflow.is_set():
+                        raise ValueError("Native model catalog output exceeded its read buffer")
                     try:
                         stream_name, data = output_chunks.get(timeout=min(remaining, .25))
                     except queue.Empty:
@@ -170,17 +203,28 @@ def read_model_catalog(home, *, executable, isolated, current=lambda: True, time
     finally:
         if selector is not None:
             selector.close()
+        stop_readers.set()
         if proc.poll() is None:
             proc.terminate()
             try:
                 proc.wait(timeout=.5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+        try:
+            proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
                 proc.wait(timeout=1)
-        else:
-            proc.wait()
+            except subprocess.TimeoutExpired:
+                pass
         for pipe in (proc.stdin, proc.stdout, proc.stderr):
-            pipe.close()
+            try:
+                pipe.close()
+            except OSError:
+                pass
+        for thread in (*windows_threads, *writer_threads):
+            thread.join(timeout=1)
 
 
 def submit_model_catalog(home, *, executable, isolated, current):

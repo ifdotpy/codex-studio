@@ -14,20 +14,64 @@ class WorktreeNeedsReview(ValueError):
 
 def _run_checkout(command, *, timeout, check, capture_output, text):
     """Stop Git's checkout workers too when the deadline expires."""
-    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                          text=text, start_new_session=os.name != 'nt') as process:
+    job = None
+    creationflags = 0
+    if os.name == 'nt':
+        from codex_windows_supervisor import CREATE_SUSPENDED, assign_process, create_job, resume_process
+
+        job = create_job()
+        creationflags = CREATE_SUSPENDED
+    try:
+        process_context = subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=text, start_new_session=os.name != 'nt', creationflags=creationflags,
+        )
+    except BaseException:
+        if job is not None:
+            job.close()
+        raise
+    with process_context as process:
         try:
+            if job is not None:
+                assign_process(process, job)
+                resume_process(process)
             output, error = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             try:
-                if os.name == 'nt':
-                    process.kill()
+                if job is not None:
+                    job.terminate()
                 else:
                     os.killpg(process.pid, signal.SIGKILL)
             except (OSError, ProcessLookupError):
                 pass
-            process.communicate()
+            try:
+                output, error = process.communicate(timeout=1)
+            except subprocess.TimeoutExpired:
+                for pipe in (process.stdout, process.stderr):
+                    if pipe is not None:
+                        pipe.close()
+                try:
+                    process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=1)
             raise subprocess.TimeoutExpired(command, timeout) from None
+        except BaseException:
+            if job is not None:
+                try:
+                    job.terminate()
+                except OSError:
+                    pass
+            elif process.poll() is None:
+                process.kill()
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+            raise
+        finally:
+            if job is not None:
+                job.close()
     result = subprocess.CompletedProcess(command, process.returncode, output, error)
     if check:
         result.check_returncode()

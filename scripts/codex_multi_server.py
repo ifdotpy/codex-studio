@@ -326,18 +326,36 @@ class MultiServerService:
             if self._identity is not None:
                 return self._identity
             directory = self.runtime.root / "multi-server"
+            if os.name == "nt":
+                from codex_private_paths import reject_reparse_path
+
+                try:
+                    reject_reparse_path(self.runtime.root, directory, allow_missing=True)
+                except (OSError, ValueError) as error:
+                    raise AccessError(503, "credential_permissions", "The credential directory requires owner-only access") from error
             directory.mkdir(mode=0o700, exist_ok=True)
             if directory.is_symlink():
                 raise AccessError(503, "credential_permissions", "The credential directory requires owner-only access")
             if os.name == "nt":
-                from codex_private_paths import ensure_private_dir
+                from codex_private_paths import ensure_private_dir, reject_reparse_path
 
-                ensure_private_dir(directory)
+                try:
+                    reject_reparse_path(self.runtime.root, directory)
+                    ensure_private_dir(directory)
+                except (OSError, ValueError) as error:
+                    raise AccessError(503, "credential_permissions", "The credential directory requires owner-only access") from error
             elif directory.stat().st_mode & 0o077:
                 raise AccessError(503, "credential_permissions", "The credential directory requires owner-only access")
             path = directory / "identity.json"
             if path.is_symlink():
                 raise AccessError(503, "credential_permissions", "The credential file must not be a symbolic link")
+            if os.name == "nt":
+                from codex_private_paths import reject_reparse_path
+
+                try:
+                    reject_reparse_path(self.runtime.root, path, allow_missing=True)
+                except (OSError, ValueError) as error:
+                    raise AccessError(503, "credential_permissions", "The credential file must not be a reparse point") from error
             if os.name == "nt" and path.exists():
                 from codex_private_paths import protect_temp_file
 
@@ -348,6 +366,14 @@ class MultiServerService:
                          "privateKey": pair["privateKey"], "label": "Studio server"}
                 fd, temporary = tempfile.mkstemp(prefix="identity-", dir=directory)
                 try:
+                    if os.name == "nt":
+                        from codex_private_paths import verify_handle_within_directory
+
+                        try:
+                            verify_handle_within_directory(fd, directory)
+                        except (OSError, ValueError) as error:
+                            os.close(fd)
+                            raise AccessError(503, "credential_permissions", "The credential file is outside its private directory") from error
                     with os.fdopen(fd, "w") as stream:
                         stream.write(_json(value))
                         stream.flush()
@@ -368,6 +394,14 @@ class MultiServerService:
                         os.unlink(temporary)
             flags = os.O_RDONLY | (os.O_NOFOLLOW if os.name != "nt" else 0)
             fd = os.open(path, flags)
+            if os.name == "nt":
+                from codex_private_paths import verify_handle_within_directory
+
+                try:
+                    verify_handle_within_directory(fd, directory)
+                except (OSError, ValueError) as error:
+                    os.close(fd)
+                    raise AccessError(503, "credential_permissions", "The credential file is outside its private directory") from error
             with os.fdopen(fd) as stream:
                 metadata = os.fstat(stream.fileno())
                 if (not stat.S_ISREG(metadata.st_mode)

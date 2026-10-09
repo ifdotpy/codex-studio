@@ -15,6 +15,7 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from codex_worktree_creation import create_worker_worktree
+from codex_windows_server import _read_control_request, _write_control_request
 
 WINDOWS = os.name == "nt"
 skip_posix = unittest.skipUnless(WINDOWS, "Windows server contract")
@@ -87,6 +88,38 @@ def _new_port_owner(port, previous_pid):
 
 @skip_posix
 class WindowsServerContract(unittest.TestCase):
+    def test_control_requests_have_distinct_files_and_receipts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary)
+            first = _write_control_request(state, "stop-backend")
+            second = _write_control_request(state, "restart-backend")
+            self.assertNotEqual(first, second)
+            self.assertTrue((state / f"windows-server-control-request-{first}.json").is_file())
+            self.assertTrue((state / f"windows-server-control-request-{second}.json").is_file())
+            request_one = _read_control_request(state, None)
+            request_two = _read_control_request(state, request_one["requestId"] if request_one else None)
+            requests = [request_one, request_two]
+            self.assertEqual({row["requestId"] for row in requests if row}, {first, second})
+
+    def test_config_replace_keeps_old_file_when_target_is_locked(self):
+        script = (ROOT / "scripts" / "manage-windows-server.ps1").read_text(encoding="utf-8")
+        self.assertIn("[System.IO.File]::Replace", script)
+        self.assertNotIn("Move-Item -Force", script)
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "server.json"
+            replacement = Path(temporary) / "server.json.tmp"
+            destination.write_text("old", encoding="utf-8")
+            replacement.write_text("new", encoding="utf-8")
+            command = (
+                "$p='" + str(destination).replace("'", "''") + "'; "
+                "$t='" + str(replacement).replace("'", "''") + "'; "
+                "$s=[IO.File]::Open($p,'Open','ReadWrite','None'); "
+                "try { [IO.File]::Replace($t,$p,$null,$true) } catch {}; $s.Dispose()"
+            )
+            subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+                           check=True, capture_output=True, text=True, timeout=20)
+            self.assertEqual(destination.read_text(encoding="utf-8"), "old")
+
     def test_entrypoint_uses_configured_state_port_and_origin(self):
         with tempfile.TemporaryDirectory(prefix="studio server Ω ") as temporary:
             state = Path(temporary) / "state with spaces Ω"
@@ -270,6 +303,10 @@ class WindowsServerContract(unittest.TestCase):
                 self.assertEqual(json.loads(result_path.read_text(encoding="utf-8"))["result"],
                                  "stopped-all")
                 self.assertIsNone(_port_owner(port))
+                from codex_process_supervisor import process_start_time
+
+                lease = json.loads((state / "supervisor.lock").read_text(encoding="utf-8"))
+                self.assertIsNone(process_start_time(lease["pid"]))
             finally:
                 if process.poll() is None:
                     _stop_entrypoint_tree(process)
@@ -299,6 +336,25 @@ class WindowsServerContract(unittest.TestCase):
             subprocess.run(["git", "-C", str(worktree), "add", "--", str(output)], check=True)
             subprocess.run(["git", "-C", str(worktree), "commit", "-m", "fixture worker result"],
                            check=True, capture_output=True, timeout=20)
+
+    def test_checkout_timeout_terminates_descendants_that_hold_output_pipes(self):
+        from codex_worktree_creation import _run_checkout
+
+        with tempfile.TemporaryDirectory(prefix="studio checkout timeout Ω ") as temporary:
+            child_pid = Path(temporary) / "child.pid"
+            child = "import time; time.sleep(60)"
+            parent = (
+                "import pathlib,subprocess,sys,time; "
+                f"p=subprocess.Popen([sys.executable,'-c',{child!r}]); "
+                f"pathlib.Path({str(child_pid)!r}).write_text(str(p.pid)); time.sleep(60)"
+            )
+            started = time.monotonic()
+            with self.assertRaises(subprocess.TimeoutExpired):
+                _run_checkout([sys.executable, "-c", parent], timeout=.5,
+                              check=False, capture_output=True, text=True)
+            self.assertLess(time.monotonic() - started, 4)
+            pid = int(child_pid.read_text(encoding="ascii"))
+            self.assertFalse(_process_commandline(pid))
             saved = subprocess.check_output(["git", "-C", str(worktree), "rev-parse", "HEAD"], text=True).strip()
             self.assertTrue(saved)
             subprocess.run(["git", "-C", str(root), "worktree", "remove", "--force", str(worktree)],

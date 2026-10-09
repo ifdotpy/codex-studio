@@ -61,8 +61,8 @@ def _wait_supervisor(state: Path, process: subprocess.Popen[bytes] | None,
     return False
 
 
-def _control_request_path(state: Path) -> Path:
-    return state / "windows-server-control.json"
+def _control_request_path(state: Path, request_id: str) -> Path:
+    return state / f"windows-server-control-request-{request_id}.json"
 
 
 def _write_control_request(state: Path, action: str, source_root: str | None = None) -> str:
@@ -81,7 +81,7 @@ def _write_control_request(state: Path, action: str, source_root: str | None = N
             json.dump(payload, stream, separators=(",", ":"))
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, _control_request_path(state))
+        os.replace(temporary, _control_request_path(state, request_id))
     except BaseException:
         try:
             os.close(fd)
@@ -93,31 +93,32 @@ def _write_control_request(state: Path, action: str, source_root: str | None = N
 
 
 def _read_control_request(state: Path, previous_request: str | None) -> dict[str, str] | None:
-    request_path = _control_request_path(state)
-    path = state / "windows-server-control-claim.json"
-    try:
-        if not path.exists():
-            os.replace(request_path, path)
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return None
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        path.unlink(missing_ok=True)
-        return None
-    if not isinstance(value, dict):
-        path.unlink(missing_ok=True)
-        return None
-    request_id = value.get("requestId")
-    action = value.get("action")
-    source_root = value.get("sourceRoot")
-    if (not isinstance(request_id, str) or request_id == previous_request
-            or action not in {"stop-backend", "restart-backend", "stop-all"}
-            or (source_root is not None and not isinstance(source_root, str))):
-        path.unlink(missing_ok=True)
-        return None
-    path.unlink(missing_ok=True)
-    return {"requestId": request_id, "action": action,
-            "sourceRoot": source_root or ""}
+    for request_path in sorted(state.glob("windows-server-control-request-*.json")):
+        request_id = request_path.stem.removeprefix("windows-server-control-request-")
+        claim_path = request_path.with_suffix(".claim")
+        try:
+            os.replace(request_path, claim_path)
+        except FileNotFoundError:
+            continue
+        try:
+            value = json.loads(claim_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            claim_path.unlink(missing_ok=True)
+            continue
+        if not isinstance(value, dict):
+            claim_path.unlink(missing_ok=True)
+            continue
+        value_id = value.get("requestId")
+        action = value.get("action")
+        source_root = value.get("sourceRoot")
+        if (not isinstance(value_id, str) or value_id != request_id or value_id == previous_request
+                or action not in {"stop-backend", "restart-backend", "stop-all"}
+                or (source_root is not None and not isinstance(source_root, str))):
+            claim_path.unlink(missing_ok=True)
+            continue
+        claim_path.unlink(missing_ok=True)
+        return {"requestId": value_id, "action": action, "sourceRoot": source_root or ""}
+    return None
 
 
 def _write_control_result(state: Path, request_id: str, result: str) -> None:
@@ -150,6 +151,24 @@ def _stop_backend(process: subprocess.Popen[bytes]) -> None:
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait(timeout=5)
+
+
+def _stop_supervisor(state: Path) -> None:
+    lease = state / "supervisor.lock"
+    identity = json.loads(lease.read_text(encoding="utf-8"))
+    pid, creation_time = identity.get("pid"), identity.get("startTime")
+    if type(pid) is not int or not isinstance(creation_time, str):
+        raise RuntimeError("The supervisor lease has no verifiable process identity")
+    from codex_process_supervisor import process_start_time
+
+    current = process_start_time(pid)
+    if current is None:
+        return
+    if current != creation_time:
+        raise RuntimeError("The supervisor process identity changed; refusing to stop it")
+    from codex_windows_supervisor import terminate_process_identity
+
+    terminate_process_identity(pid, creation_time)
 
 
 def run(root: Path, state: Path, port: int, origin: str) -> int:
@@ -253,14 +272,15 @@ def run(root: Path, state: Path, port: int, origin: str) -> int:
             delay = min(delay * 2, 30.0)
         return 0
     finally:
-        for process in (backend, supervisor):
-            if process is not None and process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
+        if backend is not None and backend.poll() is None:
+            _stop_backend(backend)
+        if stop_all_request:
+            _stop_supervisor(state)
+            if supervisor is not None:
+                supervisor.wait(timeout=5)
+        elif supervisor is not None and supervisor.poll() is None:
+            _stop_supervisor(state)
+            supervisor.wait(timeout=5)
         if backend is not None and stop_all_request:
             with backend_log_path.open("ab", buffering=0) as output:
                 output.write((json.dumps({"event": "backend_exit", "returnCode": backend.poll()})

@@ -13,7 +13,7 @@ import time
 import uuid
 
 from codex_progress import _directory, progress_path, read_progress
-from codex_private_paths import protect_temp_file
+from codex_private_paths import protect_temp_file, verify_handle_within_directory
 
 RENDERER = "progress-markdown-v2"
 LEGACY_RENDERER = "progress-markdown-v1"
@@ -46,6 +46,7 @@ def _open_layout_file(directory: int | Path, name: str, flags: int, mode: int = 
         raise ValueError("Progress layout file must be a regular file")
     descriptor = os.open(target, flags | getattr(os, "O_BINARY", 0), mode)
     try:
+        verify_handle_within_directory(descriptor, directory)
         opened = os.fstat(descriptor)
         after = target.lstat()
         if (not stat.S_ISREG(opened.st_mode)

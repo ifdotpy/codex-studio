@@ -250,8 +250,11 @@ class ServerDiscovery:
                 raise access.AccessError(503, "identity_unavailable", "The Tailscale peers are unavailable")
             owner = access._owner_login()
             candidates = set()
-            for peer in peers.values():
-                if (not isinstance(peer, dict) or peer.get("Online") is not True or peer.get("Tags")
+            # Tailscale omits the local node from Peer. Add Self so two Studio
+            # servers on one device can discover each other on different ports.
+            nodes = [node, *peers.values()]
+            for peer in nodes:
+                if (not isinstance(peer, dict) or (peer is not node and peer.get("Online") is not True) or peer.get("Tags")
                         or peer.get("UserID") != node.get("UserID") or not isinstance(peer.get("DNSName"), str)):
                     continue
                 hostname = peer["DNSName"].rstrip(".").lower()

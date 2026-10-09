@@ -3,22 +3,32 @@
 import os
 import json
 from pathlib import Path
+import subprocess
 import sqlite3
 import sys
 import tempfile
 import threading
 import unittest
 from contextlib import contextmanager
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from codex_native_input_projection import _open_rollout, accepted_turns
 from codex_progress import provision_progress, read_progress
+from codex_private_paths import reject_reparse_path
 import codex_progress_layout as layout
 
 tempfile.tempdir = str(Path.home() / "studio-dev" / "tmp")
 Path(tempfile.tempdir).mkdir(parents=True, exist_ok=True)
+
+
+def _junction(link, target):
+    result = subprocess.run(["cmd.exe", "/c", f'mklink /J "{link}" "{target}"'],
+                            capture_output=True, text=True, timeout=15)
+    if result.returncode:
+        raise AssertionError(result.stderr or result.stdout)
 
 
 @unittest.skipUnless(os.name == "nt", "Windows contract")
@@ -111,6 +121,114 @@ class WindowsRuntimePathsContract(unittest.TestCase):
             except OSError as error:
                 self.skipTest("Windows does not allow this account to create a symlink: " + str(error))
             self.assertIsNotNone(read_progress(state, "worker_1")["error"])
+
+    def test_private_path_check_rejects_a_reparse_state_root(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            outside = Path(temporary) / "outside"
+            outside.mkdir()
+            root = Path(temporary) / "state"
+            _junction(root, outside)
+            with self.assertRaises(ValueError):
+                reject_reparse_path(root, root / "multi-server", allow_missing=True)
+            os.rmdir(root)
+
+    def test_progress_handle_check_rejects_parent_junction_swap(self):
+        import codex_progress
+
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary) / "state"
+            path = provision_progress(state, "worker_1")
+            outside = Path(temporary) / "outside"
+            outside.mkdir()
+            (outside / "PROGRESS.md").write_text("outside content", encoding="utf-8")
+            agent = path.parent
+            moved = agent.with_name("agent-saved")
+            original_open = os.open
+            swapped = False
+
+            def swap(target, *args, **kwargs):
+                nonlocal swapped
+                if not swapped and Path(target) == path:
+                    agent.rename(moved)
+                    _junction(agent, outside)
+                    swapped = True
+                return original_open(target, *args, **kwargs)
+
+            try:
+                with patch.object(codex_progress.os, "open", side_effect=swap):
+                    result = read_progress(state, "worker_1")
+                self.assertTrue(swapped)
+                self.assertIsNotNone(result["error"])
+                self.assertEqual(result["markdown"], "")
+            finally:
+                if agent.exists():
+                    os.rmdir(agent)
+                moved.rename(agent)
+
+    def test_rollout_handle_check_rejects_parent_junction_swap(self):
+        import codex_native_input_projection as projection
+
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary) / "profile"
+            sessions = home / "sessions"
+            sessions.mkdir(parents=True)
+            target = sessions / "thread.jsonl"
+            target.write_text("inside", encoding="utf-8")
+            outside = Path(temporary) / "outside"
+            outside.mkdir()
+            (outside / "thread.jsonl").write_text("outside", encoding="utf-8")
+            moved = sessions.with_name("sessions-saved")
+            original_open = os.open
+            swapped = False
+
+            def swap(path, *args, **kwargs):
+                nonlocal swapped
+                if not swapped and Path(path) == target:
+                    sessions.rename(moved)
+                    _junction(sessions, outside)
+                    swapped = True
+                return original_open(path, *args, **kwargs)
+
+            try:
+                with patch.object(projection.os, "open", side_effect=swap):
+                    with self.assertRaises(ValueError):
+                        projection._open_rollout(home, Path("sessions") / "thread.jsonl")
+                self.assertTrue(swapped)
+            finally:
+                if sessions.exists():
+                    os.rmdir(sessions)
+                moved.rename(sessions)
+
+    def test_layout_handle_check_rejects_parent_junction_swap(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            agent = Path(temporary) / "agent"
+            agent.mkdir()
+            target = agent / layout.LAYOUT_FILE
+            target.write_text("{}", encoding="utf-8")
+            outside = Path(temporary) / "outside"
+            outside.mkdir()
+            (outside / layout.LAYOUT_FILE).write_text('{"outside":true}', encoding="utf-8")
+            moved = agent.with_name("agent-saved")
+            original_open = os.open
+            swapped = False
+
+            def swap(path, *args, **kwargs):
+                nonlocal swapped
+                if not swapped and Path(path) == target:
+                    agent.rename(moved)
+                    _junction(agent, outside)
+                    swapped = True
+                return original_open(path, *args, **kwargs)
+
+            try:
+                with patch.object(layout.os, "open", side_effect=swap):
+                    with self.assertRaises(ValueError):
+                        layout._open_layout_file(agent, layout.LAYOUT_FILE, os.O_RDONLY)
+                self.assertTrue(swapped)
+            finally:
+                if agent.exists():
+                    os.rmdir(agent)
+                moved.rename(agent)
 
     def test_progress_layout_measurement_round_trip(self):
         with tempfile.TemporaryDirectory() as temporary:

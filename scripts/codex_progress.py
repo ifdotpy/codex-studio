@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import stat
 
-from codex_private_paths import protect, protect_temp_file
+from codex_private_paths import protect, protect_temp_file, verify_handle_within_directory
 
 MAX_PROGRESS_BYTES = 128 * 1024
 _AGENT_ID = re.compile(r"[A-Za-z0-9_-]{1,200}\Z")
@@ -72,7 +72,10 @@ def provision_progress(state_dir, agent_id):
                         or getattr(info, "st_file_attributes", 0) & 0x400):
                     raise ValueError("PROGRESS.md must be a regular file")
             else:
-                os.close(descriptor)
+                try:
+                    verify_handle_within_directory(descriptor, agent)
+                finally:
+                    os.close(descriptor)
                 protect_temp_file(target)
             return path
         try:
@@ -115,6 +118,11 @@ def read_progress(state_dir: str | os.PathLike[str], agent_id: str) -> dict[str,
                 if getattr(info, "st_file_attributes", 0) & 0x400:
                     raise ValueError("PROGRESS.md must not be a reparse point")
                 descriptor = os.open(target, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+                try:
+                    verify_handle_within_directory(descriptor, directory)
+                except BaseException:
+                    os.close(descriptor)
+                    raise
                 opened = os.fstat(descriptor)
                 current = target.lstat()
                 if (not stat.S_ISREG(opened.st_mode)
