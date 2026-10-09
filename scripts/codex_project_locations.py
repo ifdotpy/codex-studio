@@ -86,6 +86,63 @@ def folders(path: object = None) -> dict[str, Any]:
             'folders': [entry.name for entry in rows[:200]], 'truncated': len(rows) > 200}
 
 
+def tool_receipt_key(db: sqlite3.Connection, actor: str, request_id: str, server: str) -> str:
+    """Resolve a lead's caller alias without changing the saved wire identity."""
+    from codex_multi_server_orchestration import identity
+    aliases = db.execute('SELECT request FROM runtime_tool_request_aliases WHERE agent=? AND alias=?',
+                         (actor, request_id)).fetchall()
+    candidates = {identity('project-location', actor, row['request']) for row in aliases}
+    candidates.add(identity('project-location', actor, request_id))
+    matches = []
+    for candidate in candidates:
+        row = db.execute('SELECT body FROM runtime_server_outbox WHERE id=? AND server=?', (candidate, server)).fetchone()
+        if row and json.loads(row['body'])['action'] in {'add_location', 'remove_location'}:
+            matches.append(candidate)
+        elif db.execute("SELECT 1 FROM runtime_server_retired WHERE id=? AND direction='out' AND server=?",
+                        (candidate, server)).fetchone():
+            matches.append(candidate)
+    if len(matches) > 1:
+        raise ValueError('This request ID names several location receipts. Use the returned requestId')
+    return matches[0] if matches else request_id
+
+
+def refresh_tool_receipt(runtime: Any, db: sqlite3.Connection, record: Any) -> bool:
+    """Resolve an unknown tool response from a committed location receipt only."""
+    if record.get('tool') != 'orchestration_servers':
+        return False
+    previous = runtime.tool_result(db, record['id']) or record.get('result')
+    if not isinstance(previous, dict) or previous.get('success') is not True:
+        return False
+    try:
+        value = json.loads(previous['contentItems'][0]['text'])
+    except (KeyError, IndexError, TypeError, ValueError):
+        return False
+    from codex_multi_server_orchestration import identity
+    key = identity('project-location', record['agent'], record['id'])
+    if not isinstance(value, dict) or value.get('requestId') != key or value.get('outcome') != 'unknown':
+        return False
+    row = db.execute('SELECT body,state,result FROM runtime_server_outbox WHERE id=?', (key,)).fetchone()
+    if (not row or row['state'] != 'complete' or not row['result']
+            or json.loads(row['body'])['action'] not in {'add_location', 'remove_location'}):
+        return False
+    receipt = json.loads(row['result'])
+    if receipt.get('requestId') != key or receipt.get('outcome') not in {'applied', 'not_applied'}:
+        return False
+    from codex_payloads import externalize_result
+    from codex_time import stamp_tool_result
+    now = time.time()
+    result = stamp_tool_result({'success': True, 'contentItems': [
+        {'type': 'inputText', 'text': json.dumps(receipt, ensure_ascii=False)}]}, now)
+    stored = externalize_result(runtime.root, db, result)
+    db.execute('UPDATE runtime_tool_results SET result=? WHERE id=?', (json.dumps(stored), record['id']))
+    # Older versions called the successful transport wrapper "applied" even
+    # when its paired outcome was unknown. The exact old body bounds this repair.
+    record.update(result=result, outcome=receipt['outcome'], stage='completed' if receipt['outcome'] == 'applied' else 'failed',
+                  updated=now)
+    runtime.put(db, 'tool_requests', record)
+    return True
+
+
 def request(runtime: Any, data: dict[str, Any], *, actor: dict[str, Any] | None = None) -> dict[str, Any]:
     from codex_multi_server_orchestration import identity
     service = runtime.multi_server()

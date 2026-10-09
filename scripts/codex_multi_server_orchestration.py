@@ -1239,6 +1239,8 @@ class MultiServerService:
         if action in {'exec', 'exec_read', 'exec_input', 'exec_cancel'}:
             return self._exec_tool(actor, args, key)
         server = args.get('server', self.server_id if action == 'receipt' else None)
+        if action == 'receipt' and server == 'local':
+            server = self.server_id
         if not isinstance(server, str):
             raise ValueError('Select a paired server')
         if (server not in {s['id'] for s in self.transport.servers()}
@@ -1250,20 +1252,22 @@ class MultiServerService:
             raise ValueError('Select list, projects, folders, git, fetch, or receipt')
         if action == 'receipt':
             with self.runtime.read_db() as db:
-                row = db.execute('SELECT server,state,result,error,body FROM runtime_server_outbox WHERE id=?', (args.get('request_id'),)).fetchone()
+                from codex_project_locations import tool_receipt_key
+                request_id = tool_receipt_key(db, actor['id'], args['request_id'], server)
+                row = db.execute('SELECT server,state,result,error,body FROM runtime_server_outbox WHERE id=?', (request_id,)).fetchone()
                 if row:
                     envelope = json.loads(row['body'])
                     if envelope['action'].startswith('exec') and envelope['payload'].get('actor') != actor['id']:
                         raise PermissionError('The command receipt belongs to another lead')
                 if not row:
-                    row = db.execute('SELECT server,state,result,NULL AS error FROM runtime_server_fetch WHERE id=?', (args.get('request_id'),)).fetchone()
+                    row = db.execute('SELECT server,state,result,NULL AS error FROM runtime_server_fetch WHERE id=?', (request_id,)).fetchone()
                 if not row:
                     retired = db.execute('SELECT actor FROM runtime_server_retired WHERE id=? AND direction=? AND server=?',
-                        (args.get('request_id'), 'out', server)).fetchone()
+                        (request_id, 'out', server)).fetchone()
                     if retired:
                         if retired['actor'] and retired['actor'] != actor['id']:
                             raise PermissionError('The command receipt belongs to another lead')
-                        return {'state': 'expired', 'result': expired_receipt(args['request_id']), 'error': None}
+                        return {'state': 'expired', 'result': expired_receipt(request_id), 'error': None}
             if not row or row['server'] != server:
                 raise ValueError('Unknown remote request receipt')
             return {'state': row['state'], 'result': live_receipt(json.loads(row['result'])) if row['result'] else None, 'error': row['error']}
