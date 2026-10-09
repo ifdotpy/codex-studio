@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Native executable changes must preserve work and wait for confirmed idleness."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -16,14 +18,14 @@ import threading
 import unittest
 from unittest.mock import Mock, patch
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 import codex_native_tools as native_tools
 from codex_native_binary import APPROVAL_REVISION, REQUIRED_COMPANIONS, bundle_digest
 from codex_native_runtime import NativeRuntimeUpdates, executable_for
 from codex_runtime import Runtime as ProductionRuntime
 
-spec = importlib.util.spec_from_file_location("native_tools_fixture", ROOT / "tests/native-tools-contract.py")
+spec = importlib.util.spec_from_file_location("native_tools_fixture", SERVER_TESTS_ROOT / "native-tools-contract.py")
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 

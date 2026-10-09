@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Provider version diagnostics are explicit, nonblocking, and connection scoped."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -10,7 +12,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_provider_versions import (
     ProviderVersionMonitor,
     _claude_version,

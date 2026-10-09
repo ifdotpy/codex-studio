@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Daybreak settings, native parameters and account boundaries without model calls."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -14,7 +16,7 @@ import unittest
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 
 
 def fixture(name):

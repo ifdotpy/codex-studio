@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Shared radio receipts and turn order against an independent fake native store."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -11,7 +13,7 @@ import unittest
 import uuid
 
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_radio import manage, tick, observe_item, select_pending, validate_event, guard_message, route_question_answer, holds_floor
 
 spec = importlib.util.spec_from_file_location('peers', Path(__file__).with_name('peer-teams-contract.py'))

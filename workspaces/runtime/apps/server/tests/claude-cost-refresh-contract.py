@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Claude log checks reuse costs only when exact billable content is unchanged."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -11,7 +13,7 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_session_costs import SessionCostReader
 
 

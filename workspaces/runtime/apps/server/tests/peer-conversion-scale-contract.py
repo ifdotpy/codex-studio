@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Bounded conversion reads and measured global-lock time on a large isolated DB."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -12,9 +14,9 @@ import time
 import unittest
 
 sys.dont_write_bytecode = True
-root = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(root / 'scripts'))
-spec = importlib.util.spec_from_file_location('conversion_fixture', root / 'tests/peer-conversion-contract.py')
+root = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
+spec = importlib.util.spec_from_file_location('conversion_fixture', SERVER_TESTS_ROOT / 'peer-conversion-contract.py')
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 from codex_peer_conversion import INDEXES, busy_query, move_query, rooms_query, setup_indexes

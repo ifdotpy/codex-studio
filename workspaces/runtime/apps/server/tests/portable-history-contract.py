@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Portable history preserves data without replay, including failed exports."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -14,7 +16,7 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_portable_history import CONTEXT_CHARS, export_history, history_context
 from codex_native_errors import NativeRpcError
 

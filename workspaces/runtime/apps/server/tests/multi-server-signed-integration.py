@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Two real runtimes and signed FastAPI routes, isolated from live state.
 
-Run: python3 scripts/codex_python.py --exec tests/multi-server-signed-integration.py
+Run: python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/tests/multi-server-signed-integration.py
 Only the HTTPS exchange uses an ASGI adapter. It preserves signed body bytes.
 Native HTTP/TLS has a separate suite in studio_api.multi_server.test_transport.
 The controlled scheduler permits deterministic dispatch through the real runtime.
 """
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -25,7 +27,7 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from fastapi.testclient import TestClient
 from codex_canvas import Canvas
 from codex_federation import _crypto, _sign

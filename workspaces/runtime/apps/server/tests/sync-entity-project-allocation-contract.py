@@ -1,4 +1,6 @@
 """Keep agent projection filtering, nested ownership, and truncation stable."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -9,8 +11,8 @@ import time
 import tracemalloc
 from typing import cast
 
-root = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(root / "scripts"))
+root = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 
 from codex_sync_entities import project
 

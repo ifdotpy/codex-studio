@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Opt-in live check. Uses the configured Codex account and model."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 import argparse
 import json
 from pathlib import Path
@@ -7,7 +9,7 @@ import sys
 import tempfile
 import time
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_runtime import Runtime
 from studio_api.testing import read_runtime_state
 p = argparse.ArgumentParser(description=__doc__)

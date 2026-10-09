@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """The native metadata reader preserves account isolation and process boundaries."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -17,8 +19,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 sys.dont_write_bytecode = True
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 if os.name == 'nt':
     tempfile.tempdir = str(Path.home() / 'studio-dev' / 'tmp')
     Path(tempfile.tempdir).mkdir(parents=True, exist_ok=True)

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """The control CLI reads request receipts through the current HTTP API only."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -16,7 +18,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 import codex_api_client
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts/codex-control"
+SCRIPT = SERVER_SOURCE_ROOT / "codex-control"
 
 
 class ControlRequests(unittest.TestCase):

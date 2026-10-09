@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """A surviving child cannot restore a standalone monitor's lost RPC Future."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -18,14 +20,14 @@ import uuid
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'scripts'))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_runtime import Runtime
 from codex_monitor_recovery import persist_monitor_result, recover_monitor_results, _path
-spec = importlib.util.spec_from_file_location('restore_fixture', ROOT / 'tests/supervisor-restore-selection-contract.py')
+spec = importlib.util.spec_from_file_location('restore_fixture', SERVER_TESTS_ROOT / 'supervisor-restore-selection-contract.py')
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
-spec = importlib.util.spec_from_file_location('runtime_fixture', ROOT / 'tests/runtime-contract.py')
+spec = importlib.util.spec_from_file_location('runtime_fixture', SERVER_TESTS_ROOT / 'runtime-contract.py')
 native = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(native)
 

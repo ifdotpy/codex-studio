@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Peer teams use project records and grant only same-project lead membership."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -16,7 +18,7 @@ import unittest
 import uuid
 
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_accounts import AccountStore
 from codex_peer_teams import manage, peer_pair_allowed, peers_for, snapshot
 from codex_sync_entities import ensure_tables as ensure_sync_entity_tables

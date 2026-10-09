@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Windows server entrypoint, backend restart, and native worktree contracts."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 import json
 import os
 from pathlib import Path
@@ -14,8 +16,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_worktree_creation import create_worker_worktree
 from codex_windows_server import _read_control_request, _write_control_request
 from codex_windows_server import _advertise_control_protocol, _recover_control_claims, _write_control_result
@@ -78,7 +80,7 @@ class ControlRequestPosixContract(unittest.TestCase):
             self.assertEqual([row["action"] for row in requests], ["stop-backend", "restart-backend"])
 
     def test_manager_wait_exceeds_backend_stop_deadline(self):
-        script = (ROOT / "scripts" / "manage-windows-server.ps1").read_text(encoding="utf-8")
+        script = (SERVER_SOURCE_ROOT / "manage-windows-server.ps1").read_text(encoding="utf-8")
         self.assertIn("AddSeconds(90)", script)
 
     def test_claim_remains_until_receipt_and_unreceipted_claim_recovers_as_unknown(self):
@@ -133,7 +135,7 @@ def _base_python() -> tuple[str, dict[str, str]]:
     if WINDOWS:
         site_packages = [path for path in sys.path if "site-packages" in path.casefold()]
         environment["PYTHONPATH"] = os.pathsep.join(
-            [str(ROOT / "scripts"), *site_packages, environment.get("PYTHONPATH", "")]
+            [str(SERVER_SOURCE_ROOT), *site_packages, environment.get("PYTHONPATH", "")]
         )
     return executable, environment
 
@@ -195,7 +197,7 @@ class WindowsServerContract(unittest.TestCase):
             self.assertEqual({row["requestId"] for row in requests if row}, {first, second})
 
     def test_config_replace_keeps_old_file_when_target_is_locked(self):
-        script = (ROOT / "scripts" / "manage-windows-server.ps1").read_text(encoding="utf-8")
+        script = (SERVER_SOURCE_ROOT / "manage-windows-server.ps1").read_text(encoding="utf-8")
         self.assertIn("[System.IO.File]::Replace", script)
         self.assertNotIn("Move-Item -Force", script)
         with tempfile.TemporaryDirectory() as temporary:
@@ -217,7 +219,7 @@ class WindowsServerContract(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="studio server Ω ") as temporary:
             state = Path(temporary) / "state with spaces Ω"
             result = subprocess.run(
-                [sys.executable, str(ROOT / "scripts" / "codex_windows_server.py"),
+                [sys.executable, str(SERVER_SOURCE_ROOT / "codex_windows_server.py"),
                  "--source-root", str(ROOT), "--state", str(state), "--port", "4630",
                  "--public-origin", "https://kukuka-win.tailf00fa0.ts.net:8443", "--check-config"],
                 capture_output=True, text=True, timeout=15,
@@ -238,7 +240,7 @@ class WindowsServerContract(unittest.TestCase):
             log_path = Path(temporary) / "supervisor.log"
             with log_path.open("ab") as output:
                 process = subprocess.Popen(
-                    [executable, "-B", str(ROOT / "scripts" / "codex_process_supervisor.py"),
+                    [executable, "-B", str(SERVER_SOURCE_ROOT / "codex_process_supervisor.py"),
                      "--state", str(state)],
                     cwd=ROOT, env=environment, stdin=subprocess.DEVNULL, stdout=output,
                     stderr=subprocess.STDOUT, close_fds=True,
@@ -317,7 +319,7 @@ class WindowsServerContract(unittest.TestCase):
                                 "CODEX_BIN": "",
                                 "PATH": fixture_path})
             process = subprocess.Popen(
-                [executable, str(ROOT / "scripts" / "codex_windows_server.py"),
+                [executable, str(SERVER_SOURCE_ROOT / "codex_windows_server.py"),
                  "--source-root", str(ROOT), "--state", str(state), "--port", str(port),
                  "--public-origin", "https://kukuka-win.tailf00fa0.ts.net:8443"],
                 cwd=ROOT, env=environment, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
@@ -335,7 +337,7 @@ class WindowsServerContract(unittest.TestCase):
                 self.assertIn("codex_windows_backend.py", _process_commandline(first_pid))
                 lease = json.loads((state / "supervisor.lock").read_text(encoding="utf-8"))
                 stop = subprocess.run(
-                    [executable, str(ROOT / "scripts" / "codex_windows_server.py"),
+                    [executable, str(SERVER_SOURCE_ROOT / "codex_windows_server.py"),
                      "--state", str(state), "--request-action", "stop-backend"],
                     cwd=ROOT, env=environment, capture_output=True, text=True, timeout=15,
                 )
@@ -360,7 +362,7 @@ class WindowsServerContract(unittest.TestCase):
                 from codex_process_supervisor import status
                 self.assertEqual(status(state)["stateDir"], str(state.resolve()))
                 request = subprocess.run(
-                    [executable, str(ROOT / "scripts" / "codex_windows_server.py"),
+                    [executable, str(SERVER_SOURCE_ROOT / "codex_windows_server.py"),
                      "--state", str(state), "--request-action", "restart-backend"],
                     cwd=ROOT, env=environment, capture_output=True, text=True, timeout=15,
                 )
@@ -391,7 +393,7 @@ class WindowsServerContract(unittest.TestCase):
             executable, environment = _base_python()
             environment["CODEX_AGENTS_STATE_DIR"] = str(state)
             process = subprocess.Popen(
-                [executable, str(ROOT / "scripts" / "codex_windows_server.py"),
+                [executable, str(SERVER_SOURCE_ROOT / "codex_windows_server.py"),
                  "--source-root", str(ROOT), "--state", str(state), "--port", str(port),
                  "--public-origin", "https://kukuka-win.tailf00fa0.ts.net:8443"],
                 cwd=ROOT, env=environment, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
@@ -399,7 +401,7 @@ class WindowsServerContract(unittest.TestCase):
             try:
                 _wait_until(lambda: _port_owner(port))
                 request = subprocess.run(
-                    [executable, str(ROOT / "scripts" / "codex_windows_server.py"),
+                    [executable, str(SERVER_SOURCE_ROOT / "codex_windows_server.py"),
                      "--state", str(state), "--request-action", "stop-all"],
                     cwd=ROOT, env=environment, capture_output=True, text=True, timeout=15,
                 )

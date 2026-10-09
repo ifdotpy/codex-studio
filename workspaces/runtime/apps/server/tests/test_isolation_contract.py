@@ -1,4 +1,6 @@
 """Verify Python loads the shared environment scrub before contract startup."""
+from codex_layout import REPOSITORY_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -26,7 +28,7 @@ class TestStartupIsolation(unittest.TestCase):
         )
         proc = subprocess.run(
             [sys.executable, "-B", "-c", code],
-            cwd=Path(__file__).resolve().parents[1],
+            cwd=REPOSITORY_ROOT,
             env=env,
             check=True,
             capture_output=True,
@@ -66,7 +68,7 @@ class TestStartupIsolation(unittest.TestCase):
         )
         proc = subprocess.run(
             [sys.executable, "-B", "-c", code],
-            cwd=Path(__file__).resolve().parents[1],
+            cwd=REPOSITORY_ROOT,
             env=env,
             check=True,
             capture_output=True,

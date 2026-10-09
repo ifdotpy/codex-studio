@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Restart preserves admitted work without replaying unknown operations."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -847,7 +849,7 @@ with r.db() as db:
     os._exit(9)
 """
         child=subprocess.run([sys.executable,'-B','-c',script,
-            str(Path(__file__).resolve().parents[1]/'scripts'),str(child_root)],capture_output=True,text=True)
+            str(SERVER_SOURCE_ROOT),str(child_root)],capture_output=True,text=True)
         self.assertEqual(child.returncode,9,child.stderr)
         runtime=fixture.Runtime(child_root,fixture.fixture.RecoveryServer)
         self.addCleanup(runtime.close)

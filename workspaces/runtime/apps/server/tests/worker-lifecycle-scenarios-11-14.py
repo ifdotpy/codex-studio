@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """End-to-end restart scenarios for watches, monitors, and parked workers."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
 import importlib.util
 import json
 from pathlib import Path
@@ -11,10 +13,10 @@ import unittest
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 spec = importlib.util.spec_from_file_location(
-    "monitor_fixture", ROOT / "tests/monitor-lifecycle-contract.py"
+    "monitor_fixture", SERVER_TESTS_ROOT / "monitor-lifecycle-contract.py"
 )
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)

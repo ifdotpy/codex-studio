@@ -1,4 +1,6 @@
 """Exercise protocol-3 sync negotiation and typed resource events over HTTP."""
+from codex_layout import REPOSITORY_ROOT, SERVER_TESTS_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -14,10 +16,10 @@ import urllib.request
 import stat
 import socket
 
-root = Path(__file__).resolve().parents[1]
+root = REPOSITORY_ROOT
 with tempfile.TemporaryDirectory(prefix="sync-protocol-") as directory:
     process = subprocess.Popen(
-        ["python3", "-B", str(root / "tests/simple-ui-fixture.py"), directory],
+        ["python3", "-B", str(SERVER_TESTS_ROOT / "simple-ui-fixture.py"), directory],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         env={**os.environ, "CODEX_BOARD_STATE_DIR": directory + "/board"},
     )

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Portable transfer state machine, with native servers and archive I/O isolated."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -207,7 +209,7 @@ class PortableTransfers(unittest.TestCase):
 
     def test_real_archive_connects_full_history_to_destination_context(self):
         archive_spec = importlib.util.spec_from_file_location('real_portable_archive',
-            Path(__file__).resolve().parents[1] / 'scripts' / 'codex_portable_history.py')
+            SERVER_SOURCE_ROOT / "codex_portable_history.py")
         archive = importlib.util.module_from_spec(archive_spec)
         archive_spec.loader.exec_module(archive)
         module = sys.modules['codex_portable_history']

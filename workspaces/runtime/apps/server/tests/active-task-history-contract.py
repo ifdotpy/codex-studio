@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Active-task guards exclude historical payloads and retain account ownership."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -12,7 +14,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_runtime import Runtime
 from codex_tool_requests import RequestMixin
 from codex_workspace import WorkspaceMixin, active_task_records

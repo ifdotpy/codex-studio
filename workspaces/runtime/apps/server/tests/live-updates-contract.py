@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Local release validation never replaces native connections or repeats work."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -17,8 +19,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_live_updates import LiveUpdates, start
 from codex_source_inventory import source_files
 from codex_backend_identity import backend_build
@@ -185,7 +187,7 @@ class LiveUpdatesContract(unittest.TestCase):
         self.assertEqual(json.loads((self.root / "live-update.json").read_text()), self.manager.status())
 
     def test_publisher_manifest_applies_and_records_explicit_scope(self):
-        publish = runpy.run_path(str(ROOT / "scripts/codex-publish-update"))["publish"]
+        publish = runpy.run_path(str(SERVER_SOURCE_ROOT / "codex-publish-update"))["publish"]
         receipt = publish(self.scripts, "codex_fixture_update.py", "release-1", "One fixture function")
         self.assertEqual(receipt["id"], "release-1")
         self.manager.tick()
@@ -213,7 +215,7 @@ class LiveUpdatesContract(unittest.TestCase):
         before = backend_build(self.scripts)
         nested.write_text("VALUE = 2\n")
         self.assertNotEqual(backend_build(self.scripts), before)
-        publish = runpy.run_path(str(ROOT / "scripts/codex-publish-update"))["publish"]
+        publish = runpy.run_path(str(SERVER_SOURCE_ROOT / "codex-publish-update"))["publish"]
         published = publish(self.scripts, "codex_fixture_update.py", "nested-release", "Nested package")
         manifest = json.loads((self.scripts / "studio-live-update.json").read_text())
         self.assertIn("analytics/rollout_parser.py", manifest["inputs"])
@@ -266,7 +268,7 @@ class LiveUpdatesContract(unittest.TestCase):
             source_files(self.scripts)
         self.manager.tick()
         self.assertEqual(self.manager.status()["status"], "failed")
-        publish = runpy.run_path(str(ROOT / "scripts/codex-publish-update"))["publish"]
+        publish = runpy.run_path(str(SERVER_SOURCE_ROOT / "codex-publish-update"))["publish"]
         with self.assertRaisesRegex(ValueError, "symlink"):
             publish(self.scripts, "codex_fixture_update.py", "symlink-release", "Must reject")
 

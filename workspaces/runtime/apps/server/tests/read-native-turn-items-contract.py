@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Exact-turn recovery reads complete receipts without unrelated item bodies."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -13,15 +15,15 @@ import unittest
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'scripts'))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_connection_recovery import native_operations_settled
 from codex_native_errors import NativeRpcError
 from codex_turn_recovery import read_native_turn
 
 
 def load_fixture(name, filename):
-    spec = importlib.util.spec_from_file_location(name, ROOT / 'tests' / filename)
+    spec = importlib.util.spec_from_file_location(name, SERVER_TESTS_ROOT / filename)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

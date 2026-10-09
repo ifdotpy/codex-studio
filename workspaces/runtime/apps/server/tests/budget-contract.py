@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Durable budget fixtures. No native server or model calls."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -11,7 +13,7 @@ import tempfile
 import time
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_budget import budget_admission, budget_capture, budget_status
 from codex_analytics import AnalyticsMixin
 from runtime_scoped_agent_fixture import install_scoped_agent_reads

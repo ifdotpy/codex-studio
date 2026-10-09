@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Isolated sidebar fixture. No native model requests or user state."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
 import importlib.util
 import json
 import os
@@ -9,11 +11,11 @@ import time
 import uuid
 
 sys.dont_write_bytecode = True
-root = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(root / 'tests'))
+root = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_TESTS_ROOT))
 from test_isolation import isolate_api_schema_cache
 isolate_api_schema_cache()
-sys.path.insert(0, str(root / 'scripts'))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_canvas import Canvas, make_server
 from codex_runtime import Runtime
 from codex_peer_teams import manage
@@ -23,7 +25,7 @@ from studio_api.schema import api_schema_hash, openapi_document
 # Build the real schema before runtime threads compete for the Python interpreter.
 read_cached_or_compute_api_schema_hash(
     api_schema_cache_key(), lambda: api_schema_hash(openapi_document()))
-spec = importlib.util.spec_from_file_location('runtime_fixture', root / 'tests/runtime-contract.py')
+spec = importlib.util.spec_from_file_location('runtime_fixture', SERVER_TESTS_ROOT / 'runtime-contract.py')
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the bridge protocol with a deterministic SDK. No model calls."""
+from codex_layout import CLAUDE_BRIDGE_ROOT, REPOSITORY_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -15,7 +17,7 @@ import threading
 import time
 import unittest
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = REPOSITORY_ROOT
 SDK = r'''
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -210,8 +212,8 @@ class Bridge(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         root = Path(self.temp.name)
         self.root = root
-        source = (ROOT / 'scripts/claude_bridge/bridge.mjs').read_text()
-        for helper in (ROOT / 'scripts/claude_bridge').glob('*.mjs'):
+        source = (CLAUDE_BRIDGE_ROOT / "bridge.mjs").read_text()
+        for helper in (CLAUDE_BRIDGE_ROOT).glob('*.mjs'):
             source = helper.read_text().replace("@anthropic-ai/claude-agent-sdk", "./fake.mjs")
             source = source.replace('const PREPARATION_TIMEOUT_MS = 20_000;',
                                     'const PREPARATION_TIMEOUT_MS = ' + str(self.preparation_timeout_ms) + ';')
@@ -227,7 +229,7 @@ class Bridge(unittest.TestCase):
                                         'const PASSIVE_ACCOUNT_TIMEOUT_MS = ' + str(self.passive_timeout_ms) + ';')
             (root / helper.name).write_text(source)
         (root / 'fake.mjs').write_text(SDK)
-        dependency_modules = ROOT / 'scripts/claude_bridge/node_modules'
+        dependency_modules = CLAUDE_BRIDGE_ROOT / "node_modules"
         if (dependency_modules / 'zod').is_dir():
             (root / 'node_modules').symlink_to(dependency_modules, target_is_directory=True)
         else:

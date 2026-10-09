@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Isolated notification queue load and Runtime lock attribution. No model or user state."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -16,7 +18,7 @@ import time
 import uuid
 
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from studio_api.testing import read_runtime_state
 from codex_runtime import AppServer, Runtime
 from codex_lock_metrics import MeasuredRLock
@@ -233,7 +235,7 @@ def measure(count=320, agents=24, storm=False, legacy_checkpoint=False,
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--baseline", type=Path, default=Path(__file__).resolve().parents[1] /
+    parser.add_argument("--baseline", type=Path, default=REPOSITORY_ROOT /
                         "docs/verification/2026-09-28-notification-baseline.json")
     parser.add_argument("--count", type=int, default=320)
     parser.add_argument("--agents", type=int, default=24)

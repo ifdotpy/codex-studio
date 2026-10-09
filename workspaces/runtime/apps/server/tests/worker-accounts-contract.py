@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Worker account admission skips unavailable preferences without moving explicit work."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -8,7 +10,7 @@ import unittest
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 
 from codex_catalog import CatalogPending, CatalogUnavailable, DISPLAY_READ
 from codex_worker_accounts import catalog, resolve

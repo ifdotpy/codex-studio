@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Native start-or-steer delivery and exact local input reservations."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -13,7 +15,7 @@ import unittest
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_runtime import Runtime
 from codex_native_errors import NativeRpcError
 

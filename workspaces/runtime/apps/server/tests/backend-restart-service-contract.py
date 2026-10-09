@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """A planned restart needs a verified recovery service before any signal."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -16,8 +18,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
-SOURCE = (ROOT / 'scripts/restart-backend-v2.sh').read_text().split("<<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
+ROOT = REPOSITORY_ROOT
+SOURCE = (SERVER_SOURCE_ROOT / "restart-backend-v2.sh").read_text().split("<<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
 
 
 class RestartService(unittest.TestCase):
@@ -96,7 +98,7 @@ class RestartService(unittest.TestCase):
                 patch('subprocess.run', side_effect=self.run_launchctl), \
                 patch('os.kill') as kill, patch('time.sleep'), patch('sys.stdout', output):
             self.kill = kill
-            exec(compile(SOURCE, str(ROOT / 'scripts/restart-backend-v2.sh'), 'exec'), {})
+            exec(compile(SOURCE, str(SERVER_SOURCE_ROOT / "restart-backend-v2.sh"), 'exec'), {})
         return output.getvalue()
 
     def assert_preflight_rejected(self, pattern):

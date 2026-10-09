@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Upgrade transport and receipt contracts through the installed manager."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 import hashlib
 import importlib
 import json
@@ -15,8 +17,8 @@ import time
 from types import SimpleNamespace
 import unittest
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 import codex_windows_server as server
 from codex_live_updates import LiveUpdates
 from codex_source_inventory import source_files
@@ -132,7 +134,7 @@ class WindowsUpgradeContract(unittest.TestCase):
                     old_source = local / "old source Ω"
                     (old_source / "scripts").mkdir(parents=True)
                     (old_source / "scripts" / "codex_canvas.py").touch()
-                    shutil.copy2(ROOT / "scripts" / "codex_windows_server.py", install)
+                    shutil.copy2(SERVER_SOURCE_ROOT / "codex_windows_server.py", install)
                     executable = getattr(sys, "_base_executable", sys.executable)
                     with socket.socket() as listener:
                         listener.bind(("127.0.0.1", 0))
@@ -142,7 +144,7 @@ class WindowsUpgradeContract(unittest.TestCase):
                     (install / "server.json").write_text(json.dumps(config), encoding="utf-8")
                     env = os.environ.copy()
                     env.update({"LOCALAPPDATA": str(local), "CODEX_STUDIO_SOURCE_DIR": str(ROOT),
-                                "PYTHONPATH": str(ROOT / "scripts"), "PYTHONIOENCODING": "utf-8"})
+                                "PYTHONPATH": str(SERVER_SOURCE_ROOT), "PYTHONIOENCODING": "utf-8"})
                     runner = subprocess.Popen([executable, "-B", __file__, "--runner-fixture",
                                                str(state), str(port), str(protocol), str(old_source)], env=env)
                     try:
@@ -154,7 +156,7 @@ class WindowsUpgradeContract(unittest.TestCase):
                                 return False
                         wait_until(ready)
                         result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                                                 "-File", str(ROOT / "scripts" / "manage-windows-server.ps1"),
+                                                 "-File", str(SERVER_SOURCE_ROOT / "manage-windows-server.ps1"),
                                                  "-Action", "RestartBackend", "-SourceRoot", str(ROOT)],
                                                 env=env, capture_output=True, text=True, encoding="utf-8", timeout=170)
                         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

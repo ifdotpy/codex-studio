@@ -1,4 +1,6 @@
 """Command link installation and source-independent imports. No model requests."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -10,9 +12,9 @@ import subprocess
 import tempfile
 import unittest
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = REPOSITORY_ROOT
 spec = importlib.util.spec_from_file_location(
-    "install_cli", ROOT / "scripts/install-cli.py"
+    "install_cli", SERVER_SOURCE_ROOT / "install-cli.py"
 )
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
@@ -75,7 +77,7 @@ class InstallContract(unittest.TestCase):
             with self.assertRaises(ValueError):
                 module.install(ROOT, target)
             module.install(ROOT, target, old)
-            self.assertEqual((target / "luna").resolve(), ROOT / "scripts/luna")
+            self.assertEqual((target / "luna").resolve(), SERVER_SOURCE_ROOT / "luna")
             (target / "luna").unlink()
             (target / "luna").symlink_to(old / "scripts/codex-board")
             with self.assertRaises(ValueError):

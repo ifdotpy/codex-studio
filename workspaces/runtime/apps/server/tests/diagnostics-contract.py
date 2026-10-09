@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """The diagnostics endpoint uses fake accounts and shares no command text."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -25,7 +27,7 @@ from unittest.mock import patch
 from pydantic import BaseModel
 
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_canvas import Canvas, make_server
 from codex_diagnostics import process_tree, snapshot
 from codex_lock_metrics import MeasuredRLock
@@ -185,8 +187,7 @@ class DiagnosticsContract(unittest.TestCase):
                     self.assertEqual(body, {key: value for key, value in fixture.items() if key != "supervisor"})
                     self.assertIs(type(supervisor["mode"]), bool)
                     connection.close()
-                    cli = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1]
-                                           / "scripts/codex-diagnostics"), "--port",
+                    cli = subprocess.run([sys.executable, str(SERVER_SOURCE_ROOT / "codex-diagnostics"), "--port",
                                           str(server.server_port)], capture_output=True,
                                          text=True, timeout=5, check=True)
                     printed = json.loads(cli.stdout)

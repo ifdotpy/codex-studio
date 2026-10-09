@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Native unload and rejection recovery without replaying user input."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -12,7 +14,7 @@ import tempfile
 import time
 import unittest
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_runtime import Runtime, NativeRpcError, ResponseTimeout
 spec = importlib.util.spec_from_file_location('fixture', Path(__file__).with_name('runtime-contract.py'))
 fixture = importlib.util.module_from_spec(spec)

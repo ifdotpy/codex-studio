@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Server team boundaries through model tools, history, and native dispatch."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -14,7 +16,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 import codex_api_client
 
 spec = importlib.util.spec_from_file_location('team_fixture', Path(__file__).with_name('workspace-contract.py'))
@@ -197,7 +199,7 @@ class TeamChatIsolation(unittest.TestCase):
             self.assertEqual(json.loads(db.execute('SELECT deliveries FROM runtime_chat_messages WHERE id=?', (event,)).fetchone()[0])[worker['id']], 'cancelled')
 
     def test_user_control_cli_refuses_inherited_agent_before_network(self):
-        executable = Path(__file__).resolve().parents[1] / 'scripts/codex-control'
+        executable = SERVER_SOURCE_ROOT / "codex-control"
         for variable in ('CODEX_AGENT_OWNER', 'CODEX_BOARD_OWNER'):
             for command in (['send', 'other', 'Forbidden'], ['transcript', 'other'], ['list']):
                 with self.subTest(variable=variable, command=command), patch.dict(os.environ, {variable: 'worker'}), \
