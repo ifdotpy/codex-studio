@@ -17,6 +17,18 @@ export type AccountLimitsSnapshot =
     > &
       ClientLimitMetadata);
 
+export function limitsReadSucceeded(
+  snapshot: Pick<AccountLimitsSnapshot, "error">,
+): boolean {
+  return !snapshot.error;
+}
+
+export function limitsHydrationSucceeded(
+  snapshot: Pick<AccountLimitsSnapshot, "data" | "error"> | null,
+): boolean {
+  return !!snapshot?.data && limitsReadSucceeded(snapshot);
+}
+
 export function jsonObject(
   value: JsonValue | null | undefined,
 ): JsonObject | null {
@@ -72,4 +84,28 @@ export function accountLimits(
   if (accountId && data?.accountId != null && data.accountId !== accountId)
     return null;
   return limits;
+}
+
+export function shouldReplaceLimitsSnapshot(
+  current: AccountLimitsSnapshot | null | undefined,
+  next: AccountLimitsSnapshot,
+): boolean {
+  if (next.data === null && limitsReadSucceeded(next)) return true;
+  return !current || (current.at || 0) <= (next.at || 0);
+}
+
+export function limitsSnapshotIsFresh(
+  value: JsonValue | null | undefined,
+  accountKey: string,
+  accountId?: string | null,
+  now = Date.now() / 1000,
+): boolean {
+  const snapshot = accountLimits(value, accountKey, accountId);
+  return !!(
+    snapshot &&
+    limitsReadSucceeded(snapshot) &&
+    typeof snapshot.at === "number" &&
+    Number.isFinite(snapshot.at) &&
+    now - snapshot.at < 60
+  );
 }

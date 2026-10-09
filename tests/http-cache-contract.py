@@ -34,7 +34,7 @@ class HttpCacheContract(unittest.TestCase):
         self.web = patch.object(codex_canvas, 'WEB', web)
         self.web.start()
         canvas = codex_canvas.Canvas(root)
-        self.runtime = Runtime(root)
+        self.runtime = Runtime(root, server_factory=lambda *_args: None)
         canvas.runtime = self.runtime
         self.server = codex_canvas.make_server(canvas)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)

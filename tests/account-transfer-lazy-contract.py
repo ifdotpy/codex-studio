@@ -119,27 +119,32 @@ class LazyTransferContract(unittest.TestCase):
 
     def test_automatic_history_waits_for_pending_model_list_without_manual_retry(self):
         from codex_catalog import CatalogPending
+        from unittest.mock import patch
         op = self.t.start_transfer()
         original = self.rt.catalog
         pending = True
+        now = [time.time()]
+
         def catalog(key='default'):
             if pending:
                 raise CatalogPending('Existing metadata request is pending')
             return original(key)
+
         self.rt.catalog = catalog
-        self.t.tick()
-        self.t.until(lambda: not self.store.running)
-        member = self.t.receipt(op['id'])['members'][self.aid]
-        self.assertEqual(member['phase'], 'lazy')
-        self.assertEqual(member['waiting'], 'Waiting for the destination model list')
-        self.assertIsNone(member['error'])
-        self.assertEqual(self.t.pending, [])
-        pending = False
-        time.sleep(1.05)
-        self.t.tick()
-        self.t.until(lambda: len(self.t.pending) == 1)
-        self.t.complete_fork()
-        self.t.until(lambda: not self.store.running)
+        with patch('codex_account_transfer.time.time', side_effect=lambda: now[0]):
+            self.t.tick()
+            self.t.until(lambda: not self.store.running)
+            member = self.t.receipt(op['id'])['members'][self.aid]
+            self.assertEqual(member['phase'], 'lazy')
+            self.assertEqual(member['waiting'], 'Waiting for the destination model list')
+            self.assertIsNone(member['error'])
+            self.assertEqual(self.t.pending, [])
+            pending = False
+            now[0] += 1.05
+            self.t.tick()
+            self.t.until(lambda: len(self.t.pending) == 1)
+            self.t.complete_fork()
+            self.t.until(lambda: not self.store.running)
         self.assertEqual(self.t.receipt(op['id'])['status'], 'completed')
 
     def test_account_choice_alone_completes_history_once_without_model_input(self):

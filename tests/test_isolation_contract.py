@@ -75,6 +75,8 @@ class TestStartupIsolation(unittest.TestCase):
         self.assertEqual(json.loads(proc.stdout), {name: None for name in names})
 
     def test_terminals_contract_does_not_connect_to_decoy_supervisor(self):
+        if not os.environ.get("CODEX_BIN"):
+            self.skipTest("requires a runner-resolved Codex executable; none is available")
         tests = Path(__file__).resolve().parent
         with tempfile.TemporaryDirectory(prefix="studio-decoy-supervisor-") as root:
             decoy = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

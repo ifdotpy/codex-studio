@@ -24,6 +24,7 @@ MAX_LINE_BYTES = 64 * 1024 * 1024
 ARCHIVED_RECONCILE_SECONDS = 60
 ACTIVE_RECONCILE_SECONDS = 5
 ACTIVE_IMPORT_QUOTA = 8
+NOTIFIED_RECONCILE_SECONDS = 60
 
 
 def inherited_usage_threads(agent):
@@ -187,6 +188,8 @@ def _history_worker_state(runtime):
         runtime._analytics_history_paths = {}
     if not hasattr(runtime, '_analytics_history_polls'):
         runtime._analytics_history_polls = {}
+    if not hasattr(runtime, '_analytics_history_dirty'):
+        runtime._analytics_history_dirty = set()
 
 
 def _history_actor_scope(agent):
@@ -365,49 +368,20 @@ class AnalyticsHistoryMixin:
                 return False
 
             def run():
-                failures = 0
-                reported_healthy = False
-                while not self.closed:
-                    try:
-                        advanced = self.analytics_history_step()
-                        startup_memory_mark("analytics-import-first-step")
-                        startup_memory_mark("analytics-import-progress", once=False, interval_seconds=30)
-                        if failures or not reported_healthy:
-                            with self.analytics_history_db() as db:
-                                row = db.execute("SELECT record FROM analytics_history WHERE id='importer'").fetchone()
-                                if row:
-                                    diagnostic = json.loads(row[0])
-                                    if diagnostic.get('status') == 'error':
-                                        diagnostic.update(status='current', lastError=diagnostic.get('error'),
-                                                          error=None, updated=time.time())
-                                        db.execute("UPDATE analytics_history SET record=? WHERE id='importer'", (json.dumps(diagnostic),))
-                            reported_healthy = True
-                        failures = 0
-                        self.analytics_history_health = {'status': 'running', 'updated': time.time()}
-                    except Exception as error:
-                        # A failed error write must not kill the only importer.
-                        # Keep a safe in-memory diagnostic until storage recovers.
-                        failures += 1
-                        self._analytics_history_schema_ready = False
-                        detail = _history_worker_error(error, 'History importer failed')
-                        self.analytics_history_health = {'status': 'error', 'updated': time.time(),
-                            'error': detail, 'consecutiveFailures': failures,
-                            'errorPersisted': False}
-                        try:
-                            with self.analytics_history_db() as db:
-                                db.execute("INSERT OR REPLACE INTO analytics_history VALUES (?,?,?)", (
-                                    'importer', '', json.dumps({'status': 'error', 'error': detail,
-                                                               'updated': time.time()})))
-                            self.analytics_history_health['errorPersisted'] = True
-                        except Exception as persistence_error:
-                            self.analytics_history_health['errorPersistenceError'] = _history_worker_error(
-                                persistence_error, 'Cannot store the history error')
-                        advanced = False
-                    delay = (min(5.0, .25 * 2 ** min(failures - 1, 5)) if failures else
-                             5.0 if not advanced and self._analytics_history_cursor == 0 else 0)
-                    deadline = time.monotonic() + delay
-                    while not self.closed and time.monotonic() < deadline:
-                        time.sleep(min(.25, max(0, deadline - time.monotonic())))
+                from codex_history_notifications import HistoryFileNotifications
+                notifications = HistoryFileNotifications()
+                self._analytics_history_notifications = notifications
+                # A restarted worker owns new native watches. Do not reuse the
+                # previous observer's quiet deadlines before registration.
+                for poll in self._analytics_history_polls.values():
+                    poll['due'] = 0
+                self._analytics_history_dirty.clear()
+                try:
+                    self._analytics_history_run(notifications)
+                finally:
+                    notifications.close()
+                    if getattr(self, '_analytics_history_notifications', None) is notifications:
+                        del self._analytics_history_notifications
 
             new_worker = threading.Thread(target=run, daemon=True, name='analytics-history')
             self.analytics_history_thread = new_worker
@@ -420,6 +394,58 @@ class AnalyticsHistoryMixin:
                                                 'error': _history_worker_error(error, 'History worker could not start')}
                 return False
             return True
+
+    def _analytics_history_run(self, notifications):
+        failures = 0
+        reported_healthy = False
+        while not self.closed:
+            try:
+                advanced = self.analytics_history_step()
+                startup_memory_mark("analytics-import-first-step")
+                startup_memory_mark("analytics-import-progress", once=False, interval_seconds=30)
+                if failures or not reported_healthy:
+                    with self.analytics_history_db() as db:
+                        row = db.execute("SELECT record FROM analytics_history WHERE id='importer'").fetchone()
+                        if row:
+                            diagnostic = json.loads(row[0])
+                            if diagnostic.get('status') == 'error':
+                                diagnostic.update(status='current', lastError=diagnostic.get('error'),
+                                                  error=None, updated=time.time())
+                                db.execute("UPDATE analytics_history SET record=? WHERE id='importer'", (json.dumps(diagnostic),))
+                    reported_healthy = True
+                failures = 0
+                self.analytics_history_health = {'status': 'running', 'updated': time.time()}
+            except Exception as error:
+                # A failed error write must not kill the only importer.
+                # Keep a safe in-memory diagnostic until storage recovers.
+                failures += 1
+                self._analytics_history_schema_ready = False
+                detail = _history_worker_error(error, 'History importer failed')
+                self.analytics_history_health = {'status': 'error', 'updated': time.time(),
+                    'error': detail, 'consecutiveFailures': failures,
+                    'errorPersisted': False}
+                try:
+                    with self.analytics_history_db() as db:
+                        db.execute("INSERT OR REPLACE INTO analytics_history VALUES (?,?,?)", (
+                            'importer', '', json.dumps({'status': 'error', 'error': detail,
+                                                       'updated': time.time()})))
+                    self.analytics_history_health['errorPersisted'] = True
+                except Exception as persistence_error:
+                    self.analytics_history_health['errorPersistenceError'] = _history_worker_error(
+                        persistence_error, 'Cannot store the history error')
+                advanced = False
+            delay = (min(5.0, .25 * 2 ** min(failures - 1, 5)) if failures else
+                     5.0 if not advanced and self._analytics_history_cursor == 0 else 0)
+            deadline = time.monotonic() + delay
+            while not self.closed and time.monotonic() < deadline:
+                wait = min(.25, max(0, deadline - time.monotonic()))
+                if notifications.enabled:
+                    changed = notifications.collect(wait)
+                    self._analytics_history_dirty.update(changed)
+                    if changed and not failures:
+                        break
+                else:
+                    time.sleep(wait)
 
     def _analytics_rollout_path(self, home, thread_id):
         now = time.monotonic()
@@ -448,6 +474,9 @@ class AnalyticsHistoryMixin:
             if not acquired:
                 return False
             _history_worker_state(self)
+            notifications = getattr(self, '_analytics_history_notifications', None) if background else None
+            if notifications is not None:
+                self._analytics_history_dirty.update(notifications.collect())
             with _history_step_connections(self):
                 # Due actors share setup, but every import retains fresh reads.
                 # Progress and round boundaries preserve the worker's idle delay.
@@ -497,6 +526,7 @@ class AnalyticsHistoryMixin:
         processed = set(prefix)
         previous_scopes = getattr(self, '_analytics_history_scopes', {})
         scopes, due, active_ids = {}, [], set()
+        dirty = self._analytics_history_dirty
         for actor in actors:
             identity = actor['id']
             scope = _history_actor_scope(actor)
@@ -507,13 +537,16 @@ class AnalyticsHistoryMixin:
             if active:
                 active_ids.add(identity)
             previous_scope = previous_scopes.get(identity, poll['scope'] if poll is not None else scope)
-            if identity in processed and previous_scope == scope and not (revisit_active and active):
+            if changed:
+                dirty.discard(identity)
+            notified = identity in dirty
+            if identity in processed and previous_scope == scope and not (revisit_active and active) and not notified:
                 continue
-            if not changed and now < poll['due']:
+            if not changed and not notified and now < poll['due']:
                 continue
             catching_up = poll is not None and poll['status'] == 'catchingUp'
             archive = actor.get('deletedAt') and poll is not None and poll['status'] == 'current'
-            file_changed = archive and _history_file_changed(poll)
+            file_changed = notified or archive and _history_file_changed(poll)
             priority = 0 if active else 1 if changed or catching_up or file_changed else 2
             due.append(((priority, poll.get('checked', 0) if active and poll is not None else 0), identity))
         # Check the oldest active actor first; retain roster order for ties.
@@ -524,6 +557,11 @@ class AnalyticsHistoryMixin:
         self._analytics_history_ids = prefix + [identity for _, identity in due]
         self._analytics_history_scopes = scopes
         self._analytics_history_active_ids = active_ids
+        self._analytics_history_dirty.intersection_update(scopes)
+        notifications = getattr(self, '_analytics_history_notifications', None)
+        if notifications is not None:
+            # Never retain archived or inactive file descriptors.
+            notifications.retain(active_ids)
         self._analytics_history_polls = {identity: poll for identity, poll in self._analytics_history_polls.items()
                                          if identity in scopes}
         self._analytics_history_schedule_deadline = now + ACTIVE_RECONCILE_SECONDS
@@ -547,7 +585,7 @@ class AnalyticsHistoryMixin:
             if background:
                 reconcile = refresh and time.monotonic() >= getattr(self, '_analytics_history_schedule_deadline', float('inf'))
                 if (not ids or self._analytics_history_cursor == 0
-                        or reconcile):
+                        or reconcile or self._analytics_history_dirty):
                     schedule = (self._analytics_history_roster(db), reconcile)
             elif not ids or self._analytics_history_cursor % len(ids) == 0:
                 from sqlite3 import sqlite_version_info
@@ -597,12 +635,27 @@ class AnalyticsHistoryMixin:
             "threadId": a["threadId"], "deletedAt": a.get("deletedAt"), "offset": 0, "importedRecords": 0, "malformedLines": 0,
             "context": {"threadId": a["threadId"]},
         }
+        self._analytics_history_dirty.discard(a['id'])
         advanced = self._analytics_history_import(a, key, state, budget_advanced, max_bytes, max_records)
+        due = (time.monotonic() + ARCHIVED_RECONCILE_SECONDS
+               if a.get('deletedAt') and state.get('status') == 'current'
+               and not advanced and not _history_actor_active(a) else 0)
+        notifications = getattr(self, '_analytics_history_notifications', None) if background else None
+        if notifications is not None and state.get('status') != 'catchingUp':
+            active = _history_actor_active(a)
+            attached = False
+            if active and state.get('path') and state.get('status') in {'current', 'partialLine', 'oversizedLine'}:
+                attached = notifications.watch(a['id'], state['path'])
+            else:
+                notifications.retain(set(self._analytics_history_active_ids) - {a['id']})
+            interval = (NOTIFIED_RECONCILE_SECONDS if notifications.contains(a['id']) or not active
+                        else ACTIVE_RECONCILE_SECONDS)
+            due = 0 if attached or budget_advanced else time.monotonic() + interval
+            # A newly attached watch must precede one exact import, closing the
+            # race between the previous read and native registration.
         self._analytics_history_polls[a['id']] = {
             'scope': _history_actor_scope(a), 'status': state.get('status'), 'checked': time.monotonic(),
-            'due': time.monotonic() + ARCHIVED_RECONCILE_SECONDS
-                if a.get('deletedAt') and state.get('status') == 'current'
-                and not advanced and not _history_actor_active(a) else 0,
+            'due': due,
             'path': state.get('path'), 'identity': state.get('filesystemIdentity', state.get('identity')),
             'fileBytes': state.get('fileBytes'),
         }

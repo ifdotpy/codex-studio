@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { components } from "../../generated/api";
+import { answerList } from "./AnswerFields";
 import { requestApprovalDetails, requestQuestions } from "./requestData";
 
 type RequestDto = components["schemas"]["RequestEntityDto"];
@@ -38,6 +39,7 @@ describe("requestQuestions", () => {
         question: "Choose formats",
         multiSelect: true,
         isSecret: false,
+        isOther: true,
         options: [
           { label: "JSON", description: "Structured output" },
           { label: "Text" },
@@ -48,6 +50,7 @@ describe("requestQuestions", () => {
         question: "API key",
         multiSelect: false,
         isSecret: true,
+        isOther: true,
         options: [],
       },
     ]);
@@ -140,5 +143,34 @@ describe("requestApprovalDetails", () => {
       command: ["git", "status"],
       permissions: { mode: "workspace-write" },
     });
+  });
+});
+
+describe("custom answer permission", () => {
+  it("honors native isOther and rejects stale custom enum drafts", () => {
+    const request: RequestDto = {
+      id: "native",
+      method: "item/tool/requestUserInput",
+      params: {
+        questions: [
+          { id: "closed", question: "Closed", options: [{ label: "One" }] },
+          {
+            id: "open",
+            question: "Open",
+            isOther: true,
+            options: [{ label: "One" }],
+          },
+        ],
+      },
+    };
+    const [closed, open] = requestQuestions(request);
+    expect(closed.isOther).toBe(false);
+    expect(open.isOther).toBe(true);
+    expect(answerList(closed, { selected: ["One"], other: "Custom" })).toEqual([
+      "One",
+    ]);
+    expect(answerList(open, { selected: [], other: "Custom" })).toEqual([
+      "Custom",
+    ]);
   });
 });

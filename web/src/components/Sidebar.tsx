@@ -1,5 +1,12 @@
 import { serverLocalStorage as localStorage } from "../servers/storage";
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  Fragment,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   ActionIcon,
   Button,
@@ -41,6 +48,13 @@ import {
 } from "./shell/messages/PeerTeams";
 
 import SidebarRow from "./SidebarRow";
+import {
+  createSidebarCatalogSelector,
+  createSidebarSearchSelector,
+  itemGroup,
+  chatGroup as catalogChatGroup,
+} from "./sidebar/catalog";
+export { isVisibleSidebarAgent } from "./sidebar/catalog";
 import type { ChatIndicator } from "./chat-status/chatStatusModel";
 import { reportPromptComposerRender } from "./prompt-composer/renderProbe";
 
@@ -75,16 +89,6 @@ type Props = {
   markingRead: Set<string>;
 };
 type NavigableProject = Project & { path: string; name: string };
-export function isVisibleSidebarAgent(
-  agent: Pick<Agent, "source" | "isLead" | "deletedAt" | "sharedRoomId">,
-) {
-  return (
-    agent.source === "managed" &&
-    agent.isLead &&
-    !agent.deletedAt &&
-    !agent.sharedRoomId
-  );
-}
 export function projectDisplayName(
   project: Pick<Project, "path" | "name">,
 ): string {
@@ -159,27 +163,24 @@ export default function Sidebar(p: Props) {
     id?: string;
     action: "save" | "delete";
   } | null>(null);
-  const peerTeams =
-    runtime?.peerTeamsVersion === 1 ? runtime.peerTeams || [] : [];
-  const projects = (runtime?.projects ?? [])
-    .filter(
-      (project): project is Project & { path: string } =>
-        typeof project.path === "string",
-    )
-    .map((project): NavigableProject => ({
-      ...project,
-      name: projectDisplayName(project),
-    }));
-  const teamMove = usePeerTeamMove(p.refresh, p.notify);
-  const teamFor = (id: string) =>
-    peerTeams.find((team) => (team.members ?? []).includes(id));
-  const grouped = new Set(
-    peerTeams.flatMap((team) =>
-      (team.members ?? []).filter((id) =>
-        p.data.threads.some((a) => a.id === id && a.cwd === team.projectPath),
-      ),
-    ),
+  const peerTeams = useMemo(
+    () => (runtime?.peerTeamsVersion === 1 ? runtime.peerTeams || [] : []),
+    [runtime?.peerTeamsVersion, runtime?.peerTeams],
   );
+  const projects = useMemo(
+    () =>
+      (runtime?.projects ?? [])
+        .filter(
+          (project): project is Project & { path: string } =>
+            typeof project.path === "string",
+        )
+        .map((project): NavigableProject => ({
+          ...project,
+          name: projectDisplayName(project),
+        })),
+    [runtime?.projects],
+  );
+  const teamMove = usePeerTeamMove(p.refresh, p.notify);
   const [dialog, setDialog] = useState<{
     title: string;
     path: string;
@@ -288,20 +289,32 @@ export default function Sidebar(p: Props) {
       return changed ? next : old;
     });
   }, [p.data.threads]);
-  const agents = p.data.threads
-    .filter(isVisibleSidebarAgent)
-    .map((a) => (overrides[a.id] ? { ...a, ...overrides[a.id] } : a));
-  const sharedRooms = (runtime?.rooms || []).filter(
-    (r) => r.radio?.direct && !r.userHidden,
+  const catalogSelector = useMemo(createSidebarCatalogSelector, []);
+  const catalog = catalogSelector(
+    p.data.threads,
+    overrides,
+    peerTeams,
+    sorting.order,
   );
-  const visibleSharedRooms = archive
-    ? []
-    : sharedRooms.filter((r) =>
-        `${r.name} ${r.projectPath || ""} ${projects.find((project) => project.path === r.projectPath)?.name || ""}`
-          .toLowerCase()
-          .includes(query.toLowerCase()),
-      );
-  const selectedFolder = agents.find((a) => a.id === p.opened)?.projectFolder;
+  const { agents, byProject, grouped } = catalog;
+  const teamFor = (id: string) => catalog.byTeam.get(id);
+  const sharedRooms = useMemo(
+    () =>
+      (runtime?.rooms || []).filter((r) => r.radio?.direct && !r.userHidden),
+    [runtime?.rooms],
+  );
+  const visibleSharedRooms = useMemo(
+    () =>
+      archive
+        ? []
+        : sharedRooms.filter((r) =>
+            `${r.name} ${r.projectPath || ""} ${projects.find((project) => project.path === r.projectPath)?.name || ""}`
+              .toLowerCase()
+              .includes(query.toLowerCase()),
+          ),
+    [archive, sharedRooms, projects, query],
+  );
+  const selectedFolder = catalog.byId.get(p.opened || "")?.projectFolder;
   useEffect(() => {
     if (
       agents.some((a) => a.id === p.opened) ||
@@ -332,29 +345,10 @@ export default function Sidebar(p: Props) {
       }
     }
   }, [p.opened, selectedFolder]);
-  const itemGroup = (path: string, parent: string | null = null) =>
-    JSON.stringify(["items", path, parent]);
   const teamKey = (path: string, id: string) =>
     JSON.stringify([path, "team", id]);
-  const legacyChatGroup = (a: Agent) =>
-    JSON.stringify([
-      "chats",
-      a.cwd,
-      !!a.pinned,
-      !!a.archived,
-      ...(teamFor(a.id) ? ["team", teamFor(a.id)!.id] : []),
-      ...(a.projectFolder ? [a.projectFolder] : []),
-    ]);
-  const chatGroup = (a: Agent) =>
-    !teamFor(a.id) && !a.pinned
-      ? itemGroup(a.cwd || "", a.projectFolder || null)
-      : legacyChatGroup(a);
-  const chatRank = (a: Agent) => {
-    const rank = sorting.rank(chatGroup(a), a.id);
-    return rank === Number.MAX_SAFE_INTEGER
-      ? sorting.rank(legacyChatGroup(a), a.id)
-      : rank;
-  };
+  const chatGroup = (agent: Agent) =>
+    catalogChatGroup(agent, teamFor(agent.id));
   const folderDrop = (
     project: NavigableProject,
     folder: ProjectFolder | null = null,
@@ -362,7 +356,7 @@ export default function Sidebar(p: Props) {
     sorting.dropBindings(
       folder ? folderKey(project.path, folder.id) : project.path,
       (source) => {
-        const chat = agents.find((a) => a.id === source.id);
+        const chat = catalog.byId.get(source.id);
         return !!(
           (canOrganizeProjects || (!folder && teamFor(source.id))) &&
           !teamMove.blocked() &&
@@ -375,7 +369,7 @@ export default function Sidebar(p: Props) {
         );
       },
       ({ id }) => {
-        const chat = agents.find((a) => a.id === id)!;
+        const chat = catalog.byId.get(id)!;
         if (!folder && teamFor(id)) {
           teamMove.move(project, id, null);
           return;
@@ -413,28 +407,47 @@ export default function Sidebar(p: Props) {
         });
       },
     );
-  const orderedAgents = [...agents].sort(
-    (a, b) =>
-      Number(!!b.pinned) - Number(!!a.pinned) ||
-      chatRank(a) - chatRank(b) ||
-      (("updated" in b ? b.updated : b.created) || 0) -
-        (("updated" in a ? a.updated : a.created) || 0),
+  const orderedAgents = catalog.ordered;
+  const searchSelector = useMemo(createSidebarSearchSelector, []);
+  const searchContext = useMemo(
+    () => ({ projects, peerTeams }),
+    [projects, peerTeams],
   );
-  const filtered = orderedAgents
-    .filter((row) => !!row.archived === archive)
-    .filter((a) => {
-      const project = projects.find((item) => item.path === a.cwd);
+  const projectsByPath = useMemo(
+    () => new Map(projects.map((project) => [project.path, project])),
+    [projects],
+  );
+  const filtered = useMemo(() => {
+    const archived = orderedAgents.filter((row) => !!row.archived === archive);
+    const matching = searchSelector(archived, searchContext, query, (a) => {
+      const project = projectsByPath.get(a.cwd || "");
       const legacyProjectName = "project" in a ? a.project : undefined;
-      if (a.id === p.opened && grouped.has(a.id)) return true;
-      const teamName =
-        peerTeams.find(
-          (team) =>
-            (team.members ?? []).includes(a.id) && team.projectPath === a.cwd,
-        )?.name || "";
-      return `${teamName} ${a.name || ""} ${a.cwd || ""} ${projectSearchLabel(project?.name, legacyProjectName)} ${folderLabel(project?.folders || [], a.projectFolder || "")} ${a.tail || ""}`
-        .toLowerCase()
-        .includes(query.toLowerCase());
+      const team = catalog.byTeam.get(a.id);
+      const teamName = team && team.projectPath === a.cwd ? team.name : "";
+      return `${teamName || ""} ${a.name || ""} ${a.cwd || ""} ${projectSearchLabel(project?.name, legacyProjectName)} ${folderLabel(project?.folders || [], a.projectFolder || "")} ${a.tail || ""}`;
     });
+    // Keep the selected team member visible under a search, as before.
+    const selected = catalog.byId.get(p.opened || "");
+    if (
+      query &&
+      selected &&
+      !!selected.archived === archive &&
+      grouped.has(selected.id) &&
+      !matching.includes(selected)
+    ) {
+      const matches = new Set(matching);
+      return archived.filter((row) => row === selected || matches.has(row));
+    }
+    return matching;
+  }, [
+    orderedAgents,
+    archive,
+    query,
+    searchContext,
+    projectsByPath,
+    p.opened,
+    grouped,
+  ]);
   const rename = async (e: React.FormEvent, id: string) => {
     e.preventDefault();
     try {
@@ -444,49 +457,10 @@ export default function Sidebar(p: Props) {
       /* Keep the draft when the server rejects the name. */
     }
   };
-  const groupMap = new Map<
-    string,
-    NavigableProject & {
-      chats: Agent[];
-      registered: boolean;
-      hasChats: boolean;
-    }
-  >();
-  for (const project of projects)
-    groupMap.set(project.path, {
-      ...project,
-      chats: [],
-      registered: true,
-      hasChats:
-        agents.some((a) => a.cwd === project.path) ||
-        sharedRooms.some((r) => r.projectPath === project.path),
-    });
-  for (const a of agents) {
-    const path = a.cwd || "";
-    if (!groupMap.has(path))
-      groupMap.set(path, {
-        id: path,
-        created: 0,
-        path,
-        name: path.split("/").filter(Boolean).at(-1) || "Other chats",
-        chats: [],
-        registered: false,
-        hasChats: true,
-      });
-  }
-  for (const room of sharedRooms) {
-    const path = room.projectPath || "";
-    if (!groupMap.has(path))
-      groupMap.set(path, {
-        id: path,
-        created: 0,
-        path,
-        name: path.split("/").filter(Boolean).at(-1) || "Other chats",
-        chats: [],
-        registered: false,
-        hasChats: true,
-      });
-  }
+  const sharedProjectPaths = useMemo(
+    () => new Set(sharedRooms.map((room) => room.projectPath)),
+    [sharedRooms],
+  );
   const keptInCompact = (a: Agent) =>
     !!(
       teamFor(a.id) ||
@@ -498,10 +472,72 @@ export default function Sidebar(p: Props) {
       p.indicators.get(a.id)?.kind === "unread" ||
       (a.updated || a.created || 0) >= Date.now() / 1000 - 86400
     );
-  for (const a of filtered) {
-    if (query || !compactProjects[a.cwd || ""] || keptInCompact(a))
-      groupMap.get(a.cwd || "")!.chats.push(a);
-  }
+  const compactIndicatorKey = agents
+    .filter(
+      (agent) =>
+        compactProjects[agent.cwd || ""] &&
+        p.indicators.get(agent.id)?.kind === "unread",
+    )
+    .map((agent) => agent.id)
+    .join("\n");
+  const groupMap = useMemo(() => {
+    const groups = new Map<
+      string,
+      NavigableProject & {
+        chats: Agent[];
+        registered: boolean;
+        hasChats: boolean;
+      }
+    >();
+    for (const project of projects)
+      groups.set(project.path, {
+        ...project,
+        chats: [],
+        registered: true,
+        hasChats:
+          byProject.has(project.path) || sharedProjectPaths.has(project.path),
+      });
+    for (const a of agents) {
+      const path = a.cwd || "";
+      if (!groups.has(path))
+        groups.set(path, {
+          id: path,
+          created: 0,
+          path,
+          name: path.split("/").filter(Boolean).at(-1) || "Other chats",
+          chats: [],
+          registered: false,
+          hasChats: true,
+        });
+    }
+    for (const room of sharedRooms) {
+      const path = room.projectPath || "";
+      if (!groups.has(path))
+        groups.set(path, {
+          id: path,
+          created: 0,
+          path,
+          name: path.split("/").filter(Boolean).at(-1) || "Other chats",
+          chats: [],
+          registered: false,
+          hasChats: true,
+        });
+    }
+    for (const a of filtered) {
+      if (query || !compactProjects[a.cwd || ""] || keptInCompact(a))
+        groups.get(a.cwd || "")!.chats.push(a);
+    }
+    return groups;
+  }, [
+    projects,
+    agents,
+    sharedRooms,
+    sharedProjectPaths,
+    filtered,
+    query,
+    compactProjects,
+    compactIndicatorKey,
+  ]);
   const itemIds = (group: NavigableProject, parent: string | null = null) =>
     [
       ...(!parent
@@ -513,10 +549,9 @@ export default function Sidebar(p: Props) {
         .filter((f) => (f.parentId || null) === parent)
         .sort((a, b) => a.name.localeCompare(b.name))
         .map((f) => folderKey(group.path, f.id)),
-      ...orderedAgents
+      ...(byProject.get(group.path) || [])
         .filter(
           (a) =>
-            a.cwd === group.path &&
             !!a.archived === archive &&
             !grouped.has(a.id) &&
             !a.pinned &&
@@ -528,11 +563,21 @@ export default function Sidebar(p: Props) {
         sorting.rank(itemGroup(group.path, parent), a) -
         sorting.rank(itemGroup(group.path, parent), b),
     );
-  const allProjectGroups = [...groupMap.values()].sort(
-    (a, b) =>
-      sorting.rank("projects", a.path) - sorting.rank("projects", b.path) ||
-      a.name.localeCompare(b.name),
+  const projectOrderKey = JSON.stringify(
+    [...groupMap.values()].map((group) => [group.path, group.name]),
   );
+  const projectPaths = useMemo(
+    () =>
+      [...groupMap.values()]
+        .sort(
+          (a, b) =>
+            sorting.rank("projects", a.path) -
+              sorting.rank("projects", b.path) || a.name.localeCompare(b.name),
+        )
+        .map((group) => group.path),
+    [projectOrderKey, sorting.order],
+  );
+  const allProjectGroups = projectPaths.map((path) => groupMap.get(path)!);
   const projectGroups = allProjectGroups.filter(
     (group) =>
       !query ||
@@ -554,7 +599,7 @@ export default function Sidebar(p: Props) {
       bindings={sorting.dropBindings(
         `convert:${row.id}`,
         (source, event) => {
-          const chat = agents.find((a) => a.id === source.id);
+          const chat = catalog.byId.get(source.id);
           const box = event.currentTarget.getBoundingClientRect();
           return !!(
             chat &&
@@ -571,7 +616,7 @@ export default function Sidebar(p: Props) {
         },
         ({ id }) =>
           setConversion({
-            source: agents.find((a) => a.id === id)!,
+            source: catalog.byId.get(id)!,
             target: row,
             project: groupMap.get(row.cwd || "")!,
           }),
@@ -648,7 +693,7 @@ export default function Sidebar(p: Props) {
         drop={sorting.dropBindings(
           `peer-team:${team.id}`,
           (source) => {
-            const chat = agents.find((a) => a.id === source.id);
+            const chat = catalog.byId.get(source.id);
             return !!(
               chat &&
               source.group === chatGroup(chat) &&
@@ -754,9 +799,8 @@ export default function Sidebar(p: Props) {
             const closed = collapsed[id] && !query;
             const occupied =
               folders.some((item) => item.parentId === folder.id) ||
-              agents.some(
-                (chat) =>
-                  chat.cwd === group.path && chat.projectFolder === folder.id,
+              (byProject.get(group.path) || []).some(
+                (chat) => chat.projectFolder === folder.id,
               );
             return {
               id,

@@ -87,6 +87,7 @@ test("Original Typography Browser", async ({
       await dialog
         .getByRole("tab", { name: "Appearance", exact: true })
         .click();
+      await dialog.locator(".studio-appearance-more summary").click();
       return dialog;
     };
     let settings = await openSettings();
@@ -100,11 +101,11 @@ test("Original Typography Browser", async ({
       .getByLabel("Studio text style", { exact: true })
       .selectOption("original");
     const checkOriginal = async () => {
-      // These are the sizes in 4a0746c^, before global typography overrides.
+      // Original typography keeps the legacy sizes and current status text token.
       for (const [selector, expected] of [
         [".chat-row .row-copy strong", "13px"],
         ["#conversation-title", "15px"],
-        ["#conversation-status", "11px"],
+        ["#conversation-status", "12px"],
         ["#messages .prose", "14px"],
         ["#message", "14px"],
       ])

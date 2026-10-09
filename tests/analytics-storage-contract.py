@@ -30,6 +30,13 @@ class AnalyticsStorageContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
+        self.disk_usage_patch = patch.object(
+            storage.shutil,
+            "disk_usage",
+            return_value=type("RoomyVolume", (), {"free": 128 * 1024**3})(),
+        )
+        self.disk_usage_patch.start()
+        self.addCleanup(self.disk_usage_patch.stop)
         self.canvas = root / "canvas.sqlite3"
         self.analytics = root / "analytics.sqlite3"
         with database(self.canvas) as db:

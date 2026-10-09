@@ -230,7 +230,11 @@ export function NativeNotice({
       : error.hint;
     const raw = details || error.message;
     return (
-      <div className="native-notice native-limit-notice" data-message={item.id}>
+      <div
+        className="native-notice native-limit-notice"
+        data-message={item.id}
+        data-source-message={item.sourceId}
+      >
         <div className="native-limit-notice-heading">
           <CircleAlert size={16} aria-hidden="true" />
           <strong>{error.title}</strong>
@@ -251,6 +255,7 @@ export function NativeNotice({
     <div
       className={`native-notice ${error?.severity || notice}`}
       data-message={item.id}
+      data-source-message={item.sourceId}
     >
       <details>
         <summary>

@@ -161,6 +161,30 @@ test("accounts settings show per-server state and provider choices", async ({
     path: resolve(screenshots, "accounts-mobile.png"),
   });
 
+  await settings.getByRole("tab", { name: "Servers", exact: true }).click();
+  const servers = settings.getByRole("region", {
+    name: "Servers",
+    exact: true,
+  });
+  await expect(servers.locator("[data-settings-server]")).toHaveCount(3);
+  await page.setViewportSize({ width: 1280, height: 1100 });
+  await page.mouse.move(0, 0);
+  await page.emulateMedia({ colorScheme: "light" });
+  await settings.screenshot({
+    path: resolve(screenshots, "servers-cards-light.png"),
+  });
+  await page.emulateMedia({ colorScheme: "dark" });
+  await settings.screenshot({
+    path: resolve(screenshots, "servers-cards-dark.png"),
+  });
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.setViewportSize({ width: 390, height: 1500 });
+  await page.mouse.move(0, 0);
+  await settings.screenshot({
+    path: resolve(screenshots, "servers-cards-mobile.png"),
+  });
+  await settings.getByRole("tab", { name: "Accounts", exact: true }).click();
+
   await accounts
     .getByRole("button", { name: "Add account", exact: true })
     .click();

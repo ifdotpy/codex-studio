@@ -170,15 +170,14 @@ class OwnerCacheContract(unittest.TestCase):
             nextAt=time.time() - 1, stallTimeoutSeconds=10 if stalled else 0,
             fileActivityAt=time.time() - 100, fileGeneration=1, stallWakeGeneration=-1)
 
-    def test_quiet_rules_load_one_owner_once_in_each_phase(self):
+    def test_future_rules_do_not_load_the_owner(self):
         actor = self.runtime.add_owner(history="x" * 65536)
         for index in range(48):
             self.runtime.add_rule(str(index))
         with self.runtime.read_db() as db:
             before = self.runtime.records(db, "rules")
         self.runtime.rules_tick()
-        self.assertEqual([(phase, key) for phase, key, _ in self.runtime.owner_loads],
-                         [("read", "owner"), ("writer", "owner")])
+        self.assertEqual(self.runtime.owner_loads, [])
         with self.runtime.read_db() as db:
             self.assertEqual(self.runtime.records(db, "rules"), before)
         self.assertEqual(self.runtime.load("agents", "owner"), actor)
@@ -188,7 +187,8 @@ class OwnerCacheContract(unittest.TestCase):
         for key in ("first", "second"):
             self.runtime.add_owner(key)
             for index in range(8):
-                self.runtime.add_rule(key + str(index), key, kind="event")
+                self.runtime.add_rule(key + str(index), key, kind="low_workers", minimumWorkers=1,
+                                      durationMinutes=1, lowSince=time.time() - 10, alerted=False, activeWorkers=0)
         self.runtime.rules_tick()
         self.assertEqual(len(self.runtime.owner_loads), 4)
         self.runtime.rules_tick()
@@ -278,7 +278,7 @@ class OwnerCacheContract(unittest.TestCase):
     def test_read_phase_agent_revision_invalidates_the_owner(self):
         self.runtime.add_owner()
         for index in range(3):
-            self.runtime.add_rule(str(index), kind="event")
+            self.runtime.add_rule(str(index), nextAt=time.time() - 1)
         changed = []
         def after_load(runtime, db, actor):
             if runtime.phase == "read" and not changed:

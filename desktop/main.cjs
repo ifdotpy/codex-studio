@@ -18,6 +18,7 @@ const {
   configureRecovery,
   isInstalledApplication,
   recoveryPreference,
+  recoveryPaths,
   supervisorPreference,
   recoveryStatusLabel,
   trackDesktopRecovery,
@@ -831,6 +832,11 @@ async function start() {
         throw new Error(
           "Background recovery can be registered only by /Applications/Codex Studio.app.",
         );
+      // Read the verified owner before an attaching desktop can change its recovery environment.
+      backend = await identity(
+        `http://127.0.0.1:${Number(process.env.CODEX_DESKTOP_PORT || 4620)}`,
+        recoveryPaths().state,
+      );
       await setBackgroundRecovery(recoveryPreference());
     } catch (error) {
       markBackgroundRecoveryUnavailable(error);

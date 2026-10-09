@@ -1,3 +1,4 @@
+import { Tooltip } from "@mantine/core";
 import StudioSettingsTabs, {
   isStudioSettingsTab,
   type StudioSettingsTab,
@@ -18,14 +19,19 @@ import ServerAccountsPanel from "./servers/ServerAccountsPanel";
 import { localServer, viewServer } from "./servers/registry";
 import { serverLocalStorage as localStorage } from "./servers/storage";
 import SearchOverlay from "./components/shell/SearchOverlay";
-import { SettingsSection, SettingsRow } from "./components/ui/primitives";
+import { SettingsRow } from "./components/ui/primitives";
 import { modalSizes } from "./theme";
 import { menuActions, renameCommand, studioCommand } from "./nativeCommands";
 import { useDesktopNotifications } from "./hooks/desktopNotifications";
 import { useNativeAction } from "./useNativeAction";
 import { useChatPrefetch } from "./hooks/chatPrefetch";
 import { useTeamTokenRateStream } from "./hooks/useTeamTokenRateStream";
-import { accountLimits } from "./usage/accountUsage";
+import {
+  accountLimits,
+  limitsReadSucceeded,
+  limitsSnapshotIsFresh,
+  shouldReplaceLimitsSnapshot,
+} from "./usage/accountUsage";
 import { usageAccountConnectionKey as usageConnectionKey } from "./usage/usageAccountRefresh";
 import type { AccountLimitsSnapshot } from "./usage/accountUsage";
 import { useMobileViewport } from "./hooks/mobileViewport";
@@ -153,6 +159,8 @@ function isLeadCreateRequest(value: Json): value is LeadCreateRequest {
   );
 }
 import Sidebar from "./components/Sidebar";
+import { createAppCatalogSelector } from "./components/sidebar/catalog";
+const emptyAgents: Agent[] = [];
 import {
   unreadResult,
   chatIndicators,
@@ -166,7 +174,6 @@ import ProjectAccount from "./components/ProjectAccount";
 import SessionActivity from "./components/agents/SessionActivity";
 import { useWorkerModels } from "./components/agents/WorkerModelPicker";
 import { UnifiedAgentSettings } from "./components/agents/UnifiedAgentSettings";
-import { AccountTiles } from "./components/AccountTiles";
 import { FederationSettings } from "./components/FederationSettings";
 import { LinuxVMSettings } from "./components/LinuxVMSettings";
 import BrowserAccessNotice from "./components/BrowserAccessNotice";
@@ -181,7 +188,10 @@ import Conversation from "./components/Conversation";
 const SelectedConversation = memo(Conversation);
 import type { UsageAccount } from "./components/Usage";
 import { watchResourceReads } from "./components/watchResourceReads";
-import { limitsBaselineReader } from "./usage/limitsBaseline";
+import {
+  limitsBaselineReader,
+  type LimitsBaselineHydration,
+} from "./usage/limitsBaseline";
 import RadioChat from "./components/RadioChat";
 import SharedChatCreate, {
   sharedCreationKey,
@@ -306,6 +316,8 @@ export default function App() {
     { action: "account-sign-in" | "account-action" }
   > | null>(null);
   const [mainSettingsOpen, setMainSettingsOpen] = useState(false);
+  const [workerSettingsOpen, setWorkerSettingsOpen] = useState(false);
+  const [reviewSettingsOpen, setReviewSettingsOpen] = useState(false);
   const [filePreview, setFilePreview] = useState<PreviewTarget | null>(null);
   const { colorScheme, setColorScheme } = useMantineColorScheme();
   const preferenceLoad = useMemo(() => {
@@ -346,6 +358,7 @@ export default function App() {
       if (next.theme !== colorScheme) setColorScheme(next.theme);
       try {
         localStorage.setItem(studioPreferencesStorageKey, JSON.stringify(next));
+        window.dispatchEvent(new Event("studio-preferences-change"));
         if (isServerView)
           window.parent.postMessage(
             { kind: "studio-server-preferences", preferences: next },
@@ -647,31 +660,26 @@ export default function App() {
     });
     return response;
   };
-  const agents = data?.threads || [],
-    leads = agents.filter(
-      (a) => a.source === "managed" && a.isLead && !a.sharedRoomId,
-    ),
-    agent = agents.find((a) => a.id === opened),
-    room = data?.runtime?.rooms?.find((r) => r.id === opened),
-    legacy = data?.chats.find((c) => c.id === opened),
-    roomRoots = room ? roomLeadIds(room, agents) : [],
-    lead = room?.radio
-      ? undefined
-      : agents.find(
-          (a) =>
-            a.id ===
-            (agent?.rootId ||
-              (agent?.isLead ? agent.id : undefined) ||
-              (roomContext && roomRoots.includes(roomContext)
-                ? roomContext
-                : roomRoots[0])),
-        ),
-    team = useRetainedArray(
-      lead
-        ? agents.filter((a) => a.id === lead.id || a.rootId === lead.id)
-        : [],
-    ),
-    workers = useRetainedArray(team.filter((a) => !a.isLead));
+  const appCatalogSelector = useMemo(createAppCatalogSelector, []);
+  const agents = data?.threads || emptyAgents;
+  const catalog = appCatalogSelector(agents);
+  const leads = catalog.leads;
+  const agent = catalog.byId.get(opened || "");
+  const room = data?.runtime?.rooms?.find((r) => r.id === opened);
+  const legacy = data?.chats.find((c) => c.id === opened);
+  const roomRoots = room ? roomLeadIds(room, agents) : [];
+  const lead = room?.radio
+    ? undefined
+    : catalog.byId.get(
+        agent?.rootId ||
+          (agent?.isLead ? agent.id : undefined) ||
+          (roomContext && roomRoots.includes(roomContext)
+            ? roomContext
+            : roomRoots[0]) ||
+          "",
+      );
+  const team = (lead && catalog.team(lead.id)) || emptyAgents;
+  const workers = (lead && catalog.workers(lead.id)) || emptyAgents;
   useTeamTokenRateStream(
     lead?.id,
     Boolean(workers.length && (narrowTeam ? teamOpen : wideTeamOpen)),
@@ -685,14 +693,19 @@ export default function App() {
   );
   const activities = useMemo(
     () => (data ? chatActivities(data) : new Map()),
-    [data],
+    [data?.threads, data?.runtime?.tasks, data?.runtime?.monitors],
   );
   const indicators = useMemo(
     () =>
       data
         ? chatIndicators(data, readState.readStateFor, activities)
         : new Map(),
-    [data, readState.readStateFor, activities],
+    [
+      data?.threads,
+      data?.runtime?.requests,
+      readState.readStateFor,
+      activities,
+    ],
   );
   useEffect(() => {
     setWorkerQuery("");
@@ -734,7 +747,7 @@ export default function App() {
     accountKey,
     !!agent && agent.source === "managed",
   );
-  const limitsRequests = useRef(new Map<string, Promise<void>>());
+  const limitsRequests = useRef(new Map<string, Promise<boolean>>());
   const selectedAccount =
     accounts.data.accounts.find((a) => a.id === accountKey) ||
     accounts.data.archivedAccounts?.find((a) => a.id === accountKey);
@@ -880,7 +893,10 @@ export default function App() {
   limitsCache.current = limitsByAccount;
   const limitsWatchers = useRef(new Map<string, () => void>());
   const limitsCacheHydrations = useRef(
-    new Map<string, { token: object; promise: Promise<boolean> }>(),
+    new Map<
+      string,
+      { token: object; promise: Promise<LimitsBaselineHydration> }
+    >(),
   );
   const accountsForLimits = useRef(accounts.data.accounts);
   accountsForLimits.current = accounts.data.accounts;
@@ -897,22 +913,47 @@ export default function App() {
         !cached.error &&
         Date.now() / 1000 - (cached.at || 0) < 60
       )
-        return Promise.resolve();
+        return Promise.resolve(true);
+      const requestStartedAt = Date.now() / 1000;
       setLimitsLoading((old) => ({ ...old, [key]: true }));
       const request = get("/api/limits", {
         query: key === "default" ? undefined : { account_key: key },
         timeoutMs: 25000,
       })
         .then((result) => {
-          if (!accountLimits(result, key, selectedId))
+          const responseSnapshot = accountLimits(result, key, selectedId);
+          if (!responseSnapshot)
             throw new Error("Codex returned limits for another account.");
+          const snapshot =
+            responseSnapshot.data === null && limitsReadSucceeded(result)
+              ? { ...responseSnapshot, at: requestStartedAt }
+              : responseSnapshot;
+          const currentSnapshot = accountLimits(
+            limitsCache.current[key],
+            key,
+            selectedId,
+          );
+          if (shouldReplaceLimitsSnapshot(currentSnapshot, snapshot))
+            limitsCache.current = {
+              ...limitsCache.current,
+              [key]: { ...snapshot, accountKey: key },
+            };
           setLimitsByAccount((old) => {
             const previous = accountLimits(old[key], key, selectedId);
-            if (previous && (previous.at || 0) > (result.at || 0)) return old;
-            return { ...old, [key]: { ...result, accountKey: key } };
+            if (!shouldReplaceLimitsSnapshot(previous, snapshot)) return old;
+            return { ...old, [key]: { ...snapshot, accountKey: key } };
           });
+          return limitsReadSucceeded(result);
         })
         .catch((error) => {
+          limitsCache.current = {
+            ...limitsCache.current,
+            [key]: {
+              ...(limitsCache.current[key] || { data: null }),
+              error: errorText(error),
+              accountKey: key,
+            },
+          };
           setLimitsByAccount((old) => ({
             ...old,
             [key]: {
@@ -921,6 +962,7 @@ export default function App() {
               accountKey: key,
             },
           }));
+          return false;
         })
         .finally(() => {
           limitsRequests.current.delete(key);
@@ -932,7 +974,9 @@ export default function App() {
     [accounts.data.accounts],
   );
   const reloadLimits = useCallback(
-    (force = false) => reloadLimitsFor(accountKey, force),
+    async (force = false) => {
+      await reloadLimitsFor(accountKey, force);
+    },
     [accountKey, reloadLimitsFor],
   );
   const forceReloadLimits = useCallback(
@@ -1004,7 +1048,9 @@ export default function App() {
           signedOut: !!account?.disconnected,
           limits,
           loading: !!limitsLoading[key],
-          reload: (force = false) => reloadLimitsFor(key, force),
+          reload: async (force = false) => {
+            await reloadLimitsFor(key, force);
+          },
         };
       });
   }, [
@@ -1043,22 +1089,41 @@ export default function App() {
           const currentAccount = accountsForLimits.current.find(
             (item) => item.id === key,
           );
+          const snapshot = accountLimits(
+            result,
+            key,
+            currentAccount?.accountId,
+          );
           if (
             currentAccount?.disconnected ||
-            !accountLimits(result, key, currentAccount?.accountId) ||
-            !result.data
+            !snapshot ||
+            !limitsSnapshotIsFresh(snapshot, key, currentAccount?.accountId)
           )
             return false;
+          const previousCurrent = accountLimits(
+            limitsCache.current[key],
+            key,
+            currentAccount?.accountId,
+          );
+          if (
+            !previousCurrent ||
+            (previousCurrent.at || 0) < (snapshot.at || 0)
+          )
+            limitsCache.current = {
+              ...limitsCache.current,
+              [key]: { ...snapshot, accountKey: key },
+            };
           setLimitsByAccount((old) => {
             const previous = accountLimits(
               old[key],
               key,
               currentAccount?.accountId,
             );
-            if (previous && (previous.at || 0) >= (result.at || 0)) return old;
-            return { ...old, [key]: result };
+            if (previous && (previous.at || 0) >= (snapshot.at || 0))
+              return old;
+            return { ...old, [key]: snapshot };
           });
-          return true;
+          return { snapshot };
         })
         .catch(() => false);
       limitsCacheHydrations.current.set(key, { token, promise: hydration });
@@ -1095,15 +1160,24 @@ export default function App() {
           () =>
             limitsCacheHydrations.current.get(key)?.promise ??
             Promise.resolve(false),
-          // Later resource notifications must refresh even when the cached
-          // snapshot is under 60 seconds old. The helper suppresses this read
-          // only for a baseline covered by successful cache hydration.
+          // A same-version reconnect baseline is covered by hydration; a newer
+          // resource version still forces a read despite a fresh cache entry.
           () => reloadLimitsForRef.current(key, true),
           () => {
             const account = accountsForLimits.current.find(
               (item) => item.id === key,
             );
             return active && !account?.disconnected;
+          },
+          (snapshot) => {
+            const account = accountsForLimits.current.find(
+              (item) => item.id === key,
+            );
+            return limitsSnapshotIsFresh(
+              snapshot ?? limitsCache.current[key],
+              key,
+              account?.accountId,
+            );
           },
         ),
         () => {
@@ -1948,7 +2022,7 @@ export default function App() {
         projectAccount={(path) => {
           setSidebar(false);
           setModal({
-            title: "Project account",
+            title: "Project settings",
             body: (
               <ProjectAccount
                 path={path}
@@ -2648,215 +2722,318 @@ export default function App() {
             </Tabs.Panel>
             <Tabs.Panel value="appearance" pt="md">
               <div className="studio-appearance-groups">
-                <section className="settings-group" aria-label="Theme">
-                  <h2>Theme</h2>
-                  <SettingsRow label="Color scheme">
-                    <NativeSelect
-                      aria-label="Studio theme"
-                      value={studioPreferences.theme}
-                      data={[
-                        { value: "auto", label: "System" },
-                        { value: "light", label: "Light" },
-                        { value: "dark", label: "Dark" },
-                      ]}
-                      onChange={(event) =>
-                        updateStudioPreferences({
-                          ...studioPreferences,
-                          theme: event.currentTarget
-                            .value as StudioPreferences["theme"],
-                        })
-                      }
-                    />
-                  </SettingsRow>
-                </section>
-                <section className="settings-group" aria-label="Fonts">
-                  <h2>Fonts</h2>
-                  <SettingsRow label="Text style">
-                    <NativeSelect
-                      aria-label="Studio text style"
-                      value={studioPreferences.typography}
-                      data={[
-                        {
-                          value: "original",
-                          label: "Default text",
-                        },
-                        { value: "custom", label: "Custom text" },
-                      ]}
-                      onChange={(event) =>
-                        updateStudioPreferences({
-                          ...studioPreferences,
-                          typography: event.currentTarget
-                            .value as StudioPreferences["typography"],
-                        })
-                      }
-                    />
-                    <small>
-                      Select Custom text to change the font and text sizes.
-                    </small>
-                  </SettingsRow>
-                  <SettingsRow label="Font family">
-                    <NativeSelect
-                      aria-label="Studio font family"
-                      disabled={studioPreferences.typography === "original"}
-                      value={studioPreferences.fontFamily}
-                      data={Object.entries(fontFamilies).map(
-                        ([value, font]) => ({ value, label: font.label }),
-                      )}
-                      onChange={(event) =>
-                        updateStudioPreferences({
-                          ...studioPreferences,
-                          fontFamily: event.currentTarget
-                            .value as StudioPreferences["fontFamily"],
-                        })
-                      }
-                    />
-                  </SettingsRow>
-                  <SettingsRow
-                    label={
-                      <span className="studio-range-label">
-                        Sidebar text{" "}
-                        <output>{studioPreferences.sidebarFontSize}px</output>
-                      </span>
-                    }
+                <SettingsRow label="Theme">
+                  <div
+                    className="studio-appearance-segments"
+                    role="radiogroup"
+                    aria-label="Studio theme"
                   >
-                    <div className="studio-range-field">
-                      <Slider
-                        thumbLabel="Sidebar font size"
-                        disabled={studioPreferences.typography === "original"}
-                        min={12}
-                        max={24}
-                        step={1}
-                        value={studioPreferences.sidebarFontSize}
-                        onChange={(value) =>
-                          updateStudioPreferences({
-                            ...studioPreferences,
-                            sidebarFontSize: value,
-                          })
-                        }
-                      />
-                    </div>
-                  </SettingsRow>
-                  <SettingsRow
-                    label={
-                      <span className="studio-range-label">
-                        Main text{" "}
-                        <output>{studioPreferences.mainFontSize}px</output>
-                      </span>
-                    }
+                    {(
+                      [
+                        ["auto", "System"],
+                        ["light", "Light"],
+                        ["dark", "Dark"],
+                      ] as const
+                    ).map(([value, label]) => (
+                      <label key={value}>
+                        <input
+                          type="radio"
+                          name="studio-theme"
+                          value={value}
+                          checked={studioPreferences.theme === value}
+                          onChange={() =>
+                            updateStudioPreferences({
+                              ...studioPreferences,
+                              theme: value,
+                            })
+                          }
+                        />
+                        <span>{label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </SettingsRow>
+                <SettingsRow label="Text size">
+                  <div
+                    className="studio-appearance-segments"
+                    role="radiogroup"
+                    aria-label="Studio text size"
                   >
-                    <div className="studio-range-field">
-                      <Slider
-                        thumbLabel="Main font size"
-                        disabled={studioPreferences.typography === "original"}
-                        min={12}
-                        max={24}
-                        step={1}
-                        value={studioPreferences.mainFontSize}
-                        onChange={(value) =>
-                          updateStudioPreferences({
-                            ...studioPreferences,
-                            mainFontSize: value,
-                          })
-                        }
-                      />
-                    </div>
-                  </SettingsRow>
-                </section>
-                <section className="settings-group" aria-label="Chat layout">
-                  <h2>Chat layout</h2>
-                  <SettingsRow label="Width">
-                    <NativeSelect
-                      aria-label="Chat width layout"
-                      value={studioPreferences.contentLayout}
-                      data={[
-                        { value: "original", label: "Default width" },
-                        { value: "custom", label: "Custom width" },
-                      ]}
-                      onChange={(event) =>
-                        updateStudioPreferences({
-                          ...studioPreferences,
-                          contentLayout: event.currentTarget
-                            .value as StudioPreferences["contentLayout"],
-                        })
-                      }
-                    />
-                    <small>Select Custom width to change the chat width.</small>
-                  </SettingsRow>
-                  <SettingsRow
-                    label={
-                      <span className="studio-range-label">
-                        Custom width{" "}
-                        <output>{studioPreferences.contentWidth}%</output>
-                      </span>
-                    }
+                    {(
+                      [
+                        [12, "S"],
+                        [14, "M"],
+                        [16, "L"],
+                      ] as const
+                    ).map(([value, label]) => (
+                      <label key={value}>
+                        <input
+                          type="radio"
+                          name="studio-text-size"
+                          value={value}
+                          checked={
+                            studioPreferences.typography === "custom" &&
+                            studioPreferences.sidebarFontSize === value &&
+                            studioPreferences.mainFontSize === value
+                          }
+                          onChange={() =>
+                            updateStudioPreferences({
+                              ...studioPreferences,
+                              typography: "custom",
+                              sidebarFontSize: value,
+                              mainFontSize: value,
+                            })
+                          }
+                        />
+                        <span>{label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </SettingsRow>
+                <SettingsRow label="Chat width">
+                  <div
+                    className="studio-appearance-segments"
+                    role="radiogroup"
+                    aria-label="Studio chat width"
                   >
-                    <div className="studio-range-field">
-                      <Slider
-                        thumbLabel="Transcript width"
-                        disabled={
-                          studioPreferences.contentLayout === "original"
+                    {(
+                      [
+                        [60, "Narrow"],
+                        [80, "Wide"],
+                        [100, "Full"],
+                      ] as const
+                    ).map(([value, label]) => (
+                      <label key={value}>
+                        <input
+                          type="radio"
+                          name="studio-chat-width"
+                          value={value}
+                          checked={
+                            studioPreferences.contentLayout === "custom" &&
+                            studioPreferences.contentWidth === value
+                          }
+                          onChange={() =>
+                            updateStudioPreferences({
+                              ...studioPreferences,
+                              contentLayout: "custom",
+                              contentWidth: value,
+                            })
+                          }
+                        />
+                        <span>{label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </SettingsRow>
+                <details className="studio-appearance-more">
+                  <summary>More</summary>
+                  <div className="studio-appearance-more-content">
+                    <section className="settings-group" aria-label="Fonts">
+                      <h2>Fonts</h2>
+                      <SettingsRow label="Text style">
+                        <NativeSelect
+                          aria-label="Studio text style"
+                          value={studioPreferences.typography}
+                          data={[
+                            {
+                              value: "original",
+                              label: "Default text",
+                            },
+                            { value: "custom", label: "Custom text" },
+                          ]}
+                          onChange={(event) =>
+                            updateStudioPreferences({
+                              ...studioPreferences,
+                              typography: event.currentTarget
+                                .value as StudioPreferences["typography"],
+                            })
+                          }
+                        />
+                        <small>
+                          Select Custom text to change the font and text sizes.
+                        </small>
+                      </SettingsRow>
+                      <SettingsRow label="Font family">
+                        <NativeSelect
+                          aria-label="Studio font family"
+                          disabled={studioPreferences.typography === "original"}
+                          value={studioPreferences.fontFamily}
+                          data={Object.entries(fontFamilies).map(
+                            ([value, font]) => ({ value, label: font.label }),
+                          )}
+                          onChange={(event) =>
+                            updateStudioPreferences({
+                              ...studioPreferences,
+                              fontFamily: event.currentTarget
+                                .value as StudioPreferences["fontFamily"],
+                            })
+                          }
+                        />
+                      </SettingsRow>
+                      <SettingsRow
+                        label={
+                          <span className="studio-range-label">
+                            Sidebar text{" "}
+                            <output>
+                              {studioPreferences.sidebarFontSize}px
+                            </output>
+                          </span>
                         }
-                        min={60}
-                        max={100}
-                        step={1}
-                        value={studioPreferences.contentWidth}
-                        onChange={(value) =>
-                          updateStudioPreferences({
-                            ...studioPreferences,
-                            contentWidth: value,
-                          })
+                      >
+                        <div className="studio-range-field">
+                          <Slider
+                            thumbLabel="Sidebar font size"
+                            disabled={
+                              studioPreferences.typography === "original"
+                            }
+                            min={12}
+                            max={24}
+                            step={1}
+                            value={studioPreferences.sidebarFontSize}
+                            onChange={(value) =>
+                              updateStudioPreferences({
+                                ...studioPreferences,
+                                sidebarFontSize: value,
+                              })
+                            }
+                          />
+                        </div>
+                      </SettingsRow>
+                      <SettingsRow
+                        label={
+                          <span className="studio-range-label">
+                            Main text{" "}
+                            <output>{studioPreferences.mainFontSize}px</output>
+                          </span>
                         }
-                      />
-                      <small>
-                        Applies to messages, progress, and composer. Narrow
-                        screens use the full available width.
-                      </small>
-                    </div>
-                  </SettingsRow>
-                </section>
-                <section className="settings-group" aria-label="Messages">
-                  <h2>Messages</h2>
-                  <label className="settings-field studio-preference-toggle">
-                    <span className="settings-label">Show message avatars</span>
-                    <input
-                      aria-label="Show message avatars"
-                      type="checkbox"
-                      checked={studioPreferences.showMessageAvatars}
-                      onChange={(event) =>
-                        updateStudioPreferences({
-                          ...studioPreferences,
-                          showMessageAvatars: event.currentTarget.checked,
-                        })
-                      }
-                    />
-                  </label>
-                </section>
-                <section className="settings-group" aria-label="Maintenance">
-                  <h2>Maintenance</h2>
-                  <Button
-                    loading={removingAllSending}
-                    onClick={async () => {
-                      if (removingAllSending) return;
-                      setRemovingAllSending(true);
-                      try {
-                        const count = await removeAllSendingMessages(
-                          { stateDir: data.stateDir, workspaceId },
-                          data,
-                          outgoingMessages,
-                        );
-                        notify(
-                          `Removed ${count} sending messages from this device. Work already sent continues.`,
-                        );
-                      } catch (error) {
-                        notify(errorText(error));
-                      } finally {
-                        setRemovingAllSending(false);
-                      }
-                    }}
-                  >
-                    Remove all sending messages
-                  </Button>
-                </section>
+                      >
+                        <div className="studio-range-field">
+                          <Slider
+                            thumbLabel="Main font size"
+                            disabled={
+                              studioPreferences.typography === "original"
+                            }
+                            min={12}
+                            max={24}
+                            step={1}
+                            value={studioPreferences.mainFontSize}
+                            onChange={(value) =>
+                              updateStudioPreferences({
+                                ...studioPreferences,
+                                mainFontSize: value,
+                              })
+                            }
+                          />
+                        </div>
+                      </SettingsRow>
+                    </section>
+                    <section
+                      className="settings-group"
+                      aria-label="Chat layout"
+                    >
+                      <h2>Chat layout</h2>
+                      <SettingsRow label="Width">
+                        <NativeSelect
+                          aria-label="Chat width layout"
+                          value={studioPreferences.contentLayout}
+                          data={[
+                            { value: "original", label: "Default width" },
+                            { value: "custom", label: "Custom width" },
+                          ]}
+                          onChange={(event) =>
+                            updateStudioPreferences({
+                              ...studioPreferences,
+                              contentLayout: event.currentTarget
+                                .value as StudioPreferences["contentLayout"],
+                            })
+                          }
+                        />
+                        <small>
+                          Select Custom width to change the chat width.
+                        </small>
+                      </SettingsRow>
+                      <SettingsRow
+                        label={
+                          <span className="studio-range-label">
+                            Custom width{" "}
+                            <output>{studioPreferences.contentWidth}%</output>
+                          </span>
+                        }
+                      >
+                        <div className="studio-range-field">
+                          <Slider
+                            thumbLabel="Transcript width"
+                            disabled={
+                              studioPreferences.contentLayout === "original"
+                            }
+                            min={60}
+                            max={100}
+                            step={1}
+                            value={studioPreferences.contentWidth}
+                            onChange={(value) =>
+                              updateStudioPreferences({
+                                ...studioPreferences,
+                                contentWidth: value,
+                              })
+                            }
+                          />
+                          <small>
+                            Applies to messages, progress, and composer. Narrow
+                            screens use the full available width.
+                          </small>
+                        </div>
+                      </SettingsRow>
+                    </section>
+                    <section className="settings-group" aria-label="Messages">
+                      <h2>Messages</h2>
+                      <label className="settings-field studio-preference-toggle">
+                        <span className="settings-label">
+                          Show message avatars
+                        </span>
+                        <input
+                          aria-label="Show message avatars"
+                          type="checkbox"
+                          checked={studioPreferences.showMessageAvatars}
+                          onChange={(event) =>
+                            updateStudioPreferences({
+                              ...studioPreferences,
+                              showMessageAvatars: event.currentTarget.checked,
+                            })
+                          }
+                        />
+                      </label>
+                    </section>
+                    <section
+                      className="settings-group"
+                      aria-label="Maintenance"
+                    >
+                      <h2>Maintenance</h2>
+                      <Button
+                        loading={removingAllSending}
+                        onClick={async () => {
+                          if (removingAllSending) return;
+                          setRemovingAllSending(true);
+                          try {
+                            const count = await removeAllSendingMessages(
+                              { stateDir: data.stateDir, workspaceId },
+                              data,
+                              outgoingMessages,
+                            );
+                            notify(
+                              `Removed ${count} sending messages from this device. Work already sent continues.`,
+                            );
+                          } catch (error) {
+                            notify(errorText(error));
+                          } finally {
+                            setRemovingAllSending(false);
+                          }
+                        }}
+                      >
+                        Remove all sending messages
+                      </Button>
+                    </section>
+                  </div>
+                </details>
               </div>
             </Tabs.Panel>
             <Tabs.Panel value="federation" pt="md">
@@ -2953,149 +3130,175 @@ export default function App() {
       </Modal>
       <Modal
         opened={settingsOpen}
-        closeOnEscape={!accountModalOpen && !mainSettingsOpen}
-        closeOnClickOutside={!accountModalOpen && !mainSettingsOpen}
+        closeOnEscape={
+          !accountModalOpen &&
+          !mainSettingsOpen &&
+          !workerSettingsOpen &&
+          !reviewSettingsOpen
+        }
+        closeOnClickOutside={
+          !accountModalOpen &&
+          !mainSettingsOpen &&
+          !workerSettingsOpen &&
+          !reviewSettingsOpen
+        }
         onClose={() => setSettingsOpen(false)}
         title="Chat settings"
         size={modalSizes.settings}
       >
-        <div className="chat-settings-panel">
-          <SettingsSection title="Conversation">
-            {lead?.source === "managed" && (
-              <SettingsRow label="Subagent parallelism">
-                <SubagentConcurrencyControl
-                  lead={lead}
-                  stateDir={data.stateDir}
-                  workspaceId={workspaceId}
+        <div className="chat-settings-panel chat-settings-rows">
+          {agent?.source === "managed" && (
+            <>
+              <SettingsRow label="Model">
+                <UnifiedAgentSettings
+                  key={"execution:" + agent.id}
+                  state={accounts}
+                  notify={notify}
+                  settingsRow
+                  permissionsTargetId="chat-settings-permissions"
+                  extrasTargetId="chat-settings-modes"
+                  onOpenChange={setMainSettingsOpen}
+                  onAccountModalOpenChange={setAccountModalOpen}
+                  agent={agent}
+                  catalog={agentModels}
+                  team={data?.runtime?.agents || []}
                   refresh={refresh}
                 />
               </SettingsRow>
-            )}
-            <BrowserAccessNotice
-              accountKey={accountKey}
-              active={settingsOpen && (agent || lead)?.provider !== "claude"}
-            />
-            <SettingsRow label="Account" stacked>
-              <Accounts
-                onModalOpenChange={setAccountModalOpen}
-                projectAccountKeys={
-                  data.runtime?.projects
-                    ?.filter(
-                      (project) =>
-                        typeof project.path === "string" &&
-                        ((agent || lead)?.cwd === project.path ||
-                          (agent || lead)?.cwd?.startsWith(`${project.path}/`)),
-                    )
-                    .sort(
-                      (a, b) => (b.path?.length || 0) - (a.path?.length || 0),
-                    )[0]?.accountKeys ?? undefined
-                }
-                renderPicker={(selectAccount, disabled) => (
-                  <AccountTiles
-                    showLabel={false}
-                    label="Account"
-                    accounts={accounts.data.accounts.filter(
-                      (account) =>
-                        !account.disconnected && account.status === "ready",
-                    )}
-                    value={accountKey}
-                    disabled={disabled}
-                    onChange={selectAccount}
-                  />
-                )}
-                state={accounts}
-                agent={agent || lead}
-                accountKey={accountKey}
-                onError={notify}
-                changeAccount={async (key) => {
-                  const selectedAgent = agent || lead;
-                  if (selectedAgent?.isLead) {
-                    const selected = await post("/api/agents/account", {
-                      id: selectedAgent.id,
-                      account_key: key,
-                    });
-                    rememberCreated(selected, data.stateDir);
-                    await refresh();
-                  } else {
-                    accounts.setData(
-                      await post("/api/accounts/default", {
-                        account_key: key,
-                      }),
-                    );
-                  }
-                }}
-              />
-            </SettingsRow>
-            {agent?.cwd && (
-              <SettingsRow label="Project">
-                <Button
-                  id="project"
-                  className="project-picker"
-                  leftSection={<Folder size={15} />}
-                  aria-label="Choose project folder"
-                  title={agent.cwd}
-                  onClick={() => {
-                    setSettingsOpen(false);
-                    project();
-                  }}
-                >
-                  {projectName}
-                  <span className="settings-change-label">Change</span>
-                </Button>
-              </SettingsRow>
-            )}
-          </SettingsSection>
-          <SettingsSection title="Models">
-            {agent?.source === "managed" && (
-              <UnifiedAgentSettings
-                key={"execution:" + agent.id}
-                state={accounts}
-                notify={notify}
-                permissionsTargetId="chat-settings-permissions"
-                inline
-                onOpenChange={setMainSettingsOpen}
-                agent={agent}
-                catalog={agentModels}
-                team={data?.runtime?.agents || []}
+              {lead?.isLead &&
+                (["worker", "review"] as const).map((role) => (
+                  <SettingsRow
+                    key={role}
+                    label={role === "worker" ? "Workers" : "Review"}
+                  >
+                    <UnifiedAgentSettings
+                      state={accounts}
+                      notify={notify}
+                      settingsRow
+                      initialRole={role}
+                      onOpenChange={
+                        role === "worker"
+                          ? setWorkerSettingsOpen
+                          : setReviewSettingsOpen
+                      }
+                      onAccountModalOpenChange={setAccountModalOpen}
+                      agent={lead}
+                      catalog={agentModels}
+                      team={data?.runtime?.agents || []}
+                      refresh={refresh}
+                    />
+                  </SettingsRow>
+                ))}
+            </>
+          )}
+          {lead?.source === "managed" && (
+            <SettingsRow label="Parallel">
+              <SubagentConcurrencyControl
+                compact
+                lead={lead}
+                stateDir={data.stateDir}
+                workspaceId={workspaceId}
                 refresh={refresh}
               />
-            )}
-          </SettingsSection>
-          <div id="chat-settings-permissions" />
-          {agent?.provider === "claude" && (
-            <Suspense fallback={null}>
-              <ClaudeSettings
-                agent={agent}
-                account={selectedAccount}
-                onSignIn={(key) => {
-                  setSettingsOpen(false);
-                  setClaudeLoginKey(key);
-                }}
-              />
-            </Suspense>
+            </SettingsRow>
           )}
-          {agent?.cwd && (
-            <div className="chat-settings-footer">
+          <div id="chat-settings-permissions" />
+          <BrowserAccessNotice
+            compact
+            accountKey={accountKey}
+            active={settingsOpen && (agent || lead)?.provider !== "claude"}
+          />
+          <div className="chat-settings-footer">
+            {agent?.cwd && (
               <Button
                 variant="default"
                 className="settings-new-chat"
                 leftSection={<Plus size={14} />}
+                aria-label="New chat in this project"
                 disabled={creating}
                 onClick={() => {
                   setSettingsOpen(false);
                   void newChat(agent.cwd ?? undefined);
                 }}
               >
-                New chat in this project
+                New chat
               </Button>
-            </div>
-          )}
+            )}
+            {agent?.source === "managed" &&
+              (["compact", "review"] as const)
+                .filter((action) =>
+                  menuActions(agent.provider ?? undefined).includes(action),
+                )
+                .map((action) => {
+                  const disabled =
+                    busy.has(agent.status ?? "") ||
+                    !!agent.inFlight ||
+                    !!nativeThreadError(agent) ||
+                    !agent.threadId;
+                  return (
+                    <Tooltip
+                      key={action}
+                      disabled={!disabled}
+                      label={
+                        !agent.threadId
+                          ? "Available after the chat starts."
+                          : "Wait until the chat is ready."
+                      }
+                    >
+                      <span>
+                        <Button
+                          variant="default"
+                          disabled={disabled}
+                          onClick={() => {
+                            setSettingsOpen(false);
+                            void run(() => submitNativeAction(agent, action));
+                          }}
+                        >
+                          {action === "compact" ? "Compact" : "Review"}
+                        </Button>
+                      </span>
+                    </Tooltip>
+                  );
+                })}
+          </div>
+          <details className="chat-settings-more">
+            <summary>More</summary>
+            <div id="chat-settings-modes" />
+            {agent?.cwd && (
+              <Button
+                leftSection={<Folder size={14} />}
+                aria-label="Choose project folder"
+                onClick={() => {
+                  setSettingsOpen(false);
+                  project();
+                }}
+              >
+                Folder
+              </Button>
+            )}
+            {agent?.provider === "claude" && (
+              <Suspense fallback={null}>
+                <ClaudeSettings
+                  agent={agent}
+                  account={selectedAccount}
+                  permissionsTargetId="chat-settings-permissions"
+                  onSignIn={(key) => {
+                    setSettingsOpen(false);
+                    setClaudeLoginKey(key);
+                  }}
+                />
+              </Suspense>
+            )}
+          </details>
         </div>
       </Modal>
       <Modal
         opened={!!modal}
         onClose={() => setModal(null)}
         title={modal?.title}
+        size={
+          modal?.title === "Project settings" ? modalSizes.settings : undefined
+        }
       >
         <div className="picker">{modal?.body}</div>
       </Modal>

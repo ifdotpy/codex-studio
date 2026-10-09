@@ -30,6 +30,8 @@ class Accounts:
         self.lock = threading.RLock()
         self.profile = profile
         self.registered = []
+        self.root = Path(profile['claudeOptions']['configDir']).parent / 'accounts'
+        self.root.mkdir(parents=True)
 
     def _row(self, key):
         if key != 'claude-test':
@@ -111,7 +113,8 @@ email = 'wrong@example.com' if code == 'wrong' else 'expected@example.com'
         self.agents = []
         self.rt.db = lambda: nullcontext(None)
         self.rt.records = lambda db, table: copy.deepcopy(self.agents)
-        self.rt.account_agents = lambda db, key: copy.deepcopy([row for row in self.agents if row.get('accountKey') == key])
+        self.rt.account_agents = lambda db, key: copy.deepcopy(
+            [agent for agent in self.agents if agent.get('accountKey', 'default') == key])
         self.rt.put = lambda db, table, record: self.agents.__setitem__(
             next(i for i, row in enumerate(self.agents) if row['id'] == record['id']), record)
         self.login = LoginManager(self.rt, deadline=3)

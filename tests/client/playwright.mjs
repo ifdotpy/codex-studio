@@ -242,7 +242,7 @@ export const browserExecutablePath =
 
 /** @typedef {Pick<RoomEntityDto, "id" | "name" | "kind" | "members" | "rootId" | "updated" | "userHidden" | "projectPath" | "radio" | "peerTeamId" | "peerTeamName" | "lastMessage" | "peerLabel" | "localMembers">} TestRoom */
 /** @typedef {Pick<TaskEntityDto, "id" | "turnId" | "agent" | "kind" | "status" | "created" | "finished" | "name" | "command" | "query" | "cwd" | "processId" | "durationMs" | "timeout_ms" | "interactive" | "stdinClosed" | "stdinCloseRequested" | "stdinError" | "cancelRequested" | "exitCode" | "bytes" | "log" | "outputTruncated">} TestTask */
-/** @typedef {Pick<ProjectEntityDto, "id" | "path" | "name" | "created" | "updated" | "accountKey" | "accountRevision" | "accountKeys" | "organizationRevision" | "peerTeamsRevision" | "folders" | "peerTeams" | "workerBaseRef" | "workerBaseRevision">} TestProject */
+/** @typedef {Pick<ProjectEntityDto, "id" | "path" | "name" | "created" | "updated" | "accountKey" | "accountRevision" | "accountKeys" | "organizationRevision" | "peerTeamsRevision" | "folders" | "peerTeams" | "workerBaseRef" | "workerBaseRevision" | "workerEnvironment" | "workerEnvironmentRevision">} TestProject */
 /** @typedef {Pick<ComplaintEntityDto, "id" | "leadId" | "author" | "authorName" | "leadName" | "title" | "status" | "needsUserResponse" | "created" | "readAt" | "recipient" | "version">} TestComplaint */
 /** @typedef {{ agents: TestAgent[], rooms: TestRoom[], tasks: TestTask[], monitors: MonitorEntityDto[], complaints: TestComplaint[], projects: TestProject[], events: EventEntityDto[], peerTeams: PeerTeamEntityDto[], requests: RequestEntityDto[], rules: RuleEntityDto[], work: WorkEntityDto[], connected?: WorkspaceEntityDto["connected"], peerTeamsVersion?: WorkspaceEntityDto["peerTeamsVersion"], projectOrganizationVersion?: WorkspaceEntityDto["projectOrganizationVersion"], tasksHistoryLimit?: WorkspaceEntityDto["tasksHistoryLimit"], nativeNotices: WorkspaceEntityDto["nativeNotices"], sidebarOrder: WorkspaceEntityDto["sidebarOrder"], rateLimits: WorkspaceEntityDto["rateLimits"], rateLimitsByAccount: WorkspaceEntityDto["rateLimitsByAccount"], stateDir?: string }} TestRuntimeView */
 /** @typedef {{ token: string, stateDir?: string, chats: ChatEntityDto[], edges: EdgeEntityDto[], runtime: TestRuntimeView, threads: TestAgent[] }} TestStateView */
@@ -522,8 +522,11 @@ function entityValuesFromSnapshot(snapshot) {
       "updated",
       "accountKey",
       "accountRevision",
+      "accountKeys",
       "workerBaseRef",
       "workerBaseRevision",
+      "workerEnvironment",
+      "workerEnvironmentRevision",
     ]),
   );
   append("request", runtime.requests);

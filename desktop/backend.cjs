@@ -3,6 +3,7 @@ const path = require("node:path");
 const os = require("node:os");
 const { createHash } = require("node:crypto");
 const { spawn, execFileSync } = require("node:child_process");
+const { savedLaunchEnvironment } = require("./restart-environment.cjs");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function backendExitStatus(child) {
@@ -300,8 +301,9 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
   fs.mkdirSync(state, { recursive: true });
   const canonicalState = fs.realpathSync(state);
   let persistedSupervisorMode = false;
+  let saved = {};
   try {
-    const saved = JSON.parse(
+    saved = JSON.parse(
       fs.readFileSync(
         path.join(canonicalState, "background-recovery.json"),
         "utf8",
@@ -338,6 +340,7 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
       origin,
       owned: false,
     };
+  const launchEnv = savedLaunchEnvironment(env, saved, canonicalState);
   const script = path.join(resources, "scripts/codex-canvas");
   if (
     !fs.existsSync(script) ||
@@ -346,7 +349,7 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
     throw new Error(
       "Desktop assets are missing. Run the web build before starting or packaging desktop.",
     );
-  const python = apiPython(resources, env);
+  const python = apiPython(resources, launchEnv);
   execFileSync(
     python,
     [
@@ -355,7 +358,7 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
     ],
     { timeout: 5000 },
   );
-  const codex = executable("codex", env);
+  const codex = executable("codex", launchEnv);
   if (supervisorMode) {
     const supervisor = path.join(
       resources,
@@ -375,7 +378,7 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
           {
             timeout: 2000,
             stdio: "ignore",
-            env: { ...env, CODEX_AGENTS_STATE_DIR: canonicalState },
+            env: { ...launchEnv, CODEX_AGENTS_STATE_DIR: canonicalState },
           },
         );
         lastError = null;
@@ -400,12 +403,12 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
       detached: true,
       stdio: ["ignore", fd, fd],
       env: {
-        ...env,
+        ...launchEnv,
         CODEX_AGENTS_STATE_DIR: canonicalState,
         CODEX_AGENTS_SUPERVISOR_MODE: supervisorMode ? "1" : "0",
         CODEX_BIN: codex,
         CODEX_NODE: process.execPath,
-        PATH: `${path.dirname(codex)}:${env.PATH || "/usr/bin:/bin"}`,
+        PATH: `${path.dirname(codex)}:${launchEnv.PATH || "/usr/bin:/bin"}`,
       },
     });
   } finally {

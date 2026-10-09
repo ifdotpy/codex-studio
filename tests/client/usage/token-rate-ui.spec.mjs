@@ -17,7 +17,11 @@ test("Token rate ui", async ({
   const proc = spawn(
     "python3",
     ["-B", join(repo, "tests/simple-ui-fixture.py"), root],
-    { stdio: ["pipe", "pipe", "pipe"] },
+    {
+      stdio: ["pipe", "pipe", "pipe"],
+      // The footer needs one worker. Keep the real Runtime turn scheduler.
+      env: { ...process.env, RICH_PREVIEW_UI_FIXTURE: "1" },
+    },
   );
   let log = "";
   proc.stderr.on("data", (data) => (log += data));
@@ -39,6 +43,12 @@ test("Token rate ui", async ({
     const lead = initial.find((agent) => agent.name === "Release lead");
     const other = initial.find((agent) => agent.name === "Other project");
     const worker = initial.find((agent) => agent.name === "Worker 00");
+    assert.equal(
+      initial.filter(
+        (agent) => agent.rootId === lead.id && agent.id !== lead.id,
+      ).length,
+      1,
+    );
     const page = runnerPage;
     await page.setViewportSize({ width: 1200, height: 900 });
     page.setDefaultTimeout(10000);
@@ -52,6 +62,10 @@ test("Token rate ui", async ({
         constructor(...args) {
           super(...args);
           window.__rateSources.push(this);
+          Native.prototype.addEventListener.call(this, "resources", (event) => {
+            const frame = JSON.parse(event.data);
+            if (frame.reason === "initial") this.resourceBaseline = frame;
+          });
           Native.prototype.addEventListener.call(
             this,
             "token-rates",
@@ -95,24 +109,25 @@ test("Token rate ui", async ({
     await page.locator(`[data-chat="${other.id}"]`).click();
     await meter.waitFor({ state: "attached" });
     assert.equal(await meter.innerText(), "", "no output before the turn");
-    try {
-      await page.waitForFunction(() =>
-        window.__rateSources.some(
-          (source) =>
-            source.readyState === 1 && source.url.includes("protocol=3"),
-        ),
+    const waitForResourceBaseline = (completeCatalog = true) =>
+      page.waitForFunction(
+        ({ ids, completeCatalog }) => {
+          const source = window.__rateSources.at(-1);
+          return (
+            source?.readyState === EventSource.OPEN &&
+            Boolean(source.resourceBaseline) &&
+            (!completeCatalog ||
+              ids.every((id) =>
+                source.resourceBaseline.resources.some(
+                  (resource) =>
+                    resource.kind === "transcript" && resource.agentId === id,
+                ),
+              ))
+          );
+        },
+        { ids: initial.map((agent) => agent.id), completeCatalog },
       );
-    } catch (error) {
-      const state = await page.evaluate(() => ({
-        sources: window.__rateSources.map((source) => ({
-          url: source.url,
-          state: source.readyState,
-        })),
-        title: document.title,
-        text: document.body.innerText.slice(0, 1000),
-      }));
-      throw Error(`${JSON.stringify(state)} ${log}\n${error}`);
-    }
+    await waitForResourceBaseline();
     const connections = () =>
       page.evaluate(() =>
         window.__rateSources
@@ -120,11 +135,17 @@ test("Token rate ui", async ({
           .map((source) => source.url)
           .sort(),
       );
-    let meterOffConnections = await connections();
+    const meterOffConnections = await connections();
+    const actor = await start(other.id);
+    await waitForResourceBaseline();
+    assert.deepEqual(
+      await connections(),
+      meterOffConnections,
+      "turn startup retains the complete resource subscription",
+    );
     await page.evaluate(() => {
       window.__rateDelivery = true;
     });
-    const actor = await start(other.id);
     notify(actor, "item/started", {
       item: { id: "rate-answer", type: "agentMessage", text: "" },
     });
@@ -247,7 +268,6 @@ test("Token rate ui", async ({
     );
     await page.locator(`[data-chat="${other.id}"]`).click();
     assert.equal(await meter.innerText(), beforeTool);
-    meterOffConnections = await connections();
     notify(actor, "turn/completed", {
       turn: { id: actor.turnId, status: "completed" },
     });
@@ -261,8 +281,27 @@ test("Token rate ui", async ({
       (id) => window.__lastRateBatch?.rates[id]?.active === false,
       other.id,
     );
-    const inject = async (rate) =>
-      page.evaluate(
+    const completedRate = await page.evaluate(
+      (id) => window.__lastRateBatch.rates[id].rate,
+      other.id,
+    );
+    const follower = await page.context().newPage();
+    follower.setDefaultTimeout(10000);
+    await follower.goto(origin);
+    await follower.locator(`[data-chat="${other.id}"]`).click();
+    await follower.waitForFunction(
+      ({ id, rate }) => {
+        const meter = document.querySelector("#conversation .token-rate");
+        return (
+          meter?.dataset.agent === id && Number(meter.dataset.rate) === rate
+        );
+      },
+      { id: other.id, rate: completedRate },
+    );
+    await follower.close();
+    const inject = async (rate) => {
+      await waitForResourceBaseline(false);
+      return page.evaluate(
         ({ id, turnId, rate }) => {
           const source = window.__rateSources.findLast(
             (source) =>
@@ -274,6 +313,7 @@ test("Token rate ui", async ({
             new MessageEvent("token-rates", {
               data: JSON.stringify({
                 ...window.__lastRateBatch,
+                revision: window.__lastRateBatch.revision + 1,
                 rates: {
                   ...window.__lastRateBatch.rates,
                   [id]: {
@@ -290,6 +330,7 @@ test("Token rate ui", async ({
         },
         { id: other.id, turnId: actor.turnId, rate },
       );
+    };
     const waitForMobileFooterLayout = async () => {
       await page.waitForFunction(() => {
         const composer = document.querySelector("#composer");
@@ -297,7 +338,6 @@ test("Token rate ui", async ({
         const style = composer && getComputedStyle(composer);
         return (
           window.matchMedia("(max-width: 760px)").matches &&
-          root.dataset.mobileKeyboard === "false" &&
           Boolean(root.style.getPropertyValue("--mobile-viewport-height")) &&
           style?.paddingTop === "8px" &&
           style.paddingBottom === "8px"
@@ -367,15 +407,6 @@ test("Token rate ui", async ({
         document.querySelector("#conversation .token-rate")?.textContent ===
         "80 tok/s",
     );
-    const follower = await page.context().newPage();
-    follower.setDefaultTimeout(10000);
-    await follower.goto(origin);
-    await follower.locator(`[data-chat="${other.id}"]`).click();
-    await follower.waitForFunction((id) => {
-      const meter = document.querySelector("#conversation .token-rate");
-      return meter?.dataset.agent === id && meter.dataset.rate === "80";
-    }, other.id);
-    await follower.close();
     assert.ok(
       await page.evaluate(() =>
         window.__footerTweenValues.some((value) => value > 20 && value < 80),
@@ -428,12 +459,7 @@ test("Token rate ui", async ({
     );
     await page.setViewportSize({ width: 1200, height: 900 });
     await page.locator(`[data-chat="${lead.id}"]`).click();
-    await page.waitForFunction(() =>
-      window.__rateSources.some(
-        (source) =>
-          source.readyState === 1 && source.url.includes("protocol=3"),
-      ),
-    );
+    await waitForResourceBaseline();
     const cardsOffConnections = await connections();
     await page.locator("#team-toggle").click();
     assert.deepEqual(
@@ -501,6 +527,7 @@ test("Token rate ui", async ({
         id,
       lead.id,
     );
+    await waitForResourceBaseline();
     assert.equal(
       await meter.innerText(),
       "",
