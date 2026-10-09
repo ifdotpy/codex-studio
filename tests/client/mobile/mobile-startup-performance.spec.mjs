@@ -433,7 +433,15 @@ test(
         root.dispatchEvent(new Event("scroll", { bubbles: true }));
       });
       await page.waitForTimeout(1_000);
-      boundary.latestVisibleAfterScrollDown = await latestRow.isVisible();
+      boundary.latestVisibleAfterScrollDown = await latestRow.evaluate(
+        (row) => {
+          const viewport = document
+            .querySelector("#messages")
+            .getBoundingClientRect();
+          const bounds = row.getBoundingClientRect();
+          return bounds.bottom > viewport.top && bounds.top < viewport.bottom;
+        },
+      );
       boundary.scrollRequestsAfter = await page.evaluate(
         () =>
           performance.getEntriesByType("resource").filter((entry) => {

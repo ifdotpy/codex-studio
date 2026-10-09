@@ -962,6 +962,15 @@ test(
       await page
         .locator('[data-message="a-live"]:not([data-lazy-message])')
         .waitFor({ state: "visible" });
+      const newestRowInViewport = await page
+        .locator('[data-message="a-live"]:not([data-lazy-message])')
+        .evaluate((row) => {
+          const viewport = document
+            .querySelector("#messages")
+            .getBoundingClientRect();
+          const bounds = row.getBoundingClientRect();
+          return bounds.bottom > viewport.top && bounds.top < viewport.bottom;
+        });
       const requestsAfterScroll = await page.evaluate(
         () =>
           performance.getEntriesByType("resource").filter((entry) => {
@@ -993,6 +1002,11 @@ test(
         latestMounted,
         1,
         "The newest transcript row is mounted after scrolling to the end",
+      );
+      assert.equal(
+        newestRowInViewport,
+        true,
+        "Scrolling to the end brings the newest row into the transcript viewport",
       );
       assert.equal(
         laterCommentaryMounted,
