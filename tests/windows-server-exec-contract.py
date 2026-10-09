@@ -125,12 +125,12 @@ class WindowsExecContract(unittest.TestCase):
         response = self.start([str(shim), '--version', '&echo', 'WINDOWS_ARGV_INJECTION'],
                               key='batch-injection-check', timeout=20)
         value = self.finish(response['value']['handle'])
-        self.assertEqual(value['stdout'], 'SAFE_BATCH\n', value)
+        self.assertEqual(value['stdout'].replace('\r\n', '\n'), 'SAFE_BATCH\n', value)
 
         safe_args = ['left&right', 'pipe|value', 'less<value', 'greater>value', 'caret^value', 'space value']
         response = self.start([str(shim), *safe_args], key='batch-meta-check', timeout=20)
         value = self.finish(response['value']['handle'])
-        self.assertEqual(value['stdout'], 'SAFE_BATCH\n', value)
+        self.assertEqual(value['stdout'].replace('\r\n', '\n'), 'SAFE_BATCH\n', value)
 
         for index, unsafe in enumerate(('percent%value', 'bang!value', 'quote"value', 'line\nbreak')):
             with self.subTest(argument=unsafe):
