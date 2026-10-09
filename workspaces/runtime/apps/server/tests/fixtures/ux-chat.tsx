@@ -2,8 +2,8 @@ import React, { useCallback, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
-import "../../web/src/style.css";
-import Conversation from "../../web/src/components/Conversation";
+import "../../../../client/apps/web/src/style.css";
+import Conversation from "../../../../client/apps/web/src/components/Conversation";
 
 function Fixture() {
   const [id, setId] = useState("lead");

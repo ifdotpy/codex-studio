@@ -1,5 +1,5 @@
 {
-  "source": "hand-authored supervisor event frames based on tests/process-supervisor-contract.py",
+  "source": "hand-authored supervisor event frames based on workspaces/runtime/apps/server/tests/process-supervisor-contract.py",
   "supervisorReplay": true,
   "events": [
     {

@@ -9,6 +9,18 @@ import re
 
 
 FAILURE = re.compile(r"\bFAIL\s+([^\s:]+\.py):\s*(.*)")
+LAYOUT_PREFIXES = (
+    ("tests/", "workspaces/runtime/apps/server/tests/"),
+    ("scripts/", "workspaces/runtime/apps/server/src/"),
+)
+
+
+def normalize_suite_path(suite: str) -> str:
+    """Give old and relocated logs the same repository-relative suite identity."""
+    for prefix, replacement in LAYOUT_PREFIXES:
+        if suite.startswith(prefix):
+            return replacement + suite[len(prefix):]
+    return suite
 
 
 def failures(path: Path) -> dict[str, set[str]]:
@@ -17,6 +29,7 @@ def failures(path: Path) -> dict[str, set[str]]:
         match = FAILURE.search(line)
         if match:
             suite, detail = match.groups()
+            suite = normalize_suite_path(suite)
             result.setdefault(suite, set()).add(detail.strip())
     return result
 

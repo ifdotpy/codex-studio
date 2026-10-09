@@ -1,11 +1,13 @@
 """Minimal real HTTP server for the first-draft-push contract."""
-from pathlib import Path
 import json
 import os
 import sys
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "scripts"))
+from pathlib import Path
+
+from codex_layout import SERVER_SOURCE_ROOT
+
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 
 from codex_canvas import Canvas, make_server
 from codex_runtime import Runtime

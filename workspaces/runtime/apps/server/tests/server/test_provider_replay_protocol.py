@@ -11,10 +11,11 @@ import threading
 import time
 import unittest
 
-ROOT = Path(__file__).resolve().parents[2]
-REPLAY_SERVER = ROOT / "tests" / "provider-replay-server.py"
-sys.path.insert(0, str(ROOT / "tests"))
-PROVIDER_RUNNER_PATH = ROOT / "tests" / "provider-replay-runner.py"
+from codex_layout import SERVER_TESTS_ROOT
+
+REPLAY_SERVER = SERVER_TESTS_ROOT / "provider-replay-server.py"
+sys.path.insert(0, str(SERVER_TESTS_ROOT))
+PROVIDER_RUNNER_PATH = SERVER_TESTS_ROOT / "provider-replay-runner.py"
 PROVIDER_RUNNER_SPEC = importlib.util.spec_from_file_location("provider_replay_runner", PROVIDER_RUNNER_PATH)
 PROVIDER_RUNNER = importlib.util.module_from_spec(PROVIDER_RUNNER_SPEC)
 PROVIDER_RUNNER_SPEC.loader.exec_module(PROVIDER_RUNNER)

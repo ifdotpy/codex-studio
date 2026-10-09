@@ -1,5 +1,5 @@
 {
-  "source": "hand-authored protocol frames based on tests/runtime-contract.py FakeServer.fail_start",
+  "source": "hand-authored protocol frames based on workspaces/runtime/apps/server/tests/runtime-contract.py FakeServer.fail_start",
   "lostStartReply": true,
   "expectedMissingReplies": [{ "method": "turn/start", "id": 5 }],
   "events": [
