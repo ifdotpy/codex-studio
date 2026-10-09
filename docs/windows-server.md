@@ -74,6 +74,19 @@ the Windows console shutdown signal. The entrypoint and supervisor stay up;
 supervised workers stay attached. Use `-Action RestartBackend -SourceRoot
 `<path>`to stop the API, select a source tree, and start the API again. Use`-Action StopAll` only to stop the server tree and remove its logon task.
 
+The manager supports Windows PowerShell 5.1 and PowerShell 7. The runner writes
+`state/windows-server-runner.json` with control protocol 2, its process ID, and
+its creation time. The manager verifies this identity before it writes a separate
+request file. If this file is absent, the manager uses the old singleton transport.
+A stale or invalid identity stops the request.
+
+The old transport permits one request until its receipt confirms the result.
+The manager retains that request ID in `windows-server-control-legacy-pending.json`.
+If the receipt is absent, inspect the runner and request before any recovery.
+Do not submit the action again or move the request to another transport.
+An old runner must be replaced separately while it has no active handles.
+Stop the backend first. Preserve the existing supervisor during the runner change.
+
 Tailscale Serve keeps the WSL2 Studio server on HTTPS port 443, which proxies
 to `127.0.0.1:4720`. The native Windows server uses HTTPS port 8443, which
 proxies to `127.0.0.1:4630`. Its public origin is

@@ -13,6 +13,7 @@ from types import ModuleType
 import uuid
 
 from codex_source_inventory import source_files
+from codex_private_paths import ensure_private_dir, protect_temp_file
 
 
 class LiveUpdates:
@@ -43,20 +44,23 @@ class LiveUpdates:
         path = Path(self.runtime.root) / "live-update.json"
         temporary = None
         try:
-            with tempfile.NamedTemporaryFile(mode="w", dir=path.parent,
+            ensure_private_dir(path.parent)
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
                                              prefix=".live-update-", delete=False) as stream:
                 temporary = stream.name
+                protect_temp_file(temporary)
                 json.dump(state, stream, sort_keys=True)
                 stream.write("\n")
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, path)
             temporary = None
-            descriptor = os.open(path.parent, os.O_RDONLY)
-            try:
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
+            if os.name != "nt":
+                descriptor = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
         except OSError as error:
             with self._state_lock:
                 self._state = {**state, "receiptError": str(error)}

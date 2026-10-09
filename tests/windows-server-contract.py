@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -17,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from codex_worktree_creation import create_worker_worktree
 from codex_windows_server import _read_control_request, _write_control_request
-from codex_windows_server import _recover_control_claims, _write_control_result
+from codex_windows_server import _advertise_control_protocol, _recover_control_claims, _write_control_result
 
 WINDOWS = os.name == "nt"
 skip_posix = unittest.skipUnless(WINDOWS, "Windows server contract")
@@ -28,6 +29,11 @@ if WINDOWS:
 
 
 class ControlRequestPosixContract(unittest.TestCase):
+    def setUp(self):
+        protocol = patch("codex_windows_server._runner_control_protocol", return_value=2)
+        protocol.start()
+        self.addCleanup(protocol.stop)
+
     def test_sequence_lock_covers_request_publication(self):
         with tempfile.TemporaryDirectory() as temporary:
             state = Path(temporary)
@@ -177,6 +183,7 @@ class WindowsServerContract(unittest.TestCase):
     def test_control_requests_have_distinct_files_and_receipts(self):
         with tempfile.TemporaryDirectory() as temporary:
             state = Path(temporary)
+            _advertise_control_protocol(state)
             first = _write_control_request(state, "stop-backend")
             second = _write_control_request(state, "restart-backend")
             self.assertNotEqual(first, second)
@@ -200,7 +207,7 @@ class WindowsServerContract(unittest.TestCase):
                 "$p='" + str(destination).replace("'", "''") + "'; "
                 "$t='" + str(replacement).replace("'", "''") + "'; "
                 "$s=[IO.File]::Open($p,'Open','ReadWrite','None'); "
-                "try { [IO.File]::Replace($t,$p,$null,$true) } catch {}; $s.Dispose()"
+                "try { [IO.File]::Replace($t,$p,[NullString]::Value,$true) } catch {}; $s.Dispose()"
             )
             subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
                            check=True, capture_output=True, text=True, timeout=20)
@@ -299,10 +306,16 @@ class WindowsServerContract(unittest.TestCase):
                 self.skipTest("TCP port 4631 is already in use")
             log = (root / "entrypoint.log").open("ab")
             executable, environment = _base_python()
+            node = shutil.which("node")
+            self.assertIsNotNone(node, "The backend requires Node.js for its Ed25519 service")
+            fixture_path = os.pathsep.join([
+                str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"),
+                str(Path(node).parent),
+            ])
             environment.update({"CODEX_HOME": str(profile), "CODEX_AGENTS_STATE_DIR": str(state),
                                 "CODEX_AGENTS_SUPERVISOR_MODE": "1",
                                 "CODEX_BIN": "",
-                                "PATH": str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32")})
+                                "PATH": fixture_path})
             process = subprocess.Popen(
                 [executable, str(ROOT / "scripts" / "codex_windows_server.py"),
                  "--source-root", str(ROOT), "--state", str(state), "--port", str(port),
@@ -310,7 +323,15 @@ class WindowsServerContract(unittest.TestCase):
                 cwd=ROOT, env=environment, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
             )
             try:
-                first_pid = _wait_until(lambda: _port_owner(port))
+                try:
+                    first_pid = _wait_until(lambda: _port_owner(port))
+                except AssertionError as error:
+                    log.flush()
+                    details = (root / "entrypoint.log").read_text(encoding="utf-8", errors="replace")
+                    backend_log = state / "backend.log"
+                    if backend_log.exists():
+                        details += backend_log.read_text(encoding="utf-8", errors="replace")
+                    raise AssertionError(f"{error}; server logs: {details}") from error
                 self.assertIn("codex_windows_backend.py", _process_commandline(first_pid))
                 lease = json.loads((state / "supervisor.lock").read_text(encoding="utf-8"))
                 stop = subprocess.run(
