@@ -355,7 +355,7 @@ def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str) -> d
                 and path.name not in {'workspace.py', 'namespace_exec.py'}):
             files.append({'path': '/opt/codex-studio/vm/guest/' + path.relative_to(guest_dir).as_posix(),
                           'permissions': '0644', 'encoding': 'gz+b64',
-                          'content': base64.b64encode(gzip.compress(path.read_bytes())).decode()})
+                          'content': base64.b64encode(gzip.compress(path.read_bytes(), mtime=0)).decode()})
     if not (guest_dir / 'install.sh').is_file():
         raise LinuxVMError('The Linux VM guest install.sh payload is unavailable.')
     layr_source = guest_dir.parent / 'layr'
@@ -368,7 +368,7 @@ def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str) -> d
         if hashlib.sha256(data).hexdigest() != expected:
             raise LinuxVMError('The vendored layr source checksum differs: ' + name)
         files.append({'path': '/opt/codex-studio/vm/layr/' + name, 'permissions': '0644',
-                      'encoding': 'gz+b64', 'content': base64.b64encode(gzip.compress(data)).decode()})
+                      'encoding': 'gz+b64', 'content': base64.b64encode(gzip.compress(data, mtime=0)).decode()})
     files.append({'path': '/opt/codex-studio/vm/layr/manifest.json', 'permissions': '0644',
                   'content': json.dumps(manifest)})
     skills = guest_dir.parents[1] / '.agents/skills'
@@ -378,7 +378,7 @@ def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str) -> d
         if source.is_file() and not source.is_symlink():
             files.append({'path': '/opt/codex-studio/.agents/skills/' + name,
                           'permissions': '0644', 'encoding': 'gz+b64',
-                          'content': base64.b64encode(gzip.compress(source.read_bytes())).decode()})
+                          'content': base64.b64encode(gzip.compress(source.read_bytes(), mtime=0)).decode()})
     scripts = guest_dir.parents[1] / 'scripts'
     for name in ['codex_process_supervisor.py',
                  'codex_open_file_limit.py', 'codex_records.py', 'codex_file_lock.py',
@@ -387,23 +387,29 @@ def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str) -> d
         if not source.is_file():
             raise LinuxVMError(f'The Linux VM runtime payload is unavailable: {name}.')
         files.append({'path': '/opt/codex-studio/scripts/' + name, 'permissions': '0644',
-                      'encoding': 'gz+b64', 'content': base64.b64encode(gzip.compress(source.read_bytes())).decode()})
+                      'encoding': 'gz+b64', 'content': base64.b64encode(gzip.compress(source.read_bytes(), mtime=0)).decode()})
     bridge = scripts / 'claude_bridge'
     for source in sorted(bridge.iterdir()):
         if source.is_file() and (source.name in {'package.json', 'package-lock.json'} or
                                  (source.suffix == '.mjs' and not source.name.endswith('.test.mjs') and
                                   source.name != 'vitest.config.mjs')):
             files.append({'path': '/opt/codex-studio/claude_bridge/' + source.name, 'permissions': '0644',
-                          'encoding': 'gz+b64', 'content': base64.b64encode(gzip.compress(source.read_bytes())).decode()})
+                          'encoding': 'gz+b64', 'content': base64.b64encode(gzip.compress(source.read_bytes(), mtime=0)).decode()})
     if not any(entry['path'].endswith('/claude_bridge/package-lock.json') for entry in files):
         raise LinuxVMError('The pinned Claude bridge dependency manifest is unavailable.')
+    generation = hashlib.sha256(json.dumps({'files': files, 'codex': codex_version,
+                                            'claude': claude_version}, sort_keys=True).encode()).hexdigest()
+    ready_path = '/var/lib/codex-studio/provision-ready-' + generation
     script = _provision_script(codex_version, claude_version)
+    script = script.replace('touch /var/lib/codex-studio/provision-ready\n',
+                            'touch /var/lib/codex-studio/provision-ready\ntouch ' + ready_path + '\n')
     files.append({'path': '/opt/codex-studio/provision.sh', 'permissions': '0700', 'content': script})
     files.append({'path': '/etc/systemd/system/codex-studio-provision.service', 'permissions': '0644', 'content': '''[Unit]
 Description=Provision the Codex Studio Linux VM
 After=network-online.target cloud-config.service
 Wants=network-online.target
-ConditionPathExists=!/var/lib/codex-studio/provision-ready
+RequiresMountsFor=/var/lib/codex-studio
+ConditionPathExists=!@READY_PATH@
 
 [Service]
 Type=oneshot
@@ -417,7 +423,7 @@ StandardError=journal+console
 
 [Install]
 WantedBy=multi-user.target
-'''})
+'''.replace('@READY_PATH@', ready_path)})
     return {'hostname': 'studio-linux', 'manage_etc_hosts': True, 'ssh_pwauth': False,
             'disable_root': True, 'users': [{'name': 'studio', 'lock_passwd': True,
                                           'shell': '/bin/bash'}],
