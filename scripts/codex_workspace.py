@@ -435,6 +435,11 @@ class WorkspaceMixin:
         if db is None:
             with self.lock, self.db() as connection:
                 return self.project_account(cwd, db=connection)
+        if str(cwd).startswith('project:'):
+            row = db.execute('SELECT record FROM runtime_projects WHERE id=?', (str(cwd),)).fetchone()
+            if not row:
+                raise ValueError('Select an existing project')
+            return str(json.loads(row[0]).get('accountKey') or self.accounts.default())
         directory = Path(self.project_directory(cwd, require_existing=False))
         matches = [p for p in self.records(db, "projects")
                    if p.get("accountKey") and directory.is_relative_to(Path(p["path"]).expanduser().resolve())]
@@ -446,6 +451,11 @@ class WorkspaceMixin:
         if db is None:
             with self.lock, self.db() as connection:
                 return self.project_worker_base(cwd, db=connection)
+        if str(cwd).startswith('project:'):
+            row = db.execute('SELECT record FROM runtime_projects WHERE id=?', (str(cwd),)).fetchone()
+            if not row:
+                raise ValueError('Select an existing project')
+            return json.loads(row[0]).get('workerBaseRef')
         directory = Path(self.project_directory(cwd, require_existing=False))
         matches = [p for p in self.records(db, "projects")
                    if p.get("workerBaseRef") and directory.is_relative_to(

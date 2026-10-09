@@ -134,6 +134,7 @@ class PeerTeam(ContractModel):
 class ProjectLocation(ContractModel):
     serverId: str
     path: str
+    requestedPath: str | None = None
     projectId: str
     gitOrigin: str | None = None
 

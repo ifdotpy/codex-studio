@@ -26,6 +26,14 @@ def resolve(runtime, parent, data, *, catalogs=None):
     model = model or defaults['model'] or root['model']
     if not isinstance(model, str) or not model.strip():
         raise ValueError('Select an available model')
+    project_accounts = None
+    if root.get('projectId') and root.get('projectServerId'):
+        from codex_project_locations import settings_key
+        import json
+        with runtime.read_db() as db:
+            project_key = settings_key(runtime, db, root['cwd'], root)
+            row = db.execute('SELECT record FROM runtime_projects WHERE id=?', (project_key,)).fetchone()
+            project_accounts = json.loads(row[0]).get('accountKeys') if row else None
     parent_account = parent.get('accountKey', 'default')
     selected = defaults.get('accountKey')
     explicit = data.get('account_key', selected)
@@ -34,12 +42,16 @@ def resolve(runtime, parent, data, *, catalogs=None):
     if explicit is not None:
         if not isinstance(explicit, str) or not explicit:
             raise ValueError('Select an available worker account')
+        if project_accounts and explicit not in project_accounts:
+            raise ValueError('Select a worker account of this project')
         row = runtime.accounts.get(explicit)
         if row.get('disconnected') or row.get('deleted') or (explicit != parent_account and row.get('status') != 'ready'):
             raise ValueError('Sign in to the worker account before creating a worker')
         candidates = [explicit]
     else:
         candidates = account_order(runtime, parent_account)
+        if project_accounts:
+            candidates = [key for key in candidates if key in project_accounts]
     # Native catalogs are provider-specific. Do not depend on the parent's
     # provider when the requested model identifies the other provider.
     provider = ('codex' if model.startswith('gpt-') else

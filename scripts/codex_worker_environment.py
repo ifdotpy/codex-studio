@@ -11,6 +11,11 @@ def validate(value):
 
 
 def project_default(runtime, cwd, db):
+    if str(cwd).startswith('project:'):
+        row = db.execute('SELECT record FROM runtime_projects WHERE id=?', (str(cwd),)).fetchone()
+        if not row:
+            raise ValueError('Select an existing project')
+        return validate(json.loads(row[0]).get('workerEnvironment', 'host'))
     directory = Path(runtime.project_directory(cwd, require_existing=False))
     matches = [project for project in runtime.records(db, "projects")
                if directory.is_relative_to(Path(project["path"]).expanduser().resolve())
@@ -20,7 +25,7 @@ def project_default(runtime, cwd, db):
     return validate(max(matches, key=lambda p: len(Path(p["path"]).parts))["workerEnvironment"])
 
 
-def select(runtime, spec, cwd):
+def select(runtime, spec, cwd, *, project_key=None):
     if spec.get("role", "implementer") != "implementer":
         if spec.get("environment", "host") != "host":
             raise ValueError("Reviewers must use the host environment")
@@ -28,7 +33,7 @@ def select(runtime, spec, cwd):
     if "environment" in spec:
         return validate(spec["environment"])
     with runtime.lock, runtime.read_db() as db:
-        return project_default(runtime, cwd, db)
+        return project_default(runtime, project_key or cwd, db)
 
 
 def set_project_default(runtime, data):

@@ -895,6 +895,7 @@ class ProjectPeerTeamDto(ContractModel):
 class ProjectLocationDto(ContractModel):
     serverId: str
     path: str
+    requestedPath: str | None = None
     projectId: str
     gitOrigin: str | None = None
 

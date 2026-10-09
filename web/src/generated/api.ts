@@ -8355,6 +8355,8 @@ export interface components {
       path: string;
       /** Projectid */
       projectId: string;
+      /** Requestedpath */
+      requestedPath?: string | null;
       /** Serverid */
       serverId: string;
     };
@@ -8366,6 +8368,8 @@ export interface components {
       path: string;
       /** Projectid */
       projectId: string;
+      /** Requestedpath */
+      requestedPath?: string | null;
       /** Serverid */
       serverId: string;
     };

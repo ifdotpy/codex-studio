@@ -4733,7 +4733,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     return existing
                 prior = self.agent(data["previous"], db) if data.get("previous") else None
                 directory = requested_cwd or (prior["cwd"] if prior else os.environ.get("CODEX_CANVAS_CWD", os.getcwd()))
-                catalog_account = data["account_key"] if "account_key" in data else self.project_account(directory, db=db)
+                from codex_project_locations import chat_binding, settings_key
+                binding = chat_binding(self, db, directory, data.get('project_id'), data.get('project_server_id'))
+                project_key = settings_key(self, db, directory, binding)
+                catalog_account = data["account_key"] if "account_key" in data else self.project_account(project_key, db=db)
             catalog = self.catalog(catalog_account)
             self.validate_execution(catalog, data["model"], None, False)
         with self.lock:
@@ -4763,7 +4766,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if previous and previous.get("deletedAt"):
                     raise ValueError("This conversation was deleted")
                 cwd = requested_cwd or (previous["cwd"] if previous else os.environ.get("CODEX_CANVAS_CWD", os.getcwd()))
-                account_key = data["account_key"] if "account_key" in data else self.project_account(cwd, db=db)
+                from codex_project_locations import chat_binding, settings_key
+                binding = chat_binding(self, db, cwd, data.get('project_id'), data.get('project_server_id'))
+                project_key = settings_key(self, db, cwd, binding)
+                account_key = data["account_key"] if "account_key" in data else self.project_account(project_key, db=db)
+                if binding:
+                    row = db.execute('SELECT record FROM runtime_projects WHERE id=?', (project_key,)).fetchone()
+                    project_accounts = json.loads(row[0]).get('accountKeys') if row else None
+                    if project_accounts and account_key not in project_accounts:
+                        raise ValueError('Select an account of this project')
                 if catalog_account is not None and account_key != catalog_account:
                     raise ValueError("The account changed. Select the model again")
                 if self.accounts.get(account_key).get("deleted"):
@@ -4771,9 +4782,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if self.accounts.get(account_key).get("disconnected"):
                     raise ValueError("Reconnect this account before creating a chat")
                 from codex_project_folders import folder_for
-                from codex_project_locations import chat_binding
-                binding = chat_binding(self, db, cwd, data.get('project_id'), data.get('project_server_id'))
-                project_folder = folder_for(self, db, cwd, data.get('project_folder'))
+                project_folder = folder_for(self, db, project_key, data.get('project_folder'))
                 if previous and data.get("reuse_empty", True) and self.empty_lead(db, previous) and previous.get("provider", "codex") == self.accounts.get(account_key).get("provider", "codex"):
                     if data.get("model"):
                         effort, native_effort = self.validate_execution(catalog, data["model"], previous.get("effort"),
@@ -8274,7 +8283,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         for spec in specs:
             directory = spawn_directory(actor["cwd"], spec.get("cwd"))
             from codex_worker_environment import select as select_environment
-            environment = select_environment(self, spec, directory)
+            from codex_project_locations import settings_key
+            with self.lock, self.read_db() as db:
+                metadata_key = settings_key(self, db, directory, actor)
+            environment = select_environment(self, spec, directory, project_key=metadata_key)
             if spec.get("role", "implementer") == "implementer":
                 workspace_root, directory, prefix = self.worker_spawn_repository(actor, directory)
                 git_repo = git_toplevel(directory, prefix=prefix)
@@ -8298,7 +8310,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 selected_base_ref = spec.get("base_ref")
                 if workspace_mode in {"image", "worktree"} and selected_base_ref is None and git_repo:
                     with self.lock, self.db() as db:
-                        selected_base_ref = self.project_worker_base(directory, db=db)
+                        selected_base_ref = self.project_worker_base(metadata_key, db=db)
                 if git_repo and (workspace_mode == "worktree" or
                                  (workspace_mode == "image" and selected_base_ref is not None)):
                     cache_key = (git_repo, selected_base_ref)
