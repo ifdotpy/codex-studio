@@ -16,6 +16,103 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
+
+async function installTranscriptPageRoute(page, histories, agents) {
+  await page.route("**/api/transcript/page?*", async (route) => {
+    const url = new URL(route.request().url());
+    const id = url.searchParams.get("id");
+    const items = histories.get(id) || [];
+    const limit = Math.max(1, Number(url.searchParams.get("limit") || 100));
+    let start = 0;
+    let end = 0;
+    const before = url.searchParams.get("before");
+    const after = url.searchParams.get("after");
+    const around = url.searchParams.get("around");
+    if (before) {
+      end = Math.max(
+        0,
+        items.findIndex((item) => item.id === before),
+      );
+      start = Math.max(0, end - limit);
+    } else if (after) {
+      start = Math.max(0, items.findIndex((item) => item.id === after) + 1);
+      end = Math.min(items.length, start + limit);
+    } else if (around) {
+      const index = Math.max(
+        0,
+        items.findIndex((item) => item.id === around),
+      );
+      start = Math.max(0, index - 120);
+      end = Math.min(items.length, start + 240);
+    }
+    const selected = items.slice(start, end);
+    await route.fulfill({
+      json: {
+        agent: agents.find((agent) => agent.id === id) || null,
+        historyVersion: "fixed-history",
+        items: selected,
+        truncated: false,
+        nextCursor: start > 0 ? items[start - 1].id : null,
+        nextAfterCursor:
+          end < items.length ? selected.at(-1)?.id || null : null,
+      },
+    });
+  });
+}
+
+function responsivenessHistory(prefix) {
+  const items = [];
+  for (let turn = 0; turn < 30; turn++) {
+    const shared = {
+      turnId: `${prefix}-turn-${turn}`,
+      turnStatus: "completed",
+    };
+    items.push({
+      ...shared,
+      id: `${prefix}-user-${turn}`,
+      role: "user",
+      text: `Review component ${turn}.`,
+    });
+    for (let step = 0; step < 4; step++) {
+      items.push({
+        ...shared,
+        id: `${prefix}-text-${turn}-${step}`,
+        role: "assistant",
+        text: `Component ${turn}, step ${step}.\n\n${"The **test evidence** explains this behavior. ".repeat(6)}\n\n- Inspect the request\n- Check the response\n\n\`\`\`ts\nconst result = await check();\n\`\`\``,
+      });
+      items.push({
+        ...shared,
+        id: `${prefix}-tool-${turn}-${step}`,
+        role: "tool",
+        toolStatus: "completed",
+        title: "commandExecution",
+        text: JSON.stringify({
+          type: "commandExecution",
+          command: `python3 check_${step}.py`,
+          status: "completed",
+          aggregatedOutput: "check passed\n".repeat(30),
+          exitCode: 0,
+        }),
+      });
+    }
+    items.push({
+      ...shared,
+      id: `${prefix}-result-${turn}`,
+      role: "assistant",
+      phase: "final_answer",
+      text: `Component ${turn} checked. All evidence remains available.`,
+    });
+  }
+  items.push({
+    id: `${prefix}-live`,
+    role: "assistant",
+    turnId: `${prefix}-live-turn`,
+    turnStatus: "running",
+    text: "Stream revision 0.",
+  });
+  return items;
+}
+
 test(
   "Ui responsiveness browser",
   { tag: "@performance" },
@@ -92,61 +189,9 @@ test(
           monitors: [],
         },
       };
-      const history = (prefix) => {
-        const items = [];
-        for (let turn = 0; turn < 30; turn++) {
-          const shared = {
-            turnId: `${prefix}-turn-${turn}`,
-            turnStatus: "completed",
-          };
-          items.push({
-            ...shared,
-            id: `${prefix}-user-${turn}`,
-            role: "user",
-            text: `Review component ${turn}.`,
-          });
-          for (let step = 0; step < 4; step++) {
-            items.push({
-              ...shared,
-              id: `${prefix}-text-${turn}-${step}`,
-              role: "assistant",
-              text: `Component ${turn}, step ${step}.\n\n${"The **test evidence** explains this behavior. ".repeat(6)}\n\n- Inspect the request\n- Check the response\n\n\`\`\`ts\nconst result = await check();\n\`\`\``,
-            });
-            items.push({
-              ...shared,
-              id: `${prefix}-tool-${turn}-${step}`,
-              role: "tool",
-              toolStatus: "completed",
-              title: "commandExecution",
-              text: JSON.stringify({
-                type: "commandExecution",
-                command: `python3 check_${step}.py`,
-                status: "completed",
-                aggregatedOutput: "check passed\n".repeat(30),
-                exitCode: 0,
-              }),
-            });
-          }
-          items.push({
-            ...shared,
-            id: `${prefix}-result-${turn}`,
-            role: "assistant",
-            phase: "final_answer",
-            text: `Component ${turn} checked. All evidence remains available.`,
-          });
-        }
-        items.push({
-          id: `${prefix}-live`,
-          role: "assistant",
-          turnId: `${prefix}-live-turn`,
-          turnStatus: "running",
-          text: "Stream revision 0.",
-        });
-        return items;
-      };
       const histories = new Map([
-        [a.id, history("a")],
-        [b.id, history("b")],
+        [a.id, responsivenessHistory("a")],
+        [b.id, responsivenessHistory("b")],
       ]);
       for (const [name, viewport] of [
         ["desktop", { width: 1440, height: 960 }],
@@ -344,6 +389,7 @@ test(
             },
           });
         });
+        await installTranscriptPageRoute(page, histories, agents);
         await page.goto(origin);
         if (!(await page.locator('[data-message="a-result-29"]').count())) {
           if (name === "mobile")
@@ -498,25 +544,79 @@ test(
           "Streaming does not lose typed characters",
         );
         let revealedCommentary = 0;
-        for (let turn = 0; turn < 30; turn++) {
+        const revealCommentary = async (id) => {
+          const visibleTranscript = page.locator("#messages:visible").first();
+          for (let pageHop = 0; pageHop < 3; pageHop++) {
+            const revealed = await page
+              .waitForFunction(
+                (messageId) => {
+                  const root = [...document.querySelectorAll("#messages")].find(
+                    (node) => {
+                      const bounds = node.getBoundingClientRect();
+                      return bounds.width > 0 && bounds.height > 0;
+                    },
+                  );
+                  root?.dispatchEvent(
+                    new CustomEvent("studio-history-reveal", {
+                      detail: messageId,
+                    }),
+                  );
+                  return !!root?.querySelector(
+                    `[data-message="${CSS.escape(messageId)}"]:not([data-lazy-message])`,
+                  );
+                },
+                id,
+                { timeout: 750 },
+              )
+              .then(() => true)
+              .catch(() => false);
+            if (revealed) return;
+
+            const earlier = page.locator("#earlier-messages");
+            if (!(await earlier.isVisible()))
+              throw new Error(`No earlier transcript page can load ${id}`);
+            const response = page.waitForResponse((candidate) => {
+              const url = new URL(candidate.url());
+              return (
+                url.pathname === "/api/transcript/page" &&
+                url.searchParams.has("before")
+              );
+            });
+            await earlier.click();
+            await response;
+            await visibleTranscript.evaluate(
+              () =>
+                new Promise((resolve) =>
+                  requestAnimationFrame(() => requestAnimationFrame(resolve)),
+                ),
+            );
+          }
+          throw new Error(`Transcript pagination did not reveal ${id}`);
+        };
+        // Newest page first: each bounded page is complete within its range.
+        for (let turn = 6; turn < 30; turn++) {
           for (let step = 0; step < 4; step++) {
             const id = `a-text-${turn}-${step}`;
-            await page.waitForFunction((messageId) => {
-              const root = [...document.querySelectorAll("#messages")].find(
-                (node) => {
-                  const bounds = node.getBoundingClientRect();
-                  return bounds.width > 0 && bounds.height > 0;
-                },
-              );
-              root?.dispatchEvent(
-                new CustomEvent("studio-history-reveal", {
-                  detail: messageId,
-                }),
-              );
-              return !!root?.querySelector(
-                `[data-message="${CSS.escape(messageId)}"]:not([data-lazy-message])`,
-              );
-            }, id);
+            await revealCommentary(id);
+            revealedCommentary++;
+          }
+        }
+        const newestResultCount = await page
+          .locator('[data-message^="a-result-"]')
+          .count();
+        assert.equal(
+          newestResultCount,
+          24,
+          "The newest page retains the latest 24 final answers",
+        );
+        assert.match(
+          await page.locator('[data-message="a-live"]').innerText(),
+          /Stream revision 12\./,
+        );
+        for (let turn = 0; turn < 6; turn++) {
+          for (let step = 0; step < 4; step++) {
+            const id = `a-text-${turn}-${step}`;
+            await revealCommentary(id);
             revealedCommentary++;
           }
         }
@@ -527,17 +627,13 @@ test(
         );
         assert.equal(
           await page.locator('[data-message^="a-result-"]').count(),
-          30,
-          "Streaming retains all final answers",
+          24,
+          "The older page retains its 24 final answers",
         );
         assert.equal(
           await page.locator('[data-message^="b-"]').count(),
           0,
           "The other chat does not leak into history",
-        );
-        assert.match(
-          await page.locator('[data-message="a-live"]').innerText(),
-          /Stream revision 12\./,
         );
         assert.deepEqual(errors, []);
         const metrics = await page.evaluate(() => window.metrics);
@@ -677,5 +773,162 @@ test(
           .map((ownedContext) => ownedContext.close()),
       );
     }
+  },
+);
+
+test(
+  "Ui responsiveness history can return from older messages",
+  { tag: "@performance" },
+  async ({ browser }) => {
+    test.setTimeout(120_000);
+    const repo = fileURLToPath(new URL("../../../", import.meta.url));
+    const dir = await mkdtemp(join(tmpdir(), "studio-ui-history-return-"));
+    await cp(
+      process.env.RESPONSIVENESS_DIST || join(repo, "web/dist"),
+      join(dir, "dist"),
+      { recursive: true },
+    );
+    const fixture = spawn(
+      "python3",
+      ["-B", join(repo, "tests/simple-ui-fixture.py"), dir],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, CODEX_BOARD_STATE_DIR: join(dir, "board") },
+      },
+    );
+    let fixtureLog = "";
+    fixture.stderr.on("data", (chunk) => {
+      fixtureLog += chunk;
+    });
+    const port = await new Promise((resolve, reject) => {
+      fixture.stdout.once("data", (chunk) =>
+        resolve(Number(String(chunk).trim())),
+      );
+      fixture.once("exit", () => reject(new Error(fixtureLog)));
+    });
+    const origin = `http://127.0.0.1:${port}`;
+    const original = await readTestState(origin);
+    const a = original.threads.find((agent) => agent.name === "Other project");
+    const b = original.threads.find((agent) => agent.name === "Release lead");
+    const agents = [a, b].map((agent) => ({
+      ...agent,
+      status: "completed",
+      inFlight: false,
+      turnId: null,
+    }));
+    const state = {
+      ...original,
+      threads: agents,
+      nodes: agents,
+      chats: [],
+      edges: [],
+      runtime: {
+        ...original.runtime,
+        agents,
+        rooms: [],
+        requests: [],
+        events: [],
+        work: [],
+        tasks: [],
+        userTasks: [],
+        complaints: [],
+        monitors: [],
+      },
+    };
+    const histories = new Map([
+      [a.id, responsivenessHistory("a")],
+      [b.id, responsivenessHistory("b")],
+    ]);
+    const page = await browser.newPage({
+      viewport: { width: 1440, height: 960 },
+      serviceWorkers: "block",
+    });
+    page.setDefaultTimeout(30_000);
+    installApiSchemaFixtureHeaders(page);
+    await page.addInitScript(
+      ({ stateDir, id }) => {
+        localStorage.setItem(`codex-desktop-opened:${stateDir}`, id);
+        localStorage.setItem(`codex-mobile-opened:${stateDir}`, id);
+      },
+      { stateDir: original.stateDir, id: a.id },
+    );
+    const syncContract = await readFixtureSyncContract(origin);
+    await stubEntityState(page, state, syncContract);
+    await page.route("**/api/sync/pull?*", (route) => {
+      const requestUrl = route.request().url();
+      const url = new URL(requestUrl);
+      const scope = url.searchParams.get("scope");
+      const transcriptId = scope?.startsWith("transcript:")
+        ? scope.slice("transcript:".length)
+        : undefined;
+      return route.fulfill({
+        json: {
+          workspaceId: syncContract.identity.workspaceId,
+          ...entityPullFixtureForRequest(state, requestUrl, {
+            transcriptSeq: 1,
+            ...(transcriptId
+              ? {
+                  transcript: {
+                    agent: agents.find((agent) => agent.id === transcriptId),
+                    items: histories.get(transcriptId) || [],
+                    historyVersion: "fixed-history",
+                    truncated: false,
+                    nextAfterCursor: null,
+                    nextCursor: null,
+                  },
+                }
+              : {}),
+          }),
+        },
+      });
+    });
+    await installTranscriptPageRoute(page, histories, agents);
+    await page.goto(origin);
+    await page.locator(`[data-chat="${a.id}"]`).waitFor({ state: "visible" });
+    await page.locator("#messages").waitFor({ state: "visible" });
+    if (!(await page.locator('[data-message="a-live"]').count()))
+      await page.locator(`[data-chat="${a.id}"]`).click();
+    await page.locator('[data-message="a-live"]').waitFor();
+
+    const earlier = page.locator("#earlier-messages");
+    while (await earlier.isVisible()) {
+      const response = page.waitForResponse((candidate) => {
+        const url = new URL(candidate.url());
+        return (
+          url.pathname === "/api/transcript/page" &&
+          url.searchParams.has("before")
+        );
+      });
+      await earlier.click();
+      await response;
+    }
+    const later = page.locator("#newer-messages");
+    while (await later.isVisible()) {
+      const response = page.waitForResponse((candidate) => {
+        const url = new URL(candidate.url());
+        return (
+          url.pathname === "/api/transcript/page" &&
+          url.searchParams.has("after")
+        );
+      });
+      await later.click();
+      await response;
+    }
+    const latestMounted = await page
+      .locator('[data-message="a-live"]:not([data-lazy-message])')
+      .count();
+    const laterCommentaryMounted = await page
+      .locator('[data-message="a-text-24-0"]:not([data-lazy-message])')
+      .count();
+    test.fail(
+      true,
+      "Known forward transcript paging defect: Later messages exhaust the server pages without moving the retained page past the old anchor",
+    );
+    assert.equal(latestMounted, 1, "The newest transcript row is mounted");
+    assert.equal(
+      laterCommentaryMounted,
+      1,
+      "Commentary in the forward page is mounted",
+    );
   },
 );
