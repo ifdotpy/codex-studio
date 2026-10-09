@@ -123,9 +123,15 @@ def request(rt: "Runtime", actor: "AgentRecord", args: dict[str, Any], key: str)
     with rt.lock, rt.db() as db:
         previous = _existing(rt, db, key, actor, target, directory, requested)
         if previous is not None:
-            return previous
+            needs_registration = bool(actor.get('movedFrom') and actor.get('remoteOrigin'))
+        else:
+            needs_registration = False
         root = rt.agent(actor['rootId'], db)
         defaults = rt.review_defaults(root)
+    if previous is not None:
+        if needs_registration:
+            rt.multi_server().moves().register_review_child(actor, previous['agentId'], key)
+        return previous
     model = args.get('model') or defaults['model'] or actor['model']
     # A specific model uses its own default unless the caller supplies effort.
     if 'effort' in args:
@@ -171,6 +177,8 @@ def request(rt: "Runtime", actor: "AgentRecord", args: dict[str, Any], key: str)
                           _catalog=(review_account, catalog), _validate_only=True)
         try:
             child.update(yoloMode=False, worktree=False)
+            if current.get('movedFrom') and current.get('remoteOrigin'):
+                child.update(autoWake=False, moveReviewPending=True)
             value = {'requestId': key, 'agentId': child['id'], 'status': 'queued',
                      'reviewModel': child['model'], 'reviewEffort': child.get('nativeEffort', child.get('effort')),
                      'agents': [{name: child[name] for name in ('id', 'name', 'status', 'model', 'effort', 'fastMode')}],
@@ -185,11 +193,13 @@ def request(rt: "Runtime", actor: "AgentRecord", args: dict[str, Any], key: str)
                        (key, json.dumps(externalize_result(rt.root, db, result))))
             if receipt:
                 rt.finish_tool_request(key, result, outcome='applied', db=db)
-            return value
         except Exception as error:
             # rt.create is the uncertainty boundary even if a later write fails.
             error.review_child_created = True  # type: ignore[attr-defined]  # typed-suspect: Custom exception may reject assignment
             raise
+    if actor.get('movedFrom') and actor.get('remoteOrigin'):
+        rt.multi_server().moves().register_review_child(actor, child['id'], key)
+    return value
 
 
 def claim(rt: "Runtime", db: "sqlite3.Connection", agent: "AgentRecord") -> dict[str, Any] | None:

@@ -324,3 +324,25 @@ Resume the worker after a successful token sync. Preserve uncertain input receip
 Archive retains the guest snapshot. Restore returns the worker paused.
 A VM disconnect does not prove that a native operation failed.
 Preserve its request ID and inspect the result before another operation.
+
+## Move your own execution
+
+Use `orchestration_move` only when another server is needed.
+Prepare the target folder with Git and server command tools first.
+Supply the paired server ID (or `local`), absolute `cwd`, and stable `request_id`.
+Finish the current turn after acceptance. The next turn runs on the target.
+Studio keeps the old workspace and transfers native history without credentials.
+The Studio transcript stays on the source. Running children stay on their servers.
+Finish other tools, background commands, monitors, and pending spawns first.
+Read an uncertain move with `orchestration_request action=get` and the same request ID.
+Do not repeat it with another identity.
+
+Use the same provider account and organization to keep the prompt cache.
+Codex preserves the old request prefix and requires matching native versions,
+OS, and MCP tools. A different account returns a cache warning.
+Claude requires the same account, CLI version, and SDK version.
+Claude uses the SDK system prompt snapshot and excludes dynamic sections.
+On a version mismatch, update the target CLI through its normal install process.
+Do not upgrade it as part of the move.
+See [the move contract](../../../ORCHESTRATION.md#move-your-execution-to-another-server)
+for limits and recovery.

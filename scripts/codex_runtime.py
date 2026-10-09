@@ -260,8 +260,9 @@ def voice_tools():
 from codex_agent_review import review_tools
 
 from codex_multi_server_orchestration import server_tools
+from codex_agent_move import move_tools
 
-TOOLS += server_tools(tool, TEXT) + voice_tools() + work_tools(tool, TEXT) + rule_tools(tool, TEXT) + request_tools(tool, TEXT) + efficiency_tools(tool, TEXT) + review_tools(tool, TEXT)
+TOOLS += server_tools(tool, TEXT) + move_tools(tool, TEXT) + voice_tools() + work_tools(tool, TEXT) + rule_tools(tool, TEXT) + request_tools(tool, TEXT) + efficiency_tools(tool, TEXT) + review_tools(tool, TEXT)
 for definition in TOOLS:
     if definition["name"] == "orchestration_send":
         definition["inputSchema"]["properties"]["delivery"] = {
@@ -3256,7 +3257,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         # Preserve renderer-facing source and team fields on every entity write.
         view = dict(record)
         block = native_thread_block(record)  # type: ignore[no-untyped-call]
-        view.update(kind="agent", source="managed", canSend=not bool(block),
+        view.update(kind="agent", source="managed", canSend=not bool(block) and not bool(record.get("movedTo")) and not bool(record.get('moveImportPending')),
                     launcherAlive=not self.closed,
                     nextTurnSettingsSupported=True, readStateSupported=True)
         if block:
@@ -5267,6 +5268,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def tool_definitions(self, actor=None):
         if actor is None:
             return TOOLS
+        if actor.get('frozenNativeParams'):
+            return copy.deepcopy(actor['frozenNativeParams']['dynamicTools'])
         if actor.get("nativeReview"):
             return []
         lead = bool(actor.get("isLead"))
@@ -5733,6 +5736,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         from codex_browser import configure_browser
         if a.get("provider") != "claude":
             configure_browser(self, a, params)
+        if a.get('frozenNativeParams'):
+            frozen = a['frozenNativeParams']
+            params.update(baseInstructions=frozen['baseInstructions'],
+                          developerInstructions=frozen['developerInstructions'],
+                          model=frozen['model'], dynamicTools=copy.deepcopy(frozen['dynamicTools']))
+            if a.get('provider') != 'claude':
+                if frozen.get('effort') is not None:
+                    params['config']['model_reasoning_effort'] = frozen['effort']
+                if frozen.get('summary') is not None:
+                    params['config']['model_reasoning_summary'] = frozen['summary']
         return params
 
     def prepare(self, a, timing=None):
@@ -6396,7 +6409,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     and (not a.get("inFlight") or
                          db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND status='pending' "
                                     "AND epoch=? LIMIT 1", (a["id"], a["epoch"])).fetchone())
-                    and not a.get("remoteWorker") and not a.get("remoteAnchor")
+                    and not a.get("remoteWorker") and not a.get("remoteAnchor") and not a.get('executionMove')
                     and a["autoWake"]
                     and (not a.get("nativeFailureHold") or (
                         (a.get("budgetActionWait") or {}).get("action") == "capacity"
@@ -7954,7 +7967,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     (a["id"], a["epoch"]),
                 ).fetchone()
                 retrying_after_input = turn.get("status") == "completed" and pending is not None
-                if (not claude_pre_input_retry and a["status"] != "waiting" and (not retrying_after_input or restart_event)
+                if (not a.get('executionMove') and not claude_pre_input_retry and a["status"] != "waiting" and (not retrying_after_input or restart_event)
                         and a.get("turnEpoch", a["epoch"]) == a["epoch"]
                         and not (safety_retry_active(a) and a["nativeSafetyRetry"]["turnId"] == turn.get("id"))):
                     stopped = (turn.get("status") != "completed"
@@ -8469,8 +8482,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if isinstance(args, str):
                     args = json.loads(args)
                 name = p.get("tool")
+                if a.get('executionMove') and name not in {'orchestration_move', 'orchestration_request'}:
+                    request_outcome = 'not_applied'
+                    raise ValueError('The move is accepted. Finish this turn before the next task')
                 if name in {"orchestration_agent_manage", "orchestration_interrupt", "orchestration_send"} \
-                        and isinstance(args.get('agent_id'), str) and args['agent_id'] not in {'parent', 'lead', 'broadcast', 'all', 'workspace'}:
+                        and not a.get('movedFrom') and isinstance(args.get('agent_id'), str) and args['agent_id'] not in {'parent', 'lead', 'broadcast', 'all', 'workspace'}:
                     request_outcome = 'not_applied'
                     args = {**args, 'agent_id': self.resolve_visible_agent_id(
                         a['id'], args['agent_id'], include_archived=name == 'orchestration_agent_manage')}
@@ -8483,11 +8499,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         request_outcome = 'not_applied'
                         args = {**args, 'target': self.resolve_visible_agent_id(a['id'], target)}
                         request_outcome = None
-                if name == 'orchestration_task' and isinstance(args.get('owner'), str) and args['owner']:
+                if name == 'orchestration_task' and not a.get('remoteOrigin') and isinstance(args.get('owner'), str) and args['owner']:
                     request_outcome = 'not_applied'
                     args = {**args, 'owner': self.resolve_visible_agent_id(a['id'], args['owner'])}
                     request_outcome = None
-                if name == "orchestration_agent_manage":
+                if name == 'orchestration_agent_manage' and a.get('movedFrom') and a.get('remoteOrigin') and args.get('action') != 'park':
+                    value = self.multi_server().worker_call(a, 'move_manage', args, key)
+                elif name == "orchestration_agent_manage":
                     from codex_agent_management import manage_agent
                     value = manage_agent(self, a["id"], args, a["epoch"])
                 elif name == "orchestration_read":
@@ -8502,6 +8520,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     value = self.voice().speak(a["id"], args["text"], key, epoch=a["epoch"])
                 elif name == "orchestration_servers":
                     value = self.multi_server().tools(a, args, key)
+                elif name == 'orchestration_move':
+                    try:
+                        value = self.multi_server().moves().start(a, args, key)
+                    except (ValueError, PermissionError):
+                        request_outcome = 'not_applied'
+                        raise
                 elif name == "orchestration_task" and a.get('remoteOrigin'):
                     value = self.multi_server().worker_call(a, 'task', args, key)
                 elif name == "orchestration_task":
@@ -8529,6 +8553,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         latest.update(name=latest["name"] if latest.get("manualName") else title.strip(), needsTitle=False)
                         self.put(db, "agents", latest)
                         value = {"title": latest["name"]}
+                elif name == 'orchestration_interrupt' and a.get('movedFrom') and a.get('remoteOrigin'):
+                    value = self.multi_server().worker_call(a, 'move_interrupt', args, key)
                 elif name == "orchestration_interrupt":
                     target = self.agent(args["agent_id"])
                     cursor = target
@@ -8546,7 +8572,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     from codex_agent_review import request as request_review
                     value = request_review(self, a, args, key)
                 elif name == "orchestration_spawn":
-                    value = self.spawn_agents(a, args, key)
+                    value = (self.multi_server().worker_call(a, 'move_spawn', args, key)
+                             if a.get('movedFrom') and a.get('remoteOrigin') else self.spawn_agents(a, args, key))
                 elif name in {"orchestration_status", "orchestration_peers"} and a.get('remoteOrigin'):
                     value = self.multi_server().worker_call(a, 'directory', {'tool': name, 'arguments': args}, key)
                 elif name in {"orchestration_status", "orchestration_peers"}:
@@ -8557,6 +8584,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     value = self.multi_server().worker_call(a, 'chat_read', args, key)
                 elif name == "orchestration_chat_read":
                     value = self.chat_read(args["room_id"], a["id"], args.get("before"), model=True)
+                elif name == 'orchestration_send' and a.get('movedFrom') and a.get('remoteOrigin'):
+                    value = self.multi_server().worker_call(a, 'move_send', args, key)
                 elif name == "orchestration_send":
                     if not isinstance(args.get("agent_id"), str) or not args["agent_id"]:
                         request_outcome = "not_applied"

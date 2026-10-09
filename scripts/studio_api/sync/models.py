@@ -523,7 +523,17 @@ class RemoteParentLinkDto(ContractModel):
     link: str
 
 
+class MovePointerDto(ContractModel):
+    server: str
+    move: str
+    agentId: str | None = None
+
+
 class AgentEntityDto(ContractModel):
+    moveImportPending: bool = False
+    movedTo: MovePointerDto | None = None
+    movedFrom: MovePointerDto | None = None
+
     remoteWorker: RemoteWorkerLinkDto | None = None
     remoteOrigin: RemoteParentLinkDto | None = None
     remoteAnchor: RemoteParentLinkDto | None = None

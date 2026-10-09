@@ -33,6 +33,15 @@ import { listSkills } from "./skills.mjs";
 import { reconcileHistoricalBash } from "./historical-bash-receipts.mjs";
 import { createCatalogCache } from "./catalog-cache.mjs";
 
+import {
+  movePrompt,
+  moveIdentity,
+  moveVersions,
+  nativeFile,
+  nativeDestination,
+  publishNative,
+} from "./move.mjs";
+
 const providerOptions = JSON.parse(process.env.STUDIO_CLAUDE_OPTIONS || "{}");
 const STUDIO_INPUT_NAMESPACE = "8d95e191-763a-4ee2-a462-7d27f981f138";
 function nativeUserMessageId(id) {
@@ -811,6 +820,7 @@ async function startSession(s, active, p) {
           type: "preset",
           preset: "claude_code",
           append: s.developerInstructions || "",
+          ...movePrompt,
         },
         // Studio managed agents replace native subagents, as in Codex threads.
         disallowedTools: ["Agent"],
@@ -1471,6 +1481,48 @@ async function handle(method, p) {
     return probe(p.cwd, async (q) =>
       commandCatalog((await q.initializationResult()).commands),
     );
+  if (method === "claude/moveVersions")
+    return moveVersions(process.env.STUDIO_CLAUDE_BIN || "claude");
+  if (method === "claude/moveIdentity")
+    return moveIdentity(process.env.STUDIO_CLAUDE_BIN || "claude");
+  if (method === "claude/moveExport") {
+    const s = await session(p.threadId);
+    if (queries.get(s.id)?.turn || queries.get(s.id)?.tasks.size)
+      throw new Error(
+        "Finish the Claude turn and background tasks before a move",
+      );
+    return {
+      path: await nativeFile(s.nativeId || s.id, undefined, s.cwd),
+      session: { ...structuredClone(s), turns: [] },
+    };
+  }
+  if (method === "claude/moveImport") {
+    const existing = await sessionStore
+      .metadata(p.session.id)
+      .catch(() => null);
+    const active = queries.get(p.session.id);
+    if (active?.turn || active?.tasks.size)
+      throw new Error("The destination Claude session is active");
+    if (
+      existing &&
+      (await session(p.session.id)).nativeId !== p.session.nativeId
+    )
+      throw new Error(
+        "The destination Claude session has a different native identity",
+      );
+    active?.input.close();
+    active?.q?.close();
+    queries.delete(p.session.id);
+    const s = { ...p.session, cwd: p.cwd };
+    await publishNative(
+      p.path,
+      nativeDestination(s.nativeId || s.id, p.cwd),
+      !!existing,
+    );
+    sessions.set(s.id, s);
+    await persist(s);
+    return { thread: wireThread(s, await sessionStore.metadata(s.id), false) };
+  }
   if (method === "claude/state") {
     const s = await session(p.threadId),
       active = queries.get(s.id);

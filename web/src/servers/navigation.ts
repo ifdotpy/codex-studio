@@ -50,7 +50,10 @@ export function navigationSnapshot(
       !chat.isLead ||
       chat.deletedAt ||
       chat.sharedRoomId ||
-      (chat as typeof chat & { remoteAnchor?: unknown }).remoteAnchor
+      (chat as typeof chat & { remoteAnchor?: unknown; movedTo?: unknown })
+        .remoteAnchor ||
+      chat.movedTo ||
+      chat.moveImportPending
     )
       continue;
     const path = chat.cwd || "";

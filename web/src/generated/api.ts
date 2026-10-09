@@ -2762,6 +2762,13 @@ export interface components {
       manualName?: boolean | null;
       /** Model */
       model?: string | null;
+      movedFrom?: components["schemas"]["MovePointerDto"] | null;
+      movedTo?: components["schemas"]["MovePointerDto"] | null;
+      /**
+       * Moveimportpending
+       * @default false
+       */
+      moveImportPending?: boolean;
       /** Name */
       name?: string | null;
       /** Nativeerror */
@@ -3093,6 +3100,13 @@ export interface components {
       manualName?: boolean | null;
       /** Model */
       model?: string | null;
+      movedFrom?: components["schemas"]["MovePointerDto"] | null;
+      movedTo?: components["schemas"]["MovePointerDto"] | null;
+      /**
+       * Moveimportpending
+       * @default false
+       */
+      moveImportPending?: boolean;
       /** Name */
       name?: string | null;
       /** Nativeerror */
@@ -4501,6 +4515,13 @@ export interface components {
       manualName?: boolean | null;
       /** Model */
       model?: string | null;
+      movedFrom?: components["schemas"]["MovePointerDto"] | null;
+      movedTo?: components["schemas"]["MovePointerDto"] | null;
+      /**
+       * Moveimportpending
+       * @default false
+       */
+      moveImportPending?: boolean;
       /** Name */
       name?: string | null;
       /** Nativeerror */
@@ -6971,6 +6992,15 @@ export interface components {
       | "failed"
       | "cancelled"
       | "lost";
+    /** MovePointerDto */
+    MovePointerDto: {
+      /** Agentid */
+      agentId?: string | null;
+      /** Move */
+      move: string;
+      /** Server */
+      server: string;
+    };
     /** MutationReceipt */
     MutationReceipt: {
       /** Syncentities */

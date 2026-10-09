@@ -45,6 +45,8 @@ it("builds completed reply notifications with a bounded title and body", () => {
       { ...lead, id: "no-turn", lastCompletedTurn: "" },
       { ...lead, id: "in-flight", inFlight: true },
       { ...lead, id: "deleted", deletedAt: 1 },
+      { ...lead, id: "moved", movedTo: { server: "target" } },
+      { ...lead, id: "imported", moveImportPending: true },
       {
         ...lead,
         id: "fallback",

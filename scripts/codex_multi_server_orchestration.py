@@ -6,6 +6,8 @@ proxy and an explicit remote-parent link. SQLite owns queues and receipts.
 """
 from __future__ import annotations
 
+import copy
+
 import base64
 from dataclasses import dataclass
 import hashlib
@@ -221,9 +223,11 @@ class MultiServerService:
         self._diagnostic_lock = threading.Lock()
         self._command_lock = threading.RLock()
         self._command_service: Any = None
+        self._move_service: Any = None
         self._pruned_at = 0.0
         with runtime.db() as db:
             db.executescript('''
+                CREATE TABLE IF NOT EXISTS runtime_agent_moves(id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_server_outbox (
                     id TEXT PRIMARY KEY, server TEXT NOT NULL, body TEXT NOT NULL,
                     state TEXT NOT NULL, result TEXT, attempts INTEGER NOT NULL DEFAULT 0,
@@ -275,6 +279,13 @@ class MultiServerService:
                 from codex_server_exec import ServerExec
                 self._command_service = ServerExec(self)
             return self._command_service
+
+    def moves(self) -> Any:
+        with self._command_lock:
+            if self._move_service is None:
+                from codex_agent_move import AgentMoves
+                self._move_service = AgentMoves(self)
+            return self._move_service
 
     def close(self) -> None:
         with self._command_lock:
@@ -471,6 +482,7 @@ class MultiServerService:
         return None
 
     def tick(self) -> None:
+        self.moves().tick()
         with self._tick_lock:
             if self._running or self.runtime.closed:
                 return
@@ -623,7 +635,8 @@ class MultiServerService:
                              'status': 'starting', 'inFlight': True, 'created': time.time(),
                              'worktree': False, 'imageWorkspace': False,
                              'remoteWorker': {'server': server, 'link': link_id}, 'remoteReservation': True, 'error': None}
-                    for field in ('startAttempt', 'workerDefaults', 'reviewDefaults', 'quickCreate', 'needsTitle'):
+                    for field in ('startAttempt', 'workerDefaults', 'reviewDefaults', 'quickCreate', 'needsTitle',
+                                  'executionMove', 'movedTo', 'movedFrom', 'frozenNativeParams', 'executionArchives', 'executionRouteAliases', 'moveReviewPending', 'moveImportPending'):
                         proxy.pop(field, None)
                     self.runtime.put(db, 'agents', proxy)
                     if spec.get('task_id'):
@@ -651,6 +664,10 @@ class MultiServerService:
 
     def event(self, db: Any, agent: dict[str, Any], kind: str, text: str, key: str) -> str | None:
         remote = agent.get('remoteWorker')
+        if agent.get('movedTo') and agent.get('remoteOrigin'):
+            origin = agent['remoteOrigin']
+            return self.queue(db, origin['home'], 'move_home_event',
+                {'agent': agent['id'], 'link': origin['link'], 'kind': kind, 'text': text}, identity('move-home-event', key))
         if remote:
             metadata = db.execute('SELECT record FROM runtime_event_meta WHERE id=?', (key,)).fetchone()
             metadata = json.loads(metadata[0]) if metadata else {}
@@ -703,7 +720,7 @@ class MultiServerService:
             agent.pop('remoteAdmission', None)
             self.runtime.put(db, 'agents', agent)
         fields = ('status', 'cwd', 'branch', 'workerBaseCommit', 'autoWake', 'epoch', 'inFlight', 'tokensUsed', 'error')
-        if origin and (previous is None or any(agent.get(k) != previous.get(k) for k in fields)
+        if origin and not agent.get('movedTo') and (previous is None or any(agent.get(k) != previous.get(k) for k in fields)
                        or agent.get('startAttempt') != previous.get('startAttempt')):
             key = identity(agent['id'], 'state', uuid.uuid4().hex)
             sequence = db.execute('UPDATE runtime_server_sequence SET value=value+1 WHERE id=1 RETURNING value').fetchone()[0]
@@ -713,7 +730,7 @@ class MultiServerService:
             self.queue(db, origin['home'], 'state', {'link': origin['link'], 'worker': agent['id'],
                 'parentEpoch': link['parentEpoch'], 'sequence': sequence, 'record': {**record,
                     'admissionId': (agent.get('remoteAdmission') or {}).get('id') or agent.get('remoteLastAdmission')}}, key)
-        if remote and previous and previous.get('autoWake') and agent.get('autoWake') is False:
+        if remote and not (origin and agent.get('movedTo')) and previous and previous.get('autoWake') and agent.get('autoWake') is False:
             self.queue(db, remote['server'], 'stop', {'link': remote['link'], 'worker': agent['id'],
                 'reason': agent.get('error') or 'Stopped by the parent', 'controlEpoch': agent['epoch']}, identity(agent['id'], 'stop', str(agent['epoch'])))
 
@@ -758,7 +775,7 @@ class MultiServerService:
                 # Preserve the crash boundary. Only an exact durable effect can
                 # reconcile a running receipt; no second execution is allowed.
                 if (row['state'] == 'waiting'
-                        or action in {'admit', 'projects', 'folders', 'git', 'chunk', 'directory', 'chat_read', 'context', 'exec_read', 'exec_receipt'}
+                        or action in {'admit', 'projects', 'folders', 'git', 'chunk', 'directory', 'chat_read', 'context', 'exec_read', 'exec_receipt', 'move_validate', 'move_status', 'move_begin', 'move_chunk', 'move_activate', 'move_home_validate', 'move_route_ready', 'move_route_status', 'move_home_event'}
                         or action == 'task' and payload.get('args', {}).get('action') in {'list', 'get', 'history'}
                         or action == 'complaint' and payload.get('args', {}).get('action') == 'read'):
                     # Reads have no effect. Slot admission is a compare-and-set reservation, with no
@@ -830,6 +847,21 @@ class MultiServerService:
             pass
 
     def _evidence(self, db: Any, action: str, payload: dict[str, Any], key: str) -> dict[str, Any] | None:
+        if action == 'move_home_relocate':
+            row = db.execute('SELECT record FROM runtime_agents WHERE id=?', (payload['agent'],)).fetchone()
+            if row and json.loads(row[0]).get('movedTo', {}).get('move') == payload['move']:
+                return {'redirected': True}
+        if action == 'move_child':
+            child_id = payload['args']['child']['id']
+            row = db.execute('SELECT record FROM runtime_agents WHERE id=?', (child_id,)).fetchone()
+            if row:
+                child = json.loads(row[0])
+                if child.get('parentId') == payload['worker'] and child.get('remoteWorker', {}).get('link') == payload['link']:
+                    return {'registered': True, 'agentId': child_id}
+        if action == 'move_prepare':
+            row = db.execute('SELECT record FROM runtime_agent_moves WHERE id=?', (identity(payload['move'], 'target'),)).fetchone()
+            if row and json.loads(row[0])['phase'] in {'ready', 'active'}:
+                return {'phase': json.loads(row[0])['phase']}
         if action == 'exec':
             if not db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_server_exec'").fetchone():
                 return None
@@ -884,6 +916,8 @@ class MultiServerService:
         return None
 
     def _receive(self, principal: str, action: str, p: dict[str, Any], key: str) -> dict[str, Any]:
+        if action in {'move_validate', 'move_status', 'move_begin', 'move_chunk', 'move_prepare', 'move_activate', 'move_home_validate', 'move_home_relocate', 'move_home_event', 'move_route_ready', 'move_route_status'}:
+            return cast(dict[str, Any], self.moves().receive(principal, action, p, key))
         if action == 'exec_receipt':
             with self.runtime.db() as db:
                 original = db.execute('SELECT * FROM runtime_server_inbox WHERE id=?', (p['handle'],)).fetchone()
@@ -939,10 +973,12 @@ class MultiServerService:
                 if link['side'] != 'remote' or p.get('worker') not in link['workers']:
                     raise PermissionError('Worker is outside this remote-parent link')
                 worker = self.runtime.agent(p['worker'], db)
-            elif action in {'state', 'task', 'message', 'admit', 'directory', 'complaint', 'chat_read', 'context'}:
+            elif action in {'state', 'task', 'message', 'admit', 'directory', 'complaint', 'chat_read', 'context', 'move_spawn', 'move_send', 'move_interrupt', 'move_manage', 'move_child'}:
                 if link['side'] != 'home' or p.get('worker') not in link['workers']:
                     raise PermissionError('Worker is outside this home team')
                 worker = self.runtime.agent(p['worker'], db)
+                if (worker.get('movedTo') or worker.get('executionRouteAliases')) and worker.get('remoteWorker') != {'server': principal, 'link': link_id}:
+                    raise PermissionError('The worker has moved to another execution route')
             elif action == 'event':
                 if link['side'] != 'home':
                     raise PermissionError('The event is not addressed to this home team')
@@ -1010,7 +1046,7 @@ class MultiServerService:
                     self.runtime.put(db, 'agents', proxy)
                 self.runtime.enqueue_recovery_event(db, parent, p['kind'], p['text'], key)
                 return {'eventId': key}
-            if action in {'task', 'message', 'directory', 'complaint', 'chat_read', 'context'}:
+            if action in {'task', 'message', 'directory', 'complaint', 'chat_read', 'context', 'move_spawn', 'move_send', 'move_interrupt', 'move_manage', 'move_child'}:
                 parent = self.runtime.agent(link['parent'], db)
                 if parent['epoch'] != link['parentEpoch'] or not parent['autoWake'] or not worker['autoWake']:
                     raise ValueError('The home team was stopped')
@@ -1026,6 +1062,11 @@ class MultiServerService:
                     raise ValueError('The parent epoch was superseded')
                 if p.get('controlEpoch', 0) != worker.get('remoteControlEpoch', 0):
                     raise ValueError('The remote worker control epoch changed')
+                if worker.get('movedTo'):
+                    # A queued input can arrive after the source becomes read-only.
+                    # Route it through the canonical home without reopening native input here.
+                    self.runtime.enqueue_recovery_event(db, worker, p['kind'], p['text'], key)
+                    return {'eventId': key}
                 if p['kind'] in {'user', 'followup'}:
                     # send handles explicit resumption and preserves native input
                     # receipts. Other events never reopen a stopped worker.
@@ -1043,6 +1084,60 @@ class MultiServerService:
                 if self._evidence(db, 'stop', p, key) is None:
                     return {'pending': True}
             return cast(dict[str, Any], value)
+        if action in {'move_spawn', 'move_send', 'move_interrupt', 'move_manage', 'move_child'}:
+            if not worker.get('movedTo'):
+                raise PermissionError('This agent has no move redirect')
+            if worker.get('remoteOrigin'):
+                return self.worker_call(worker, action, p['args'], key)
+            if action == 'move_child':
+                summary = p['args']['child']
+                if set(summary) - {'id', 'name', 'cwd', 'model', 'effort', 'nativeEffort', 'fastMode', 'provider', 'role', 'epoch', 'created', 'prompt'}:
+                    raise ValueError('The review child contains unsupported fields')
+                child_id = summary['id']
+                uuid.UUID(child_id)
+                with self.runtime.lock, self.runtime.db() as db:
+                    link = self.link(db, p['link'])
+                    existing = db.execute('SELECT record FROM runtime_agents WHERE id=?', (child_id,)).fetchone()
+                    if existing:
+                        proxy = json.loads(existing[0])
+                        if proxy.get('parentId') != worker['id'] or proxy.get('remoteWorker') != {'server': principal, 'link': p['link']}:
+                            raise PermissionError('The review child identity belongs to another parent')
+                    else:
+                        proxy = {**worker, **summary, 'id': child_id, 'parentId': worker['id'], 'rootId': worker['rootId'],
+                                 'isLead': False, 'threadId': None, 'turnId': None, 'status': 'starting', 'inFlight': True,
+                                 'autoWake': True, 'remoteReservation': True, 'remoteWorker': {'server': principal, 'link': p['link']}}
+                        for field in list(proxy):
+                            if field.startswith(('imageWorkspace', 'workerBase', 'worktree', 'remote')) and field not in {'remoteReservation', 'remoteWorker'} or field in {'executionMove', 'movedFrom', 'movedTo', 'frozenNativeParams', 'startAttempt', 'executionArchives', 'executionRouteAliases', 'moveImportPending'}:
+                                proxy.pop(field, None)
+                        self.runtime.put(db, 'agents', proxy)
+                    if child_id not in link['workers']:
+                        link['workers'].append(child_id)
+                        db.execute('UPDATE runtime_server_links SET record=? WHERE id=?', (encoded(link), p['link']))
+                return {'registered': True, 'agentId': child_id}
+            if action == 'move_spawn':
+                args = copy.deepcopy(p['args'])
+                if not args.get('server'):
+                    args['server'] = principal
+                return cast(dict[str, Any], self.runtime.spawn_agents(worker, args, key))
+            args = copy.deepcopy(p['args'])
+            if args.get('agent_id'):
+                args['agent_id'] = self.runtime.resolve_visible_agent_id(worker['id'], args['agent_id'], include_archived=action == 'move_manage')
+            if action == 'move_manage':
+                from codex_agent_management import manage_agent
+                return manage_agent(self.runtime, worker['id'], args, worker['epoch'])
+            target = self.runtime.agent(args['agent_id'])
+            cursor = target
+            while cursor.get('parentId') and cursor['parentId'] != worker['id']:
+                cursor = self.runtime.agent(cursor['parentId'])
+            if cursor.get('parentId') != worker['id']:
+                raise PermissionError('You can control only your descendants')
+            if action == 'move_interrupt':
+                return cast(dict[str, Any], self.runtime.stop(target['id'], True,
+                    reason='Stopped by agent ' + worker['name'], sender=worker['id'], sender_epoch=worker['epoch']))
+            return cast(dict[str, Any], self.runtime.send(target['id'], p['args']['text'], key, manual=False,
+                resume=True, delivery=p['args'].get('delivery', 'queue'), sender=worker['id'], sender_epoch=worker['epoch']))
+        if worker.get('movedTo') and worker.get('remoteOrigin') and action in {'task', 'message', 'directory', 'complaint', 'chat_read', 'context'}:
+            return self.worker_call(worker, action, p['args'], key)
         if action == 'chat_read':
             return cast(dict[str, Any], self.runtime.chat_read(p['args']['room_id'], worker['id'], p['args'].get('before'), model=True))
         if action == 'context':
@@ -1072,11 +1167,19 @@ class MultiServerService:
         anchor_id = identity(p['link'], 'anchor')
         # Use the destination's account catalog and project defaults. Local
         # account keys from the home server are never inferred to exist here.
-        anchor = self.runtime.create({'id': anchor_id, 'name': 'Remote parent ' + p['parent'][:8],
-            'prompt': '', 'cwd': specs[0]['cwd'], 'yolo_mode': p['yoloMode'],
-            'concurrency': p['concurrency']}, draft=True)
-        with self.runtime.lock, self.runtime.db() as db:
+        with self.runtime.read_db() as db:
+            existing = db.execute('SELECT record FROM runtime_agents WHERE id=?', (p['parent'],)).fetchone()
+            moved_parent = json.loads(existing[0]) if existing else None
+        if (moved_parent and moved_parent.get('movedFrom') and not moved_parent.get('movedTo')
+                and moved_parent.get('remoteOrigin', {}).get('home') == principal
+                and moved_parent.get('isLead') and moved_parent.get('autoWake')):
+            anchor = moved_parent
+        else:
+            anchor = self.runtime.create({'id': anchor_id, 'name': 'Remote parent ' + p['parent'][:8],
+                'prompt': '', 'cwd': specs[0]['cwd'], 'yolo_mode': p['yoloMode'],
+                'concurrency': p['concurrency']}, draft=True)
             anchor['remoteAnchor'] = {'link': p['link'], 'home': principal}
+        with self.runtime.lock, self.runtime.db() as db:
             self.runtime.put(db, 'agents', anchor)
             db.execute('INSERT OR IGNORE INTO runtime_server_links VALUES (?,?)', (p['link'], encoded({**p, 'side': 'remote'})))
         # Existing spawn owns account/base validation and atomic worker + input

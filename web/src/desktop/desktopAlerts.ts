@@ -34,7 +34,10 @@ export function desktopAlerts(data: Snapshot): DesktopAlert[] {
     if (
       !agent.isLead ||
       agent.inFlight ||
-      (agent as typeof agent & { remoteAnchor?: unknown }).remoteAnchor
+      (agent as typeof agent & { remoteAnchor?: unknown; movedTo?: unknown })
+        .remoteAnchor ||
+      agent.movedTo ||
+      agent.moveImportPending
     )
       continue;
     const turn = agent.lastCompletedTurn;

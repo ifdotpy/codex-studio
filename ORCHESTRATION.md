@@ -999,3 +999,62 @@ A VM disconnect leaves native outcomes unknown. Do not repeat an uncertain
 operation with a new request ID. `maintenance_report` includes VM disk and
 memory data. Set VM limits in Studio Settings, Linux VM, while the VM is stopped.
 See [Linux VM workspaces](docs/linux-vm-workspaces.md) for the protocol and limits.
+
+### Move your execution to another server
+
+`orchestration_move` moves the caller, whether it is a lead or a worker.
+Prepare the target folder first with Git and server command tools.
+Supply `server` (a paired server ID or `local`), an absolute `cwd`, and a stable
+`request_id`. You can also supply `account_key` and a short `note`.
+Studio does not copy project files or create an image or a worktree.
+The old source workspace remains on the source server.
+
+Finish the current turn after the tool returns `status: "accepted"`.
+Studio freezes the source, transfers the native provider history, imports it
+without model input, saves the source redirect, and queues one target turn.
+The target turn includes the new server, folder, and note as new context.
+The existing native history bytes and item order remain unchanged.
+The Studio transcript stays on the source. Credentials do not move.
+The sidebar shows the target entry. The source record retains its target pointer.
+Children remain on their servers. Results, task updates, and messages use the
+existing remote-parent channel.
+
+The original home server keeps the team route and task board.
+After a move from A to B and then C, A points directly to C.
+B retains a read-only source record and sends late child results through A.
+Pair each new target with the original home server before a subsequent move.
+A return to an earlier server imports the current native history there.
+Codex closes only that idle native session with archive and unarchive.
+The import extends its indexed file only if all old bytes remain an exact prefix.
+Studio retains a private copy of the previous native file.
+Other native sessions stay loaded.
+
+A move refuses other active tools, native background commands, command monitors,
+and pending child spawns. Stop or finish them before the move.
+A queued model or reasoning change must finish before a move.
+A missing target folder, account, or model also prevents acceptance.
+The transfer deadline is 300 seconds. Native history has a 256 MiB limit.
+Codex ancestry has a 1024-file limit. Native settings have a 240 KiB limit.
+Studio refuses excess size and does not shorten history or instructions.
+
+Use `orchestration_request action="get"` with the original `request_id` to read
+both the acceptance receipt and the current move phase.
+An uncertain native import stays unknown. Studio does not repeat it.
+A confirmed target import can recover a lost reply and complete the redirect.
+Do not issue a different request ID to recover an uncertain move.
+An offline target before acceptance does not freeze the source.
+
+Move only when the target server is needed. Prefer the same provider account
+and organization to retain the prompt cache.
+Codex retains the native session ID, full history, instructions, model,
+reasoning settings, and ordered tool definitions.
+Codex preflight requires the same native version, OS, and MCP tool catalog.
+A different Codex account produces an explicit cache-loss warning.
+Claude requires the same provider account and organization.
+Claude uses SDK `systemPrompt.snapshot=true` and `excludeDynamicSections=true`.
+Claude also requires matching Claude CLI and SDK versions on both servers.
+A mismatch names both versions and tells the caller to update the target.
+Studio does not upgrade a CLI during a move.
+Snapshot cache reuse depends on provider support and cache lifetime.
+The local Claude probe read 96.51% of input tokens from the cache after a folder
+change with both options. Cross-machine Claude cache reuse remains unverified.

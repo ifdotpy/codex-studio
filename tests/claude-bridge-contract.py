@@ -61,7 +61,7 @@ export function query({prompt,options}){
  let abort=new AbortController();
  let outputTotal=0;
  if(options.env?.TMPDIR)fs.writeFileSync(options.cwd+'/.probe-options',JSON.stringify({permissionMode:options.permissionMode,tmpdir:options.env.TMPDIR}));
- if(options.systemPrompt)fs.appendFileSync(options.cwd+'/.queries',JSON.stringify({resume:options.resume||null,sessionId:options.sessionId||null,permissionMode:options.permissionMode})+'\n');
+ if(options.systemPrompt)fs.appendFileSync(options.cwd+'/.queries',JSON.stringify({resume:options.resume||null,sessionId:options.sessionId||null,permissionMode:options.permissionMode,systemPrompt:options.systemPrompt})+'\n');
  if(options.systemPrompt)fs.appendFileSync(options.cwd+'/.thinking-flags',JSON.stringify({phase:'initial',model:options.model,settings:options.settings})+'\n');
  return {
   supportedModels:async()=>[
@@ -226,7 +226,7 @@ class Bridge(unittest.TestCase):
         self.proc = subprocess.Popen([shutil.which('node'), str(root / 'bridge.mjs'), str(root / 'state')],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             env={**os.environ, 'STUDIO_CLAUDE_ACCOUNT':'test@example.test',
-                 'STUDIO_CLAUDE_IDLE_SECONDS':'1'})
+                 'STUDIO_CLAUDE_IDLE_SECONDS':'1', 'CLAUDE_CONFIG_DIR': str(root / 'native-config')})
         self.addCleanup(self.close)
         self.rows = queue.Queue()
         threading.Thread(target=lambda: [self.rows.put(json.loads(line)) for line in self.proc.stdout], daemon=True).start()
@@ -236,6 +236,39 @@ class Bridge(unittest.TestCase):
         self.question_answers = ['A']
         self.thread = self.call('thread/start', {'cwd':str(root),'dynamicTools':[{'name':'echo','description':'Echo',
             'inputSchema':{'type':'object','properties':{'text':{'type':'string'}},'required':['text']}}]})['thread']['id']
+
+    def test_move_native_history_import_has_no_model_input_and_resumes_the_same_session(self):
+        config = self.root / 'claude-native'
+        projects = config / 'projects' / 'source'
+        projects.mkdir(parents=True)
+        native = projects / (self.thread + '.jsonl')
+        native.write_bytes(b'{"type":"user","message":{"content":"Exact native history"}}\n')
+        # The test bridge uses only this isolated native configuration directory.
+        # The import path is supplied directly; no account token or auth file is copied.
+        session = {'id': self.thread, 'nativeId': self.thread, 'started': True, 'model': 'default',
+                   'cwd': str(self.root), 'developerInstructions': 'Frozen instructions',
+                   'dynamicTools': [], 'turns': []}
+        new_id = str(uuid.uuid4())
+        session['id'] = new_id
+        session['nativeId'] = new_id
+        target_config = self.root / 'native-config'
+        imported = self.call('claude/moveImport', {'session': session, 'cwd': str(self.root), 'path': str(native)})
+        self.assertEqual(imported['thread']['id'], new_id)
+        self.assertFalse((self.root / '.queries').exists())
+        published = next((target_config / 'projects').glob('*/*.jsonl'))
+        self.assertEqual(published.read_bytes(), native.read_bytes())
+        self.thread = new_id
+        turn = self.call('turn/start', {'threadId': new_id, 'clientUserMessageId': 'move-handoff',
+                                      'input': [{'type': 'text', 'text': 'Continue here'}]})['turn']['id']
+        self.assertEqual(self.completed()['id'], turn)
+        query = json.loads((self.root / '.queries').read_text().splitlines()[-1])
+        self.assertEqual(query['resume'], new_id)
+        self.assertTrue(query['systemPrompt']['snapshot'])
+        self.assertTrue(query['systemPrompt']['excludeDynamicSections'])
+        exported = self.call('claude/moveExport', {'threadId': new_id})
+        self.assertEqual(exported['session']['nativeId'], new_id)
+        self.assertEqual(exported['session']['turns'], [])
+        self.assertEqual(Path(exported['path']).read_bytes(), native.read_bytes())
 
     def close(self):
         self.proc.stdin.close()
