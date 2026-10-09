@@ -9,6 +9,7 @@ import json
 import math
 from pathlib import Path
 import platform
+import re
 import threading
 import time
 from typing import Any, cast
@@ -16,10 +17,74 @@ import uuid
 
 from codex_exact_history import export_codex, frozen_codex_parameters, private_write, unpack_codex, export_claude, extend_codex_history, MAX_HISTORY_BYTES
 from codex_multi_server_orchestration import encoded, identity
+from codex_native_errors import NativeRpcError
 
 CHUNK = 96 * 1024
 DEADLINE = 300
 _TERMINAL = {'complete', 'unknown', 'failed'}
+
+
+def diagnostic_name(value: Any) -> str:
+    # Do not print URLs, configuration values, descriptions, or schema content.
+    return value if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.:+ -]{1,128}', value) else '<unavailable>'
+
+
+def catalog_names(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result = []
+    for row in rows:
+        tools = row.get('tools', {})
+        entries = tools.items() if isinstance(tools, dict) else ((entry.get('name'), entry) for entry in tools)
+        result.append({'name': diagnostic_name(row.get('name')),
+            'hash': hashlib.sha256(encoded(row).encode()).hexdigest(),
+            'tools': [{'name': diagnostic_name(name), 'hash': hashlib.sha256(encoded(tool).encode()).hexdigest()}
+                      for name, tool in entries]})
+    return result
+
+
+def listed_names(rows: list[dict[str, Any]]) -> str:
+    return ', '.join(diagnostic_name(row.get('name')) for row in rows) or '(none)'
+
+
+def claude_tool_refusal(data: Any) -> str | None:
+    refusal = data.get('moveRefusal') if isinstance(data, dict) else None
+    if not isinstance(refusal, dict) or refusal.get('kind') not in {'studio_tools', 'external_tools', 'builtin_tools'}:
+        return None
+    names = {}
+    for field in ('sourceNames', 'targetNames', 'changedNames'):
+        values = refusal.get(field)
+        if not isinstance(values, list) or len(values) > 1000 or any(not isinstance(value, str) for value in values):
+            return None
+        names[field] = ', '.join(diagnostic_name(value) for value in values) or '(none)'
+    if refusal['kind'] == 'external_tools':
+        return f'External MCP tool snapshots are not supported yet. Source tools [{names["sourceNames"]}]. Their target schemas cannot be verified'
+    if refusal['kind'] == 'builtin_tools':
+        return f'The target CLI does not offer saved builtin tools [{names["changedNames"]}]. Source tools [{names["sourceNames"]}]; target tools [{names["targetNames"]}]'
+    return f'The effective target Studio tool definitions differ in names, schemas, or order. Source tools [{names["sourceNames"]}]; target tools [{names["targetNames"]}]; changed definitions [{names["changedNames"]}]'
+
+
+def capability_difference(provider: str, source: dict[str, Any], target: dict[str, Any]) -> str:
+    differences = []
+    fields = [('cli', 'Claude CLI version', 'Source CLI', 'target CLI'),
+              ('sdk', 'Claude SDK version', 'source SDK', 'target SDK')] if provider == 'claude' else [
+              ('version', 'Codex CLI version', 'source', 'target')]
+    fields.append(('platform', 'Platform', 'source', 'target'))
+    for field, label, source_label, target_label in fields:
+        if source.get(field) != target.get(field):
+            differences.append(f'{label} differs: {source_label} {diagnostic_name(source.get(field))}; {target_label} {diagnostic_name(target.get(field))}')
+    if provider == 'codex' and (source.get('mcp') != target.get('mcp') or source.get('mcpCatalog') != target.get('mcpCatalog')):
+        left, right = source.get('mcpCatalog', []), target.get('mcpCatalog', [])
+        differences.append(f'MCP servers: source [{listed_names(left)}]; target [{listed_names(right)}]')
+        before, after = {row['name']: row for row in left}, {row['name']: row for row in right}
+        for name in sorted(before.keys() | after.keys()):
+            a, b = before.get(name, {}), after.get(name, {})
+            if a != b:
+                differences.append(f'MCP server {diagnostic_name(name)} differs; source tools [{listed_names(a.get("tools", []))}]; target tools [{listed_names(b.get("tools", []))}]')
+                tool_a = {tool['name']: tool['hash'] for tool in a.get('tools', [])}
+                tool_b = {tool['name']: tool['hash'] for tool in b.get('tools', [])}
+                changed = sorted(name for name in tool_a.keys() & tool_b.keys() if tool_a[name] != tool_b[name])
+                if changed:
+                    differences.append('MCP tool definitions differ: ' + diagnostic_name(name) + '/' + ', '.join(diagnostic_name(tool) for tool in changed))
+    return '. '.join(differences)
 
 def move_tools(tool: Any, text: dict[str, Any]) -> list[dict[str, Any]]:
     return [tool('orchestration_move',
@@ -158,7 +223,8 @@ class AgentMoves:
         if mcp.get('nextCursor'):
             raise ValueError('The complete native MCP tool catalog exceeds the move preflight limit')
         return {'version': native.get('version'), 'platform': platform.system(),
-                'mcp': hashlib.sha256(encoded(mcp.get('data', [])).encode()).hexdigest()}
+                'mcp': hashlib.sha256(encoded(mcp.get('data', [])).encode()).hexdigest(),
+                'mcpCatalog': catalog_names(mcp['data'])}
 
     def _native_owner(self, db: Any, actor: str, thread: str, account: str, provider: str) -> None:
         uuid.UUID(thread)
@@ -721,20 +787,25 @@ class AgentMoves:
                 self._native_owner(db, payload['agentId'], payload['nativeThread'], account['id'], payload['provider'])
             temporary = {'provider': payload['provider'], 'accountKey': account['id'], 'id': 'move-preflight'}
             capabilities = self._capabilities(temporary)
-            if capabilities.get('platform') != payload['capabilities'].get('platform'):
-                raise ValueError('The source and target OS differ. The builtin tool catalog cannot be proved identical')
-            if capabilities != payload['capabilities'] and payload['provider'] == 'claude':
-                source = payload['capabilities']
-                raise ValueError(f"Claude versions differ. Source CLI {source['cli']}, SDK {source['sdk']}; target CLI {capabilities['cli']}, SDK {capabilities['sdk']}. Update the CLI and SDK on the target to the source versions before a move")
             if capabilities != payload['capabilities']:
-                raise ValueError('The native version, platform, or MCP tools differ. The exact prompt prefix cannot be preserved')
+                detail = capability_difference(payload['provider'], payload['capabilities'], capabilities)
+                fix = 'Update the CLI and SDK on the target to the source versions before a move' if payload['provider'] == 'claude' else 'Use the same CLI version, platform, and MCP catalog on both servers'
+                raise ValueError(detail + '. The exact prompt prefix and builtin tool catalog cannot be proved identical. ' + fix)
             account_identity = self._account_identity(account)
             if payload['provider'] == 'claude' and account_identity != payload['accountIdentity']:
                 raise ValueError('Claude moves require the same provider account and organization on the target')
             cache_proof = 'exact_native_history_and_catalog'
             if payload['provider'] == 'claude':
-                proof = self.runtime.connect(account['id']).call('claude/movePreflight',
-                    {'proof': payload['claudeProof'], 'cwd': payload['cwd'], 'model': payload['model']}, timeout=25)
+                try:
+                    proof = self.runtime.connect(account['id']).call('claude/movePreflight',
+                        {'proof': payload['claudeProof'], 'cwd': payload['cwd'], 'model': payload['model']}, timeout=25)
+                except NativeRpcError as error:
+                    # Only this read-only preflight's names-only refusal can become a paired rejection.
+                    # Other native errors retain their unknown outcome and private diagnostics.
+                    refusal_detail = claude_tool_refusal(error.data)
+                    if refusal_detail is None:
+                        raise
+                    raise ValueError(refusal_detail) from error
                 cache_proof = proof.get('proofMethod', 'saved_snapshot_and_identical_studio_options')
             catalog = self.runtime.catalog(account['id'])
             if not any(row.get('model') == payload['model'] for row in catalog.get('data', [])):

@@ -267,6 +267,26 @@ class Bridge(unittest.TestCase):
     def test_review_moved_default_permission_stays_default(self):
         self.moved_permission('default')
 
+    def test_move_tool_refusal_data_contains_only_names_without_model_input(self):
+        proof = {'session': {'id': self.thread, 'model': 'default', 'dynamicTools': []},
+            'tools': [{'name': 'mcp__studio__old', 'description': 'private-description',
+                       'input_schema': {'private': 'schema-secret'}}]}
+        self.sequence += 1
+        request = self.sequence
+        self.write({'id': request, 'method': 'claude/movePreflight',
+                    'params': {'proof': proof, 'model': 'default', 'cwd': str(self.root)}})
+        while True:
+            response = self.read()
+            if response.get('id') == request:
+                break
+            self.notifications.append(response)
+        self.assertEqual(response['error']['data']['moveRefusal'], {
+            'kind': 'studio_tools', 'sourceNames': ['mcp__studio__old'], 'targetNames': [], 'changedNames': []})
+        self.assertIn('mcp__studio__old', response['error']['message'])
+        for private in ('private-description', 'schema-secret'):
+            self.assertNotIn(private, json.dumps(response))
+        self.assertFalse((self.root / '.queries').exists())
+
     def test_move_native_history_import_has_no_model_input_and_resumes_the_same_session(self):
         self.thread = self.call('thread/start', {'cwd': str(self.root), 'model': 'default',
                                                 'dynamicTools': []})['thread']['id']

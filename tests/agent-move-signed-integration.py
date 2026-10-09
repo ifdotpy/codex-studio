@@ -16,6 +16,7 @@ spec = importlib.util.spec_from_file_location('move_fixture', Path(__file__).wit
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
 from codex_agent_move import DEADLINE
+from codex_native_errors import NativeRpcError
 
 
 class HistoryServer(f.fixture.f.FakeServer):
@@ -705,6 +706,112 @@ class Moves(f.SignedIntegration):
                 {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': 'version-refuse'}, 'version-refuse')
         self.assertFalse(self.a.runtime.agent(self.lead['id']).get('executionMove'))
 
+    def test_refusal_names_all_codex_fields_without_private_catalog_values(self):
+        source = self.a.runtime.server
+        target = self.b.runtime.server
+        source.native_binary['version'] = '0.160.1'
+        target.native_binary['version'] = '0.161.0'
+        source_call, target_call = source.call, target.call
+        def status(original, names, method, params, timeout=60):
+            if method == 'mcpServerStatus/list':
+                return {'data': [{'name': name, 'tools': {'inspect': {'name': 'inspect',
+                    'description': 'private-description', 'inputSchema': {'private': 'schema-secret'}}},
+                    'url': 'https://private.example/?token=url-secret', 'env': {'TOKEN': 'env-secret'}} for name in names]}
+            return original(method, params, timeout)
+        service = self.b.runtime.multi_server().moves()
+        original_caps = service._capabilities
+        source_service = self.a.runtime.multi_server().moves()
+        source_caps = source_service._capabilities
+        with patch.object(source, 'call', side_effect=lambda m, p, timeout=60: status(source_call, ['anarlog', 'computer-use'], m, p, timeout)), \
+             patch.object(target, 'call', side_effect=lambda m, p, timeout=60: status(target_call, ['linear'], m, p, timeout)), \
+             patch.object(source_service, '_capabilities', side_effect=lambda actor: {**source_caps(actor), 'platform': 'Darwin'}), \
+             patch.object(service, '_capabilities', side_effect=lambda actor: {**original_caps(actor), 'platform': 'Linux'}):
+            with self.assertRaises(ValueError) as refused:
+                self.a.runtime.multi_server().moves().start(self.lead,
+                    {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': 'detail'}, 'detail')
+        message = str(refused.exception)
+        for field in ('0.160.1', '0.161.0', 'Darwin', 'Linux', 'anarlog', 'computer-use', 'linear', 'inspect'):
+            self.assertIn(field, message)
+        for secret in ('private-description', 'schema-secret', 'private.example', 'url-secret', 'env-secret'):
+            self.assertNotIn(secret, message)
+        self.assertFalse(self.a.runtime.agent(self.lead['id']).get('executionMove'))
+
+    def test_refusal_names_all_claude_version_and_platform_fields(self):
+        self.claude_source()
+        self.b.runtime.server.cli_version = '2.1.177'
+        self.b.runtime.server.sdk_version = '0.3.284'
+        service = self.b.runtime.multi_server().moves()
+        original = service._capabilities
+        source_service = self.a.runtime.multi_server().moves()
+        source_caps = source_service._capabilities
+        with patch.object(source_service, '_capabilities', side_effect=lambda actor: {**source_caps(actor), 'platform': 'Darwin'}), \
+             patch.object(service, '_capabilities', side_effect=lambda actor: {**original(actor), 'platform': 'Linux'}):
+            with self.assertRaises(ValueError) as refused:
+                self.a.runtime.multi_server().moves().start(self.lead,
+                    {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': 'claude-detail'}, 'claude-detail')
+        for field in ('2.1.291', '2.1.177', '0.3.285', '0.3.284', 'Darwin', 'Linux'):
+            self.assertIn(field, str(refused.exception))
+        self.assertFalse(self.a.runtime.agent(self.lead['id']).get('executionMove'))
+
+    def test_refusal_preserves_claude_native_tool_details_without_raw_errors(self):
+        self.claude_source()
+        target = self.b.runtime.server
+        original = target.call
+        def refuse(method, params, timeout=60):
+            if method == 'claude/movePreflight':
+                raise NativeRpcError({'code': -32000, 'message': 'raw-error-secret', 'data': {
+                    'moveRefusal': {'kind': 'studio_tools', 'sourceNames': ['mcp__studio__old', 'mcp__studio__same'],
+                        'targetNames': ['mcp__studio__new', 'mcp__studio__same'], 'changedNames': ['mcp__studio__same']}}})
+            return original(method, params, timeout)
+        with patch.object(target, 'call', side_effect=refuse):
+            with self.assertRaises(ValueError) as refused:
+                self.a.runtime.multi_server().moves().start(self.lead,
+                    {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': 'native-tool-detail'}, 'native-tool-detail')
+        message = str(refused.exception)
+        for name in ('mcp__studio__old', 'mcp__studio__new', 'changed definitions [mcp__studio__same]'):
+            self.assertIn(name, message)
+        self.assertNotIn('raw-error-secret', message)
+        self.assertFalse(self.a.runtime.agent(self.lead['id']).get('executionMove'))
+
+    def test_refusal_names_changed_tools_when_versions_and_servers_match(self):
+        source, target = self.a.runtime.server, self.b.runtime.server
+        source_call, target_call = source.call, target.call
+        def status(original, side, method, params, timeout=60):
+            if method == 'mcpServerStatus/list':
+                return {'data': [{'name': 'same-server', 'tools': {
+                    'read': {'name': 'read', 'inputSchema': {'private': side + '-secret'}},
+                    side: {'name': side, 'inputSchema': {'private': side + '-secret'}}}}]}
+            return original(method, params, timeout)
+        with patch.object(source, 'call', side_effect=lambda m, p, timeout=60: status(source_call, 'source-only', m, p, timeout)), \
+             patch.object(target, 'call', side_effect=lambda m, p, timeout=60: status(target_call, 'target-only', m, p, timeout)):
+            with self.assertRaises(ValueError) as refused:
+                self.a.runtime.multi_server().moves().start(self.lead,
+                    {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': 'tool-detail'}, 'tool-detail')
+        message = str(refused.exception)
+        for name in ('same-server', 'source-only', 'target-only', 'MCP tool definitions differ: same-server/read'):
+            self.assertIn(name, message)
+        self.assertNotIn('source-only-secret', message)
+        self.assertNotIn('target-only-secret', message)
+        self.assertNotIn('CLI version differs', message)
+        self.assertFalse(self.a.runtime.agent(self.lead['id']).get('executionMove'))
+
+    def test_refusal_keeps_unstructured_claude_native_errors_unknown(self):
+        self.claude_source()
+        target = self.b.runtime.server
+        original = target.call
+        def refuse(method, params, timeout=60):
+            if method == 'claude/movePreflight':
+                raise NativeRpcError({'code': -32000, 'message': 'raw-error-secret',
+                    'data': {'moveRefusal': {'kind': 'unknown', 'sourceNames': ['private-name']}}})
+            return original(method, params, timeout)
+        with patch.object(target, 'call', side_effect=refuse):
+            with self.assertRaisesRegex(RuntimeError, 'receipt is unknown') as refused:
+                self.a.runtime.multi_server().moves().start(self.lead,
+                    {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': 'unknown-native-error'}, 'unknown-native-error')
+        self.assertNotIn('raw-error-secret', str(refused.exception))
+        self.assertNotIn('private-name', str(refused.exception))
+        self.assertFalse(self.a.runtime.agent(self.lead['id']).get('executionMove'))
+
     def test_claude_same_email_with_a_different_organization_refuses(self):
         self.claude_source()
         self.b.runtime.server.organization = 'another-organization'
@@ -718,7 +825,7 @@ class Moves(f.SignedIntegration):
         target = self.b.runtime.multi_server().moves()
         original = target._capabilities
         with patch.object(target, '_capabilities', side_effect=lambda actor: {**original(actor), 'platform': 'Another OS'}):
-            with self.assertRaisesRegex(ValueError, 'OS differ.*builtin tool catalog'):
+            with self.assertRaisesRegex(ValueError, 'Platform differs.*builtin tool catalog'):
                 self.a.runtime.multi_server().moves().start(self.lead,
                     {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': 'os-refuse'}, 'os-refuse')
         self.assertFalse(self.a.runtime.agent(self.lead['id']).get('executionMove'))

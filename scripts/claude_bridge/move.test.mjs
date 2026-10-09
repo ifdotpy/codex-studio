@@ -174,6 +174,57 @@ test("saved snapshots require a complete prompt and ordered schemas for the nati
   }
 });
 
+test("tool refusal reports names and changed schemas without private values", () => {
+  const source = [
+    { name: "mcp__studio__old", input_schema: { token: "source-secret" } },
+    { name: "mcp__studio__same", input_schema: { token: "source-secret" } },
+  ];
+  const target = [
+    { name: "mcp__studio__new", input_schema: { token: "target-secret" } },
+    { name: "mcp__studio__same", input_schema: { token: "target-secret" } },
+  ];
+  assert.throws(
+    () => verifyToolProof({ tools: source }, target),
+    (error) => {
+      for (const name of [
+        "mcp__studio__old",
+        "mcp__studio__new",
+        "mcp__studio__same",
+      ])
+        assert.ok(error.message.includes(name));
+      assert.ok(
+        error.message.includes("changed definitions [mcp__studio__same]"),
+      );
+      assert.ok(!error.message.includes("source-secret"));
+      assert.ok(!error.message.includes("target-secret"));
+      assert.deepEqual(error.data.moveRefusal, {
+        kind: "studio_tools",
+        sourceNames: source.map((entry) => entry.name),
+        targetNames: target.map((entry) => entry.name),
+        changedNames: ["mcp__studio__same"],
+      });
+      assert.ok(!JSON.stringify(error.data).includes("source-secret"));
+      return true;
+    },
+  );
+  assert.throws(
+    () =>
+      verifyToolProof(
+        {
+          tools: [
+            { name: "mcp__https://host/?token=name-secret", input_schema: {} },
+          ],
+        },
+        [],
+      ),
+    (error) => {
+      assert.ok(!error.message.includes("name-secret"));
+      assert.deepEqual(error.data.moveRefusal.sourceNames, ["<unavailable>"]);
+      return true;
+    },
+  );
+});
+
 test("Studio proof reads the compiled ordered MCP schemas without model input", async () => {
   const { createSdkMcpServer, tool } =
     await import("@anthropic-ai/claude-agent-sdk");
