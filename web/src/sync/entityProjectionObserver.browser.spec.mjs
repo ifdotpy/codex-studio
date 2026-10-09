@@ -40,8 +40,8 @@ test("entity observer applies RxDB changes across tabs and resets before publica
   browser,
 }) => {
   test.setTimeout(60_000);
-  const { createServer } =
-    await import("../../node_modules/vite/dist/node/index.js");
+  const { createFixtureViteServer: createServer } =
+    await import("../../../tests/client/playwright.mjs");
   const server = await createServer({
     configFile: false,
     root: fileURLToPath(new URL("../..", import.meta.url)),

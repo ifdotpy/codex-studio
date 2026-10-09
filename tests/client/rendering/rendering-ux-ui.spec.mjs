@@ -2,7 +2,6 @@
 // Isolated component browser checks. No server state or live model requests.
 import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { writeFile, rm } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,8 +11,9 @@ test("rendering ux ui", async ({ page: runnerPage }) => {
   const root = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
-  const require = createRequire(join(root, "web/package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const name = `.rendering-check-${process.pid}`;
   const entry = join(root, "web", `${name}.tsx`);
   const html = join(root, "web", `${name}.html`);

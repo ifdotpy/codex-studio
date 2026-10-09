@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import {
   API_SCHEMA_HASH_HEADER,
+  createFixtureViteServer,
   FIXTURE_OPTIMIZE_DEPS,
   apiSchemaHandshakeSse,
   readApiSchemaHash,
@@ -40,9 +41,7 @@ test("Ux Chat Ui", async ({
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
   const require = createRequire(join(repo, "web/package.json"));
-  const { createServer: createViteServer } = await import(
-    require.resolve("vite")
-  );
+  const createViteServer = createFixtureViteServer;
   const webRoot = join(repo, "web");
   const temporary = await mkdtemp(join(webRoot, ".studio-chat-ux-"));
   const temporaryName = temporary.slice(webRoot.length + 1);

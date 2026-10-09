@@ -14,7 +14,8 @@ test("Scroll restart", async () => {
   const require = createRequire(join(repo, "web/package.json"));
   const { chromium, webkit } = require("playwright-core");
   const browserType = process.env.BROWSER === "webkit" ? webkit : chromium;
-  const { createServer } = await import(require.resolve("vite"));
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const cache = await mkdtemp(join(tmpdir(), "studio-scroll-restart-"));
   const server = await createServer({
     configFile: false,

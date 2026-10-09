@@ -1,4 +1,3 @@
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,8 +12,9 @@ test("progress cache retains good content through a panel read error", async ({
 }) => {
   const repo = join(import.meta.dirname, "../../../..");
   const webRoot = join(repo, "web");
-  const require = createRequire(join(webRoot, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../../../../tests/client/playwright.mjs");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-progress-error-"));
   const entry = join(webRoot, "progress-cache-error-fixture.ts");
   const server = await createServer({

@@ -1,4 +1,3 @@
-import { createRequire } from "node:module";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,8 +13,9 @@ import {
 // Exercise the Accounts manager through its Studio settings host and native menus.
 async function fixture(page) {
   const root = join(import.meta.dirname, "../../../web");
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const evidence = await mkdtemp(join(tmpdir(), "studio-accounts-cards-"));
   const entry = join(root, "accounts-cards-fixture.tsx");
   const accounts = [

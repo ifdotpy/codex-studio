@@ -1,7 +1,6 @@
 import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "../playwright.mjs";
 
@@ -10,8 +9,9 @@ test("Complaint ownership", async ({ browser: testBrowser }) => {
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Current message recipient, history, and response delivery through the real component.
   const repo = testRepo;
-  const require = createRequire(join(repo, "web/package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const harness = `
   import React from 'react';
   import {createRoot} from 'react-dom/client';

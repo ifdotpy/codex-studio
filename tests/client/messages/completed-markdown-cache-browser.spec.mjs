@@ -1,4 +1,3 @@
-import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -28,8 +27,9 @@ test("Completed Markdown Cache Browser", async ({
   };
 
   const root = join(import.meta.dirname, "../../../web");
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const baseline = process.env.BASELINE === "1";
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-markdown-cache-"));
   const entry = join(root, "markdown-cache-fixture.tsx");

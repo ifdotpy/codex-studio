@@ -12,7 +12,8 @@ test("Sidebar incremental rows and current callbacks @performance", async ({
   const root = join(import.meta.dirname, "../../../web");
   const require = createRequire(join(root, "package.json"));
   const { build } = require("esbuild");
-  const { createServer } = await import(require.resolve("vite"));
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const directory = await mkdtemp(
     join(tmpdir(), "studio-sidebar-incremental-"),
   );

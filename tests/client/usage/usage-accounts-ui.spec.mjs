@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -31,8 +30,9 @@ test("usage accounts ui", async ({ browser: _browser }) => {
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
-  const require = createRequire(join(repo, "web/package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const cache = await mkdtemp(join(tmpdir(), "usage-accounts-vite-"));
   const entry = join(repo, "web/__usage-accounts-fixture.jsx");
   const now = Math.floor(Date.now() / 1000);

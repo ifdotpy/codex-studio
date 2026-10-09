@@ -16,7 +16,8 @@ test("Transcript render performance @performance", async () => {
   const require = createRequire(join(root, "package.json"));
   const { chromium, webkit } = require("playwright-core");
   const browserType = process.env.BROWSER === "webkit" ? webkit : chromium;
-  const { createServer } = await import(require.resolve("vite"));
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-render-audit-"));
   const entry = join(root, "transcript-audit.tsx");
   const server = await createServer({

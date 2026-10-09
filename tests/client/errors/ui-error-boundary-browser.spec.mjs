@@ -1,6 +1,5 @@
 import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -13,8 +12,9 @@ test("ui-error-boundary-browser", async ({ page }) => {
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
-  const require = createRequire(join(repo, "web/package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const cache = await mkdtemp(join(tmpdir(), "studio-display-boundary-"));
   const entry = join(repo, "web/__display-boundary.jsx");
   const source = `

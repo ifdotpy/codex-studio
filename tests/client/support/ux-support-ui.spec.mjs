@@ -16,7 +16,8 @@ test("ux support ui", async ({ page: runnerPage }) => {
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
   const require = createRequire(join(repo, "web/package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const temporary = await mkdtemp(join(tmpdir(), "studio-support-ux-"));
   let server;
   try {

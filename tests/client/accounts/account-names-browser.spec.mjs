@@ -1,5 +1,4 @@
 import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
-import { createRequire } from "node:module";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,8 +9,9 @@ async function fixture(page, mode) {
     console.error("Account fixture:", error.message),
   );
   const root = join(import.meta.dirname, "../../../web");
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const evidence = await mkdtemp(join(tmpdir(), "studio-account-names-"));
   const entry = join(root, "account-names-fixture.tsx");
   const accounts = [

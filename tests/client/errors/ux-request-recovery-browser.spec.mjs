@@ -7,7 +7,6 @@ import {
 } from "../playwright.mjs";
 // Real UI components with isolated HTTP responses. No model or user state.
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,8 +17,9 @@ test("Ux request recovery browser", async ({
 }) => {
   test.setTimeout(45_000);
   const root = fileURLToPath(new URL("../../../", import.meta.url));
-  const require = createRequire(join(root, "web/package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const cache = await mkdtemp(join(tmpdir(), "studio-ux-request-recovery-"));
   const entry = join(root, "web/__request-recovery.jsx");
   const source = `

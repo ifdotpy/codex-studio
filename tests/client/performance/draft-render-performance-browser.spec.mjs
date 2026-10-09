@@ -30,9 +30,8 @@ test("Draft Render Performance Browser @performance", async ({
   };
 
   const root = fileURLToPath(new URL("../../../", import.meta.url));
-  const { createServer } = await import(
-    root + "/web/node_modules/vite/dist/node/index.js"
-  );
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const server = await createServer({
     configFile: false,
     root: root + "/web",

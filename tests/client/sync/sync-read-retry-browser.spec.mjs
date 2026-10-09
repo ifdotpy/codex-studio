@@ -10,12 +10,8 @@ import {
 
 test("sync-read-retry-browser", async ({ page: fixturePage }) => {
   test.setTimeout(60_000);
-  const { createServer } = await import(
-    new URL(
-      "../../../web/node_modules/vite/dist/node/index.js",
-      import.meta.url,
-    )
-  );
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const workspaceId = "e".repeat(32);
   const attempts = new Map();
   const streams = new Set();

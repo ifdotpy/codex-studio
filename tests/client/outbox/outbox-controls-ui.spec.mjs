@@ -1,7 +1,6 @@
 // Full React client and shared RxDB, isolated server. No live agent requests.
 import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -19,8 +18,9 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
-  const require = createRequire(join(repo, "web/package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const evidence = await mkdtemp(join(tmpdir(), "studio-outbox-controls-"));
   const fixture = spawn(
     process.env.PYTHON_BIN || "python3.14",

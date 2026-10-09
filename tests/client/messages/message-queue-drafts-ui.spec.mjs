@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 // Actual queue component, isolated browser storage, no backend or model service.
 
-import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
+import {
+  createFixtureViteServer,
+  FIXTURE_OPTIMIZE_DEPS,
+} from "../playwright.mjs";
 import { createServer } from "node:http";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createRequire } from "node:module";
 import { test, expect } from "../playwright.mjs";
 
 test("Message Queue Drafts Ui", async ({
@@ -31,10 +33,8 @@ test("Message Queue Drafts Ui", async ({
   };
 
   const repo = join(import.meta.dirname, "../../..");
-  const require = createRequire(join(repo, "web/package.json"));
-  const { createServer: createViteServer } = await import(
-    require.resolve("vite")
-  );
+
+  const createViteServer = createFixtureViteServer;
   const root = await mkdtemp(join(repo, "web/.message-queue-drafts-"));
   const entry = join(root, "entry.tsx");
   let vite;

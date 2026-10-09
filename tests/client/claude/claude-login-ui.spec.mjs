@@ -1,6 +1,5 @@
 import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
@@ -15,8 +14,9 @@ const syncWorkspaceId = "1234567890abcdef1234567890abcdef";
 
 test("claude login ui", async ({ page: runnerPage }) => {
   const root = resolve(import.meta.dirname, "../../../web");
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const cacheDir = await mkdtemp(join(tmpdir(), "claude-login-ui-"));
   const entry = join(root, "claude-login-fixture.tsx");
   const server = await createServer({

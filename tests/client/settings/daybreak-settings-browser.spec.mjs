@@ -5,7 +5,6 @@ import {
 } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,8 +22,9 @@ test("Daybreak settings", async ({ context }) => {
   // Exercise the real settings component without a backend or model request.
 
   const root = fileURLToPath(new URL("../../../web/", import.meta.url));
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-daybreak-settings-"));
   const entry = join(root, "daybreak-settings-fixture.tsx");
   const schemaHeaders = JSON.stringify({

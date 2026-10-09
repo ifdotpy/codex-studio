@@ -24,12 +24,8 @@ test("Sync stream measure @performance", async () => {
   const requireWeb = createRequire(join(root, "web/package.json"));
   const { chromium } = requireWeb("playwright-core");
   const typescript = requireWeb("typescript");
-  const { createServer } = await import(
-    new URL(
-      "../../../web/node_modules/vite/dist/node/index.js",
-      import.meta.url,
-    )
-  );
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const directory = await mkdtemp(join(tmpdir(), "sync-stream-measure-"));
   const fixture = spawn("python3", ["-B", fixturePath, directory], {
     stdio: ["pipe", "pipe", "pipe"],

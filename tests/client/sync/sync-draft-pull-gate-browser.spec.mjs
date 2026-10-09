@@ -13,12 +13,8 @@ test("draft pull waits for a real trigger without blocking push recovery", async
   page: fixturePage,
 }) => {
   test.setTimeout(45_000);
-  const { createServer } = await import(
-    new URL(
-      "../../../web/node_modules/vite/dist/node/index.js",
-      import.meta.url,
-    )
-  );
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const workspaceId = "c".repeat(32);
   const streams = new Set();
   let pulls = 0;

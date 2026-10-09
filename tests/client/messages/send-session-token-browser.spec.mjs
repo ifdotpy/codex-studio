@@ -2,7 +2,6 @@ import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import { installApiSchemaFixtureHeaders, test } from "../playwright.mjs";
 // Real RxDB and send callers with controlled session and claim delays.
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,8 +14,9 @@ test("Send session token browser", async ({
 }) => {
   test.setTimeout(45_000);
   const root = fileURLToPath(new URL("../../../", import.meta.url));
-  const require = createRequire(join(root, "web/package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const temporary = await mkdtemp(join(tmpdir(), "studio-send-session-token-"));
   const workspaceId = "c".repeat(32);
   const server = await createServer({

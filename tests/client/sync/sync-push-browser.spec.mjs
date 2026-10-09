@@ -11,12 +11,8 @@ import {
 test("Sync push", async ({ context: testContext }) => {
   test.setTimeout(30_000);
   // Real RxDB/Dexie reconciles a shared stream invalidation through HTTP pull.
-  const { createServer } = await import(
-    new URL(
-      "../../../web/node_modules/vite/dist/node/index.js",
-      import.meta.url,
-    )
-  );
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const workspaceId = "c".repeat(32);
   const streams = new Map();
   let revision = 1;

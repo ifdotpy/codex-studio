@@ -6,12 +6,8 @@ test("draft pushes coalesce at the production replication boundary", async ({
   context,
 }) => {
   test.setTimeout(45_000);
-  const { createServer } = await import(
-    new URL(
-      "../../../web/node_modules/vite/dist/node/index.js",
-      import.meta.url,
-    )
-  );
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const workspaceId = "f".repeat(32);
   const pushes = [];
   const pushTimes = [];

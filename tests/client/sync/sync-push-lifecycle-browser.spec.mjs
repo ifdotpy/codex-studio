@@ -29,12 +29,8 @@ test("Sync Push Lifecycle Browser", async ({
     },
   };
 
-  const { createServer } = await import(
-    new URL(
-      "../../../web/node_modules/vite/dist/node/index.js",
-      import.meta.url,
-    )
-  );
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const workspaceId = "d".repeat(32);
   const streams = new Set();
   let opened = 0;

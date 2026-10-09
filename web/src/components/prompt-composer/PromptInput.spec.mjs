@@ -3,8 +3,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createServer } from "vite";
-import { expect, test } from "../../../../tests/client/playwright.mjs";
+import {
+  createFixtureViteServer as createServer,
+  expect,
+  test,
+} from "../../../../tests/client/playwright.mjs";
 
 let cacheDir;
 let server;

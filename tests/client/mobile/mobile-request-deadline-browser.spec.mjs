@@ -13,7 +13,8 @@ const webkitPath = webkit.executablePath();
 
 async function runDeadlineChecks(name, engine, executablePath) {
   // Browser request deadlines still expire after mobile JavaScript suspension.
-  const { createServer } = await import(require.resolve("vite"));
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const server = await createServer({
     optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
     configFile: false,

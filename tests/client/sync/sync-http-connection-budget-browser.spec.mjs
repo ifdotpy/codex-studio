@@ -7,7 +7,6 @@ import {
 } from "../playwright.mjs";
 // Actual HTTP connection capacity with two renderer windows and slow history.
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,8 +18,9 @@ test("Sync http connection budget browser", async ({
 }) => {
   test.setTimeout(45_000);
   const root = fileURLToPath(new URL("../../../", import.meta.url));
-  const require = createRequire(join(root, "web/package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const cache = await mkdtemp(join(tmpdir(), "studio-sync-connection-budget-"));
   const workspaceId = "b".repeat(32);
   const streams = new Set();

@@ -2,7 +2,6 @@ import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import { handleEntitySyncFixtureRequest, test } from "../playwright.mjs";
 // Structured diagnostic fixtures through real React components. No live API writes.
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,8 +13,9 @@ test("Structured operational errors ui", async ({
 }) => {
   test.setTimeout(45_000);
   const root = fileURLToPath(new URL("../../../", import.meta.url));
-  const require = createRequire(join(root, "web/package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const temporary = await mkdtemp(join(tmpdir(), "studio-operational-errors-"));
   const harness = `
   import React from 'react';

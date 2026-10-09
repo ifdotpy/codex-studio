@@ -1,6 +1,5 @@
 // Component check with an isolated Vite server. No backend or model calls.
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,8 +7,9 @@ import { test, expect } from "../playwright.mjs";
 
 test("agent phase browser", async ({ page: runnerPage }) => {
   const root = join(import.meta.dirname, "../../../web");
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const evidence = await mkdtemp(join(tmpdir(), "studio-agent-phase-"));
   const entry = join(root, "agent-phase-fixture.tsx");
   const server = await createServer({

@@ -1,7 +1,6 @@
 import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import { test } from "../playwright.mjs";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -12,8 +11,9 @@ test("Peer teams browser", async ({
 }) => {
   test.setTimeout(45_000);
   const root = resolve(import.meta.dirname, "../../../web");
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-peer-teams-"));
   const entry = join(root, "peer-teams-fixture.tsx");
   const server = await createServer({

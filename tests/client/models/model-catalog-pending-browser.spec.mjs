@@ -2,7 +2,6 @@
 
 import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import { execFileSync } from "node:child_process";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -41,8 +40,9 @@ test("Model Catalog Pending Browser", async ({
   const root = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
-  const require = createRequire(join(root, "web/package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const temporary = await mkdtemp(
     join(tmpdir(), "studio-model-catalog-pending-"),
   );

@@ -119,12 +119,8 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       releaseRecoveryB,
       recoveryReadStarted = false;
     let notificationRevision = 0;
-    const { createServer } = await import(
-      new URL(
-        "../../../web/node_modules/vite/dist/node/index.js",
-        import.meta.url,
-      )
-    );
+    const { createFixtureViteServer: createServer } =
+      await import("../playwright.mjs");
     server = await createServer({
       configFile: false,
       root: join(repo, "web"),

@@ -1,6 +1,5 @@
 import { handleEntitySyncFixtureRequest, test } from "../playwright.mjs";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,8 +21,9 @@ test.afterEach(async ({ browser }, testInfo) => {
 test("chat read client browser", async ({ browser: _browser }) => {
   test.setTimeout(45_000);
   const root = join(import.meta.dirname, "../../../web");
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const workspaceId = "c".repeat(32);
   const syncAgent = {
     id: "one",

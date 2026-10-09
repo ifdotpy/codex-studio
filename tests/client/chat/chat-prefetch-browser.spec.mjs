@@ -15,12 +15,8 @@ test("Chat prefetch browser", async ({
   context: runnerContext,
 }) => {
   test.setTimeout(45_000);
-  const { createServer } = await import(
-    new URL(
-      "../../../web/node_modules/vite/dist/node/index.js",
-      import.meta.url,
-    )
-  );
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-chat-prefetch-vite-"));
   const streams = new Set();
   const server = await createServer({

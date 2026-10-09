@@ -10,7 +10,6 @@ import {
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomUUID, createHash } from "node:crypto";
-import { createRequire } from "node:module";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,8 +20,9 @@ async function runMessageReceiptScenario(
   observedFirst,
 ) {
   const repo = fileURLToPath(new URL("../../../", import.meta.url));
-  const require = createRequire(join(repo, "web/package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const python = process.env.PYTHON || process.env.PYTHON_BIN || "python3";
   const dist = process.env.RECEIPTS_DIST || join(repo, "web/dist");
   const index = await readFile(join(dist, "index.html"));

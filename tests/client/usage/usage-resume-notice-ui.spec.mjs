@@ -2,7 +2,6 @@ import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { mkdtemp, rm } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "../playwright.mjs";
@@ -13,8 +12,9 @@ test("Usage resume notice", async ({ context: testContext }) => {
   // Render the production limit notice and verify its schedule and opt-out action.
 
   const repo = testRepo;
-  const require = createRequire(join(repo, "web/package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const cache = await mkdtemp(join(tmpdir(), "usage-resume-notice-vite-"));
   const entry = join(repo, "web/__usage-resume-fixture.jsx");
   const dueAt = Math.floor(Date.now() / 1000) + 3600;

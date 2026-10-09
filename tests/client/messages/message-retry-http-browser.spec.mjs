@@ -15,12 +15,8 @@ test("message retry http browser", async ({ page: runnerPage }) => {
   const root = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
-  const { createServer } = await import(
-    new URL(
-      "../../../web/node_modules/vite/dist/node/index.js",
-      import.meta.url,
-    )
-  );
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const state = await mkdtemp(join(tmpdir(), "studio-retry-http-"));
   const fixture = spawn(
     "python3",

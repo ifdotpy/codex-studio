@@ -1,6 +1,5 @@
 import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -13,8 +12,8 @@ import {
 } from "../playwright.mjs";
 
 async function createRadioFixtureServer(root, cacheDir) {
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const entry = join(root, "radio-create-fixture.tsx");
   const workspaceId = "b".repeat(32);
   const syncSnapshot = {

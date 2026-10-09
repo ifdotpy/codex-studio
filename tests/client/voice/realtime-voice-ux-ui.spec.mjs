@@ -1,7 +1,6 @@
 import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
 import { join } from "node:path";
 import {
   API_SCHEMA_HASH_HEADER,
@@ -14,8 +13,9 @@ test("Realtime voice ux", async ({ context }) => {
   test.setTimeout(30_000);
   // React fixture: no microphone, native account, or model request.
   const root = fileURLToPath(new URL("../../../web/", import.meta.url));
-  const require = createRequire(root + "/package.json");
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const entryPath = join(root, "audit-entry.tsx");
   const workspaceId = "0123456789abcdef0123456789abcdef";
   const entry = `import React from 'react';import{createRoot}from'react-dom/client';import{MantineProvider}from'@mantine/core';import'@mantine/core/styles.css';import RealtimeVoice from '/src/components/RealtimeVoice.tsx';

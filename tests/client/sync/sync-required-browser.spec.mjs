@@ -11,12 +11,8 @@ import {
 } from "../playwright.mjs";
 
 test("sync required browser", async ({ page: runnerPage }) => {
-  const { createServer } = await import(
-    new URL(
-      "../../../web/node_modules/vite/dist/node/index.js",
-      import.meta.url,
-    )
-  );
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const server = await createServer({
     configFile: false,
     root: fileURLToPath(new URL("../../../web", import.meta.url)),
@@ -185,12 +181,8 @@ test("draft bootstrap retries pause and recover on explicit activity", async ({
   page: runnerPage,
 }) => {
   test.setTimeout(120_000);
-  const { createServer } = await import(
-    new URL(
-      "../../../web/node_modules/vite/dist/node/index.js",
-      import.meta.url,
-    )
-  );
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const workspaceId = "c".repeat(32);
   let identityStatus = 503;
   let identityRequests = 0;

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,8 +15,9 @@ import {
 test("progress-fit-browser", async ({ browser, page }) => {
   test.setTimeout(60_000);
   const root = join(import.meta.dirname, "../../../web");
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-progress-fit-"));
   const entry = join(root, "progress-fit-fixture.tsx");
   const streams = new Set();
@@ -854,8 +854,9 @@ test("compact progress open control meets the mobile touch target", async ({
   );
   test.setTimeout(30_000);
   const root = join(import.meta.dirname, "../../../web");
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-progress-target-"));
   const entry = join(root, "progress-target-fixture.tsx");
   const workspaceId = "a".repeat(32);

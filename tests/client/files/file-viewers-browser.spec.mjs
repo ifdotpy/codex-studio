@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,9 +7,9 @@ import { test, expect } from "../playwright.mjs";
 
 test("file-viewers-browser", async ({ browser, page }) => {
   test.setTimeout(45_000);
-  const root = join(import.meta.dirname, "../../../web"),
-    require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+  const root = join(import.meta.dirname, "../../../web");
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-file-viewers-"));
   const entry = join(root, "file-viewers-fixture.tsx");
   const server = await createServer({

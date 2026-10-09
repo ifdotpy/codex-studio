@@ -11,12 +11,8 @@ import {
 } from "../playwright.mjs";
 
 test("mobile sync browser", async ({ page }) => {
-  const { createServer } = await import(
-    new URL(
-      "../../../web/node_modules/vite/dist/node/index.js",
-      import.meta.url,
-    )
-  );
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const streams = new Set();
   const streamResources = new Map();
   let opened = 0;

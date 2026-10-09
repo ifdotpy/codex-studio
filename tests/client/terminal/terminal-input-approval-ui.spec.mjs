@@ -1,6 +1,5 @@
 // Exercise the Codex 0.159 write_stdin_approval request through the real card and answer API.
 import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -32,8 +31,9 @@ test("Terminal Input Approval Ui", async ({
   const root = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
-  const require = createRequire(join(root, "web/package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const temporary = await mkdtemp(join(tmpdir(), "studio-stdin-approval-"));
   const harness = `
 import React from 'react';

@@ -1,7 +1,6 @@
 import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,8 +14,9 @@ test("Native runtime status", async ({ context }) => {
   test.setTimeout(45_000);
 
   const root = fileURLToPath(new URL("../../../web/", import.meta.url));
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-native-runtime-ui-"));
   const entry = join(root, "native-runtime-fixture.tsx");
   const server = await createServer({

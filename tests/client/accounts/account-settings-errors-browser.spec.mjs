@@ -1,7 +1,6 @@
 import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,8 +16,9 @@ import {
 test("Account settings errors", async ({ browser }) => {
   test.setTimeout(45_000);
   const root = fileURLToPath(new URL("../../../web/", import.meta.url));
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const negative = process.env.NEGATIVE === "1";
   const browserType = browser.browserType();
   const entry = join(root, "account-error-fixture.tsx");

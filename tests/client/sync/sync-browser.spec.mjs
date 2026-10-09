@@ -30,12 +30,8 @@ test("Sync Browser", async ({
     },
   };
 
-  const { createServer } = await import(
-    new URL(
-      "../../../web/node_modules/vite/dist/node/index.js",
-      import.meta.url,
-    )
-  );
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const server = await createServer({
     configFile: false,
     root: fileURLToPath(new URL("../../../web", import.meta.url)),

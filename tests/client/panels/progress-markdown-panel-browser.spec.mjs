@@ -5,7 +5,6 @@ import {
   test,
 } from "../playwright.mjs";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,8 +15,9 @@ test("Progress markdown panel browser", async ({
 }) => {
   test.setTimeout(45_000);
   const root = join(import.meta.dirname, "../../../web");
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-progress-panel-"));
   const workspaceId = "1234567890abcdef1234567890abcdef";
   const entry = join(root, "progress-panel-fixture.tsx");

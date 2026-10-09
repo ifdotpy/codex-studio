@@ -19,7 +19,8 @@ test("failed tool limit remains visible in a completed turn @performance", async
   const root = fileURLToPath(new URL("../../../web/", import.meta.url));
   const require = createRequire(join(root, "package.json"));
   const { chromium } = require("playwright-core");
-  const { createServer } = await import(require.resolve("vite"));
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-turn-limit-"));
   const entry = join(root, "transcript-audit.tsx");
   const server = await createServer({

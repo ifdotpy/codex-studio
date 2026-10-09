@@ -7,7 +7,6 @@ import {
   syncIdentityFixture,
 } from "../playwright.mjs";
 // Real RxDB, with controlled HTTP failures. No live server writes.
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -37,8 +36,9 @@ test("Mobile Send Reliability Browser", async ({
   const root = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
-  const require = createRequire(join(root, "web/package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const temporary = await mkdtemp(join(tmpdir(), "studio-mobile-send-"));
   const server = await createServer({
     configFile: false,

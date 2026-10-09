@@ -2,7 +2,6 @@ import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import { test } from "../playwright.mjs";
 // Render the actual banner: ordinary monitor waits are quiet, failures stay visible.
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,8 +14,9 @@ test("Context repair notice ui", async ({
 }) => {
   test.setTimeout(45_000);
   const repo = fileURLToPath(new URL("../../../", import.meta.url));
-  const require = createRequire(join(repo, "web/package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const cache = await mkdtemp(join(tmpdir(), "context-repair-notice-vite-"));
   const entry = join(repo, "web/__context-repair-notice-fixture.jsx");
   const source = `

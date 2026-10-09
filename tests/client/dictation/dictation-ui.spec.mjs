@@ -2,7 +2,6 @@ import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import { test } from "../playwright.mjs";
 // Isolated real React and IndexedDB. Audio capture and native speech are mocks.
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { resolve } from "node:path";
 test("Dictation ui", async ({
   browser: testBrowser,
@@ -10,10 +9,9 @@ test("Dictation ui", async ({
   context: runnerContext,
 }) => {
   test.setTimeout(45_000);
-  const require = createRequire(
-    new URL("../../../web/package.json", import.meta.url),
-  );
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const root = resolve(import.meta.dirname, "../../../web");
   const server = await createServer({
     optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },

@@ -3,7 +3,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   appendFileSync,
@@ -46,6 +46,11 @@ const require = createRequire(
   fileURLToPath(new URL("../../web/package.json", import.meta.url)),
 );
 const { test: baseTest, expect } = require("@playwright/test");
+const fixtureViteCaches = new Set();
+process.once("exit", () => {
+  for (const cacheDir of fixtureViteCaches)
+    rmSync(cacheDir, { recursive: true, force: true });
+});
 // Resolve the fixture interpreter once so every shared fixture launch uses the
 // same dependency-equipped runtime, regardless of legacy caller spellings.
 const fixturePythonCommand =
@@ -80,6 +85,89 @@ export const FIXTURE_OPTIMIZE_DEPS = {
     "lucide-react",
   ],
 };
+
+/**
+ * Start a Vite fixture server with a private dependency cache. Parallel
+ * Playwright workers otherwise share web/node_modules/.vite, where one
+ * server's optimizer can invalidate modules another server is serving.
+ * @param {{ optimizeDeps?: { include?: string[]; [key: string]: unknown }; [key: string]: unknown }} config
+ */
+export async function createFixtureViteServer(config) {
+  const cacheDir = mkdtempSync(join(playwrightScratch.root, "vite-cache-"));
+  fixtureViteCaches.add(cacheDir);
+  try {
+    const { createServer } = await import(require.resolve("vite"));
+    const configuredOptimizeDeps = config.optimizeDeps ?? {};
+    const include = [
+      ...new Set([
+        ...FIXTURE_OPTIMIZE_DEPS.include,
+        ...(configuredOptimizeDeps.include ?? []),
+      ]),
+    ];
+    const server = await createServer({
+      ...config,
+      cacheDir,
+      optimizeDeps: { ...configuredOptimizeDeps, include },
+    });
+    const dependencyRoot = resolve(cacheDir, "deps");
+    server.middlewares.stack.unshift({
+      route: "",
+      handle(request, response, next) {
+        let pathname;
+        try {
+          pathname = new URL(request.url, "http://fixture.local").pathname;
+        } catch {
+          return next();
+        }
+        const prefix = "/node_modules/.vite/deps/";
+        if (!pathname.startsWith(prefix)) return next();
+        const dependencyPath = resolve(
+          dependencyRoot,
+          decodeURIComponent(pathname.slice(prefix.length)),
+        );
+        if (!dependencyPath.startsWith(`${dependencyRoot}${sep}`)) {
+          response.statusCode = 400;
+          response.end("Invalid optimized dependency path");
+          return;
+        }
+        if (!existsSync(dependencyPath)) return next();
+        const metadata = server.environments.client?.depsOptimizer?.metadata;
+        const dependency =
+          metadata &&
+          Object.values({
+            ...metadata.optimized,
+            ...metadata.chunks,
+            ...metadata.discovered,
+          }).find((entry) => resolve(entry.file) === dependencyPath);
+        if (!dependency?.browserHash) return next();
+        // Keep legacy browser-side imports on Vite's canonical optimized URL.
+        // Serving these bytes at the legacy path creates a second React module
+        // instance beside the /@fs URL imported by transformed application code.
+        response.writeHead(302, {
+          Location: `/@fs${dependencyPath}?v=${dependency.browserHash}`,
+          "Cache-Control": "no-cache",
+        });
+        response.end();
+      },
+    });
+    const close = server.close.bind(server);
+    let closePromise;
+    server.close = () => {
+      closePromise ??= Promise.resolve()
+        .then(() => close())
+        .finally(() => {
+          rmSync(cacheDir, { recursive: true, force: true });
+          fixtureViteCaches.delete(cacheDir);
+        });
+      return closePromise;
+    };
+    return server;
+  } catch (error) {
+    rmSync(cacheDir, { recursive: true, force: true });
+    fixtureViteCaches.delete(cacheDir);
+    throw error;
+  }
+}
 
 export const API_SCHEMA_HASH_HEADER = readGeneratedString(
   "API_SCHEMA_HASH_HEADER",

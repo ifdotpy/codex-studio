@@ -4,7 +4,6 @@ import {
   apiSchemaHandshakeSse,
 } from "../playwright.mjs";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,8 +16,9 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
 }) => {
   test.setTimeout(45_000);
   const root = join(import.meta.dirname, "../../../web");
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-unified-picker-vite-"));
   const output =
     process.env.PICKER_SCREENSHOTS ||

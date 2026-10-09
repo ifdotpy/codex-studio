@@ -364,6 +364,8 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
   fixture.stderr.on("data", (chunk) => {
     fixtureLog += chunk;
   });
+  const activeApiRoutes = new Set();
+  let drainingApiRoutes = false;
   try {
     await page.addInitScript(() => {
       const key = "studio-api-schema-update-attempted";
@@ -419,19 +421,26 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
     let mismatchEnabled = true;
     let schemaResponses = 0;
     await page.context().route("**/api/**", async (route) => {
-      const path = new URL(route.request().url()).pathname;
-      if (path === "/api/sync/stream") return route.continue();
-      if (!mismatchEnabled) return route.continue();
-      const response = await route.fetch();
-      const headers = { ...response.headers() };
-      if (mismatchEnabled) {
-        schemaResponses++;
-        headers[API_SCHEMA_HASH_HEADER.toLowerCase()] = "foreign-schema";
+      const active = (async () => {
+        const path = new URL(route.request().url()).pathname;
+        if (path === "/api/sync/stream") return route.continue();
+        if (!mismatchEnabled) return route.continue();
+        const response = await route.fetch();
+        const headers = { ...response.headers() };
+        if (mismatchEnabled) {
+          schemaResponses++;
+          headers[API_SCHEMA_HASH_HEADER.toLowerCase()] = "foreign-schema";
+        }
+        await route.fulfill({ response, headers });
+      })();
+      activeApiRoutes.add(active);
+      try {
+        await active;
+      } catch (error) {
+        if (!drainingApiRoutes) throw error;
+      } finally {
+        activeApiRoutes.delete(active);
       }
-      await route.fulfill({
-        response,
-        headers,
-      });
     });
     await page.reload();
     await expect.poll(() => schemaResponses).toBeGreaterThan(0);
@@ -756,6 +765,9 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
   } finally {
     if (workerChanged) await writeFile(workerPath, originalWorker);
     if (indexChanged) await writeFile(indexPath, originalIndex);
+    drainingApiRoutes = true;
+    await page.context().unrouteAll({ behavior: "wait" });
+    await Promise.allSettled(activeApiRoutes);
     fixture.kill();
   }
 });
@@ -836,6 +848,7 @@ test("a stream mismatch keeps the transcript and draft while stopping every requ
       "No requests follow a stream mismatch",
     );
   } finally {
+    await page.context().unrouteAll({ behavior: "ignoreErrors" });
     fixture.kill();
   }
 });
@@ -855,12 +868,8 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
   fixture.stderr.on("data", (chunk) => {
     fixtureLog += chunk;
   });
-  const { createServer } = await import(
-    new URL(
-      "../../../web/node_modules/vite/dist/node/index.js",
-      import.meta.url,
-    )
-  );
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const server = await createServer({
     configFile: false,
     root: join(root, "web"),
