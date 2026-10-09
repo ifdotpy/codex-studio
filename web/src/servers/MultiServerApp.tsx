@@ -13,6 +13,8 @@ import {
 } from "@mantine/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import App from "../App";
+import ProjectGroupsSidebar from "./ProjectGroupsSidebar";
+import { projectChatCommand } from "./projectChatCommand";
 import { frameURL } from "./frameOrigin";
 import { canUnloadFrame } from "./idleFrames";
 import { fetchServerSummary } from "./summary";
@@ -66,6 +68,8 @@ export default function MultiServerApp() {
   const [navigation, setNavigation] = useState<
     Record<string, ServerNavigation>
   >({});
+  const navigationRef = useRef(navigation);
+  navigationRef.current = navigation;
   const [status, setStatus] = useState<Record<string, ResourceConnectionState>>(
     {},
   );
@@ -404,6 +408,13 @@ export default function MultiServerApp() {
         state.known = true;
         if (state.activity !== event.data.busy) state.idleSince = Date.now();
         state.activity = event.data.busy;
+      } else if (event.data.kind === "studio-project-new-chat") {
+        const target = serversRef.current.find(
+          (server) => server.id === event.data.target,
+        );
+        const command =
+          target && projectChatCommand(navigationRef.current[id], event.data);
+        if (target && command) send(target.id, command);
       } else if (event.data.kind === "studio-server-open-settings") {
         setManager(true);
       } else if (event.data.kind === "studio-server-preferences") {
@@ -586,109 +597,25 @@ export default function MultiServerApp() {
         {!servers.length && (
           <p>Pair a server to open its projects and chats.</p>
         )}
-        {servers.map((server) => {
-          const view = navigation[server.id];
-          const needle = query.toLocaleLowerCase();
-          return (
-            <section key={server.id} data-server={server.id}>
-              <header>
-                <button
-                  className="server-title"
-                  onClick={() => select(server.id)}
-                  aria-current={current === server.id ? "true" : undefined}
-                >
-                  {server.label}
-                </button>
-                <small role="status">
-                  {status[server.id] === "live"
-                    ? "Online"
-                    : status[server.id] === "schema-mismatch"
-                      ? "Update required"
-                      : status[server.id] === "offline" ||
-                          status[server.id] === "degraded"
-                        ? "Offline"
-                        : "Connecting"}
-                </small>
-              </header>
-              <div className="server-tools">
-                <Button
-                  size="xs"
-                  variant="subtle"
-                  onClick={() => send(server.id, { action: "projects" })}
-                >
-                  Projects
-                </Button>
-                <Button
-                  size="xs"
-                  variant="subtle"
-                  onClick={() => send(server.id, { action: "settings" })}
-                >
-                  Settings
-                </Button>
-              </div>
-              {view?.projects.map((project) => {
-                const chats = view.chats.filter(
-                  (chat) =>
-                    chat.path === project.path &&
-                    !chat.archived &&
-                    (!needle ||
-                      `${server.label} ${project.name} ${project.path} ${chat.name}`
-                        .toLocaleLowerCase()
-                        .includes(needle)),
-                );
-                if (
-                  needle &&
-                  !chats.length &&
-                  !`${server.label} ${project.name} ${project.path}`
-                    .toLocaleLowerCase()
-                    .includes(needle)
-                )
-                  return null;
-                return (
-                  <details key={project.path} open>
-                    <summary title={`${project.path} (${server.label})`}>
-                      {project.name}
-                      <small>{server.label}</small>
-                    </summary>
-                    <Button
-                      size="xs"
-                      variant="subtle"
-                      onClick={() =>
-                        send(server.id, {
-                          action: "new-chat",
-                          path: project.path || undefined,
-                        })
-                      }
-                    >
-                      New chat
-                    </Button>
-                    {chats.map((chat) => (
-                      <button
-                        className="server-chat"
-                        key={chat.id}
-                        data-chat={chat.id}
-                        aria-current={
-                          current === server.id && view.opened === chat.id
-                            ? "page"
-                            : undefined
-                        }
-                        onClick={() =>
-                          send(server.id, { action: "open", id: chat.id })
-                        }
-                      >
-                        {chat.name}
-                        {chat.unread && (
-                          <span aria-label="Unread result"> ●</span>
-                        )}
-                      </button>
-                    ))}
-                  </details>
-                );
-              })}
-              {view?.error && <p className="notice">{view.error}</p>}
-            </section>
-          );
-        })}
+        <Button
+          variant="subtle"
+          onClick={() =>
+            send(
+              servers.some((row) => row.id === "local") ? "local" : current,
+              { action: "add-project" },
+            )
+          }
+        >
+          Add project
+        </Button>
+        <ProjectGroupsSidebar
+          navigation={navigation}
+          servers={servers}
+          statuses={status}
+          current={current}
+          query={query}
+          send={send}
+        />
       </aside>
       <main className="server-views">
         {!servers.length && (

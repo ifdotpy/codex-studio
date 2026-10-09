@@ -75,6 +75,7 @@ type Props = {
   addProject: () => void;
   changeProject: (agent: Agent) => void;
   projectAccount: (path: string) => void;
+  projectFolders?: (path: string) => void;
   creating: boolean;
   rename: (id: string, name: string) => Promise<void>;
   remove: (id: string, room: boolean) => void;
@@ -1143,6 +1144,13 @@ export default function Sidebar(p: Props) {
                         <Menu.Item onClick={() => editProject(group)}>
                           Rename project
                         </Menu.Item>
+                        {p.projectFolders && (
+                          <Menu.Item
+                            onClick={() => p.projectFolders?.(group.path)}
+                          >
+                            Folders
+                          </Menu.Item>
+                        )}
                         <Menu.Item onClick={() => p.projectAccount(group.path)}>
                           Project account
                         </Menu.Item>

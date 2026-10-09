@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const workspaceId = "b".repeat(32);
-export async function fixture(label, signed = false) {
+export async function fixture(label, signed = false, options = {}) {
   const keys = crypto.generateKeyPairSync("ed25519");
   const publicKey = keys.publicKey
     .export({ format: "pem", type: "spki" })
@@ -157,6 +157,7 @@ export async function fixture(label, signed = false) {
           body.requestId || body.request_id,
         );
     }
+    if (options.handle?.({ request, url, body, json, snapshot })) return;
     if (url.pathname === "/api/monitor/log") {
       response.writeHead(200, {
         "Content-Type": "text/plain",
@@ -377,6 +378,7 @@ export async function fixture(label, signed = false) {
   return {
     origin: `http://127.0.0.1:${server.address().port}`,
     invitation,
+    snapshot,
     writes,
     pairs,
     accessRequests,
