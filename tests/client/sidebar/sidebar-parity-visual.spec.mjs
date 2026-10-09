@@ -58,6 +58,10 @@ function inspectDOM(element, { omitHeader = false } = {}) {
 async function prepareCapture(page, sidebar) {
   await page.mouse.move(1, 1);
   await sidebar.evaluate(async (element) => {
+    // Compare the same idle state after each filter edit.
+    const active = element.ownerDocument.activeElement;
+    if (element.contains(active) && active instanceof HTMLElement)
+      active.blur();
     await element.ownerDocument.fonts.ready;
     const frame = () =>
       new Promise((resolve) => requestAnimationFrame(resolve));

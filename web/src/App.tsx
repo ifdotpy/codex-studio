@@ -1855,7 +1855,9 @@ export default function App() {
       notify(errorText(error));
       return;
     }
-    const project = projects.items.find((row) => row.id === projectId);
+    const project = projects.items.find(
+      (row) => row.id === projectId || row.path === projectId,
+    );
     if (!project?.path || !project.name) return;
     setSidebar(false);
     setModal({

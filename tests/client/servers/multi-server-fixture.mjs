@@ -10,7 +10,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
 const root = fileURLToPath(new URL("../../../", import.meta.url));
-const workspaceId = "b".repeat(32);
+const defaultWorkspaceId = "b".repeat(32);
 export async function fixture(
   label,
   signed = false,
@@ -19,9 +19,10 @@ export async function fixture(
   const options = Array.isArray(accountRowsOrOptions)
     ? {}
     : accountRowsOrOptions || {};
+  const workspaceId = options.workspaceId || defaultWorkspaceId;
   const accountRows = Array.isArray(accountRowsOrOptions)
     ? accountRowsOrOptions
-    : null;
+    : options.accounts || null;
   const keys = crypto.generateKeyPairSync("ed25519");
   const publicKey = keys.publicKey
     .export({ format: "pem", type: "spki" })
@@ -219,6 +220,9 @@ export async function fixture(
       handleEntitySyncFixtureRequest(request, response, {
         snapshot,
         workspaceId,
+        initialResources: options.resourceBaseline
+          ? JSON.parse(url.searchParams.get("resources") || "[]")
+          : undefined,
         onStreamReady: (send) => notify.push(send),
       })
     )

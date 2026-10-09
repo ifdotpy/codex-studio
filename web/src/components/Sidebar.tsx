@@ -458,15 +458,24 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
     JSON.stringify([path, "team", id]);
   const chatGroup = (agent: Agent) =>
     catalogChatGroup(agent, teamFor(agent.id));
+  const middleDrop = (event: React.DragEvent<HTMLElement>) => {
+    const box = event.currentTarget.getBoundingClientRect();
+    return (
+      event.clientY > box.top + box.height * 0.25 &&
+      event.clientY < box.top + box.height * 0.75
+    );
+  };
   const folderDrop = (
     project: NavigableProject,
     folder: ProjectFolder | null = null,
+    reorder: ReturnType<typeof sorting.bindings> | Record<string, never> = {},
   ) =>
     sorting.dropBindings(
       folder ? folderKey(project.path, folder.id) : project.path,
-      (source) => {
+      (source, event) => {
         const chat = catalog.byId.get(source.id);
         return !!(
+          (!reorder.draggable || middleDrop(event)) &&
           (canOrganizeProjects || (!folder && teamFor(source.id))) &&
           !teamMove.blocked() &&
           !organizationLock.current &&
@@ -510,6 +519,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
           );
         });
       },
+      reorder,
     );
   const orderedAgents = catalog.ordered;
   const searchSelector = useMemo(createSidebarSearchSelector, []);
@@ -812,6 +822,31 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
     if (!members.length && (query || archive)) return null;
     const key = JSON.stringify([group.path, "team", team.id]);
     const closed = !!collapsed[key] && !query;
+    const teamDrop = (
+      reorder: ReturnType<typeof sorting.bindings> | Record<string, never> = {},
+    ) =>
+      sorting.dropBindings(
+        `peer-team:${team.id}`,
+        (source, event) => {
+          const chat = catalog.byId.get(source.id);
+          return !!(
+            (!reorder.draggable || middleDrop(event)) &&
+            chat &&
+            canEdit(projectTarget(group.path, undefined, team.id)) &&
+            canEdit({ kind: "chat", id: chat.id }) &&
+            services.serverForChat(chat.id) ===
+              services.owner(projectTarget(group.path, undefined, team.id))
+                .ownerId &&
+            source.group === chatGroup(chat) &&
+            chat.cwd === group.path &&
+            !teamMembers.includes(chat.id) &&
+            !teamMove.blocked() &&
+            !organizationLock.current
+          );
+        },
+        ({ id }) => teamMove.move(group, id, team.id),
+        reorder,
+      );
     return (
       <SidebarBackendProvider
         key={team.id}
@@ -832,31 +867,14 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
           scope={p.data.stateDir}
           openRoom={p.open}
           refresh={p.refresh}
-          reorder={sorting.bindings(
-            itemGroup(group.path),
-            teamKey(group.path, team.id),
-            itemIds(group),
+          reorder={teamDrop(
+            sorting.bindings(
+              itemGroup(group.path),
+              teamKey(group.path, team.id),
+              itemIds(group),
+            ),
           )}
-          drop={sorting.dropBindings(
-            `peer-team:${team.id}`,
-            (source) => {
-              const chat = catalog.byId.get(source.id);
-              return !!(
-                chat &&
-                canEdit(projectTarget(group.path, undefined, team.id)) &&
-                canEdit({ kind: "chat", id: chat.id }) &&
-                services.serverForChat(chat.id) ===
-                  services.owner(projectTarget(group.path, undefined, team.id))
-                    .ownerId &&
-                source.group === chatGroup(chat) &&
-                chat.cwd === group.path &&
-                !teamMembers.includes(chat.id) &&
-                !teamMove.blocked() &&
-                !organizationLock.current
-              );
-            },
-            ({ id }) => teamMove.move(group, id, team.id),
-          )}
+          drop={teamDrop()}
           closed={closed}
           toggle={() => toggleProject(key)}
           edit={() =>
@@ -968,10 +986,14 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                     {...folderDrop(group, folder)}
                   >
                     <UnstyledButton
-                      {...sorting.bindings(
-                        itemGroup(group.path, parent?.id || null),
-                        id,
-                        siblingIds,
+                      {...folderDrop(
+                        group,
+                        folder,
+                        sorting.bindings(
+                          itemGroup(group.path, parent?.id || null),
+                          id,
+                          siblingIds,
+                        ),
                       )}
                       aria-description="Drag to reorder. Alt + Up or Down also works."
                       className="project-tree-toggle"
