@@ -181,7 +181,6 @@ export function useSyncedDrafts() {
       }
       const dismissedKeys = new Set(dismissed.current);
       for (const [session, branches] of sessions) {
-        const hasPendingEdit = pendingEdits.current.has(session);
         const active = activeDraftVersions(branches);
         const chosen = active.find(
           (version) =>
@@ -189,18 +188,18 @@ export function useSyncedDrafts() {
         );
         if (
           chosen &&
-          !hasPendingEdit &&
+          !pendingEdits.current.has(session) &&
           !localHeads.current.has(session) &&
           next[session] !== chosen.text
         ) {
           if (next === current.current) next = { ...next };
           next[session] = chosen.text;
         }
+        if (pendingEdits.current.has(session)) continue;
         for (const branch of active) {
           if (
             branch.id === draftVersionId(device, writer, session) &&
-            (hasPendingEdit ||
-              branch.updated < (localHeads.current.get(session) || 0))
+            branch.updated < (localHeads.current.get(session) || 0)
           )
             continue;
           if (branch.text && branch.text !== next[session])
@@ -526,11 +525,6 @@ export function useSyncedDrafts() {
         .then(async ({ db, workspaceId }) => {
           if (stopped) return;
           adoptScope(workspaceId);
-          const draftQuery = db.drafts.find();
-          const sub = draftQuery.$.subscribe((docs: any[]) => {
-            reconcile(decodeDrafts(docs));
-          });
-          unsubscribe = () => sub.unsubscribe();
           await flushDrafts();
           const testOnly =
             typeof window !== "undefined"
@@ -568,6 +562,10 @@ export function useSyncedDrafts() {
               });
           }
           if (stopped) return;
+          const sub = db.drafts.find().$.subscribe((docs: any[]) => {
+            reconcile(decodeDrafts(docs));
+          });
+          unsubscribe = () => sub.unsubscribe();
           started = true;
           bootstrapRetryCount = 0;
           setBootstrapPaused(false);
