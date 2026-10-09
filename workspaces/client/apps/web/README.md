@@ -2,12 +2,13 @@
 
 ## Change Contract
 
-The web client owns Studio's renderer, presentation, and user interaction. It
-reads application and agent state through the server HTTP API; the server owns
-persistent state, execution, and native provider access. Keep permission and
-request identity rules intact for actions that write state. Match checks to the
-changed interface, and use the focused composer check with
-`pnpm run test:skill-autocomplete` for skill completion changes.
+The web client owns Studio's renderer, presentation, and user interaction. Its
+public interface is the server HTTP API; it must not access SQLite or provider
+credentials. Keep permission checks, exact request identities, and uncertain
+outcomes intact for writes. Vite, TypeScript, and test settings belong to this
+app's configuration and [`package.json`](package.json). Focused check:
+`pnpm --filter codex-agents-web run test:unit -- <pattern>`; for skill
+completion, use `pnpm --filter codex-agents-web run test:skill-autocomplete`.
 
 React and TypeScript components, built with Vite. Mantine provides controls,
 menus, dialogs, drawers, and the shared theme. Lucide provides icons. The Python server owns agents,
@@ -15,15 +16,15 @@ SQLite, message delivery, and command monitors.
 
 ## Run
 
-From this directory:
+Install dependencies once from the repository root with `pnpm install --frozen-lockfile`.
+Run package commands from this directory:
 
 ```bash
-pnpm install --frozen-lockfile
 pnpm run build
-../../../runtime/apps/server/src/codex-canvas
 ```
 
-Open <http://127.0.0.1:4620>. The server serves `dist/`.
+From the repository root, start the installed backend with `codex-canvas`
+and open <http://127.0.0.1:4620>. The server serves this app's `dist/`.
 Build output is local and ignored by Git. Rebuild it after a frontend change.
 The server reports a missing build instead of serving an older client.
 
@@ -198,7 +199,7 @@ The current turn shows tool calls by default, including completed commands while
 the agent thinks. Manual collapse remains available. Turn completion preserves
 the visible calls; older commands stay hidden when history is reopened.
 
-`tests/chat/live-chat-ui.spec.mjs` injects app-server notifications into an isolated runtime.
+`workspaces/client/apps/web/tests/chat/live-chat-ui.spec.mjs` injects app-server notifications into an isolated runtime.
 It tests the real HTTP stream and React interface without model inference.
 
 ## Orchestration workspace
@@ -276,7 +277,6 @@ Backend regression commands run from the repository root:
 ```bash
 python3 -B workspaces/runtime/apps/server/tests/runtime-contract.py
 python3 -B workspaces/runtime/apps/server/tests/canvas-contract.py
-python3 -B workspaces/runtime/apps/server/tests/user-tasks-contract.py
 python3 -B workspaces/runtime/apps/server/tests/workspace-contract.py
 python3 -B workspaces/runtime/apps/server/tests/workspace-races.py
 python3 -B workspaces/runtime/apps/server/tests/workspace-protocol.py

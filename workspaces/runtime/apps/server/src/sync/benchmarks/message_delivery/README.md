@@ -23,9 +23,9 @@ fresh temporary state directory and Codex profile.
 From the repository root:
 
 ```sh
-python3 scripts/sync/benchmarks/message_delivery/benchmark.py --check
-python3 scripts/sync/benchmarks/message_delivery/benchmark.py --agents 1 8 32 --messages-per-agent 8 --repetitions 2 --analytics both --transport both --output /tmp/message-delivery.json
-python3 -m unittest discover -s scripts/sync/benchmarks/message_delivery -p 'test_*.py'
+python3 workspaces/runtime/apps/server/src/sync/benchmarks/message_delivery/benchmark.py --check
+python3 workspaces/runtime/apps/server/src/sync/benchmarks/message_delivery/benchmark.py --agents 1 8 32 --messages-per-agent 8 --repetitions 2 --analytics both --transport both --output /tmp/message-delivery.json
+python3 -m unittest discover -s workspaces/runtime/apps/server/src/sync/benchmarks/message_delivery -p 'test_*.py'
 ```
 
 The first command is a quick protocol-3 stream and sync-pull smoke run. The full command produces

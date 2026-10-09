@@ -1,19 +1,31 @@
 # Codex Studio desktop
 
+## Change Contract
+
+The Electron app owns the native host, isolated preload bridge, desktop
+packaging, and startup of the web renderer. Its public renderer interface is
+`window.codexDesktop`; backend state and orchestration remain behind the server
+HTTP API. Do not access SQLite or provider credentials from the renderer, and
+do not stop a backend to update desktop source. Preserve state-directory and
+bundle identity, request receipts, and hidden-window test behavior. Runtime
+configuration is owned by the desktop launcher and server environment; package
+commands are owned by [`package.json`](package.json). Focused check:
+`pnpm --filter codex-agents-desktop run test`.
+
 The Electron app opens the existing React workspace. The Python backend owns agents, terminals, monitors, and the SQLite database. Closing the app leaves that backend active.
 
 ## Start
 
 Requirements: macOS on Apple silicon, Node.js 22.15 or later, Python 3.11 or later, and the installed Codex CLI with its existing sign-in.
 
-From `desktop/`:
+Install dependencies once from the repository root with `pnpm install --frozen-lockfile`.
+Run package commands from this directory:
 
 ```sh
-npm ci
-npm run dev
+pnpm run dev
 ```
 
-`dev` builds the web app and starts Electron. Use `npm start` after a web build. Use `npm run start:hidden` for a check without a visible window.
+`dev` builds the web app and starts Electron. Use `pnpm run start` after a web build. Use `pnpm run start:hidden` for a check without a visible window.
 
 The app attaches to a compatible backend at `http://127.0.0.1:4620`. Otherwise, it starts the bundled Python backend as a detached process. A backend identity endpoint checks the protocol and canonical state directory before the app loads the page. The runtime file lock prevents two servers from owning the same database. An incompatible service causes a visible error. The app does not stop that service or choose another database.
 
@@ -27,8 +39,12 @@ Backend logs and its PID remain in `canvas.log` and `canvas.pid` under the state
 
 ## Package
 
+Full packaging currently targets macOS on Apple silicon. The Linux UI-only
+verification artifact skips Swift compilation and signing; it does not imply
+Linux full-backend support.
+
 ```sh
-npm run package
+pnpm run package
 ```
 
 The command creates `dist/Codex Studio-darwin-arm64/Codex Studio.app`. Set
@@ -46,11 +62,11 @@ Keep the password file private (mode `0600`). The build unlocks only that keycha
 An environment override can specify `CODEX_STUDIO_SIGNING_KEYCHAIN`; unlock it before the build.
 The build refuses ad hoc signing because it changes the application identity
 that macOS uses for saved permissions. Keep the same certificate for updates.
-After changing installed resources, run `node desktop/signing.mjs /path/to/Codex\ Studio.app`.
+After changing installed resources, run `node workspaces/client/apps/desktop/signing.mjs /path/to/Codex\ Studio.app`.
 Do not replace this signature with `codesign --sign -`.
 The signer makes the bundled Python cache directory read-only. This prevents
 external Python imports from adding files that invalidate the resource seal.
-Run `node desktop/signing-test.mjs` from the repository root to check the local
+Run `node workspaces/client/apps/desktop/signing-test.mjs` from the repository root to check the local
 certificate and cache behavior.
 
 To install a locally built update while keeping the detached backend and its
@@ -59,7 +75,7 @@ active work running:
 1. Build and verify the signed app under `/tmp`:
 
    ```sh
-   CODEX_DESKTOP_PACKAGE_OUT=/tmp/codex-studio-supervisor node desktop/package.mjs
+   CODEX_DESKTOP_PACKAGE_OUT=/tmp/codex-studio-supervisor node workspaces/client/apps/desktop/package.mjs
    codesign --verify --deep --strict \
      "/tmp/codex-studio-supervisor/Codex Studio-darwin-arm64/Codex Studio.app"
    ```
@@ -107,8 +123,8 @@ The [Electron security guide](https://www.electronjs.org/docs/latest/tutorial/se
 ## Verify
 
 ```sh
-npm test
-TMPDIR=/tmp npm run test:package
+pnpm test
+TMPDIR=/tmp pnpm run test:package
 ```
 
 `test:package` requires a current package. It starts that exact `.app`, verifies its bundled backend path, and checks backend survival after app exit. On macOS, the short temporary path keeps the backend's Unix socket path within the platform limit.
@@ -131,7 +147,7 @@ leaves the audio saved for a retry. Browser mode can record and download audio;
 transcription requires the updated macOS desktop host. Restart the desktop app
 after its package update to load the new bridge. This restart does not stop agents.
 
-Packaging requires Xcode command-line tools. `npm run package` compiles and embeds
+Packaging requires Xcode command-line tools. `pnpm run package` compiles and embeds
 the native helper and usage descriptions. To prepare a development launch:
 
 ```sh
@@ -148,8 +164,8 @@ not a filesystem path. Temporary native files are removed after each attempt.
 Targeted checks from the repository root:
 
 ```sh
-npm --prefix web run test:browser -- dictation-ui.spec.mjs
-node web/node_modules/vitest/vitest.mjs run --config desktop/vitest.config.mjs native-ux.test.mjs dictation-permissions.test.mjs
+pnpm --filter codex-agents-web run test:browser -- dictation-ui.spec.mjs
+pnpm --filter codex-agents-desktop run test
 ```
 
 These checks mock capture and recognition. They do not request microphone or Speech
@@ -172,15 +188,15 @@ focus. A click opens the chat or the request that needs attention.
 Alerts use the existing chat snapshot without separate workspace reads. The first
 snapshot after launch establishes a baseline; old events do not repeat.
 The desktop app must remain running. macOS notification settings still apply.
-Run `npm --prefix web run test:unit -- desktopAlerts.test.mjs` and
-`npm --prefix web run test:browser -- desktop-notifications-ui.spec.mjs` from the repository root. The UI check
+Run `pnpm --filter codex-agents-web run test:unit -- desktopAlerts.test.mjs` and
+`pnpm --filter codex-agents-web run test:browser -- desktop-notifications-ui.spec.mjs` from the repository root. The UI check
 records native bridge calls; it does not display or verify macOS banners.
 
 Native transcription accepts an attempt `id`. `onTranscriptionProgress()` reports completed and total audio parts for that ID. `cancelTranscription(id)` stops that attempt after a user action. The saved recording remains on the device.
 
 ## UI-only package
 
-Use `npm run start:ui` to start the UI without a local backend.
-Use `npm run package:ui` to create the UI-only application.
+Use `pnpm run start:ui` to start the UI without a local backend.
+Use `pnpm run package:ui` to create the UI-only application.
 Set `CODEX_UI_PORT` and `CODEX_DESKTOP_PROFILE` for isolated checks.
-See [Multi-server UI](../docs/multi-server-ui.md) for pairing and verification commands.
+See [Multi-server UI](../../../../docs/multi-server-ui.md) for pairing and verification commands.

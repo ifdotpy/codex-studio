@@ -3,7 +3,7 @@
 Current scope: resource reservations and their controls are removed.
 The delivery evidence below records the original implementation.
 
-Owner request: implement all recommendations in FEATURE-GAPS.md, 2026-09-06.
+Owner request: implement all recommendations in docs/feature-gaps.md, 2026-09-06.
 Baseline: 01c61fb. Preserve native Codex tools, managed wakes, room privacy, complaints, and permission enforcement.
 
 ## Acceptance scope

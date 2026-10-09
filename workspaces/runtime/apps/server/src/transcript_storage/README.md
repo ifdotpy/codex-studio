@@ -48,9 +48,9 @@ return the latest committed full text and do not wait for FTS.
 Run from the repository root:
 
 ```sh
-PYTHONPATH=scripts python3 -m unittest discover -s scripts/transcript_storage/tests
-PYTHONPATH=scripts python3 scripts/transcript_storage/benchmarks/benchmark.py --check
-PYTHONPATH=scripts python3 scripts/transcript_storage/benchmarks/benchmark.py
+PYTHONPATH=workspaces/runtime/apps/server/src python3 -m unittest discover -s workspaces/runtime/apps/server/src/transcript_storage/tests
+PYTHONPATH=workspaces/runtime/apps/server/src python3 workspaces/runtime/apps/server/src/transcript_storage/benchmarks/benchmark.py --check
+PYTHONPATH=workspaces/runtime/apps/server/src python3 workspaces/runtime/apps/server/src/transcript_storage/benchmarks/benchmark.py
 ```
 
 The benchmark uses synthetic text and production persistence/index/migration

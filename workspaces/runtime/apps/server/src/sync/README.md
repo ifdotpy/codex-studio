@@ -10,10 +10,9 @@ integration suites.
 # UI synchronization
 
 The normative client and server behavior is documented in
-[`docs/sync.md`](../../docs/sync.md) and
-[`docs/sync-protocol.md`](../../docs/sync-protocol.md). The removed
-`scripts/sync/sync_store.py` was a divergent prototype; it is not an alternate
-implementation or source of contract.
+[`docs/sync.md`](../../../../../../docs/sync.md) and
+[`docs/sync-protocol.md`](../../../../../../docs/sync-protocol.md). The removed
+The former sync-store prototype was divergent; it is not an alternate implementation or source of contract.
 
 The browser receives typed protocol-3 resource notifications over
 `/api/sync/stream` and pulls affected projections through `/api/sync/pull`.
@@ -29,9 +28,9 @@ synthetic agent messages reaching an HTTP client through sync invalidation and
 pulls or the direct transcript read path.
 
 ```sh
-python3 -B -m unittest discover -s scripts/sync/tests -v
-python3 -B scripts/sync/benchmarks/benchmark.py --check
-python3 -B scripts/sync/benchmarks/benchmark.py --iterations 300
+python3 -B -m unittest discover -s workspaces/runtime/apps/server/src/sync/tests -v
+python3 -B workspaces/runtime/apps/server/src/sync/benchmarks/benchmark.py --check
+python3 -B workspaces/runtime/apps/server/src/sync/benchmarks/benchmark.py --iterations 300
 ```
 
 The isolated benchmark reports p50/p95/p99 pull latency, serialized payload

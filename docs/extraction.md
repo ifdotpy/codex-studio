@@ -6,8 +6,10 @@ The source commit is `fe89689`. A Git subtree split produced
 The standalone repository starts from that history. It has no remote configured.
 The original license is retained without new permissions.
 
-The application owns `scripts/`, `prompts/`, `tests/`, `web/`, `desktop/`, and its
-product documentation. The full command guide moved to `CLI.md`. The application
+The server app owns its Python source, runtime prompts, and server tests. The
+client workspace owns `workspaces/client/apps/web/` and
+`workspaces/client/apps/desktop/`; the repository root temporarily provides compatibility launchers for
+installed commands. The repository also owns its product documentation. The full command guide moved to `docs/cli.md`. The application
 does not need the skill checkout to import modules, build, run, or start workers.
 Runtime worker prompts remain with their launcher.
 
@@ -43,7 +45,8 @@ reset credits. Historical delivery documents retain their original evidence.
 
 ## Local transition
 
-The live server now starts from `/Users/igor/Projects/codex-agents/scripts/codex-canvas` (PID `37912` at verification).
+At the 2026-09-06 verification, the live server started from the extracted
+checkout through its then-current `codex-canvas` launcher (PID `37912`).
 Its URL and state directory remain unchanged. Both existing agents remain.
 The database backup is `/Users/igor/.local/state/codex-agents/backups/canvas-before-source-extraction-20260906-104252.sqlite3`.
 
@@ -55,7 +58,7 @@ The installed `codex-control list` command also reads the same runtime.
 
 Evidence: `~/.local/state/codex-agents/evidence/source-extraction-20260906/`.
 Old ignored web build files were preserved outside the skill at
-`~/.local/state/codex-agents/migration-backups/skill-build-cache-20260906/web/`.
+`~/.local/state/codex-agents/migration-backups/skill-build-cache-20260906/workspaces/client/apps/web/`.
 Unrelated old Python cache files remain untouched.
 
 ## Independent skill boundary
