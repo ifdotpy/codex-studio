@@ -12,7 +12,47 @@ type SavedFlow = {
   cancelRequestId?: string;
   label: string;
   email: string;
+  createdAt: number;
+  unknownSince?: number;
 };
+const UNKNOWN_REQUEST_GRACE_MS = 5000;
+const terminal = (status?: string) =>
+  ["ready", "error", "cancelled"].includes(status || "");
+const attemptKey = (key: string, id: string) => `${key}:${id}`;
+
+function readSavedFlow(key: string): SavedFlow | null {
+  const active = saved<unknown>(key, null);
+  if (typeof active === "string") {
+    const flow = saved<SavedFlow | null>(attemptKey(key, active), null);
+    if (!flow) save(key, null);
+    return flow;
+  }
+  if (
+    active &&
+    typeof active === "object" &&
+    "requestId" in active &&
+    typeof active.requestId === "string"
+  ) {
+    const legacy = active as SavedFlow;
+    save(attemptKey(key, legacy.requestId), {
+      ...legacy,
+      createdAt: legacy.createdAt || Date.now(),
+    });
+    save(key, legacy.requestId);
+    return { ...legacy, createdAt: legacy.createdAt || Date.now() };
+  }
+  return null;
+}
+
+function isUnknownRequest(failure: unknown) {
+  const status =
+    failure && typeof failure === "object" && "status" in failure
+      ? failure.status
+      : undefined;
+  return (
+    status === 404 || /unknown claude sign-in request/i.test(errorText(failure))
+  );
+}
 
 function allowedUrl(value?: string | null) {
   try {
@@ -49,7 +89,7 @@ export default function ClaudeAddSignIn({
 }) {
   const storageKey = `claude-add-sign-in:${scope}`;
   const [flow, setFlow] = useState<SavedFlow | null>(() =>
-    saved<SavedFlow | null>(storageKey, null),
+    readSavedFlow(storageKey),
   );
   const requestId = flow?.requestId || "";
   const [receipt, setReceipt] = useState<Receipt | null>(null);
@@ -58,11 +98,18 @@ export default function ClaudeAddSignIn({
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
+  const [now, setNow] = useState(() => Date.now());
   const lock = useRef(false);
   const readyRequest = useRef("");
   const persistFlow = (next: SavedFlow) => {
-    save(storageKey, next);
+    save(attemptKey(storageKey, next.requestId), next);
+    save(storageKey, next.requestId);
     setFlow(next);
+  };
+  const clearSavedFlow = (savedFlow: SavedFlow) => {
+    save(attemptKey(storageKey, savedFlow.requestId), null);
+    if (saved<string>(storageKey, "") === savedFlow.requestId)
+      save(storageKey, null);
   };
   const start = async (emailHint = expectedEmail, forceNew = false) => {
     if (lock.current) return;
@@ -74,13 +121,15 @@ export default function ClaudeAddSignIn({
       flow &&
       (!receipt || ["starting", "pending"].includes(receipt.status));
     const next: SavedFlow = canResume
-      ? flow
+      ? { ...flow, unknownSince: undefined }
       : {
           requestId: crypto.randomUUID(),
           startRequestId: crypto.randomUUID(),
           label: label.trim() || "Claude Code",
           email: emailHint.trim(),
+          createdAt: Date.now(),
         };
+    if (!canResume && flow) clearSavedFlow(flow);
     persistFlow(next);
     setReceipt(null);
     try {
@@ -127,20 +176,19 @@ export default function ClaudeAddSignIn({
       if (action === "code") setCode("");
       persistFlow({ ...nextFlow, [requestField]: undefined });
     } catch (failure) {
-      setError(errorText(failure));
+      if (action === "cancel" && isUnknownRequest(failure)) {
+        clearSavedFlow(flow);
+        setFlow(null);
+        setReceipt(null);
+        setError("");
+      } else setError(errorText(failure));
     } finally {
       lock.current = false;
       setBusy("");
     }
   };
   useEffect(() => {
-    if (
-      !requestId ||
-      receipt?.status === "ready" ||
-      receipt?.status === "error" ||
-      receipt?.status === "cancelled"
-    )
-      return;
+    if (!requestId || terminal(receipt?.status) || busy === "start") return;
     let live = true;
     const poll = async () => {
       try {
@@ -156,7 +204,11 @@ export default function ClaudeAddSignIn({
           );
         }
       } catch (failure) {
-        if (live) setError(errorText(failure));
+        if (!live) return;
+        if (isUnknownRequest(failure) && flow && !flow.unknownSince) {
+          persistFlow({ ...flow, unknownSince: Date.now() });
+          setError("");
+        } else if (!isUnknownRequest(failure)) setError(errorText(failure));
       }
     };
     const stop = watchResourceReads({ kind: "accounts" }, poll, (failure) => {
@@ -169,7 +221,29 @@ export default function ClaudeAddSignIn({
       stop();
       clearInterval(timer);
     };
-  }, [onReady, receipt?.status, requestId]);
+  }, [busy, flow?.unknownSince, onReady, receipt?.status, requestId]);
+  useEffect(() => {
+    if (!flow?.unknownSince || !requestId || receipt) return;
+    const remaining =
+      UNKNOWN_REQUEST_GRACE_MS - (Date.now() - flow.unknownSince);
+    if (remaining <= 0) {
+      setNow(Date.now());
+      return;
+    }
+    const timer = setTimeout(() => setNow(Date.now()), remaining);
+    return () => clearTimeout(timer);
+  }, [flow?.unknownSince, receipt, requestId]);
+  useEffect(() => {
+    if (flow && terminal(receipt?.status)) clearSavedFlow(flow);
+  }, [flow?.requestId, receipt?.status]);
+  const unknownTooLong =
+    !!flow?.unknownSince &&
+    !receipt &&
+    now - flow.unknownSince >= UNKNOWN_REQUEST_GRACE_MS;
+  const close = () => {
+    if (flow && terminal(receipt?.status)) clearSavedFlow(flow);
+    onClose();
+  };
   const url = allowedUrl(receipt?.verificationUrl);
   const displayLabel = flow?.label || label;
   const displayEmail = flow?.email || expectedEmail || email;
@@ -186,7 +260,7 @@ export default function ClaudeAddSignIn({
   return (
     <Modal
       opened={opened}
-      onClose={onClose}
+      onClose={close}
       title={`Sign in to Claude · ${displayLabel}`}
       centered
     >
@@ -199,6 +273,9 @@ export default function ClaudeAddSignIn({
           </p>
         ) : (
           <>
+            {receipt?.status === "cancelled" && (
+              <p role="status">Sign-in cancelled.</p>
+            )}
             {url && (
               <Group>
                 <Button
@@ -257,9 +334,7 @@ export default function ClaudeAddSignIn({
                 </Stack>
               </form>
             )}
-            {!requestId ||
-            receipt?.status === "error" ||
-            receipt?.status === "cancelled" ? (
+            {!requestId || terminal(receipt?.status) ? (
               <Button
                 onClick={() => void start(displayEmail)}
                 loading={busy === "start"}
@@ -268,10 +343,35 @@ export default function ClaudeAddSignIn({
                 {receipt ? "Start again" : "Start sign-in"}
               </Button>
             ) : (
-              <p role="status">Waiting for sign-in on {serverLabel}…</p>
+              !receipt && (
+                <Group>
+                  <Button
+                    onClick={() => void start(displayEmail)}
+                    loading={busy === "start"}
+                    disabled={!!busy}
+                  >
+                    Retry sign-in
+                  </Button>
+                  {unknownTooLong && (
+                    <Button
+                      variant="default"
+                      onClick={() => void start(displayEmail, true)}
+                      disabled={!!busy}
+                    >
+                      Start again
+                    </Button>
+                  )}
+                </Group>
+              )
             )}
             {requestId &&
-              ["starting", "pending"].includes(receipt?.status || "") && (
+              receipt &&
+              ["starting", "pending"].includes(receipt.status) && (
+                <p role="status">Waiting for sign-in on {serverLabel}…</p>
+              )}
+            {requestId &&
+              (["starting", "pending"].includes(receipt?.status || "") ||
+                !receipt) && (
                 <Button
                   variant="subtle"
                   onClick={() => void run("cancel")}
@@ -281,6 +381,12 @@ export default function ClaudeAddSignIn({
                   Cancel
                 </Button>
               )}
+            {unknownTooLong && (
+              <p role="status">
+                The server has not found this request. Retry it, start again, or
+                cancel.
+              </p>
+            )}
             {wrong && receipt?.email && (
               <Button
                 variant="default"
@@ -297,7 +403,7 @@ export default function ClaudeAddSignIn({
         )}
         {shownError && <p role="alert">{shownError}</p>}
         <Group justify="flex-end">
-          <Button variant="subtle" onClick={onClose}>
+          <Button variant="subtle" onClick={close}>
             Close
           </Button>
         </Group>

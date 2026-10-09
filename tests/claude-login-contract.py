@@ -44,6 +44,12 @@ class Accounts:
         metadata = codex_claude.auth_metadata(self.profile, force=True)
         return {**metadata, 'status': metadata['status'] if metadata['accountId'] == self.profile['accountId'] else 'changed'}
 
+    def reconnect(self, key, verified_metadata=None):
+        if verified_metadata is not None:
+            self.profile.update(verified_metadata)
+        self.profile.pop('disconnected', None)
+        return dict(self.profile)
+
     def register_claude(self, options, label, verified_metadata=None):
         profile = {'provider':'claude', 'claudeOptions':options}
         metadata = verified_metadata or codex_claude.auth_metadata(profile, force=True)
@@ -204,6 +210,18 @@ email = 'wrong@example.com' if code == 'wrong' else 'expected@example.com'
         self.assertIn('different Claude account', result['error'])
         self.assertEqual(self.profile['accountId'], 'claude:expected@example.com')
         self.assertEqual(self.rt.accounts.refresh('claude-test')['status'], 'changed')
+
+    def test_disconnected_account_can_reauthenticate_and_reconnect(self):
+        self.profile['disconnected'] = True
+        rid = str(uuid.uuid4())
+        started = self.login.start('claude-test', rid)
+        self.ids.append(rid)
+        self.assertIn(started['status'], {'starting', 'pending'})
+        self.await_status(rid, {'pending'})
+        self.login.code(rid, 'valid-code')
+        result = self.await_status(rid, {'ready', 'error'})
+        self.assertEqual(result['status'], 'ready', result)
+        self.assertFalse(self.profile.get('disconnected', False))
 
     def test_add_account_uses_private_config_and_registers_verified_identity_once(self):
         rid = str(uuid.uuid4())

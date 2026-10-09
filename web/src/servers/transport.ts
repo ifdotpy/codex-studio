@@ -48,10 +48,17 @@ export function apiOrigin() {
 export function serverFetch(request: Request) {
   if (
     serverViewId === "local" &&
+    isolatedServerView &&
     request.method === "POST" &&
     LOCAL_FRAME_ACCOUNT_MUTATIONS.has(new URL(request.url).pathname)
-  )
-    return globalThis.fetch(request);
+  ) {
+    const requestUrl = new URL(request.url);
+    const frameUrl = new URL(
+      `${requestUrl.pathname}${requestUrl.search}`,
+      globalThis.location.origin,
+    );
+    return globalThis.fetch(new Request(frameUrl, request));
+  }
   if (!serverViewId || (serverViewId === "local" && !isolatedServerView))
     return globalThis.fetch(request);
   const server = viewServer(serverViewId);

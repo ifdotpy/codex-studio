@@ -347,7 +347,7 @@ export async function fixture(label, signed = false, accountRows = null) {
     if (url.pathname === "/api/accounts/claude/login") {
       const receipt = accountLogins.get(url.searchParams.get("request_id"));
       json(
-        receipt || { error: "Unknown fake Claude login" },
+        receipt || { error: "Unknown Claude sign-in request" },
         receipt ? 200 : 404,
       );
       return;

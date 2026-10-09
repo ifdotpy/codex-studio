@@ -212,8 +212,29 @@ test("accounts settings show per-server state and provider choices", async ({
   const claudeSignIn = remoteFrame.getByRole("dialog", {
     name: /Sign in to Claude · New Claude/,
   });
+  const addStarts = [];
+  const addStartCounts = new Map();
+  await page.route("**/api/accounts/claude/add", async (route) => {
+    const request = route.request();
+    if (request.method() !== "POST") return route.continue();
+    const body = request.postDataJSON();
+    const requestId = request.headers()["x-studio-request-id"];
+    addStarts.push({ loginId: body.login_id, requestId });
+    const prior = addStartCounts.get(body.login_id) || 0;
+    addStartCounts.set(body.login_id, prior + 1);
+    if (prior === 0 && addStartCounts.size <= 2) return route.abort();
+    return route.continue();
+  });
   await claudeSignIn.getByRole("button", { name: "Start sign-in" }).click();
+  await expect(
+    claudeSignIn.getByRole("button", { name: "Retry sign-in", exact: true }),
+  ).toBeVisible();
+  await claudeSignIn
+    .getByRole("button", { name: "Retry sign-in", exact: true })
+    .click();
   await expect(claudeSignIn.getByLabel("Paste code")).toBeVisible();
+  expect(addStarts[1]?.loginId).toBe(addStarts[0]?.loginId);
+  expect(addStarts[1]?.requestId).toBe(addStarts[0]?.requestId);
   await expect(
     claudeSignIn.getByRole("button", { name: "Copy link" }),
   ).toBeVisible();
@@ -262,6 +283,57 @@ test("accounts settings show per-server state and provider choices", async ({
     .last()
     .click();
   await expect(settings).toBeVisible();
+
+  await accounts
+    .getByRole("button", { name: "Add account", exact: true })
+    .click();
+  const secondClaudeAdd = page.getByRole("dialog", { name: "Add account" });
+  await secondClaudeAdd
+    .getByRole("button", { name: /Claude.*link \+ paste code/ })
+    .click();
+  await secondClaudeAdd.getByLabel("Server").click();
+  await page.getByRole("option", { name: "Remote" }).click();
+  await secondClaudeAdd.getByLabel("Name").fill("Second Claude");
+  await secondClaudeAdd.getByRole("button", { name: "Continue" }).click();
+  const secondClaudeSignIn = remoteFrame.getByRole("dialog", {
+    name: /Sign in to Claude · Second Claude/,
+  });
+  await expect(
+    secondClaudeSignIn.getByRole("button", {
+      name: "Start sign-in",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await secondClaudeSignIn
+    .getByRole("button", { name: "Start sign-in", exact: true })
+    .click();
+  await expect(
+    secondClaudeSignIn.getByRole("button", {
+      name: "Retry sign-in",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    secondClaudeSignIn.getByRole("button", {
+      name: "Start again",
+      exact: true,
+    }),
+  ).toBeVisible({ timeout: 10000 });
+  await secondClaudeSignIn
+    .getByRole("button", { name: "Start again", exact: true })
+    .click();
+  await expect(
+    secondClaudeSignIn.getByRole("link", { name: "Open sign-in page" }),
+  ).toBeVisible();
+  expect(addStarts[3]?.loginId).not.toBe(addStarts[2]?.loginId);
+  expect(addStarts[3]?.requestId).not.toBe(addStarts[2]?.requestId);
+  await secondClaudeSignIn
+    .getByRole("button", { name: "Cancel", exact: true })
+    .click();
+  await expect(secondClaudeSignIn).toContainText("Sign-in cancelled.");
+  await secondClaudeSignIn.getByLabel("Close", { exact: true }).click();
+  await expect(settings).toBeVisible();
+
   await accounts
     .getByRole("button", { name: "Add account", exact: true })
     .click();

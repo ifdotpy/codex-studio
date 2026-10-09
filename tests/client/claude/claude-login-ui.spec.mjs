@@ -45,11 +45,13 @@ test("claude login ui", async ({ page: runnerPage }) => {
     let receipt = null;
     let starts = [];
     let codes = [];
-    let lose = true;
+    let unsafeNext = false;
     await page.route("**/api/**", async (route) => {
       const req = route.request();
       const url = new URL(req.url());
       const body = req.method() === "POST" ? req.postDataJSON() : {};
+      if (url.pathname === "/api/sync/identity")
+        return route.fulfill({ status: 404, json: {} });
       if (url.pathname === "/api/accounts/claude/login") {
         if (req.method() === "POST") {
           starts.push(body.login_id);
@@ -57,14 +59,22 @@ test("claude login ui", async ({ page: runnerPage }) => {
             requestId: body.login_id,
             accountKey: "claude",
             status: "pending",
-            verificationUrl: "https://claude.ai/oauth/authorize?fixture=1",
+            verificationUrl: unsafeNext
+              ? "https://claude.ai.evil.example/oauth/authorize"
+              : "https://claude.com/cai/oauth/authorize?fixture=1",
           };
-          if (lose) {
-            lose = false;
-            return route.abort();
-          }
+          unsafeNext = false;
+        } else if (!receipt) {
+          // Let the start POST reach this route before the first status read.
+          await new Promise((resolve) => setTimeout(resolve, 50));
         }
-        return route.fulfill({ json: receipt || { error: "Unknown request" } });
+        return route.fulfill({
+          json: receipt || {
+            requestId: url.searchParams.get("request_id"),
+            accountKey: "claude",
+            status: "starting",
+          },
+        });
       }
       if (url.pathname.endsWith("/code")) {
         codes.push(body.code);
@@ -94,9 +104,22 @@ test("claude login ui", async ({ page: runnerPage }) => {
       await page.getByRole("button", { name: "me@example.com" }).click();
       await page.getByRole("menuitem", { name: /Manage accounts/ }).click();
       await page
-        .getByRole("button", { name: "Sign in again", exact: true })
+        .getByRole("button", {
+          name: "Actions for me@example.com",
+          exact: true,
+        })
+        .click();
+      await page
+        .getByRole("menuitem", { name: "Sign in again", exact: true })
         .click();
     };
+    const resetToken = String(Date.now());
+    await page.addInitScript((token) => {
+      if (sessionStorage.getItem("claude-login-ui-reset") === token) return;
+      localStorage.removeItem("claude-sign-in:fixture:claude");
+      localStorage.removeItem("claude-add-sign-in:fixture");
+      sessionStorage.setItem("claude-login-ui-reset", token);
+    }, resetToken);
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/check`,
     );
@@ -108,7 +131,9 @@ test("claude login ui", async ({ page: runnerPage }) => {
     await page
       .getByRole("button", { name: "Start sign-in", exact: true })
       .click();
-    await page.getByRole("link", { name: "Open Claude sign-in" }).waitFor();
+    await page
+      .getByRole("link", { name: "Open Claude sign-in" })
+      .waitFor({ timeout: 3000 });
     const first = starts[0];
     await page.reload();
     await open();
@@ -128,13 +153,12 @@ test("claude login ui", async ({ page: runnerPage }) => {
     );
     await page.reload();
     await open();
+    unsafeNext = true;
     await page.getByRole("button", { name: "Start new sign-in" }).click();
-    await page.getByRole("link", { name: "Open Claude sign-in" }).waitFor();
-    assert.notEqual(starts.at(-1), first);
-    receipt.verificationUrl = "https://claude.ai.evil.example/oauth/authorize";
     await page
       .getByText("Claude returned an unsupported sign-in URL.")
       .waitFor();
+    assert.notEqual(starts.at(-1), first);
     assert.equal(
       await page.getByRole("link", { name: "Open Claude sign-in" }).count(),
       0,
@@ -143,9 +167,10 @@ test("claude login ui", async ({ page: runnerPage }) => {
     await page.getByText("Sign-in cancelled.", { exact: true }).waitFor();
     assert.deepEqual(failures, []);
     console.log(
-      "PASS Claude account trigger, lost reply, reload, code secrecy, ready restart, unsafe URL, cancel",
+      "PASS Claude re-auth menu, reload, code secrecy, ready restart, unsafe URL, cancel",
     );
   } finally {
+    await runnerPage.close();
     await server.close();
     await rm(cacheDir, { recursive: true, force: true });
   }

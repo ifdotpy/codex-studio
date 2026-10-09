@@ -220,8 +220,8 @@ class LoginManager:
             # Read the saved identity without the blocking native status command.
             with self.runtime.accounts.lock:
                 profile = copy.deepcopy(self.runtime.accounts._row(key))
-            if profile.get('provider') != 'claude' or profile.get('disconnected'):
-                raise ValueError('Select a connected Claude account')
+            if profile.get('provider') != 'claude':
+                raise ValueError('Select a Claude account')
             email = profile.get('email')
             if not email or profile.get('accountId') != 'claude:' + email:
                 raise ValueError('The Claude account has no saved identity')
@@ -433,8 +433,7 @@ class LoginManager:
             with self.runtime.accounts.lock:
                 current = self.runtime.accounts._row(job['receipt']['accountKey'])
                 if (current.get('claudeOptions') != profile.get('claudeOptions')
-                        or current.get('accountId') != profile['accountId']
-                        or current.get('disconnected')):
+                        or current.get('accountId') != profile['accountId']):
                     raise ValueError('Account settings changed during sign-in')
             refreshed = self.runtime.accounts.refresh(job['receipt']['accountKey'], verified_metadata=metadata)
             with self.lock:
@@ -444,6 +443,10 @@ class LoginManager:
                         and metadata.get('accountId') == profile['accountId']
                         and refreshed.get('status') == 'ready'
                         and refreshed.get('accountId') == profile['accountId']):
+                    if profile.get('disconnected'):
+                        self.runtime.accounts.reconnect(
+                            job['receipt']['accountKey'], verified_metadata=metadata,
+                        )
                     self._finish(job, 'ready')
                 elif metadata.get('status') == 'ready' and metadata.get('accountId') != job['profile']['accountId']:
                     self._finish(job, 'error', 'A different Claude account signed in. Sign in with ' + job['receipt']['email'] + '.')

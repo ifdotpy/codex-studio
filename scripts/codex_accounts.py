@@ -343,8 +343,11 @@ class AccountStore:
                 self._save()
         return self.snapshot()
 
-    def reconnect(self, key):
-        self.get(key)
+    def reconnect(self, key, verified_metadata=None):
+        if verified_metadata is None:
+            self.get(key)
+        else:
+            self.refresh(key, verified_metadata=verified_metadata)
         with self.lock:
             row = self._row(key)
             if row.get("status") != "ready":

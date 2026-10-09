@@ -17,6 +17,19 @@ import { copyText } from "../clipboard/clipboard";
 export type LoginReceipt = PostResult<"/api/accounts/login">;
 const active = (status?: string) =>
   ["starting", "pending", "uncertain"].includes(status || "");
+export function deviceCodeCountdownSeconds(
+  expiresAt: unknown,
+  now: number,
+): number | null {
+  if (
+    typeof expiresAt !== "number" ||
+    !Number.isFinite(expiresAt) ||
+    expiresAt <= 0 ||
+    !Number.isFinite(now)
+  )
+    return null;
+  return Math.max(0, Math.ceil(expiresAt - now));
+}
 
 export default function AccountSignIn({
   state,
@@ -151,13 +164,17 @@ export default function AccountSignIn({
   }
   const connected = ["ready", "duplicate"].includes(receipt?.status || "");
   useEffect(() => {
-    if (!receipt?.expiresAt || !active(receipt.status)) return;
+    if (
+      !receipt ||
+      deviceCodeCountdownSeconds(receipt?.expiresAt, Date.now() / 1000) ===
+        null ||
+      !active(receipt.status)
+    )
+      return;
     const timer = setInterval(() => setNow(Date.now() / 1000), 1000);
     return () => clearInterval(timer);
   }, [receipt?.expiresAt, receipt?.status]);
-  const expirySeconds = receipt?.expiresAt
-    ? Math.max(0, Math.ceil(receipt.expiresAt - now))
-    : null;
+  const expirySeconds = deviceCodeCountdownSeconds(receipt?.expiresAt, now);
   return (
     <section
       className="account-add"

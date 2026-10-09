@@ -60,6 +60,7 @@ export default function ClaudeSignIn({
   const [copied, setCopied] = useState(false);
   const lock = useRef(false);
   const refreshed = useRef("");
+  const recoveredRequest = useRef(requestId);
   const ready = useRef(onReady);
   ready.current = onReady;
   const store = (result: Receipt, id: string) => {
@@ -79,7 +80,7 @@ export default function ClaudeSignIn({
   useEffect(() => {
     if (!requestId || !active(receipt)) return;
     let live = true;
-    const stop = watchResourceReads(
+    const watch = watchResourceReads(
       { kind: "accounts" },
       async () => {
         const result = await get("/api/accounts/claude/login", {
@@ -91,9 +92,13 @@ export default function ClaudeSignIn({
         if (live) setError(errorText(failure));
       },
     );
+    if (recoveredRequest.current === requestId) {
+      recoveredRequest.current = "";
+      watch.refresh();
+    }
     return () => {
       live = false;
-      stop();
+      watch();
     };
   }, [requestId, receipt?.status]);
   const run = async (action: LoginAction) => {
