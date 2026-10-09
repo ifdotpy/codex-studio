@@ -11,6 +11,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+test.use({ apiSchemaFixtureHeaders: false });
+
 test("team-navigation-ui", async ({ page: fixturePage }) => {
   test.setTimeout(60_000);
   const repo = dirname(

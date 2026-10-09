@@ -10,6 +10,9 @@ import { fileURLToPath } from "node:url";
 import { mkdtemp, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+test.use({ apiSchemaFixtureHeaders: false });
+
 test("Chat controls", async ({ page }) => {
   test.setTimeout(45_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));

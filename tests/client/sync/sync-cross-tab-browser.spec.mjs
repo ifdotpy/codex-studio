@@ -9,6 +9,8 @@ import {
   expect,
 } from "../playwright.mjs";
 
+test.use({ apiSchemaFixtureHeaders: false });
+
 test("sync-cross-tab-browser @performance", async ({
   browser: fixtureBrowser,
 }) => {

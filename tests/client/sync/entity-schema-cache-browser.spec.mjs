@@ -16,6 +16,8 @@ import {
   expect,
 } from "../playwright.mjs";
 
+test.use({ apiSchemaFixtureHeaders: false });
+
 test("a real built renderer uses a new projection cache and preserves drafts", async ({
   browser,
 }) => {

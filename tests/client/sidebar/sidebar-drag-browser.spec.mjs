@@ -10,6 +10,9 @@ import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+
+test.use({ apiSchemaFixtureHeaders: false });
+
 test("sidebar drag browser", async ({ page: runnerPage }) => {
   const root = resolve(import.meta.dirname, "../../..");
   const stateDir = await mkdtemp(join(tmpdir(), "studio-sidebar-drag-"));

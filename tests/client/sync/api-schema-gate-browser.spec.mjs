@@ -15,6 +15,8 @@ import {
   test,
 } from "../playwright.mjs";
 
+test.use({ apiSchemaFixtureHeaders: false });
+
 const SILENT_HANDSHAKE_RETRY_ADVANCE_MS = 16_000;
 
 async function startColdGateFixture() {

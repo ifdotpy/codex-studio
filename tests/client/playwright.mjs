@@ -109,42 +109,120 @@ export function apiSchemaHeaders(headers = {}) {
   return { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(), ...headers };
 }
 
+const apiSchemaFixtureTargets = new WeakSet();
+const apiSchemaFixtureBrowsers = new WeakSet();
+const apiSchemaFixtureHeaderState = { enabled: true };
+
+function routeMatchersEqual(left, right) {
+  if (Object.is(left, right)) return true;
+  return (
+    left instanceof RegExp &&
+    right instanceof RegExp &&
+    left.source === right.source &&
+    left.flags === right.flags
+  );
+}
+
 /** @param {import("playwright").Page | import("playwright").BrowserContext} target */
 export function installApiSchemaFixtureHeaders(target) {
+  if (apiSchemaFixtureTargets.has(target)) return;
+  apiSchemaFixtureTargets.add(target);
   const registerRoute = target.route.bind(target);
+  const unregisterRoute = target.unroute.bind(target);
+  const wrappedHandlers = [];
   target.route = (url, handler, options) => {
-    if (typeof url !== "string" || !url.startsWith("**/api/"))
-      return registerRoute(url, handler, options);
-    return registerRoute(
-      url,
-      (route) =>
-        handler(
-          new Proxy(route, {
-            get(routeTarget, property) {
-              if (property === "fulfill")
-                return (response = {}) => {
-                  const headers = new Headers(response.headers);
-                  if (!headers.has(API_SCHEMA_HASH_HEADER))
-                    headers.set(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
-                  const normalizedHeaders = {};
-                  headers.forEach((value, key) => {
-                    normalizedHeaders[key] = value;
-                  });
-                  return routeTarget.fulfill({
-                    ...response,
-                    headers: normalizedHeaders,
-                  });
-                };
-              const value = Reflect.get(routeTarget, property, routeTarget);
-              return typeof value === "function"
-                ? value.bind(routeTarget)
-                : value;
-            },
-          }),
-          route.request(),
-        ),
-      options,
+    const wrappedHandler = (route, request) => {
+      if (!new URL(request.url()).pathname.startsWith("/api/"))
+        return handler(route, request);
+      return handler(
+        new Proxy(route, {
+          get(routeTarget, property) {
+            if (property === "fulfill")
+              return (response = {}) => {
+                const originalHeaders =
+                  typeof response.response?.headers === "function"
+                    ? response.response.headers()
+                    : {};
+                const headers = new Headers(originalHeaders);
+                new Headers(response.headers).forEach((value, key) =>
+                  headers.set(key, value),
+                );
+                if (!headers.has(API_SCHEMA_HASH_HEADER))
+                  headers.set(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
+                const normalizedHeaders = {};
+                headers.forEach((value, key) => {
+                  normalizedHeaders[key] = value;
+                });
+                return routeTarget.fulfill({
+                  ...response,
+                  headers: normalizedHeaders,
+                });
+              };
+            const value = Reflect.get(routeTarget, property, routeTarget);
+            return typeof value === "function"
+              ? value.bind(routeTarget)
+              : value;
+          },
+        }),
+        request,
+      );
+    };
+    wrappedHandlers.push({ url, handler, wrappedHandler });
+    return registerRoute(url, wrappedHandler, options);
+  };
+  target.unroute = async (url, handler) => {
+    const matching = wrappedHandlers.filter(
+      (entry) =>
+        routeMatchersEqual(entry.url, url) &&
+        (handler === undefined || entry.handler === handler),
     );
+    if (handler === undefined) {
+      const result = await unregisterRoute(url);
+      for (let index = wrappedHandlers.length - 1; index >= 0; index--) {
+        if (routeMatchersEqual(wrappedHandlers[index].url, url))
+          wrappedHandlers.splice(index, 1);
+      }
+      return result;
+    }
+    if (!matching.length) return unregisterRoute(url, handler);
+    await Promise.all(
+      matching.map((entry) => unregisterRoute(url, entry.wrappedHandler)),
+    );
+    for (const entry of matching) {
+      const index = wrappedHandlers.indexOf(entry);
+      if (index >= 0) wrappedHandlers.splice(index, 1);
+    }
+  };
+}
+
+/** @param {import("playwright").Browser} browser */
+function installApiSchemaFixtureBrowser(browser) {
+  if (apiSchemaFixtureBrowsers.has(browser)) return;
+  apiSchemaFixtureBrowsers.add(browser);
+  const originalNewContext = browser.newContext;
+  const originalNewPage = browser.newPage;
+  browser.newContext = async function (...args) {
+    const context = await originalNewContext.apply(this, args);
+    if (apiSchemaFixtureHeaderState.enabled)
+      installApiSchemaFixtureContext(context);
+    return context;
+  };
+  browser.newPage = async function (...args) {
+    const page = await originalNewPage.apply(this, args);
+    if (apiSchemaFixtureHeaderState.enabled)
+      installApiSchemaFixtureHeaders(page);
+    return page;
+  };
+}
+
+/** @param {import("playwright").BrowserContext} context */
+function installApiSchemaFixtureContext(context) {
+  installApiSchemaFixtureHeaders(context);
+  const originalNewPage = context.newPage;
+  context.newPage = async function (...args) {
+    const page = await originalNewPage.apply(this, args);
+    installApiSchemaFixtureHeaders(page);
+    return page;
   };
 }
 
@@ -262,8 +340,57 @@ async function stopFixtureChild(child) {
     throw new Error(`Fixture process ${child.pid} did not exit after SIGKILL`);
 }
 
-const test = baseTest.extend({
-  // @ts-expect-error This module adds a private fixture to the shared test type.
+/** @typedef {import("@playwright/test").PlaywrightTestArgs & import("@playwright/test").PlaywrightTestOptions & {
+ * apiSchemaFixtureHeaders: boolean;
+ * apiSchemaFixtureHeaderSetup: void;
+ * fixtureChildCleanup: void;
+ * }} ClientTestFixtures
+ */
+/** @typedef {import("@playwright/test").PlaywrightWorkerArgs & import("@playwright/test").PlaywrightWorkerOptions & {
+ * apiSchemaFixtureBrowserSetup: void;
+ * browserStageTiming: void;
+ * }} ClientWorkerFixtures
+ */
+/** @type {import("@playwright/test").Fixtures<
+ * ClientTestFixtures,
+ * ClientWorkerFixtures,
+ * import("@playwright/test").PlaywrightTestArgs & import("@playwright/test").PlaywrightTestOptions,
+ * import("@playwright/test").PlaywrightWorkerArgs & import("@playwright/test").PlaywrightWorkerOptions
+ * >}
+ */
+const sharedFixtures = {
+  apiSchemaFixtureHeaders: [true, { option: true }],
+  apiSchemaFixtureBrowserSetup: [
+    async ({ playwright, browserName }, use) => {
+      const browserType = playwright[browserName];
+      const originalLaunch = browserType.launch;
+      const wrappedLaunch = async function (...args) {
+        const browser = await originalLaunch.apply(this, args);
+        installApiSchemaFixtureBrowser(browser);
+        return browser;
+      };
+      browserType.launch = wrappedLaunch;
+      try {
+        await use();
+      } finally {
+        if (browserType.launch === wrappedLaunch)
+          browserType.launch = originalLaunch;
+      }
+    },
+    { scope: "worker", auto: true },
+  ],
+  apiSchemaFixtureHeaderSetup: [
+    async ({ apiSchemaFixtureHeaders }, use) => {
+      const previousEnabled = apiSchemaFixtureHeaderState.enabled;
+      apiSchemaFixtureHeaderState.enabled = apiSchemaFixtureHeaders;
+      try {
+        await use();
+      } finally {
+        apiSchemaFixtureHeaderState.enabled = previousEnabled;
+      }
+    },
+    { auto: true },
+  ],
   browserStageTiming: [
     async ({ playwright, browserName }, use, workerInfo) => {
       const browserType = playwright[browserName];
@@ -438,7 +565,9 @@ const test = baseTest.extend({
     },
     { auto: true, timeout: fixtureCleanupTimeoutMs },
   ],
-});
+};
+
+const test = baseTest.extend(sharedFixtures);
 
 export { test, expect };
 

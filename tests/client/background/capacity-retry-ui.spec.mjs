@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+test.use({ apiSchemaFixtureHeaders: false });
+
 const fixtureRetryDelays = [2, 6, 24, 60];
 
 const browserContextsByTest = new WeakMap();
