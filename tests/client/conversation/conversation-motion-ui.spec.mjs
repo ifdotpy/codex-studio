@@ -580,6 +580,13 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
       await transcriptRoot.evaluate((root) => delete root.dataset.motionRoot);
       if (width < 700) await page.locator("#sidebar-toggle").click();
       await page.locator(`[data-chat="${other.id}"]`).click();
+      if (width < 700)
+        await page.waitForFunction(
+          () =>
+            !document.querySelector(
+              ".mantine-Drawer-overlay[data-fixed='true']",
+            ),
+        );
       await emitTranscript(other.id, {
         agent: other,
         items: [],
@@ -624,7 +631,6 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
         await page
           .locator(".mantine-Drawer-overlay[data-fixed='true']")
           .waitFor({ state: "visible" });
-        const navigationStarted = await page.evaluate(() => performance.now());
         await page.locator(`[data-chat="${other.id}"]`).click();
         await page.waitForFunction(
           (name) =>
@@ -633,32 +639,11 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
               ?.textContent?.includes(name),
           other.name,
         );
-        const atTitleChange = await page.evaluate(
-          (started) => ({
-            titleChangeMs: performance.now() - started,
-            overlayPresent: !!document.querySelector(
+        await page.waitForFunction(
+          () =>
+            !document.querySelector(
               ".mantine-Drawer-overlay[data-fixed='true']",
             ),
-          }),
-          navigationStarted,
-        );
-        let drawerClosedMs = null;
-        try {
-          await page.waitForFunction(
-            () =>
-              !document.querySelector(
-                ".mantine-Drawer-overlay[data-fixed='true']",
-              ),
-            undefined,
-            { timeout: 1000 },
-          );
-          drawerClosedMs = await page.evaluate(
-            (started) => performance.now() - started,
-            navigationStarted,
-          );
-        } catch {}
-        console.log(
-          `MOTION_MOBILE_DRAWER_NAVIGATION ${JSON.stringify({ atTitleChange, drawerClosedMs })}`,
         );
       } else await page.locator(`[data-chat="${other.id}"]`).click();
       await emitTranscript(other.id, {
@@ -669,6 +654,13 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
       });
       if (width < 700) await page.locator("#sidebar-toggle").click();
       await page.locator(`[data-chat="${lead.id}"]`).click();
+      if (width < 700)
+        await page.waitForFunction(
+          () =>
+            !document.querySelector(
+              ".mantine-Drawer-overlay[data-fixed='true']",
+            ),
+        );
       await emit();
       await markTranscriptRoot();
       await afterPaint(page, rootSelector);
@@ -681,33 +673,6 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
       );
       const latest = page.locator(`${conversationSelector} #jump-latest`);
       const idle = await latest.boundingBox();
-      const hitTarget = await latest.evaluate((button) => {
-        const rect = button.getBoundingClientRect();
-        window.motionLatestEvents = [];
-        for (const type of ["pointerdown", "pointerup", "click"])
-          button.addEventListener(type, (event) => {
-            window.motionLatestEvents.push({
-              type,
-              target: event.target?.outerHTML?.slice(0, 160),
-              x: event.clientX,
-              y: event.clientY,
-            });
-          });
-        const hit = document.elementFromPoint(
-          rect.x + rect.width / 2,
-          rect.y + rect.height / 2,
-        );
-        return {
-          rect: {
-            x: rect.x,
-            y: rect.y,
-            width: rect.width,
-            height: rect.height,
-          },
-          hit: hit?.outerHTML.slice(0, 200),
-        };
-      });
-      console.log(`MOTION_LATEST_HIT_TARGET ${JSON.stringify(hitTarget)}`);
       await page.mouse.move(idle.x + idle.width / 2, idle.y + idle.height / 2);
       await page.mouse.down();
       const pressed = await latest.boundingBox();
@@ -725,11 +690,8 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
           clientHeight: root.clientHeight,
           gap: root.scrollHeight - root.scrollTop - root.clientHeight,
           buttonVisible: !!button && button.getBoundingClientRect().height > 0,
-          buttonText: button?.textContent,
-          events: window.motionLatestEvents,
         };
       });
-      console.log(`MOTION_LATEST_STATE ${JSON.stringify(latestState)}`);
       assert.ok(latestState.gap < 2, "Latest resumes following");
       // Momentum or a scrollbar drag reaches the bottom without recent input.
       await page.locator(rootSelector).evaluate((root) => {
