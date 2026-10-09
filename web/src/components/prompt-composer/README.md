@@ -43,6 +43,10 @@ the visible screen. Mobile model and
 account information shares one row so it does not push the send controls and
 usage footer below the keyboard. The limit ratio and approximate chrome
 allowance live in [`style.css`](../../style.css).
+For an empty managed chat, model and worker settings remain below the composer.
+When the keyboard leaves a short visible viewport, that settings panel becomes
+internally scrollable so the send controls and usage footer stay visible.
+Closing the keyboard restores the expanded settings layout.
 `tests/client/mobile/mobile-keyboard-ui.spec.mjs` checks simulated viewport
 changes with Android and iPhone identities in the browser selected by
 `BROWSER`; it does not open a real operating-system keyboard or language

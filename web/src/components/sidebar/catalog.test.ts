@@ -5,6 +5,7 @@ import {
   createSidebarCatalogSelector,
   createSidebarSearchSelector,
   countProjectChats,
+  defaultLead,
   isVisibleSidebarAgent,
   type SidebarOrder,
   type SidebarOverrides,
@@ -245,6 +246,21 @@ describe("incremental sidebar catalog", () => {
 });
 
 describe("App catalog", () => {
+  it("selects the most recently updated lead with an ID tie-break", () => {
+    const release = agent("release", { created: 1, updated: 8 });
+    const other = agent("other", { created: 3, updated: 8 });
+    const older = agent("older", { created: 9, updated: 7 });
+    expect(defaultLead([older, other, release])?.id).toBe("other");
+    expect(defaultLead([release, older, other])?.id).toBe("other");
+    expect(
+      defaultLead([
+        agent("later", { created: 4 }),
+        agent("first", { created: 2 }),
+      ])?.id,
+    ).toBe("first");
+    expect(defaultLead([])).toBeUndefined();
+  });
+
   it("retains another tree and updates membership, source order and root selection", () => {
     const select = createAppCatalogSelector();
     const rows = [

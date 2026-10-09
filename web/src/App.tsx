@@ -171,7 +171,10 @@ function isLeadCreateRequest(value: Json): value is LeadCreateRequest {
   );
 }
 import Sidebar from "./components/Sidebar";
-import { createAppCatalogSelector } from "./components/sidebar/catalog";
+import {
+  createAppCatalogSelector,
+  defaultLead,
+} from "./components/sidebar/catalog";
 const emptyAgents: Agent[] = [];
 import {
   unreadResult,
@@ -913,7 +916,7 @@ export default function App() {
     if (agent?.id === createdSelection.current) createdSelection.current = null;
     if (!opened || (!agent && !room && !legacy))
       setOpened(
-        leads.at(-1)?.id ||
+        defaultLead(leads)?.id ||
           data.runtime?.rooms
             .filter((room) => room.radio?.direct && !room.userHidden)
             .at(-1)?.id ||

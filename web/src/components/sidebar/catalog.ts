@@ -31,6 +31,29 @@ export function isVisibleSidebarAgent(
     !agent.sharedRoomId
   );
 }
+
+/** Prefer latest explicit update; without update timestamps, prefer the oldest lead. */
+export function defaultLead(leads: Agent[]) {
+  const hasUpdates = leads.some((lead) => lead.updated != null);
+  let selected: Agent | undefined;
+  for (const lead of leads) {
+    if (!selected) {
+      selected = lead;
+      continue;
+    }
+    const updated = hasUpdates ? (lead.updated ?? 0) : -(lead.created ?? 0);
+    const selectedUpdated = hasUpdates
+      ? (selected.updated ?? 0)
+      : -(selected.created ?? 0);
+    if (
+      updated > selectedUpdated ||
+      (updated === selectedUpdated && lead.id < selected.id)
+    )
+      selected = lead;
+  }
+  return selected;
+}
+
 export function countProjectChats(
   agents: Pick<Agent, "cwd" | "archived">[],
   archived: boolean,
