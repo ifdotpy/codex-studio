@@ -144,17 +144,6 @@ export function useConversationScroll(id: string, ready: boolean) {
     const root = scroll.current;
     const body = content.current;
     if (!root || !body) return;
-    const composer = root
-      .closest<HTMLElement>("#conversation")
-      ?.querySelector<HTMLElement>("#composer");
-    let resizeFrame = 0;
-    const scheduleResizeRestore = () => {
-      if (resizeFrame) return;
-      resizeFrame = requestAnimationFrame(() => {
-        resizeFrame = 0;
-        restore();
-      });
-    };
     const input = (event: Event) => {
       if (event instanceof KeyboardEvent) {
         if (
@@ -189,8 +178,6 @@ export function useConversationScroll(id: string, ready: boolean) {
     const observer = new ResizeObserver(restore);
     observer.observe(root);
     observer.observe(body);
-    const composerObserver = new ResizeObserver(scheduleResizeRestore);
-    if (composer) composerObserver.observe(composer);
     const mutations = new MutationObserver(restore);
     mutations.observe(body, { childList: true, subtree: true });
     return () => {
@@ -198,8 +185,6 @@ export function useConversationScroll(id: string, ready: boolean) {
       window.removeEventListener("pagehide", checkpoint);
       document.removeEventListener("visibilitychange", checkpoint);
       observer.disconnect();
-      composerObserver.disconnect();
-      cancelAnimationFrame(resizeFrame);
       mutations.disconnect();
       for (const type of ["wheel", "touchmove", "keydown", "pointerdown"])
         root.removeEventListener(type, input);
