@@ -259,6 +259,7 @@ class DesktopResponse(ResponseModel):
     supervisorFallback: bool
     supervisorNotice: str | None
     stateDir: str
+    linuxVm: dict[str, JsonValue] | None = None
 
 
 class HostResources(ContractModel):

@@ -11,7 +11,6 @@ Type=notify
 User=studio
 Group=studio
 Environment=HOME=/home/studio
-Environment=CODEX_WORKSPACE_STORE=/var/lib/codex-studio/workspaces
 WorkingDirectory=@REPO@
 ExecStart=/usr/bin/python3 @REPO@/vm/guest/service.py
 Restart=on-failure

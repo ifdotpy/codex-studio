@@ -1,0 +1,22 @@
+[Unit]
+Description=Studio layr privilege broker
+After=network-online.target codex-studio-layr.service
+Requires=codex-studio-layr.service
+Wants=network-online.target
+RequiresMountsFor=/var/lib/codex-studio
+
+[Service]
+Type=simple
+User=root
+Environment=LAYR_ROOT=/var/lib/codex-studio/layr
+Environment=LAYR_SOCKET=/run/layr/layr.sock
+ExecStart=/usr/bin/python3 /opt/codex-studio/vm/guest/layr_admin.py serve
+Restart=on-failure
+RestartSec=2
+KillMode=process
+UMask=0077
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Literal, cast
 
@@ -30,6 +31,16 @@ ProviderVersionStatus = Callable[[object], dict[str, JsonValue]]
 BrowserDiagnostics = Callable[[object, str], dict[str, JsonValue] | None]
 SupervisorStatus = Callable[[str], dict[str, JsonValue]]
 DiagnosticsSnapshot = Callable[[object], dict[str, JsonValue]]
+
+
+def linux_vm_status() -> dict[str, JsonValue] | None:
+    if platform.system() != "Darwin":
+        return None
+    from codex_linux_vm import connect
+    try:
+        return cast(dict[str, JsonValue], connect().layr_status())
+    except (RuntimeError, OSError, ValueError) as error:
+        return {"state": "unavailable", "error": str(error)}
 
 
 def create_router(context: ApiContext) -> APIRouter:
@@ -153,6 +164,7 @@ def create_router(context: ApiContext) -> APIRouter:
         )
         result = {
             "application": "codex-agents",
+            "linuxVm": linux_vm_status(),
             "protocol": 1,
             "mobileProtocol": 1,
             "backendBuild": BACKEND_BUILD,

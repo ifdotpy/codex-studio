@@ -73,6 +73,9 @@ try {
       filter: (source) =>
         !source.includes("__pycache__") && !source.endsWith(".pyc"),
     });
+    await cp(path.join(root, "../vm/layr"), path.join(resources, "vm/layr"), {
+      recursive: true,
+    });
   }
   await cp(path.join(root, "../web/dist"), path.join(resources, "web/dist"), {
     recursive: true,

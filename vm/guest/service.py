@@ -25,9 +25,11 @@ from upload import Uploads, sha, tree_space
 
 READ_METHODS = {"health", "workspace.status", "provider.attach", "provider.list", "provider.rpc",
                 "upload.begin", "upload.chunk", "upload.commit", "file.stat", "file.read"}
+READ_METHODS |= {"project.ensure", "share.status", "layr.health"}
 METHODS = READ_METHODS | {"exec", "sync.push", "workspace.startBase", "workspace.create",
                           "workspace.archive", "workspace.remove", "provider.start", "provider.write",
                           "provider.stop", "credentials.put"}
+METHODS |= {"project.import", "share.configure"}
 CLIENT_IDLE_SECONDS = 60
 
 
@@ -214,8 +216,8 @@ class Service:
         if directory.exists() and not native:
             raise GuestError("outcome_unknown", "The provider launch directory already exists")
         sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-        import codex_workspace_images as images
-        floor = images._minimum_free_bytes(images._AGENT_MIN_FREE_ENV, images._DEFAULT_AGENT_MIN_FREE_BYTES)
+        floor = int(os.environ.get('CODEX_WORKSPACE_AGENT_MIN_FREE_BYTES', str(5 * 1024**3)))
+        require(floor >= 0, "The guest free-space floor must be non-negative")
         if shutil.disk_usage(self.state).free < floor + 80 * 1024**2:
             raise GuestError("busy", "The data disk has insufficient free space for the provider journal")
         private_dir(directory)
@@ -420,6 +422,9 @@ class Service:
             return {"totalBytes": None, "availableBytes": None}
 
     async def dispatch(self, request_id, method, params, emit):
+        if method in {"project.ensure", "project.import", "share.configure", "share.status", "layr.health"}:
+            from layr_admin_client import admin_request
+            return await admin_request(request_id, method, params, emit)
         if method == "health":
             process = await asyncio.create_subprocess_exec("stat", "-f", "-c", "%T", str(self.store), stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL)
@@ -429,11 +434,16 @@ class Service:
                 process.kill()
                 await asyncio.wait_for(process.wait(), 5)
                 output = b"unknown"
+            try:
+                from layr_admin_client import admin_request
+                layr = await admin_request(request_id + ":layr", "layr.health", {})
+            except GuestError as error:
+                layr = {"state": "unavailable", "error": error.code}
             return {"protocol": PROTOCOL, "uid": os.getuid(), "home": str(self.home), "store": str(self.store),
                     "projects": str(self.projects), "state": str(self.state), "filesystem": output.decode().strip(),
                     "providers": len(self.list_providers()),
                     "disk": {"freeBytes": shutil.disk_usage(self.store).free, "totalBytes": shutil.disk_usage(self.store).total},
-                    "memory": self.memory()}
+                    "memory": self.memory(), "layr": layr}
         if method.startswith("file."):
             return await self.file(method, params)
         if method.startswith("workspace."):

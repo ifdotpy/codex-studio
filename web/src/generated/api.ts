@@ -5857,6 +5857,10 @@ export interface components {
       /** Backendbuild */
       backendBuild: string;
       browser: components["schemas"]["BrowserStatus"] | null;
+      /** Linuxvm */
+      linuxVm?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
       liveUpdate: components["schemas"]["LiveUpdateStatus"] | null;
       /** Mobileprotocol */
       mobileProtocol: number;
