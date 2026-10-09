@@ -95,6 +95,44 @@ test("Questions overflow", async ({ browser }) => {
       )
       .toBe(true);
 
+    let previousTranscript;
+    let stableBottomSamples = 0;
+    await expect
+      .poll(
+        async () => {
+          const current = await messageScroller.evaluate((node) => ({
+            messages: node.querySelectorAll("[data-message]").length,
+            scrollHeight: node.scrollHeight,
+            clientHeight: node.clientHeight,
+            scrollTop: node.scrollTop,
+          }));
+          const atBottom =
+            current.messages > 0 &&
+            current.scrollHeight > current.clientHeight + 1 &&
+            Math.abs(
+              current.scrollHeight - current.clientHeight - current.scrollTop,
+            ) < 1;
+          if (
+            atBottom &&
+            previousTranscript &&
+            current.messages === previousTranscript.messages &&
+            current.scrollHeight === previousTranscript.scrollHeight &&
+            current.clientHeight === previousTranscript.clientHeight &&
+            current.scrollTop === previousTranscript.scrollTop
+          ) {
+            stableBottomSamples += 1;
+          } else {
+            stableBottomSamples = 0;
+          }
+          previousTranscript = current;
+          return stableBottomSamples;
+        },
+        {
+          message: "The loaded transcript settles at the following position",
+          interval: 100,
+        },
+      )
+      .toBeGreaterThanOrEqual(3);
     const initialScroll = await view.evaluate(() => ({
       requests: document.querySelector("#requests").scrollTop,
       messages: document.querySelector("#messages").scrollTop,

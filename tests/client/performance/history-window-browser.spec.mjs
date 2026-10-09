@@ -159,8 +159,18 @@ createRoot(document.getElementById("root")).render(<Harness/>);`;
       '[data-message="tool500-1"]:not([data-lazy-message])',
     );
     await expect(tool).toBeVisible();
+    await tool.evaluate((node) => {
+      node.addEventListener(
+        "toggle",
+        () => {
+          node.dataset.toggleObserved = "true";
+        },
+        { once: true },
+      );
+    });
     await tool.locator("summary").first().click();
     await expect(tool).toHaveAttribute("open", "");
+    await expect(tool).toHaveAttribute("data-toggle-observed", "true");
     await page.evaluate(() => window.jump("a900"));
     await expect
       .poll(() => page.locator('[data-message="tool500-1"]').count())
