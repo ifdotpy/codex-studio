@@ -104,6 +104,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
         const OriginalEventSource = window.EventSource;
         window.__entityFrames = [];
         window.__entityStreamUrls = [];
+        window.__entityStreamAttempts = [];
         window.__entityPersisterCompletions = [];
         window.__entityMutationDecodes = [];
         const responseJson = Response.prototype.json;
@@ -126,7 +127,12 @@ test("committed entities propagate between renderer tabs @sync", async ({
           constructor(...args) {
             super(...args);
             const streamIndex = window.__entityStreamUrls.length;
-            window.__entityStreamUrls.push(String(args[0]));
+            const url = String(args[0]);
+            const attempt = { url, opened: false, errored: false };
+            window.__entityStreamUrls.push(url);
+            window.__entityStreamAttempts.push(attempt);
+            this.addEventListener("open", () => (attempt.opened = true));
+            this.addEventListener("error", () => (attempt.errored = true));
             this.addEventListener("resources", (event) =>
               window.__entityFrames.push({
                 at: performance.timeOrigin + performance.now(),
@@ -203,11 +209,19 @@ test("committed entities propagate between renderer tabs @sync", async ({
       "the coalesced stream did not include state, drafts, and the opened chat transcript in every tab",
     );
     for (const page of pages) {
-      const urls = await page.evaluate(() => window.__entityStreamUrls);
-      assert.equal(
-        new Set(urls).size,
-        urls.length,
-        "a stream URL was reopened unchanged",
+      const attempts = await page.evaluate(() => window.__entityStreamAttempts);
+      const liveReopens = attempts.filter((attempt, index) => {
+        if (index === 0) return false;
+        const previousAttempt = attempts
+          .slice(0, index)
+          .filter((prior) => prior.url === attempt.url)
+          .at(-1);
+        return previousAttempt?.opened && !previousAttempt.errored;
+      });
+      assert.deepEqual(
+        liveReopens,
+        [],
+        `a successfully opened stream URL was reopened before error: ${JSON.stringify(liveReopens)}`,
       );
     }
     const results = [];
@@ -331,6 +345,11 @@ test("committed entities propagate between renderer tabs @sync", async ({
           persisterDoneAt,
           persisterAdvanced: persisterCompletion.advanced,
           persisterCompletion,
+          mutationEntity: {
+            id: createdEntity.id,
+            seq: createdEntity.seq,
+            deleted: createdEntity._deleted ?? false,
+          },
           collection: "agent",
           deleted: false,
         };
@@ -341,11 +360,21 @@ test("committed entities propagate between renderer tabs @sync", async ({
       const entityId = reply.entityId;
       const expectedEntitySequence = reply.entitySequence ?? reply.seq;
       const entityDocumentId = `entity:${params.collection}:${entityId}`;
+      // The actor gets a new chat's row in its mutation response; peers get it
+      // through their state stream.
+      if (params.operation === "chat") {
+        assert.deepEqual(reply.mutationEntity, {
+          id: entityDocumentId,
+          seq: expectedEntitySequence,
+          deleted: false,
+        });
+      }
       await waitFor(
         () =>
           Promise.all(
-            pages.map((page, tab) =>
-              page.evaluate(
+            pages.map(async (page, tab) => {
+              if (tab === 0 && params.operation === "chat") return true;
+              return page.evaluate(
                 ({ from, documentId, seq, deleted }) =>
                   window.__entityFrames
                     .slice(from)
@@ -368,8 +397,8 @@ test("committed entities propagate between renderer tabs @sync", async ({
                   seq: expectedEntitySequence,
                   deleted: params.deleted,
                 },
-              ),
-            ),
+              );
+            }),
           ).then((received) => received.every(Boolean)),
         `${params.operation} did not publish its exact entity row to every tab`,
       );
@@ -419,6 +448,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
       assert.ok(observed, `${params.operation} pushed row must be observable`);
       const document = observed.document;
       if (params.operation === "chat") {
+        await pages[0].locator(`[data-chat="${entityId}"]`).waitFor();
         await pages[1].locator(`[data-chat="${entityId}"]`).waitFor();
         await pages[2].locator(`[data-chat="${entityId}"]`).waitFor();
       }
