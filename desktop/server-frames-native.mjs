@@ -91,7 +91,22 @@ try {
     }),
   );
 } finally {
-  if (desktop) await desktop.close();
+  if (desktop) {
+    const pid = desktop.process().pid;
+    let watchdog;
+    await Promise.race([
+      desktop.close().catch(() => {}),
+      new Promise((resolve) => {
+        watchdog = setTimeout(() => {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {}
+          resolve();
+        }, 5000);
+      }),
+    ]);
+    clearTimeout(watchdog);
+  }
   await remote.close();
   await rm(folder, { recursive: true, force: true });
 }

@@ -1,4 +1,11 @@
 import { serveOrigin, type StudioServer } from "./registry";
+export class PairingNotAppliedError extends Error {
+  constructor() {
+    super(
+      "The invitation is unavailable. Studio will request a new invitation.",
+    );
+  }
+}
 export type PairInvitation = {
   protocol: 1;
   inviteId: string;

@@ -161,6 +161,92 @@ test("Serve HTTPS ports retain the host, credential, and path restrictions", () 
   ])
     expect(() => serveOrigin(origin)).toThrow();
 });
+test("a confirmed unavailable invitation releases only its rejected attempt and coalesces concurrent retries", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "studio-rejected-invite-"));
+  const invitation = {
+    protocol: 1,
+    serverId: "remote",
+    origin: "https://remote.tailnet.ts.net",
+    inviteId: "old",
+    token: "secret",
+    publicKey: "key",
+    tailscaleUser: "owner",
+  };
+  let respond;
+  const pending = new Promise((resolve) => {
+    respond = resolve;
+  });
+  const calls = [];
+  let reject = true;
+  const adapter = createServerCredentials({
+    profile: root,
+    safeStorage,
+    fetchRequest: async (request) => {
+      const body = await request.clone().json();
+      calls.push(body);
+      if (reject) return pending;
+      return Response.json({
+        ...invitation,
+        inviteId: body.inviteId,
+        clientId: body.clientId,
+        paired: true,
+      });
+    },
+  });
+  try {
+    const input = {
+      origin: invitation.origin,
+      invitation,
+      requestId: "old-request",
+    };
+    const first = adapter.pair(input);
+    const duplicate = adapter.pair(input);
+    expect(first).toBe(duplicate);
+    await expect(
+      adapter.pair({
+        ...input,
+        invitation: { ...invitation, inviteId: "other" },
+      }),
+    ).rejects.toThrow("another pairing attempt");
+    respond(
+      Response.json(
+        {
+          error: "The invitation is expired or was already used",
+          code: "invite_unavailable",
+        },
+        { status: 403 },
+      ),
+    );
+    await expect(first).rejects.toMatchObject({ code: "invite_unavailable" });
+    expect(calls).toHaveLength(1);
+    expect(
+      await adapter.hasPairAttempt({
+        origin: invitation.origin,
+        serverId: "remote",
+        requestId: "old-request",
+        inviteId: "old",
+      }),
+    ).toBe(false);
+    reject = false;
+    await adapter.pair({
+      ...input,
+      invitation: { ...invitation, inviteId: "new" },
+      requestId: "new-request",
+    });
+    expect(calls).toHaveLength(2);
+    expect(calls[1].clientId).not.toBe(calls[0].clientId);
+    expect(
+      await adapter.hasPairAttempt({
+        origin: invitation.origin,
+        serverId: "remote",
+        requestId: "new-request",
+        inviteId: "new",
+      }),
+    ).toBe(true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 test("pairing fails when the OS key store is unavailable or uses plaintext", async () => {
   for (const store of [
     { isEncryptionAvailable: () => false },

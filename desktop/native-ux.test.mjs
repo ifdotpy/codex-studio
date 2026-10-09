@@ -357,6 +357,16 @@ test("desktop native settings, notification and speech boundaries work with fixt
       }),
       false,
     );
+    await assert.rejects(
+      f.handler(serverEvent, {
+        method: "serverCredentialAction",
+        value: {
+          action: "pairApproved",
+          origin: "https://remote.tailnet.ts.net",
+        },
+      }),
+      /Use the server manager/,
+    );
     f.setBackendBuild("old");
     assert.equal((await f.invoke("getBackendUpdate")).updateRequired, true);
     f.setBackendBuild("installed");
