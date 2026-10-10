@@ -27,6 +27,15 @@ Use the root [`justfile`](../justfile) for the three independent scopes:
 3. **Pre-PR gate:** run the server and client suites described below and report
    their results separately. A focused hypothesis does not replace this gate.
 
+The repository checks add three focused commands: `just contracts-check` runs
+the existing generated API check in read-only mode; `just boundaries-check`
+checks manifest-declared imports and workspace direction; and
+`just check-affected <base>` checks changed packages and reverse dependents
+discovered from workspace manifests. It widens to all packages for root policy
+or unowned-file changes and prints the reason per selected package.
+`just check-affected <base> --dry-run` prints that selection without running
+checks.
+
 Package names and directories come from pnpm and Cargo manifests, with `server`
 representing the current Python app. Native manifests and runners remain the
 owners of test discovery and selection. All facade commands work from a
