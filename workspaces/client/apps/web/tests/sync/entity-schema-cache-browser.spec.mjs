@@ -16,6 +16,9 @@ import {
   expect,
 } from "../playwright.mjs";
 
+// This spec deliberately serves old schema hashes to exercise the update gate.
+test.use({ apiSchemaFixtureHeaders: false });
+
 test("a real built renderer uses a new projection cache and preserves drafts", async ({
   browser,
 }) => {
