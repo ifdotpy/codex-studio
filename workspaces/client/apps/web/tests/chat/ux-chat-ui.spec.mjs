@@ -1,7 +1,7 @@
 // Isolated component fixture. All API requests use local test responses.
 import { createServer } from "node:http";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import {
@@ -37,14 +37,12 @@ test("Ux Chat Ui", async ({
     },
   };
 
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const require = createRequire(
     join(repo, "workspaces/client/apps/web/package.json"),
   );
   const createViteServer = createFixtureViteServer;
-  const webRoot = join(repo, "web");
+  const webRoot = join(repo, "workspaces/client/apps/web");
   const temporary = await mkdtemp(join(webRoot, ".studio-chat-ux-"));
   const temporaryName = temporary.slice(webRoot.length + 1);
   const entry = join(temporary, "entry.tsx");

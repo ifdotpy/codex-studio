@@ -3,7 +3,7 @@ import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const browserContextsByTest = new WeakMap();
@@ -23,9 +23,7 @@ test.afterEach(async ({ browser }, testInfo) => {
 test("team token rate ui", async ({ browser }) => {
   test.setTimeout(240_000);
   const cadenceIntervals = [];
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   for (const [size, width] of [
     [3, 390],
     [8, 1200],

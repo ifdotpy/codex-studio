@@ -21,7 +21,7 @@ import { fileURLToPath } from "node:url";
 test("Conversation tools menu displays compact prompt navigation", async ({
   page,
 }) => {
-  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-compact-tools-"));
   const fixture = spawn(
     process.env.PYTHON || "python3",
@@ -61,7 +61,7 @@ test("Conversation tools menu displays compact prompt navigation", async ({
   }
 });
 async function startSearchFocusSetup(page) {
-  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-search-focus-"));
   const fixture = spawn(
     process.env.PYTHON || "python3",
@@ -153,7 +153,7 @@ test("Search messages focuses its query input when opened", async ({
 });
 
 async function open320Workspace(page) {
-  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-header-width-"));
   const fixture = spawn(
     process.env.PYTHON || "python3",
@@ -241,7 +241,7 @@ test("Shell ux ui", async ({
   context: runnerContext,
 }) => {
   test.setTimeout(60_000);
-  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-ux-navigation-"));
   const fixture = spawn(
     process.env.PYTHON || "python3",

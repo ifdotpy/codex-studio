@@ -20,7 +20,7 @@ test.use({ apiSchemaFixtureHeaders: false });
 const SILENT_HANDSHAKE_RETRY_ADVANCE_MS = 16_000;
 
 async function startColdGateFixture() {
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "studio-schema-cold-gate-"));
   const fixture = spawnFixture(
     process.env.PYTHON_BIN || "python3",
@@ -411,7 +411,7 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
   page,
 }) => {
   test.setTimeout(120_000);
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "studio-schema-gate-"));
   const webDist = join(state, "web-dist");
   await cp(join(root, "workspaces/client/apps/web/dist"), webDist, {
@@ -822,7 +822,7 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
 test("a stream mismatch keeps the transcript and draft while stopping every request", async ({
   page,
 }) => {
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "studio-schema-stream-gate-"));
   const fixture = spawnFixture(
     process.env.PYTHON_BIN || "python3",
@@ -908,7 +908,7 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
   page,
 }) => {
   test.setTimeout(120_000);
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "studio-schema-cache-variant-"));
   const fixture = spawnFixture(
     process.env.PYTHON_BIN || "python3",
@@ -927,7 +927,7 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
     await import("../playwright.mjs");
   const server = await createServer({
     configFile: false,
-    root: join(root, "web"),
+    root: join(root, "workspaces/client/apps/web"),
     server: { host: "127.0.0.1", port: 0 },
   });
   await server.listen();

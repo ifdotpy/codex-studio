@@ -11,7 +11,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 test("Skill autocomplete", async ({ browser: testBrowser }) => {
   test.setTimeout(75_000);
-  const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
+  const testRepo = fileURLToPath(
+    new URL("../../../../../../", import.meta.url),
+  );
   // Production composer against an isolated runtime and delayed skill endpoint.
 
   const repo = testRepo;
@@ -742,7 +744,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
 
 test("500-entry local skill filter latency @performance", async ({ page }) => {
   test.setTimeout(75_000);
-  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-skill-filter-perf-"));
   const fixture = spawn(
     "python3",

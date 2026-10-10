@@ -1,6 +1,6 @@
 import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   API_SCHEMA_HASH_HEADER,
@@ -14,16 +14,14 @@ import {
 const workspaceId = "a".repeat(32);
 
 async function createFixture(page, options = {}) {
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
 
   const { createFixtureViteServer: createServer } =
     await import("../playwright.mjs");
   const server = await createServer({
     optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
     configFile: false,
-    root: join(repo, "web"),
+    root: join(repo, "workspaces/client/apps/web"),
     server: { host: "127.0.0.1", port: 0 },
   });
   let available = options.available ?? true;

@@ -852,7 +852,10 @@ test("progress-fit-browser", async ({ browser, page }) => {
         "-c",
         'import json,sys;sys.path.insert(0,"scripts");from codex_progress_layout import _report;[_report(row) for row in json.load(sys.stdin)];print("Browser report payloads match backend validator")',
       ],
-      { cwd: join(root, ".."), input: JSON.stringify(payloads) },
+      {
+        cwd: join(root, "../../../../"),
+        input: JSON.stringify(payloads),
+      },
     );
     expect(errors).toEqual([]);
     await page.setViewportSize({ width: 1440, height: 800 });

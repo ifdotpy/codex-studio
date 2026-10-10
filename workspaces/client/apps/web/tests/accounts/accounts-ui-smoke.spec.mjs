@@ -13,14 +13,12 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { access, readFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, extname } from "node:path";
+import { join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 async function runAccountsUi(mode, { page: fixturePage }) {
   installApiSchemaFixtureHeaders(fixturePage);
-  const root = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const webDist =
     process.env.STUDIO_WEB_DIST ||
     join(root, "workspaces/client/apps/web/dist");

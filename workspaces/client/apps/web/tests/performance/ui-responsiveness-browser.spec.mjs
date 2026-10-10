@@ -119,7 +119,7 @@ async function runUiResponsiveness({
   assertIdleRootWindows,
 }) {
   test.setTimeout(300_000);
-  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const dir = await mkdtemp(
     join(playwrightScratchRoot, "studio-ui-responsiveness-"),
   );
@@ -809,7 +809,7 @@ test(
   { tag: "@performance" },
   async ({ browser }) => {
     test.setTimeout(120_000);
-    const repo = fileURLToPath(new URL("../../../", import.meta.url));
+    const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
     const dir = await mkdtemp(
       join(playwrightScratchRoot, "studio-ui-history-return-"),
     );

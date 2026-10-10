@@ -1217,9 +1217,7 @@ test("work log ui", async ({ browser: _browser }) => {
 test("reload converges after an in-flight transcript pull", async ({
   browser,
 }) => {
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const directory = await mkdtemp(join(tmpdir(), "studio-work-log-reload-"));
   const fixture = spawn(
     "python3",

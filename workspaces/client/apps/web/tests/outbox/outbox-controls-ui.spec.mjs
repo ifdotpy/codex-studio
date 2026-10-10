@@ -3,7 +3,7 @@ import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -15,9 +15,7 @@ import {
 
 test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
   test.setTimeout(45_000);
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
 
   const { createFixtureViteServer: createServer } =
     await import("../playwright.mjs");
@@ -62,7 +60,7 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
     server = await createServer({
       optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
       configFile: false,
-      root: join(repo, "web"),
+      root: join(repo, "workspaces/client/apps/web"),
       cacheDir: join(evidence, "vite"),
       server: {
         host: "127.0.0.1",

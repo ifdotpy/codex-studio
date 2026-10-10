@@ -15,9 +15,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 async function setupNarrowComposer(browser) {
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-composer-narrow-"));
   const fixture = spawn(
     "python3",

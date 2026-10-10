@@ -18,7 +18,7 @@ async function runWorkspaceLayout(
   assertTranscriptShare,
 ) {
   test.setTimeout(60_000);
-  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "codex-workspace-layout-"));
   const fixture = spawn(
     "python3",
@@ -673,7 +673,7 @@ test("workspace transcript retains 48% at 1024×768", async ({
   ));
 
 async function measureMobileWorkspaceComposerBody(page) {
-  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "codex-workspace-composer-"));
   const fixture = spawn(
     "python3",

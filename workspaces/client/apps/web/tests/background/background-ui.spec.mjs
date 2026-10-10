@@ -8,14 +8,12 @@ import {
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 test("background-ui", async ({ page: fixturePage }) => {
   test.setTimeout(60_000);
-  const skill = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const skill = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "codex-background-ui-"));
   const proc = spawn(
     "python3",

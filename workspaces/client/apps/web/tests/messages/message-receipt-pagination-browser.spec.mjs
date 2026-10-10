@@ -19,7 +19,7 @@ async function runMessageReceiptScenario(
   { browser: testBrowser, context: runnerContext },
   observedFirst,
 ) {
-  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
 
   const { createFixtureViteServer: createServer } =
     await import("../playwright.mjs");
@@ -250,7 +250,7 @@ async function runMessageReceiptScenario(
 
     server = await createServer({
       configFile: false,
-      root: join(repo, "web"),
+      root: join(repo, "workspaces/client/apps/web"),
       cacheDir: join(temporary, "vite"),
       optimizeDeps: {
         noDiscovery: true,

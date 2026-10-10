@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   test,
@@ -22,9 +22,7 @@ async function repeatedReadCountsScenario(
   browser,
   { modelOnly = false, accountsOnly = false } = {},
 ) {
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "repeated-read-counts-"));
   const fixture = spawn(
     "python3",

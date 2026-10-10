@@ -1,6 +1,6 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { readTestState, expect, spawnFixture, test } from "../playwright.mjs";
@@ -13,9 +13,7 @@ test("active panel resource stream reconnects promptly after repeated reloads", 
     true,
     "Intermittent product race: the expected failure occurred in 10/10 focused ordinary repeats but unexpectedly passed in two ordinary full-suite runs; see KNOWN-FAILURES.md.",
   );
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "studio-progress-reload-"));
   const fixture = spawnFixture(
     "python3",

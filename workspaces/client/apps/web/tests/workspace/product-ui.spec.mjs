@@ -12,9 +12,7 @@ import {
 
 const browserContextsByTest = new WeakMap();
 async function setupProductMobileComposer(browser) {
-  const skill = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const skill = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "codex-react-ui-320-"));
   const proc = spawn(
     "python3",

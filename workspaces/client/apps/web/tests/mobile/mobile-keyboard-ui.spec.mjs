@@ -2,7 +2,7 @@
 // Test viewport geometry in a headless browser with isolated server state.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   expect,
@@ -27,9 +27,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
     browser: runnerBrowser,
     browserName,
   }) => {
-    const root = dirname(
-      dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-    );
+    const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
     const state = await mkdtemp(
       join(playwrightScratchRoot, "codex-mobile-keyboard-"),
     );
@@ -419,9 +417,7 @@ test.describe("Usage footer clearance on small mobile viewports", () => {
   test("footer stays inside the visual viewport with the expected gap", async ({
     browser,
   }) => {
-    const root = dirname(
-      dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-    );
+    const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
     const state = await mkdtemp(
       join(playwrightScratchRoot, "codex-mobile-footer-clearance-"),
     );

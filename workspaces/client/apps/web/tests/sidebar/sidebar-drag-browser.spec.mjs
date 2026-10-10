@@ -15,12 +15,19 @@ import { join, resolve } from "node:path";
 test.use({ apiSchemaFixtureHeaders: false });
 
 test("sidebar drag browser", async ({ page: runnerPage }) => {
-  const root = resolve(import.meta.dirname, "../../..");
+  const root = resolve(import.meta.dirname, "../../../../../../");
   const stateDir = await mkdtemp(join(tmpdir(), "studio-sidebar-drag-"));
   console.log("Sidebar fixture state retained after worker cleanup:", stateDir);
   const proc = spawn(
     process.env.PYTHON || "python3",
-    ["-B", join(root, "tests/sidebar-drag-fixture.py"), stateDir],
+    [
+      "-B",
+      join(
+        root,
+        "workspaces/runtime/apps/server/tests/sidebar-drag-fixture.py",
+      ),
+      stateDir,
+    ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   let log = "";
@@ -436,11 +443,18 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
 });
 
 async function startSidebarOverlapSetup(page) {
-  const root = resolve(import.meta.dirname, "../../..");
+  const root = resolve(import.meta.dirname, "../../../../../../");
   const stateDir = await mkdtemp(join(tmpdir(), "studio-sidebar-overlap-"));
   const proc = spawn(
     process.env.PYTHON || "python3",
-    ["-B", join(root, "tests/sidebar-drag-fixture.py"), stateDir],
+    [
+      "-B",
+      join(
+        root,
+        "workspaces/runtime/apps/server/tests/sidebar-drag-fixture.py",
+      ),
+      stateDir,
+    ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   let log = "";

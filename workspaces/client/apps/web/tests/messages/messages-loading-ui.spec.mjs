@@ -16,7 +16,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 test("Messages loading", async ({ browser }) => {
   test.setTimeout(45_000);
-  const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
+  const testRepo = fileURLToPath(
+    new URL("../../../../../../", import.meta.url),
+  );
   // Production UI with isolated HTTP reads. No model or user task writes.
   const repo = testRepo;
   const root = await mkdtemp(join(tmpdir(), "studio-messages-loading-"));

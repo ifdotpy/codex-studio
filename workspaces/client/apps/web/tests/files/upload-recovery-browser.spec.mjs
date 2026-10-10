@@ -3,21 +3,19 @@ import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { apiSchemaHeaders, test, expect } from "../playwright.mjs";
 
 test("upload recovery browser", async ({ browser }) => {
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
 
   const { createFixtureViteServer: createServer } =
     await import("../playwright.mjs");
   const cache = await mkdtemp(join(tmpdir(), "studio-upload-recovery-"));
   const server = await createServer({
     configFile: false,
-    root: join(repo, "web"),
+    root: join(repo, "workspaces/client/apps/web"),
     cacheDir: cache,
     optimizeDeps: {
       noDiscovery: true,
@@ -489,16 +487,14 @@ test("upload recovery browser", async ({ browser }) => {
 });
 
 async function setupAttachmentWriters(browser) {
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
 
   const { createFixtureViteServer: createServer } =
     await import("../playwright.mjs");
   const cache = await mkdtemp(join(tmpdir(), "studio-upload-race-"));
   const server = await createServer({
     configFile: false,
-    root: join(repo, "web"),
+    root: join(repo, "workspaces/client/apps/web"),
     cacheDir: cache,
     optimizeDeps: {
       noDiscovery: true,

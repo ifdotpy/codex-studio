@@ -29,9 +29,7 @@ test.afterEach(async ({ browser }, testInfo) => {
 });
 
 async function setupUncertainRemovePointer(page) {
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-message-hit-test-"));
   const fixture = spawn(
     process.env.PYTHON_BIN || "python3",

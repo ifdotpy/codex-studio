@@ -16,7 +16,7 @@ test("Mobile client ui", async ({
   context: runnerContext,
 }) => {
   test.setTimeout(60_000);
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "codex-mobile-ui-"));
   const fixture = spawn(
     "python3",
@@ -479,7 +479,7 @@ test("Mobile client ui", async ({
 });
 
 async function setupMobile320Composer(testBrowser) {
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "codex-mobile-composer-"));
   const fixture = spawn(
     "python3",

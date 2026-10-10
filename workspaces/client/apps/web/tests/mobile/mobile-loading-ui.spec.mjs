@@ -34,7 +34,7 @@ async function initialShellGzipBytes(dist) {
 }
 
 test("mobile initial shell gzip budget", async () => {
-  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const dist =
     process.env.STUDIO_WEB_DIST ||
     join(repo, "workspaces/client/apps/web/dist");
@@ -48,7 +48,7 @@ test("mobile initial shell gzip budget", async () => {
 
 test("mobile loading ui", async ({ browser: _browser }) => {
   test.setTimeout(45_000);
-  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const useWebKit = test.info().project.use.browserName === "webkit";
   const dir = await mkdtemp(join(tmpdir(), "studio-mobile-loading-"));
   await cp(join(repo, "workspaces/client/apps/web/dist"), join(dir, "dist"), {

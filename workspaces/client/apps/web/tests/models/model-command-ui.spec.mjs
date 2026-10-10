@@ -21,7 +21,7 @@ import {
 
 test("main settings dialog closes after chat switch", async ({ browser }) => {
   test.setTimeout(45_000);
-  const repo = join(import.meta.dirname, "../../../");
+  const repo = join(import.meta.dirname, "../../../../../../");
   const root = await mkdtemp(join(tmpdir(), "studio-model-switch-dialog-"));
   const proc = spawn(
     process.env.PYTHON || "python3",
@@ -95,7 +95,7 @@ test("main settings dialog closes after chat switch", async ({ browser }) => {
 
 test("model-command-ui", async ({ browser }) => {
   test.setTimeout(45_000);
-  const repo = join(import.meta.dirname, "../../../");
+  const repo = join(import.meta.dirname, "../../../../../../");
   const root = await mkdtemp(join(tmpdir(), "studio-model-command-ui-"));
   const models = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna"].map(
     (model) => ({

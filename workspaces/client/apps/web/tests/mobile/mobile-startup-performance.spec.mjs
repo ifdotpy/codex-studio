@@ -27,7 +27,7 @@ test(
   { tag: "@performance" },
   async () => {
     test.setTimeout(120_000);
-    const repo = fileURLToPath(new URL("../../../", import.meta.url));
+    const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
     const fixtureRepo = process.env.MOBILE_PERF_BACKEND || repo;
     const { chromium, webkit } = createRequire(
       join(repo, "workspaces/client/apps/web/package.json"),
@@ -178,7 +178,7 @@ test(
   { tag: "@performance" },
   async () => {
     test.setTimeout(300_000);
-    const repo = fileURLToPath(new URL("../../../", import.meta.url));
+    const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
     const fixtureRepo = process.env.MOBILE_PERF_BACKEND || repo;
     const { chromium, webkit } = createRequire(
       join(repo, "workspaces/client/apps/web/package.json"),
@@ -511,7 +511,7 @@ test(
 
 test("Mobile startup performance", { tag: "@performance" }, async () => {
   test.setTimeout(300_000);
-  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const fixtureRepo = process.env.MOBILE_PERF_BACKEND || repo;
   const { chromium, webkit } = createRequire(
     join(repo, "workspaces/client/apps/web/package.json"),
