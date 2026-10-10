@@ -80,7 +80,10 @@ test("Mobile usability", async () => {
     "python3",
     [
       "-B",
-      join(repo, "tests/mobile-usability-fixture.py"),
+      join(
+        repo,
+        "workspaces/runtime/apps/server/tests/mobile-usability-fixture.py",
+      ),
       join(temporary, "Mobile release"),
       join(temporary, "items.json"),
     ],

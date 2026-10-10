@@ -48,7 +48,10 @@ test("Mobile startup performance", { tag: "@performance" }, async () => {
     process.env.PYTHON || "python3",
     [
       "-B",
-      join(fixtureRepo, "tests/mobile-startup-fixture.py"),
+      join(
+        fixtureRepo,
+        "workspaces/runtime/apps/server/tests/mobile-startup-fixture.py",
+      ),
       join(dir, "state"),
     ],
     {

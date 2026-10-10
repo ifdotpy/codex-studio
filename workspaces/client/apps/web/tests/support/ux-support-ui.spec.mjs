@@ -18,7 +18,7 @@ test("ux support ui", async ({ page: runnerPage }) => {
   const entry = join(temporary, "index.html");
   await writeFile(
     entry,
-    `<html><div id="root"></div><script type="module" src="${join(repo, "tests/fixtures/ux-support.tsx")}"></script></html>`,
+    `<html><div id="root"></div><script type="module" src="${join(repo, "workspaces/runtime/apps/server/tests/fixtures/ux-support.tsx")}"></script></html>`,
   );
   let server;
   try {
