@@ -14,6 +14,12 @@ import re
 from common import GuestError, atomic_bytes, atomic_json, require
 
 
+# Finder shows a mounted share by its share name, so the Mac names it after the project
+# folder. Plain ASCII keeps the smb:// source free of escapes; Samba compares case-blind.
+SHARE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,47}")
+RESERVED_SHARES = {"global", "homes", "printers", "print$", "ipc$"}
+
+
 def project_id(value):
     require(isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}", value),
             "projectId must start with an ASCII letter or digit and contain letters, digits, hyphens, or underscores")
@@ -83,6 +89,35 @@ class Share:
         if (self.state / "smb-password").exists():
             await self.refresh()
 
+    def share_name(self, record):
+        return record.get("name") or record["projectId"]
+
+    async def name(self, params):
+        """Give a project's share the Mac's preferred name, unique among shares; keep it
+        while it still follows that preference."""
+        project = project_id(params.get("projectId"))
+        preferred = params.get("name")
+        require(isinstance(preferred, str) and SHARE_NAME.fullmatch(preferred)
+                and preferred.lower() not in RESERVED_SHARES, "Invalid share name")
+        async with self.lock:
+            path = self.state / ("export-" + project + ".json")
+            if not path.exists():
+                raise GuestError("not_found", "The project has no share export")
+            record = json.loads(path.read_text())
+            taken = {self.share_name(json.loads(other.read_text())).lower()
+                     for other in self.state.glob("export-*.json") if other != path}
+            current = record.get("name")
+            follows = current in {preferred} | {preferred + "-" + str(n) for n in range(2, 100)}
+            if not (follows and current.lower() not in taken):
+                current = next((candidate for candidate in [preferred] + [preferred + "-" + str(n) for n in range(2, 100)]
+                                if candidate.lower() not in taken), None)
+                require(current is not None, "No free share name for this project")
+                record["name"] = current
+                atomic_json(path, record)
+                if (self.state / "smb-password").exists():
+                    await self.refresh()
+        return {"projectId": project, "name": current}
+
     async def restore(self):
         # No agent owns this directory. Names come from saved validated registrations.
         for record in sorted(self.state.glob("export-*.json")):
@@ -99,9 +134,10 @@ class Share:
             "disable netbios = yes", "load printers = no", "disable spoolss = yes",
             "printing = bsd", "printcap name = /dev/null", "unix extensions = no",
             "server signing = mandatory", "smb encrypt = required", "", ])
-        for record in sorted(self.state.glob("export-*.json")):
-            project = project_id(json.loads(record.read_text())["projectId"])
-            text += "\n".join(["[" + project + "]", "path = " + str(self.export_root / project),
+        for path in sorted(self.state.glob("export-*.json")):
+            record = json.loads(path.read_text())
+            project = project_id(record["projectId"])
+            text += "\n".join(["[" + self.share_name(record) + "]", "path = " + str(self.export_root / project),
                 "read only = yes", "guest ok = no", "valid users = studio-view",
                 "force user = root", "browseable = yes", "follow symlinks = no",
                 "wide links = no", "veto files = /.DS_Store/", "delete veto files = no", "", ""])
@@ -119,6 +155,9 @@ class Share:
             state = "ready"
         except GuestError:
             state = "failed"
+        records = {}
+        for path in self.state.glob("export-*.json"):
+            record = json.loads(path.read_text())
+            records[record["projectId"]] = self.share_name(record)
         return {"state": state, "protocol": "smb", "readOnly": True, "transport": "vsock",
-                "user": "studio-view", "projects": sorted(
-                    json.loads(record.read_text())["projectId"] for record in self.state.glob("export-*.json"))}
+                "user": "studio-view", "projects": sorted(records), "names": records}

@@ -109,7 +109,8 @@ else:
 os.close(fd)
 # Only what follows the prompt explains a failure.
 sys.stdout.write(seen[mark:].decode(errors="replace").replace(password, "***"))
-sys.exit(os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]) or (0 if sent else 2))
+# An existing authenticated session can mount without a prompt; the exit code decides.
+sys.exit(os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]))
 """
 
 
@@ -117,12 +118,34 @@ def _mount_smbfs(source: str, destination: Path, password: str,
                  executable: str = '/sbin/mount_smbfs') -> subprocess.CompletedProcess[str]:
     import sys
     return subprocess.run([sys.executable, '-I', '-c', _MOUNT_HELPER, executable, '-o',
-                           'rdonly,soft,nodatacache,nomdatacache,sessionencrypt', source, str(destination)],
+                           # nobrowse: the folder in ~/Studio is the view; no "127.0.0.1" server in the sidebar.
+                           'nobrowse,rdonly,soft,nodatacache,nomdatacache,sessionencrypt', source, str(destination)],
                           input=password + '\n', capture_output=True, text=True,
                           start_new_session=True, timeout=30)
 
 
-def mount_project(client: Client, project: dict[str, Any], password: str) -> dict[str, Any]:
+def share_hint(source: str | Path | None) -> str:
+    """The preferred share name: the Mac project folder name in plain ASCII. Finder shows
+    the mounted share by this name; the guest makes it unique."""
+    name = re.sub(r'[^A-Za-z0-9._-]+', '-', Path(source or '').name).strip('._-')[:40].strip('._-')
+    return name if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', name) and name.lower() not in {
+        'global', 'homes', 'printers'} else 'project'
+
+
+def _ours(row: dict[str, str], names: set[str]) -> bool:
+    """A read-only mount of one of this project's share names, at any address or port."""
+    return ('read-only' in row['options'].split(', ') and any(
+        re.fullmatch(r'//studio-view@[^/]+/' + re.escape(name), row['source']) for name in names))
+
+
+def _release(path: Path) -> None:
+    from codex_linux_vm import LinuxVMError
+    released = subprocess.run(['/sbin/umount', str(path)], capture_output=True, text=True, timeout=30)
+    if released.returncode:
+        raise LinuxVMError('The previous share mount is busy: ' + (released.stderr.strip()[:200] or 'umount failed'))
+
+
+def mount_project(client: Client, project: dict[str, Any], password: str, hint: str) -> dict[str, Any]:
     from codex_linux_vm import LinuxVMError
     identity = _id(project['projectId'])
     share = project['share']
@@ -134,25 +157,33 @@ def mount_project(client: Client, project: dict[str, Any], password: str) -> dic
     port = bridge.get('port')
     if bridge.get('state') != 'listening' or type(port) is not int:
         raise LinuxVMError('The VM share bridge is unavailable: ' + str(bridge.get('error') or 'not listening'))
-    destination = Path.home() / 'Studio' / identity
+    name = client.call('share.name', {'projectId': identity, 'name': hint}, timeout=30)['name']
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}', name):
+        raise LinuxVMError('The guest returned an invalid share name.')
+    record = client.state_dir / 'layr-projects' / identity / 'mount.json'
+    previous = json.loads(record.read_text()) if record.exists() else {}
+    names = {identity, name} | ({previous['name']} if previous.get('name') else set())
+    destination = Path.home() / 'Studio' / name
     destination.parent.mkdir(mode=0o700, exist_ok=True)
     if destination.parent.is_symlink() or destination.is_symlink():
         raise LinuxVMError('The Studio share path must not contain symlinks.')
-    entries = [row for row in _mount_entries() if row['path'] == str(destination)]
-    expected = f'//studio-view@127.0.0.1:{port}/{identity}'
-    if entries:
-        row = entries[0]
-        read_only = 'read-only' in row['options'].split(', ')
-        if row['source'] == expected and read_only:
-            _save(client.state_dir / 'layr-projects' / identity / 'mount.json',
-                  {'projectId': identity, 'path': str(destination), 'port': port})
-            return {'state': 'mounted', 'path': str(destination), 'readOnly': True}
-        # Only this share at an older address or port is replaced; anything else stays.
-        if not (read_only and re.fullmatch(r'//studio-view@[^/]+/' + re.escape(identity), row['source'])):
+    entries = _mount_entries()
+    # A rename moves the view: release this project's mount at its former path.
+    for former in {Path(previous['path'])} if previous.get('path') else set():
+        if former != destination and former.parent == destination.parent and not former.is_symlink():
+            if any(row['path'] == str(former) and _ours(row, names) for row in entries):
+                _release(former)
+            if former.is_dir() and not any(former.iterdir()):
+                former.rmdir()
+    expected = f'//studio-view@127.0.0.1:{port}/{name}'
+    for row in [row for row in _mount_entries() if row['path'] == str(destination)]:
+        if row['source'] == expected and 'read-only' in row['options'].split(', '):
+            _save(record, {'projectId': identity, 'name': name, 'path': str(destination), 'port': port})
+            return {'state': 'mounted', 'path': str(destination), 'name': name, 'readOnly': True}
+        # Only this share at an older address, port or name is replaced; anything else stays.
+        if not _ours(row, names):
             raise LinuxVMError('A different filesystem already uses the project share path.')
-        released = subprocess.run(['/sbin/umount', str(destination)], capture_output=True, text=True, timeout=30)
-        if released.returncode:
-            raise LinuxVMError('The previous share mount is busy: ' + (released.stderr.strip()[:200] or 'umount failed'))
+        _release(destination)
     destination.mkdir(mode=0o700, exist_ok=True)
     if any(destination.iterdir()):
         raise LinuxVMError('The project share mount folder is not empty.')
@@ -164,12 +195,11 @@ def mount_project(client: Client, project: dict[str, Any], password: str) -> dic
     rows = [row for row in _mount_entries() if row['path'] == str(destination)]
     if len(rows) != 1 or 'read-only' not in rows[0]['options'].split(', '):
         raise LinuxVMError('The SMB mount has no proven read-only result.', uncertain=True)
-    _save(client.state_dir / 'layr-projects' / identity / 'mount.json',
-          {'projectId': identity, 'path': str(destination), 'port': port})
-    return {'state': 'mounted', 'path': str(destination), 'readOnly': True}
+    _save(record, {'projectId': identity, 'name': name, 'path': str(destination), 'port': port})
+    return {'state': 'mounted', 'path': str(destination), 'name': name, 'readOnly': True}
 
 
-def _mount_or_report(client: Client, project: dict[str, Any], password: str) -> dict[str, Any]:
+def _mount_or_report(client: Client, project: dict[str, Any], password: str, hint: str) -> dict[str, Any]:
     """The Finder view is a convenience: agents work in the VM without it. A failed mount
     stays visible in mount_status and in the project result, and the chat continues.
     For example, macOS blocks a background Python without Local Network permission."""
@@ -177,7 +207,7 @@ def _mount_or_report(client: Client, project: dict[str, Any], password: str) -> 
     directory = client.state_dir / 'layr-projects' / _id(project['projectId'])
     report = directory / 'mount-error.json'
     try:
-        mounted = mount_project(client, project, password)
+        mounted = mount_project(client, project, password, hint)
     except LinuxVMError as error:
         _save(report, {'projectId': _id(project['projectId']), 'error': str(error)[:500], 'at': time.time()})
         return {'state': 'failed', 'readOnly': True, 'error': str(error)[:500]}
@@ -207,7 +237,7 @@ def import_project(client: Client, project_id: str, source: str | Path, owner: s
             else:
                 password = _credential(client)
                 existing['share'] = client.call('share.status', {}, timeout=30)
-                existing['mount'] = _mount_or_report(client, existing, password)
+                existing['mount'] = _mount_or_report(client, existing, password, share_hint(source))
                 return cast(dict[str, Any], existing)
         state_path = directory / ('import-' + operation + '.json')
         archive = directory / ('source-' + operation + '.tar.gz')
@@ -222,7 +252,7 @@ def import_project(client: Client, project_id: str, source: str | Path, owner: s
                 project = pending['result']
                 password = _credential(client)
                 project['share'] = client.call('share.status', {}, timeout=30)
-                project['mount'] = _mount_or_report(client, project, password)
+                project['mount'] = _mount_or_report(client, project, password, share_hint(source))
                 return cast(dict[str, Any], project)
             if not archive.exists():
                 raise LinuxVMError('The pending import archive is unavailable; inspect the guest receipt.', uncertain=True)
@@ -245,7 +275,7 @@ def import_project(client: Client, project_id: str, source: str | Path, owner: s
         project = client.call('project.import', params, request_id=operation + ':import', timeout=1810)
         password = _credential(client)
         project['share'] = client.call('share.status', {}, timeout=30)
-        project['mount'] = _mount_or_report(client, project, password)
+        project['mount'] = _mount_or_report(client, project, password, share_hint(source))
         _save(directory / 'project.json', {'projectId': project_id, 'source': source_path})
         # Keep the small receipt association. Never remove an uncertain archive.
         pending['result'] = project
@@ -260,10 +290,13 @@ def remount_registered(client: Client) -> None:
         return
     password = _credential(client)
     for record in records:
-        identity = _id(json.loads(record.read_text())['projectId'])
+        saved = json.loads(record.read_text())
+        identity = _id(saved['projectId'])
         project = client.call('project.ensure', {'projectId': identity}, timeout=30)
         project['share'] = client.call('share.status', {}, timeout=30)
-        _mount_or_report(client, project, password)
+        source = record.with_name('project.json')
+        hint = saved.get('name') or share_hint(json.loads(source.read_text())['source'] if source.exists() else None)
+        _mount_or_report(client, project, password, hint)
 
 
 def mount_status(state_dir: Path) -> dict[str, Any]:

@@ -45,9 +45,13 @@ The Mac credential file has mode 0600 in the VM state directory.
 No password appears in a process argument or a status response: Studio types it
 on the controlling terminal that `mount_smbfs` reads.
 
-The Mac mounts the share at `~/Studio/<projectId>` without root.
-The mount appears in Finder. An older read-only mount of the same share at another
-address or port is unmounted and mounted again; any other filesystem there stays.
+The Mac mounts the share at `~/Studio/<name>` without root, where `<name>` is the
+Mac project folder name in plain ASCII (`share.name`; the guest adds `-2`, `-3` for
+another project with the same name). Finder shows the mounted share by this name.
+The mount uses `nobrowse`: the folder is the view, and no `127.0.0.1` server appears
+in the Finder sidebar. An older read-only mount of the same share at another address,
+port, name or folder is unmounted, and its empty folder is removed; any other
+filesystem there stays.
 The Finder view is a convenience: when the mount fails, agents keep working in the VM,
 and `mount_status` reports the failure with its reason.
 The server and the Mac mount both reject writes.

@@ -158,6 +158,35 @@ class ImportTests(unittest.IsolatedAsyncioTestCase):
 
 
 
+class ShareNameTests(unittest.IsolatedAsyncioTestCase):
+    async def share(self, root, *projects):
+        share = Share(root, root / "store")
+        for project in projects:
+            (root / ("export-" + project + ".json")).write_text(json.dumps({"projectId": project}))
+        (root / "smb-password").write_text("x")
+        return share
+
+    async def test_the_share_takes_the_preferred_name_and_stays_unique(self):
+        from common import GuestError
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            share = await self.share(root, "a" * 64, "b" * 64)
+            with patch("layr_share.command", new=AsyncMock()):
+                self.assertEqual((await share.name({"projectId": "a" * 64, "name": "my-app"}))["name"], "my-app")
+                self.assertEqual((await share.name({"projectId": "b" * 64, "name": "MY-APP"}))["name"], "MY-APP-2")
+                # A repeated request keeps the chosen name.
+                self.assertEqual((await share.name({"projectId": "b" * 64, "name": "MY-APP"}))["name"], "MY-APP-2")
+                self.assertEqual((await share.name({"projectId": "a" * 64, "name": "renamed"}))["name"], "renamed")
+            configuration = share.configuration.read_text()
+            self.assertIn("[renamed]\npath = " + str(share.export_root / ("a" * 64)), configuration)
+            self.assertIn("[MY-APP-2]\npath = " + str(share.export_root / ("b" * 64)), configuration)
+            for bad in ("global", "a b", "../x", "x" * 49, "", "[x]", "-x"):
+                with self.subTest(bad=bad), self.assertRaises(GuestError):
+                    await share.name({"projectId": "a" * 64, "name": bad})
+            with self.assertRaises(GuestError):
+                await share.name({"projectId": "c" * 64, "name": "other"})
+
+
 class ShareBridgeTests(unittest.IsolatedAsyncioTestCase):
     """share_bridge.py with TCP standing in for vsock; the relay code is the same."""
 
