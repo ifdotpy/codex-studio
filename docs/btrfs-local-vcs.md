@@ -1,8 +1,9 @@
 # Local version control on btrfs: design contract
 
 Status: implemented in [layr](https://github.com/ifdotpy/layr) (private repository, commit
-`7a157bf`, 2026-10-10). This document keeps the decisions and their reasons; commands, formats,
-measurements and limits are in the layr README. Owner of the decisions: the user. Technical advice
+`1405682`, 2026-10-10). This document keeps Studio's decisions about local version control and
+their reasons. layr itself is a general tool: its own design is in layr `docs/design.md`;
+commands, formats, measurements and limits are in the layr README. Owner of the decisions: the user. Technical advice
 and prototypes: [agent workspace isolation research](research/2026-10-03-agent-workspace-isolation.md).
 
 ## Intent
@@ -64,8 +65,36 @@ so models learn it quickly, and it has equal convenience. It does not take the n
     Records of other machines never change a line that has its working folder here.
 16. The root service: every write into a line goes through descriptors (`openat2`, no symbolic
     links); commands for users (git network access, tests, sync, merge drivers) run with that
-    user's uid, groups and a clean environment; merge drivers run as the lead of the machine.
-    Unsafe Rust code is limited to one module.
+    user's uid, groups and a clean environment; merge drivers run as the caller of the merge
+    (changed from "as the lead", see 18). Unsafe Rust code is limited to one module.
+
+## Decisions after layr became a general tool (2026-10-10)
+
+17. Boundary (user decision): layr knows Unix users and groups, projects, lines, states, rules
+    and checks, and nothing about agents, leads, tasks or turns. A feature goes into layr when
+    people on a shared Linux server would want it with the same meaning; otherwise it is Studio's.
+    Studio's part (the guest service in `vm/guest`, "layr-agent") uses only layr's public
+    commands, never its database or store folders. Every security rule is a layr rule (roles,
+    deny rules, protection rules); Studio only sets them, because an agent can call layr
+    directly. Studio labels operations with `LAYR_SESSION` (the agent id); layr shows labels and
+    never decides by them.
+18. Roles in a Studio project (layr's model, docs/design.md section 3): the user is the admin;
+    the lead agent is a maintainer; worker and reviewer agents are writers. All agent users are
+    in one Unix group with a deny rule for `sync`, `remote`, `access`, `config`, `records` and
+    `backup`, so no role given to an agent later reaches these. main is protected: it changes
+    only through `layr merge <line> --expect <reviewed state>` by a maintainer, after the
+    project's named checks pass on the merge result. Only the owner changes a line; the lead no
+    longer writes into a worker's line (it makes its own line from it, or deletes it).
+19. One commit per task (decision 5) is Studio's choice: `layr push --squash -m <task title>`.
+    layr's default push keeps every state as a commit.
+20. Exploration groups (below) and the `host_exec` slots are Studio workflows built from lines,
+    `merge --expect`, `layr export` and the line folders; layr no longer has `group` and `slot`.
+21. The end of an agent turn: `layr layer repair`, then `layr save -m "Studio turn <n>"`
+    (replaces `layr save --turn-end`).
+22. The layr copy in `vm/layr` is vendored from a fixed revision (`scripts/update-vm-layr.py`).
+    Moving it to `1405682` also needs the guest changes of 18 and 21; revisions before
+    `9254261` lack fixes for reading root files through merge drivers, for signed backups and
+    stream checks, and for files too large for memory.
 
 ## Data model
 
@@ -217,10 +246,10 @@ over ssh or the paired server channel, [multiple Studio servers](multi-server.md
 - Each agent has its own Linux user. It owns only its line (mode `0700`).
 - An agent reads history only through `layr` (`log`, `show`, `diff`), not through the state paths.
 - Creating, deleting and renaming lines and states is a `layr` operation.
-- The project lead (per machine) merges into the main line, pushes, tags and runs gc; only root
-  changes the lead or makes lines owned by root.
-- The git object store is open to all local users when `members` is `*`, otherwise `0750` with an
-  access list for the lead, the members and the line owners on this machine.
+- Roles, deny rules and protection rules decide merges into main, pushes, tags and gc
+  (decision 18); only root makes lines owned by root.
+- The git object store is open to all local users when everyone has a role, otherwise `0750`
+  with an access list for the users and groups with a role and the line owners on this machine.
 
 A state snapshot keeps the owner of the line root, so its owner could clear the read-only flag if it
 could reach the path. The `0700` root folder above `states/` is what prevents this, so it is a hard
@@ -239,7 +268,8 @@ The user views files through a read-only network share (below).
 
 ### `host_exec`: macOS commands for agents in the VM
 
-One general tool. Studio does not know what the command does.
+One general tool. Studio does not know what the command does. The slot copies below are Studio's
+(decision 20): it makes them from `layr export` and the line folders; layr has no slot command.
 
 1. Each project has a pool of slots on the Mac. A slot is a folder at a stable path, with its own
    `DerivedData` and package folders next to it. A stable path keeps Xcode builds warm: Xcode does
@@ -365,11 +395,11 @@ delete, edits of different lines, delete against change.
 
 ## Exploration groups
 
-Several agents can try the same task in parallel lines with a common base state. The group has an
-epoch counter. When the user or the lead accepts one result, that line is merged and the epoch
-increments. The other lines of the group become stale: the utility refuses to merge them and
-offers to archive them. This is an optional policy for "best of N" work. Normal lines use the merge
-engine.
+Several agents can try the same task in parallel lines with a common base state. When the user or
+the lead accepts one result, that line is merged and the other lines of the attempt are archived.
+This is a Studio workflow (decision 20): Studio keeps the attempt and its lines, merges the
+accepted line with `merge --expect`, and deletes the others. layr had a `group` command for this
+until 2026-10-10.
 
 ## Remote bridge
 
