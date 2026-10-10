@@ -1,0 +1,68 @@
+.project-server-choice,
+.project-locations {
+  display: grid;
+  gap: 12px;
+}
+.project-server-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+.project-server-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  min-width: 0;
+}
+.project-server-card > button {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  padding: 12px;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.project-server-card > button[aria-pressed="true"] {
+  background: var(--line);
+  outline: 2px solid var(--mantine-primary-color-filled);
+}
+.project-server-card > button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.project-location-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.project-location-row p {
+  margin: 4px 0;
+  overflow-wrap: anywhere;
+}
+.project-location-row small {
+  color: var(--muted);
+}
+
+.picker .project-location-actions {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.project-location-actions svg {
+  flex-shrink: 0;
+}
+.project-server-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

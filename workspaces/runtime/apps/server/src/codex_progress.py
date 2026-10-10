@@ -1,0 +1,156 @@
+"""Read each agent's plain progress file without running code or changing state."""
+
+from contextlib import contextmanager
+import os
+from pathlib import Path
+import re
+import stat
+
+from codex_private_paths import protect, protect_temp_file, verify_handle_within_directory
+
+MAX_PROGRESS_BYTES = 128 * 1024
+_AGENT_ID = re.compile(r"[A-Za-z0-9_-]{1,200}\Z")
+
+
+def progress_path(state_dir, agent_id):
+    if not isinstance(agent_id, str) or not _AGENT_ID.fullmatch(agent_id):
+        raise ValueError("Invalid agent identity for PROGRESS.md")
+    return Path(state_dir).absolute() / "progress" / agent_id / "PROGRESS.md"
+
+
+@contextmanager
+def _directory(state_dir, agent_id, *, create=False):
+    # Open each untrusted component separately. A renamed directory or symlink
+    # cannot redirect an already opened directory descriptor to another agent.
+    progress_path(state_dir, agent_id)
+    if os.name == "nt":
+        root = Path(state_dir).absolute()
+        progress = root / "progress"
+        agent = progress / agent_id
+        for directory in (root, progress, agent):
+            try:
+                info = directory.lstat()
+            except FileNotFoundError:
+                if not create or directory == root:
+                    raise
+                directory.mkdir(mode=0o700)
+                protect(directory, directory=True)
+                info = directory.lstat()
+            if (not stat.S_ISDIR(info.st_mode)
+                    or getattr(info, "st_file_attributes", 0) & 0x400):
+                raise ValueError("Progress path must not contain a reparse point")
+        yield agent
+        return
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptors = [os.open(Path(state_dir), os.O_RDONLY | os.O_DIRECTORY)]
+    try:
+        for name in ("progress", agent_id):
+            if create:
+                try:
+                    os.mkdir(name, mode=0o700, dir_fd=descriptors[-1])
+                except FileExistsError:
+                    pass
+            descriptors.append(os.open(name, flags, dir_fd=descriptors[-1]))
+        yield descriptors[-1]
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def provision_progress(state_dir, agent_id):
+    """Create an empty file once. Never replace existing agent content."""
+    path = progress_path(state_dir, agent_id)
+    with _directory(state_dir, agent_id, create=True) as directory:
+        if isinstance(directory, Path):
+            target = directory / "PROGRESS.md"
+            try:
+                descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                                     | getattr(os, "O_BINARY", 0), 0o600)
+            except FileExistsError:
+                info = target.lstat()
+                if (not stat.S_ISREG(info.st_mode)
+                        or getattr(info, "st_file_attributes", 0) & 0x400):
+                    raise ValueError("PROGRESS.md must be a regular file")
+            else:
+                try:
+                    verify_handle_within_directory(descriptor, directory)
+                finally:
+                    os.close(descriptor)
+                protect_temp_file(target)
+            return path
+        try:
+            descriptor = os.open("PROGRESS.md", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                 0o600, dir_fd=directory)
+        except FileExistsError:
+            if not stat.S_ISREG(os.stat("PROGRESS.md", dir_fd=directory, follow_symlinks=False).st_mode):
+                raise ValueError("PROGRESS.md must be a regular file")
+        else:
+            os.close(descriptor)
+    return path
+
+
+def progress_context(state_dir, agent_id):
+    from codex_progress_layout import progress_fit_context
+    path = progress_path(state_dir, agent_id)
+    return (
+        f"Your progress file is {path}. Read and edit this plain UTF-8 Markdown file with ordinary file tools. "
+        "Studio displays it above this chat's composer. Keep it at most 128 KiB. "
+        "Use it for the current status, results, and blockers. Update it when these facts change. "
+        "An empty or missing file clears the display. This file belongs to this agent, even when agents share a working directory. "
+        "It persists across restarts. It does not run scripts, read command output, or wake the model. "
+    ) + progress_fit_context(state_dir, agent_id)
+
+
+def _revision(info):
+    return ":".join(str(value) for value in
+                    (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns, info.st_size))
+
+
+def read_progress(state_dir: str | os.PathLike[str], agent_id: str) -> dict[str, object]:
+    path = progress_path(state_dir, agent_id)
+    result = {"id": agent_id, "agent": agent_id, "format": "markdown", "markdown": "",
+              "path": str(path), "revision": None, "updated": None, "exists": False, "error": None}
+    try:
+        with _directory(state_dir, agent_id) as directory:
+            if isinstance(directory, Path):
+                target = directory / "PROGRESS.md"
+                info = target.lstat()
+                if getattr(info, "st_file_attributes", 0) & 0x400:
+                    raise ValueError("PROGRESS.md must not be a reparse point")
+                descriptor = os.open(target, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+                try:
+                    verify_handle_within_directory(descriptor, directory)
+                except BaseException:
+                    os.close(descriptor)
+                    raise
+                opened = os.fstat(descriptor)
+                current = target.lstat()
+                if (not stat.S_ISREG(opened.st_mode)
+                        or getattr(current, "st_file_attributes", 0) & 0x400
+                        or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)):
+                    os.close(descriptor)
+                    raise ValueError("PROGRESS.md must be a stable regular file")
+            else:
+                descriptor = os.open("PROGRESS.md", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            with os.fdopen(descriptor, "rb") as stream:
+                result["exists"] = True
+                before = os.fstat(stream.fileno())
+                if not stat.S_ISREG(before.st_mode):
+                    raise ValueError("PROGRESS.md must be a regular file")
+                if before.st_size > MAX_PROGRESS_BYTES:
+                    raise ValueError("PROGRESS.md exceeds the 128 KiB limit")
+                content = stream.read(MAX_PROGRESS_BYTES + 1)
+                after = os.fstat(stream.fileno())
+                if len(content) > MAX_PROGRESS_BYTES:
+                    raise ValueError("PROGRESS.md exceeds the 128 KiB limit")
+                if _revision(before) != _revision(after):
+                    raise ValueError("PROGRESS.md changed during the read. Studio will retry")
+                markdown = content.decode("utf-8")
+                result.update(markdown=markdown, revision=_revision(after), updated=after.st_mtime)
+    except FileNotFoundError:
+        pass
+    except UnicodeError:
+        result["error"] = "PROGRESS.md must contain valid UTF-8 text"
+    except (OSError, ValueError) as error:
+        result["error"] = "Cannot read PROGRESS.md: " + str(error)
+    return result

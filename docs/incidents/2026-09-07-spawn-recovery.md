@@ -13,9 +13,9 @@ Catalog access precedes creation in the inspected runtime. All seven planned
 UUID5 worker identities and names are absent from the registry.
 
 | Request | Native start UTC | Native cancellation UTC | Studio task creation UTC | Stored result UTC |
-|---|---|---|---|---|
-| exec773 | 11:57:54.557 | 11:59:40.224 | 12:00:21.095 | 12:01:22.512 |
-| exec789 | 13:11:33.218 | 13:12:33.941 | 13:13:57.475 | 13:14:57.821 |
+| ------- | ---------------- | ----------------------- | ------------------------ | ----------------- |
+| exec773 | 11:57:54.557     | 11:59:40.224            | 12:00:21.095             | 12:01:22.512      |
+| exec789 | 13:11:33.218     | 13:12:33.941            | 13:13:57.475             | 13:14:57.821      |
 
 The exact native call IDs are `exec-7ecb02a4-a933-49d4-b110-ddc6d2c1ff9d`
 and `exec-45a0d3ee-1e12-40f9-be9b-bd5a91258292`.
@@ -46,7 +46,7 @@ prevents execution. Cancellation during spawn preflight prevents its transaction
 
 Native response reads are separate from ordered callbacks. Recovery and
 coordination have separate pools. Account-scoped model metadata uses one pending
-native read and a bounded wait. See [the recovery contract](../../ORCHESTRATION.md).
+native read and a bounded wait. See [the recovery contract](../orchestration.md).
 
 Regression checks cover blocked callbacks, blocked pools, delayed catalog
 responses, transaction rollback, lost replies, stable-ID replay, and parent wake.

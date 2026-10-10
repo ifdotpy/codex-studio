@@ -1,0 +1,548 @@
+#!/usr/bin/env python3
+"""Native review through Studio tool receipts and dispatch. No model calls."""
+
+# Support direct execution without runner-provided PYTHONPATH.
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
+import concurrent.futures
+import copy
+import importlib.util
+import json
+import os
+import shutil
+import subprocess
+from pathlib import Path
+import sys
+import tempfile
+import threading
+import unittest
+import uuid
+from unittest.mock import patch
+
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location('account_fixture', Path(__file__).with_name('runtime-accounts-contract.py'))
+f = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(f)
+from codex_runtime import ResponseTimeout
+
+FINDINGS = '[P1] Preserve the receipt before command submission. File: server.py:42.'
+
+
+class ReviewServer(f.AccountServer):
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.mode = 'running'
+        self.reviews = []
+
+    def call(self, method, params, timeout=60):
+        if method == 'turn/interrupt' and params.get('turnId') == '':
+            self.calls.append((method, copy.deepcopy(params)))
+            return {}
+        return super().call(method, params, timeout)
+
+    def submit(self, method, params):
+        if method != 'review/start':
+            return super().submit(method, params)
+        self.calls.append((method, copy.deepcopy(params)))
+        entry = {'params': copy.deepcopy(params), 'future': concurrent.futures.Future(),
+                 'turn': {'id': 'review-' + str(len(self.reviews)), 'status': 'inProgress'},
+                 'handled': threading.Event(), 'registered': threading.Event()}
+        self.reviews.append(entry)
+        if self.mode == 'early':
+            self.finish(entry)
+        if self.mode != 'lost':
+            entry['future'].set_result({'turn': entry['turn'], 'reviewThreadId': params['threadId']})
+        return entry['future']
+
+    def wait(self, future, timeout=60):
+        if any(e['future'] is future for e in self.reviews) and not future.done():
+            raise ResponseTimeout('review/start response timed out; outcome unknown')
+        return super().wait(future, timeout)
+
+    def on_result(self, future, callback):
+        entry = next((e for e in self.reviews if e['future'] is future), None)
+        if entry is None:
+            return super().on_result(future, callback)
+        def done(result):
+            work = callback(result)
+            if work:
+                work.add_done_callback(lambda _: entry['handled'].set())
+            else:
+                entry['handled'].set()
+        future.add_done_callback(done)
+        entry['registered'].set()
+
+    def finish(self, entry, status='completed'):
+        params = {'threadId': entry['params']['threadId'], 'turnId': entry['turn']['id']}
+        self.notify({'method': 'item/completed', 'params': {**params,
+            'item': {'id': 'findings', 'type': 'exitedReviewMode', 'review': FINDINGS}}})
+        self.notify({'method': 'turn/completed', 'params': {**params,
+            'turn': {'id': entry['turn']['id'], 'status': status}}})
+
+
+class ReviewRuntimeContract(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.repo_template_temp = tempfile.TemporaryDirectory(prefix='studio-review-repo-template-')
+        cls.addClassCleanup(cls.repo_template_temp.cleanup)
+        cls.repo_template = Path(cls.repo_template_temp.name) / 'repo'
+        cls.repo_template.mkdir()
+        subprocess.run(['git', 'init', '-q', str(cls.repo_template)], check=True)
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='studio-review-test-')
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        # Native review reads git history; the reviewer folder must be a repository.
+        shutil.copytree(self.repo_template / '.git', self.root / '.git')
+        self.env = patch.dict(os.environ, {'CODEX_HOME': str(self.root / 'home')})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        self.rt = f.ControlledRuntime(self.root / 'state', ReviewServer)
+        self.addCleanup(self.rt.close)
+        self.server = self.rt.connect()
+        self.parent = self.rt.new_lead({'cwd': str(self.root), 'model': 'test-model'})
+        self.parent = self.rt.prepare(self.parent)
+        self.update(self.parent['id'], autoWake=True, inFlight=True, status='running', turnId='parent-turn')
+        self.parent = self.rt.agent(self.parent['id'])
+        self.seq = 100
+
+    def update(self, key, **values):
+        with self.rt.lock, self.rt.db() as db:
+            a = self.rt.agent(key, db)
+            a.update(values)
+            self.rt.put(db, 'agents', a)
+        return a
+
+    def invoke(self, args=None, *, actor=None):
+        self.seq += 1
+        actor = actor or self.parent
+        name = 'orchestration_review'
+        args = copy.deepcopy(args if args is not None else {'request_id': 'review-fixture'})
+        self.rt.dynamic({'id': self.seq, 'params': {'threadId': actor['threadId'],
+            'turnId': actor['turnId'], 'callId': str(self.seq), 'tool': name, 'arguments': args}},
+            actor.get('accountKey', 'default'))
+        response = next(r['result'] for r in self.server.responses if r['id'] == self.seq)
+        return response
+
+    def request(self, **options):
+        result = self.invoke(**options)
+        self.assertTrue(result['success'], result)
+        return json.loads(result['contentItems'][0]['text'])
+
+    def dispatch_review(self, value):
+        self.rt.dispatch()
+        f.f.eventually(lambda: bool(self.server.reviews))
+        # The per-agent executor introduced in 28d90c39 persists the accepted
+        # review request before the child start receipt, so waiting is valid.
+        f.f.eventually(lambda: self.rt.agent(value['agentId'])['status'] in
+                       {'running', 'completed', 'starting', 'waiting'})
+        entry = self.server.reviews[-1]
+        if self.server.mode == 'lost':
+            self.assertTrue(entry['registered'].wait(3))
+        else:
+            f.f.eventually(lambda: self.rt.agent(value['agentId']).get('startAttempt', {}).get('turnId') == entry['turn']['id'])
+        return entry
+
+    def parent_results(self):
+        with self.rt.db() as db:
+            return db.execute("SELECT id,text FROM runtime_events WHERE agent=? AND kind='child_result'",
+                              (self.parent['id'],)).fetchall()
+
+    def restart_runtime(self):
+        self.rt.close()
+        self.rt = f.ControlledRuntime(self.root / 'state', ReviewServer)
+        self.addCleanup(self.rt.close)
+        self.server = self.rt.connect()
+
+    def test_retries_share_one_durable_receipt(self):
+        first = self.request()
+        self.assertEqual(self.request(), first)
+        self.assertEqual(self.request(), first)
+        with self.rt.db() as db:
+            children = [a for a in self.rt.records(db, 'agents') if a.get('parentId') == self.parent['id']]
+            receipts = [r for r in self.rt.records(db, 'tool_requests') if r['id'] == first['requestId']]
+        self.assertEqual([a['id'] for a in children], [first['agentId']])
+        self.assertEqual(len(receipts), 1)
+        self.assertEqual(receipts[0]['outcome'], 'applied')
+        conflict = self.invoke({'request_id': 'review-fixture', 'target': {'type': 'baseBranch', 'branch': 'other'}})
+        self.assertFalse(conflict['success'])
+        self.assertFalse(self.server.reviews)
+
+    def test_non_repository_failure_settles_and_reconciles_without_child(self):
+        nonrepo_temp = tempfile.TemporaryDirectory(prefix='studio-review-outside-')
+        self.addCleanup(nonrepo_temp.cleanup)
+        nonrepo = Path(nonrepo_temp.name)
+        self.update(self.parent['id'], cwd=str(nonrepo))
+        failed = self.invoke({'request_id': 'require-repository-failure'})
+        self.assertFalse(failed['success'], failed)
+        self.assertIn('needs a git repository', failed['contentItems'][0]['text'])
+        key = self.parent['threadId'] + ':review:require-repository-failure'
+        receipt = self.rt.request_action(self.parent['id'], {'action': 'get', 'request_id': key})
+        self.assertEqual(receipt['outcome'], 'not_applied')
+        self.assertEqual(receipt['stage'], 'failed')
+        self.assertEqual(receipt['result']['contentItems'][0]['text'], failed['contentItems'][0]['text'])
+        with self.rt.db() as db:
+            child = db.execute('SELECT 1 FROM runtime_agents WHERE id=?',
+                               (str(uuid.uuid5(uuid.NAMESPACE_URL, key)),)).fetchone()
+        self.assertIsNone(child)
+        self.assertEqual(self.server.reviews, [])
+
+        legacy_key = self.parent['threadId'] + ':review:legacy-review-failure'
+        preserved = {'success': False, 'contentItems': [{'type': 'inputText', 'text': 'original failure'}]}
+        with self.rt.lock, self.rt.db() as db:
+            self.rt.put(db, 'tool_requests', {'id': legacy_key, 'agent': self.parent['id'],
+                'tool': 'orchestration_review', 'stage': 'failed', 'outcome': 'unknown',
+                'result': preserved, 'updated': 1})
+            result = self.rt.reconcile_tool_requests(db, self.parent['id'])
+        self.assertIn(legacy_key, result['reconciled'])
+        reconciled = self.rt.request_action(self.parent['id'], {'action': 'get', 'request_id': legacy_key})
+        self.assertEqual(reconciled['outcome'], 'not_applied')
+        self.assertEqual(reconciled['result'], preserved)
+
+    def test_review_tool_schema_exposes_cwd(self):
+        definition = next(tool for tool in self.rt.tool_definitions(self.parent)
+                          if tool['name'] == 'orchestration_review')
+        self.assertIn('cwd', definition['inputSchema']['properties'])
+        self.assertIn('repository folder for the review; defaults to the agent cwd',
+                      definition['description'])
+
+    def test_failure_after_reviewer_creation_stays_uncertain(self):
+        original_put = self.rt.put
+        def fail_after_child(db, table, row):
+            original_put(db, table, row)
+            if table == 'agents' and row.get('nativeReview'):
+                raise OSError('post-creation write failed')
+        with patch.object(self.rt, 'put', side_effect=fail_after_child):
+            failed = self.invoke({'request_id': 'post-create-write-failure'})
+        self.assertFalse(failed['success'])
+        key = self.parent['threadId'] + ':review:post-create-write-failure'
+        receipt = self.rt.request_action(self.parent['id'], {'action': 'get', 'request_id': key})
+        self.assertEqual(receipt['outcome'], 'unknown')
+
+    def test_receipt_recovery_reports_current_child(self):
+        request_id = 'recovery-direct'
+        first = self.request(args={'request_id': request_id})
+        self.assertEqual(self.request(args={'request_id': request_id}), first)
+        receipt = self.rt.request_action(self.parent['id'], {
+            'action': 'get', 'request_id': request_id})
+        self.assertEqual(receipt['agentIds'], [first['agentId']])
+        self.assertEqual(receipt['tool'], 'orchestration_review')
+        self.assertEqual([(a['id'], a['status']) for a in receipt['agents']],
+                         [(first['agentId'], 'queued')])
+        self.update(first['agentId'], status='completed', inFlight=False)
+        recovered = self.rt.request_action(self.parent['id'], {
+            'action': 'get', 'request_id': first['requestId']})
+        self.assertEqual(recovered['agentIds'], [first['agentId']])
+        self.assertEqual([(a['id'], a['status']) for a in recovered['agents']],
+                         [(first['agentId'], 'completed')])
+        self.assertEqual(recovered['result'], receipt['result'])
+        self.assertEqual(recovered['outcome'], 'applied')
+
+
+    def test_dispatch_uses_child_native_review_with_inherited_identity_and_readonly_policy(self):
+        target = {'type': 'baseBranch', 'branch': 'main'}
+        value = self.request(args={'target': target, 'request_id': 'base-main'})
+        child = self.rt.agent(value['agentId'])
+        for field in ('cwd', 'model', 'effort', 'accountKey', 'provider'):
+            self.assertEqual(child[field], self.parent[field], field)
+        self.assertEqual(child['role'], 'reviewer')
+        self.assertFalse(child['worktree'])
+        self.assertEqual(self.rt.tool_definitions(child), [])
+        entry = self.dispatch_review(value)
+        child = self.rt.agent(child['id'])
+        self.assertEqual(entry['params'], {'threadId': child['threadId'], 'target': target, 'delivery': 'inline'})
+        self.assertNotEqual(child['threadId'], self.parent['threadId'])
+        self.assertFalse(any(m == 'turn/start' for m, _ in self.server.calls))
+        start = next(p for m, p in self.server.calls if m == 'thread/start' and p.get('dynamicTools') == [])
+        self.assertEqual(start['sandbox'], 'read-only')
+        settings = next(p for m, p in self.server.calls if m == 'thread/settings/update' and p['threadId'] == child['threadId'])
+        self.assertEqual(settings['sandboxPolicy'], {'type': 'readOnly'})
+        self.assertEqual(settings['model'], self.parent['model'])
+        self.rt.dispatch()
+        self.assertEqual(len(self.server.reviews), 1)
+
+    def test_scenario_7_restart_after_claim_restores_same_review_action(self):
+        from codex_agent_review import claim
+        value = self.request(args={'request_id': 'restart-review-claim',
+                                   'target': {'type':'baseBranch','branch':'main'}})
+        child = self.rt.agent(value['agentId'])
+        with self.rt.lock, self.rt.db() as db:
+            attempt = claim(self.rt, db, child)
+        self.assertEqual(attempt['action'], 'review')
+        self.assertFalse(attempt['submitted'])
+        self.assertEqual(self.rt.agent(child['id'])['nativeReview']['status'], 'started')
+        self.rt.close()
+        self.rt = f.ControlledRuntime(self.root / 'state', ReviewServer)
+        self.addCleanup(self.rt.close)
+        self.server = self.rt.connect()
+        child = self.rt.agent(child['id'])
+        self.assertEqual(child['nativeReview']['status'], 'pending')
+        self.assertEqual(child['nativeReview']['requestId'], value['requestId'])
+        self.assertEqual(child['nativeReview']['target'], {'type': 'baseBranch', 'branch': 'main'})
+        self.assertNotIn('startAttempt', child)
+        self.rt.dispatch()
+        f.f.eventually(lambda: bool(self.server.reviews))
+        self.assertEqual(len(self.server.reviews), 1)
+        f.f.eventually(lambda: bool(self.rt.agent(child['id']).get('threadId')))
+        child = self.rt.agent(child['id'])
+        self.assertEqual(self.server.reviews[0]['params']['threadId'], child['threadId'])
+        self.assertEqual(self.server.reviews[0]['params']['target'], child['nativeReview']['target'])
+        self.assertEqual(child['nativeReview']['requestId'], value['requestId'])
+
+    def test_scenario_7_restart_after_preparation_and_settings_keeps_same_target(self):
+        from codex_agent_review import claim
+        value = self.request(args={'request_id':'restart-review-settings',
+            'target':{'type':'baseBranch','branch':'main'}})
+        child = self.rt.agent(value['agentId'])
+        with self.rt.lock, self.rt.db() as db:
+            attempt = claim(self.rt, db, child)
+            current = self.rt.agent(child['id'], db)
+            current['threadId'] = 'prepared-review-thread'
+            attempt['threadId'] = current['threadId']
+            attempt['modelSettings'] = {'id':attempt['id'],'epoch':attempt['epoch'],
+                'accountKey':attempt['accountKey'],'threadId':attempt['threadId'],
+                'connectionId':self.rt.connection_ids['default'],
+                'settings':self.rt.preparation_settings(current),'status':'acknowledged'}
+            current['startAttempt'] = attempt
+            self.rt.put(db,'agents',current)
+        self.restart_runtime()
+        child = self.rt.agent(child['id'])
+        self.assertEqual(child['nativeReview']['status'],'pending')
+        self.assertEqual(child['nativeReview']['target'],{'type':'baseBranch','branch':'main'})
+        self.assertEqual(child['nativeReview']['requestId'],value['requestId'])
+        with patch('codex_native_tools.gate',return_value=True):
+            self.rt.dispatch()
+        f.f.eventually(lambda: bool(self.server.reviews))
+        self.assertEqual(len(self.server.reviews),1)
+        self.assertEqual(self.server.reviews[0]['params']['target'],child['nativeReview']['target'])
+
+    def test_scenario_7_restart_after_review_start_never_repeats_unknown_mutation(self):
+        self.server.mode = 'lost'
+        value = self.request(args={'request_id':'restart-review-start',
+            'target':{'type':'baseBranch','branch':'main'}})
+        entry = self.dispatch_review(value)
+        child = self.rt.agent(value['agentId'])
+        self.assertTrue(child['startAttempt']['submitted'])
+        self.assertEqual(len(self.server.reviews),1)
+        self.restart_runtime()
+        child = self.rt.agent(child['id'])
+        self.assertEqual(child['nativeReview']['requestId'],value['requestId'])
+        self.assertEqual(child['restartRecovery']['stage'],'held')
+        self.rt.dispatch()
+        self.assertEqual(self.server.reviews,[])
+        self.assertEqual(len(self.parent_results()),1)
+        self.assertEqual(entry['params']['target'],child['nativeReview']['target'])
+
+    def test_scenario_7_restart_after_final_result_and_parent_delivery_is_idempotent(self):
+        value = self.request(args={'request_id':'restart-review-result',
+            'target':{'type':'baseBranch','branch':'main'}})
+        entry = self.dispatch_review(value)
+        self.server.finish(entry)
+        f.f.eventually(lambda: (self.rt.agent(value['agentId'])['status']=='completed'
+                                or self.rt.agent(value['agentId']).get('agentArchive')))
+        self.assertEqual(len(self.parent_results()),1)
+        self.restart_runtime()
+        child = self.rt.agent(value['agentId'])
+        self.assertTrue(child['status']=='completed' or child.get('agentArchive'))
+        self.assertEqual(len(self.parent_results()),1)
+        with self.rt.lock, self.rt.db() as db:
+            db.execute("UPDATE runtime_events SET status='delivered' WHERE id=?",
+                       (self.parent_results()[0]['id'],))
+        self.restart_runtime()
+        self.assertEqual(len(self.parent_results()),1)
+        child = self.rt.agent(value['agentId'])
+        self.assertTrue(child['status']=='completed' or child.get('agentArchive'))
+
+    def test_team_limit_counts_descendants_and_excludes_the_lead(self):
+        self.update(self.parent['id'], concurrency=1)
+        value = self.request()
+        self.dispatch_review(value)
+        self.assertIn(self.rt.agent(value['agentId'])['status'], {'starting', 'running'})
+        self.assertEqual(len(self.server.reviews), 1)
+
+    def test_findings_before_rpc_response_without_started_event_reach_parent_once(self):
+        self.server.mode = 'early'
+        value = self.request()
+        entry = self.dispatch_review(value)
+        child = self.rt.agent(value['agentId'])
+        self.assertEqual(child['status'], 'completed')
+        self.assertFalse(child['inFlight'])
+        self.assertEqual(child['lastAnswer'], FINDINGS)
+        with self.rt.db() as db:
+            records = [json.loads(row[0]) for row in db.execute('SELECT record FROM runtime_items WHERE agent=?', (child['id'],))]
+        self.assertTrue(any(FINDINGS in item['text'] for item in records))
+        self.assertEqual(len(self.parent_results()), 1)
+        self.assertEqual(json.loads(self.parent_results()[0]['text'])['result'], FINDINGS)
+        self.server.finish(entry)
+        self.rt.dispatch()
+        self.assertEqual(len(self.parent_results()), 1)
+        self.assertEqual(len(self.server.reviews), 1)
+        finished = self.rt.agent(child['id'])
+        self.assertTrue(finished['status'] == 'completed' or finished.get('agentArchive'))
+
+    def test_lost_response_never_repeats_and_late_result_preserves_completion(self):
+        self.server.mode = 'lost'
+        value = self.request()
+        entry = self.dispatch_review(value)
+        self.assertTrue(self.rt.agent(value['agentId'])['inFlight'])
+        self.assertEqual(self.request(), value)
+        self.rt.dispatch()
+        self.assertEqual(len(self.server.reviews), 1)
+        self.server.finish(entry)
+        self.assertEqual(len(self.parent_results()), 1)
+        entry['future'].set_result({'turn': entry['turn']})
+        self.assertTrue(entry['handled'].wait(3))
+        self.assertEqual(self.rt.agent(value['agentId'])['status'], 'completed')
+        self.assertFalse(self.rt.agent(value['agentId'])['inFlight'])
+        self.assertEqual(self.rt.agent(value['agentId'])['lastAnswer'], FINDINGS)
+        self.assertEqual(len(self.parent_results()), 1)
+        self.rt.dispatch()
+        self.assertEqual(len(self.server.reviews), 1)
+
+    def test_parent_pause_cancels_queued_review_without_native_submission(self):
+        value = self.request()
+        self.rt.stop(self.parent['id'])
+        self.rt.dispatch()
+        child = self.rt.agent(value['agentId'])
+        self.assertEqual(child['status'], 'paused')
+        self.assertFalse(child['autoWake'])
+        self.assertFalse(self.server.reviews)
+
+    def test_parent_pause_interrupts_active_child_exact_turn(self):
+        value = self.request()
+        entry = self.dispatch_review(value)
+        self.rt.stop(self.parent['id'])
+        interrupts = [p for m, p in self.server.calls if m == 'turn/interrupt' and p['threadId'] == entry['params']['threadId']]
+        self.assertEqual(interrupts, [{'threadId': entry['params']['threadId'], 'turnId': entry['turn']['id']}])
+        self.assertEqual(self.rt.agent(value['agentId'])['status'], 'paused')
+        self.assertEqual(len(self.parent_results()), 0)
+
+    def test_claude_and_native_reviewer_cannot_create_reviews(self):
+        self.assertIn('orchestration_review', {t['name'] for t in self.rt.tool_definitions(self.parent)})
+        claude = self.update(self.parent['id'], provider='claude')
+        self.assertNotIn('orchestration_review', {t['name'] for t in self.rt.tool_definitions(claude)})
+        result = self.invoke(actor=claude)
+        self.assertFalse(result['success'])
+        self.assertIn('only for Codex', result['contentItems'][0]['text'])
+        self.update(self.parent['id'], provider='codex')
+        value = self.request(args={'request_id': 'allowed'})
+        child = self.rt.prepare(self.rt.agent(value['agentId']))
+        child = self.update(child['id'], status='running', inFlight=True, turnId='forged-review-tool-turn')
+        result = self.invoke(args={'request_id': 'nested'}, actor=child)
+        self.assertFalse(result['success'])
+        self.assertIn('cannot create another review', result['contentItems'][0]['text'])
+        self.assertEqual(self.rt.tool_definitions(child), [])
+
+    def test_nondefault_account_owns_review_rpc_and_receipt(self):
+        other_home = self.root / 'other-home'
+        other_home.mkdir()
+        (other_home / 'auth.json').write_text(json.dumps({'tokens': {
+            'account_id': 'review-other-account', 'access_token': 'fixture'}}))
+        account = self.rt.accounts.register(str(other_home))
+        original_server = self.server
+        self.server = self.rt.connect(account)
+        self.parent = self.rt.new_lead({'cwd': str(self.root), 'account_key': account})
+        self.parent = self.rt.prepare(self.parent)
+        self.parent = self.update(self.parent['id'], autoWake=True, inFlight=True,
+                                  status='running', turnId='other-parent-turn')
+        value = self.request()
+        self.assertTrue(value['requestId'].startswith(account + ':'))
+        self.assertEqual(self.rt.agent(value['agentId'])['accountKey'], account)
+        self.dispatch_review(value)
+        self.assertFalse(original_server.reviews)
+        self.assertEqual(len(self.server.reviews), 1)
+        self.assertEqual(self.request(), value)
+
+    def test_cancelled_tool_receipt_prevents_creation_on_later_callback(self):
+        message = {'id': 99, 'params': {'threadId': self.parent['threadId'],
+            'turnId': self.parent['turnId'], 'callId': 'cancel-reserved',
+            'tool': 'orchestration_review', 'arguments': {'request_id': 'cancel-before-create'}}}
+        receipt = self.rt.reserve_tool_request(message, 'default', self.rt.connection_ids['default'])
+        cancelled = self.rt.request_action(self.parent['id'], {'action': 'cancel', 'request_id': receipt['id']})
+        self.assertEqual(cancelled['outcome'], 'not_applied')
+        result = self.invoke({'request_id': 'cancel-before-create'})
+        self.assertFalse(result['success'])
+        with self.rt.db() as db:
+            self.assertEqual(len(self.rt.records(db, 'agents')), 1)
+        self.assertFalse(self.server.reviews)
+
+    def test_pause_during_unknown_submission_interrupts_late_acknowledgement(self):
+        self.server.mode = 'lost'
+        value = self.request()
+        entry = self.dispatch_review(value)
+        self.rt.stop(self.parent['id'])
+        entry['future'].set_result({'turn': entry['turn']})
+        self.assertTrue(entry['handled'].wait(3))
+        child = self.rt.agent(value['agentId'])
+        self.assertEqual(child['status'], 'paused')
+        self.assertFalse(child['autoWake'])
+        interrupts = [p for m, p in self.server.calls if m == 'turn/interrupt'
+                      and p['threadId'] == entry['params']['threadId']]
+        self.assertEqual(interrupts, [
+            {'threadId': entry['params']['threadId'], 'turnId': ''},
+            {'threadId': entry['params']['threadId'], 'turnId': entry['turn']['id']}])
+        self.assertEqual(len(self.parent_results()), 0)
+        self.rt.dispatch()
+        self.assertEqual(len(self.server.reviews), 1)
+
+    def test_native_cancel_completion_before_late_response_does_not_restart_child(self):
+        self.server.mode = 'lost'
+        value = self.request()
+        entry = self.dispatch_review(value)
+        self.rt.stop(self.parent['id'])
+        completion = {'method': 'turn/completed', 'params': {
+            'threadId': entry['params']['threadId'],
+            'turn': {'id': entry['turn']['id'], 'status': 'interrupted'}}}
+        self.server.notify(completion)
+        entry['future'].set_result({'turn': entry['turn']})
+        self.assertTrue(entry['handled'].wait(3))
+        self.server.notify(completion)
+        self.rt.dispatch()
+        child = self.rt.agent(value['agentId'])
+        self.assertEqual(child['status'], 'paused')
+        self.assertFalse(child['inFlight'])
+        self.assertIsNone(child['turnId'])
+        self.assertEqual(child['lastCompletedTurnStatus'], 'interrupted')
+        interrupts = [p for m, p in self.server.calls if m == 'turn/interrupt'
+                      and p['threadId'] == entry['params']['threadId']]
+        self.assertEqual(interrupts, [{'threadId': entry['params']['threadId'], 'turnId': ''}])
+        self.assertEqual(len(self.parent_results()), 0)
+        self.assertEqual(len(self.server.reviews), 1)
+
+    def test_unknown_review_cancel_rejects_changed_account_or_connection(self):
+        self.server.mode = 'lost'
+        value = self.request()
+        entry = self.dispatch_review(value)
+        child = self.rt.agent(value['agentId'])
+        self.update(child['id'], autoWake=False, status='paused', epoch=child['epoch'] + 1)
+        baseline = len([m for m, _ in self.server.calls if m == 'turn/interrupt'])
+        for change in ({'accountKey': 'different-account'}, {'connectionId': 'retired-connection'}):
+            with self.subTest(change=change):
+                current = self.rt.agent(child['id'])
+                attempt = {**current['startAttempt'], **change}
+                self.update(child['id'], startAttempt=attempt)
+                self.rt.interrupt(current)
+                self.assertEqual(len([m for m, _ in self.server.calls if m == 'turn/interrupt']), baseline)
+                self.update(child['id'], startAttempt=child['startAttempt'])
+        current = self.rt.agent(child['id'])
+        self.rt.interrupt(current)
+        self.assertEqual(self.server.calls[-1], ('turn/interrupt', {'threadId': entry['params']['threadId'], 'turnId': ''}))
+        self.assertEqual(len([m for m, _ in self.server.calls if m == 'turn/interrupt']), baseline + 1)
+
+    def test_existing_inline_ui_review_stays_on_selected_chat(self):
+        self.update(self.parent['id'], inFlight=False, status='completed', turnId=None)
+        self.rt.native_action(self.parent['id'], 'review')
+        self.assertEqual(len(self.server.reviews), 1)
+        self.assertEqual(self.server.reviews[0]['params'], {'threadId': self.parent['threadId'],
+            'target': {'type': 'uncommittedChanges'}, 'delivery': 'inline'})
+        with self.rt.db() as db:
+            self.assertEqual(len(self.rt.records(db, 'agents')), 1)
+
+
+if __name__ == '__main__':
+    unittest.main()

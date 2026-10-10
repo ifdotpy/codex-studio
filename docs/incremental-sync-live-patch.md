@@ -5,7 +5,7 @@ sync entities (round 3), `#11`, removed `/api/state` and the legacy
 `state` / `state:chat` pull scopes. The install sequence and dry-run notes below
 record the earlier rollout plan; they are not current deployment instructions.
 
-The guarded server patch artifact is [`scripts/codex_sync_live_patch.py`](../scripts/codex_sync_live_patch.py). It is built for the live server method layout at `a1ede55` and the rebased renderer/server source. Do not start another backend or point this patch at a live database during fixture verification.
+The guarded server patch artifact is [`workspaces/runtime/apps/server/src/codex_sync_live_patch.py`](../workspaces/runtime/apps/server/src/codex_sync_live_patch.py). It is built for the live server method layout at `a1ede55` and the rebased renderer/server source. Do not start another backend or point this patch at a live database during fixture verification.
 
 ## Install order
 

@@ -1,0 +1,277 @@
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import signal
+import socket
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from unittest.mock import call, patch
+import fcntl
+
+HERE = Path(__file__).resolve().parent
+REPOSITORY_ROOT = HERE.parents[3]
+SERVER_SOURCE = REPOSITORY_ROOT / "workspaces/runtime/apps/server/src"
+spec = importlib.util.spec_from_file_location("recovery", HERE / "recover_backend.py")
+recovery = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(recovery)
+
+
+def free_port():
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        return server.getsockname()[1]
+
+
+def wait_for(check, seconds=20):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            result = check()
+            if result:
+                return result
+        except (OSError, ValueError):
+            pass
+        time.sleep(.1)
+    raise AssertionError("Recovery did not reach its expected state.")
+
+
+class RecoveryTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="studio-supervisor-test-", dir="/tmp")
+        self.state = Path(self.temp.name).resolve()
+        source_link = self.state / "workspaces/runtime/apps/server/src"
+        source_link.parent.mkdir(parents=True)
+        source_link.symlink_to(SERVER_SOURCE, target_is_directory=True)
+        renderer = self.state / "workspaces/client/apps/web/dist"
+        renderer.mkdir(parents=True)
+        (renderer / "index.html").write_text("fixture")
+        self.config = {"version": 1, "enabled": True, "stateDir": str(self.state),
+                       "port": free_port(), "python": sys.executable,
+                       "codex": "/usr/bin/true", "resources": str(self.state),
+                       "environment": {"CODEX_CANVAS_CWD": str(self.state / "workspace")}}
+        self.child = None
+        self.supervisors = []
+        self.recovered_pid = None
+
+    def tearDown(self):
+        for process in self.supervisors:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=10)
+        if self.child is not None and self.child.poll() is None:
+            self.child.terminate()
+            self.child.wait(timeout=10)
+        if self.recovered_pid is not None:
+            try:
+                os.kill(self.recovered_pid, signal.SIGTERM)
+                wait_for(lambda: recovery.identity(self.config["port"], self.state) is None)
+                # The listener can close before this owned process finishes cleanup.
+                wait_for(lambda: recovery.process_start_time(self.recovered_pid) is None)
+            except ProcessLookupError:
+                pass
+        self.temp.cleanup()
+
+    def test_free_port_with_occupied_runtime_never_starts(self):
+        with (self.state / "runtime.lock").open("a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with patch.object(recovery.subprocess, "Popen") as spawn:
+                child, status = recovery.tick(self.config, self.state)
+            self.assertIsNone(child)
+            self.assertEqual(status, "waiting for runtime owner")
+            spawn.assert_not_called()
+
+    def test_uncertain_or_incompatible_identity_never_starts(self):
+        for error in (TimeoutError("timeout"), ValueError("invalid body"), RuntimeError("wrong state")):
+            with patch.object(recovery, "identity", side_effect=error), patch.object(recovery.subprocess, "Popen") as spawn:
+                with self.assertRaises(type(error)):
+                    recovery.tick(self.config, self.state)
+                spawn.assert_not_called()
+
+    def test_supervisor_fallback_never_signals_pid_claimed_by_unrelated_listener(self):
+        foreign_pid = os.getpid()
+        body = json.dumps({"application": "codex-agents", "protocol": 1,
+                           "stateDir": str(self.state), "pid": foreign_pid,
+                           "supervisorMode": True}).encode()
+        with patch.object(recovery.urllib.request, "build_opener") as build_opener, \
+                patch.object(recovery.os, "kill") as kill:
+            build_opener.return_value.open.return_value = io.BytesIO(body)
+            with self.assertRaisesRegex(RuntimeError, "not the packaged Codex Canvas"):
+                recovery.tick(self.config, self.state, supervisor_fallback=True)
+            self.assertNotIn(call(foreign_pid, signal.SIGTERM), kill.call_args_list)
+
+    def test_packaged_backend_path_with_spaces_uses_exact_arguments(self):
+        resources = self.state / "Codex Studio.app" / "Contents" / "Resources" / "workspace"
+        (resources / "scripts").mkdir(parents=True)
+        (resources / "scripts/codex-canvas").write_text("fixture")
+        (resources / "studio-install.json").write_text('{"mode":"combined"}')
+        config = {**self.config, "resources": str(resources)}
+        script = str((resources / "scripts/codex-canvas").resolve())
+        pid = 12345
+        arguments = [sys.executable, "-B", script, "--port", str(config["port"])]
+        with patch.object(recovery, "backend_process_arguments", return_value=arguments) as read, \
+                patch.object(recovery.subprocess, "check_output", return_value=str(pid)) as output:
+            recovery.verify_backend_process({"pid": pid}, config)
+        read.assert_called_once_with(pid, str(resources))
+        self.assertEqual(output.call_count, 1)
+        self.assertEqual(output.call_args.args[0][0], "/usr/sbin/lsof")
+
+    def test_split_display_path_cannot_claim_the_packaged_backend(self):
+        resources = self.state / "Codex Studio.app" / "Contents" / "Resources" / "workspace"
+        (resources / "scripts").mkdir(parents=True)
+        (resources / "scripts/codex-canvas").write_text("fixture")
+        (resources / "studio-install.json").write_text('{"mode":"combined"}')
+        config = {**self.config, "resources": str(resources)}
+        script = str((resources / "scripts/codex-canvas").resolve())
+        with patch.object(recovery, "backend_process_arguments", return_value=[sys.executable, *script.split()]), \
+                patch.object(recovery.subprocess, "check_output") as output:
+            with self.assertRaisesRegex(RuntimeError, "not the packaged Codex Canvas"):
+                recovery.verify_backend_process({"pid": 12345}, config)
+        output.assert_not_called()
+
+    def test_matching_arguments_do_not_replace_the_listener_pid_guard(self):
+        script = str((recovery.backend_scripts(self.config["resources"]) / "codex-canvas").resolve())
+        with patch.object(recovery, "backend_process_arguments", return_value=[sys.executable, script]), \
+                patch.object(recovery.subprocess, "check_output", return_value="54321"):
+            with self.assertRaisesRegex(RuntimeError, "does not own the configured listener"):
+                recovery.verify_backend_process({"pid": 12345}, self.config)
+
+    def test_process_argument_read_failure_never_signals_the_reported_pid(self):
+        reported = {"pid": 12345, "supervisorMode": True}
+        for error in (OSError("unavailable"), ValueError("invalid native data"),
+                      ImportError("missing reader"), RuntimeError("unsupported platform")):
+            with self.subTest(error=type(error).__name__), \
+                    patch.object(recovery, "identity", return_value=reported), \
+                    patch.object(recovery, "backend_process_arguments", side_effect=error), \
+                    patch.object(recovery.subprocess, "check_output") as output, \
+                    patch.object(recovery.os, "kill") as kill:
+                with self.assertRaisesRegex(RuntimeError, "Cannot verify fallback backend PID"):
+                    recovery.tick(self.config, self.state, supervisor_fallback=True)
+                output.assert_not_called()
+                kill.assert_not_called()
+
+    @unittest.skipUnless(sys.platform == "darwin" or sys.platform.startswith("linux"), "native process reader")
+    def test_native_argument_reader_preserves_spaces(self):
+        argument = str(self.state / "Codex Studio.app" / "scripts" / "codex-canvas")
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", argument])
+        try:
+            arguments = recovery.backend_process_arguments(process.pid, self.config["resources"])
+            self.assertEqual(arguments[-1], argument)
+            self.assertIn("import time; time.sleep(30)", arguments)
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
+
+    def test_supervisor_probe_failure_never_starts_a_replacement(self):
+        config = {
+            "supervisorEnabled": True,
+            "python": sys.executable,
+            "resources": str(self.state),
+            "codex": "/usr/bin/true",
+        }
+        probe_error = subprocess.TimeoutExpired(["status"], 2)
+        with patch.object(recovery.subprocess, "run", side_effect=probe_error), \
+                patch.object(recovery.subprocess, "Popen") as spawn:
+            child, status = recovery.supervisor_tick(config, self.state)
+        self.assertIsNone(child)
+        self.assertEqual(status, "supervisor starting")
+        spawn.assert_not_called()
+
+    def test_same_owner_survives_supervisor_restart_and_crash_keeps_data(self):
+        self.config["supervisorEnabled"] = True
+        supervisor_log = self.state / "supervisor-owner.log"
+        with supervisor_log.open("w") as output:
+            owner = subprocess.Popen(
+                [sys.executable, "-B", str(SERVER_SOURCE / "codex_process_supervisor.py"),
+                 "--state", str(self.state)],
+                stdout=output,
+                stderr=output,
+            )
+        self.supervisors.append(owner)
+        wait_for(
+            lambda: recovery.supervisor_tick(self.config, self.state)[1]
+            == "supervisor ready"
+        )
+        self.child, status = recovery.tick(self.config, self.state)
+        self.assertEqual(status, "started")
+        first = wait_for(lambda: recovery.identity(self.config["port"], self.state))
+        self.assertEqual(first["pid"], self.child.pid)
+        with sqlite3.connect(self.state / "canvas.sqlite3") as db:
+            db.execute("CREATE TABLE recovery_test_receipt (id TEXT PRIMARY KEY, value TEXT)")
+            db.execute("INSERT INTO recovery_test_receipt VALUES (?, ?)", ("accepted-once", "retained"))
+        filename = self.state / "background-recovery.json"
+        filename.write_text(json.dumps(self.config))
+        for _ in range(2):
+            log = self.state / f"supervisor-{len(self.supervisors)}.log"
+            with log.open("w") as output:
+                process = subprocess.Popen([sys.executable, "-B", str(HERE / "recover_backend.py"), "--config", str(filename)], stdout=output, stderr=output)
+            self.supervisors.append(process)
+            wait_for(lambda: 'attached' in log.read_text())
+            self.assertEqual(recovery.identity(self.config["port"], self.state)["pid"], first["pid"])
+            process.kill()
+            process.wait(timeout=10)
+            self.assertIsNone(self.child.poll())
+        with (self.state / "supervisor-active.log").open("w") as output:
+            process = subprocess.Popen([sys.executable, "-B", str(HERE / "recover_backend.py"), "--config", str(filename)], stdout=output, stderr=output)
+        self.supervisors.append(process)
+        wait_for(lambda: 'attached' in (self.state / "supervisor-active.log").read_text())
+        self.child.kill()
+        self.child.wait(timeout=10)
+        second = wait_for(lambda: recovery.identity(self.config["port"], self.state))
+        self.recovered_pid = second["pid"]
+        self.assertNotEqual(second["pid"], first["pid"])
+        with sqlite3.connect(self.state / "canvas.sqlite3") as db:
+            self.assertEqual(db.execute("SELECT * FROM recovery_test_receipt").fetchall(), [("accepted-once", "retained")])
+
+    def test_desktop_restarts_only_after_exact_saved_process_ends(self):
+        filename = self.state / "desktop-recovery.json"
+        intent = {"version": 1, "desiredOpen": True, "pid": os.getpid(),
+                  "startedAt": subprocess.check_output(["/bin/ps", "-p", str(os.getpid()), "-o", "lstart="], text=True, env={**os.environ, "LC_ALL": "C"}).strip(),
+                  "executable": "/usr/bin/true", "profile": str(self.state / "profile")}
+        filename.write_text(json.dumps(intent))
+        with patch.object(recovery.subprocess, "check_output", return_value=intent["startedAt"]), patch.object(recovery.subprocess, "Popen") as spawn:
+            self.assertEqual(recovery.desktop_tick(self.config, self.state)[1], "desktop attached")
+            spawn.assert_not_called()
+        dead = subprocess.Popen(["/usr/bin/true"])
+        dead.wait(timeout=5)
+        intent["pid"] = dead.pid
+        filename.write_text(json.dumps(intent))
+        child, status = recovery.desktop_tick(self.config, self.state)
+        self.assertEqual(status, "desktop started")
+        self.assertEqual(child.wait(timeout=5), 0)
+        intent["desiredOpen"] = False
+        filename.write_text(json.dumps(intent))
+        with patch.object(recovery.subprocess, "Popen") as spawn:
+            self.assertEqual(recovery.desktop_tick(self.config, self.state)[1], "desktop closed")
+            spawn.assert_not_called()
+
+    def test_desktop_unknown_process_and_changed_intent_do_not_restart(self):
+        filename = self.state / "desktop-recovery.json"
+        intent = {"version": 1, "desiredOpen": True, "pid": os.getpid(),
+                  "startedAt": "unknown", "executable": "/usr/bin/true", "profile": str(self.state)}
+        filename.write_text(json.dumps(intent))
+        with patch.object(recovery.subprocess, "check_output", return_value=""), patch.object(recovery.subprocess, "Popen") as spawn:
+            with self.assertRaisesRegex(RuntimeError, "identity is unavailable"):
+                recovery.desktop_tick(self.config, self.state)
+            spawn.assert_not_called()
+
+    def test_authoritative_absent_environment_stays_absent(self):
+        with patch.dict(os.environ, {"CODEX_HOME": "/foreign-account"}):
+            env = recovery.launch_environment({**self.config, "unsetEnvironment": ["CODEX_HOME"]}, self.state)
+            self.assertNotIn("CODEX_HOME", env)
+            self.assertEqual(env["CODEX_CANVAS_CWD"], str(self.state / "workspace"))
+
+    def test_configuration_cannot_switch_database(self):
+        filename = self.state / "background-recovery.json"
+        filename.write_text(json.dumps({**self.config, "stateDir": str(self.state / "other")}))
+        with self.assertRaisesRegex(RuntimeError, "different state"):
+            recovery.load_config(filename, self.state)
+
+
+if __name__ == "__main__":
+    unittest.main()

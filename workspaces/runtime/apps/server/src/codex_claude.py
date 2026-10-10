@@ -1,0 +1,286 @@
+"""Claude Code subscription transport. Credentials stay with the native CLI."""
+import json
+import os
+from pathlib import Path
+import shutil
+import shlex
+import re
+import subprocess
+import signal
+import sys
+import threading
+import time
+from codex_layout import CLAUDE_BRIDGE_ROOT
+
+_lock = threading.Lock()
+_cache = {}
+_inflight = {}
+
+
+def _auth_status(executable, env, *, interactive=False):
+    passive = sys.platform == 'darwin' and not interactive
+    if passive:
+        command = [sys.executable, '-B', str(Path(__file__).with_name('codex_claude_passive_auth.py'))]
+    else:
+        command = [executable, 'auth', 'status', '--json']
+    # The CLI can spawn credential readers. Own their group, including on timeout.
+    process = subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               text=True, start_new_session=os.name != 'nt')
+    try:
+        stdout, _ = process.communicate(timeout=8)
+        if len(stdout) > 1024 * 1024:
+            raise ValueError('Claude sign-in metadata exceeds its limit')
+        data = json.loads(stdout)
+        if not isinstance(data, dict):
+            raise ValueError('Invalid Claude sign-in metadata')
+        if passive and process.returncode != 0:
+            raise ValueError('Claude sign-in metadata reader failed')
+        if passive:
+            return data
+        result = {'status': 'signedOut', 'accountId': None, 'email': None, 'plan': None}
+        if process.returncode == 0 and data.get('loggedIn') and data.get('authMethod') == 'claude.ai':
+            identity = data.get('email')
+            if not isinstance(identity, str) or not identity:
+                raise ValueError('Missing account identity')
+            result.update(status='ready', accountId='claude:' + identity,
+                          email=identity, plan=data.get('subscriptionType'),
+                          _credentialIdentity='claude:' + identity)
+        return result
+    finally:
+        if os.name != 'nt':
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        elif process.poll() is None:
+            process.kill()
+        process.communicate(timeout=2)
+
+
+def profile_options(profile=None):
+    """Validate persisted provider settings before native process creation."""
+    if profile is not None and not isinstance(profile, dict):
+        raise ValueError('Claude settings must be an object')
+    raw = (profile or {}).get('claudeOptions', {} if (profile or {}).get('provider') else profile or {})
+    if not isinstance(raw, dict):
+        raise ValueError('Claude settings must be an object')
+    unknown = set(raw) - {'binaryPath', 'configDir', 'customModels', 'autoCompactWindow', 'launchArgs'}
+    if unknown:
+        raise ValueError('Unknown Claude setting: ' + ', '.join(sorted(unknown)))
+    result = {}
+    for field in ('binaryPath', 'configDir'):
+        value = raw.get(field, '')
+        if not isinstance(value, str) or '\x00' in value:
+            raise ValueError('Invalid Claude ' + field)
+        if value.strip():
+            value = value.strip()
+            result[field] = str(Path(value).expanduser().resolve()) if field == 'configDir' or '/' in value else value
+    models = raw.get('customModels', [])
+    if not isinstance(models, list) or len(models) > 100:
+        raise ValueError('Supply at most 100 custom Claude models')
+    normalized = []
+    for model in models:
+        if isinstance(model, str):
+            model = {'id': model, 'label': model}
+        if not isinstance(model, dict) or set(model) - {'id', 'label'}:
+            raise ValueError('Custom Claude models need id and label')
+        identifier, label = model.get('id'), model.get('label') or model.get('id')
+        if not isinstance(identifier, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,199}', identifier):
+            raise ValueError('Invalid custom Claude model id')
+        if not isinstance(label, str) or not label.strip() or len(label) > 200:
+            raise ValueError('Invalid custom Claude model label')
+        if any(item['id'] == identifier for item in normalized):
+            raise ValueError('Duplicate custom Claude model id')
+        normalized.append({'id': identifier, 'label': label.strip()})
+    result['customModels'] = normalized
+    window = raw.get('autoCompactWindow')
+    if window not in (None, ''):
+        if isinstance(window, bool) or not re.fullmatch(r'[0-9]+', str(window)) or not 100000 <= int(window) <= 1000000:
+            raise ValueError('Auto-compact must be between 100000 and 1000000 tokens')
+        result['autoCompactWindow'] = int(window)
+    args = raw.get('launchArgs', '')
+    if not isinstance(args, str) or len(args) > 4096:
+        raise ValueError('Invalid Claude launch arguments')
+    try:
+        tokens = shlex.split(args)
+    except ValueError:
+        raise ValueError('Invalid Claude launch argument quotes') from None
+    # Transport, credentials and permissions remain owned by their explicit controls.
+    switches = {'--chrome', '--no-chrome', '--debug', '--verbose', '--disable-slash-commands'}
+    valued = {'--add-dir', '--betas'}
+    i = 0
+    seen = set()
+    while i < len(tokens):
+        token = tokens[i]
+        if token in seen:
+            raise ValueError('Duplicate Claude launch argument: ' + token)
+        seen.add(token)
+        if token in switches:
+            i += 1
+        elif token in valued and i + 1 < len(tokens) and not tokens[i + 1].startswith('-'):
+            i += 2
+        else:
+            raise ValueError('Unsupported Claude launch argument: ' + token)
+    result['launchArgs'] = shlex.join(tokens)
+    return result
+
+
+def bridge_options(profile=None):
+    options = profile_options(profile)
+    tokens = shlex.split(options.pop('launchArgs'))
+    extra = {}
+    while tokens:
+        name = tokens.pop(0)[2:]
+        value = tokens.pop(0) if name in {'add-dir', 'betas'} else None
+        if name in extra:
+            raise ValueError('Duplicate Claude launch argument: --' + name)
+        extra[name] = value
+    options['extraArgs'] = extra
+    return options
+
+
+def installed(profile=None):
+    configured = profile_options(profile).get('binaryPath') or os.environ.get('STUDIO_CLAUDE_BIN')
+    return (shutil.which(configured or 'claude') or
+            (str(Path.home() / '.local/bin/claude')
+             if not configured and os.access(Path.home() / '.local/bin/claude', os.X_OK) else None))
+
+
+def subscription_env(profile=None):
+    env = os.environ.copy()
+    for key in ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL',
+                'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+                'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR', 'CLAUDE_CODE_USE_BEDROCK',
+                'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY'):
+        env.pop(key, None)
+    config = profile_options(profile).get('configDir')
+    if config:
+        env['CLAUDE_CONFIG_DIR'] = config
+    return env
+
+
+def auth_metadata(profile=None, force=False, *, interactive=False):
+    requested_at = time.monotonic()
+    executable = installed(profile)
+    env = subscription_env(profile)
+    key = (executable, env.get('CLAUDE_CONFIG_DIR', ''), env.get('HOME', ''))
+    result = {'status': 'signedOut', 'accountId': None, 'email': None, 'plan': None}
+    while True:
+        with _lock:
+            pending = _inflight.get(key)
+            cached = _cache.get(key)
+            if pending is None and not force and cached and time.monotonic() - cached[0] < 15:
+                return dict(cached[1])
+            if pending is None:
+                pending = {'done': threading.Event(), 'started': time.monotonic(),
+                           'interactive': interactive}
+                _inflight[key] = pending
+                break
+        if not pending['done'].wait(max(0, requested_at + 9 - time.monotonic())):
+            result.update(status='error', error='Cannot read Claude Code sign-in status', _authErrorKind='timeout')
+            return result
+        if not force or pending['started'] >= requested_at:
+            if interactive and not pending.get('interactive'):
+                continue
+            return dict(pending['result'])
+        if time.monotonic() >= requested_at + 9:
+            result.update(status='error', error='Cannot read Claude Code sign-in status', _authErrorKind='timeout')
+            return result
+    try:
+        if executable:
+            try:
+                result = _auth_status(executable, env, interactive=interactive)
+            except subprocess.TimeoutExpired:
+                result.update(status='error', error='Cannot read Claude Code sign-in status', _authErrorKind='timeout')
+            except OSError:
+                result.update(status='error', error='Cannot read Claude Code sign-in status', _authErrorKind='spawn')
+            except (ValueError, TypeError, AttributeError):
+                result.update(status='error', error='Cannot read Claude Code sign-in status', _authErrorKind='parser')
+    except BaseException:
+        result = {'status': 'error', 'accountId': None, 'email': None, 'plan': None,
+                  'error': 'Cannot read Claude Code sign-in status', '_authErrorKind': 'unexpected'}
+        raise
+    finally:
+        with _lock:
+            _cache[key] = (time.monotonic(), result)
+            pending['result'] = result
+            _inflight.pop(key, None)
+            pending['done'].set()
+    return dict(result)
+
+
+def auth_metadata_from_output(returncode, stdout):
+    """Parse a completed native status check without starting a process."""
+    result = {'status': 'signedOut', 'accountId': None, 'email': None, 'plan': None}
+    try:
+        data = json.loads(stdout)
+        if returncode == 0 and data.get('loggedIn') and data.get('authMethod') == 'claude.ai':
+            identity = data.get('email')
+            if not isinstance(identity, str) or not identity:
+                raise ValueError('Missing account identity')
+            result.update(status='ready', accountId='claude:' + identity,
+                          email=identity, plan=data.get('subscriptionType'),
+                          _credentialIdentity='claude:' + identity)
+    except (ValueError, TypeError, AttributeError):
+        result.update(status='error', error='Cannot read Claude Code sign-in status', _authErrorKind='parser')
+    return result
+
+
+def node_executable() -> str | None:
+    configured_node = os.environ.get('STUDIO_NODE_BIN')
+    candidates = [configured_node] if configured_node else [
+        shutil.which('node'), '/opt/homebrew/bin/node', '/usr/local/bin/node',
+        str(Path.home() / '.local/share/fnm/aliases/default/bin/node'),
+        str(Path.home() / 'Library/Application Support/fnm/aliases/default/bin/node'),
+        str(Path.home() / '.volta/bin/node'), str(Path.home() / '.local/share/mise/shims/node'),
+    ]
+    return next((str(Path(p).resolve()) for p in candidates if p and os.access(p, os.X_OK)), None)
+
+
+def transport(root, profile=None):
+    executable = installed(profile)
+    node = node_executable()
+    bridge = CLAUDE_BRIDGE_ROOT / 'bridge.mjs'
+    if not executable or not node:
+        raise ValueError('Install Node.js and Claude Code, then run claude auth login')
+    if not (bridge.parent / 'node_modules/@anthropic-ai/claude-agent-sdk/package.json').is_file():
+        raise ValueError('Claude support is missing. Run `pnpm install --frozen-lockfile` at the repository root.')
+    env = subscription_env(profile)
+    expected = (profile or {}).get('accountId')
+    if (profile or {}).get('_nativeAuthPending') is True:
+        identity = (profile or {}).get('email')
+        if (not isinstance(identity, str) or not identity
+                or expected != 'claude:' + identity or (profile or {}).get('status') != 'error'):
+            raise ValueError('Cannot verify the pinned Claude account')
+        # The bridge checks this exact identity/provider/subscription before input.
+    else:
+        metadata = auth_metadata(profile)
+        if metadata.get('status') != 'ready':
+            raise ValueError('Sign in to Claude Code with a Claude subscription')
+        if expected and metadata.get('accountId') != expected:
+            raise ValueError('This Claude profile account changed. Restore its original login')
+        identity = metadata['email']
+    env['STUDIO_CLAUDE_OPTIONS'] = json.dumps(bridge_options(profile))
+    env['STUDIO_CLAUDE_ACCOUNT'] = identity
+    env['PATH'] = str(Path(node).parent) + os.pathsep + env.get('PATH', '')
+    env['STUDIO_CLAUDE_BIN'] = executable
+    return [node, str(bridge), str(root)], env
+
+
+def retained_transport(root, handle, command, env):
+    """Keep a verified live bridge when automatic Node discovery changes."""
+    from codex_process_supervisor import native_launch_environment, retained_native_launch
+    try:
+        native_launch_environment(root, handle, command, env, None)
+    except RuntimeError as error:
+        if (str(error) != 'Supervisor native launch settings changed; existing work was preserved'
+                or env.get('STUDIO_NODE_BIN')):
+            raise
+        retained = retained_native_launch(root, handle, command, env)
+        if retained is None:
+            raise error
+        # The expected proof permits only attachment to this live generation.
+        # It never executes the retained Node path or creates another process.
+        return retained['command'], retained
+    return command, None

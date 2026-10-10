@@ -1,87 +1,15 @@
 #!/usr/bin/env python3
-"""Stop one Codex worker launcher by its verified PID file.
-
-usage: codex-stop --wave WAVE [--timeout SECONDS]
-"""
-
-from __future__ import annotations
-
-import argparse
+"""Compatibility exec shim for the relocated runtime command."""
 import os
-import re
-import signal
-import subprocess
+from pathlib import Path
 import sys
-import time
-# Keep import caches out of the project checkout.
-sys.dont_write_bytecode = True
-from codex_state import state_dir, process_is_alive
 
 
-WAVE_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
-
-
-def wave_name(value: str) -> str:
-    if not WAVE_PATTERN.fullmatch(value):
-        raise argparse.ArgumentTypeError("use only letters, digits, dot, underscore, or hyphen")
-    return value
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--wave", type=wave_name, default=os.environ.get("CODEX_WAVE"))
-    parser.add_argument("--timeout", type=float, default=10)
-    args = parser.parse_args()
-    if not args.wave:
-        parser.error("--wave or CODEX_WAVE is required")
-    if args.timeout <= 0:
-        parser.error("--timeout must be a positive number")
-
-    pid_path = state_dir() / f"codex-swarm-launcher.{args.wave}.pid"
-    try:
-        pid = int(pid_path.read_text(encoding="utf-8").strip())
-    except FileNotFoundError:
-        print(f"no launcher PID file for wave {args.wave}", file=sys.stderr)
-        return 1
-    except (OSError, ValueError) as error:
-        print(f"invalid launcher PID file {pid_path}: {error}", file=sys.stderr)
-        return 2
-
-    if not process_is_alive(pid):
-        pid_path.unlink(missing_ok=True)
-        print(f"CODEX STOPPED wave={args.wave} launcher={pid} was not active")
-        return 0
-
-    result = subprocess.run(
-        ["ps", "-p", str(pid), "-o", "command="],
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-    command = result.stdout.strip()
-    if result.returncode != 0 or "codex-swarm.mjs" not in command:
-        print(f"refuse to stop unverified process {pid}: {command or 'unknown command'}", file=sys.stderr)
-        return 2
-
-    os.kill(pid, signal.SIGTERM)
-    deadline = time.monotonic() + args.timeout
-    while process_is_alive(pid) and time.monotonic() < deadline:
-        time.sleep(0.1)
-    if process_is_alive(pid):
-        print(f"launcher {pid} did not stop in {args.timeout:g}s", file=sys.stderr)
-        return 1
-
-    try:
-        if int(pid_path.read_text(encoding="utf-8").strip()) == pid:
-            pid_path.unlink()
-    except (FileNotFoundError, OSError, ValueError):
-        pass
-    print(f"CODEX STOPPED wave={args.wave} launcher={pid}")
-    return 0
-
-
-if __name__ == "__main__":
-    try:
-        sys.exit(main())
-    except RuntimeError as error:
-        sys.exit(f"codex-stop: {error}")
+# Installed command links may reach this file through one or more symlinks.
+project = Path(__file__).resolve().parents[1]
+source = project / "workspaces" / "runtime" / "apps" / "server" / "src" / "codex-stop"
+arguments = [sys.executable]
+if sys.dont_write_bytecode:
+    arguments.append("-B")
+arguments.extend((str(source), *sys.argv[1:]))
+os.execv(sys.executable, arguments)

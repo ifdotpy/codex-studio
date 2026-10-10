@@ -1,8 +1,8 @@
 # UI synchronization
 
-[`scripts/codex_sync.py`](../scripts/codex_sync.py) owns the production
-`SyncStore`, constructed by [`scripts/studio_api/context.py`](../scripts/studio_api/context.py).
-The HTTP integration is in [`scripts/studio_api/sync/router.py`](../scripts/studio_api/sync/router.py).
+[`workspaces/runtime/apps/server/src/codex_sync.py`](../workspaces/runtime/apps/server/src/codex_sync.py) owns the production
+`SyncStore`, constructed by [`workspaces/runtime/apps/server/src/studio_api/context.py`](../workspaces/runtime/apps/server/src/studio_api/context.py).
+The HTTP integration is in [`workspaces/runtime/apps/server/src/studio_api/sync/router.py`](../workspaces/runtime/apps/server/src/studio_api/sync/router.py).
 The client and server wire contract is in [`sync-protocol.md`](sync-protocol.md).
 
 The store serves the legacy state projection, current entity-based workspace
@@ -30,8 +30,7 @@ external state. Entity streams use their own durable entity revisions and
 tombstone floor rather than the legacy snapshot clock.
 
 This implementation does not expose independent trigger-backed state and
-transcript generation counters. The former `scripts/sync/sync_store.py`
-prototype did; tests and measurements based on it did not describe production
+transcript generation counters. A former sync-store prototype did; tests and measurements based on it did not describe production
 behavior. See the [consolidation audit](verification/2026-10-05-syncstore-consolidation.md)
 for the complete comparison and decisions about prototype-only contracts.
 
@@ -44,7 +43,7 @@ return the current master row on conflict, preserving other tabs' drafts.
 
 ## Checks
 
-The [`sync component guide`](../scripts/sync/README.md) runs the production
+The [`sync component guide`](../workspaces/runtime/apps/server/src/sync/README.md) runs the production
 store's component tests and isolated benchmark. Root-level HTTP, entity, read,
 write, critical-flow, and browser contracts verify integration through their
 actual callers.

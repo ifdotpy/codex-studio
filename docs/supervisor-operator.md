@@ -8,7 +8,7 @@ the incident or test log that the handle belongs to a test or unknown client.
 Read the current supervisor identity first:
 
 ```sh
-python3 scripts/codex_process_supervisor.py --state "$STATE_DIR" --status-json
+python3 workspaces/runtime/apps/server/src/codex_process_supervisor.py --state "$STATE_DIR" --status-json
 ```
 
 From the matching `handles` entry, copy `id`, `pid`, `startTime`, and
@@ -16,7 +16,7 @@ From the matching `handles` entry, copy `id`, `pid`, `startTime`, and
 to its recorded start time. Then close that exact identity:
 
 ```sh
-python3 scripts/codex_process_supervisor.py --state "$STATE_DIR" \
+python3 workspaces/runtime/apps/server/src/codex_process_supervisor.py --state "$STATE_DIR" \
   --admin-close-handle terminals \
   --expected-pid "$PID" \
   --expected-start-time "$START_TIME" \

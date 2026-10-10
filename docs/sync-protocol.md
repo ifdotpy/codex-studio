@@ -17,10 +17,10 @@ an already accepted write retain their own request identities and lifecycles.
 
 ### Authoritative types
 
-[Python resource models](../scripts/studio_api/sync/resources/models.py) own the
+[Python resource models](../workspaces/runtime/apps/server/src/studio_api/sync/resources/models.py) own the
 closed resource union and named event envelopes. OpenAPI publishes those models;
-`npm run api:generate` emits TypeScript declarations and the SHA-256 identity of
-the canonical OpenAPI JSON. `npm run api:check` rejects stale output. API
+`pnpm run api:generate` emits TypeScript declarations and the SHA-256 identity of
+the canonical OpenAPI JSON. `pnpm run api:check` rejects stale output. API
 responses include the server identity. Hash-bearing protocol-3 connections begin
 with an `api-schema` event; mismatches get only that handshake before close.
 Hashless non-renderer clients retain the existing event sequence. Mutating
@@ -113,7 +113,7 @@ they do not cause a periodic limits or costs request.
 ### Notifications from other processes
 
 Supported CLI writers publish their committed resource changes through the
-[authenticated notification relay](../scripts/studio_api/sync/resources/relay/README.md).
+[authenticated notification relay](../workspaces/runtime/apps/server/src/studio_api/sync/resources/relay/README.md).
 `POST /api/sync/notify` accepts the Python-defined request identity and resource
 references; the ordinary API token and request-boundary checks still apply.
 The CLI verifies that the API state directory matches the source write's root

@@ -49,12 +49,12 @@ measure this on the target filesystem before relying on first-status timing.
 
 ## Modules
 
-| File                                   | Responsibility                                                        |
-| -------------------------------------- | --------------------------------------------------------------------- |
-| `scripts/codex_workspace_images.py`    | Public API, store, state, locks, base versions, and lifecycle.        |
-| `scripts/codex_workspace_macos.py`     | APFS images, copy and delta operations, attach, detach, and size.     |
-| `scripts/codex_workspace_linux.py`     | Base folders, `rsync` deltas, overlay mounts, detach, and size.       |
-| `scripts/codex_runtime.py` and callers | Workspace selection, agent paths, archive, restore, and disk reports. |
+| File                                                              | Responsibility                                                        |
+| ----------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `workspaces/runtime/apps/server/src/codex_workspace_images.py`    | Public API, store, state, locks, base versions, and lifecycle.        |
+| `workspaces/runtime/apps/server/src/codex_workspace_macos.py`     | APFS images, copy and delta operations, attach, detach, and size.     |
+| `workspaces/runtime/apps/server/src/codex_workspace_linux.py`     | Base folders, `rsync` deltas, overlay mounts, detach, and size.       |
+| `workspaces/runtime/apps/server/src/codex_runtime.py` and callers | Workspace selection, agent paths, archive, restore, and disk reports. |
 
 ## Store
 

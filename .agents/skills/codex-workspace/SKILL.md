@@ -17,13 +17,13 @@ to resolve or forward conversational questions, complaints, and requests.
 
 In a managed session, use the advertised `orchestration_*` tools. The application
 owns their queue, permissions, state, and worker lifecycle.
-From a terminal, use this project's `scripts/codex-control --help` to find commands
+From a terminal, use this project's `codex-control --help` to find commands
 for the existing server. Do not start another server to control the same state.
 
-Read [managed orchestration](../../../ORCHESTRATION.md) for tool contracts,
-permissions, and recovery. Read [CLI usage](../../../CLI.md) only for standalone
+Read [managed orchestration](../../../docs/orchestration.md) for tool contracts,
+permissions, and recovery. Read [CLI usage](../../../docs/cli.md) only for standalone
 worker waves, daemon operations, or legacy chat commands. Read the
-[project README](../../../README.md) for setup. Paths are relative to this skill.
+[project README](../../../docs/product-guide.md) for setup. Paths are relative to this skill.
 
 If neither the managed tools nor an available application server support the
 requested action, report that limit. Native Codex tools do not imply that the
@@ -73,7 +73,7 @@ offers the model. A user-selected subagent account applies to all new workers.
 Set `account_key` only when it respects that choice.
 Omitted fields use team defaults. Use `effort: null` for the model's native default.
 Use `fast_mode: false` to disable Fast for that worker. Explicit profile values override team defaults.
-Only the user can change team defaults. See [the execution contract](../../../ORCHESTRATION.md).
+Only the user can change team defaults. See [the execution contract](../../../docs/orchestration.md).
 
 The managed server queues child results and starts a new lead turn after a final
 answer. Finish the current turn when useful independent work is exhausted and a
@@ -335,3 +335,31 @@ Resume the worker after a successful token sync. Preserve uncertain input receip
 Archive retains the guest snapshot. Restore returns the worker paused.
 A VM disconnect does not prove that a native operation failed.
 Preserve its request ID and inspect the result before another operation.
+
+## Teleport your own execution
+
+Use `orchestration_teleport` only when another server is needed.
+Older sessions keep `orchestration_move` and its exact definition and role text.
+Studio saves the tool name when it creates the native session.
+The name stays the same after a teleport. Existing sessions keep their prompt cache.
+Prepare the target folder with Git and server command tools first.
+Supply the paired server ID (or `local`), absolute `cwd`, and stable `request_id`.
+Finish the current turn after acceptance. The next turn runs on the target.
+Studio keeps the old workspace and transfers native history without credentials.
+The Studio transcript stays on the source. Running children stay on their servers.
+Finish other tools, background commands, monitors, and pending spawns first.
+Read an uncertain teleport with `orchestration_request action=get` and the same request ID.
+Do not repeat it with another identity.
+
+Use the same provider account and organization to keep the prompt cache.
+Codex preserves the old request prefix and requires matching native versions,
+OS, and MCP tools. A different account refuses by default.
+Only explicit `accept_cache_loss=true` approves cache loss for that Codex move.
+Claude requires a verified saved prompt snapshot and matching Studio tool schemas.
+External MCP snapshots currently refuse.
+Claude requires the same account, CLI version, and SDK version.
+Claude uses the SDK system prompt snapshot and excludes dynamic sections.
+On a version mismatch, update the target CLI through its normal install process.
+Do not upgrade it as part of the move.
+See [the move contract](../../../docs/orchestration.md#move-your-execution-to-another-server)
+for limits and recovery.

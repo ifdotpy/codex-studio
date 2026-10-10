@@ -43,13 +43,13 @@ active are not valid evidence.
 
 ## Code checks
 
-Run `npm run typecheck:runtime` (or `python3 scripts/codex_python.py --mypy`) to run the strict mypy ratchet across the runtime. It is intentionally not part of the pre-commit hook.
+Run `pnpm run typecheck:runtime` (or `python3 workspaces/runtime/apps/server/src/codex_python.py --mypy`) to run the strict mypy ratchet across the runtime. It is intentionally not part of the pre-commit hook.
 
 The repository root owns Oxlint and Oxfmt. Install their pinned dependencies with
-`npm ci`. Activate the required pre-commit hook once per clone with
+`pnpm install --frozen-lockfile`. Activate the required pre-commit hook once per clone with
 `git config --local core.hooksPath .githooks`. The hook checks staged JavaScript,
 TypeScript, CSS, HTML, Markdown, YAML, and JSON from the Git index, including
-files outside `web/`; it must not rewrite the index or working files. Run
-`npm run test:pre-commit` to verify the hook's staged-content behavior.
-Use `npm run lint:all` and `npm run format:check:all` for whole-repository audits;
+files outside `workspaces/client/apps/web/`; it must not rewrite the index or working files. Run
+`pnpm run test:pre-commit` to verify the hook's staged-content behavior.
+Use `pnpm run lint:all` and `pnpm run format:check:all` for whole-repository audits;
 append explicit paths after `--` when checking selected files.

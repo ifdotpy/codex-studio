@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+"""Install or inspect the independent Studio process supervisor."""
+from codex_supervisor_service import main
+
+if __name__ == '__main__':
+    main()

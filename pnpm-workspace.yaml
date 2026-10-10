@@ -1,0 +1,17 @@
+packages:
+  - "."
+  - "workspaces/*/apps/*"
+  - "workspaces/*/packages/*"
+
+overrides:
+  "@modelcontextprotocol/sdk": 1.31.0
+  "typed-rest-client>qs": 6.16.0
+
+allowBuilds:
+  esbuild: true
+  playwright: true
+
+patchedDependencies:
+  # Weak event-bulk caching releases payloads; projection pulls retain 409
+  # conflicts for server-sequence comparison. Recheck on every RxDB upgrade.
+  rxdb@17.5.0: patches/rxdb@17.5.0.patch

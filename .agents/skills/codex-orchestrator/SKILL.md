@@ -160,3 +160,26 @@ to the user and tell the subagent that the decision remains pending.
 
 Native tool permission requests still require the real user approval when the
 permission system requires it. Your decision cannot replace that approval.
+
+## Teleport the lead or a worker
+
+Each new session can call `orchestration_teleport` to teleport its own execution.
+Older sessions keep `orchestration_move` and its exact definition and role text.
+Studio saves the name when it creates the native session.
+The name stays the same after a teleport. This change preserves the old prompt cache.
+Prepare the target folder with Git first. Supply an absolute `cwd` and a stable
+request ID. Finish the current turn after acceptance.
+Existing children keep their servers and report through the remote-parent channel.
+Studio preserves the old workspace and transfers native provider history.
+The Studio transcript stays on the source. Credentials never move.
+
+Move only when needed. The same provider account and organization keep the cache.
+Codex preserves the old request prefix and requires matching native versions,
+OS, and MCP tools. A different account refuses by default.
+Only explicit `accept_cache_loss=true` approves cache loss for that Codex move.
+Claude requires a verified saved prompt snapshot and matching Studio tool schemas.
+External MCP snapshots currently refuse.
+Claude requires the same account and matching CLI and SDK versions.
+Its SDK keeps the system prompt snapshot and excludes dynamic sections.
+Refuse a version mismatch. Do not upgrade a CLI during a move.
+Read uncertainty with `orchestration_request`. Do not issue another move identity.

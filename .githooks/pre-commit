@@ -2,4 +2,4 @@
 set -eu
 
 repository_root="$(git rev-parse --show-toplevel)"
-exec node "$repository_root/scripts/check-code.mjs" staged
+exec node "$repository_root/workspaces/tooling/apps/repository-checks/check-code.mjs" staged

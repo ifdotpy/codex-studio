@@ -1,0 +1,150 @@
+// Keep one certificate identity across local application updates.
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  readFileSync,
+  mkdirSync,
+  chmodSync,
+  existsSync,
+  openSync,
+  closeSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
+import { pathToFileURL, fileURLToPath } from "node:url";
+
+function configuration(env = process.env) {
+  if (env.CODEX_STUDIO_SIGNING_IDENTITY)
+    return {
+      identity: env.CODEX_STUDIO_SIGNING_IDENTITY,
+      keychain: env.CODEX_STUDIO_SIGNING_KEYCHAIN,
+    };
+  try {
+    return JSON.parse(
+      readFileSync(
+        path.join(homedir(), ".config/codex-studio/signing.json"),
+        "utf8",
+      ),
+    );
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    return {};
+  }
+}
+function validate(identity) {
+  if (typeof identity !== "string" || !/^[a-fA-F0-9]{40}$/.test(identity))
+    throw new Error(
+      "Configure a persistent Studio signing certificate. Ad hoc signing loses macOS permissions after updates.",
+    );
+}
+function privateArgument(value) {
+  if (typeof value !== "string" || /[\0\r\n]/.test(value))
+    throw new Error("Invalid dedicated Studio signing input.");
+  return `"${value.replace(/[\\"]/g, "\\$&")}"`;
+}
+export function signingIdentity(env = process.env) {
+  const config = configuration(env);
+  validate(config.identity);
+  if (config.keychain && config.passwordFile) {
+    const input = `unlock-keychain -p ${privateArgument(readFileSync(config.passwordFile, "utf8").trim())} ${privateArgument(config.keychain)}\n`;
+    // security has a 4096-byte line buffer. Never allow a second parsed command.
+    if (Buffer.byteLength(input, "utf8") > 4095)
+      throw new Error("Invalid dedicated Studio signing input.");
+    let result;
+    try {
+      result = spawnSync("/usr/bin/security", ["-i"], {
+        input,
+        encoding: "utf8",
+        stdio: "pipe",
+        timeout: 10_000,
+      });
+    } catch {
+      throw new Error(
+        "Could not unlock the dedicated Studio signing keychain.",
+      );
+    }
+    if (result.status !== 0)
+      throw new Error(
+        "Could not unlock the dedicated Studio signing keychain.",
+      );
+  }
+  const identities = execFileSync(
+    "security",
+    [
+      "find-identity",
+      "-p",
+      "codesigning",
+      ...(config.keychain ? [config.keychain] : []),
+    ],
+    { encoding: "utf8" },
+  );
+  if (!identities.toUpperCase().includes(config.identity.toUpperCase()))
+    throw new Error(
+      "The configured Studio signing certificate is unavailable in Keychain.",
+    );
+  return config.identity;
+}
+export function signCode(target, identity = signingIdentity(), extra = []) {
+  validate(identity);
+  const config = configuration();
+  const keychain =
+    config.identity?.toUpperCase() === identity.toUpperCase() &&
+    config.keychain;
+  execFileSync(
+    "codesign",
+    [
+      "--force",
+      ...(keychain ? ["--keychain", keychain] : []),
+      "--sign",
+      identity,
+      ...extra,
+      target,
+    ],
+    { stdio: "inherit" },
+  );
+}
+export function signLinuxVM(target, identity = signingIdentity()) {
+  signCode(target, identity, [
+    "--identifier",
+    "local.codex.agents.linux-vm",
+    "--entitlements",
+    fileURLToPath(
+      new URL("./native/linux-vm/entitlements.plist", import.meta.url),
+    ),
+  ]);
+  execFileSync("codesign", ["--verify", "--strict", target], {
+    stdio: "inherit",
+    timeout: 10_000,
+  });
+}
+export function signApplication(application, identity = signingIdentity()) {
+  // External Python callers can import these modules without -B. Cache writes
+  // would add unsealed resources after installation and invalidate the bundle.
+  const scripts = path.join(
+    application,
+    "Contents/Resources/workspace/scripts",
+  );
+  if (existsSync(scripts)) {
+    const cache = path.join(scripts, "__pycache__");
+    mkdirSync(cache, { recursive: true });
+    chmodSync(cache, 0o555);
+    // The updater opens this lease on its first tick. Create it before sealing
+    // resources, and preserve the inode and contents of an existing lease.
+    closeSync(openSync(path.join(scripts, ".studio-update.lock"), "a"));
+  }
+  signCode(application, identity, [
+    "--deep",
+    "--identifier",
+    "local.codex.agents",
+  ]);
+  execFileSync("codesign", ["--verify", "--deep", "--strict", application], {
+    stdio: "inherit",
+  });
+}
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
+) {
+  if (process.argv.length !== 3)
+    throw new Error("Supply the application bundle path.");
+  signApplication(path.resolve(process.argv[2]));
+}

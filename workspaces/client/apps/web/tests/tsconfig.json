@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "baseUrl": ".",
+    "checkJs": true,
+    "lib": ["ES2022", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "paths": {
+      "@playwright/test": ["../node_modules/@playwright/test"],
+      "playwright": ["../node_modules/playwright"]
+    },
+    "target": "ES2022",
+    "typeRoots": ["../node_modules/@types"],
+    "types": ["node"]
+  },
+  "files": ["playwright.mjs"]
+}

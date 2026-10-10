@@ -70,9 +70,9 @@ The installed application's source matches the reviewed correction.
 
 All 81 targeted tests pass:
 
-- `python3.14 -B tests/turn-recovery-contract.py`: 17.
-- `python3.14 -B tests/turn-start-contract.py`: 16.
-- `python3.14 -B tests/runtime-contract.py`: 48.
+- `python3.14 -B workspaces/runtime/apps/server/tests/turn-recovery-contract.py`: 17.
+- `python3.14 -B workspaces/runtime/apps/server/tests/turn-start-contract.py`: 16.
+- `python3.14 -B workspaces/runtime/apps/server/tests/runtime-contract.py`: 48.
 
 Coverage includes lost completion, partial final text, failed and interrupted outcomes,
 active turns, read timeouts, identity races, storage failure, pending-message delivery,

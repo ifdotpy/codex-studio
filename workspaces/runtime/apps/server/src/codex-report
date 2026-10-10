@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""Print bounded status and final answers for Codex worker waves.
+
+usage:
+  codex-report [--wave WAVE]
+  codex-report [--wave WAVE] NAME --answers
+  codex-report --all-waves
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+from pathlib import Path
+# Keep import caches out of the project checkout.
+sys.dont_write_bytecode = True
+from codex_state import state_dir, process_is_alive, final_answer
+
+
+WAVE_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
+
+
+def wave_name(value: str) -> str:
+    if not WAVE_PATTERN.fullmatch(value):
+        raise argparse.ArgumentTypeError("use only letters, digits, dot, underscore, or hyphen")
+    return value
+
+
+def load_status_files(root: Path, wave: str | None, all_waves: bool) -> list[Path]:
+    if wave:
+        return [root / f"codex-swarm-status.{wave}.json"]
+    paths = sorted(root.glob("codex-swarm-status.*.json"), key=lambda path: path.stat().st_mtime)
+    if all_waves:
+        return paths
+    return paths[-1:]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("name", nargs="?", help="show one worker")
+    parser.add_argument("--wave", type=wave_name, default=os.environ.get("CODEX_WAVE"))
+    parser.add_argument("--all-waves", action="store_true")
+    parser.add_argument("--chars", type=int, default=3000)
+    parser.add_argument("--answers", action="store_true")
+    args = parser.parse_args()
+    if args.chars <= 0:
+        parser.error("--chars must be a positive integer")
+
+    root = state_dir()
+    paths = [path for path in load_status_files(root, args.wave, args.all_waves) if path.exists()]
+    if not paths:
+        print(f"no swarm status file in {root}")
+        return 1
+
+    threads = []
+    for path in paths:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            print(f"cannot read {path}: {error}", file=sys.stderr)
+            return 1
+        if not isinstance(value, list) or not all(
+            isinstance(item, dict)
+            and isinstance(item.get("name"), str)
+            and isinstance(item.get("threadId"), str)
+            for item in value
+        ):
+            print(f"invalid status file: {path}", file=sys.stderr)
+            return 1
+        threads.extend(value)
+
+    if args.name:
+        threads = [thread for thread in threads if thread.get("name") == args.name]
+        if not threads:
+            print(f"no worker named {args.name}")
+            return 1
+
+    for thread in threads:
+        wave = thread.get("wave", "unknown")
+        status = thread.get("turnStatus", "unknown")
+        pid = int(thread.get("launcherPid") or 0)
+        if status in ("running", "waiting", "starting", "capacity-retry") and not process_is_alive(pid):
+            status = "abandoned"
+        goal = f" goal={thread['goalStatus']}" if thread.get("goalStatus") else ""
+        error = f" error={thread['error']}" if thread.get("error") else ""
+        print(
+            f"{wave:14} {thread.get('name', '?'):20} {thread.get('model') or thread.get('requestedModel')} "
+            f"{thread.get('effort')} events={thread.get('events', 0):5} {status}{goal}{error}"
+        )
+
+    if args.answers:
+        for thread in threads:
+            print(f"\n===== {thread.get('name', '?')} =====")
+            print(final_answer(thread["threadId"], args.chars))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except RuntimeError as error:
+        sys.exit(f"codex-report: {error}")

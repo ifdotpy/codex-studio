@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
-"""Serve the local Codex agent canvas."""
+"""Compatibility exec shim for the relocated runtime command."""
 import os
 from pathlib import Path
 import sys
-sys.dont_write_bytecode = True
-from codex_python import resolve_python
-selected_python: Path = resolve_python(Path(__file__).resolve().parent)
-if Path(os.path.abspath(selected_python)) != Path(os.path.abspath(sys.executable)):
-    os.execv(str(selected_python), [str(selected_python), "-B", *sys.argv])
-from codex_startup_memory import mark as startup_memory_mark
-startup_memory_mark("backend-entry")
-from codex_canvas import main
 
-if __name__ == "__main__":
-    main()
+
+# Installed command links may reach this file through one or more symlinks.
+project = Path(__file__).resolve().parents[1]
+source = project / "workspaces" / "runtime" / "apps" / "server" / "src" / "codex-canvas"
+arguments = [sys.executable]
+if sys.dont_write_bytecode:
+    arguments.append("-B")
+arguments.extend((str(source), *sys.argv[1:]))
+os.execv(sys.executable, arguments)

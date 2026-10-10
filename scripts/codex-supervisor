@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
-"""Install or inspect the independent Studio process supervisor."""
-from codex_supervisor_service import main
+"""Compatibility exec shim for the relocated runtime command."""
+import os
+from pathlib import Path
+import sys
 
-if __name__ == '__main__':
-    main()
+
+# Installed command links may reach this file through one or more symlinks.
+project = Path(__file__).resolve().parents[1]
+source = project / "workspaces" / "runtime" / "apps" / "server" / "src" / "codex-supervisor"
+arguments = [sys.executable]
+if sys.dont_write_bytecode:
+    arguments.append("-B")
+arguments.extend((str(source), *sys.argv[1:]))
+os.execv(sys.executable, arguments)

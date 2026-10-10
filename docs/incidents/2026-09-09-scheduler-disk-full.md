@@ -40,7 +40,7 @@ recovery is operational recovery, not an automatic retry of unknown submissions.
 
 ## Checks
 
-`python3 tests/scheduler-disk-full-contract.py`: three tests pass.
+`python3 workspaces/runtime/apps/server/tests/scheduler-disk-full-contract.py`: three tests pass.
 Live evidence: `/tmp/studio-scheduler-inspection.json`,
 `/tmp/studio-scheduler-activation.json`, `/tmp/studio-scheduler-compat.json`,
 and `/tmp/studio-attar-reserved-start-result.json`.

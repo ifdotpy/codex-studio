@@ -149,8 +149,8 @@ Finder actions remain available for the local server.
 Build the web assets first.
 
 ```sh
-npm --prefix web run build
-npm --prefix desktop run start:ui
+pnpm --filter codex-agents-web run build
+pnpm --filter codex-agents-desktop run start:ui
 ```
 
 The UI-only host serves assets on `127.0.0.1:4621`.
@@ -162,7 +162,7 @@ It starts no Python backend or recovery service.
 Create a package outside the checkout:
 
 ```sh
-CODEX_DESKTOP_PACKAGE_OUT=/tmp/studio-ui-package npm --prefix desktop run package:ui
+CODEX_DESKTOP_PACKAGE_OUT=/tmp/studio-ui-package pnpm --filter codex-agents-desktop run package:ui
 ```
 
 The package has an explicit UI-only marker.
@@ -173,8 +173,8 @@ The existing package command still creates the combined application.
 Run a hidden check with a separate profile and an ephemeral port:
 
 ```sh
-node desktop/ui-only-smoke.mjs
-CODEX_UI_EXECUTABLE='/path/to/Codex Studio.app/Contents/MacOS/Codex Studio' node desktop/ui-only-smoke.mjs
+node workspaces/client/apps/desktop/ui-only-smoke.mjs
+CODEX_UI_EXECUTABLE='/path/to/Codex Studio.app/Contents/MacOS/Codex Studio' node workspaces/client/apps/desktop/ui-only-smoke.mjs
 ```
 
 ## Verification
@@ -204,7 +204,7 @@ The selected frame and shell keep two renderer processes.
 Run the same measurement against a package:
 
 ```sh
-CODEX_UI_EXECUTABLE='/path/to/Codex Studio.app/Contents/MacOS/Codex Studio' node desktop/multi-server-memory.mjs
+CODEX_UI_EXECUTABLE='/path/to/Codex Studio.app/Contents/MacOS/Codex Studio' node workspaces/client/apps/desktop/multi-server-memory.mjs
 ```
 
 Browser diagnostics use Chromium with debugger sessions attached to each renderer.
@@ -230,5 +230,5 @@ Regenerate the combined API schema after that integration.
 Check the final server's export header list after integration:
 
 ```sh
-python3 tests/multi-server-ui-cors-contract.py
+python3 workspaces/runtime/apps/server/tests/multi-server-ui-cors-contract.py
 ```
