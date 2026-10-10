@@ -199,10 +199,15 @@ print(json.dumps(value))
         return [row for row in self.wire if row["target"] == ROUTE and json.loads(row["raw"])["action"] == name]
 
     def test_signed_server_name_and_peer_status_propagation(self):
-        invitation = self.a.local({"action": "create_invite", "requestId": "invite-names"})["invitation"]
-        self.b.local({"action": "accept_invite", "invitation": invitation, "requestId": "pair-names"})
         a = self.a.runtime.paired_access()
         b = self.b.runtime.paired_access()
+        if not any(peer["id"] == self.b.server_id for peer in a.servers()):
+            invitation = self.a.local({"action": "create_invite", "requestId": "invite-names"})["invitation"]
+            self.b.local({"action": "accept_invite", "invitation": invitation, "requestId": "pair-names"})
+            a = self.a.runtime.paired_access()
+            b = self.b.runtime.paired_access()
+        self.assertTrue(any(peer["id"] == self.b.server_id for peer in a.servers()))
+        self.assertTrue(any(peer["id"] == self.a.server_id for peer in b.servers()))
         aliases_a, aliases_b = a.server_aliases(), b.server_aliases()
         keys_a, keys_b = a._keys().copy(), b._keys().copy()
         request = {"action": "name", "serverId": self.b.server_id, "label": "Kukuka Windows", "requestId": "remote-name"}

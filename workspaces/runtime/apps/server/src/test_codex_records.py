@@ -34,10 +34,12 @@ AGENT_FIELD_GROUPS = {
         imageWorkspaceBaseRef imageWorkspaceBaseRepo imageWorkspaceCreatedAt imageWorkspaceError
         imageWorkspaceHasGit imageWorkspacePhase imageWorkspaceReady imageWorkspaceRepo
         imageWorkspaceSubpath inFlight isLead
+        workspaceMode workspaceBackend
         lastAnswer lastCompletedTurn manualName model name nativeLimitErrorAt nativeRelease
         nativeSafetyBuffering nativeSafetyRetry nativeStatus nativeThreadBlock nativeTurnError parentId parkedEvent cyberAccessProgram
         pendingSettings pendingSettingsAccountKey pinned project projectFolder projectFolderRevision
         provider quickCreate readState reviewDefaults role rootId sharedRoomId startAttempt status
+        moveImportPending movedFrom movedTo projectId projectServerId serverId
         subagentConcurrencyVersion tail threadId tokensUsed turnId updated workerDefaults worktree
         worktreePreparation yoloMode
         accountTransferId capacityRetry contextRepairWait epoch lastCompletedTurnStatus lastEvent
@@ -67,7 +69,9 @@ AGENT_FIELD_GROUPS = {
         workerBaseMainRef workerBaseRef workerBaseStatus worktreeCleanup worktreeReady
         worktreeWarning authResumeAttempt cleanedImageWorkspace imageWorkspaceCleanupResult
         imageWorkspaceBaseError nativeToolRefreshId nativeToolUpdate portableHistory
-        queueMutationRevision workspaceReservationId forkedFrom sourceMessage draft
+        queueMutationRevision workspaceReservationId workspaceModeExplicit workspaceInGit
+        forkedFrom sourceMessage draft executionArchives executionMove executionRouteAliases
+        frozenNativeParams nativeRoleGuidance nativeTeleportTool moveReviewPending
         remoteEpoch remoteControlEpoch remoteStateSequence remoteReservation remoteAdmission
         remoteAdmissionRequest remoteLastAdmission remoteStopRequest
     """.split()),

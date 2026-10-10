@@ -26,7 +26,7 @@ SDK = SDK.replace(
    if(!options.systemPrompt&&fs.existsSync(process.argv[2]+'/.slow-catalog'))await new Promise(resolve=>setTimeout(resolve,250));""")
 SDK = SDK.replace(
     '  initializationResult:',
-    """  reinitialize:async()=>{await new Promise(()=>{});},
+    """  reinitialize:async()=>{fs.appendFileSync(options.cwd+'/.catalog-reinitializations','refresh\\n');await new Promise(()=>{});},
   initializationResult:""")
 SDK = SDK.replace(
     'applyFlagSettings:async settings=>{',
@@ -134,11 +134,11 @@ class PreparationPhase(fixture.Bridge):
 
     def test_active_turn_refreshes_original_catalog_without_another_turn(self):
         self.turn('wait', 'active-native-work')
-        path = self.root / 'state' / '.catalog-queries'
+        path = self.root / '.catalog-reinitializations'
         deadline = time.monotonic() + 2
-        while (not path.exists() or len(path.read_text().splitlines()) < 2) and time.monotonic() < deadline:
+        while not path.exists() and time.monotonic() < deadline:
             time.sleep(.005)
-        self.assertEqual(len(path.read_text().splitlines()), 2)
+        self.assertEqual(len(path.read_text().splitlines()), 1)
         self.assertTrue(self.call('model/list', {})['data'])
         self.assertEqual(len((self.root / '.queries').read_text().splitlines()), 1)
         flags = [json.loads(line) for line in (self.root / '.thinking-flags').read_text().splitlines()]

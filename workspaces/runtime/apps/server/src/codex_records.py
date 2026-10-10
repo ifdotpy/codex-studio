@@ -1213,14 +1213,20 @@ class RemoteParentLinkRecord(TypedDict):
     link: str
 
 
+class MovePointerRecord(TypedDict):
+    server: str
+    move: str
+    agentId: NotRequired[str | None]
+
+
 class AgentRecord(TypedDict):
     """JSON object stored in ``runtime_agents.record`` after mode projection."""
 
     id: str
     rootId: str
-    projectId: NotRequired[str]
-    projectServerId: NotRequired[str]
-    serverId: NotRequired[str]
+    projectId: NotRequired[str | None]
+    projectServerId: NotRequired[str | None]
+    serverId: NotRequired[str | None]
     epoch: int
     status: AgentStatusValue
     name: NotRequired[str]
@@ -1258,8 +1264,8 @@ class AgentRecord(TypedDict):
     moveImportPending: NotRequired[bool]
     executionMove: NotRequired[JsonObject]
     executionArchives: NotRequired[list[JsonObject]]
-    movedTo: NotRequired[JsonObject]
-    movedFrom: NotRequired[JsonObject]
+    movedTo: NotRequired[MovePointerRecord | None]
+    movedFrom: NotRequired[MovePointerRecord | None]
     frozenNativeParams: NotRequired[JsonObject]
     nativeTeleportTool: NotRequired[str]
     nativeRoleGuidance: NotRequired[str]
@@ -1277,6 +1283,10 @@ class AgentRecord(TypedDict):
     worktreeReady: NotRequired[bool]
     worktreePreparation: NotRequired[WorktreePreparation | None]
     worktreeWarning: NotRequired[str | None]
+    workspaceMode: NotRequired[Literal["image", "worktree", "shared"] | None]
+    workspaceBackend: NotRequired[Literal["asif", "vm"] | None]
+    workspaceModeExplicit: NotRequired[bool]
+    workspaceInGit: NotRequired[bool]
     imageWorkspace: NotRequired[bool]
     imageWorkspaceReady: NotRequired[bool]
     imageWorkspacePhase: NotRequired[ImageWorkspacePhase | None]

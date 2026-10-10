@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.request
 from unittest.mock import patch
 
 ROOT = REPOSITORY_ROOT

@@ -7,6 +7,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 import hashlib
 import os
@@ -15,9 +18,6 @@ import subprocess
 import sys
 import time
 import unittest
-
-if os.name != 'nt':
-    raise SystemExit('This contract runs on Windows')
 
 ROOT = REPOSITORY_ROOT
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
@@ -28,6 +28,7 @@ spec.loader.exec_module(fixture)
 Commands = fixture.Commands
 
 
+@unittest.skipUnless(os.name == 'nt', 'Windows server exec contract')
 class WindowsExecContract(unittest.TestCase):
     setUp = Commands.setUp
     stop_supervisors = Commands.stop_supervisors
