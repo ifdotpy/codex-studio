@@ -110,8 +110,10 @@ so models learn it quickly, and it has equal convenience. It does not take the n
       agents are not in that group), and `--path .github=admin` for CI configuration;
     - named checks (`layr config check.<name>`, then `layr protect main --check <name>`) run on
       every merge result; their command sets its own `PATH` (checks get a clean environment).
-      Their build output becomes the shared warm layer (`target`, `node_modules`) of main, so
-      a new agent line starts warm, without one copy of the build per agent;
+      layr does not keep the build output of a check (changed on 2026-10-10, layr ec725b4): a
+      warm layer comes only from an explicit `layr save --layers` on main, and which tools'
+      output is valid in a new line is Studio's choice (layr `docs/design.md`, section 5).
+      Studio does not configure layers yet;
     - Studio merges as the lead agent's user, not as root: root passes every rule;
     - a task that needs more rights for a while gets a role for a time
       (`layr access grant <agent> maintainer --until 2h`).

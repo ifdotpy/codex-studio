@@ -30,8 +30,7 @@ the VM main line and its states; the Mac folder stays the place where the user e
 Every file below the project folder, except:
 
 - `.git` directories and files, `.worktrees`, and the Studio image store;
-- layr layers (the project's regenerable paths such as `node_modules`, `target`,
-  `.venv`): each side builds its own, and the VM keeps warm layers;
+- dependency folders (`node_modules`, `.venv`): each side installs its own;
 - folders that Git ignores (build output, caches);
 - special files (devices, sockets, FIFOs) and files over 256 MiB, with a notice. A
   synced file that grows over the limit keeps its last synced version in the VM; it

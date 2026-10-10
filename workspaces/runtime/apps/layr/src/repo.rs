@@ -421,6 +421,40 @@ impl<'a> Repo<'a> {
         Ok(Some(st))
     }
 
+    /// The state that `save --layers` gives a line's layers to: on a protected line with no
+    /// changes since its head, the head, so the next lines made from that head start warm; else a
+    /// new automatic state. Only a protected line gives layers to a state that other lines share,
+    /// so such a state never holds a layer that only its maker may use.
+    pub fn layers_state(&self, ctx: &Ctx, line: &Line, message: &str, running: bool) -> Result<StateRec> {
+        let w = self.working(line);
+        if !w.exists() {
+            return Err(crate::cmd::exit(1, format!("error: the line '{}' has no working folder", line.name)));
+        }
+        let mut st = self.new_state(ctx, &w, StateKind::Auto, vec![line.head.clone()], message, Some(line))?;
+        if let Some(head) = self.p.db.state(&line.head)? {
+            let base = self.p.state_path(&head.id);
+            if self.policy().rule_for(&line.name).is_some() && base.exists() {
+                // Changes as git would see them: a layer is an empty folder in a snapshot, and a
+                // merge leaves new owners and times on unchanged files.
+                let layers = self.p.config_strings("regenerable");
+                let in_layer = |path: &str| layers.iter().any(|l| path == l || path.starts_with(&format!("{l}/")));
+                let changed = changes::file_changes(&base, &self.p.state_path(&st.id))?
+                    .into_iter()
+                    .any(|c| !skip_path(&c.path) && !in_layer(&c.path));
+                if !changed {
+                    self.discard_states(std::slice::from_ref(&st));
+                    return Ok(head);
+                }
+            }
+        }
+        st.running = running;
+        let mut rec = Record::new("save");
+        rec.states.push(st.clone());
+        rec.data = serde_json::json!({"line": line.id});
+        self.commit_record(ctx, rec)?;
+        Ok(st)
+    }
+
     // ----- staging -----
 
     pub fn stage(&self, line: &Line) -> Option<PathBuf> {

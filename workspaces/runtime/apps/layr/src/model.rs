@@ -65,9 +65,9 @@ pub struct StateRec {
     /// The user who made the layer snapshots (a uid of the state's machine).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layer_by: Option<u32>,
-    /// The layers may go to lines of other users: they were made on a protected line (by its
-    /// checks or a save there). Other layers go only to lines of the user who made them, because
-    /// a layer holds code that review does not see.
+    /// The layers may go to lines of other users: they were saved on a protected line by someone
+    /// who may save there. Other layers go only to lines of the user who made them, because a
+    /// layer holds code that review does not see.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub layer_shared: bool,
 }

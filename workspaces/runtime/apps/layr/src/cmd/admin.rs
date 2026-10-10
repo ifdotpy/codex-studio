@@ -32,7 +32,11 @@ pub fn save(ctx: &Ctx, args: &[String]) -> Result<i32> {
         repo.authorize_line(ctx, &l, crate::repo::LineOp::Save)?;
         let _lock = repo.p.lock()?;
         let l = repo.line(&l.id)?;
-        let st = repo.save(ctx, &l, &msg, a.has("--running"), a.has("--force") || a.has("--layers"))?;
+        let st = if a.has("--layers") {
+            Some(repo.layers_state(ctx, &l, &msg, a.has("--running"))?)
+        } else {
+            repo.save(ctx, &l, &msg, a.has("--running"), a.has("--force"))?
+        };
         match st {
             Some(s) => {
                 if a.has("--layers") {
@@ -434,7 +438,7 @@ pub fn try_cmd(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let state = revs::resolve(repo, h.line.as_ref(), rev)?;
     // `try` is the caller's own command: it gets the caller's environment.
     let env: Vec<(String, String)> = ctx.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-    run_check_in(ctx, repo, &state, &a.paths, &a.paths.join(" "), &env, a.has("-q"), a.has("--keep"), false)
+    run_check_in(ctx, repo, &state, &a.paths, &a.paths.join(" "), &env, a.has("-q"), a.has("--keep"))
 }
 
 /// Run a configured check as the caller in a temporary copy of `state` and record its exit code
@@ -442,10 +446,10 @@ pub fn try_cmd(ctx: &Ctx, args: &[String]) -> Result<i32> {
 /// state, which may come from another user: it gets a clean environment (no tokens or keys of
 /// the caller), only HOME, USER, LOGNAME and PATH.
 ///
-/// After a passing check, the layers of the copy (its build output) become the layers of the
-/// state, shared: the next lines from this state, and the next checks, start warm.
+/// The copy starts with the warm layers of the state, but its build output is never kept: layr
+/// cannot tell whether build output is valid for a state (docs/design.md, section 5).
 pub fn run_check(ctx: &Ctx, repo: &Repo, state: &str, argv: &[String], command: &str, quiet: bool) -> Result<i32> {
-    run_check_in(ctx, repo, state, argv, command, &[], quiet, false, true)
+    run_check_in(ctx, repo, state, argv, command, &[], quiet, false)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -458,7 +462,6 @@ fn run_check_in(
     env: &[(String, String)],
     quiet: bool,
     keep: bool,
-    capture_layers: bool,
 ) -> Result<i32> {
     let name = format!(".try-{:016x}", rand::random::<u64>());
     let dir = repo.p.line_path(&name);
@@ -484,12 +487,6 @@ fn run_check_in(
         let st = c.status()?;
         let code = st.code().unwrap_or(128);
         let _lock = repo.p.lock()?;
-        if code == 0 && capture_layers && repo.p.db.state(state)?.map(|s| s.layers.is_empty()).unwrap_or(false) {
-            let owner = (ctx.caller.uid, ctx.caller.gid);
-            if let Err(e) = record_layers(ctx, repo, state, &dir, owner, true) {
-                eprintln!("warning: the layers of the check were not kept: {e:#}");
-            }
-        }
         let mut rec = Record::new("check");
         rec.data =
             serde_json::json!({"state": state, "command": command, "exit": code, "seconds": started.elapsed().as_secs_f64()});
