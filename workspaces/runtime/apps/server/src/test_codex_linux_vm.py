@@ -383,6 +383,24 @@ class ClientTests(unittest.TestCase):
 
 
 
+class PackagedLayoutTests(unittest.TestCase):
+    def test_packaged_providers_root_holds_the_bridge_copied_by_the_package(self):
+        import importlib.util
+        import shutil
+        with tempfile.TemporaryDirectory() as name:
+            scripts = Path(name) / 'workspace' / 'scripts'
+            scripts.mkdir(parents=True)
+            shutil.copy(Path(vm.__file__).with_name('codex_layout.py'), scripts / 'codex_layout.py')
+            spec = importlib.util.spec_from_file_location('packaged_layout', scripts / 'codex_layout.py')
+            layout = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(layout)
+            # package.mjs copies the bridge source to workspaces/providers/apps/claude-bridge.
+            self.assertEqual(layout.PROVIDERS_ROOT / 'apps/claude-bridge',
+                             (Path(name) / 'workspace/workspaces/providers/apps/claude-bridge').resolve())
+        package = (vm.DESKTOP_ROOT / 'package.mjs').read_text()
+        self.assertIn('path.join(resources, "workspaces/providers/apps/claude-bridge")', package)
+
+
 class ProvisionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='vm-provision-script-')
