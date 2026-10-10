@@ -64,6 +64,13 @@ VM startup restores the guest exports and the registered Mac mounts.
 It includes the layr version, store size, disk space, guest share state, and Mac mount state.
 Linux servers return `linuxVm: null`.
 
+`GET /api/agents/finder-view?agent=<id>` tells where Finder shows the files of one chat.
+A native chat returns its folder.
+A VM chat returns the mount state of its project view: the `~/Studio` path when it is mounted,
+or the saved failure reason when it is not.
+The endpoint reads the saved records and the mount table only. It does not mount or call the VM.
+The Project folder dialog uses it to reveal the read-only view in Finder.
+
 ## Source update
 
 The repository contains the clean layr source at `workspaces/runtime/apps/layr`.

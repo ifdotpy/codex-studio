@@ -53,6 +53,7 @@ GET_PATHS = frozenset(
         "/api/search/item",
         "/api/checkpoints",
         "/api/capabilities",
+        "/api/agents/finder-view",
         "/api/skills",
         "/api/panel",
         "/api/profiles",

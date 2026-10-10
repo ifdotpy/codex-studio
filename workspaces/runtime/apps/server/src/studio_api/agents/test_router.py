@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import json
+from pathlib import Path
 import sqlite3
+import tempfile
 import threading
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -12,7 +15,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
 from types import SimpleNamespace
 from typing import Iterator
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import unittest
 
 from studio_api.context import ApiContext
@@ -25,6 +28,8 @@ class _RuntimeFixture:
         self.calls: list[tuple[str, tuple[object, ...]]] = []
         self.invalid_stop_response = False
         self.lock = threading.RLock()
+        # None keeps the generic created-agent record for routes that do not look it up.
+        self.records: dict[str, dict[str, object]] | None = None
 
     def stop(self, agent_id: str, descendants: bool) -> dict[str, list[str]]:
         self.calls.append(("stop", (agent_id, descendants)))
@@ -57,8 +62,12 @@ class _RuntimeFixture:
         finally:
             connection.close()
 
-    def agent(self, _agent_id: str, _db: sqlite3.Connection) -> dict[str, object]:
-        return _agent_record()
+    def agent(self, agent_id: str, _db: sqlite3.Connection) -> dict[str, object]:
+        if self.records is None:
+            return _agent_record()
+        if agent_id not in self.records:
+            raise ValueError("Unknown managed agent")
+        return self.records[agent_id]
 
     def agent_entity_view(
         self, _db: sqlite3.Connection, record: dict[str, object]
@@ -462,6 +471,125 @@ def test_transfer_openapi_keeps_action_body_scope_optional() -> None:
     ]
 
 
+_VM_CWD = "/var/lib/codex-studio/layr/projects/app-project/lines/main"
+
+
+def _finder_records() -> dict[str, dict[str, object]]:
+    return {
+        "native": {"id": "native", "executionMode": "native", "cwd": "/Users/me/app"},
+        "legacy": {"id": "legacy", "cwd": "/Users/me/legacy"},
+        "vm": {"id": "vm", "executionMode": "vm", "layrProjectId": "app-project", "cwd": _VM_CWD},
+        "vm-new": {"id": "vm-new", "executionMode": "vm", "cwd": "/Users/me/app"},
+    }
+
+
+@contextmanager
+def _finder_fixture(
+    mount: dict[str, object] | None = None,
+    error: str | None = None,
+    entries: list[dict[str, str]] | None = None,
+) -> Iterator[tuple[TestClient, _RuntimeFixture, Path, Mock]]:
+    """A VM state directory with saved mount records and a fake mount table."""
+    app, runtime, _context = _app()
+    runtime.records = _finder_records()
+    vm = Mock()
+    with tempfile.TemporaryDirectory() as name:
+        state = Path(name)
+        project = state / "layr-projects" / "app-project"
+        project.mkdir(parents=True)
+        if mount is not None:
+            (project / "mount.json").write_text(json.dumps({"projectId": "app-project", **mount}))
+        if error is not None:
+            (project / "mount-error.json").write_text(
+                json.dumps({"projectId": "app-project", "error": error, "at": 1.0})
+            )
+        vm.state_dir = state
+        # A response that misses its declared model is logged and sent unvalidated.
+        with unittest.TestCase().assertNoLogs("studio_api.context", "ERROR"), \
+                patch("codex_linux_workspaces.client", return_value=vm), \
+                patch("codex_linux_vm_share._mount_entries", return_value=entries or []), \
+                patch("codex_linux_vm_share._mount_smbfs") as mount_smbfs:
+            yield TestClient(app), runtime, state, mount_smbfs
+    # The view reads saved records and the mount table only.
+    vm.call.assert_not_called()
+    vm.request.assert_not_called()
+
+
+def test_finder_view_of_a_native_chat_is_its_folder() -> None:
+    with _finder_fixture() as (client, _runtime, _state, mount_smbfs):
+        native = client.get("/api/agents/finder-view?agent=native")
+        legacy = client.get("/api/agents/finder-view?agent=legacy")
+
+    assert native.status_code == 200, native.text
+    assert native.json() == {"kind": "native", "path": "/Users/me/app"}
+    assert legacy.json() == {"kind": "native", "path": "/Users/me/legacy"}
+    mount_smbfs.assert_not_called()
+
+
+def test_finder_view_of_a_vm_chat_is_its_mounted_studio_folder() -> None:
+    path = "/Users/me/Studio/app"
+    entries = [{
+        "source": "//studio-view@127.0.0.1:4100/app",
+        "path": path,
+        "options": "smbfs, nodev, nosuid, read-only, mounted by me",
+    }]
+    with _finder_fixture({"name": "app", "path": path, "port": 4100}, entries=entries) as (
+        client, _runtime, _state, mount_smbfs,
+    ):
+        response = client.get("/api/agents/finder-view?agent=vm")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"kind": "vm", "state": "mounted", "path": path, "error": None}
+    assert _VM_CWD not in response.text
+    mount_smbfs.assert_not_called()
+
+
+def test_finder_view_of_a_vm_chat_reports_why_it_is_not_mounted() -> None:
+    reason = "The authenticated SMB mount failed: server connection failed"
+    with _finder_fixture(error=reason) as (client, _runtime, _state, mount_smbfs):
+        failed = client.get("/api/agents/finder-view?agent=vm")
+        new = client.get("/api/agents/finder-view?agent=vm-new")
+    # A remount that failed after an earlier mount keeps the saved reason.
+    saved = {"name": "app", "path": "/Users/me/Studio/app", "port": 4100}
+    with _finder_fixture(saved, error=reason) as (client, _runtime, _state, _mount):
+        unmounted = client.get("/api/agents/finder-view?agent=vm")
+    with _finder_fixture(saved) as (client, _runtime, _state, _mount):
+        never_failed = client.get("/api/agents/finder-view?agent=vm")
+
+    assert failed.status_code == 200, failed.text
+    assert failed.json() == {"kind": "vm", "state": "failed", "path": None, "error": reason}
+    assert new.json() == {"kind": "vm", "state": "unmounted", "path": None, "error": None}
+    assert unmounted.json() == {"kind": "vm", "state": "unmounted", "path": None, "error": reason}
+    assert never_failed.json() == {"kind": "vm", "state": "unmounted", "path": None, "error": None}
+    mount_smbfs.assert_not_called()
+
+
+def test_finder_view_of_an_unknown_agent_is_not_found() -> None:
+    with _finder_fixture() as (client, _runtime, _state, _mount):
+        response = client.get("/api/agents/finder-view?agent=missing")
+        empty = client.get("/api/agents/finder-view?agent=")
+
+    assert response.status_code == 404
+    assert empty.status_code == 400
+
+
+def test_finder_view_publishes_a_closed_response_union() -> None:
+    app, _runtime, _context = _app()
+    schema = app.openapi()
+    operation = schema["paths"]["/api/agents/finder-view"]["get"]
+    body = operation["responses"]["200"]["content"]["application/json"]["schema"]
+
+    assert [parameter["name"] for parameter in operation["parameters"]] == ["agent"]
+    assert operation["parameters"][0]["required"] is True
+    assert {entry["$ref"] for entry in body["anyOf"]} == {
+        "#/components/schemas/NativeFinderViewResponse",
+        "#/components/schemas/VmFinderViewResponse",
+    }
+    vm = schema["components"]["schemas"]["VmFinderViewResponse"]
+    assert set(vm["required"]) == {"kind", "state", "path", "error"}
+    assert vm["properties"]["state"]["enum"] == ["mounted", "unmounted", "failed"]
+
+
 class AgentRouterTests(unittest.TestCase):
     def test_durable_action_rejection_happens_before_runtime_call(self) -> None:
         test_durable_action_rejection_happens_before_runtime_call()
@@ -498,3 +626,18 @@ class AgentRouterTests(unittest.TestCase):
 
     def test_transfer_action_request_schema_does_not_require_scope(self) -> None:
         test_transfer_openapi_keeps_action_body_scope_optional()
+
+    def test_finder_view_of_a_native_chat_is_its_folder(self) -> None:
+        test_finder_view_of_a_native_chat_is_its_folder()
+
+    def test_finder_view_of_a_mounted_vm_chat(self) -> None:
+        test_finder_view_of_a_vm_chat_is_its_mounted_studio_folder()
+
+    def test_finder_view_of_an_unmounted_vm_chat(self) -> None:
+        test_finder_view_of_a_vm_chat_reports_why_it_is_not_mounted()
+
+    def test_finder_view_of_an_unknown_agent(self) -> None:
+        test_finder_view_of_an_unknown_agent_is_not_found()
+
+    def test_finder_view_schema(self) -> None:
+        test_finder_view_publishes_a_closed_response_union()

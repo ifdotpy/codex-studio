@@ -311,13 +311,18 @@ def mount_status(state_dir: Path) -> dict[str, Any]:
     if not records:
         return {'state': 'failed' if failed else 'unmounted', 'projects': failed}
     entries = _mount_entries()
+    reasons = {row['projectId']: row['error'] for row in failed}
     result = []
     for record in records:
         saved = json.loads(record.read_text())
         entry = next((row for row in entries if row['path'] == saved['path']), None)
-        result.append({'projectId': saved['projectId'], 'path': saved['path'],
-                       'state': 'mounted' if entry else 'unmounted',
-                       'readOnly': bool(entry and 'read-only' in entry['options'].split(', '))})
+        row = {'projectId': saved['projectId'], 'path': saved['path'],
+               'state': 'mounted' if entry else 'unmounted',
+               'readOnly': bool(entry and 'read-only' in entry['options'].split(', '))}
+        # A remount that failed after an earlier success keeps its reason.
+        if not entry and saved['projectId'] in reasons:
+            row['error'] = reasons[saved['projectId']]
+        result.append(row)
     failed = [row for row in failed if row['projectId'] not in {item['projectId'] for item in result}]
     state = 'failed' if failed else 'mounted' if all(row['state'] == 'mounted' for row in result) else 'unmounted'
     return {'state': state, 'projects': result + failed}

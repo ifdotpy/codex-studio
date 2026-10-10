@@ -191,6 +191,7 @@ import {
 import { useChatReadState } from "./components/useChatReadState";
 import UIErrorBoundary from "./components/UIErrorBoundary";
 import ProjectAccount from "./components/ProjectAccount";
+import ProjectFolderDialog from "./components/ProjectFolderDialog";
 import SessionActivity from "./components/agents/SessionActivity";
 import { useWorkerModels } from "./components/agents/WorkerModelPicker";
 import { UnifiedAgentSettings } from "./components/agents/UnifiedAgentSettings";
@@ -1954,21 +1955,15 @@ export default function App() {
       setModal({
         title: "Project folder",
         body: (
-          <>
-            <p>{agent.cwd}</p>
-            <p>To use another folder, start a new chat.</p>
-            {window.codexDesktop && !isRemoteServerView && (
-              <Button
-                onClick={() =>
-                  void window.codexDesktop
-                    ?.revealPath(agent.cwd!)
-                    .catch((error) => notify(errorText(error)))
-                }
-              >
-                Show in Finder
-              </Button>
-            )}
-          </>
+          <ProjectFolderDialog
+            agent={agent}
+            canReveal={!!window.codexDesktop && !isRemoteServerView}
+            onReveal={(path) =>
+              void window.codexDesktop
+                ?.revealPath(path)
+                .catch((error) => notify(errorText(error)))
+            }
+          />
         ),
       });
   };

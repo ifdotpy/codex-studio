@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path, PurePosixPath
 import platform
+import subprocess
 import time
 from typing import Any, Mapping
 
@@ -33,6 +34,28 @@ def project_id(agent: Mapping[str, Any]) -> str:
         return str(agent["layrProjectId"])
     source = str(agent.get("projectId") or agent.get("hostProjectPath") or agent["cwd"])
     return hashlib.sha256(source.encode()).hexdigest()
+
+
+def finder_view(runtime: Any, agent: Mapping[str, Any]) -> dict[str, Any]:
+    """Where Finder shows a chat's files. A VM chat has the read-only ~/Studio view of its
+    layr project. Reads the saved mount records and the mount table; never mounts or calls the VM."""
+    if not is_vm(agent):
+        return {"kind": "native", "path": agent.get("cwd")}
+    view: dict[str, Any] = {"kind": "vm", "state": "unmounted", "path": None, "error": None}
+    if not agent.get("layrProjectId"):
+        return view
+    from codex_linux_vm_share import mount_status
+    from codex_linux_workspaces import client
+    try:
+        status = mount_status(client(runtime).state_dir)
+    except (RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+        return {**view, "state": "failed", "error": "The Finder view status is unavailable: " + str(error)[:300]}
+    row = next((row for row in status["projects"] if row.get("projectId") == agent["layrProjectId"]), None)
+    if row is None:
+        return view
+    if row["state"] == "mounted":
+        return {**view, "state": "mounted", "path": row["path"]}
+    return {**view, "state": row["state"], "error": row.get("error")}
 
 
 def request(runtime: Any, method: str, params: dict[str, Any], identity: str,

@@ -328,6 +328,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/agents/finder-view": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Finder View
+     * @description Where Finder shows the chat's files. Reads saved records only; never mounts or calls the VM.
+     */
+    get: operations["finder_view_api_agents_finder_view_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/analytics": {
     parameters: {
       query?: never;
@@ -7487,6 +7507,23 @@ export interface components {
       error: string;
     };
     /**
+     * NativeFinderViewResponse
+     * @description A native chat works in its Mac folder.
+     */
+    NativeFinderViewResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /**
+       * Kind
+       * @constant
+       */
+      kind: "native";
+      /** Path */
+      path: string | null;
+    };
+    /**
      * NativeNoticeDto
      * @description Account notices and provider-version advisories shown in the UI.
      */
@@ -12810,6 +12847,30 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
+    /**
+     * VmFinderViewResponse
+     * @description A VM chat: the read-only ~/Studio view of its layr project. The path is set only when mounted.
+     */
+    VmFinderViewResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Error */
+      error: string | null;
+      /**
+       * Kind
+       * @constant
+       */
+      kind: "vm";
+      /** Path */
+      path: string | null;
+      /**
+       * State
+       * @enum {string}
+       */
+      state: "mounted" | "unmounted" | "failed";
+    };
     /** VoiceApprovalResponse */
     VoiceApprovalResponse: {
       /** Syncentities */
@@ -15018,6 +15079,57 @@ export interface operations {
       };
       /** @description JSON required */
       415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  finder_view_api_agents_finder_view_get: {
+    parameters: {
+      query: {
+        agent: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["NativeFinderViewResponse"]
+            | components["schemas"]["VmFinderViewResponse"];
+        };
+      };
+      /** @description Invalid request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Local origin and session token required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Not Found */
+      404: {
         headers: {
           [name: string]: unknown;
         };
