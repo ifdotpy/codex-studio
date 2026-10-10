@@ -72,10 +72,7 @@ def source_files(scripts: str | Path = SERVER_SOURCE_ROOT) -> tuple[tuple[str, P
             if path.suffix == ".py" or path.name == _NODE_CRYPTO_HELPER or path.is_dir():
                 raise ValueError("Backend source must not be a symlink: " + _safe_relative(path, root))
             continue
-        if path.is_file() and (
-            path.suffix == ".py"
-            or path.name in {"codex-canvas", _NODE_CRYPTO_HELPER}
-        ):
+        if path.is_file() and (path.suffix == ".py" or path.name in {"codex-canvas", _NODE_CRYPTO_HELPER}):
             add(path)
         elif path.is_dir():
             init = path / "__init__.py"
