@@ -115,6 +115,19 @@ class HostImportTests(unittest.TestCase):
             self.assertEqual(value, "a" * 64)
             self.assertNotIn("a" * 64, arguments)
             self.assertNotIn("a" * 64, result.stdout + result.stderr)
+            failing = Path(name) / "failing"
+            failing.write_text("#!/bin/bash\nIFS= read -r -s -p 'Password: ' value </dev/tty\n"
+                               "echo \"mount_smbfs: server rejected $value\" >&2; exit 77\n")
+            failing.chmod(0o700)
+            project = {"projectId": "p1", "share": {"state": "ready", "address": "192.168.64.2"}}
+            original = share._mount_smbfs
+            self.mount.stop()
+            self.addCleanup(self.mount.start)
+            with patch.object(Path, "home", return_value=Path(name)), patch.object(share, "_mount_entries", return_value=[]), \
+                    patch.object(share, "_mount_smbfs", lambda source, destination, password:
+                                 original(source, destination, password, executable=str(failing))):
+                with self.assertRaisesRegex(LinuxVMError, r"SMB mount failed: mount_smbfs: server rejected \*\*\*$"):
+                    share.mount_project(self.client, project, "a" * 64)
 
     def test_mac_mount_rejects_existing_writable_or_different_share(self):
         home = self.root / "home"

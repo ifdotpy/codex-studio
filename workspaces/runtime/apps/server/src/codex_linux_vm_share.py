@@ -90,7 +90,7 @@ if pid == 0:
         os.execv(sys.argv[1], sys.argv[1:])
     finally:
         os._exit(127)
-sent, seen, deadline = False, b"", time.monotonic() + 25
+sent, seen, mark, deadline = False, b"", 0, time.monotonic() + 25
 while time.monotonic() < deadline:
     if not select.select([fd], [], [], 0.5)[0]:
         continue
@@ -103,10 +103,12 @@ while time.monotonic() < deadline:
     seen += chunk
     if not sent and b"assword" in seen:
         os.write(fd, password.encode() + b"\n")
-        sent = True
+        sent, mark = True, len(seen)
 else:
     os.kill(pid, 9)
 os.close(fd)
+# Only what follows the prompt explains a failure.
+sys.stdout.write(seen[mark:].decode(errors="replace").replace(password, "***"))
 sys.exit(os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]) or (0 if sent else 2))
 """
 
@@ -148,7 +150,9 @@ def mount_project(client: Client, project: dict[str, Any], password: str) -> dic
         raise LinuxVMError('The project share mount folder is not empty.')
     result = _mount_smbfs(expected, destination, password)
     if result.returncode:
-        raise LinuxVMError('The authenticated SMB mount failed.')
+        lines = (result.stdout + result.stderr).replace(password, '***').strip().splitlines()
+        detail = lines[-1].strip()[:300] if lines else 'exit code ' + str(result.returncode)
+        raise LinuxVMError('The authenticated SMB mount failed: ' + detail)
     rows = [row for row in _mount_entries() if row['path'] == str(destination)]
     if len(rows) != 1 or 'read-only' not in rows[0]['options'].split(', '):
         raise LinuxVMError('The SMB mount has no proven read-only result.', uncertain=True)
