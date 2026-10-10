@@ -43,6 +43,7 @@ jobs:
       - name: Prepare the Python runtime used by client unit tests
         run: |
           echo "XDG_CACHE_HOME=$RUNNER_TEMP/codex-studio-cache" >> "$GITHUB_ENV"
+          cargo build --release -p studio-operations-python
           XDG_CACHE_HOME="$RUNNER_TEMP/codex-studio-cache" python3 workspaces/runtime/apps/server/src/install-cli.py --bin-dir "$RUNNER_TEMP/codex-studio-bin"
       - name: Client unit tests
         run: pnpm run test:client:unit
@@ -95,6 +96,7 @@ jobs:
       - name: Prepare the repository-managed Python environments
         run: |
           echo "XDG_CACHE_HOME=$RUNNER_TEMP/codex-studio-cache" >> "$GITHUB_ENV"
+          cargo build --release -p studio-operations-python
           XDG_CACHE_HOME="$RUNNER_TEMP/codex-studio-cache" python3 workspaces/runtime/apps/server/src/install-cli.py --dev --bin-dir "$RUNNER_TEMP/codex-studio-bin"
       - name: Strict runtime mypy ratchet
         run: pnpm run typecheck:runtime
@@ -146,6 +148,7 @@ jobs:
       - name: Prepare the Python test environment
         run: |
           echo "XDG_CACHE_HOME=$RUNNER_TEMP/codex-studio-cache" >> "$GITHUB_ENV"
+          cargo build --release -p studio-operations-python
           XDG_CACHE_HOME="$RUNNER_TEMP/codex-studio-cache" python3 workspaces/runtime/apps/server/src/install-cli.py --dev --bin-dir "$RUNNER_TEMP/codex-studio-bin"
       - name: List facade recipes
         run: just --list

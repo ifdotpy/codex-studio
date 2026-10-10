@@ -1,0 +1,20 @@
+[package]
+name = "studio-operations"
+version.workspace = true
+edition.workspace = true
+description = "Pure operation lifecycle transitions for Codex Studio"
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[dependencies]
+serde = { workspace = true, features = ["derive"], optional = true }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true
