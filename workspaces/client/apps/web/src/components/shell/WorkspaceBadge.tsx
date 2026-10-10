@@ -1,22 +1,37 @@
 import type { Agent } from "../../types";
 
 export type WorkspaceBadgeInfo = {
-  label: "ASIF" | "VM" | "WT" | "SHARED";
+  label: "LAYR" | "ASIF" | "WT" | "SHARED";
   title: string;
 };
 
 export function workspaceBadgeInfo(agent?: Agent): WorkspaceBadgeInfo | null {
-  if (!agent || agent.isLead) return null;
-  if (
-    agent.remoteWorker &&
-    (!agent.cwd ||
-      !agent.workspaceMode ||
-      (agent.workspaceMode === "image" &&
-        !agent.workspaceBackend &&
-        !agent.environment))
-  )
-    return null;
-  const mode =
+  if (!agent) return null;
+  if (agent.isLead) {
+    const mode = (agent as { workspaceMode?: string }).workspaceMode;
+    if (!mode) return null;
+    const label =
+      mode === "layr"
+        ? "LAYR"
+        : mode === "image"
+          ? "ASIF"
+          : mode === "worktree"
+            ? "WT"
+            : undefined;
+    return label
+      ? {
+          label,
+          title:
+            label === "LAYR"
+              ? "Linux VM with layr"
+              : label === "ASIF"
+                ? "Apple Sparse Image Format workspace"
+                : "Git worktree",
+        }
+      : null;
+  }
+  if (agent.remoteWorker && (!agent.cwd || !agent.workspaceMode)) return null;
+  const mode: string | undefined =
     agent.workspaceMode ??
     (agent.imageWorkspace
       ? "image"
@@ -28,18 +43,18 @@ export function workspaceBadgeInfo(agent?: Agent): WorkspaceBadgeInfo | null {
   if (!mode) return null;
 
   const label =
-    mode === "image"
-      ? agent.workspaceBackend === "vm" || agent.environment === "linux"
-        ? "VM"
-        : "ASIF"
-      : mode === "worktree"
-        ? "WT"
-        : "SHARED";
+    mode === "layr"
+      ? "LAYR"
+      : mode === "image"
+        ? "ASIF"
+        : mode === "worktree"
+          ? "WT"
+          : "SHARED";
   const name =
-    label === "ASIF"
-      ? "Apple Sparse Image Format workspace"
-      : label === "VM"
-        ? "Linux virtual machine workspace"
+    label === "LAYR"
+      ? "Linux VM with layr"
+      : label === "ASIF"
+        ? "Apple Sparse Image Format workspace"
         : label === "WT"
           ? "Git worktree"
           : "Shared folder";

@@ -1,3 +1,4 @@
+import { isNewChatSettings } from "../components/newChatSettings";
 import type { ServerCommand, ServerNavigation } from "./navigation";
 
 // The shell accepts a cross-server choice only from the owning frame's project list.
@@ -9,7 +10,8 @@ export function projectChatCommand(
     typeof value.projectId !== "string" ||
     typeof value.projectServerId !== "string" ||
     typeof value.path !== "string" ||
-    typeof value.target !== "string"
+    typeof value.target !== "string" ||
+    (value.settings !== undefined && !isNewChatSettings(value.settings))
   )
     return null;
   const project = view?.projects.find(
@@ -27,5 +29,6 @@ export function projectChatCommand(
     path: value.path,
     projectId: value.projectId,
     projectServerId: value.projectServerId,
+    ...(isNewChatSettings(value.settings) ? { settings: value.settings } : {}),
   };
 }

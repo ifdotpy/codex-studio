@@ -43,6 +43,16 @@ async function folderMenu(page, sidebar, name, item) {
   await button(sidebar, `Options for folder ${name}`).click();
   await page.getByRole("menuitem", { name: item, exact: true }).click();
 }
+// New chat asks for the workspace and models before it creates the chat.
+async function startNewChat(page, fixture) {
+  const dialog = page.getByRole("dialog", { name: "New chat", exact: true });
+  const start = dialog.getByRole("button", { name: "Start chat", exact: true });
+  await expect(start).toBeEnabled();
+  expect(fixture.calls.remote.some((call) => call.path === "/api/leads")).toBe(
+    false,
+  );
+  await start.click();
+}
 async function drag(page, from, to, edge = 0.5) {
   let a;
   await expect(async () => {
@@ -483,6 +493,7 @@ test("project rename, compact, folders, account, new chats, shared chats and dir
       .first()
       .hover();
     await button(sidebar, "New chat in folder Remote Empty").click();
+    await startNewChat(page, fixture);
     await expect
       .poll(() =>
         fixture.calls.remote.some((call) => call.path === "/api/leads"),
@@ -881,6 +892,7 @@ test("global search opens its source chat, and toolbar actions use the active se
     ).toBeVisible();
     await remote.getByRole("button", { name: "Close", exact: true }).click();
     await button(sidebar, "New chat").click();
+    await startNewChat(page, fixture);
     await expect
       .poll(() =>
         fixture.calls.remote.some((call) => call.path === "/api/leads"),

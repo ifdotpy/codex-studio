@@ -28,6 +28,8 @@ import {
 } from "./mergedSidebar";
 import { createSidebarRpcClient } from "./sidebarRpc";
 import { frameSidebarBackend } from "./frameSidebarBackend";
+import ProjectServerCards from "../components/ProjectServerCards";
+import { projectServerChoices, type LocationProject } from "./projectLocations";
 import { projectChatCommand } from "./projectChatCommand";
 import { frameURL } from "./frameOrigin";
 import { canUnloadFrame } from "./idleFrames";
@@ -63,6 +65,12 @@ const combinedNavigation =
   new URLSearchParams(location.search).get("studio-navigation") !== "classic";
 export default function MultiServerApp() {
   const [failure, setFailure] = useState("");
+  const [newChatDialog, setNewChatDialog] = useState<{
+    project: LocationProject;
+    server: string;
+    folder?: string;
+    binding?: { projectId: string; projectServerId: string };
+  } | null>(null);
   const load = () => {
     try {
       return readServers();
@@ -612,6 +620,49 @@ export default function MultiServerApp() {
         state.known = true;
         if (state.activity !== event.data.busy) state.idleSince = Date.now();
         state.activity = event.data.busy;
+      } else if (event.data.kind === "studio-open-new-chat") {
+        setMobileOpen(false);
+        const view = navigationRef.current[id];
+        const project = view?.projects.find(
+          (row) =>
+            row.id === event.data.projectId || row.path === event.data.path,
+        );
+        const directory =
+          project?.path ||
+          view?.chats.find((row) => row.id === view.opened)?.path ||
+          event.data.path ||
+          "";
+        setNewChatDialog({
+          server: id,
+          project: {
+            ...project,
+            id: project?.id || directory,
+            path: directory,
+            name: project?.name || directory || "Current folder",
+            locations: project?.locations?.length
+              ? project.locations
+              : [
+                  {
+                    serverId: id,
+                    path: directory,
+                    projectId: project?.id || directory,
+                  },
+                ],
+          },
+          folder:
+            typeof event.data.projectFolder === "string"
+              ? event.data.projectFolder
+              : undefined,
+          // Keep the frame's project binding. A folder belongs to that project.
+          binding:
+            typeof event.data.projectId === "string" &&
+            typeof event.data.projectServerId === "string"
+              ? {
+                  projectId: event.data.projectId,
+                  projectServerId: event.data.projectServerId,
+                }
+              : undefined,
+        });
       } else if (event.data.kind === "studio-project-new-chat") {
         const target = serversRef.current.find(
           (server) => server.id === event.data.target,
@@ -951,6 +1002,63 @@ export default function MultiServerApp() {
           ))}
       </main>
       {settings}
+      <Modal
+        opened={!!newChatDialog}
+        closeOnEscape={false}
+        onClose={() => setNewChatDialog(null)}
+        title="New chat"
+        aria-label="New chat"
+        size="lg"
+      >
+        {newChatDialog && (
+          <ProjectServerCards
+            project={newChatDialog.project}
+            servers={projectServerChoices(
+              servers,
+              status,
+              Object.fromEntries(
+                (discovery.snapshot?.servers || []).map((server) => [
+                  server.id,
+                  server.reachability,
+                ]),
+              ),
+            ).map((row) => ({
+              ...row,
+              system: navigation[row.id]?.system,
+            }))}
+            lastServer={newChatDialog.server}
+            onCancel={() => setNewChatDialog(null)}
+            onAdd={(server) => {
+              send(newChatDialog.server, {
+                action: "project-folders",
+                projectId: newChatDialog.project.id,
+                server,
+              });
+              setNewChatDialog(null);
+            }}
+            onChoose={(location, settings) => {
+              const origin = location.serverId === newChatDialog.server;
+              send(location.serverId, {
+                action: "new-chat",
+                path: location.path,
+                settings,
+                ...(origin && newChatDialog.folder
+                  ? { folder: newChatDialog.folder }
+                  : {}),
+                ...(origin && newChatDialog.binding
+                  ? newChatDialog.binding
+                  : newChatDialog.project.homeServerId
+                    ? {
+                        projectId: newChatDialog.project.id,
+                        projectServerId: newChatDialog.project.homeServerId,
+                      }
+                    : {}),
+              });
+              setNewChatDialog(null);
+            }}
+          />
+        )}
+      </Modal>
       <Modal
         opened={searchOpen}
         onClose={() => setSearchOpen(false)}

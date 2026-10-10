@@ -4708,8 +4708,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "workerBaseMainRef": data.get("_workerBaseMainRef"),
             }
             if is_lead:
-                a["workerDefaults"] = defaults
-                a["reviewDefaults"] = {"model": None, "effort": None}
+                a["workerDefaults"] = data.get("_initialWorkerDefaults", defaults)
+                a["reviewDefaults"] = data.get("_initialReviewDefaults", {"model": None, "effort": None})
                 a.update(agentMode="multi", agentModeRevision=0, agentModeSupported=True)
             if catalog is not None:
                 a["nativeEffort"] = native_effort
@@ -4737,7 +4737,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if "yolo_mode" in data and type(data["yolo_mode"]) is not bool:
             raise ValueError("yolo_mode must be a boolean")
         key = data.get("id")
+        execution_fields = ("effort", "fast_mode", "daybreak_enabled", "worker_defaults", "review_defaults")
         settings = {k: data.get(k) for k in ("model", "previous")}
+        settings.update({field: data[field] for field in execution_fields if field in data})
         if "workspaceMode" in data:
             settings["workspaceMode"] = data["workspaceMode"]
         if "account_key" in data:
@@ -4757,7 +4759,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         signature = json.dumps(settings, sort_keys=True)
         catalog = None
         catalog_account = None
-        if data.get("model"):
+        if data.get("model") or any(field in data for field in execution_fields):
             # Catalog reads cannot hold the runtime lock, including on empty reuse.
             with self.lock, self.db() as db:
                 alias = db.execute("SELECT agent, signature FROM runtime_lead_requests WHERE id=?", (key,)).fetchone()
@@ -4779,7 +4781,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 project_key = settings_key(self, db, directory, binding)
                 catalog_account = data["account_key"] if "account_key" in data else self.project_account(project_key, db=db)
             catalog = self.catalog(catalog_account)
-            self.validate_execution(catalog, data["model"], None, False)
+            provider = self.accounts.get(catalog_account).get("provider", "codex")
+            selected_model = data.get("model") or ("default" if provider == "claude" else DEFAULT_LEAD_MODEL)
+            self.validate_execution(catalog, selected_model, data.get("effort"), data.get("fast_mode", False))
+            worker_defaults = None
+            if "worker_defaults" in data or "review_defaults" in data:
+                from codex_worker_accounts import settings_catalog
+                worker_catalog = settings_catalog(self, catalog_account, data.get("worker_defaults") or {})
+                if "worker_defaults" in data:
+                    worker_defaults = self.validate_worker_defaults(data["worker_defaults"], selected_model, worker_catalog)
+                review_defaults = self.validate_review_defaults(data["review_defaults"], worker_catalog) if "review_defaults" in data else None
         with self.lock:
             with self.db() as db:
                 alias = db.execute("SELECT agent, signature FROM runtime_lead_requests WHERE id=?", (key,)).fetchone()
@@ -4824,7 +4835,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     raise ValueError("Reconnect this account before creating a chat")
                 from codex_project_folders import folder_for
                 project_folder = folder_for(self, db, project_key, data.get('project_folder'))
-                if previous and not previous.get("layrReady") and previous.get("workspaceMode", "worktree") == selected_workspace and data.get("reuse_empty", True) and self.empty_lead(db, previous) and previous.get("provider", "codex") == self.accounts.get(account_key).get("provider", "codex"):
+                if previous and not previous.get("layrReady") and previous.get("workspaceMode", "worktree") == selected_workspace and not any(field in data for field in execution_fields) and data.get("reuse_empty", True) and self.empty_lead(db, previous) and previous.get("provider", "codex") == self.accounts.get(account_key).get("provider", "codex"):
                     if data.get("model"):
                         effort, native_effort = self.validate_execution(catalog, data["model"], previous.get("effort"),
                             previous.get("fastMode", False), fallback_effort=True)
@@ -4859,7 +4870,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                 "_creationSignature": signature, "_projectBinding": binding, "account_key": account_key,
                                 "workspaceMode": selected_workspace,
                                 "yolo_mode": data.get("yolo_mode", previous.get("yoloMode") is not False if previous else True),
-                                **({"model": data["model"]} if data.get("model") else {})}, draft=True, _catalog=catalog)
+                                **({"model": data["model"]} if data.get("model") else {}),
+                                **{field: data[field] for field in ("effort", "fast_mode", "daybreak_enabled") if field in data},
+                                **({"_initialWorkerDefaults": worker_defaults} if "worker_defaults" in data else {}),
+                                **({"_initialReviewDefaults": review_defaults} if "review_defaults" in data else {})}, draft=True, _catalog=catalog)
             # Each new team starts with Studio defaults, independent of the previous chat.
             return created
 

@@ -36,6 +36,8 @@ vi.mock("react", async (importOriginal) => {
   return {
     ...original,
     useCallback: (callback: unknown) => callback,
+    // No provider is mounted, so a context read returns its default value.
+    useContext: (context: { _currentValue: unknown }) => context._currentValue,
     useMemo: (compute: () => unknown, dependencies?: readonly unknown[]) => {
       const index = cursor.memo++;
       const previous = memos[index];

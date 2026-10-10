@@ -1,5 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ApiError, get, errorText } from "../../api";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { ApiError, get, errorText, type GetResult } from "../../api";
 import { claudeModelLabel } from "../../claude-model-label";
 import { watchResourceReads } from "../watchResourceReads";
 
@@ -128,12 +135,21 @@ export function supportsDaybreakMode(
   );
 }
 
+export const ModelCatalogReader = createContext<{
+  scope: string;
+  read: (options: {
+    query?: { account_key?: string; workers?: string; retry?: "1" };
+    signal?: AbortSignal;
+  }) => Promise<GetResult<"/api/models">>;
+} | null>(null);
+
 export function useWorkerModels(
   accountKey: string,
   enabled: boolean,
   workers = false,
 ) {
-  const catalogKey = `${accountKey}:${workers}`;
+  const reader = useContext(ModelCatalogReader);
+  const catalogKey = `${reader?.scope || ""}:${accountKey}:${workers}`;
   const [result, setResult] = useState<{
     key: string;
     models: WorkerModelInfo[];
@@ -160,7 +176,13 @@ export function useWorkerModels(
       const retry = explicitRetry;
       explicitRetry = false;
       try {
-        const data = await get("/api/models", {
+        const read =
+          reader?.read ||
+          ((options: {
+            query?: { account_key?: string; workers?: string; retry?: "1" };
+            signal?: AbortSignal;
+          }) => get("/api/models", options));
+        const data = await read({
           query: {
             account_key: accountKey,
             workers: workers ? "1" : undefined,
@@ -224,12 +246,14 @@ export function useWorkerModels(
           error: errorText(error),
         }));
     });
+    // A dialog can read another server before that server has a resource stream.
+    if (reader) stop.refresh();
     return () => {
       active = false;
       controller.abort();
       stop();
     };
-  }, [accountKey, catalogKey, workers, enabled, attempt]);
+  }, [accountKey, catalogKey, workers, enabled, attempt, reader]);
   const current = result?.key === catalogKey ? result : null;
   const models = useMemo(
     () =>
