@@ -1981,6 +1981,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             return self._voice_store
 
     def paired_access(self):
+        # Entity reads run without the runtime lock; they find the service once it exists.
+        service = self.__dict__.get("_paired_access_service")
+        if service is not None:
+            return service
         with self.lock:
             service = getattr(self, "_paired_access_service", None)
             if service is None:
