@@ -565,6 +565,39 @@ class ServerSuiteRunner(unittest.TestCase):
             self.assertTrue(live.is_dir())
             self.assertTrue(unmarked.is_dir())
 
+    def test_macos_available_memory_comes_from_vm_stat(self):
+        sample = ("Mach Virtual Memory Statistics: (page size of 16384 bytes)\n"
+                  "Pages free:                                  1000.\n"
+                  "Pages active:                                9000.\n"
+                  "Pages inactive:                              2000.\n"
+                  "Pages speculative:                             30.\n"
+                  "Pages wired down:                            5000.\n")
+        completed = subprocess.CompletedProcess(["/usr/bin/vm_stat"], 0, stdout=sample, stderr="")
+
+        def no_avphys(name):
+            if name == "SC_AVPHYS_PAGES":
+                raise ValueError("unrecognized configuration name")
+            return 16384
+
+        with (mock.patch.object(RUNNER.os, "sysconf", side_effect=no_avphys),
+              mock.patch.object(RUNNER.sys, "platform", "darwin"),
+              mock.patch.object(RUNNER.subprocess, "run", return_value=completed) as run,
+              mock.patch.object(RUNNER, "_cgroup_directories", return_value=()),
+              mock.patch.object(RUNNER.Path, "read_text", side_effect=OSError("no /proc"))):
+            self.assertEqual(RUNNER.available_memory_bytes(), 16384 * 3030)
+        run.assert_called_once()
+        with (mock.patch.object(RUNNER.subprocess, "run",
+                                return_value=subprocess.CompletedProcess([], 0, stdout="unexpected", stderr=""))):
+            self.assertIsNone(RUNNER._vm_stat_available_bytes())
+
+    def test_without_proc_stat_competing_load_comes_from_the_load_average(self):
+        with (mock.patch.object(RUNNER.Path, "is_file", return_value=False),
+              mock.patch.object(RUNNER.os, "getloadavg", return_value=(7.2, 5.0, 3.0))):
+            self.assertEqual(RUNNER.sample_runnable_other_process_count(window_seconds=0), 7)
+        with (mock.patch.object(RUNNER.Path, "is_file", return_value=False),
+              mock.patch.object(RUNNER.os, "getloadavg", side_effect=OSError("unavailable"))):
+            self.assertEqual(RUNNER.sample_runnable_other_process_count(window_seconds=0), 0)
+
     def test_automatic_worker_count_tracks_cpu_affinity_and_measured_memory(self):
         profile = {
             "maxSuiteRssBytes": 1024**3,

@@ -12,6 +12,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import select
 import shutil
 import signal
@@ -140,6 +141,8 @@ BROWSER_SUITES = frozenset({
 })
 LIVE_SUITES = frozenset({f"{TESTS_REL}/runtime-live.py"})
 EXPENSIVE_SUITES = frozenset({
+    # Real APFS images: about 118 s alone, so any parallel load passes the 120 s deadline.
+    f"{TESTS_REL}/workspace-images-macos.py",
     f"{TESTS_REL}/account-costs-contract.py", f"{TESTS_REL}/analytics-memory-contract.py",
     f"{TESTS_REL}/analytics-usage-memory-contract.py", f"{TESTS_REL}/cost-scanner-contract.py",
     f"{TESTS_REL}/costs-contract.py", f"{TESTS_REL}/limit-payloads-contract.py",
@@ -963,6 +966,23 @@ def _cgroup_directories(controller):
     return tuple(dict.fromkeys(candidates))
 
 
+def _vm_stat_available_bytes():
+    """Free, inactive and speculative pages from macOS vm_stat, or None.
+
+    macOS has no SC_AVPHYS_PAGES; inactive pages are reclaimable without swap.
+    """
+    try:
+        output = subprocess.run(["/usr/bin/vm_stat"], capture_output=True, text=True,
+                                timeout=5, check=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    page_size = re.search(r"page size of (\d+) bytes", output)
+    pages = dict(re.findall(r"^Pages (free|inactive|speculative):\s+(\d+)\.$", output, re.MULTILINE))
+    if page_size is None or len(pages) != 3:
+        return None
+    return int(page_size.group(1)) * sum(int(count) for count in pages.values())
+
+
 def available_memory_bytes():
     """Return available memory, bounded by this process's cgroup when present."""
     available = None
@@ -972,6 +992,8 @@ def available_memory_bytes():
         available = int(page_size * available_pages)
     except (OSError, ValueError, AttributeError):
         pass
+    if available is None and sys.platform == "darwin":
+        available = _vm_stat_available_bytes()
     try:
         for line in Path("/proc/meminfo").read_text(encoding="ascii").splitlines():
             if line.startswith("MemAvailable:"):
@@ -1008,11 +1030,20 @@ def _instantaneous_runnable_process_count():
     return 0
 
 
+def _load_average_other_count():
+    """Without /proc/stat (macOS), use the one-minute load average less this planner."""
+    try:
+        load = os.getloadavg()[0]
+    except (OSError, AttributeError):
+        return 0
+    return max(0, math.ceil(load) - 1)
+
+
 def sample_runnable_other_process_count(window_seconds=5.0, interval_seconds=0.5,
                                        *, sample=None, clock=None, sleep=None):
     """Estimate competing runnable work from the sample-window median."""
     if not Path("/proc/stat").is_file():
-        return 0
+        return _load_average_other_count()
     sample = _instantaneous_runnable_process_count if sample is None else sample
     clock = time.monotonic if clock is None else clock
     sleep = time.sleep if sleep is None else sleep
