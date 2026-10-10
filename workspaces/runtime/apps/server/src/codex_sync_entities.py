@@ -524,7 +524,11 @@ def patch(db: sqlite3.Connection, collection: str, key: str, changes: Any) -> bo
 def refresh_workspace_limit_timestamps(
     db: sqlite3.Connection, account_key: str, snapshot: JsonValue,
 ) -> bool:
-    """Persist cache timestamps without creating a visible entity revision."""
+    """Persist cache timestamps without creating a visible entity revision.
+
+    These fields keep Runtime's restart cache fresh but do not change the
+    renderer-visible limit values, so they must not advance the sync sequence.
+    """
     if not isinstance(snapshot, dict):
         return False
     _ensure_sequence_transaction(db)
