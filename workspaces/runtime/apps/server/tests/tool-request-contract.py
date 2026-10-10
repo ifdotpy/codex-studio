@@ -213,6 +213,19 @@ class RequestContract(unittest.TestCase):
         self.assertEqual(self.runtime.tool_request(cached['id'])['outcome'], 'applied')
         self.assertFalse(self.runtime.begin_tool_request(running['id']))
 
+    def test_restart_skips_and_logs_unsupported_legacy_lifecycle(self):
+        unsupported = {
+            'id': 'thread:unsupported', 'agent': 'lead', 'threadId': 'thread',
+            'accountKey': 'default', 'stage': 'queued', 'outcome': 'surprising',
+            'cancelRequested': False, 'updated': 1,
+        }
+        with self.runtime.db() as db:
+            self.runtime.put(db, 'tool_requests', unsupported)
+        with self.assertLogs('codex_tool_requests', level='WARNING') as logs:
+            self.runtime = Ledger(self.runtime.path)
+        self.assertIn('Skipping unsupported stored tool request lifecycle', logs.output[0])
+        self.assertEqual(self.runtime.tool_request(unsupported['id']), unsupported)
+
     def test_atomic_receipt_obeys_transaction_rollback(self):
         record = self.reserve()
         self.runtime.begin_tool_request(record['id'])

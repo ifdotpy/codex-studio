@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import time
 import uuid
@@ -10,7 +11,11 @@ from typing import Any, TYPE_CHECKING, Protocol
 
 from codex_records import RecordStore
 from codex_operations_adapter import (
-    apply_decision, content_for_record, missing_receipt_outcome, require_decision,
+    _legacy_state,
+    apply_decision,
+    content_for_record,
+    missing_receipt_outcome,
+    require_decision,
     transition_record,
 )
 
@@ -223,6 +228,14 @@ class RequestMixin:
         for row in rows:
             from codex_payloads import resolve_record, state_root
             record = resolve_record(state_root(self), json.loads(row[0]))
+            try:
+                _legacy_state(record)
+            except ValueError:
+                logging.getLogger(__name__).warning(
+                    "Skipping unsupported stored tool request lifecycle during restart: %s/%s",
+                    record.get("stage"), record.get("outcome"),
+                )
+                continue
             cached = self.tool_result(db, record["id"])
             if cached:
                 self.finish_tool_request(record["id"], cached, db=db)

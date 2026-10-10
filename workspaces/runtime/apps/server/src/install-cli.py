@@ -209,7 +209,7 @@ def main():
         project = REPOSITORY_ROOT
         operations_extension(REPOSITORY_ROOT, SERVER_SOURCE_ROOT)
         if os.environ.get("CODEX_AGENTS_PYTHON"):
-            python = resolve_python(SERVER_SOURCE_ROOT, require_operations=False)
+            python = resolve_python(SERVER_SOURCE_ROOT)
         else:
             python = prepare_environment(project)
         if args.dev:

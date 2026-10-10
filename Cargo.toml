@@ -13,7 +13,7 @@ license = "LicenseRef-Proprietary"
 publish = false
 
 [workspace.lints.rust]
-unsafe_code = "deny"
+unsafe_code = "forbid"
 unused_must_use = "deny"
 
 [workspace.lints.clippy]
