@@ -22,3 +22,15 @@ test-plan package case="" *args:
 [doc("Run the package's manifest-defined lint, type, and unit checks; accepts --dry-run.")]
 check package *args:
     @node {{quote(facade)}} check {{quote(package)}} {{args}}
+
+[doc("Check generated API contracts in read-only drift mode.")]
+contracts-check:
+    @node {{quote(facade)}} contracts-check
+
+[doc("Fail on undeclared imports and forbidden workspace boundaries.")]
+boundaries-check:
+    @node {{quote(facade)}} boundaries-check
+
+[doc("Check changed packages and manifest dependents; accepts --dry-run.")]
+check-affected base *args:
+    @node {{quote(facade)}} check-affected {{quote(base)}} {{args}}

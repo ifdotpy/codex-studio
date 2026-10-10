@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
+import { builtinModules, createRequire } from "node:module";
 import {
   appendFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -21,6 +23,78 @@ const COST = {
 };
 const NOT_STARTED = "backend, browser, Electron, provider";
 const LOG_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+const SOURCE_EXTENSIONS = /\.(?:[cm]?js|[cm]?ts|jsx|tsx)$/;
+const SOURCE_SKIP = new Set([
+  ".git",
+  "node_modules",
+  "dist",
+  "target",
+  "coverage",
+]);
+const DECLARATION_SECTIONS = [
+  "dependencies",
+  "devDependencies",
+  "peerDependencies",
+  "optionalDependencies",
+];
+const BOUNDARY_ALLOWLIST = [
+  {
+    importer: "codex-agents-desktop",
+    file: "bridge.d.ts",
+    specifier: "../web/src/servers/desktopCredentials",
+    reason:
+      "The desktop bridge declaration shares the renderer's credential wire types until they have a public package owner.",
+  },
+  {
+    importer: "codex-agents-desktop",
+    file: "server-access-native.mjs",
+    specifier: "../web/tests/servers/multi-server-fixture.mjs",
+    reason:
+      "The native desktop integration scenario reuses the renderer's local multi-server test fixture.",
+  },
+  {
+    importer: "codex-agents-desktop",
+    file: "test.mjs",
+    specifier: "../web/tests/playwright.mjs",
+    reason:
+      "The native desktop scenario reuses the renderer's browser test-state helper.",
+  },
+  {
+    importer: "codex-agents-desktop",
+    file: "multi-server-memory.mjs",
+    specifier: "../web/tests/servers/multi-server-fixture.mjs",
+    reason:
+      "A desktop integration scenario reuses the renderer's local multi-server test fixture.",
+  },
+  {
+    importer: "codex-agents-desktop",
+    file: "server-frames-native.mjs",
+    specifier: "../web/tests/servers/multi-server-fixture.mjs",
+    reason:
+      "A desktop integration scenario reuses the renderer's local multi-server test fixture.",
+  },
+  {
+    importer: "codex-agents-web",
+    file: "tests/**",
+    specifier: "../../../../../runtime/apps/server/tests/**",
+    reason:
+      "Renderer browser tests reuse local setup fixtures maintained with the server test runner.",
+  },
+  {
+    importer: "server",
+    file: "tests/claude-*-contract.mjs",
+    specifier: "../../../../providers/apps/claude-bridge/**",
+    reason:
+      "Server bridge contract tests import the actual bridge implementation under test.",
+  },
+  {
+    importer: "server",
+    file: "tests/fixtures/ux-*.tsx",
+    specifier: "../../../../../client/apps/web/**",
+    reason:
+      "Server-owned visual fixtures reuse renderer components and styles for isolated UX validation.",
+  },
+];
 
 function fail(message) {
   throw new Error(message);
@@ -656,7 +730,7 @@ export async function execute(
 
 function usage() {
   process.stdout.write(
-    "Usage: facade.mjs packages | test <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-plan <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | check <package> [--dry-run] [--json]\n",
+    "Usage: facade.mjs packages | test <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-plan <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | check <package> [--dry-run] [--json] | contracts-check | boundaries-check | check-affected <base> [--dry-run]\n",
   );
 }
 
@@ -710,6 +784,365 @@ export function parseSelection(requestedCase, rest) {
   };
 }
 
+function workspaceFiles(root) {
+  const files = [];
+  function visit(directory) {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isDirectory() && SOURCE_SKIP.has(entry.name)) continue;
+      const full = path.join(directory, entry.name);
+      if (entry.isDirectory()) visit(full);
+      else if (SOURCE_EXTENSIONS.test(entry.name)) files.push(full);
+    }
+  }
+  const workspaces = path.join(root, "workspaces");
+  if (existsSync(workspaces)) visit(workspaces);
+  return files;
+}
+
+function packageImports(root, file, source) {
+  try {
+    const require = createRequire(import.meta.url);
+    const ts = require(require.resolve("typescript"));
+    const kind = /\.[cm]?tsx?$/.test(file)
+      ? ts.ScriptKind.TS
+      : ts.ScriptKind.JS;
+    const script = ts.createSourceFile(
+      file,
+      source,
+      ts.ScriptTarget.Latest,
+      true,
+      kind,
+    );
+    const specs = [];
+    function visit(node) {
+      if (
+        (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+        ts.isStringLiteral(node.moduleSpecifier)
+      )
+        specs.push(node.moduleSpecifier.text);
+      if (
+        ts.isCallExpression(node) &&
+        node.arguments.length &&
+        ts.isStringLiteral(node.arguments[0])
+      ) {
+        const expression = node.expression;
+        const name = ts.isIdentifier(expression)
+          ? expression.text
+          : ts.isPropertyAccessExpression(expression)
+            ? expression.name.text
+            : "";
+        if (
+          name === "require" ||
+          name === "import" ||
+          (name === "resolve" &&
+            expression.getText(script) === "require.resolve")
+        )
+          specs.push(node.arguments[0].text);
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(script);
+    return specs;
+  } catch {
+    const specs = [];
+    const pattern =
+      /\b(?:from\s*|import\s*\(|import\s+|export\s+[^;]*?\sfrom\s*|require\s*\()\s*["']([^"']+)["']/g;
+    for (const match of source.matchAll(pattern)) specs.push(match[1]);
+    return specs;
+  }
+}
+
+function packageRootFor(file, packages) {
+  const workspacePackage = packages
+    .filter((item) => item.dir !== ".")
+    .filter((item) => {
+      const dir = path.resolve(item.root, item.dir);
+      return file === dir || file.startsWith(`${dir}${path.sep}`);
+    })
+    .sort((a, b) => b.dir.length - a.dir.length)[0];
+  if (workspacePackage) return workspacePackage;
+  const tooling = packages.find((item) => item.name === "codex-studio-tooling");
+  const relative =
+    tooling && path.relative(tooling.root, file).split(path.sep).join("/");
+  return relative?.startsWith("workspaces/tooling/apps/repository-checks/")
+    ? tooling
+    : undefined;
+}
+
+function packageName(specifier) {
+  if (
+    !specifier ||
+    specifier.startsWith(".") ||
+    specifier.startsWith("/") ||
+    specifier.startsWith("#") ||
+    specifier.startsWith("@/")
+  )
+    return null;
+  return specifier.startsWith("@")
+    ? specifier.split("/").slice(0, 2).join("/")
+    : specifier.split("/")[0];
+}
+
+function declaredDependencies(item) {
+  const manifest = item.manifest ? manifestFor(item) : {};
+  return new Set(
+    DECLARATION_SECTIONS.flatMap((section) =>
+      Object.keys(manifest[section] ?? {}),
+    ),
+  );
+}
+
+function allowlisted(importer, file, specifier) {
+  return BOUNDARY_ALLOWLIST.some(
+    (entry) =>
+      entry.importer === importer &&
+      globMatches(entry.file, file) &&
+      globMatches(entry.specifier, specifier),
+  );
+}
+
+function globMatches(pattern, value) {
+  const regex = pattern
+    .split("**")
+    .map((part) =>
+      part
+        .split("*")
+        .map((segment) => segment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+        .join("[^/]*"),
+    )
+    .join(".*");
+  return new RegExp(`^${regex}$`).test(value);
+}
+
+export function boundaryFindings(root, packages, files = workspaceFiles(root)) {
+  const rooted = packages.map((item) => ({ ...item, root }));
+  const byName = new Map(rooted.map((item) => [item.name, item]));
+  const appPackages = rooted.filter((item) => /\/apps\/[^/]+$/.test(item.dir));
+  const builtins = new Set(
+    builtinModules.flatMap((name) => [name, `node:${name}`]),
+  );
+  const findings = [];
+  for (const file of files) {
+    const importer = packageRootFor(file, rooted);
+    if (!importer) continue;
+    const relativeFile = path
+      .relative(path.resolve(root, importer.dir), file)
+      .split(path.sep)
+      .join("/");
+    const declared = declaredDependencies(importer);
+    const source = readFileSync(file, "utf8");
+    for (const specifier of packageImports(root, file, source)) {
+      if (specifier.startsWith(".")) {
+        const targetPath = path.resolve(path.dirname(file), specifier);
+        const target = packageRootFor(targetPath, rooted);
+        const destinationApp = appPackages.find((app) => {
+          const dir = path.resolve(root, app.dir);
+          return (
+            targetPath === dir || targetPath.startsWith(`${dir}${path.sep}`)
+          );
+        });
+        if (importer.dir.includes("/packages/") && destinationApp)
+          findings.push({
+            rule: "package-imports-app",
+            importer: importer.name,
+            file: relativeFile,
+            specifier,
+            message: `${importer.name} package imports app ${destinationApp.name}`,
+          });
+        if (
+          target &&
+          target.name !== importer.name &&
+          !declared.has(target.name) &&
+          !allowlisted(importer.name, relativeFile, specifier)
+        )
+          findings.push({
+            rule: "relative-workspace-import",
+            importer: importer.name,
+            file: relativeFile,
+            specifier,
+            message: `${importer.name} reaches into ${target.name} by relative path without a declared package dependency`,
+          });
+        continue;
+      }
+      const name = packageName(specifier);
+      if (!name || builtins.has(name) || name.startsWith("node:")) continue;
+      const destination = byName.get(name);
+      if (
+        importer.dir.includes("/packages/") &&
+        destination?.dir.includes("/apps/")
+      )
+        findings.push({
+          rule: "package-imports-app",
+          importer: importer.name,
+          file: relativeFile,
+          specifier,
+          message: `${importer.name} package imports app ${destination.name}`,
+        });
+      if (destination && destination.name !== importer.name) continue;
+      if (importer.manifest && !declared.has(name))
+        findings.push({
+          rule: "undeclared-bare-import",
+          importer: importer.name,
+          file: relativeFile,
+          specifier,
+          message: `${importer.name} imports undeclared package ${name}`,
+        });
+    }
+  }
+  return findings;
+}
+
+export function checkBoundaries(root = rootFrom(), packages = discover(root)) {
+  const findings = boundaryFindings(root, packages);
+  if (findings.length) {
+    for (const finding of findings)
+      process.stderr.write(
+        `${finding.rule}: ${finding.file}: ${finding.message} (${finding.specifier})\n`,
+      );
+    return 1;
+  }
+  process.stdout.write(
+    `Workspace boundaries passed (${packages.length} packages; ${BOUNDARY_ALLOWLIST.length} documented crossings allowlisted).\n`,
+  );
+  return 0;
+}
+
+export function affectedPlan(root, base, packages, changedFiles) {
+  if (!changedFiles.length)
+    fail(`No changed files found by git diff --name-only ${base}...HEAD`);
+  const reasons = new Map();
+  const allPackages = (reason) =>
+    packages.forEach((item) =>
+      reasons.set(item.name, `conservative widening: ${reason}`),
+    );
+  const rootPolicy =
+    /^(?:package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|\.github\/|justfile(?:$|\/))/;
+  const policyChange = changedFiles.find((file) => rootPolicy.test(file));
+  if (policyChange) allPackages(`root policy file ${policyChange} changed`);
+  else {
+    for (const file of changedFiles) {
+      const owners = packages
+        .filter(
+          (item) =>
+            item.dir !== "." &&
+            (file === item.dir || file.startsWith(`${item.dir}/`)),
+        )
+        .sort((a, b) => b.dir.length - a.dir.length);
+      const owner =
+        owners[0] ??
+        (file.startsWith("workspaces/tooling/")
+          ? packages.find((item) => item.name === "codex-studio-tooling")
+          : null);
+      if (!owner) {
+        allPackages(`unowned file ${file} changed`);
+        break;
+      }
+      reasons.set(owner.name, `changed file ${file} belongs to ${owner.dir}`);
+    }
+  }
+  if (
+    ![...reasons.values()].some((reason) =>
+      reason.startsWith("conservative widening"),
+    )
+  ) {
+    const dependents = new Map(packages.map((item) => [item.name, new Set()]));
+    const cargoMetadata = packages.some((item) => item.ecosystem === "cargo")
+      ? JSON.parse(
+          runSync(
+            "cargo",
+            ["metadata", "--no-deps", "--format-version", "1"],
+            root,
+            "Cargo workspace graph",
+          ),
+        )
+      : null;
+    for (const item of packages) {
+      if (item.ecosystem === "pnpm") {
+        for (const dependency of declaredDependencies(item))
+          if (byWorkspaceDependency(item.manifest, dependency, packages))
+            dependents.get(dependency)?.add(item.name);
+      } else if (item.ecosystem === "cargo") {
+        for (const dependency of cargoMetadata.packages.find(
+          (pkg) => pkg.name === item.name,
+        )?.dependencies ?? [])
+          if (
+            packages.some(
+              (candidate) =>
+                candidate.name === dependency.name &&
+                candidate.ecosystem === "cargo",
+            )
+          )
+            dependents.get(dependency.name)?.add(item.name);
+      }
+    }
+    const queue = [...reasons.keys()];
+    while (queue.length) {
+      const dependency = queue.shift();
+      for (const dependent of dependents.get(dependency) ?? []) {
+        if (reasons.has(dependent)) continue;
+        reasons.set(dependent, `reverse dependency of ${dependency}`);
+        queue.push(dependent);
+      }
+    }
+  }
+  return packages
+    .filter((item) => reasons.has(item.name))
+    .map((item) => ({ package: item.name, reason: reasons.get(item.name) }));
+}
+
+function byWorkspaceDependency(manifestPath, dependency, packages) {
+  if (!manifestPath) return false;
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  return DECLARATION_SECTIONS.some((section) => {
+    const value = manifest[section]?.[dependency];
+    return (
+      typeof value === "string" &&
+      value.startsWith("workspace:") &&
+      packages.some((item) => item.name === dependency)
+    );
+  });
+}
+
+export function runContractsCheck(root = rootFrom()) {
+  process.stdout.write(
+    "Checking generated API contracts without writing files: pnpm run api:check\n",
+  );
+  const result = spawnSync("pnpm", ["run", "api:check"], {
+    cwd: root,
+    stdio: "inherit",
+  });
+  return result.status ?? 1;
+}
+
+function runAffected(root, base, dryRun) {
+  const changed = runSync(
+    "git",
+    ["diff", "--name-only", `${base}...HEAD`],
+    root,
+    "Changed-file discovery",
+  )
+    .split("\n")
+    .filter(Boolean);
+  const packages = discover(root);
+  const selection = affectedPlan(root, base, packages, changed);
+  process.stdout.write(
+    `Affected checks for ${base}...HEAD (${changed.length} changed files):\n`,
+  );
+  for (const item of selection)
+    process.stdout.write(
+      `- ${item.package}: ${item.reason}${dryRun ? `; command: just check ${item.package}` : ""}\n`,
+    );
+  if (dryRun) return 0;
+  for (const item of selection) {
+    const result = spawnSync("just", ["check", item.package], {
+      cwd: root,
+      stdio: "inherit",
+    });
+    if (result.status !== 0) return result.status ?? 1;
+  }
+  return 0;
+}
+
 export async function main(argv = process.argv.slice(2)) {
   justVersion();
   const [action, packageName, requestedCase, ...rest] = argv;
@@ -727,6 +1160,17 @@ export async function main(argv = process.argv.slice(2)) {
   if (action === "help" || action === "--help") {
     usage();
     return 0;
+  }
+  if (action === "contracts-check") return runContractsCheck(rootFrom());
+  if (action === "boundaries-check") return checkBoundaries(rootFrom());
+  if (action === "check-affected") {
+    if (!packageName || packageName.startsWith("-"))
+      fail("Usage: check-affected <base> [--dry-run]");
+    return runAffected(
+      rootFrom(),
+      packageName,
+      requestedCase === "--dry-run" || rest.includes("--dry-run"),
+    );
   }
   if (!["test", "test-plan", "check"].includes(action)) {
     usage();
