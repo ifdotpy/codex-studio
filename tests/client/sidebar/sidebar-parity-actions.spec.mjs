@@ -715,7 +715,22 @@ test("project pointer and keyboard order plus pin keyboard order persist on the 
     });
     await expect(otherProject).toBeVisible();
     await expect(otherProject).not.toHaveAttribute("aria-expanded");
-    const initialChats = await sidebar.locator("[data-chat]").count();
+    const visibleChats = sidebar.locator("[data-chat]");
+    await expect(visibleChats).toHaveCount(14);
+    const initialChats = await visibleChats.count();
+    const waitForOrderReceipt = () =>
+      expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              !Object.keys(localStorage).some(
+                (key) =>
+                  key.startsWith("codex-sidebar-order:") &&
+                  key.endsWith(":pending"),
+              ),
+          ),
+        )
+        .toBe(true);
     await otherProject.focus();
     await page.keyboard.press("Alt+ArrowUp");
     await expect
@@ -728,6 +743,18 @@ test("project pointer and keyboard order plus pin keyboard order persist on the 
             .length,
       )
       .toBe(1);
+    // Snapshot mutation precedes the POST receipt; wait until the pending write clears.
+    await waitForOrderReceipt();
+    await expect
+      .poll(() =>
+        sidebar
+          .locator(".sidebar-project")
+          .evaluateAll((rows) => rows.map((row) => row.dataset.projectPath)),
+      )
+      .toEqual([
+        JSON.stringify(["project", "local", "other-project"]),
+        JSON.stringify(["project", "local", "logical-project"]),
+      ]);
     await drag(page, homeProject, otherProject, 0.1);
     await expect
       .poll(() => fixture.local.snapshot.runtime.sidebarOrder.groups.projects)
@@ -739,6 +766,17 @@ test("project pointer and keyboard order plus pin keyboard order persist on the 
             .length,
       )
       .toBe(2);
+    await waitForOrderReceipt();
+    await expect
+      .poll(() =>
+        sidebar
+          .locator(".sidebar-project")
+          .evaluateAll((rows) => rows.map((row) => row.dataset.projectPath)),
+      )
+      .toEqual([
+        JSON.stringify(["project", "local", "logical-project"]),
+        JSON.stringify(["project", "local", "other-project"]),
+      ]);
     await otherProject.click();
     await expect(sidebar.locator("[data-chat]")).toHaveCount(initialChats);
     await menu(page, sidebar, "Local Root A", "Pin");
@@ -755,6 +793,7 @@ test("project pointer and keyboard order plus pin keyboard order persist on the 
             .length,
       )
       .toBe(3);
+    await waitForOrderReceipt();
     await expect(sidebar.getByRole("status")).toHaveText(
       "Moved to position 2 of 3",
     );
@@ -767,6 +806,7 @@ test("project pointer and keyboard order plus pin keyboard order persist on the 
             .length,
       )
       .toBe(4);
+    await waitForOrderReceipt();
     const key = JSON.stringify(["chats", sourcePath("local"), true, false]);
     expect(fixture.local.snapshot.runtime.sidebarOrder.groups[key]).toEqual([
       "root-a",

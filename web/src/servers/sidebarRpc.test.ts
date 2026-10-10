@@ -132,6 +132,21 @@ it("uses the frame API with the exact request identity and options", async () =>
   });
 });
 
+it("does not post a sidebar mutation without the owning frame session token", async () => {
+  await expect(
+    executeSidebarRequest(
+      {
+        action: "post",
+        path: "/api/projects",
+        body: { action: "reorder", request_id: "order-without-token" },
+      },
+      vi.fn(),
+      vi.fn(),
+    ),
+  ).rejects.toThrow("The sidebar server session is not ready.");
+  expect(post).not.toHaveBeenCalled();
+});
+
 it("denies non-sidebar API paths, credential options and unrelated commands", async () => {
   const refresh = vi.fn();
   const run = vi.fn();

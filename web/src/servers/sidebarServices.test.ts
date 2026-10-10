@@ -339,6 +339,62 @@ describe("owner sidebar services", () => {
     expect(b.requests).toEqual([]);
   });
 
+  it("uses each acknowledged owner revision even before a new snapshot renders", async () => {
+    const { model } = fixture();
+    const a = backend("local");
+    const b = backend("remote");
+    const services = createMergedSidebarServices(
+      model,
+      new Map([
+        ["local", a.api],
+        ["remote", b.api],
+      ]),
+      () => true,
+      {},
+    );
+    const projectOrder = [...model.order.projects].reverse();
+    const groups = { ...model.order, projects: projectOrder };
+    a.response({
+      revision: 3,
+      groups: { ...model.sources[0].sidebar.sidebarOrder!.groups },
+    });
+    await services
+      .owner({ kind: "order", group: "projects" })
+      .post("/api/projects", {
+        action: "reorder",
+        groups,
+        expected_revision: 10,
+        request_id: "first-order",
+      });
+    a.response({
+      revision: 4,
+      groups: { ...model.sources[0].sidebar.sidebarOrder!.groups },
+    });
+    const refreshedServices = createMergedSidebarServices(
+      model,
+      new Map([
+        ["local", a.api],
+        ["remote", b.api],
+      ]),
+      () => true,
+      {},
+    );
+    await refreshedServices
+      .owner({ kind: "order", group: "projects" })
+      .post("/api/projects", {
+        action: "reorder",
+        groups,
+        expected_revision: 11,
+        request_id: "second-order",
+      });
+    expect(
+      a.requests.map(
+        ({ body }) => (body as { expected_revision: number }).expected_revision,
+      ),
+    ).toEqual([2, 3]);
+    expect(b.requests).toEqual([]);
+  });
+
   it("refuses offline posts and unavailable canonical metadata without another owner", async () => {
     const { sources } = fixture();
     const model = mergeSidebar([sources[1]], 1, true);

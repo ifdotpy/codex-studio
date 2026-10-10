@@ -21,6 +21,14 @@ type Pending = {
   ownerId?: string;
   body: Extract<PostBody<"/api/projects">, { action: "reorder" }>;
 };
+
+export function sidebarOrderCanWrite(
+  sessionToken: string | undefined,
+  available: boolean | undefined,
+): boolean {
+  return available !== false && (!!sessionToken || available === true);
+}
+
 export function useSidebarOrder(
   key: string,
   server: ServerOrder | undefined,
@@ -49,7 +57,10 @@ export function useSidebarOrder(
   }, [key]);
   useEffect(() => {
     const migrationTarget = { kind: "order" as const, group: "projects" };
-    if (!server || (!sessionToken && !services.available?.(migrationTarget)))
+    if (
+      !server ||
+      !sidebarOrderCanWrite(sessionToken, services.available?.(migrationTarget))
+    )
       return;
     if (server.revision > revision.current) {
       revision.current = server.revision;
@@ -84,6 +95,7 @@ export function useSidebarOrder(
   const send = async (request: Pending, optimistic?: Order) => {
     if (busy.current) return false;
     busy.current = true;
+    let clearPending = false;
     try {
       localStorage.setItem(pendingKey, JSON.stringify(request));
       if (optimistic) setOrder(optimistic);
@@ -96,16 +108,18 @@ export function useSidebarOrder(
       });
       if (!("revision" in result))
         throw new Error("Invalid sidebar order response");
-      localStorage.removeItem(pendingKey);
-      requestBackend.current = null;
       if (result.revision >= revision.current) {
         revision.current = result.revision;
         setOrder(result.groups || {});
         save(key, result.groups || {});
       }
-      void refresh?.().catch((error) =>
-        notify?.(`Could not refresh sidebar order: ${errorText(error)}`),
-      );
+      try {
+        await refresh?.();
+      } catch (error) {
+        notify?.(`Could not refresh sidebar order: ${errorText(error)}`);
+      }
+      requestBackend.current = null;
+      clearPending = true;
       return true;
     } catch (error) {
       if (
@@ -114,8 +128,8 @@ export function useSidebarOrder(
         error.status < 500 &&
         error.status !== 408
       ) {
-        localStorage.removeItem(pendingKey);
         requestBackend.current = null;
+        clearPending = true;
         setOrder(server?.groups || {});
         notify?.(
           error.status === 409
@@ -135,6 +149,7 @@ export function useSidebarOrder(
       return false;
     } finally {
       busy.current = false;
+      if (clearPending) localStorage.removeItem(pendingKey);
     }
   };
   const rank = (group: string, id: string) => {
@@ -151,8 +166,9 @@ export function useSidebarOrder(
     if (from === to || !ids.includes(from) || !ids.includes(to)) return;
     const next = ids.filter((id) => id !== from);
     next.splice(next.indexOf(to) + Number(after), 0, from);
+    const target = { kind: "order" as const, group };
     if (
-      (!sessionToken && !services.available?.({ kind: "order", group })) ||
+      !sidebarOrderCanWrite(sessionToken, services.available?.(target)) ||
       !server ||
       server.groups === null ||
       busy.current
@@ -165,7 +181,7 @@ export function useSidebarOrder(
       return;
     }
     const value = { ...order, [group]: next };
-    if (services.available && !services.available({ kind: "order", group })) {
+    if (services.available && !services.available(target)) {
       notify?.("The sidebar server is offline or unavailable.");
       return;
     }
