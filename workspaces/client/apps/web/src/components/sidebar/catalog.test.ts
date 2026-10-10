@@ -4,6 +4,8 @@ import {
   createAppCatalogSelector,
   createSidebarCatalogSelector,
   createSidebarSearchSelector,
+  countProjectChats,
+  mostRecentActivity,
   isVisibleSidebarAgent,
   type SidebarOrder,
   type SidebarOverrides,
@@ -62,6 +64,18 @@ function reference(rows: Agent[], orders: SidebarOrder, peerTeams: PeerTeam[]) {
 }
 
 describe("incremental sidebar catalog", () => {
+  it("counts only listed chats in the current active or archived view", () => {
+    const select = createSidebarCatalogSelector();
+    const rows = [
+      agent("active"),
+      agent("archived", { archived: true }),
+      agent("worker", { isLead: false }),
+      agent("deleted", { deletedAt: 1 }),
+    ];
+    const listed = select(rows, overrides, teams, order).agents;
+    expect([...countProjectChats(listed, false)]).toEqual([["/work", 1]]);
+    expect([...countProjectChats(listed, true)]).toEqual([["/work", 1]]);
+  });
   it("retains all visible indexes when a hidden worker changes", () => {
     const select = createSidebarCatalogSelector();
     const rows = [
@@ -232,6 +246,28 @@ describe("incremental sidebar catalog", () => {
 });
 
 describe("App catalog", () => {
+  it("selects the most recent activity with a stable ID tie-break", () => {
+    expect(
+      mostRecentActivity([
+        agent("created", { created: 100 }),
+        agent("updated", { created: 1, updated: 50 }),
+      ])?.id,
+    ).toBe("created");
+    expect(
+      mostRecentActivity([
+        agent("z", { created: 10 }),
+        agent("a", { created: 10 }),
+      ])?.id,
+    ).toBe("a");
+    expect(
+      mostRecentActivity([
+        agent("z", { created: undefined, updated: undefined }),
+        agent("a", { created: undefined, updated: undefined }),
+      ])?.id,
+    ).toBe("a");
+    expect(mostRecentActivity([])).toBeUndefined();
+  });
+
   it("retains another tree and updates membership, source order and root selection", () => {
     const select = createAppCatalogSelector();
     const rows = [

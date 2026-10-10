@@ -4,21 +4,37 @@ import {
   sourcePath,
   scope,
 } from "./sidebar-parity-fixture.mjs";
-test("the shared home heading keeps its saved collapse after reload", async ({
+test("project headings ignore saved collapse state", async ({
   page,
   context,
 }, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 1100 });
   const f = await sidebarParityFixture(context);
+  await context.addInitScript(
+    ({ scope, localPath, remotePath }) => {
+      localStorage.setItem(
+        `codex-project-tree:${scope}`,
+        JSON.stringify({ [localPath]: true }),
+      );
+      localStorage.setItem(
+        `:server:remote:codex-project-tree:${scope}`,
+        JSON.stringify({ [remotePath]: true }),
+      );
+    },
+    { scope, localPath: sourcePath("local"), remotePath: sourcePath("remote") },
+  );
   try {
     const sidebar = await f.open(page);
-    const group = sidebar.getByRole("button", {
-      name: "Home project",
-      exact: true,
+    const group = sidebar.locator(".project-tree-toggle", {
+      hasText: "Home project",
     });
-    await expect(group).toHaveAttribute("aria-expanded", "true");
+    await expect(group).toBeVisible();
+    await expect(group).not.toHaveAttribute("aria-expanded");
+    const chats = sidebar.locator(".sidebar-project [data-chat]");
+    await expect(chats).toHaveCount(20);
+    const before = await chats.count();
     await group.click();
-    await expect(group).toHaveAttribute("aria-expanded", "false");
+    await expect(chats).toHaveCount(before);
     await page.reload();
     await expect(group).toBeVisible();
     const preferences = await page.evaluate(
@@ -38,13 +54,13 @@ test("the shared home heading keeps its saved collapse after reload", async ({
       contentType: "application/json",
     });
     expect(preferences.local[sourcePath("local")]).toBe(true);
-    expect(preferences.remote[sourcePath("remote")]).not.toBe(true);
-    await expect(group).toHaveAttribute("aria-expanded", "false");
+    expect(preferences.remote[sourcePath("remote")]).toBe(true);
+    await expect(group).not.toHaveAttribute("aria-expanded");
   } finally {
     await f.close();
   }
 });
-test("selecting a remote chat expands only the session view and explicit heading edits use home storage", async ({
+test("selecting a remote chat leaves saved project collapse state untouched", async ({
   page,
   context,
 }, testInfo) => {
@@ -75,11 +91,10 @@ test("selecting a remote chat expands only the session view and explicit heading
   try {
     await page.goto(f.local.origin + "/?studio-navigation=combined");
     const sidebar = page.locator("#sidebar");
-    const group = sidebar.getByRole("button", {
-      name: "Home project",
-      exact: true,
+    const group = sidebar.locator(".project-tree-toggle", {
+      hasText: "Home project",
     });
-    await expect(group).toHaveAttribute("aria-expanded", "false");
+    await expect(group).not.toHaveAttribute("aria-expanded");
     await sidebar
       .getByLabel("Filter projects and chats")
       .fill("Remote Saved pin");
@@ -99,7 +114,7 @@ test("selecting a remote chat expands only the session view and explicit heading
       .locator("[data-chat]")
       .first()
       .click();
-    await expect(group).toHaveAttribute("aria-expanded", "true");
+    await expect(group).not.toHaveAttribute("aria-expanded");
     const result = await page.evaluate(
       ({ scope }) => ({
         writes: window.__reviewWrites,
@@ -120,8 +135,6 @@ test("selecting a remote chat expands only the session view and explicit heading
     expect(result.local[sourcePath("local")]).toBe(true);
     expect(result.remote[sourcePath("remote")]).toBe(true);
     expect(result.writes).toEqual([]);
-    await group.click();
-    await group.click();
     const saved = await page.evaluate(
       ({ scope }) => ({
         local: JSON.parse(
@@ -134,7 +147,7 @@ test("selecting a remote chat expands only the session view and explicit heading
       }),
       { scope },
     );
-    expect(saved.local[sourcePath("local")]).toBe(false);
+    expect(saved.local[sourcePath("local")]).toBe(true);
     expect(saved.remote[sourcePath("remote")]).toBe(true);
   } finally {
     await f.close();
@@ -216,10 +229,10 @@ test("combined frames do not mount sidebars or migrate null groups", async ({
     await f.close();
   }
 });
-test("unregistered chat directories can collapse", async ({
+test("unregistered project headings do not collapse", async ({
   page,
   context,
-}, testInfo) => {
+}) => {
   test.setTimeout(60000);
   await page.setViewportSize({ width: 1440, height: 1100 });
   const f = await sidebarParityFixture(context);
@@ -227,11 +240,11 @@ test("unregistered chat directories can collapse", async ({
   f.remote.snapshot.runtime.peerTeams = [];
   try {
     const sidebar = await f.open(page);
-    const group = sidebar.getByRole("button", {
-      name: "/remote/project",
-      exact: true,
+    const group = sidebar.locator(".project-tree-toggle", {
+      hasText: "/remote/project",
     });
-    await expect(group).toHaveAttribute("aria-expanded", "true");
+    await expect(group).toBeVisible();
+    await expect(group).not.toHaveAttribute("aria-expanded");
     await group.click();
     await page.evaluate(
       () =>
@@ -239,13 +252,7 @@ test("unregistered chat directories can collapse", async ({
           requestAnimationFrame(() => requestAnimationFrame(resolve)),
         ),
     );
-    await expect(group).toHaveAttribute("aria-expanded", "false");
-    await testInfo.attach("unregistered-collapse", {
-      body: JSON.stringify({
-        expanded: await group.getAttribute("aria-expanded"),
-      }),
-      contentType: "application/json",
-    });
+    await expect(group).not.toHaveAttribute("aria-expanded");
   } finally {
     await f.close();
   }

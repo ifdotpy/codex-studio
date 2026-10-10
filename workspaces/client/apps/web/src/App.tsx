@@ -125,6 +125,8 @@ import { removeAllSendingMessages } from "./components/removeSendingMessages";
 import type { Attachment } from "./components/ComposerAttachments";
 import {
   defaultStudioPreferences,
+  MAX_HIDE_OLD_CHATS_THRESHOLD,
+  MIN_HIDE_OLD_CHATS_THRESHOLD,
   fontFamilies,
   formatSidebarShortcut,
   parseSidebarShortcut,
@@ -174,7 +176,10 @@ function isLeadCreateRequest(value: Json): value is LeadCreateRequest {
   );
 }
 import Sidebar from "./components/Sidebar";
-import { createAppCatalogSelector } from "./components/sidebar/catalog";
+import {
+  createAppCatalogSelector,
+  mostRecentActivity,
+} from "./components/sidebar/catalog";
 const emptyAgents: Agent[] = [];
 import {
   unreadResult,
@@ -399,6 +404,14 @@ export default function App() {
   const [studioPreferences, setStudioPreferences] = useState<StudioPreferences>(
     preferenceLoad.value,
   );
+  const [hideOldChatsThresholdDraft, setHideOldChatsThresholdDraft] = useState(
+    () => String(preferenceLoad.value.hideOldChatsThreshold),
+  );
+  useEffect(() => {
+    setHideOldChatsThresholdDraft(
+      String(studioPreferences.hideOldChatsThreshold),
+    );
+  }, [studioPreferences.hideOldChatsThreshold]);
   const [studioPreferencesError, setStudioPreferencesError] = useState(
     preferenceLoad.error,
   );
@@ -901,10 +914,12 @@ export default function App() {
     if (agent?.id === createdSelection.current) createdSelection.current = null;
     if (!opened || (!agent && !room && !legacy))
       setOpened(
-        leads.at(-1)?.id ||
-          data.runtime?.rooms
-            .filter((room) => room.radio?.direct && !room.userHidden)
-            .at(-1)?.id ||
+        mostRecentActivity(leads)?.id ||
+          mostRecentActivity(
+            data.runtime?.rooms.filter(
+              (room) => room.radio?.direct && !room.userHidden,
+            ) || [],
+          )?.id ||
           null,
       );
     else save(key, opened);
@@ -2280,6 +2295,7 @@ export default function App() {
           indicators={indicators}
           markUnread={(a) => void readState.markUnread(a)}
           markingRead={readState.marking}
+          hideOldChatsThreshold={studioPreferences.hideOldChatsThreshold}
           rename={rename}
           remove={remove}
           mobile={sidebar}
@@ -3049,6 +3065,39 @@ export default function App() {
                       </label>
                     ))}
                   </div>
+                </SettingsRow>
+                <SettingsRow
+                  label="Hide old chats"
+                  help="Projects with fewer chats always show all of them."
+                >
+                  <TextInput
+                    aria-label="Hide old chats"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    value={hideOldChatsThresholdDraft}
+                    onChange={(event) =>
+                      setHideOldChatsThresholdDraft(event.currentTarget.value)
+                    }
+                    onBlur={() => {
+                      const value = Number(hideOldChatsThresholdDraft);
+                      if (
+                        /^\d+$/.test(hideOldChatsThresholdDraft) &&
+                        Number.isInteger(value) &&
+                        value >= MIN_HIDE_OLD_CHATS_THRESHOLD &&
+                        value <= MAX_HIDE_OLD_CHATS_THRESHOLD
+                      ) {
+                        updateStudioPreferences({
+                          ...studioPreferences,
+                          hideOldChatsThreshold: value,
+                        });
+                        setHideOldChatsThresholdDraft(String(value));
+                      } else {
+                        setHideOldChatsThresholdDraft(
+                          String(studioPreferences.hideOldChatsThreshold),
+                        );
+                      }
+                    }}
+                  />
                 </SettingsRow>
                 <details className="studio-appearance-more">
                   <summary>More</summary>

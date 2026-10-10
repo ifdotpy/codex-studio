@@ -151,7 +151,7 @@ async function open() {
       serverDatabaseSuffix,
     );
   };
-  // Cached display does not authorize reads or draft writes against another Mac.
+  // Cached display does not authorize reads or draft writes against another computer.
   // Retain the original request after the grace period, and retry failed checks.
   let verified = !!identity;
   let firstCheck: ReturnType<typeof identify> | undefined = initialIdentity;

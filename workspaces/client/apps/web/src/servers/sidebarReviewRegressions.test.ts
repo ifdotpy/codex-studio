@@ -75,7 +75,7 @@ function preferences(a: SidebarSource, b?: SidebarSource) {
   const model = mergeSidebar(sources, 1, true);
   return { model, writes, cache: mergedSidebarPreferences(model, backends) };
 }
-it("an explicit shared heading edit writes only the home owner", () => {
+it("ignores explicit shared project heading edits", () => {
   const a = source("local"),
     b = source("remote");
   b.sidebar.projects[0].projectAliases = [
@@ -88,25 +88,18 @@ it("an explicit shared heading edit writes only the home owner", () => {
     ...previous,
     [model.projectKey("remote", "/remote")]: false,
   });
-  expect(writes.mock.calls.map((call) => call[0])).toEqual(["local"]);
+  expect(writes).not.toHaveBeenCalled();
+  expect(model.collapsed[model.projectKey("local", "/local")]).toBeUndefined();
 });
-it("an unregistered directory has an original collapse key", () => {
+it("ignores saved collapse state for an unregistered project directory", () => {
   const a = source("local");
   a.sidebar.projects = [];
-  a.sidebar.collapsed = {};
   const { model, writes, cache } = preferences(a);
   const key = "codex-project-tree:" + model.data.stateDir;
-  const previous = cache.saved<Record<string, boolean>>(key, {});
   const field = model.projectKey("local", "/local");
-  expect(
-    cache.editPreference(key, previous, { ...previous, [field]: true })[field],
-  ).toBe(true);
-  expect(writes).toHaveBeenCalledExactlyOnceWith(
-    "local",
-    "codex-project-tree:/same/state",
-    {},
-    { "/local": true },
-  );
+  expect(cache.saved<Record<string, boolean>>(key, {})[field]).toBeUndefined();
+  expect(model.collapsed[field]).toBeUndefined();
+  expect(writes).not.toHaveBeenCalled();
 });
 it("a reorder with 4000 chats on each server passes the real backend validator", () => {
   const a = source("local", 4000),
@@ -144,7 +137,12 @@ except Passed: print("validated")`;
   expect(
     execFileSync(
       "python3",
-      ["../../../runtime/apps/server/src/codex_python.py", "--exec", "-c", code],
+      [
+        "../../../runtime/apps/server/src/codex_python.py",
+        "--exec",
+        "-c",
+        code,
+      ],
       {
         input: JSON.stringify({
           action: "reorder",

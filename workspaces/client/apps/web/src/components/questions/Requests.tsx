@@ -301,9 +301,19 @@ function RequestCard({
     if (!open || !card.current) return;
     const node = card.current;
     const form = node.querySelector<HTMLElement>(".request-answer-form");
-    const transcript = node.closest("#messages");
+    const transcript = node.closest<HTMLElement>("#messages");
+    const requests = node.closest<HTMLElement>("#requests");
     if (!form || !transcript) return;
     const position = () => {
+      if (requests) {
+        const cardBounds = node.getBoundingClientRect();
+        const requestsBounds = requests.getBoundingClientRect();
+        if (
+          cardBounds.top < requestsBounds.top ||
+          cardBounds.top >= requestsBounds.bottom
+        )
+          requests.scrollTop += cardBounds.top - requestsBounds.top - 12;
+      }
       if (onAnswerPosition) onAnswerPosition(node);
       else
         transcript.scrollTop +=
@@ -311,26 +321,11 @@ function RequestCard({
           transcript.getBoundingClientRect().top -
           12;
     };
-    const fit = () => {
-      const available =
-        transcript.clientHeight -
-        (form.getBoundingClientRect().top - node.getBoundingClientRect().top) -
-        24;
-      form.style.setProperty(
-        "--request-answer-height",
-        `${Math.max(120, available)}px`,
-      );
-    };
-    fit();
-    position();
-    const observer = new ResizeObserver(() => {
-      fit();
-      position();
-    });
+    const observer = new ResizeObserver(() => position());
     observer.observe(transcript);
-    const frame = requestAnimationFrame(() => {
-      position();
-    });
+    if (requests) observer.observe(requests);
+    position();
+    const frame = requestAnimationFrame(() => position());
     return () => {
       cancelAnimationFrame(frame);
       observer.disconnect();
@@ -645,7 +640,16 @@ export default function Requests({
     ? requests.filter((r) => r.agent === mainAgentId)
     : [];
   return (
-    <div id="requests">
+    <div
+      id="requests"
+      onFocusCapture={(event) => {
+        const target = event.target;
+        if (target instanceof HTMLElement) {
+          const option = target.closest<HTMLElement>(".request-answer-option");
+          option?.scrollIntoView({ block: "nearest" });
+        }
+      }}
+    >
       {mainRequests.length > 0 && (
         <section aria-label="Main-agent requests">
           <h3 className="main-agent-requests-heading">Main-agent requests</h3>

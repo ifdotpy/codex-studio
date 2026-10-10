@@ -138,9 +138,17 @@ for (const [theme, viewport] of [
         sidebar.getByRole("button", { name: /Local chat/ }).first(),
       ).toBeVisible();
       await expect(sidebar.locator(".sidebar-project")).toHaveCount(1);
-      await expect(
-        sidebar.getByRole("button", { name: "Home project", exact: true }),
-      ).toBeVisible();
+      const projectName = sidebar.locator(".project-tree-toggle", {
+        hasText: "Home project",
+      });
+      await expect(projectName).toBeVisible();
+      await expect(projectName).not.toHaveAttribute("aria-expanded");
+      expect(await projectName.evaluate((element) => element.tagName)).toBe(
+        "BUTTON",
+      );
+      const chatCount = await sidebar.locator("[data-chat]").count();
+      await projectName.click();
+      await expect(sidebar.locator("[data-chat]")).toHaveCount(chatCount);
       await expect(page.getByLabel("Studio server")).toHaveCount(0);
       await expect(
         sidebar.getByRole("button", { name: "Studio settings", exact: true }),

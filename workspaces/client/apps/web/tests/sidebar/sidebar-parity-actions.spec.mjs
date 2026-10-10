@@ -12,9 +12,16 @@ async function menu(page, sidebar, name, item) {
   await page.getByRole("menuitem", { name: item, exact: true }).click();
 }
 async function projectMenu(page, sidebar, item) {
-  await button(sidebar, "Home project").hover();
+  await sidebar
+    .locator(".project-tree-toggle", { hasText: "Home project" })
+    .hover();
   await button(sidebar, "Options for project Home project").click();
-  await page.getByRole("menuitem", { name: item, exact: true }).click();
+  await page
+    .getByRole("menuitem", {
+      name: item === "Show old" ? /^Show old \(\d+\)$/ : item,
+      exact: item !== "Show old",
+    })
+    .click();
 }
 async function listMenu(page, sidebar, item) {
   await button(sidebar, "Project list options").click();
@@ -120,12 +127,29 @@ test("saved folders, nested folders, order, pins, teams, compact and collapse re
       await expect(chat(sidebar, "Local Root A")).toHaveCount(0);
     }
     await sidebar.getByLabel("Filter projects and chats").fill("");
-    await listMenu(page, sidebar, "Expand all projects");
+    const projectHeading = sidebar.locator(".project-tree-toggle", {
+      hasText: "Home project",
+    });
+    await expect(projectHeading).not.toHaveAttribute("aria-expanded");
+    const visibleBeforeClick = await sidebar.locator("[data-chat]").count();
+    await projectHeading.click();
+    await expect(sidebar.locator("[data-chat]")).toHaveCount(
+      visibleBeforeClick,
+    );
+    await expect(chat(sidebar, "Remote Nested chat")).toHaveCount(0);
+    await sidebar
+      .getByRole("button", { name: "Remote Nested", exact: false })
+      .first()
+      .click();
+    await sidebar
+      .getByRole("button", { name: /Remote Saved team/ })
+      .first()
+      .click();
     await expect(chat(sidebar, "Remote Nested chat")).toBeVisible();
     await expect(chat(sidebar, "Remote Team A")).toBeVisible();
     await sidebar.locator(".project-show-all").click();
     await expect(chat(sidebar, "Remote Old 5")).toBeVisible();
-    await expect(sidebar.locator(".project-show-all")).toHaveText("Show less");
+    await expect(sidebar.locator(".project-show-all")).toHaveText("Hide old");
     await sidebar.locator(".project-show-all").click();
     await expect(chat(sidebar, "Remote Old 5")).toHaveCount(0);
     await listMenu(page, sidebar, "Show archived chats");
@@ -146,7 +170,10 @@ test("pointer and keyboard reorder preserve source order, and chats can enter an
 }) => {
   const { fixture, sidebar } = await setup(context, page);
   try {
-    await listMenu(page, sidebar, "Expand all projects");
+    await sidebar
+      .getByRole("button", { name: /Remote Saved team/ })
+      .first()
+      .click();
     const member = chat(sidebar, "Remote Team A").locator("[data-chat]");
     const other = chat(sidebar, "Remote Team B").locator("[data-chat]");
     await drag(page, other, member, 0.1);
@@ -192,7 +219,7 @@ test("pointer and keyboard reorder preserve source order, and chats can enter an
     await drag(
       page,
       chat(sidebar, "Remote Root A").locator("[data-chat]"),
-      button(sidebar, "Home project"),
+      sidebar.locator(".project-tree-toggle", { hasText: "Home project" }),
     );
     await expect
       .poll(() =>
@@ -230,7 +257,11 @@ test("pointer and keyboard reorder preserve source order, and chats can enter an
             .projectFolder,
       )
       .toBe("empty");
-    await drag(page, root, button(sidebar, "Home project"));
+    await drag(
+      page,
+      root,
+      sidebar.locator(".project-tree-toggle", { hasText: "Home project" }),
+    );
     await expect
       .poll(
         () =>
@@ -352,7 +383,10 @@ test("conversion from a peer team to a subagent keeps the owner and asks for con
 }) => {
   const { fixture, sidebar } = await setup(context, page);
   try {
-    await listMenu(page, sidebar, "Expand all projects");
+    await sidebar
+      .getByRole("button", { name: /Remote Saved team/ })
+      .first()
+      .click();
     await drag(
       page,
       chat(sidebar, "Remote Team A").locator("[data-chat]"),
@@ -392,8 +426,8 @@ test("project rename, compact, folders, account, new chats, shared chats and dir
 }) => {
   const { fixture, sidebar } = await setup(context, page);
   try {
-    await projectMenu(page, sidebar, "Show more");
-    await expect(sidebar.locator(".project-show-all")).toHaveText("Show less");
+    await projectMenu(page, sidebar, "Show old");
+    await expect(sidebar.locator(".project-show-all")).toHaveText("Hide old");
     await projectMenu(page, sidebar, "Rename project");
     await page
       .getByRole("textbox", { name: "Project name", exact: true })
@@ -497,7 +531,7 @@ test("project rename, compact, folders, account, new chats, shared chats and dir
       )
       .toBe(true);
     await expect(
-      button(sidebar, "Home New shared chat Codex, MAC"),
+      button(sidebar, "Home New shared chat Codex, LOC"),
     ).toBeVisible();
   } finally {
     await fixture.close();
@@ -649,7 +683,7 @@ test("folder create, nested create, rename, remove and chat membership use origi
   }
 });
 
-test("project and pin keyboard order persist on the home server without changing remote order", async ({
+test("project pointer and keyboard order plus pin keyboard order persist on the home server", async ({
   page,
   context,
 }) => {
@@ -673,12 +707,78 @@ test("project and pin keyboard order persist on the home server without changing
   );
   try {
     const sidebar = await fixture.open(page);
-    await expect(button(sidebar, "Other project")).toBeVisible();
-    await button(sidebar, "Other project").focus();
+    const otherProject = sidebar.locator(".project-tree-toggle", {
+      hasText: "Other project",
+    });
+    const homeProject = sidebar.locator(".project-tree-toggle", {
+      hasText: "Home project",
+    });
+    await expect(otherProject).toBeVisible();
+    await expect(otherProject).not.toHaveAttribute("aria-expanded");
+    const visibleChats = sidebar.locator("[data-chat]");
+    await expect(visibleChats).toHaveCount(14);
+    const initialChats = await visibleChats.count();
+    const waitForOrderReceipt = () =>
+      expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              !Object.keys(localStorage).some(
+                (key) =>
+                  key.startsWith("codex-sidebar-order:") &&
+                  key.endsWith(":pending"),
+              ),
+          ),
+        )
+        .toBe(true);
+    await otherProject.focus();
     await page.keyboard.press("Alt+ArrowUp");
     await expect
       .poll(() => fixture.local.snapshot.runtime.sidebarOrder.groups.projects)
       .toEqual(["/same/other", sourcePath("local")]);
+    await expect
+      .poll(
+        () =>
+          fixture.calls.local.filter((call) => call.body.action === "reorder")
+            .length,
+      )
+      .toBe(1);
+    // Snapshot mutation precedes the POST receipt; wait until the pending write clears.
+    await waitForOrderReceipt();
+    await expect
+      .poll(() =>
+        sidebar
+          .locator(".sidebar-project")
+          .evaluateAll((rows) => rows.map((row) => row.dataset.projectPath)),
+      )
+      .toEqual([
+        JSON.stringify(["project", "local", "other-project"]),
+        JSON.stringify(["project", "local", "logical-project"]),
+      ]);
+    await drag(page, homeProject, otherProject, 0.1);
+    await expect
+      .poll(() => fixture.local.snapshot.runtime.sidebarOrder.groups.projects)
+      .toEqual([sourcePath("local"), "/same/other"]);
+    await expect
+      .poll(
+        () =>
+          fixture.calls.local.filter((call) => call.body.action === "reorder")
+            .length,
+      )
+      .toBe(2);
+    await waitForOrderReceipt();
+    await expect
+      .poll(() =>
+        sidebar
+          .locator(".sidebar-project")
+          .evaluateAll((rows) => rows.map((row) => row.dataset.projectPath)),
+      )
+      .toEqual([
+        JSON.stringify(["project", "local", "logical-project"]),
+        JSON.stringify(["project", "local", "other-project"]),
+      ]);
+    await otherProject.click();
+    await expect(sidebar.locator("[data-chat]")).toHaveCount(initialChats);
     await menu(page, sidebar, "Local Root A", "Pin");
     const pin = chat(sidebar, "Local Root A").locator("[data-chat]");
     await expect(
@@ -692,7 +792,8 @@ test("project and pin keyboard order persist on the home server without changing
           fixture.calls.local.filter((call) => call.body.action === "reorder")
             .length,
       )
-      .toBe(2);
+      .toBe(3);
+    await waitForOrderReceipt();
     await expect(sidebar.getByRole("status")).toHaveText(
       "Moved to position 2 of 3",
     );
@@ -704,7 +805,8 @@ test("project and pin keyboard order persist on the home server without changing
           fixture.calls.local.filter((call) => call.body.action === "reorder")
             .length,
       )
-      .toBe(3);
+      .toBe(4);
+    await waitForOrderReceipt();
     const key = JSON.stringify(["chats", sourcePath("local"), true, false]);
     expect(fixture.local.snapshot.runtime.sidebarOrder.groups[key]).toEqual([
       "root-a",
@@ -728,7 +830,7 @@ test("project and pin keyboard order persist on the home server without changing
             ),
           ),
       )
-      .toEqual(["Other project", "Home project"]);
+      .toEqual(["Home project", "Other project"]);
     await expect(async () => {
       const pins = await restored
         .locator(".sidebar-row")

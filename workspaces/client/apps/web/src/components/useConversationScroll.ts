@@ -209,7 +209,7 @@ export function useConversationScroll(id: string, ready: boolean) {
     remember();
     persist();
   };
-  const revealRequest = (node: HTMLElement) => {
+  const revealRequest = useCallback((node: HTMLElement) => {
     const root = scroll.current;
     if (!root || !root.contains(node)) return;
     updateFollow(false);
@@ -223,7 +223,7 @@ export function useConversationScroll(id: string, ready: boolean) {
         node.getBoundingClientRect().top - root.getBoundingClientRect().top,
     };
     persist();
-  };
+  }, []);
   const getAnchorId = () => {
     const root = scroll.current;
     if (!root) return null;

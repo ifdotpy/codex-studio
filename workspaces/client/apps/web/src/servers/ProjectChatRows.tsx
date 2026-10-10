@@ -1,6 +1,7 @@
 import ChatStatus from "../components/agents/ChatStatus";
 import { ProviderMark } from "../components/AccountTiles";
 import type { ChatIndicator } from "../components/chat-status/chatStatusModel";
+import { DEFAULT_LOCAL_SERVER_ALIAS } from "./serverAliases";
 import "./sidebar-status.css";
 
 export type ProjectChat = {
@@ -30,6 +31,28 @@ export function keepCompactChat(chat: ProjectChat, now = Date.now() / 1000) {
   );
 }
 
+export function compactVisibleChats(
+  chats: ProjectChat[],
+  compact: boolean,
+  threshold: number,
+  selected?: { id: string; serverId: string },
+) {
+  const shouldCompact = compact && chats.length >= threshold;
+  return chats.filter(
+    (chat) =>
+      !shouldCompact ||
+      (selected?.id === chat.id && selected.serverId === chat.serverId) ||
+      keepCompactChat(chat),
+  );
+}
+
+export function shouldShowOldChatsControl(
+  chatCount: number,
+  threshold: number,
+) {
+  return chatCount >= threshold;
+}
+
 export function ChatServerLine({
   provider,
   alias,
@@ -53,6 +76,7 @@ export default function ProjectChatRows({
   selected,
   aliases,
   compact,
+  hideOldChatsThreshold,
   query,
   open,
   setCompact,
@@ -61,15 +85,17 @@ export default function ProjectChatRows({
   selected?: { id: string; serverId: string };
   aliases: Record<string, string>;
   compact: boolean;
+  hideOldChatsThreshold: number;
   query?: string;
   open: (chat: ProjectChat) => void;
   setCompact: (value: boolean) => void;
 }) {
   const isSelected = (chat: ProjectChat) =>
     selected?.id === chat.id && selected.serverId === chat.serverId;
-  const visible = chats.filter(
-    (chat) => query || !compact || isSelected(chat) || keepCompactChat(chat),
-  );
+  const shouldCompact = compact && chats.length >= hideOldChatsThreshold;
+  const visible = query
+    ? chats
+    : compactVisibleChats(chats, compact, hideOldChatsThreshold, selected);
   const hidden = chats.length - visible.length;
   return (
     <>
@@ -85,7 +111,9 @@ export default function ProjectChatRows({
             <strong>{chat.name}</strong>
             <ChatServerLine
               provider={chat.provider || undefined}
-              alias={aliases[chat.serverId || "local"] || "MAC"}
+              alias={
+                aliases[chat.serverId || "local"] || DEFAULT_LOCAL_SERVER_ALIAS
+              }
             />
           </span>
           <ChatStatus
@@ -104,14 +132,16 @@ export default function ProjectChatRows({
           />
         </button>
       ))}
-      {!query && (compact ? hidden > 0 : chats.length > 0) && (
-        <button
-          className="project-show-more"
-          onClick={() => setCompact(!compact)}
-        >
-          {compact ? `Show more (${hidden})` : "Show less"}
-        </button>
-      )}
+      {!query &&
+        shouldShowOldChatsControl(chats.length, hideOldChatsThreshold) &&
+        (shouldCompact ? hidden > 0 : chats.length > 0) && (
+          <button
+            className="project-show-more"
+            onClick={() => setCompact(!compact)}
+          >
+            {shouldCompact ? `Show old (${hidden})` : "Hide old"}
+          </button>
+        )}
     </>
   );
 }

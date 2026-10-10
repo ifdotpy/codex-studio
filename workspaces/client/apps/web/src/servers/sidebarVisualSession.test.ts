@@ -197,7 +197,7 @@ it("selection expansion stays in the session across snapshots and never writes o
   expect(writes).not.toHaveBeenCalled();
 });
 
-it("an explicit home collapse survives an unchanged saved value and accepts a later owner preference change", () => {
+it("ignores saved project collapse from the home and remote owners", () => {
   const { sources, writes, wrap } = setup();
   sources[1].online = true;
   sources[0].sidebar.collapsed = { "/local": false };
@@ -208,22 +208,9 @@ it("an explicit home collapse survives an unchanged saved value and accepts a la
   const { model, backend } = wrap();
   const field = model.projectKey("local", "/local");
   const key = `codex-project-tree:${model.data.stateDir}`;
-  const previous = backend.saved<Record<string, boolean>>(key, {});
   expect(
-    backend.editPreference(key, previous, { ...previous, [field]: true })[
-      field
-    ],
-  ).toBe(true);
-  expect(writes.mock.calls.map((call) => call[0])).toEqual(["local"]);
-  sources[0].sidebar = { ...sources[0].sidebar, collapsed: { "/local": true } };
-  expect(wrap().backend.saved<Record<string, boolean>>(key, {})[field]).toBe(
-    true,
-  );
-  sources[0].sidebar = {
-    ...sources[0].sidebar,
-    collapsed: { "/local": false },
-  };
-  expect(wrap().backend.saved<Record<string, boolean>>(key, {})[field]).toBe(
-    false,
-  );
+    backend.saved<Record<string, boolean>>(key, {})[field],
+  ).toBeUndefined();
+  expect(model.collapsed[field]).toBeUndefined();
+  expect(writes).not.toHaveBeenCalled();
 });

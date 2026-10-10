@@ -377,7 +377,7 @@ describe("complete multi-server sidebar projection", () => {
 
 describe("original saved sidebar state", () => {
   it.each([undefined, false, true])(
-    "reads a shared heading collapse from its home owner (remote: %s)",
+    "ignores saved project collapse state in every source (remote: %s)",
     (remoteValue) => {
       const local = source("local");
       const remote = source("remote", [
@@ -396,10 +396,10 @@ describe("original saved sidebar state", () => {
       const model = mergeSidebar([local, remote]);
       const heading = model.projectKey("local", path);
       expect(model.projectKey("remote", path)).toBe(heading);
-      expect(model.collapsed[heading]).toBe(true);
+      expect(model.collapsed[heading]).toBeUndefined();
       local.sidebar.collapsed = {};
       remote.sidebar.collapsed = { [path]: true };
-      expect(mergeSidebar([local, remote]).collapsed[heading]).toBe(false);
+      expect(mergeSidebar([local, remote]).collapsed[heading]).toBeUndefined();
     },
   );
 
@@ -453,7 +453,7 @@ describe("original saved sidebar state", () => {
         `codex-project-tree:${model.data.stateDir}`,
         {},
       )[model.projectKey("local", path)],
-    ).toBe(false);
+    ).toBeUndefined();
     expect(
       cache.saved<Record<string, boolean>>(
         `codex-project-compact:${model.data.stateDir}`,
@@ -464,7 +464,7 @@ describe("original saved sidebar state", () => {
     expect(b.writes).toEqual([]);
   });
 
-  it("reads original namespaces without writing and uses home collapse with shared compact visibility", () => {
+  it("reads original namespaces without writing and ignores project collapse with shared compact visibility", () => {
     const local = source("local");
     const remote = source("remote", [
       {
@@ -492,7 +492,7 @@ describe("original saved sidebar state", () => {
     ).toEqual({ [model.projectKey("local", path)]: false });
     expect(
       cache.saved(`codex-project-tree:${model.data.stateDir}`, {}),
-    ).toEqual({ [model.projectKey("local", path)]: true });
+    ).toEqual({});
     expect(a.writes).toEqual([]);
     expect(b.writes).toEqual([]);
     expect(local.sidebar.collapsed).toEqual({ [path]: true });

@@ -116,7 +116,7 @@ export function BrowserDictation({
         "not-allowed":
           "Microphone access was denied. Allow access in the browser settings, then try again.",
         "service-not-allowed":
-          "Speech recognition is unavailable in this browser. Use keyboard dictation or the Mac app.",
+          "Speech recognition is unavailable in this browser. Use keyboard dictation or the desktop app.",
         network:
           "The browser speech service lost its connection. The text already shown is saved on this device.",
         "no-speech":
@@ -199,7 +199,7 @@ export function BrowserDictation({
           {!supported && (
             <p role="status">
               Dictation is unavailable in this browser. Use keyboard dictation
-              or the Mac app.
+              or the desktop app.
             </p>
           )}
           <label className="dictation-language">
