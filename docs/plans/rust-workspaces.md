@@ -91,15 +91,15 @@ Verified from source:
   measurement-only; production restart safety has not been established here.
 - No `.github/workflows/` directory exists at the inspected revision.
 
-| ID   | Approved decision                                                                                                                                                                                | Status / consequence                                                                                 |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
-| D-01 | Eventually migrate the owned production Python backend, supervisor, and CLI to Rust; retain React/Electron and the required Node SDK bridge; Python may remain in development/testing.           | Approved. Core-only would change the completion criteria.                                            |
-| D-02 | Domain source workspaces share one root Cargo workspace and one root pnpm workspace, with one lockfile per ecosystem.                                                                            | Approved. Domain independence means independent checks/ownership, not independent release universes. |
-| D-03 | Permit a bounded UI reconnect during supervisor-backed backend replacement, preserving active work; approve the outage bound after isolated measurement and before rollout.                      | Approved. Not permission to restart the user's backend.                                              |
-| D-04 | Use pinned Just as a thin command facade; keep Cargo, pnpm, and the existing Python runner as execution owners.                                                                                  | Approved for the later M-01 stage; no new build scheduler or cloud cache.                            |
-| D-05 | Keep Pydantic/OpenAPI authoritative initially; transfer each migrated HTTP domain's schema authority to Rust with compatibility checks and one composed API schema.                              | Approved; no simultaneous handwritten authorities.                                                   |
-| D-06 | Preserve current Linux, macOS, WSL, and Windows-specific behavior where currently supported; report the actual checked platform matrix.                                                          | Approved compatibility requirement; this does not promise new platform support.                      |
-| D-07 | During the first orchestration-core Rust slice, use a private, versioned local subprocess protocol; Python retains writes and effects. Retire the bridge as ownership moves to the Rust backend. | Approved; no public listener or language FFI initially.                                              |
+| ID   | Approved decision                                                                                                                                                                                                                                       | Status / consequence                                                                                              |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| D-01 | Eventually migrate the owned production Python backend, supervisor, and CLI to Rust; retain React/Electron and the required Node SDK bridge; Python may remain in development/testing.                                                                  | Approved. Core-only would change the completion criteria.                                                         |
+| D-02 | Domain source workspaces share one root Cargo workspace and one root pnpm workspace, with one lockfile per ecosystem.                                                                                                                                   | Approved. Domain independence means independent checks/ownership, not independent release universes.              |
+| D-03 | Permit a bounded UI reconnect during supervisor-backed backend replacement, preserving active work; approve the outage bound after isolated measurement and before rollout.                                                                             | Approved. Not permission to restart the user's backend.                                                           |
+| D-04 | Use pinned Just as a thin command facade; keep Cargo, pnpm, and the existing Python runner as execution owners.                                                                                                                                         | Approved for the later M-01 stage; no new build scheduler or cloud cache.                                         |
+| D-05 | Keep Pydantic/OpenAPI authoritative initially; transfer each migrated HTTP domain's schema authority to Rust with compatibility checks and one composed API schema.                                                                                     | Approved; no simultaneous handwritten authorities.                                                                |
+| D-06 | Preserve current Linux, macOS, WSL, and Windows-specific behavior where currently supported; report the actual checked platform matrix.                                                                                                                 | Approved compatibility requirement; this does not promise new platform support.                                   |
+| D-07 | During the first orchestration-core Rust slice, call `studio-operations` in-process through a private PyO3 extension with a versioned JSON boundary; Python retains persistence and effects. Retire the binding as ownership moves to the Rust backend. | Revised and approved 2026-10-10; no public listener, subprocess, shadow execution, or duplicated lifecycle rules. |
 
 **P-01: update-contract opportunity.** D-03 changes the live-update contract.
 Issue #9 records a historical inventory of 27 patch modules and 17 related test
@@ -278,18 +278,17 @@ and shutdown.
 Initially keep `workspaces/runtime/apps/server/src/studio_api/schema.py` and `generate_types.py` as the
 source pipeline. Generate without opening user state or starting providers.
 
-For the first Rust slice, define a small internal request/response contract with
-protocol version, scoped request ID, input generation, typed event/state, and
-explicit success/error/unknown variants. Frame messages with bounded lengths;
-reserve stdout for protocol and stderr for diagnostics; detect premature exit,
-invalid frames, incompatible versions, and deadline expiration. The caller
-retains the authoritative snapshot. Rust returns the expected state revision with
-its decision; Python checks that revision in the same transaction that persists
-the decision and outgoing intent. A stale decision is discarded and may be
-recomputed from fresh state without repeating any external effect. The evaluator
-is a long-lived local child, not a new process per event. A failed evaluation
-produces no execution
-intent to apply. No replay of effects is hidden in this temporary bridge.
+For the first Rust slice, expose only `transition(state_json, event_json)` and
+`PROTOCOL_VERSION` from the private PyO3 module. Serde JSON carries the existing
+typed Rust state, event, and decision directly in process; it is an FFI data
+encoding, not a separate wire protocol. Python reconstructs the state from the
+stored record, calls the core while holding the existing lock and transaction,
+and persists the returned decision there. Missing or mismatched modules fail
+backend startup with the explicit Cargo build command; installation and desktop
+packaging copy a previously built platform library and never build implicitly.
+There is no subprocess, decision comparison, shadow mode, or second Python
+lifecycle implementation. Python continues to own authorization, SQLite,
+record/payload shape, timing, and provider effects until a later ownership stage.
 
 For each HTTP domain migration, one change transfers schema ownership and route
 ownership together. Rust-owned DTOs produce that domain's OpenAPI fragment;
@@ -372,7 +371,7 @@ provider, or unrelated tests unless that selected behavior requires them.
 Compiling the selected package and its declared dependencies is allowed; building
 unrelated applications is not. Keep fixture setup small and local. A pure domain
 test takes typed inputs and checks transitions/effect intents without launching
-Python, SQLite, or the evaluator subprocess.
+Python, SQLite, a provider, or the application.
 
 **R-36.** A plan command reports selection, native command, required setup,
 reason for each dependency/check, and any execution-cost category before running.
@@ -484,7 +483,7 @@ stages; this document deliberately does not duplicate completion status.
 | M-02  | Relocate the source tree and migrate npm to pnpm with compatibility launchers; fix packaging, installs, inventories, imports, test discovery, and docs together.                                                                                                                     | M-00                                                |
 | M-01  | Add pinned Just and root Cargo workspace policies with a real first Rust member: the read-only diagnostics CLI. Preserve its installed command, flags, output, and HTTP caller; validate packaging. Wrap current checks; introduce CI discovery and dependency policy.               | M-02                                                |
 | M-03  | Independently runnable package tests, deterministic contract generation, boundary checks, and migration fixtures.                                                                                                                                                                    | M-01; proceed incrementally alongside M-02          |
-| M-04  | First Rust operation-lifecycle package plus private evaluator bridge; compare decisions without effects, then connect one real fixture-backed caller. Python still owns writes/effects.                                                                                              | Relevant M-02/M-03 slices                           |
+| M-04  | Rust operation-lifecycle core called in-process by the required PyO3 binding; connect the tool-request caller and remove its Python lifecycle decisions. Python keeps database writes and provider effects.                                                                          | Relevant M-02/M-03 slices                           |
 | M-05  | Transfer operation decisions/execution and recovery ownership for one complete slice using the single database owner. Move physical storage ownership only with an exclusive handoff and access through its transaction interface; migrate remaining operation domains individually. | M-04; AC-06–AC-08, AC-11                            |
 | M-06  | Isolated supervisor update measurements and decision under #9; implement safe backend replacement only after its gate.                                                                                                                                                               | M-00 baseline; research may run alongside M-01–M-05 |
 | M-07  | Migrate scheduler, process control, provider adapters, workspace/move/federation operations, and remaining stateful services, one caller-complete slice at a time.                                                                                                                   | M-05 and relevant M-06 lifecycle evidence           |
