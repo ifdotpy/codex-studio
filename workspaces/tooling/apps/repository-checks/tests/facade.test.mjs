@@ -96,6 +96,7 @@ test("Cargo uses manifest package filters and its native summary detects zero ma
   assert.deepEqual(
     commandFor("/repo", item, "test", "cli::tests::help", {
       passthrough: ["--exact", "--test", "integration"],
+      cargoTargets: ["--test", "compatibility"],
     }),
     [
       [
@@ -104,6 +105,8 @@ test("Cargo uses manifest package filters and its native summary detects zero ma
           "test",
           "-p",
           item.name,
+          "--test",
+          "compatibility",
           "cli::tests::help",
           "--",
           "--exact",
@@ -139,12 +142,20 @@ test("selection parser preserves multiword name filters and Cargo pass-through",
     ]),
     {
       caseName: "errorPresentation",
-      options: { name: "renders readable error", passthrough: [] },
+      options: {
+        name: "renders readable error",
+        passthrough: [],
+        cargoTargets: [],
+      },
     },
   );
   assert.deepEqual(parseSelection("case", ["--", "--exact", "--test", "x"]), {
     caseName: "case",
-    options: { name: "", passthrough: ["--exact", "--test", "x"] },
+    options: {
+      name: "",
+      passthrough: ["--exact"],
+      cargoTargets: ["--test", "x"],
+    },
   });
 });
 

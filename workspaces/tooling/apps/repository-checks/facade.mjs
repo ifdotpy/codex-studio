@@ -263,6 +263,7 @@ export function commandFor(root, item, action, caseName = "", options = {}) {
             "test",
             "-p",
             item.name,
+            ...(options.cargoTargets ?? []),
             ...(caseName ? [caseName] : []),
             ...(options.passthrough?.length
               ? ["--", ...options.passthrough]
@@ -403,7 +404,7 @@ function plan(root, item, action, caseName, commands, options = {}) {
 
 function selectorDescription(item, caseName, options) {
   if (item.ecosystem === "cargo")
-    return `Cargo test-name substring${options.passthrough?.length ? `; pass-through after --: ${options.passthrough.join(" ")}` : ""}`;
+    return `Cargo test-name substring${options.cargoTargets?.length ? `; Cargo target selection: ${options.cargoTargets.join(" ")}` : ""}${options.passthrough?.length ? `; test harness args after --: ${options.passthrough.join(" ")}` : ""}`;
   if (item.ecosystem === "server")
     return "server runner --filter suite substring";
   const manifest = manifestFor(item);
@@ -662,11 +663,32 @@ function usage() {
 export function parseSelection(requestedCase, rest) {
   let name = "";
   let passthrough = [];
+  let cargoTargets = [];
   const flags = [];
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
     if (arg === "--") {
-      passthrough = rest.slice(index + 1).filter((value) => value !== "--json");
+      const forwarded = rest
+        .slice(index + 1)
+        .filter((value) => value !== "--json");
+      for (let cursor = 0; cursor < forwarded.length; cursor += 1) {
+        const option = forwarded[cursor];
+        if (["--test", "--bin", "--example", "--bench"].includes(option)) {
+          if (!forwarded[cursor + 1]) fail(`${option} requires a target name`);
+          cargoTargets.push(option, forwarded[cursor + 1]);
+          cursor += 1;
+        } else if (
+          [
+            "--lib",
+            "--bins",
+            "--examples",
+            "--benches",
+            "--all-targets",
+          ].includes(option)
+        ) {
+          cargoTargets.push(option);
+        } else passthrough.push(option);
+      }
       break;
     }
     if (arg === "--name") {
@@ -684,7 +706,7 @@ export function parseSelection(requestedCase, rest) {
   }
   return {
     caseName: [requestedCase, ...flags].filter(Boolean).join(" "),
-    options: { name, passthrough },
+    options: { name, passthrough, cargoTargets },
   };
 }
 
