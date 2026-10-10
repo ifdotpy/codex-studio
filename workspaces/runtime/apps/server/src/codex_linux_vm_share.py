@@ -215,6 +215,18 @@ def _mount_or_report(client: Client, project: dict[str, Any], password: str, hin
     return mounted
 
 
+def upload_archive(client: Client, archive: Path, begin: dict[str, Any], operation: str) -> None:
+    """Send a tar archive with the guest tree upload protocol; each call keeps its request ID."""
+    client.call('upload.begin', begin, request_id=operation + ':begin', timeout=30)
+    with archive.open('rb') as stream:
+        sequence = 0
+        while data := stream.read(512 * 1024):
+            client.call('upload.chunk', {'uploadId': begin['uploadId'], 'seq': sequence,
+                'data': base64.b64encode(data).decode()}, request_id=operation + ':chunk:' + str(sequence), timeout=30)
+            sequence += 1
+    client.call('upload.commit', {'uploadId': begin['uploadId']}, request_id=operation + ':upload', timeout=1810)
+
+
 def import_project(client: Client, project_id: str, source: str | Path, owner: str | None,
                    request_id: str | None, *, incremental: bool,
                    expected_state_id: str | None) -> dict[str, Any]:
@@ -267,21 +279,16 @@ def import_project(client: Client, project_id: str, source: str | Path, owner: s
                        'root': '/var/lib/codex-studio/projects/layr-import-' + operation}
             _save(state_path, pending)
         begin = {key: pending[key] for key in ('uploadId', 'root', 'totalBytes', 'sha256', 'mode', 'deletePaths')}
-        client.call('upload.begin', begin, request_id=operation + ':begin', timeout=30)
-        with archive.open('rb') as stream:
-            sequence = 0
-            while data := stream.read(512 * 1024):
-                client.call('upload.chunk', {'uploadId': operation, 'seq': sequence,
-                    'data': base64.b64encode(data).decode()}, request_id=operation + ':chunk:' + str(sequence), timeout=30)
-                sequence += 1
-        client.call('upload.commit', {'uploadId': operation}, request_id=operation + ':upload', timeout=1810)
+        upload_archive(client, archive, begin, operation)
         params = {'projectId': project_id, 'source': pending['root'], 'owner': owner,
                   'incremental': incremental, 'expectedStateId': expected_state_id}
         project = client.call('project.import', params, request_id=operation + ':import', timeout=1810)
         password = _credential(client)
         project['share'] = client.call('share.status', {}, timeout=30)
         project['mount'] = _mount_or_report(client, project, password, share_hint(source))
-        _save(directory / 'project.json', {'projectId': project_id, 'source': source_path})
+        # The state right after the import is the base of the first Mac sync round.
+        _save(directory / 'project.json', {'projectId': project_id, 'source': source_path,
+                                           'importStateId': project.get('stateId')})
         # Keep the small receipt association. Never remove an uncertain archive.
         pending['result'] = project
         _save(state_path, pending)

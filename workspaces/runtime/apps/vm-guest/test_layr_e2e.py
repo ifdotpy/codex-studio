@@ -11,6 +11,7 @@ lead's reviewed merge, the project rules, a host_exec slot there and back, and a
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 from pathlib import Path
 import shutil
@@ -117,6 +118,84 @@ class LayrEndToEnd(unittest.IsolatedAsyncioTestCase):
         removed = await self.call(self.agents, "line.remove", {"agentId": worker_id})
         self.assertEqual(removed["state"], "removed")
         self.assertFalse(line.exists())
+
+
+
+@unittest.skipUnless(ROOT and os.geteuid() == 0 and sys.platform == "linux", "needs LAYR_E2E_ROOT, root and Linux")
+class MacSyncEndToEnd(LayrEndToEnd):
+    """mac_sync.py against a real layr daemon (docs/vm-mac-sync.md)."""
+
+    test_lead_worker_merge_and_host_slot = None
+
+    async def make_upload(self, files):
+        root = Path("/var/lib/codex-studio/projects") / ("sync-" + uuid.uuid4().hex[:12])
+        root.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, root, True)
+        for rel, data in files.items():
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text(data)
+        return str(root)
+
+    async def test_mac_changes_merge_into_main_and_main_changes_come_back(self):
+        from mac_sync import MacSync
+        imported = await self.projects.dispatch(uuid.uuid4().hex, "project.import",
+                                                {"projectId": self.project, "source": str(self.upload)})
+        start = imported["stateId"]
+        sync = MacSync(self.state, self.root, self.projects)
+        owner = self.projects.owner(self.project)["owner"]
+        main = self.projects.folder(self.project) / "lines/main"
+
+        # An agent changes the first line of app.txt in main.
+        (main / "app.txt").write_text("ONE\ntwo\nthree\n")
+        await sync.layr(["commit", "-qam", "agent change"], cwd=main, owner=owner)
+
+        # The Mac changes the last line of app.txt and adds a file, both based on the import.
+        upload = await self.make_upload({"app.txt": "one\ntwo\nTHREE\n", "notes.md": "mac notes\n"})
+        first = await sync.apply("r1", {"projectId": self.project, "operationId": "round-1", "upload": upload,
+                                        "since": [start], "entries": [
+                                            {"path": "app.txt", "kind": "file", "base": start},
+                                            {"path": "notes.md", "kind": "file", "base": None}]})
+        self.assertEqual(first["merge"], "merged")
+        self.assertEqual(first["conflicts"], [])
+        self.assertEqual((main / "app.txt").read_text(), "ONE\ntwo\nTHREE\n")
+        self.assertEqual((main / "notes.md").read_text(), "mac notes\n")
+        outbound = {row["path"]: row for row in first["outbound"][start]}
+        self.assertEqual(set(outbound), {"app.txt", "notes.md"})
+        read = await sync.read("r2", {"projectId": self.project, "stateId": first["mainStateId"], "path": "app.txt"})
+        self.assertEqual(base64.b64decode(read["data"]).decode(), "ONE\ntwo\nTHREE\n")
+        self.assertTrue(read["eof"])
+        # A repeated operation returns its receipt and applies nothing twice.
+        again = await sync.apply("r3", {"projectId": self.project, "operationId": "round-1", "upload": upload,
+                                        "since": [start], "entries": []})
+        self.assertEqual(again, first)
+
+        # The same line changed on both sides: a conflict, no markers anywhere, main unchanged.
+        agreed = first["mainStateId"]
+        (main / "app.txt").write_text("ONE\ntwo\nagent three\n")
+        await sync.layr(["commit", "-qam", "agent again"], cwd=main, owner=owner)
+        upload = await self.make_upload({"app.txt": "one\ntwo\nmac three\n"})
+        upload_root = Path(upload)
+        (upload_root / "app.txt").write_text("ONE\ntwo\nmac three\n")
+        second = await sync.apply("r4", {"projectId": self.project, "operationId": "round-2", "upload": upload,
+                                         "since": [agreed], "entries": [
+                                             {"path": "app.txt", "kind": "file", "base": agreed}]})
+        self.assertEqual(second["conflicts"], ["app.txt"])
+        self.assertEqual((main / "app.txt").read_text(), "ONE\ntwo\nagent three\n")
+        line = self.projects.folder(self.project) / "lines/mac"
+        self.assertNotIn("<<<<<<<", (line / "app.txt").read_text())
+
+        # Uncommitted lead work in main makes a round wait, never a conflict.
+        upload = await self.make_upload({"other.txt": "x\n"})
+        (main / "scratch.txt").write_text("lead work in progress\n")
+        third = await sync.apply("r5", {"projectId": self.project, "operationId": "round-3", "upload": upload,
+                                        "since": [second["mainStateId"]], "entries": [
+                                            {"path": "other.txt", "kind": "file", "base": None}]})
+        self.assertIn(third["merge"], {"merged", "refused"})
+        self.assertEqual(third["mergeConflicts"], [])
+
+        page = await sync.hashes("r6", {"projectId": self.project, "stateId": start})
+        self.assertIn("app.txt", page["items"])
+        self.assertNotIn(".git", {path.split("/")[0] for path in page["items"]})
 
 
 if __name__ == "__main__":

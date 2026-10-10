@@ -1,6 +1,7 @@
 # Mac folder sync for layr projects
 
-Status: design (2026-10-10), decision 24 in [btrfs-local-vcs.md](btrfs-local-vcs.md).
+Status: phase 1 implemented (2026-10-10), decision 24 in
+[btrfs-local-vcs.md](btrfs-local-vcs.md).
 Owner of the decisions: the user.
 
 ## Goal
@@ -94,10 +95,29 @@ the backend. A dropped-events flag or a helper restart triggers a full scan.
   paused, conflict (count), or error with its reason.
 - The project menu offers pause and resume, and the conflict choices.
 
+## Implementation
+
+- Mac side: `workspaces/runtime/apps/server/src/codex_vm_mac_sync.py`. The runtime
+  maintenance tick starts rounds every 10 s for each VM project with a Mac folder
+  (`layr-projects/<id>/project.json`), only while the VM runs. Per project, the folder
+  `layr-projects/<id>/sync/` holds `manifest.json` (agreed content and its base state
+  per path), `held.json` (sent content that is not agreed yet: a conflict, or Mac work
+  waiting for a merge), `pending.json` (the round to repeat after a lost reply) and
+  `status.json`. `config.json` with `{"enabled": false}` pauses the project.
+- Guest side: `workspaces/runtime/apps/vm-guest/mac_sync.py`, broker methods
+  `sync.mac.apply`, `sync.mac.read` and `sync.mac.hashes`. Receipts per operation make a
+  repeated call return the first result. The project user owns the `mac` and `mac-view`
+  lines; layr adds Mac files that Git ignores by name, so they reach main.
+- `project.json` records `importStateId`, the base of a project's first round. A project
+  imported before this change has none: its first round agrees only on files equal to
+  main, and every other difference waits in `status.json` (`choices`).
+- Checks: `test_codex_vm_mac_sync.py` (Mac side), and the opt-in guest end-to-end tests
+  `test_layr_e2e.py` and `test_mac_sync_e2e.py` with a real layr daemon.
+
 ## Phases
 
 1. Manifest, scan, inbound into the `mac` line, merge, outbound and agree, with a
-   polling scan. Tests with fakes, the guest end-to-end test, and a live round.
+   polling scan. Tests with fakes, the guest end-to-end test, and a live round. (Done.)
 2. The FSEvents helper.
 3. Conflict UI, the lead message, and the push rule.
 4. Sync state in the sidebar.

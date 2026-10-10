@@ -59,6 +59,18 @@ class Broker:
             self.handlers.update({method: handler for method in module.METHODS})
         self.share = Share(state, root)
         self.projects = Projects(state, root, self.share, self.agents)
+        # Mac folder sync works on the project lines as the project user (docs/vm-mac-sync.md).
+        try:
+            import mac_sync
+        except ModuleNotFoundError as exc:
+            if exc.name != "mac_sync":
+                raise
+        else:
+            handler = mac_sync.MacSync(state, root, self.projects)
+            require(not self.methods.intersection(mac_sync.METHODS), "The admin method is registered twice")
+            self.methods.update(mac_sync.METHODS)
+            self.read_methods.update(mac_sync.READ_METHODS)
+            self.handlers.update({method: handler for method in mac_sync.METHODS})
 
     def close(self):
         self.db.close()
