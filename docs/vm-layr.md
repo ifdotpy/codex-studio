@@ -39,6 +39,22 @@ It creates an `import-*` line for review.
 It does not replace the main line.
 Use `layr export` when you need a normal copy outside the VM.
 
+### Migration
+
+`codex_layr_migration.py PROJECT_FOLDER...` (installed app scripts, Studio Python, VM
+running) moves a project and its Git worktrees into layr:
+
+- It imports the project with the code rule above, with Mac folder sync paused
+  (`sync/config.json`); the user turns sync on per project.
+- Each worktree of the project's repositories (in `.worktrees` at any depth or elsewhere)
+  becomes a line `wt-<repository>-<folder>` that starts at main. The repository folder of
+  the line takes the worktree's files: committed and uncommitted work, and files that Git
+  ignores such as `.env`, without `.git` and regenerable folders (guest method
+  `sync.mac.worktree`).
+- The Mac worktrees stay. `layr-projects/<id>/worktrees.json` records each moved
+  worktree with its line and state; a repeated run skips them. `--dry-run` lists what
+  would move.
+
 ### Sidebar readiness
 
 On macOS, each project with a folder on this server has `layrReadiness` in its

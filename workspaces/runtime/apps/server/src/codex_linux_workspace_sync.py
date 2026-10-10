@@ -150,7 +150,8 @@ def archive_source(root, archive_path, baseline=None):
     skipped = _code_only_skips(root, [repo['path'] for repo in detected], excludes) | set(excludes)
     def in_skipped(relative):
         parts = relative.split('/')
-        return any('/'.join(parts[:index]) in skipped for index in range(1, len(parts) + 1))
+        # Worktrees of nested repositories too: they are lines of their own, not code here.
+        return '.worktrees' in parts or any('/'.join(parts[:index]) in skipped for index in range(1, len(parts) + 1))
     current = [dict(repo) for repo in detected if repo['path'] == '.' or not in_skipped(repo['path'])]
     full = baseline is None or not any(r['path'] == '.' for r in current)
     object_excludes = {('.git' if repo['path'] == '.' else repo['path']+'/.git')+'/objects' for repo in current}

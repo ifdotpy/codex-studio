@@ -71,11 +71,13 @@ class SourceArchives(unittest.TestCase):
         (nested / 'code.txt').write_text('nested code')
         (nested / 'out').mkdir()
         (nested / 'out/big').write_text('nested output')
+        (nested / '.worktrees/fix').mkdir(parents=True)
+        (nested / '.worktrees/fix/.git').write_text('gitdir: elsewhere')
         result, names = self.archive('code.tar.gz')
         for kept in ('.env', 'crate/src.rs', 'crate/Cargo.toml', 'nested/code.txt', 'nested/.git/HEAD', '.git/HEAD'):
             self.assertIn(kept, names)
         for skipped in ('data', 'data/clone/.git', 'build-cache', 'node_modules', 'crate/target',
-                        'src/__pycache__', 'nested/out'):
+                        'src/__pycache__', 'nested/out', 'nested/.worktrees'):
             self.assertNotIn(skipped, names)
         self.assertEqual(sorted(repo['path'] for repo in result['repositories']), ['.', 'nested'])
 

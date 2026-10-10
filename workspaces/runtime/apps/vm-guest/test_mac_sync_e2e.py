@@ -222,3 +222,64 @@ class MacSyncRounds(base.LayrEndToEnd):
         self.assertEqual((main / "app.txt").read_text(), "ONE\ntwo\nthree\nFOUR\n")
         self.assertEqual((mac / "app.txt").read_text(), "ONE\ntwo\nthree\nFOUR\n")
 
+    async def test_a_mac_worktree_becomes_a_line(self):
+        import codex_layr_migration as migration
+        from upload import extract_tree
+        mac, sync, owner, main, project, round_ = await self.start()
+        lines = self.projects.folder(self.project) / "lines"
+
+        async def move(worktree, name, subpath, operation):
+            archive = Path(tempfile.mkdtemp()) / "worktree.tar.gz"
+            migration.worktree_archive(worktree, archive)
+            upload = Path("/var/lib/codex-studio/projects") / ("mac-wt-" + operation[4:28])
+            if not upload.exists():
+                upload.mkdir(parents=True)
+                extract_tree(archive, upload)
+            return await sync.dispatch(uuid.uuid4().hex, "sync.mac.worktree", {
+                "projectId": self.project, "operationId": operation, "line": name, "subpath": subpath,
+                "upload": str(upload), "message": "Worktree " + name}, None)
+
+        # A worktree of the project repository: changed, new, ignored and deleted files.
+        worktree = Path(tempfile.mkdtemp(prefix="mac-worktree-")) / "topic"
+        subprocess.run(["git", "-C", str(mac), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(mac), "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", "base"],
+                       check=True)
+        subprocess.run(["git", "-C", str(mac), "worktree", "add", "-q", "-b", "topic", str(worktree)], check=True)
+        (worktree / "app.txt").write_text("worktree version\n")
+        (worktree / "new.txt").write_text("new in the worktree\n")
+        (worktree / ".env").write_text("SECRET=worktree\n")
+        (worktree / "README.md").unlink()
+        (worktree / "node_modules/x").mkdir(parents=True)
+        (worktree / "node_modules/x/index.js").write_text("not sent\n")
+        result = await move(worktree, "wt-topic", ".", "mac-" + "1" * 32)
+        line = lines / "wt-topic"
+        self.assertEqual((line / "app.txt").read_text(), "worktree version\n")
+        self.assertEqual((line / ".env").read_text(), "SECRET=worktree\n")
+        self.assertFalse((line / "README.md").exists())
+        self.assertFalse((line / "node_modules").exists())
+        self.assertEqual((main / "app.txt").read_text(), "one\ntwo\nthree\n")
+        self.assertTrue((main / "README.md").exists())
+        shown = await sync.layr(["show", "--stat", "HEAD"], cwd=line, owner=owner)
+        self.assertIn(".env", shown)
+        # A repeated request after a lost reply returns the receipt.
+        again = await move(worktree, "wt-topic", ".", "mac-" + "1" * 32)
+        self.assertEqual(again["stateId"], result["stateId"])
+
+        # A worktree of a nested repository replaces only that folder.
+        (main / "sub").mkdir()
+        (main / "sub/lib.txt").write_text("main lib\n")
+        (main / "sub/old.txt").write_text("gone in the worktree\n")
+        await sync.layr(["add", "-A"], cwd=main, owner=owner)
+        await sync.layr(["commit", "-qm", "sub"], cwd=main, owner=owner)
+        nested = Path(tempfile.mkdtemp(prefix="mac-nested-"))
+        subprocess.run(["git", "init", "-q", str(nested)], check=True)
+        (nested / "lib.txt").write_text("worktree lib\n")
+        await move(nested, "wt-sub-fix", "sub", "mac-" + "2" * 32)
+        fixed = lines / "wt-sub-fix"
+        self.assertEqual((fixed / "sub/lib.txt").read_text(), "worktree lib\n")
+        self.assertFalse((fixed / "sub/old.txt").exists())
+        self.assertEqual((fixed / "app.txt").read_text(), "one\ntwo\nthree\n")
+        self.assertTrue((fixed / "README.md").exists())
+        with self.assertRaises(Exception):
+            await move(nested, "wt-sub-fix", "sub", "mac-" + "3" * 32)
+

@@ -28,7 +28,8 @@ from common import GuestError, atomic_json, require
 from host_exec_protocol import inside, relative
 from layr_share import command, project_id
 
-METHODS = {"sync.mac.apply", "sync.mac.read", "sync.mac.hashes", "sync.mac.head", "sync.mac.handoff"}
+METHODS = {"sync.mac.apply", "sync.mac.read", "sync.mac.hashes", "sync.mac.head", "sync.mac.handoff",
+           "sync.mac.worktree"}
 READ_METHODS = {"sync.mac.read", "sync.mac.hashes", "sync.mac.head"}
 KEPT_RECEIPTS = 200
 LINE, VIEW = "mac", "mac-view"
@@ -38,6 +39,10 @@ STATE_ID = re.compile(r"[0-9a-f]{7,64}")
 OPERATION = re.compile(r"[A-Za-z0-9_-]{1,100}")
 UPLOADS = Path("/var/lib/codex-studio/projects")
 SKIPPED = {".git"}
+LINE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}")
+# Folders that a build makes again: a worktree import neither sends nor removes them.
+REGENERABLE = {"node_modules", ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+               ".turbo", ".next", "target"}
 
 
 def _state(value: Any) -> str:
@@ -376,6 +381,88 @@ class MacSync:
                 shutil.rmtree(params["upload"], ignore_errors=True)
             return result
 
+    async def worktree(self, request_id: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Copy a Mac worktree into a new line. The line starts at main; the folder `subpath`
+        (the repository of the worktree) takes the uploaded tree, and its files that the upload
+        lacks go. Git metadata and regenerable folders stay as main has them."""
+        project = project_id(params.get("projectId"))
+        name = params.get("line")
+        require(isinstance(name, str) and LINE_NAME.fullmatch(name) and ".." not in name
+                and not name.endswith(".lock") and name not in {"main", LINE, VIEW, "mac-conflict"},
+                "Invalid line name")
+        subpath = params.get("subpath", ".")
+        subpath = "." if subpath == "." else relative(subpath)
+        message = params.get("message")
+        require(isinstance(message, str) and 0 < len(message) <= 2000, "Invalid commit message")
+        operation = params.get("operationId")
+        require(isinstance(operation, str) and OPERATION.fullmatch(operation), "Invalid sync operation ID")
+        source = params.get("upload")
+        require(isinstance(source, str) and Path(source).parent == UPLOADS
+                and Path(source).resolve() == Path(source) and Path(source).is_dir(),
+                "The worktree upload must be a completed upload root")
+        receipts = self.state / "mac-sync" / project
+        receipt = receipts / (operation + ".json")
+        if receipt.exists():
+            return json.loads(receipt.read_text())
+        async with self.locks.setdefault(project, asyncio.Lock()):
+            owner, main, _mac, _view = await self.lines(project)
+            line = main.parent / name
+            require(not line.exists(), "The line exists already: " + name)
+            user = self.projects.owner(project)
+            await self.layr(["branch", name, "main", "--owner", owner], cwd=main, owner=owner)
+            identity = "mac-worktree:" + project + ":" + operation
+            stale = self.state / "imports" / hashlib.sha256(identity.encode()).hexdigest()
+            if stale.exists():
+                await command(["btrfs", "subvolume", "delete", stale])
+            frozen = await self.projects.freeze_source(Path(source), identity)
+            try:
+                prefix = "" if subpath == "." else subpath + "/"
+                base = line if subpath == "." else inside(line, subpath)
+
+                def files(root: Path) -> set[str]:
+                    found = set()
+                    for directory, folders, names in os.walk(root, followlinks=False):
+                        folders[:] = [f for f in folders if f not in SKIPPED and f not in REGENERABLE
+                                      and not (Path(directory) / f).is_symlink()]
+                        links = [f for f in os.listdir(directory) if (Path(directory) / f).is_symlink()
+                                 and f not in names]
+                        for item in names + links:
+                            found.add((Path(directory) / item).relative_to(root).as_posix())
+                    return found
+
+                wanted = files(frozen)
+                present = files(base) if base.is_dir() else set()
+                for rel in sorted(present - wanted):
+                    self.write(line, prefix + rel, None, user["uid"], user["gid"])
+                for rel in sorted(wanted):
+                    entry = _entry(frozen / rel)
+                    target = line / (prefix + rel)
+                    if target.is_dir() and not target.is_symlink():
+                        shutil.rmtree(target)
+                    for parent in reversed(Path(prefix + rel).parents):
+                        if parent != Path(".") and (line / parent).is_file():
+                            (line / parent).unlink()
+                    if _entry(target) != entry:
+                        self.write(line, prefix + rel, entry, user["uid"], user["gid"])
+                await self.layr(["add", "-A"], cwd=line, owner=owner)
+                # Files Git ignores, such as .env, are part of the worktree too.
+                names = [prefix + rel for rel in sorted(wanted)]
+                for start in range(0, len(names), 500):
+                    await self.layr(["add", "-f", "--", *names[start:start + 500]], cwd=line, owner=owner)
+                if await self.layr(["status", "--porcelain"], cwd=line, owner=owner):
+                    await self.layr(["commit", "-q", "-m", message], cwd=line, owner=owner)
+            except BaseException:
+                await self.run(["branch", "-D", name], cwd=main, owner=owner)
+                raise
+            finally:
+                await command(["btrfs", "subvolume", "delete", frozen])
+            result = {"projectId": project, "line": name, "subpath": subpath, "files": len(wanted),
+                      "stateId": await self.head(line, owner)}
+            receipts.mkdir(parents=True, mode=0o700, exist_ok=True)
+            atomic_json(receipt, result)
+            shutil.rmtree(source, ignore_errors=True)
+            return result
+
     async def main_head(self, request_id: str, params: dict[str, Any]) -> dict[str, Any]:
         project = project_id(params.get("projectId"))
         owner = self.projects.owner(project)["owner"]
@@ -430,4 +517,6 @@ class MacSync:
             return await self.main_head(request_id, params)
         if method == "sync.mac.handoff":
             return await self.handoff(request_id, params)
+        if method == "sync.mac.worktree":
+            return await self.worktree(request_id, params)
         return await self.hashes(request_id, params)
