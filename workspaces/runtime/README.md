@@ -19,6 +19,7 @@ through their app interfaces. Shared packages must not import apps or acquire
 runtime state without a real caller and a focused test.
 
 For one hypothesis, use `just test server <suite-filter>`; for a server change,
-use `just check server`. The root [`justfile`](../../justfile) is the discoverable
+use `just check server`. `just test-plan server <suite-filter>` prints the
+runner's exact filter command without execution. The root [`justfile`](../../justfile) is the discoverable
 entry point; the Python runner owns suite discovery and filtering. The pre-PR
 server/client gate is documented in [docs/testing.md](../../docs/testing.md).

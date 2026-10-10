@@ -16,7 +16,8 @@ There are no client packages yet. The desktop app assembles the web build and
 runtime; the web app depends on the server's HTTP contract and must not access
 SQLite or provider credentials directly.
 
-For one hypothesis, use `just test codex-agents-web <file-or-test-name>`; for a
+For one hypothesis, use `just test codex-agents-web <file-path-substring>`;
+add `--name <pattern>` to select a named Vitest case within that file. For a
 renderer change, use `just check codex-agents-web`. The root
 [`justfile`](../../justfile) discovers package names from manifests. App
 manifests and Vitest own test discovery and selection. The pre-PR server/client

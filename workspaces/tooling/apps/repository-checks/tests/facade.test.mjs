@@ -1,8 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { commandFor, parseCounts } from "../facade.mjs";
+import {
+  commandFor,
+  parseCounts,
+  parseSelection,
+  pruneLogs,
+} from "../facade.mjs";
+import { mkdtempSync, mkdirSync, statSync, rmSync, utimesSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
-test("pnpm Vitest selection forwards file and name filters to Vitest", () => {
+test("pnpm Vitest positional selection is a file path substring; --name is a native name filter", () => {
   const item = {
     name: "codex-agents-web",
     ecosystem: "pnpm",
@@ -30,7 +38,9 @@ test("pnpm Vitest selection forwards file and name filters to Vitest", () => {
     ],
   );
   assert.deepEqual(
-    commandFor(process.cwd(), item, "test", "renders retry button"),
+    commandFor(process.cwd(), item, "test", "src/errorPresentation", {
+      name: "renders retry button",
+    }),
     [
       [
         "pnpm",
@@ -42,6 +52,7 @@ test("pnpm Vitest selection forwards file and name filters to Vitest", () => {
           "run",
           "--config",
           "vitest.unit.config.ts",
+          "src/errorPresentation",
           "-t",
           "renders retry button",
         ],
@@ -83,6 +94,26 @@ test("Cargo uses manifest package filters and its native summary detects zero ma
     ["cargo", ["test", "-p", item.name, "cli::tests::help"]],
   ]);
   assert.deepEqual(
+    commandFor("/repo", item, "test", "cli::tests::help", {
+      passthrough: ["--exact", "--test", "integration"],
+    }),
+    [
+      [
+        "cargo",
+        [
+          "test",
+          "-p",
+          item.name,
+          "cli::tests::help",
+          "--",
+          "--exact",
+          "--test",
+          "integration",
+        ],
+      ],
+    ],
+  );
+  assert.deepEqual(
     parseCounts(
       item,
       "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out",
@@ -95,6 +126,86 @@ test("Cargo uses manifest package filters and its native summary detects zero ma
       summaryFound: true,
     },
   );
+});
+
+test("selection parser preserves multiword name filters and Cargo pass-through", () => {
+  assert.deepEqual(
+    parseSelection("errorPresentation", [
+      "--name",
+      "renders",
+      "readable",
+      "error",
+      "--json",
+    ]),
+    {
+      caseName: "errorPresentation",
+      options: { name: "renders readable error", passthrough: [] },
+    },
+  );
+  assert.deepEqual(parseSelection("case", ["--", "--exact", "--test", "x"]), {
+    caseName: "case",
+    options: { name: "", passthrough: ["--exact", "--test", "x"] },
+  });
+});
+
+test("composed package checks invoke only mapped local scripts, never install or build unrelated packages", () => {
+  for (const [item, action] of [
+    [
+      {
+        name: "codex-agents-web",
+        ecosystem: "pnpm",
+        manifest: new URL(
+          "../../../../client/apps/web/package.json",
+          import.meta.url,
+        ),
+      },
+      "check",
+    ],
+    [
+      {
+        name: "codex-agents-desktop",
+        ecosystem: "pnpm",
+        manifest: new URL(
+          "../../../../client/apps/desktop/package.json",
+          import.meta.url,
+        ),
+      },
+      "test",
+    ],
+  ]) {
+    const commands = commandFor(process.cwd(), item, action);
+    assert.ok(commands.length > 0);
+    for (const [bin, args] of commands) {
+      assert.equal(bin, "pnpm");
+      assert.ok(args.includes("--filter"));
+      assert.ok(!args.some((arg) => /^(install|build)$/.test(arg)));
+      assert.ok(
+        !args.some(
+          (arg) => arg.startsWith("codex-agents-") && arg !== item.name,
+        ),
+      );
+    }
+  }
+});
+
+test("focused log cache prunes runs older than fourteen days and retains recent runs", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-facade-cache-test-"));
+  try {
+    const stale = path.join(root, "run-stale");
+    const recent = path.join(root, "run-recent");
+    mkdirSync(stale);
+    mkdirSync(recent);
+    const now = Date.now();
+    const old = new Date(now - 15 * 24 * 60 * 60 * 1000);
+    const newDate = new Date(now - 1 * 24 * 60 * 60 * 1000);
+    utimesSync(stale, old, old);
+    utimesSync(recent, newDate, newDate);
+    pruneLogs(root, now);
+    assert.throws(() => statSync(stale));
+    assert.ok(statSync(recent).isDirectory());
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("server summaries count assertion scripts as executed suites and reject no runnable suite output", () => {
