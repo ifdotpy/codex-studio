@@ -109,18 +109,39 @@ export function mergedSidebarPreferences(
   const readVisual = (kind: "compact" | "collapsed") => {
     const prefix = kind === "compact" ? compactPrefix : treePrefix;
     return new Map(
-      model.sources.map((source) => [
-        source.id,
-        visualEdits.get(source.id + ":" + originalKey(prefix, source)) ||
-          source.sidebar[kind],
-      ]),
+      model.sources.map((source) => {
+        const key = originalKey(prefix, source);
+        const values = {
+          ...(visualEdits.get(source.id + ":" + key) || source.sidebar[kind]),
+        };
+        if (kind === "compact") {
+          try {
+            const backend = backendFor(source.id);
+            if (backend.storage.getItem(key) !== null) {
+              const saved = backend.saved(key, source.sidebar.compact);
+              for (const name of model.preferenceKeys.get(source.id)!.compact) {
+                const field = model.projectKey(source.id, name);
+                if (
+                  model.preferenceOwner("compact", field) === source.id &&
+                  name in saved
+                )
+                  values[name] = saved[name];
+              }
+            }
+          } catch {
+            return [source.id, values];
+          }
+        }
+        return [source.id, values];
+      }),
     );
   };
+  const readCompact = () => model.mergeVisual("compact", readVisual("compact"));
   const read = (key: string) => {
     if (key === orderKey) return order;
     if (key === compactKey)
       return {
-        ...model.mergeVisual("compact", readVisual("compact")),
+        ...readCompact(),
         ...explicitEdits.get(key),
       };
     if (key === treeKey)
