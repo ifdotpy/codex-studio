@@ -77,6 +77,49 @@ def _mount_entries() -> list[dict[str, str]]:
     return result
 
 
+# mount_smbfs asks for the password only on its controlling terminal; with a pipe or a
+# terminal that is not controlling, it skips the prompt and the server rejects the login.
+# A fresh single-threaded helper makes the terminal with pty.fork (the backend has threads)
+# and types the password from its stdin. The password never appears in an argument.
+_MOUNT_HELPER = r"""
+import os, pty, select, sys, time
+password = sys.stdin.readline().rstrip("\n")
+pid, fd = pty.fork()
+if pid == 0:
+    try:
+        os.execv(sys.argv[1], sys.argv[1:])
+    finally:
+        os._exit(127)
+sent, seen, deadline = False, b"", time.monotonic() + 25
+while time.monotonic() < deadline:
+    if not select.select([fd], [], [], 0.5)[0]:
+        continue
+    try:
+        chunk = os.read(fd, 1024)
+    except OSError:
+        break
+    if not chunk:
+        break
+    seen += chunk
+    if not sent and b"assword" in seen:
+        os.write(fd, password.encode() + b"\n")
+        sent = True
+else:
+    os.kill(pid, 9)
+os.close(fd)
+sys.exit(os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]) or (0 if sent else 2))
+"""
+
+
+def _mount_smbfs(source: str, destination: Path, password: str,
+                 executable: str = '/sbin/mount_smbfs') -> subprocess.CompletedProcess[str]:
+    import sys
+    return subprocess.run([sys.executable, '-I', '-c', _MOUNT_HELPER, executable, '-o',
+                           'rdonly,soft,nodatacache,nomdatacache,sessionencrypt', source, str(destination)],
+                          input=password + '\n', capture_output=True, text=True,
+                          start_new_session=True, timeout=30)
+
+
 def mount_project(client: Client, project: dict[str, Any], password: str) -> dict[str, Any]:
     from codex_linux_vm import LinuxVMError
     identity = _id(project['projectId'])
@@ -103,12 +146,7 @@ def mount_project(client: Client, project: dict[str, Any], password: str) -> dic
     destination.mkdir(mode=0o700, exist_ok=True)
     if any(destination.iterdir()):
         raise LinuxVMError('The project share mount folder is not empty.')
-    # A new session has no controlling terminal. readpassphrase reads stdin.
-    # The password never appears in an executable argument or a diagnostic.
-    result = subprocess.run(['/sbin/mount_smbfs', '-o',
-                             'rdonly,soft,nodatacache,nomdatacache,sessionencrypt', expected, str(destination)],
-                            input=password + '\n', capture_output=True, text=True,
-                            start_new_session=True, timeout=30)
+    result = _mount_smbfs(expected, destination, password)
     if result.returncode:
         raise LinuxVMError('The authenticated SMB mount failed.')
     rows = [row for row in _mount_entries() if row['path'] == str(destination)]

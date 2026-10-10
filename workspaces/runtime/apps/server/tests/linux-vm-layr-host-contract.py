@@ -100,6 +100,22 @@ class HostImportTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.client.ensure_layr_project("app", self.root, incremental=True)
 
+    def test_mac_mount_types_the_password_on_a_controlling_terminal(self):
+        # mount_smbfs reads the password only from /dev/tty, never from a pipe.
+        with tempfile.TemporaryDirectory() as name:
+            fake = Path(name) / "mount_smbfs"
+            seen = Path(name) / "seen"
+            fake.write_text("#!/bin/bash\nIFS= read -r -s -p 'Password for host: ' value </dev/tty || exit 3\n"
+                            f"printf '%s|%s' \"$value\" \"$*\" > {seen}\n")
+            fake.chmod(0o700)
+            result = share._mount_smbfs("//studio-view@192.168.64.2/project", Path(name) / "mnt",
+                                        "a" * 64, executable=str(fake))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            value, arguments = seen.read_text().split("|", 1)
+            self.assertEqual(value, "a" * 64)
+            self.assertNotIn("a" * 64, arguments)
+            self.assertNotIn("a" * 64, result.stdout + result.stderr)
+
     def test_mac_mount_rejects_existing_writable_or_different_share(self):
         home = self.root / "home"
         home.mkdir()
