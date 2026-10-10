@@ -116,6 +116,13 @@ so models learn it quickly, and it has equal convenience. It does not take the n
     - a task that needs more rights for a while gets a role for a time
       (`layr access grant <agent> maintainer --until 2h`).
 
+24. Mac folder sync (user decision): the user's Mac project folder stays the working copy,
+    and Studio keeps it equal to the VM project in both directions through a `mac` line
+    owned by the project user, a manifest of the agreed state, and protected merges into
+    main. Conflicts are resolved in the VM, never with markers in the Mac folder; Git
+    stays on the Mac, so `layr push` is off for a synced project. The read-only Finder
+    view stays. Design: [vm-mac-sync.md](vm-mac-sync.md).
+
 ## Data model
 
 | Term         | Meaning                                                                                                                                                     |
