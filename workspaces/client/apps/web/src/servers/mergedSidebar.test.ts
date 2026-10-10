@@ -179,6 +179,35 @@ describe("complete multi-server sidebar projection", () => {
     expect(original.writes).toEqual([]);
   });
 
+  it("makes project groups only for chats that the sidebar shows", () => {
+    const a = source("local");
+    a.sidebar.threads.push(
+      agent("worker", {
+        isLead: false,
+        parentId: "same",
+        rootId: "same",
+        cwd: "/same/project/.worktrees/worker",
+      }),
+      agent("imported", { source: "app-server", cwd: "/elsewhere/imported" }),
+      agent("lead", { cwd: "/elsewhere/lead" }),
+    );
+    const model = mergeSidebar([a, source("remote")]);
+    const groups = model.data.runtime.projects.map((project) => project.path);
+    expect(groups).toContain(model.projectKey("local", "/elsewhere/lead"));
+    expect(groups).not.toContain(
+      model.projectKey("local", "/same/project/.worktrees/worker"),
+    );
+    expect(groups).not.toContain(
+      model.projectKey("local", "/elsewhere/imported"),
+    );
+    // The worker stays a row of its lead's team.
+    expect(
+      model.data.threads.find(
+        (row) => row.id === model.chatKey("local", "worker"),
+      )?.parentId,
+    ).toBe(model.chatKey("local", "same"));
+  });
+
   it("separates overlapping chat, worker, room, folder and team IDs", () => {
     const a = source("local");
     const b = source("remote");
