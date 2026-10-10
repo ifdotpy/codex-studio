@@ -36,7 +36,10 @@ class FakeClient:
             reply = self.replies.pop(0)
             if isinstance(reply, Exception):
                 raise reply
-            return dict(reply)
+            if reply.pop('_exact', False):
+                return dict(reply)
+            # Like the guest: every requested base has a list of main's changes.
+            return {**reply, 'outbound': {**{base: [] for base in params['since']}, **reply['outbound']}}
         if method == 'sync.mac.read':
             data = self.files.get((params['stateId'], params['path']), b'')
             if data is None:
@@ -201,7 +204,7 @@ class Rounds(unittest.TestCase):
         for rel in ('old.txt', 'new.txt'):
             (self.root / rel).write_text(rel)
         manifest = {'old.txt': self.entry('old.txt', 's0'), 'new.txt': self.entry('new.txt', 's1')}
-        _, project = self.project([reply(merge='none', outbound={'s1': []})], manifest)
+        _, project = self.project([reply(merge='none', outbound={'s1': []}, _exact=True)], manifest)
         project.round()
         saved = json.loads((project.directory / 'manifest.json').read_text())
         self.assertEqual((saved['old.txt']['b'], saved['new.txt']['b']), ('s0', 'm2'))
@@ -224,6 +227,168 @@ class Rounds(unittest.TestCase):
         self.assertFalse((project.directory / 'allow-deletes.json').exists())
         with self.assertRaises(ValueError):
             project.allow_deletes()
+
+
+
+class ReviewRegressions(unittest.TestCase):
+    """Rounds that must neither lose a Mac edit nor a main change (review of 2026-10-10)."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        self.root, self.state = base / 'project', base / 'state'
+        self.root.mkdir()
+        self.state.mkdir()
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def project(self, replies: list[Any], manifest: dict[str, Any],
+                files: dict[tuple[str, str], bytes | None] | None = None) -> tuple[FakeClient, Any]:
+        client = FakeClient(self.state, replies, files)
+        project = sync.ProjectSync(client, 'p1', self.root, import_state='s1')
+        setattr(project, 'send_archive', lambda archive, begin, operation: None)
+        project.directory.mkdir(parents=True)
+        (project.directory / 'manifest.json').write_text(json.dumps(manifest))
+        return client, project
+
+    def agreed(self, rel: str, data: bytes, base: str = 's1', mode: int = 0o644) -> dict[str, Any]:
+        path = self.root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        path.chmod(mode)
+        info = path.lstat()
+        return {'k': 'file', 's': info.st_size, 'm': info.st_mtime_ns, 'x': mode, 'h': sha(data), 'b': base}
+
+    def saved(self, project: Any, name: str) -> Any:
+        return json.loads((project.directory / name).read_text())
+
+    @staticmethod
+    def change(rel: str, data: bytes | None, mode: int = 0o644) -> dict[str, Any]:
+        if data is None:
+            return {'path': rel, 'kind': 'absent'}
+        return {'path': rel, 'kind': 'file', 'mode': mode, 'size': len(data), 'sha256': sha(data)}
+
+    def test_a_refused_merge_keeps_the_unmerged_mac_edit(self) -> None:
+        manifest = {'a.txt': self.agreed('a.txt', b'agreed\n')}
+        (self.root / 'a.txt').write_text('mac edit\n')
+        outbound = {'s1': [self.change('a.txt', b'agent edit\n')]}
+        _, project = self.project([reply(main='m2', merge='refused', outbound=outbound)], manifest,
+                                  {('m2', 'a.txt'): b'agent edit\n'})
+        status = project.round()
+        self.assertEqual((self.root / 'a.txt').read_text(), 'mac edit\n')
+        self.assertEqual(self.saved(project, 'manifest.json')['a.txt']['h'], sha(b'agreed\n'))
+        self.assertEqual(status['rescan'], ['a.txt'])
+
+    def test_a_newer_mac_edit_during_a_handoff_is_not_overwritten(self) -> None:
+        manifest = {'app.txt': self.agreed('app.txt', b'agreed\n')}
+        (self.root / 'app.txt').write_text('newer mac\n')
+        combined = self.change('app.txt', b'combined\n')
+        client, project = self.project([reply(main='m10', conflicts=['app.txt'],
+                                              outbound={'s1': [combined], 'm9': [combined]})],
+                                       manifest, {('m10', 'app.txt'): b'combined\n'})
+        (project.directory / 'held.json').write_text(json.dumps(
+            {'app.txt': {'h': sha(b'handed\n'), 'why': 'agent', 'base': 'm9', 'stateId': 'h1'}}))
+        status = project.round()
+        self.assertEqual((self.root / 'app.txt').read_text(), 'newer mac\n')
+        self.assertEqual(status['conflicts'], ['app.txt'])
+        self.assertEqual(self.saved(project, 'held.json')['app.txt']['h'], sha(b'newer mac\n'))
+
+    def test_a_save_during_the_round_keeps_the_sent_content_as_the_next_base(self) -> None:
+        manifest = {'a.txt': self.agreed('a.txt', b'x\n')}
+        (self.root / 'a.txt').write_text('x abc\n')
+        client, project = self.project([reply(main='m2', applied=['a.txt'], merge='merged',
+                                              outbound={'s1': [self.change('a.txt', b'x abc\n')]})], manifest)
+        original = client.call
+
+        def save_during_apply(method: str, params: dict[str, Any], **options: Any) -> dict[str, Any]:
+            if method == 'sync.mac.apply':
+                (self.root / 'a.txt').write_text('x abcd\n')
+            return original(method, params, **options)
+        setattr(client, 'call', save_during_apply)
+        project.round()
+        self.assertEqual((self.root / 'a.txt').read_text(), 'x abcd\n')
+        entry = self.saved(project, 'manifest.json')['a.txt']
+        self.assertEqual((entry['h'], entry['b']), (sha(b'x abc\n'), 'm2'))
+        client.replies.append(reply(main='m3', applied=['a.txt'], merge='merged'))
+        project.round()
+        sent = [params['entries'] for method, params, _ in client.calls if method == 'sync.mac.apply'][-1]
+        self.assertEqual(sent, [{'path': 'a.txt', 'kind': 'file', 'base': 'm2'}])
+
+    def test_a_mac_deletion_against_a_main_edit_is_a_conflict_that_stays(self) -> None:
+        manifest = {'a.txt': self.agreed('a.txt', b'agreed\n'), 'b.txt': self.agreed('b.txt', b'b\n')}
+        (self.root / 'a.txt').unlink()
+        outbound = {'s1': [self.change('a.txt', b'agent edit\n')]}
+        client, project = self.project([reply(main='m2', conflicts=['a.txt'], outbound=outbound),
+                                        reply(main='m2', outbound={'s1': outbound['s1']})], manifest,
+                                       {('m2', 'a.txt'): b'agent edit\n'})
+        first = project.round()
+        self.assertEqual(first['conflicts'], ['a.txt'])
+        self.assertEqual(self.saved(project, 'held.json')['a.txt'], {'h': 'absent', 'why': 'conflict'})
+        second = project.round(set())
+        self.assertFalse((self.root / 'a.txt').exists())
+        self.assertEqual(second['conflicts'], ['a.txt'])
+        entries = [params['entries'] for method, params, _ in client.calls if method == 'sync.mac.apply'][-1]
+        self.assertEqual(entries, [])
+
+    def test_many_main_deletions_wait_for_a_confirmation(self) -> None:
+        manifest = {f'f{index}.txt': self.agreed(f'f{index}.txt', str(index).encode()) for index in range(10)}
+        outbound = {'s1': [self.change(f'f{index}.txt', None) for index in range(5)]}
+        _, project = self.project([reply(main='m2', outbound=outbound), reply(main='m2', outbound=outbound)],
+                                  manifest)
+        status = project.round()
+        self.assertEqual((status['state'], status['deletes']), ('paused', 5))
+        self.assertIn('deleted in the VM', status['reason'])
+        self.assertEqual(len(list(self.root.iterdir())), 10)
+        project.allow_deletes()
+        done = project.round()
+        self.assertEqual((done['state'], len(list(self.root.iterdir()))), ('synced', 5))
+
+    def test_executable_bits_sync_both_ways(self) -> None:
+        manifest = {'run.sh': self.agreed('run.sh', b'#!/bin/sh\n'), 'tool.sh': self.agreed('tool.sh', b'#!/bin/sh\n')}
+        (self.root / 'tool.sh').chmod(0o755)
+        outbound = {'s1': [self.change('run.sh', b'#!/bin/sh\n', 0o755)]}
+        client, project = self.project([reply(main='m2', applied=['tool.sh'], merge='merged', outbound=outbound)],
+                                       manifest)
+        project.round()
+        self.assertEqual((self.root / 'run.sh').stat().st_mode & 0o777, 0o755)
+        entries = [params['entries'] for method, params, _ in client.calls if method == 'sync.mac.apply'][-1]
+        self.assertEqual(entries, [{'path': 'tool.sh', 'kind': 'file', 'base': 's1', 'modeChanged': True}])
+
+    def test_a_file_too_large_to_send_is_not_a_deletion(self) -> None:
+        manifest = {'big.bin': self.agreed('big.bin', b'small')}
+        (self.root / 'big.bin').write_bytes(b'now much larger')
+        client, project = self.project([reply(main='m2')], manifest)
+        with patch.object(sync, 'MAX_FILE', 8):
+            status = project.round()
+        entries = [params['entries'] for method, params, _ in client.calls if method == 'sync.mac.apply'][-1]
+        self.assertEqual(entries, [])
+        self.assertEqual(status['notices'], ['big.bin: files over 256 MiB do not sync'])
+
+    def test_links_to_any_target_sync_as_links(self) -> None:
+        (self.root / 'outside').symlink_to('/etc')
+        (self.root / 'up').symlink_to('../elsewhere')
+        client, project = self.project([reply(main='m2', applied=['outside', 'up'], merge='merged')], {})
+        project.round()
+        entries = [params['entries'] for method, params, _ in client.calls if method == 'sync.mac.apply'][-1]
+        self.assertEqual(sorted((item['path'], item['kind']) for item in entries), [('outside', 'link'), ('up', 'link')])
+        written = sync.write_mac(self.root, 'up', 'link', b'../other', 0)
+        assert written is not None
+        self.assertEqual(written['k'], 'link')
+        self.assertEqual(os.readlink(self.root / 'up'), '../other')
+
+    def test_a_refused_operation_is_not_repeated(self) -> None:
+        manifest = {'a.txt': self.agreed('a.txt', b'agreed\n')}
+        (self.root / 'a.txt').write_text('mac\n')
+        refused = RuntimeError('Linux guest sync.mac.apply: invalid')
+        setattr(refused, 'uncertain', False)
+        client, project = self.project([refused, reply(main='m2', applied=['a.txt'], merge='merged')], manifest)
+        with self.assertRaises(RuntimeError):
+            project.round()
+        self.assertFalse((project.directory / 'pending.json').exists())
+        project.round()
+        operations = [request for method, _params, request in client.calls if method == 'sync.mac.apply']
+        self.assertNotEqual(operations[0], operations[1])
 
 
 class Choices(unittest.TestCase):
@@ -427,7 +592,7 @@ class Scheduling(unittest.TestCase):
                     function()
 
             client, runtime = Client(), Runtime()
-            with patch('platform.system', return_value='Darwin'), \
+            with patch('platform.system', return_value='Darwin'), patch.object(sync, '_refresh'), \
                     patch('codex_linux_workspaces.client', return_value=client):
                 sync.tick(runtime)
                 self.assertFalse((folder / 'sync/status.json').exists())

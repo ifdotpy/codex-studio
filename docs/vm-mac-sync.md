@@ -33,10 +33,14 @@ Every file below the project folder, except:
 - layr layers (the project's regenerable paths such as `node_modules`, `target`,
   `.venv`): each side builds its own, and the VM keeps warm layers;
 - folders that Git ignores (build output, caches);
-- special files (devices, sockets, FIFOs) and files over 256 MiB, with a notice.
+- special files (devices, sockets, FIFOs) and files over 256 MiB, with a notice. A
+  synced file that grows over the limit keeps its last synced version in the VM; it
+  is not a deletion.
 
 Files that Git ignores, such as `.env`, do sync: agents need the same local
-configuration as the user. Symbolic links sync as links and are never followed.
+configuration as the user. Symbolic links sync as links, to any target, and are never
+followed. The executable bits of files sync in both directions; a content change keeps
+the other side's bits unless the Mac changed them.
 
 ## A sync round
 
@@ -49,21 +53,25 @@ so a lost response repeats the same step with the same ID and never applies it t
 2. **Inbound.** Upload the changed files and the deletions with the tree upload
    protocol. The guest broker applies them to the `mac` line as the project user and
    saves state Sm (label `mac-sync`).
-3. **Merge.** As the project user: `layr merge mac --expect Sm` into main. The `mac` line
-   starts each round at main, so the merge is normally a fast-forward. When main moved
-   during the round, layr refuses the merge: main stays unchanged, the `mac` line goes
-   back to main, and the next round sends the same Mac files again and folds them onto
-   the new main file by file.
+3. **Merge.** As the project user: `layr merge --ff-only mac --expect Sm` into main. The
+   `mac` line starts each round at main, so the merge is a fast-forward. When main moved
+   during the round, or holds uncommitted lead work, the fast-forward is refused. A
+   three-way merge is never used: on a conflict layr would commit markers into a line
+   without checks. Main stays unchanged, the `mac` line goes back to main, and the next
+   round sends the same Mac files again and folds them onto the new main file by file.
 4. **Outbound.** For each path that changed from A to main': when the Mac file still has
-   its agreed content, or the content uploaded in this round, write the main' version
-   atomically (temporary file and rename, same mode). When the user changed it again
-   during the round, skip it; the next round uploads it.
+   its agreed content, or the content that main took from this round, write the main'
+   version atomically (temporary file and rename). When the user changed it again during
+   the round, skip it; the next round uploads it, with the content main took as its base.
+   A Mac edit that main did not take (a refused merge or a conflict) is never written
+   over.
 5. **Agree.** A := main'; update the manifest; reset the `mac` line to main'.
 
 ## Conflicts
 
 A conflict is always per file: the Mac and main changed the same lines of one file
-since their agreed content, or one side deleted a file that the other changed.
+since their agreed content, one side deleted a file that the other changed, or one side
+has a file where the other has a folder.
 
 - Studio never writes conflict markers into the Mac folder.
 - In the conflict state, other paths keep syncing in both directions; conflicted
@@ -74,7 +82,8 @@ since their agreed content, or one side deleted a file that the other changed.
   - **Ask the agent**: Studio puts the Mac version in the `mac-conflict` line at main and
     sends the project's lead chat a message with the state to read
     (`layr show <state>:<path>`). The lead commits one combined file to main; the next
-    round writes it to the Mac. A new Mac edit of the path ends the handoff.
+    round writes it to the Mac. A new Mac edit of the path ends the handoff and is never
+    overwritten; it is sent as usual and can become a new conflict.
 - Unmerged handoffs stay in the `mac-conflict` line; a handoff after a merge starts the
   line again at main.
 - A project imported before `importStateId` existed starts with a choice for every
@@ -92,7 +101,10 @@ since their agreed content, or one side deleted a file that the other changed.
 - The VM stopped or unreachable: rounds wait; Mac edits stay detectable by the
   manifest; nothing is lost.
 - A round that would delete more than 25 % of the files or more than 500 files on
-  either side pauses for the user's confirmation (an accidental `rm -rf`, a wrong path).
+  either side pauses for the user's confirmation (an accidental `rm -rf`, a wrong path,
+  an agent's mass delete in main).
+- A guest error that is not a lost reply ends the round's operation; the next round
+  starts a new one. A failed fold leaves nothing in the `mac` line.
 - Mac writes never go through symbolic links and never leave the project folder.
 - Sync writes in the VM run as the project user, never as root, so layr rules apply.
 

@@ -41,7 +41,8 @@ class GuestClient:
 class MacSyncRounds(base.LayrEndToEnd):
     test_lead_worker_merge_and_host_slot = None
 
-    async def test_both_directions_conflicts_and_quiet_rounds(self):
+    async def start(self):
+        """A Mac folder with Git, imported as the project; returns the round helpers."""
         from codex_vm_mac_sync import ProjectSync
         from mac_sync import MacSync
         from upload import extract_tree
@@ -72,6 +73,10 @@ class MacSyncRounds(base.LayrEndToEnd):
         async def round_():
             return await asyncio.to_thread(project.round)
 
+        return mac, sync, owner, main, project, round_
+
+    async def test_both_directions_conflicts_and_quiet_rounds(self):
+        mac, sync, owner, main, project, round_ = await self.start()
         # Agents change the first line and add a file; the Mac changes the last line,
         # adds an ignored .env, a build folder and a dependency folder, and deletes README.
         (main / "app.txt").write_text("ONE\ntwo\nthree\n")
@@ -158,3 +163,62 @@ class MacSyncRounds(base.LayrEndToEnd):
         self.assertEqual((mac / "notes.md").read_text(), "vm notes\n")
         settled = await round_()
         self.assertEqual((settled["state"], settled["conflicts"], settled["sent"]), ("synced", [], 0))
+
+
+    async def test_links_modes_type_changes_and_a_moving_main(self):
+        mac, sync, owner, main, project, round_ = await self.start()
+        await round_()
+        # Links sync as links in both directions, also to targets outside the folder.
+        (mac / "to-app").symlink_to("app.txt")
+        (mac / "to-etc").symlink_to("/etc")
+        (main / "to-readme").symlink_to("README.md")
+        await sync.layr(["add", "-A"], cwd=main, owner=owner)
+        await sync.layr(["commit", "-qm", "agent link"], cwd=main, owner=owner)
+        linked = await round_()
+        self.assertEqual(linked["state"], "synced", linked)
+        self.assertEqual(os.readlink(main / "to-app"), "app.txt")
+        self.assertEqual(os.readlink(main / "to-etc"), "/etc")
+        self.assertEqual(os.readlink(mac / "to-readme"), "README.md")
+        # The executable bit syncs in both directions, and a Mac edit keeps main's bit.
+        (mac / "README.md").chmod(0o755)
+        (main / "app.txt").chmod(0o755)
+        await sync.layr(["commit", "-qam", "agent chmod"], cwd=main, owner=owner)
+        await round_()
+        self.assertTrue(os.stat(main / "README.md").st_mode & 0o100)
+        self.assertTrue(os.stat(mac / "app.txt").st_mode & 0o100)
+        (mac / "app.txt").write_text("one\ntwo\nthree\nfour\n")
+        await round_()
+        self.assertTrue(os.stat(main / "app.txt").st_mode & 0o100)
+        # A Mac file where main has a folder is a conflict; other paths still sync.
+        (main / "data").mkdir()
+        (main / "data/x.txt").write_text("agent data\n")
+        await sync.layr(["add", "-A"], cwd=main, owner=owner)
+        await sync.layr(["commit", "-qm", "agent data"], cwd=main, owner=owner)
+        (mac / "data").write_text("mac file\n")
+        (mac / "other.txt").write_text("other\n")
+        typed = await round_()
+        self.assertEqual(typed["conflicts"], ["data"])
+        self.assertEqual((main / "data/x.txt").read_text(), "agent data\n")
+        self.assertEqual((main / "other.txt").read_text(), "other\n")
+        self.assertEqual((mac / "data").read_text(), "mac file\n")
+        # main moves while the round folds: the fast-forward is refused, main gets no
+        # conflict markers, and the next round folds the Mac edit onto the new main.
+        original = sync.fold
+
+        async def fold_while_main_moves(*args, **kwargs):
+            folded = await original(*args, **kwargs)
+            (main / "app.txt").write_text("ONE\ntwo\nthree\nfour\n")
+            await sync.layr(["commit", "-qam", "lead edit during the round"], cwd=main, owner=owner)
+            return folded
+        sync.fold = fold_while_main_moves
+        (mac / "app.txt").write_text("one\ntwo\nthree\nFOUR\n")
+        refused = await round_()
+        sync.fold = original
+        self.assertEqual(refused["rescan"], ["app.txt"])
+        self.assertEqual((main / "app.txt").read_text(), "ONE\ntwo\nthree\nfour\n")
+        self.assertEqual((mac / "app.txt").read_text(), "one\ntwo\nthree\nFOUR\n")
+        again = await asyncio.to_thread(project.round, set())
+        self.assertEqual(again["rescan"], [])
+        self.assertEqual((main / "app.txt").read_text(), "ONE\ntwo\nthree\nFOUR\n")
+        self.assertEqual((mac / "app.txt").read_text(), "ONE\ntwo\nthree\nFOUR\n")
+

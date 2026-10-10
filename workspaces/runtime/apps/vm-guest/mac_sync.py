@@ -46,10 +46,11 @@ def _state(value: Any) -> str:
 
 
 def _entry(path: Path) -> tuple[str, bytes, int] | None:
-    """(kind, bytes, mode) of a file or link without following links; None when absent."""
+    """(kind, bytes, mode) of a file or link without following links; None when absent,
+    also when a parent is a file."""
     try:
         info = path.lstat()
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
         return None
     if stat.S_ISLNK(info.st_mode):
         return ("link", os.readlink(path).encode(), 0)
@@ -62,6 +63,16 @@ def _entry(path: Path) -> tuple[str, bytes, int] | None:
 
 def _text(data: bytes | None) -> bool:
     return data is not None and b"\0" not in data[:8000]
+
+
+def _blocked(line: Path, rel: str) -> bool:
+    """Whether a file, link or other non-folder stands where `rel` needs a parent folder."""
+    for parent in (line / rel).parents:
+        if parent == line:
+            return False
+        if os.path.lexists(parent) and (parent.is_symlink() or not parent.is_dir()):
+            return True
+    return False
 
 
 def _describe(entry: tuple[str, bytes, int] | None) -> dict[str, Any]:
@@ -133,11 +144,11 @@ class MacSync:
         await self.clean(view, owner, VIEW)
 
     def write(self, line: Path, rel: str, entry: tuple[str, bytes, int] | None, uid: int, gid: int) -> None:
-        target = inside(line, rel, leaf=True)
+        target = inside(line, rel)
         if target.is_symlink() or target.is_file():
             target.unlink()
         elif target.exists():
-            shutil.rmtree(target)
+            raise GuestError("operation_failed", "A folder in the line has the path " + rel)
         if entry is None:
             return
         parent = target.parent
@@ -170,13 +181,24 @@ class MacSync:
                     "Invalid sync entry")
             base_state = item.get("base")
             base = None if base_state is None else await self.show(_state(base_state), rel, cwd=mac, owner=owner)
-            theirs = None if item["kind"] == "absent" else _entry(inside(upload, rel, leaf=True))
+            theirs = None if item["kind"] == "absent" else _entry(inside(upload, rel))
             require(item["kind"] == "absent" or (theirs is not None and theirs[0] == item["kind"]),
                     "The upload does not hold " + rel)
-            ours = _entry(inside(mac, rel, leaf=True))
-            require(ours is None or ours[0] != "directory", "A folder in the line has the path " + rel)
+            ours = _entry(inside(mac, rel))
+            if (ours is not None and ours[0] == "directory") or (theirs is not None and _blocked(mac, rel)):
+                # A file against a folder: the user chooses, nothing is replaced.
+                conflicts.append(rel)
+                continue
+            if theirs is not None and ours is not None and theirs[0] == ours[0] == "file" and not item.get("modeChanged"):
+                # The Mac did not change the mode: main's mode stays.
+                theirs = (theirs[0], theirs[1], ours[2])
             theirs_bytes, ours_bytes = (theirs[1] if theirs else None), (ours[1] if ours else None)
             if theirs_bytes == base and (theirs is None or ours is None or theirs[0] == ours[0]):
+                if theirs and ours and theirs[0] == ours[0] == "file" and item.get("modeChanged") \
+                        and (theirs[2] ^ ours[2]) & 0o111:
+                    # Only the mode changed on the Mac.
+                    (mac / rel).chmod((ours[2] & ~0o111) | (theirs[2] & 0o111))
+                    applied.append(rel)
                 continue
             if ours_bytes == base:
                 self.write(mac, rel, theirs, user["uid"], user["gid"])
@@ -201,17 +223,6 @@ class MacSync:
             conflicts.append(rel)
         return applied, conflicts
 
-    async def merge_conflicts(self, main: Path, owner: str, operation: str) -> list[str]:
-        """Paths that conflict between mac and main, from a merge into a scratch line."""
-        scratch = "mac-sync-probe-" + hashlib.sha256(operation.encode()).hexdigest()[:12]
-        await self.layr(["branch", scratch, "main", "--owner", owner], cwd=main, owner=owner)
-        try:
-            folder = main.parent / scratch
-            _code, output, errors = await self.run(["merge", LINE], cwd=folder, owner=owner)
-            return sorted(set(re.findall(r"Merge conflict in (.+)", output + errors)))
-        finally:
-            await self.run(["branch", "-D", scratch], cwd=main, owner=owner)
-
     async def outbound(self, view: Path, owner: str, since: list[str], state: str) -> dict[str, list[dict[str, Any]]]:
         result: dict[str, list[dict[str, Any]]] = {}
         for base in since:
@@ -221,7 +232,7 @@ class MacSync:
                 status, _, rel = line.partition("\t")
                 if not rel or rel.split("/")[0] in SKIPPED:
                     continue
-                changes.append({"path": relative(rel), **_describe(_entry(inside(view, rel, leaf=True)))})
+                changes.append({"path": relative(rel), **_describe(_entry(inside(view, rel)))})
                 require(len(changes) <= MAX_ENTRIES, "Too many changed files for one sync round")
             result[base] = changes
         return result
@@ -241,8 +252,10 @@ class MacSync:
         async with self.locks.setdefault(project, asyncio.Lock()):
             owner, main, mac, view = await self.lines(project)
             await self.deny_push(project, receipts)
-            await self.clean(mac, owner, LINE)
             main_head, mac_head = await self.head(main, owner), await self.head(mac, owner)
+            if await self.layr(["status", "--porcelain"], cwd=mac, owner=owner):
+                # Only sync writes the mac line: a failed round left these changes.
+                await self.layr(["reset", "-q", "--hard", mac_head], cwd=mac, owner=owner)
             # The line follows main between rounds; unmerged Mac work stays where it is.
             code, _, _ = await self.run(["merge-base", "--is-ancestor", mac_head, main_head], cwd=mac, owner=owner)
             if code == 0 and mac_head != main_head:
@@ -261,25 +274,30 @@ class MacSync:
                 frozen = await self.projects.freeze_source(Path(source), identity)
                 try:
                     applied, conflicts = await self.fold(project, owner, mac, frozen, entries)
+                    await self.layr(["add", "-A"], cwd=mac, owner=owner)
+                    # Files Git ignores, such as .env, sync too: add them by name.
+                    present = [rel for rel in applied if os.path.lexists(mac / rel)]
+                    for start in range(0, len(present), 500):
+                        await self.layr(["add", "-f", "--", *present[start:start + 500]], cwd=mac, owner=owner)
+                    if await self.layr(["status", "--porcelain"], cwd=mac, owner=owner):
+                        await self.layr(["commit", "-q", "-m", "Mac sync"], cwd=mac, owner=owner)
+                except BaseException:
+                    # The next round starts again from main; nothing of this round stays.
+                    await self.layr(["reset", "-q", "--hard", main_head], cwd=mac, owner=owner)
+                    raise
                 finally:
                     await command(["btrfs", "subvolume", "delete", frozen])
-                await self.layr(["add", "-A"], cwd=mac, owner=owner)
-                # Files Git ignores, such as .env, sync too: add them by name.
-                present = [rel for rel in applied if os.path.lexists(mac / rel)]
-                for start in range(0, len(present), 500):
-                    await self.layr(["add", "-f", "--", *present[start:start + 500]], cwd=mac, owner=owner)
-                if await self.layr(["status", "--porcelain"], cwd=mac, owner=owner):
-                    await self.layr(["commit", "-q", "-m", "Mac sync"], cwd=mac, owner=owner)
             mac_state = await self.head(mac, owner)
-            merge, merged, detail = "none", [], None
+            merge, detail = "none", None
             if mac_state != main_head:
-                code, output, errors = await self.run(["merge", "-q", LINE, "--expect", mac_state], cwd=main, owner=owner)
+                # The mac line starts at main, so this is a fast-forward. A main that moved
+                # during the round, or holds uncommitted lead work, refuses it: layr would
+                # otherwise commit conflict markers into main. The Mac work leaves the line,
+                # and the next round folds it onto the new main file by file.
+                code, output, errors = await self.run(["merge", "-q", "--ff-only", LINE, "--expect", mac_state],
+                                                      cwd=main, owner=owner)
                 if code:
-                    # main moved during the round or holds uncommitted lead work. The Mac
-                    # work leaves the line, and the next round folds it onto the new main
-                    # file by file, so a lasting conflict is always a per-file one.
-                    merged = await self.merge_conflicts(main, owner, operation)
-                    merge, detail = ("conflict" if merged else "refused"), (errors or output).strip()[-300:]
+                    merge, detail = "refused", (errors or output).strip()[-300:]
                     applied = []
                 else:
                     merge = "merged"
@@ -289,7 +307,7 @@ class MacSync:
             await self.checkout(view, owner, main_state)
             result = {"projectId": project, "mainStateId": main_state, "macStateId": await self.head(mac, owner),
                       "applied": applied, "conflicts": sorted(set(conflicts)), "merge": merge,
-                      "mergeConflicts": merged, "mergeError": detail,
+                      "mergeConflicts": [], "mergeError": detail,
                       "outbound": await self.outbound(view, owner, [_state(base) for base in since], main_state)}
             receipts.mkdir(parents=True, mode=0o700, exist_ok=True)
             atomic_json(receipt, result)
@@ -343,7 +361,7 @@ class MacSync:
                 require(isinstance(source, str) and Path(source).parent == UPLOADS
                         and Path(source).resolve() == Path(source) and Path(source).is_dir(),
                         "The handoff upload must be a completed upload root")
-                entry = _entry(inside(Path(source), rel, leaf=True))
+                entry = _entry(inside(Path(source), rel))
                 require(entry is not None and entry[0] == params["kind"], "The upload does not hold " + rel)
             self.write(line, rel, entry, user["uid"], user["gid"])
             await self.layr(["add", "-A"], cwd=line, owner=owner)
@@ -374,7 +392,7 @@ class MacSync:
         owner, _main, _mac, view = await self.lines(project)
         async with self.locks.setdefault(project, asyncio.Lock()):
             await self.checkout(view, owner, state)
-            entry = _entry(inside(view, params.get("path"), leaf=True))
+            entry = _entry(inside(view, params.get("path")))
         if entry is None or entry[0] == "directory":
             return {"kind": "absent"}
         kind, data, mode = entry

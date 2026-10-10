@@ -23,10 +23,12 @@ import tarfile
 import tempfile
 import threading
 import time
+from collections import Counter
 from typing import Any, Iterator
 import uuid
 
 MAX_FILE = 256 * 1024 * 1024
+ABSENT = 'absent'  # the hash of a path without a file
 ALWAYS_SKIPPED = {".git", ".worktrees", "node_modules", ".venv", "__pycache__", ".pytest_cache",
                   ".mypy_cache", ".DS_Store"}
 DELETE_GUARD = (0.25, 500)
@@ -111,10 +113,13 @@ def scan(root: Path, rules: Rules, manifest: dict[str, dict[str, Any]],
             if not (stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
                 notices.append(rel + ': a special file does not sync')
                 continue
+            known = manifest.get(rel)
             if stat.S_ISREG(info.st_mode) and info.st_size > MAX_FILE:
                 notices.append(rel + ': files over 256 MiB do not sync')
+                if known is not None:
+                    # Too large to send now, but not deleted.
+                    entries[rel] = {key: value for key, value in known.items() if key != 'b'}
                 continue
-            known = manifest.get(rel)
             same = known is not None and known.get('k') == ('link' if stat.S_ISLNK(info.st_mode) else 'file') \
                 and known.get('s') == info.st_size and known.get('m') == info.st_mtime_ns
             entry = _describe(path, info, digest=not same)
@@ -151,10 +156,12 @@ def scan_paths(root: Path, rules: Rules, manifest: dict[str, dict[str, Any]],
             entries.update(found)
             notices += more
         elif stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+            known = manifest.get(rel)
             if stat.S_ISREG(info.st_mode) and info.st_size > MAX_FILE:
                 notices.append(rel + ': files over 256 MiB do not sync')
+                if known is not None:
+                    entries[rel] = {key: value for key, value in known.items() if key != 'b'}
                 continue
-            known = manifest.get(rel)
             same = known is not None and known.get('k') == ('link' if stat.S_ISLNK(info.st_mode) else 'file') \
                 and known.get('s') == info.st_size and known.get('m') == info.st_mtime_ns
             entry = _describe(path, info, digest=not same)
@@ -167,8 +174,11 @@ def scan_paths(root: Path, rules: Rules, manifest: dict[str, dict[str, Any]],
 
 
 def _inside(root: Path, rel: str) -> Path:
+    """The Mac path of `rel`. Its parents stay inside the folder and are no links; the
+    path itself may be a link, which sync reads and replaces but never follows."""
     path = root / rel
-    if path.is_absolute() is False or '..' in rel.split('/') or not path.resolve(strict=False).is_relative_to(root.resolve()):
+    if not rel or rel.startswith('/') or '..' in rel.split('/') \
+            or not path.parent.resolve(strict=False).is_relative_to(root.resolve()):
         raise ValueError('The sync path leaves the project folder: ' + rel)
     for parent in path.parents:
         if parent == root:
@@ -288,11 +298,12 @@ class ProjectSync:
             known = manifest.get(rel)
             if rel in waiting or held.get(rel, {}).get('h') == entry['h']:
                 continue
-            if known is None or known['k'] != entry['k'] or known['h'] != entry['h']:
+            if known is None or known['k'] != entry['k'] or known['h'] != entry['h'] \
+                    or (entry['k'] == 'file' and (known.get('x', entry['x']) ^ entry['x']) & 0o111):
                 changes.append((rel, entry, known.get('b') if known else None))
         deleted = [(rel, None, known.get('b')) for rel, known in manifest.items()
                    if rel not in current and not rules.skipped(rel) and rel not in waiting
-                   and held.get(rel, {}).get('h') != 'absent']
+                   and held.get(rel, {}).get('h') != ABSENT]
         allowed = _load(self.directory / 'allow-deletes.json', {}).get('count', 0)
         if len(deleted) > 3 and len(deleted) > allowed \
                 and (len(deleted) > DELETE_GUARD[1] or len(deleted) > len(manifest) * DELETE_GUARD[0]):
@@ -306,17 +317,27 @@ class ProjectSync:
             operation, params, sent = pending['operation'], pending['params'], pending['hashes']
         else:
             operation = 'mac-' + uuid.uuid4().hex
-            params, sent = self.upload(operation, changes, manifest)
             # A path handed to the lead comes back when main changes it after the handoff.
-            params['since'] = sorted(set(params['since']) | {value['base'] for value in held.values()
-                                                              if value.get('why') == 'agent'})[:16]
+            handoffs = [value['base'] for value in held.values() if value.get('why') == 'agent']
+            params, sent = self.upload(operation, changes, manifest, handoffs)
             _save(self.directory / 'pending.json', {'operation': operation, 'params': params, 'hashes': sent})
-        result = self.client.call('sync.mac.apply', params, request_id=operation, timeout=1800)
+        try:
+            result = self.client.call('sync.mac.apply', params, request_id=operation, timeout=1800)
+        except Exception as error:
+            if getattr(error, 'uncertain', True) is False:
+                # The guest refused the operation: repeating it cannot help.
+                (self.directory / 'pending.json').unlink(missing_ok=True)
+            raise
         merged = result['merge'] in {'merged', 'none'}
         conflicts = set(result['conflicts']) | set(result['mergeConflicts'])
-        agreed, written, skipped = self.outbound(manifest, result, sent, conflicts, held)
+        allowed_removals = _load(self.directory / 'allow-deletes.json', {}).get('count', 0)
+        agreed, written, skipped, removals = self.outbound(manifest, result, sent, conflicts, held, allowed_removals)
+        bases = {item['path']: item.get('base') for item in params['entries']}
         for rel in result['applied']:
             if rel in agreed or rel in written or rel in skipped or not merged:
+                continue
+            if bases.get(rel) is not None and bases[rel] not in result['outbound']:
+                # The guest did not compare this base with main: agree in a later round.
                 continue
             # main took the Mac content unchanged for this path.
             found = current.get(rel)
@@ -338,7 +359,7 @@ class ProjectSync:
         # A held path ends when main settles it, or when the Mac file changes again.
         held = {rel: value for rel, value in held.items()
                 if rel not in written and manifest.get(rel, {}).get('h') != value['h']
-                and (not scanned(rel) or current.get(rel, {}).get('h', 'absent') == value['h']
+                and (not scanned(rel) or current.get(rel, {}).get('h', ABSENT) == value['h']
                      or rel in result['conflicts'])}
         _save(manifest_path, manifest)
         _save(self.directory / 'held.json', held)
@@ -352,15 +373,24 @@ class ProjectSync:
         # A replayed round did not read the paths waiting for a rescan; a new round did.
         leftover = set(previous.get('rescan', [])) - sent_paths if replayed else set()
         rescan = sorted(leftover if merged else leftover | sent_paths)
+        reason = None
+        if removals:
+            state, reason = 'paused', f'{removals} files were deleted in the VM; confirm before they leave the Mac'
         return self.status(state=state, mainStateId=result['mainStateId'], sent=len(params['entries']),
                            received=len(written), conflicts=in_conflict, withAgent=with_agent, rescan=rescan,
-                           mergeError=result.get('mergeError'), notices=notices, reason=None, deletes=0)
+                           mergeError=result.get('mergeError'), notices=notices, reason=reason, deletes=removals)
 
     def upload(self, operation: str, changes: list[tuple[str, dict[str, Any] | None, str | None]],
-               manifest: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], dict[str, str]]:
-        since = sorted({known['b'] for known in manifest.values() if known.get('b')})[:16]
+               manifest: dict[str, dict[str, Any]], extra: list[str] = []) -> tuple[dict[str, Any], dict[str, str]]:
+        # The guest compares at most 16 bases with main: the bases of the sent paths and of
+        # the handoffs first, then the most common ones.
+        common = [base for base, _ in Counter(known['b'] for known in manifest.values() if known.get('b')).most_common()]
+        since = list(dict.fromkeys([base for _, _, base in changes if base] + extra + common))[:16]
         params: dict[str, Any] = {'projectId': self.project_id, 'operationId': operation, 'since': since, 'entries': []}
         hashes: dict[str, str] = {}
+        for rel, entry, _base in changes:
+            if entry is None:
+                hashes[rel] = ABSENT
         if not changes:
             return params, hashes
         root = '/var/lib/codex-studio/projects/mac-sync-' + operation[4:28]
@@ -373,7 +403,11 @@ class ProjectSync:
                 directory.type, directory.mode = tarfile.DIRTYPE, 0o755
                 output.addfile(directory)
                 for rel, entry, base in changes:
-                    item = {'path': rel, 'kind': 'absent' if entry is None else entry['k'], 'base': base}
+                    item: dict[str, Any] = {'path': rel, 'kind': ABSENT if entry is None else entry['k'], 'base': base}
+                    known = manifest.get(rel)
+                    if entry is not None and entry['k'] == 'file' and known is not None \
+                            and (known.get('x', entry['x']) ^ entry['x']) & 0o111:
+                        item['modeChanged'] = True
                     params['entries'].append(item)
                     if entry is None:
                         continue
@@ -404,41 +438,81 @@ class ProjectSync:
         upload_archive(self.client, archive, begin, operation)
 
     def outbound(self, manifest: dict[str, dict[str, Any]], result: dict[str, Any], sent: dict[str, str],
-                 conflicts: set[str], held: dict[str, dict[str, Any]] | None = None
-                 ) -> tuple[set[str], set[str], set[str]]:
+                 conflicts: set[str], held: dict[str, dict[str, Any]] | None = None, allowed_removals: int = 0
+                 ) -> tuple[set[str], set[str], set[str], int]:
         """Bring main's changes to the Mac where the Mac file still has its agreed content,
-        or the content this round sent, or nothing at all. Returns (agreed without a
-        write, written, skipped because the Mac changed again)."""
+        or the content main took from this round. Returns (agreed without a write,
+        written, skipped, main deletions held for a confirmation)."""
         rules = Rules(self.root)
+        held = held or {}
         agreed, written, skipped = set(), set(), set()
         state = result['mainStateId']
+        merged = result['merge'] in {'merged', 'none'}
+        taken = set(result['applied']) if merged else set()
+        # Main deletions that would remove agreed Mac files: many at once wait for the user.
+        removals = {change['path'] for base, changes in result['outbound'].items() for change in changes
+                    if change['kind'] == ABSENT and manifest.get(change['path'], {}).get('b') == base}
+        hold = len(removals) > 3 and len(removals) > allowed_removals \
+            and (len(removals) > DELETE_GUARD[1] or len(removals) > len(manifest) * DELETE_GUARD[0])
         for base, changes in result['outbound'].items():
             for change in changes:
                 rel = change['path']
+                if rel in agreed or rel in written:
+                    continue
                 known = manifest.get(rel)
-                handed = (held or {}).get(rel, {})
-                from_agent = handed.get('why') == 'agent' and handed.get('base') == base
+                handed = held.get(rel, {})
+                # A handoff ends with main's next change of the path, unless the Mac sent a
+                # newer version in this round.
+                from_agent = handed.get('why') == 'agent' and handed.get('base') == base and rel not in sent
                 if rules.skipped(rel) or (rel in conflicts and not from_agent) \
                         or (known is not None and known.get('b') != base and not from_agent):
                     continue
+                if hold and rel in removals:
+                    skipped.add(rel)
+                    continue
                 path = _inside(self.root, rel)
                 try:
-                    now = _describe(path, path.lstat(), digest=True)
+                    info = path.lstat()
                 except FileNotFoundError:
-                    now = None
-                now_hash = now['h'] if now else None
-                target = change.get('sha256') if change['kind'] != 'absent' else None
+                    info = None
+                except NotADirectoryError:
+                    # A Mac file stands where main has a folder: that file is the conflict.
+                    skipped.add(rel)
+                    continue
+                if info is not None and stat.S_ISDIR(info.st_mode):
+                    # A Mac folder stands where main has a file; nothing replaces it.
+                    skipped.add(rel)
+                    continue
+                now = None if info is None else _describe(path, info, digest=True)
+                now_hash = now['h'] if now else ABSENT
+                target = change.get('sha256') if change['kind'] != ABSENT else ABSENT
                 if now_hash == target:
-                    # The Mac already has main's content: agree without touching the file.
                     if now is None:
                         manifest.pop(rel, None)
                     else:
+                        if now['k'] == 'file' and 'mode' in change and (now['x'] ^ change['mode']) & 0o111 \
+                                and (known is None or not (now['x'] ^ known.get('x', now['x'])) & 0o111):
+                            # Main changed the mode and the Mac did not: the Mac takes it.
+                            os.chmod(path, (now['x'] & ~0o111) | (change['mode'] & 0o111), follow_symlinks=False)
+                            now = _describe(path, path.lstat(), digest=True)
                         manifest[rel] = {**now, 'b': state}
+                    # The Mac already has main's content: agree without touching the file.
                     agreed.add(rel)
                     continue
-                allowed = {sent.get(rel)} | ({known['h']} if known else {None}) | ({handed['h']} if from_agent else set())
+                if from_agent:
+                    allowed = {handed['h']}
+                else:
+                    allowed = {known['h'] if known else ABSENT}
+                    if rel in taken and rel in sent:
+                        # main took the content this round sent.
+                        allowed.add(sent[rel])
                 if now_hash not in allowed:
                     skipped.add(rel)
+                    if rel in taken and sent.get(rel) == target:
+                        # The Mac changed again after the send, and main holds what was sent:
+                        # that content is the agreed base of the next round.
+                        manifest[rel] = {'k': change['kind'], 's': -1, 'm': 0, 'x': change.get('mode', 0),
+                                         'h': target, 'b': state}
                     continue
                 data = b''
                 if change['kind'] in {'file', 'link'}:
@@ -452,7 +526,7 @@ class ProjectSync:
                 else:
                     manifest[rel] = {**entry, 'b': state}
                 written.add(rel)
-        return agreed, written, skipped
+        return agreed, written, skipped, len(removals) if hold else 0
 
     def fetch(self, state: str, rel: str) -> bytes:
         return self.fetch_entry(state, rel)[1]
@@ -829,6 +903,9 @@ def tick(runtime: Any) -> None:
                     if scope is None:
                         times['full'] = now
                 except BlockingIOError:
+                    # A choice holds the project: the next tick scans in full, so the
+                    # file event paths are not lost.
+                    times['full'] = 0.0
                     continue
                 except Exception as error:  # noqa: BLE001 - every failure stays visible in the status
                     project.status(state='error', reason=str(error)[:500])
