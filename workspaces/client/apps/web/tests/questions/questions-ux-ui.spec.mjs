@@ -385,6 +385,9 @@ test("Questions Ux Ui", async ({
         .locator(".request-question-label")
         .first()
         .scrollIntoViewIfNeeded();
+      await page.screenshot({
+        path: join(root, `question-${width}-${theme}.png`),
+      });
     }
     await page.setViewportSize({ width: 1440, height: 960 });
     const answers = [];
@@ -447,28 +450,15 @@ test("Questions Ux Ui", async ({
       "Keep this answer",
     );
     await otherForm
-      .getByRole("button", { name: "Answer later", exact: true })
+      .getByRole("button", { name: "Close reply", exact: true })
       .click();
-    const deferredHistory = page.locator(
-      "#requests .request-history.request-deferred",
-    );
-    await deferredHistory.locator("summary").click();
-    const deferredQuestion = deferredHistory.locator(
-      '[data-request="other-question"]',
-    );
-    await deferredQuestion.waitFor();
-    assert.equal(await deferredQuestion.getAttribute("data-deferred"), "true");
     assert.equal(
-      await deferredQuestion.getByRole("button", { name: "Restore" }).count(),
-      1,
-      "Answer later moves the request into Later",
+      await page
+        .locator('[data-answer="other-question"]')
+        .evaluate((el) => el === document.activeElement),
+      true,
     );
     assert.equal(answers.length, 2, "Hide never sends an answer");
-    await deferredQuestion.getByRole("button", { name: "Restore" }).click();
-    await poll(
-      () => page.locator('[data-request="other-question"]').isVisible(),
-      "restored question returns to the active list",
-    );
     await page.locator('[data-answer="other-question"]').click();
     assert.equal(
       await otherForm
