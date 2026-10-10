@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 from contextlib import contextmanager
 import fcntl
+import gzip
 import hashlib
 import io
 import json
@@ -299,6 +300,7 @@ class ProjectSync:
                                reason=f'{len(deleted)} files were deleted on the Mac; confirm before they sync')
         changes += deleted
         pending = _load(self.directory / 'pending.json', None)
+        replayed = pending is not None
         if pending is not None:
             # A lost reply repeats the same operation; the guest answers from its receipt.
             operation, params, sent = pending['operation'], pending['params'], pending['hashes']
@@ -346,7 +348,10 @@ class ProjectSync:
         with_agent = sorted(rel for rel, value in held.items() if value['why'] == 'agent')
         state = ('conflict' if in_conflict or waiting else 'waiting' if result['merge'] in {'refused', 'conflict'}
                  or with_agent else 'synced')
-        rescan = [] if merged else sorted(item['path'] for item in params['entries'])
+        sent_paths = {item['path'] for item in params['entries']}
+        # A replayed round did not read the paths waiting for a rescan; a new round did.
+        leftover = set(previous.get('rescan', [])) - sent_paths if replayed else set()
+        rescan = sorted(leftover if merged else leftover | sent_paths)
         return self.status(state=state, mainStateId=result['mainStateId'], sent=len(params['entries']),
                            received=len(written), conflicts=in_conflict, withAgent=with_agent, rescan=rescan,
                            mergeError=result.get('mergeError'), notices=notices, reason=None, deletes=0)
@@ -361,7 +366,9 @@ class ProjectSync:
         root = '/var/lib/codex-studio/projects/mac-sync-' + operation[4:28]
         with tempfile.TemporaryDirectory(prefix='studio-mac-sync-') as scratch:
             archive = Path(scratch) / 'changes.tar.gz'
-            with tarfile.open(archive, 'w:gz') as output:
+            # No time in the archive: a repeated operation sends the same bytes.
+            with archive.open('wb') as raw, gzip.GzipFile(filename='', mode='wb', fileobj=raw, mtime=0) as packed, \
+                    tarfile.open(fileobj=packed, mode='w') as output:
                 directory = tarfile.TarInfo('.')
                 directory.type, directory.mode = tarfile.DIRTYPE, 0o755
                 output.addfile(directory)
@@ -502,15 +509,25 @@ class ProjectSync:
                     now = _describe(path, path.lstat(), digest=True)
                 except FileNotFoundError:
                     now = None
-                operation = 'mac-' + uuid.uuid4().hex
+                content = now['h'] if now else 'absent'
+                kind = now['k'] if now else 'absent'
+                known = held.get(rel, {})
+                if known.get('why') == 'agent' and known.get('h') == content and known.get('stateId'):
+                    # A repeated request: the lead already has this Mac version.
+                    result.update(line='mac-conflict', stateId=known['stateId'], kind=kind)
+                    return result
+                # The same path, Mac content and main state give the same operation, so a
+                # retry after a lost reply returns the guest's receipt.
+                operation = 'mac-' + hashlib.sha256('\0'.join((self.project_id, rel, content, head)).encode()).hexdigest()[:32]
                 params: dict[str, Any] = {'projectId': self.project_id, 'operationId': operation, 'path': rel,
-                                          'kind': now['k'] if now else 'absent'}
+                                          'kind': kind}
                 if now is not None:
                     upload, _ = self.upload(operation, [(rel, now, None)], manifest)
                     params['upload'] = upload['upload']
                 handoff = self.client.call('sync.mac.handoff', params, request_id=operation, timeout=600)
-                held[rel] = {'h': now['h'] if now else 'absent', 'why': 'agent', 'base': handoff['mainStateId']}
-                result.update(line=handoff['line'], stateId=handoff['stateId'], kind=params['kind'])
+                held[rel] = {'h': content, 'why': 'agent', 'base': handoff['mainStateId'],
+                             'stateId': handoff['stateId']}
+                result.update(line=handoff['line'], stateId=handoff['stateId'], kind=kind)
             choices.discard(rel)
             _save(self.directory / 'manifest.json', manifest)
             _save(self.directory / 'held.json', held)

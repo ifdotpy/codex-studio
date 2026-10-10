@@ -186,6 +186,17 @@ class Rounds(unittest.TestCase):
         self.assertEqual([[item['path'] for item in entries] for entries in sent], [['a.txt'], ['a.txt']])
         self.assertEqual((second['state'], second['rescan']), ('synced', []))
 
+    def test_a_replayed_round_keeps_the_paths_it_did_not_read(self) -> None:
+        (self.root / 'a.txt').write_text('agreed')
+        manifest = {'a.txt': self.entry('a.txt')}
+        (self.root / 'a.txt').write_text('mac')
+        client, project = self.project([TimeoutError('lost reply'), reply(applied=['a.txt'], merge='merged')], manifest)
+        with self.assertRaises(TimeoutError):
+            project.round()
+        # A choice asks for b.txt to be read again while the lost round waits.
+        project.status(rescan=['b.txt'])
+        self.assertEqual(project.round(set())['rescan'], ['b.txt'])
+
     def test_a_base_the_guest_did_not_compare_stays_with_its_path(self) -> None:
         for rel in ('old.txt', 'new.txt'):
             (self.root / rel).write_text(rel)
@@ -268,7 +279,12 @@ class Choices(unittest.TestCase):
         self.assertEqual((handoff['path'], handoff['kind']), ('app.txt', 'file'))
         self.assertIn('upload', handoff)
         self.assertEqual((result['line'], result['stateId'], result['kind']), ('mac-conflict', 'h1', 'file'))
-        self.assertEqual(self.saved('held.json')['app.txt'], {'h': sha(b'mac\n'), 'why': 'agent', 'base': 'm9'})
+        self.assertEqual(self.saved('held.json')['app.txt'],
+                         {'h': sha(b'mac\n'), 'why': 'agent', 'base': 'm9', 'stateId': 'h1'})
+        # A repeated request after a lost reply makes no second handoff.
+        again = self.project.resolve('app.txt', 'agent')
+        self.assertEqual(again['stateId'], 'h1')
+        self.assertEqual(len([call for call in self.client.calls if call[0] == 'sync.mac.handoff']), 1)
         status = self.saved('status.json')
         self.assertEqual((status['state'], status['withAgent'], status['conflicts']), ('waiting', ['app.txt'], []))
         # A quiet round leaves the Mac file alone while the lead works.
@@ -285,6 +301,25 @@ class Choices(unittest.TestCase):
         self.assertEqual((self.root / 'app.txt').read_text(), 'combined\n')
         self.assertEqual((done['state'], done['withAgent']), ('synced', []))
         self.assertEqual(self.saved('held.json'), {})
+
+    def test_a_lost_handoff_reply_repeats_the_same_operation_and_archive(self) -> None:
+        archives: list[bytes] = []
+        setattr(self.project, 'send_archive', lambda archive, begin, operation: archives.append(archive.read_bytes()))
+        original = self.client.call
+
+        def lose_first_reply(method: str, params: dict[str, Any], **options: Any) -> dict[str, Any]:
+            reply = original(method, params, **options)
+            if method == 'sync.mac.handoff' and len(archives) == 1:
+                raise TimeoutError('lost reply')
+            return reply
+        setattr(self.client, 'call', lose_first_reply)
+        with self.assertRaises(TimeoutError):
+            self.project.resolve('app.txt', 'agent')
+        self.project.resolve('app.txt', 'agent')
+        operations = [request for method, _params, request in self.client.calls if method == 'sync.mac.handoff']
+        self.assertEqual(len(operations), 2)
+        self.assertEqual(operations[0], operations[1])
+        self.assertEqual(archives[0], archives[1])
 
     def test_a_new_mac_edit_ends_the_handoff_and_syncs_as_usual(self) -> None:
         self.project.resolve('app.txt', 'agent')
