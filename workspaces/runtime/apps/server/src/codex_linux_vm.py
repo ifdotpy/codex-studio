@@ -741,6 +741,22 @@ class Client:
         return LinuxVMError(f"Linux VM stage {info.get('stage', 'boot')} failed: {cause}. "
                             f"Retry the Linux spawn. Log: {self.state_dir / 'console.log'}")
 
+    def share_bridge_port(self) -> int:
+        """The Mac loopback port of the helper's share bridge, chosen once and kept, so a
+        Finder mount survives VM restarts. The helper reports the port it really uses."""
+        path = self.state_dir / 'share-bridge.json'
+        try:
+            port = json.loads(path.read_text())['port']
+            if type(port) is int and 1024 <= port <= 65535:
+                return port
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        with socket.socket() as probe:
+            probe.bind(('127.0.0.1', 0))
+            port = probe.getsockname()[1]
+        _atomic_json(path, {'port': port})
+        return port
+
     def ensure_running(self, settings: Settings | dict[str, int] | None = None, *, timeout: float = 3600) -> dict[str, Any]:
         if not 0 < timeout <= 3600:
             raise LinuxVMError('VM start timeout must be between 0 and 3600 seconds.')
@@ -795,6 +811,7 @@ class Client:
                 log_path = self.state_dir / 'helper.log'
                 if log_path.exists() and log_path.stat().st_size > 1024 * 1024:
                     log_path.write_bytes(log_path.read_bytes()[-512 * 1024:])
+                self.share_bridge_port()
                 with log_path.open('ab') as log:
                     launched = subprocess.Popen([str(self.helper), 'serve', str(self.state_dir)], stdin=subprocess.DEVNULL,
                                      stdout=log, stderr=log, start_new_session=True, close_fds=True)

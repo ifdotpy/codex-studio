@@ -383,6 +383,19 @@ class ClientTests(unittest.TestCase):
 
 
 
+class ShareBridgePortTests(unittest.TestCase):
+    def test_the_loopback_port_is_chosen_once_and_kept(self):
+        with tempfile.TemporaryDirectory() as name:
+            client = vm.Client(name, helper=Path(name) / 'helper')
+            port = client.share_bridge_port()
+            self.assertTrue(1024 <= port <= 65535)
+            self.assertEqual(json.loads((Path(name) / 'share-bridge.json').read_text()), {'port': port})
+            self.assertEqual(client.share_bridge_port(), port)
+            (Path(name) / 'share-bridge.json').write_text('{"port": 80}')
+            replaced = client.share_bridge_port()
+            self.assertTrue(1024 <= replaced <= 65535)
+
+
 class PackagedLayoutTests(unittest.TestCase):
     def test_packaged_providers_root_holds_the_bridge_copied_by_the_package(self):
         import importlib.util

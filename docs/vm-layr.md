@@ -33,13 +33,23 @@ Use `layr export` when you need a normal copy outside the VM.
 ## Mac share
 
 Samba serves each project's `main/` and `states/` folders.
-It binds only to the internal VM interface.
-It accepts only the Mac gateway address and the private `studio-view` credential.
+It listens only on the guest loopback and accepts only the private `studio-view` credential.
+The share never uses the VM network. The VM helper on the Mac listens on
+`127.0.0.1:<port>` and carries each connection over vsock port 4052 to
+`share_bridge.py` in the guest, which connects to Samba on the guest loopback.
+macOS applies no Local Network permission to loopback, so the background backend
+can mount the share without a permission for its Python.
+The Mac saves the port once in `share-bridge.json`; if another program holds it,
+the helper uses a free port, and `host.status` reports the port in use.
 The Mac credential file has mode 0600 in the VM state directory.
-No password appears in a process argument or a status response.
+No password appears in a process argument or a status response: Studio types it
+on the controlling terminal that `mount_smbfs` reads.
 
 The Mac mounts the share at `~/Studio/<projectId>` without root.
-The mount appears in Finder.
+The mount appears in Finder. An older read-only mount of the same share at another
+address or port is unmounted and mounted again; any other filesystem there stays.
+The Finder view is a convenience: when the mount fails, agents keep working in the VM,
+and `mount_status` reports the failure with its reason.
 The server and the Mac mount both reject writes.
 The guest uses read-only bind mounts for the export paths.
 The share rejects symbolic links and `.DS_Store` files.

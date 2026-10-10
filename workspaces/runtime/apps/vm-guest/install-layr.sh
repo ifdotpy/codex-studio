@@ -37,11 +37,11 @@ if [ "$(cat /var/lib/codex-studio/layr-build 2>/dev/null || true)" != "$identity
 fi
 install -d -m 0711 /var/lib/codex-studio/layr
 install -d -m 0700 /var/lib/codex-studio/layr-admin
-for name in layr layr-admin share; do
+for name in layr layr-admin share share-bridge; do
     install -m 0644 /opt/codex-studio/vm/guest/codex-studio-$name.service /etc/systemd/system/codex-studio-$name.service
 done
-# Only our unit serves SMB, on the VM internal interface.
+# Only our unit serves SMB, on the guest loopback; the vsock bridge carries it to the Mac.
 systemctl disable --now smbd.service nmbd.service 2>/dev/null || true
 systemctl daemon-reload
-systemctl enable --now codex-studio-layr.service codex-studio-layr-admin.service
+systemctl enable --now codex-studio-layr.service codex-studio-layr-admin.service codex-studio-share-bridge.service
 

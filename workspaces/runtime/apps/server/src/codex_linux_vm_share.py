@@ -128,23 +128,31 @@ def mount_project(client: Client, project: dict[str, Any], password: str) -> dic
     share = project['share']
     if share.get('state') != 'ready':
         raise LinuxVMError('The guest SMB share is not ready.')
-    address = share['address']
-    import ipaddress
-    if not ipaddress.ip_address(address).is_private:
-        raise LinuxVMError('The share address must identify the internal VM network.')
+    # The helper bridges 127.0.0.1 to the guest over vsock: no VM network address, and
+    # no macOS Local Network permission for the background backend (docs/vm-layr.md).
+    bridge = client.status().get('share') or {}
+    port = bridge.get('port')
+    if bridge.get('state') != 'listening' or type(port) is not int:
+        raise LinuxVMError('The VM share bridge is unavailable: ' + str(bridge.get('error') or 'not listening'))
     destination = Path.home() / 'Studio' / identity
     destination.parent.mkdir(mode=0o700, exist_ok=True)
     if destination.parent.is_symlink() or destination.is_symlink():
         raise LinuxVMError('The Studio share path must not contain symlinks.')
     entries = [row for row in _mount_entries() if row['path'] == str(destination)]
-    expected = f'//studio-view@{address}/{identity}'
+    expected = f'//studio-view@127.0.0.1:{port}/{identity}'
     if entries:
         row = entries[0]
-        if row['source'] != expected or 'read-only' not in row['options'].split(', '):
+        read_only = 'read-only' in row['options'].split(', ')
+        if row['source'] == expected and read_only:
+            _save(client.state_dir / 'layr-projects' / identity / 'mount.json',
+                  {'projectId': identity, 'path': str(destination), 'port': port})
+            return {'state': 'mounted', 'path': str(destination), 'readOnly': True}
+        # Only this share at an older address or port is replaced; anything else stays.
+        if not (read_only and re.fullmatch(r'//studio-view@[^/]+/' + re.escape(identity), row['source'])):
             raise LinuxVMError('A different filesystem already uses the project share path.')
-        _save(client.state_dir / 'layr-projects' / identity / 'mount.json',
-              {'projectId': identity, 'path': str(destination), 'address': address})
-        return {'state': 'mounted', 'path': str(destination), 'readOnly': True}
+        released = subprocess.run(['/sbin/umount', str(destination)], capture_output=True, text=True, timeout=30)
+        if released.returncode:
+            raise LinuxVMError('The previous share mount is busy: ' + (released.stderr.strip()[:200] or 'umount failed'))
     destination.mkdir(mode=0o700, exist_ok=True)
     if any(destination.iterdir()):
         raise LinuxVMError('The project share mount folder is not empty.')
@@ -157,7 +165,7 @@ def mount_project(client: Client, project: dict[str, Any], password: str) -> dic
     if len(rows) != 1 or 'read-only' not in rows[0]['options'].split(', '):
         raise LinuxVMError('The SMB mount has no proven read-only result.', uncertain=True)
     _save(client.state_dir / 'layr-projects' / identity / 'mount.json',
-          {'projectId': identity, 'path': str(destination), 'address': address})
+          {'projectId': identity, 'path': str(destination), 'port': port})
     return {'state': 'mounted', 'path': str(destination), 'readOnly': True}
 
 

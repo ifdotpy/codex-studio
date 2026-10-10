@@ -59,6 +59,11 @@ final class Host: NSObject, VZVirtualMachineDelegate {
     let consoleQueue = DispatchQueue(label: "studio.vm.console")
     var hostExecListener: VZVirtioSocketListener?
     var hostExecDelegate: HostExecListener?
+    // The read-only project share: 127.0.0.1 on the Mac to vsock 4052 in the guest.
+    // Loopback needs no macOS Local Network permission and never touches the VM network.
+    var sharePort: Int?
+    var shareError: String?
+    let shareChannels = DispatchSemaphore(value: 32)
 
     init(directory: URL) { self.directory = directory }
     func boot() throws {
@@ -143,6 +148,7 @@ final class Host: NSObject, VZVirtualMachineDelegate {
         }
         try listen(guest: false)
         try listen(guest: true)
+        listenShare()
         vm!.start { [self] result in
             switch result {
             case .success:
@@ -187,7 +193,7 @@ final class Host: NSObject, VZVirtualMachineDelegate {
                 var noPipe: Int32 = 1
                 setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noPipe, 4)
                 if guest {
-                    DispatchQueue.main.async { [self] in connectGuest(client) }
+                    DispatchQueue.main.async { [self] in connectGuest(client, port: 4050, slots: channels) }
                 } else {
                     DispatchQueue.global().async { [self] in handle(client) }
                 }
@@ -218,7 +224,10 @@ final class Host: NSObject, VZVirtualMachineDelegate {
             defer { channels.signal() }
             switch method {
             case "host.status":
-                let result: [String: Any] = ["state": phase, "pid": getpid(), "error": failure ?? NSNull(), "settings": config]
+                let share: [String: Any] = ["state": sharePort == nil ? "unavailable" : "listening",
+                                            "port": sharePort ?? NSNull(), "error": shareError ?? NSNull()]
+                let result: [String: Any] = ["state": phase, "pid": getpid(), "error": failure ?? NSNull(),
+                                             "settings": config, "share": share]
                 reply(fd, ["id": id, "result": result]); close(fd)
             case "host.stop":
                 guard let machine = vm, machine.canStop else {
@@ -236,21 +245,65 @@ final class Host: NSObject, VZVirtualMachineDelegate {
             }
         }
     }
-    func connectGuest(_ fd: Int32) {
-        guard phase == "running", let socketDevice = vm?.socketDevices.first as? VZVirtioSocketDevice else { close(fd); channels.signal(); return }
+    func connectGuest(_ fd: Int32, port: UInt32, slots: DispatchSemaphore) {
+        guard phase == "running", let socketDevice = vm?.socketDevices.first as? VZVirtioSocketDevice else { close(fd); slots.signal(); return }
         var completed = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 15) {
-            if !completed { completed = true; close(fd); self.channels.signal() }
+            if !completed { completed = true; close(fd); slots.signal() }
         }
-        socketDevice.connect(toPort: 4050) { [self] result in
+        socketDevice.connect(toPort: port) { [self] result in
             if completed { if case .success(let connection) = result { connection.close() }; return }
             completed = true
             switch result {
-            case .failure: close(fd); channels.signal()
+            case .failure: close(fd); slots.signal()
             case .success(let connection):
                 var timeout = timeval(tv_sec: 30, tv_usec: 0)
                 setsockopt(connection.fileDescriptor, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-                DispatchQueue.global().async { [self] in bridge(fd, connection) }
+                DispatchQueue.global().async { [self] in bridge(fd, connection, slots: slots) }
+            }
+        }
+    }
+    func listenShare() {
+        // The host saves the port once; a taken port falls back to a free one, and
+        // host.status reports the port in use.
+        let settings = directory.appendingPathComponent("share-bridge.json")
+        guard let data = try? Data(contentsOf: settings),
+              let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let requested = value["port"] as? Int, (1024...65535).contains(requested) else {
+            shareError = "The share bridge port is not configured."; return
+        }
+        let listener = socket(AF_INET, SOCK_STREAM, 0)
+        guard listener >= 0 else { shareError = "Cannot create the share bridge socket."; return }
+        var reuse: Int32 = 1
+        setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
+        func bindLoopback(_ port: Int) -> Bool {
+            var addr = sockaddr_in()
+            addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+            addr.sin_family = sa_family_t(AF_INET)
+            addr.sin_port = in_port_t(UInt16(port).bigEndian)
+            addr.sin_addr = in_addr(s_addr: INADDR_LOOPBACK.bigEndian)
+            return withUnsafePointer(to: &addr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(listener, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+            } == 0
+        }
+        guard bindLoopback(requested) || (errno == EADDRINUSE && bindLoopback(0)), Darwin.listen(listener, 16) == 0 else {
+            shareError = "Cannot bind the share bridge: \(String(cString: strerror(errno)))."; close(listener); return
+        }
+        var bound = sockaddr_in()
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let named = withUnsafeMutablePointer(to: &bound) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(listener, $0, &length) }
+        }
+        guard named == 0 else { shareError = "Cannot read the share bridge port."; close(listener); return }
+        sharePort = Int(UInt16(bigEndian: bound.sin_port))
+        DispatchQueue.global().async { [self] in
+            while true {
+                let client = accept(listener, nil, nil)
+                if client < 0 { if errno == EINTR { continue }; break }
+                guard shareChannels.wait(timeout: .now()) == .success else { close(client); continue }
+                var noPipe: Int32 = 1
+                setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noPipe, 4)
+                DispatchQueue.main.async { [self] in connectGuest(client, port: 4052, slots: shareChannels) }
             }
         }
     }
@@ -268,11 +321,11 @@ final class Host: NSObject, VZVirtualMachineDelegate {
             var timeout = timeval(tv_sec: 30, tv_usec: 0)
             setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
             setsockopt(connection.fileDescriptor, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-            bridge(client, connection)
+            bridge(client, connection, slots: channels)
         } catch { close(client); connection.close(); channels.signal() }
     }
-    func bridge(_ client: Int32, _ connection: VZVirtioSocketConnection) {
-        defer { close(client); connection.close(); channels.signal() }
+    func bridge(_ client: Int32, _ connection: VZVirtioSocketConnection, slots: DispatchSemaphore) {
+        defer { close(client); connection.close(); slots.signal() }
         let guest = connection.fileDescriptor
         var descriptors = [pollfd(fd: client, events: Int16(POLLIN), revents: 0), pollfd(fd: guest, events: Int16(POLLIN), revents: 0)]
         var bytes = [UInt8](repeating: 0, count: 65536)

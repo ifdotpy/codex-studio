@@ -1,6 +1,7 @@
 """Host import contracts use the actual caller with a guest fixture."""
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -138,26 +139,77 @@ class HostImportTests(unittest.TestCase):
             failing.write_text("#!/bin/bash\nIFS= read -r -s -p 'Password: ' value </dev/tty\n"
                                "echo \"mount_smbfs: server rejected $value\" >&2; exit 77\n")
             failing.chmod(0o700)
-            project = {"projectId": "p1", "share": {"state": "ready", "address": "192.168.64.2"}}
+            project = {"projectId": "p1", "share": {"state": "ready"}}
             original = share._mount_smbfs
             self.mount.stop()
             self.addCleanup(self.mount.start)
             with patch.object(Path, "home", return_value=Path(name)), patch.object(share, "_mount_entries", return_value=[]), \
+                    patch.object(self.client, "status", return_value=self.bridge(45000)), \
                     patch.object(share, "_mount_smbfs", lambda source, destination, password:
                                  original(source, destination, password, executable=str(failing))):
                 with self.assertRaisesRegex(LinuxVMError, r"SMB mount failed: mount_smbfs: server rejected \*\*\*$"):
                     share.mount_project(self.client, project, "a" * 64)
 
-    def test_mac_mount_rejects_existing_writable_or_different_share(self):
+    @staticmethod
+    def bridge(port, state="listening"):
+        return {"state": "running", "share": {"state": state, "port": port, "error": None}}
+
+    def mount_case(self, entries, status, mounted=None):
+        """mount_project with a fake mount table and helper status; returns (result, umounts, mounts)."""
         home = self.root / "home"
-        home.mkdir()
-        project = {"projectId": "app", "share": {"state": "ready", "address": "192.168.64.2"}}
+        home.mkdir(exist_ok=True)
+        # import_project holds the project folder lock, which creates this folder.
+        (self.root / "layr-projects/app").mkdir(parents=True, exist_ok=True)
+        project = {"projectId": "app", "share": {"state": "ready"}}
+        calls = {"umount": [], "mount": []}
+        table = [dict(row, path=str(home / "Studio/app")) for row in entries]
+
+        def run(argv, **kwargs):
+            calls["umount"].append(argv)
+            table.clear()
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        def mount_smbfs(source, destination, password):
+            calls["mount"].append(source)
+            table.append({"path": str(destination), "source": source, "options": "smbfs, nodev, nosuid, read-only"})
+            return subprocess.CompletedProcess([], 0, "", "")
+
         self.mount.stop()
-        entries = [{"path": str(home / "Studio/app"), "source": "//studio-view@192.168.64.2/app", "options": "smbfs, local"}]
-        with patch.object(Path, "home", return_value=home), patch.object(share, "_mount_entries", return_value=entries):
-            with self.assertRaises(LinuxVMError):
-                share.mount_project(self.client, project, "password")
-        self.mount.start()
+        try:
+            with patch.object(Path, "home", return_value=home), \
+                    patch.object(share, "_mount_entries", side_effect=lambda: list(table)), \
+                    patch.object(self.client, "status", return_value=status), \
+                    patch.object(share.subprocess, "run", side_effect=run), \
+                    patch.object(share, "_mount_smbfs", side_effect=mount_smbfs):
+                return share.mount_project(self.client, project, "password"), calls
+        finally:
+            self.mount.start()
+
+    def test_mac_mount_goes_through_the_loopback_bridge(self):
+        result, calls = self.mount_case([], self.bridge(45000))
+        self.assertEqual(result["state"], "mounted")
+        self.assertEqual(calls["mount"], ["//studio-view@127.0.0.1:45000/app"])
+        saved = json.loads((self.root / "layr-projects/app/mount.json").read_text())
+        self.assertEqual(saved["port"], 45000)
+        # The same mount again is accepted without a new mount.
+        entry = {"source": "//studio-view@127.0.0.1:45000/app", "options": "smbfs, read-only"}
+        result, calls = self.mount_case([entry], self.bridge(45000))
+        self.assertEqual((result["state"], calls["mount"], calls["umount"]), ("mounted", [], []))
+
+    def test_mac_mount_needs_a_listening_bridge(self):
+        with self.assertRaisesRegex(LinuxVMError, "share bridge is unavailable: port taken"):
+            self.mount_case([], {"state": "running", "share": {"state": "unavailable", "port": None, "error": "port taken"}})
+
+    def test_mac_mount_replaces_only_its_own_older_read_only_share(self):
+        stale = {"source": "//studio-view@192.168.64.15/app", "options": "smbfs, read-only"}
+        result, calls = self.mount_case([stale], self.bridge(45001))
+        self.assertEqual(calls["umount"][0][0], "/sbin/umount")
+        self.assertEqual(calls["mount"], ["//studio-view@127.0.0.1:45001/app"])
+        for foreign in ({"source": "//studio-view@127.0.0.1:45000/other", "options": "smbfs, read-only"},
+                        {"source": "//someone@127.0.0.1:45000/app", "options": "smbfs, read-only"},
+                        {"source": "//studio-view@127.0.0.1:45000/app", "options": "smbfs, local"}):
+            with self.subTest(foreign=foreign), self.assertRaisesRegex(LinuxVMError, "different filesystem"):
+                self.mount_case([foreign], self.bridge(45000))
 
 
 if __name__ == "__main__":
