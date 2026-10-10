@@ -55,6 +55,7 @@ import {
 
 import SidebarRow from "./SidebarRow";
 import ProjectLayrReadiness, {
+  activeLayrReadiness,
   describeWithLayrReadiness,
   layrReadinessSummary,
 } from "./sidebar/LayrReadiness";
@@ -1296,8 +1297,12 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
               group.chats.length,
           );
           const layr = layrReadinessSummary(
-            services.layrReadiness?.(group.path) ??
-              (group.layrReadiness ? [{ readiness: group.layrReadiness }] : []),
+            activeLayrReadiness(
+              services.layrReadiness?.(group.path) ??
+                (group.layrReadiness
+                  ? [{ readiness: group.layrReadiness }]
+                  : []),
+            ),
           );
           const syncEntries: LayrSyncEntry[] =
             services.layrSync?.(group.path) ??

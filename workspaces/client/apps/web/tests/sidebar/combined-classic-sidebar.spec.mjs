@@ -98,7 +98,7 @@ for (const [theme, viewport] of [
                 },
               ],
               // Only the remote server reports layr support for its folder.
-              layrReadiness: { state: "importing" },
+              layrReadiness: { state: "ready" },
             }
           : {}),
       });
@@ -159,15 +159,15 @@ for (const [theme, viewport] of [
       // Only the remote server reports readiness; the button keeps its name.
       const readiness = projectName.locator(".project-layr-readiness");
       await expect(readiness).toHaveText("LAYR");
-      await expect(readiness).toHaveAttribute("data-state", "importing");
+      await expect(readiness).toHaveAttribute("data-state", "ready");
       await expect(readiness).toHaveAttribute(
         "title",
-        "REM: Importing into the VM",
+        "REM: Ready for layr chats",
       );
       await expect(
         sidebar.getByRole("button", { name: "Home project", exact: true }),
       ).toHaveAccessibleDescription(
-        "REM: Importing into the VM. Drag to reorder. Alt + Up or Down also works.",
+        "REM: Ready for layr chats. Drag to reorder. Alt + Up or Down also works.",
       );
       await expect(projectName).not.toHaveAttribute("aria-expanded");
       expect(await projectName.evaluate((element) => element.tagName)).toBe(
@@ -342,9 +342,26 @@ for (const [theme, viewport] of [
       await expect(row).toBeVisible();
       expect(calls.local).toEqual([]);
 
+      // layr shows only where it is active: an import in progress shows nothing.
+      remote.offline(false);
+      remote.snapshot.runtime.projects[0].layrReadiness = {
+        state: "importing",
+      };
+      await page.reload();
+      if (viewport.width < 760)
+        await page
+          .getByRole("button", { name: "Servers and chats", exact: true })
+          .click();
+      await expect(projectName).toBeVisible();
+      await expect(projectName.locator("small")).toHaveCount(0);
+      await expect(
+        sidebar.getByRole("button", { name: "Home project", exact: true }),
+      ).toHaveAccessibleDescription(
+        "Drag to reorder. Alt + Up or Down also works.",
+      );
+
       // The remote server now syncs its Mac folder: one chip tells that the project is
       // ready and that one file waits for a choice, and the remote server takes it.
-      remote.offline(false);
       Object.assign(remote.snapshot.runtime.projects[0], {
         layrReadiness: { state: "ready" },
         layrSync: {

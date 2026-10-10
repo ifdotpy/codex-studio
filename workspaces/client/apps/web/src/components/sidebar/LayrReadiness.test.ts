@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
 import ProjectLayrReadiness, {
+  activeLayrReadiness,
   describeWithLayrReadiness,
   layrReadinessSummary,
   layrReadinessText,
@@ -67,4 +68,18 @@ test("names each server and shows the state that needs attention first", () => {
   expect(describeWithLayrReadiness(failed, "Drag to reorder.")).toBe(
     "MAC: Not in the VM yet; the first layr chat imports it; MINI: Import failed: The VM is not running. Drag to reorder.",
   );
+});
+
+test("the row shows layr only for a ready project", () => {
+  const ready = { server: "MAC", readiness: { state: "ready" as const } };
+  expect(
+    activeLayrReadiness([
+      { readiness: { state: "not_imported" } },
+      { readiness: { state: "importing" } },
+      { readiness: { state: "failed", error: "VM stopped" } },
+    ]),
+  ).toEqual([]);
+  expect(
+    activeLayrReadiness([ready, { readiness: { state: "importing" } }]),
+  ).toEqual([ready]);
 });

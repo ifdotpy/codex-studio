@@ -31,6 +31,14 @@ export function layrReadinessText(readiness: LayrReadiness): string {
   }
 }
 
+/** The row shows layr only where it is active: a project that is ready for layr chats. An
+ * import that runs, failed or never started shows nothing. */
+export function activeLayrReadiness(
+  entries: readonly LayrReadinessEntry[],
+): LayrReadinessEntry[] {
+  return entries.filter((entry) => entry.readiness.state === "ready");
+}
+
 export function layrReadinessSummary(
   entries: readonly LayrReadinessEntry[],
 ): LayrReadinessSummary | null {
