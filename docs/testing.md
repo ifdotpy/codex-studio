@@ -30,7 +30,25 @@ Use the root [`justfile`](../justfile) for the three independent scopes:
 Package names and directories come from pnpm and Cargo manifests, with `server`
 representing the current Python app. Native manifests and runners remain the
 owners of test discovery and selection. All facade commands work from a
-repository subdirectory and save complete test logs outside the checkout.
+repository subdirectory and save complete test logs outside the checkout in
+`$XDG_CACHE_HOME/codex-studio/checks` (or `~/.cache/codex-studio/checks`). Set
+`CODEX_STUDIO_CHECKS_CACHE` to choose another location. The facade removes run
+directories older than 14 days at the start of each run; recent logs are kept
+for reproductions.
+
+For Vitest packages, the positional case is always a substring of the test
+file path, so `just test codex-agents-web errorPresentation` loads the matching
+file. Add `--name <pattern>` to pass a test-name filter (`-t`) as well, which
+lets a named case stay within one file. Cargo uses the positional case as its
+test-name filter and forwards runner options after `--` (for example,
+`just test studio-diagnostics parse_args -- --exact`). The server uses its
+runner's `--filter` suite selector. `just test-plan` prints the selector and
+the exact native command without execution.
+
+Each pnpm package declares its focused recipe mapping in its manifest under
+`codexStudioChecks`: `test` names the focused test script, and `check` lists
+the package-local check scripts. These mappings must invoke only that package;
+they must not install dependencies or build unrelated packages.
 
 ## Choose a suite
 
