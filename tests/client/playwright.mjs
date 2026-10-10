@@ -19,6 +19,7 @@ import {
 } from "node:fs";
 import { choosePlaywrightScratchRoot } from "./scratch-root.mjs";
 import { browserExecutablePath } from "./browser-executable.mjs";
+import { waitForFixturePort } from "./fixture-readiness.mjs";
 import {
   registerFixtureProcessGroup,
   signalFixtureProcessGroup,
@@ -885,7 +886,7 @@ export function spawnFixture(command, args, options) {
   return child;
 }
 
-export { browserExecutablePath };
+export { browserExecutablePath, waitForFixturePort };
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["JsonValue"]} JsonValue */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["SessionResponse"]} SessionResponse */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["SyncPullResponse"]} SyncPullResponse */

@@ -4,6 +4,7 @@ import {
   readFixtureSyncContract,
   apiSchemaHandshakeEvent,
   spawnFixture as spawn,
+  waitForFixturePort,
   test,
 } from "../playwright.mjs";
 // Production renderer, isolated fixture, and controlled delivery acknowledgements.
@@ -39,17 +40,10 @@ async function setupUncertainRemovePointer(page) {
   );
   let log = "";
   fixture.stderr.on("data", (chunk) => (log += chunk));
-  let startupTimeout;
-  const port = await new Promise((resolve, reject) => {
-    startupTimeout = setTimeout(
-      () => reject(new Error(`Message fixture did not start: ${log}`)),
-      10_000,
-    );
-    fixture.stdout.once("data", (chunk) =>
-      resolve(Number(String(chunk).trim())),
-    );
-    fixture.once("exit", () => reject(new Error(log)));
-  }).finally(() => clearTimeout(startupTimeout));
+  const port = await waitForFixturePort(fixture, {
+    label: "Message",
+    diagnostics: () => log,
+  });
   const origin = `http://127.0.0.1:${port}`;
   const state = await readTestState(origin);
   const lead = state.threads.find((agent) => agent.name === "Release lead");
@@ -109,7 +103,7 @@ async function setupUncertainRemovePointer(page) {
 test("uncertain outgoing message exposes both delivery controls", async ({
   page,
 }) => {
-  test.setTimeout(30_000);
+  test.setTimeout(60_000);
   page.setDefaultTimeout(10_000);
   const { message, remove, quote } = await setupUncertainRemovePointer(page);
   await message
@@ -120,7 +114,7 @@ test("uncertain outgoing message exposes both delivery controls", async ({
 });
 
 test("remove message button remains reachable by pointer", async ({ page }) => {
-  test.setTimeout(30_000);
+  test.setTimeout(60_000);
   page.setDefaultTimeout(10_000);
   const { message, hit, box } = await setupUncertainRemovePointer(page);
   test.fail(

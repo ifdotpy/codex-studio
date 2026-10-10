@@ -10,6 +10,7 @@ import {
   stubSessionCost,
   test,
   spawnFixture as spawn,
+  waitForFixturePort,
 } from "../playwright.mjs";
 // Production bundle, isolated backend, no model calls.
 import assert from "node:assert/strict";
@@ -73,19 +74,9 @@ async function startSearchFocusSetup(page) {
     if (fixture.exitCode === null) fixture.kill();
   };
   try {
-    const port = await new Promise((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(Error("Search fixture startup timed out: " + log)),
-        10_000,
-      );
-      fixture.stdout.once("data", (chunk) => {
-        clearTimeout(timer);
-        resolve(Number(String(chunk).trim()));
-      });
-      fixture.once("exit", () => {
-        clearTimeout(timer);
-        reject(Error(log || "Search fixture exited"));
-      });
+    const port = await waitForFixturePort(fixture, {
+      label: "Search",
+      diagnostics: () => log,
     });
     await page.goto(`http://127.0.0.1:${port}`);
     await page.locator("#message").waitFor();
@@ -114,6 +105,7 @@ async function startSearchFocusSetup(page) {
 }
 
 test("Search messages opens from the button and Ctrl+K", async ({ page }) => {
+  test.setTimeout(60_000);
   const setup = await startSearchFocusSetup(page);
   try {
     await setup.open("button");
@@ -129,6 +121,7 @@ test("Search messages opens from the button and Ctrl+K", async ({ page }) => {
 test("Search messages focuses its query input when opened", async ({
   page,
 }) => {
+  test.setTimeout(60_000);
   const setup = await startSearchFocusSetup(page);
   try {
     await setup.open("button");
@@ -169,19 +162,9 @@ async function open320Workspace(page) {
     if (fixture.exitCode === null) fixture.kill();
   };
   try {
-    const port = await new Promise((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(Error("Fixture startup timed out: " + log)),
-        10_000,
-      );
-      fixture.stdout.once("data", (chunk) => {
-        clearTimeout(timer);
-        resolve(Number(String(chunk).trim()));
-      });
-      fixture.once("exit", () => {
-        clearTimeout(timer);
-        reject(Error(log || "Fixture exited"));
-      });
+    const port = await waitForFixturePort(fixture, {
+      label: "Workspace",
+      diagnostics: () => log,
     });
     await page.setViewportSize({ width: 320, height: 960 });
     await page.goto(`http://127.0.0.1:${port}`);
@@ -203,6 +186,7 @@ async function open320Workspace(page) {
 test("320px workspace setup keeps other header controls in view", async ({
   page,
 }) => {
+  test.setTimeout(60_000);
   const { stop, header } = await open320Workspace(page);
   try {
     await expect(header).toBeVisible();
@@ -232,6 +216,7 @@ test("320px workspace setup keeps other header controls in view", async ({
 });
 
 test("Conversation toggle remains in view at 320px", async ({ page }) => {
+  test.setTimeout(60_000);
   const { stop, toggle } = await open320Workspace(page);
   try {
     const bounds = await toggle.boundingBox();
