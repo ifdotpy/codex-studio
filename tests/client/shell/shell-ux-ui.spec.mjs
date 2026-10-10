@@ -218,10 +218,6 @@ test("Conversation toggle remains in view at 320px", async ({ page }) => {
   const { stop, toggle } = await open320Workspace(page);
   try {
     const bounds = await toggle.boundingBox();
-    test.fixme(
-      true,
-      "The 320px conversation-toggle bounds passed in 10/10 quiet ordinary repeats; retained as an intermittent layout observation.",
-    );
     assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 320);
   } finally {
     stop();

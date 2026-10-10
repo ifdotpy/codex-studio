@@ -49,6 +49,38 @@ test("explicit schema fixture response hash takes precedence", async ({
   expect(await assertOneApiFulfillment(page, explicitHash)).toBe(explicitHash);
 });
 
+test("duplicate spec fulfill calls delegate to one Route fulfillment", async ({
+  page,
+}) => {
+  let apiHandlerCalls = 0;
+  let apiResponses = 0;
+  page.on("response", (response) => {
+    if (new URL(response.url()).pathname === "/api/probe") apiResponses++;
+  });
+  await page.route("http://schema-header-fixture.test/**", async (route) => {
+    if (!new URL(route.request().url()).pathname.startsWith("/api/"))
+      return route.fulfill({ contentType: "text/html", body: "fixture" });
+    apiHandlerCalls++;
+    const fulfillment = route.fulfill({ status: 200, body: "ok" });
+    await Promise.all([
+      fulfillment,
+      route.fulfill({ status: 200, body: "duplicate" }),
+    ]);
+  });
+  await page.goto("http://schema-header-fixture.test/");
+  const response = await page.evaluate(async () => {
+    const result = await fetch("/api/probe");
+    return {
+      body: await result.text(),
+      hash: result.headers.get("x-studio-api-schema"),
+    };
+  });
+  assert.equal(apiHandlerCalls, 1, "the spec route handles the request once");
+  assert.equal(apiResponses, 1, "the browser receives one response");
+  assert.equal(response.body, "ok", "the first spec fulfillment wins");
+  assert.equal(response.hash, readApiSchemaHash());
+});
+
 test("deferred route fulfillment keeps the schema decorator until handled", async ({
   page,
 }) => {

@@ -258,10 +258,14 @@ export function installApiSchemaFixtureHeaders(target) {
         !new URL(request.url()).pathname.startsWith("/api/")
       )
         return handler(route, request);
+      let fulfillmentPromise;
       const decoratedRoute = new Proxy(route, {
         get(target, property) {
           if (property === "fulfill")
             return (response = {}) => {
+              // A Route can only be fulfilled once. Keep duplicate calls from
+              // racing through the decorator to Playwright's one-shot API.
+              if (fulfillmentPromise) return fulfillmentPromise;
               const originalHeaders =
                 typeof response.response?.headers === "function"
                   ? response.response.headers()
@@ -278,10 +282,11 @@ export function installApiSchemaFixtureHeaders(target) {
               });
               // The fixture handler owns fulfillment. This proxy only decorates
               // its arguments and delegates a single call to the real Route.
-              return target.fulfill({
+              fulfillmentPromise = target.fulfill({
                 ...response,
                 headers: normalizedHeaders,
               });
+              return fulfillmentPromise;
             };
           const value = Reflect.get(target, property, target);
           return typeof value === "function" ? value.bind(target) : value;

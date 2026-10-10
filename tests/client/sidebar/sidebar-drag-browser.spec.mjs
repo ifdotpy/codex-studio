@@ -5,6 +5,7 @@ import {
   test,
   expect,
   spawnFixture as spawn,
+  waitForFixturePort,
 } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
@@ -25,9 +26,9 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
   let log = "";
   proc.stderr.on("data", (d) => (log += d));
   try {
-    const port = await new Promise((resolve, reject) => {
-      proc.stdout.once("data", (d) => resolve(Number(String(d).trim())));
-      proc.once("exit", () => reject(Error(log)));
+    const port = await waitForFixturePort(proc, {
+      label: "Sidebar drag",
+      diagnostics: () => log,
     });
     const url = `http://127.0.0.1:${port}`;
     const state = async () => await readTestState(url);
@@ -453,19 +454,9 @@ async function startSidebarOverlapSetup(page) {
     if (proc.exitCode === null) proc.kill();
   };
   try {
-    const port = await new Promise((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(Error("Sidebar fixture startup timed out: " + log)),
-        10_000,
-      );
-      proc.stdout.once("data", (data) => {
-        clearTimeout(timer);
-        resolve(Number(String(data).trim()));
-      });
-      proc.once("exit", () => {
-        clearTimeout(timer);
-        reject(Error(log || "Sidebar fixture exited"));
-      });
+    const port = await waitForFixturePort(proc, {
+      label: "Sidebar overlap",
+      diagnostics: () => log,
     });
     const url = `http://127.0.0.1:${port}`;
     const initial = await readTestState(url);
@@ -477,8 +468,13 @@ async function startSidebarOverlapSetup(page) {
       releaseFirst = resolve;
     });
     let startupMigrationState = "pending";
-    let firstRequestState = "pending";
-    let firstRequestError;
+    let firstRequestHeldResolve;
+    let firstRequestHeldReject;
+    const firstRequestHeld = new Promise((resolve, reject) => {
+      firstRequestHeldResolve = resolve;
+      firstRequestHeldReject = reject;
+    });
+    firstRequestHeld.catch(() => {});
     firstResponse = new Promise((resolve, reject) => {
       firstResponseFulfilled = resolve;
       firstResponseFailed = reject;
@@ -511,15 +507,14 @@ async function startSidebarOverlapSetup(page) {
           "The held project save response carries the current API schema hash",
         );
         if (isFirstRequest) {
-          firstRequestState = "held";
+          firstRequestHeldResolve();
           await responseGate;
         }
         await route.fulfill({ response });
         if (isFirstRequest) firstResponseFulfilled();
       } catch (error) {
         if (isFirstRequest) {
-          firstRequestState = "failed";
-          firstRequestError = error;
+          firstRequestHeldReject(error);
           firstResponseFailed(error);
         }
         throw error;
@@ -555,15 +550,9 @@ async function startSidebarOverlapSetup(page) {
     assert.notEqual(teamIndex, -1, "The fixture contains Team A");
     const direction = teamIndex <= before.length - 3 ? "ArrowDown" : "ArrowUp";
     await team.press(`Alt+${direction}`);
-    await expect
-      .poll(
-        () => {
-          if (firstRequestState === "failed") throw firstRequestError;
-          return firstRequestState;
-        },
-        { message: "The first reorder request should be held by the fixture" },
-      )
-      .toBe("held");
+    // Await the exact fixture signal. The normal test timeout bounds this
+    // transition without a separate short polling budget.
+    await firstRequestHeld;
     const firstOrder = await topItems();
     return {
       stop,
