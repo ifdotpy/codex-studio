@@ -4,11 +4,10 @@ import {
   type ElementProps,
 } from "@mantine/core";
 
-export interface IconActionProps
-  extends Omit<
-    ActionIconProps & ElementProps<"button">,
-    "aria-label" | "title"
-  > {
+export interface IconActionProps extends Omit<
+  ActionIconProps & ElementProps<"button">,
+  "aria-label" | "title"
+> {
   label: string;
   title?: string;
 }

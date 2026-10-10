@@ -32,6 +32,10 @@
   .empty-chat-settings {
     width: calc(100% - 28px);
     flex-direction: column;
+    flex-shrink: 1;
+    min-height: 44px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
     gap: 4px;
   }
 

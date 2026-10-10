@@ -252,8 +252,12 @@ export async function forkAtTurn(source, params, deps) {
     for (let i = 0; i < retained.length; i++)
       retained[i].nativeMessageId = forkMessages[positions[i]].uuid;
   }
-  const { controlRequests, historyBranches, ...base } = source;
-  const { threadId, lastTurnId, ...settings } = params;
+  const {
+    controlRequests: _controlRequests,
+    historyBranches: _historyBranches,
+    ...base
+  } = source;
+  const { threadId: _threadId, lastTurnId: _lastTurnId, ...settings } = params;
   const target = {
     ...base,
     ...settings,

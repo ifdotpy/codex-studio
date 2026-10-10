@@ -56,6 +56,10 @@ class ControlledRuntime(f.Runtime):
         super().__init__(*args, **kwargs)
         self.image_workspace_support = lambda _repo: (False, "disabled in protocol fixture")
 
+    def new_lead(self, data):
+        # Native protocol fixtures do not provision a VM or use live credentials.
+        return super().new_lead({'workspaceMode': 'worktree', **data})
+
     def schedule(self):
         while not self.closed:
             self.changed.wait(0.05)
@@ -90,6 +94,38 @@ class WorkerDefaults(unittest.TestCase):
             parent=parent or self.lead["id"],
             defer=True,
         )
+
+    def test_new_chat_models_are_atomic_and_receipts_include_settings(self):
+        request = {
+            "id": str(uuid.uuid4()), "cwd": str(self.root), "reuse_empty": False,
+            "model": "gpt-5.6-sol", "effort": "high", "fast_mode": True,
+            "daybreak_enabled": False,
+            "worker_defaults": {"model": "worker", "effort": "low", "fast_mode": False},
+            "review_defaults": {"model": "gpt-6-astra", "effort": "high"},
+        }
+        lead = self.runtime.new_lead(request)
+        self.assertEqual((lead["model"], lead["effort"], lead["fastMode"]), ("gpt-5.6-sol", "high", True))
+        self.assertEqual((lead["workerDefaults"]["model"], lead["workerDefaults"]["effort"]), ("worker", "low"))
+        self.assertEqual(lead["reviewDefaults"], {"model": "gpt-6-astra", "effort": "high"})
+        self.assertEqual(self.runtime.new_lead(request)["id"], lead["id"])
+        for patch in ({"effort": "low"}, {"fast_mode": False},
+                      {"worker_defaults": {"model": "small", "effort": "medium", "fast_mode": False}},
+                      {"review_defaults": {"model": None, "effort": None}}):
+            with self.subTest(patch=patch), self.assertRaisesRegex(ValueError, "different settings"):
+                self.runtime.new_lead({**request, **patch})
+        child = self.worker(parent=lead["id"])
+        self.assertEqual((child["model"], child["effort"]), ("worker", "low"))
+        self.assertIsNone(lead.get("threadId"))
+
+    def test_invalid_new_chat_worker_defaults_create_no_chat(self):
+        key = str(uuid.uuid4())
+        with self.assertRaisesRegex(ValueError, "Fast mode"):
+            self.runtime.new_lead({
+                "id": key, "cwd": str(self.root), "model": "gpt-6-astra",
+                "worker_defaults": {"model": "small", "effort": "medium", "fast_mode": True},
+            })
+        with self.assertRaisesRegex(ValueError, "Unknown managed agent"):
+            self.runtime.agent(key)
 
     def test_latest_root_defaults_not_intermediate_execution(self):
         self.settings(effort="high", fast_mode=True)

@@ -71,6 +71,10 @@ test("paired sidebar shows the chat provider and server alias", async ({
     const group = page
       .locator(".server-sidebar .sidebar-project")
       .filter({ has: page.locator('[data-chat="recent"]') });
+    const projectName = group.locator(".project-tree-toggle");
+    expect(await projectName.evaluate((element) => element.tagName)).toBe(
+      "DIV",
+    );
     const chat = group.locator('[data-chat="recent"]');
     await expect(chat.locator(".chat-server-line")).toHaveText("REM");
     await expect(chat.locator(".chat-server-line")).toHaveAttribute(
@@ -79,11 +83,11 @@ test("paired sidebar shows the chat provider and server alias", async ({
     );
     await expect(group.locator('[data-chat="old"]')).toHaveCount(0);
     await group
-      .getByRole("button", { name: "Show more (2)", exact: true })
+      .getByRole("button", { name: "Show old (2)", exact: true })
       .click();
     await expect(group.locator('[data-chat="old"]')).toBeVisible();
     await expect(
-      group.getByRole("button", { name: "Show less", exact: true }),
+      group.getByRole("button", { name: "Hide old", exact: true }),
     ).toBeVisible();
     await page.reload();
     await expect(group.locator('[data-chat="old"]')).toBeVisible();
@@ -91,7 +95,7 @@ test("paired sidebar shows the chat provider and server alias", async ({
       .getByRole("button", { name: "Studio settings", exact: true })
       .click();
     const card = page.locator('[data-settings-server="remote"]');
-    await card.getByLabel("Server alias", { exact: true }).fill("MAC");
+    await card.getByLabel("Server alias", { exact: true }).fill("LOC");
     await card.getByRole("button", { name: "Save alias", exact: true }).click();
     await expect(
       card.getByText("This alias belongs to another server."),
@@ -103,7 +107,7 @@ test("paired sidebar shows the chat provider and server alias", async ({
     ).toBeDisabled();
     await dialog.getByRole("button", { name: "Close", exact: true }).click();
     await expect(chat.locator(".chat-server-line")).toHaveText("SRV");
-    await group.getByRole("button", { name: "Show less", exact: true }).click();
+    await group.getByRole("button", { name: "Hide old", exact: true }).click();
     await expect(group.locator('[data-chat="old"]')).toHaveCount(0);
     await page.reload();
     await expect(chat.locator(".chat-server-line")).toHaveText("SRV");

@@ -65,6 +65,18 @@ workers whose provider matches the destination. Workers on another provider stay
 on their current account. New workers use the team's destination account and
 provider-compatible defaults.
 
+Chat creation selects `workspaceMode`.
+
+| Mode       | Platform        | Agent workspace                                     |
+| ---------- | --------------- | --------------------------------------------------- |
+| `layr`     | macOS, default  | Lead and agents in the Linux VM on owned layr lines |
+| `image`    | macOS           | Native agents in ASIF images                        |
+| `worktree` | macOS and Linux | Native agents in Git worktrees                      |
+
+The first layr chat imports the project once. Later chats reuse the VM main line.
+The Mac folder stays separate. Export a copy only on request.
+See [VM chats](linux-vm-workspaces.md) and [ASIF images](workspace-images.md).
+
 ## Setup
 
 Requirements: Python 3.11 or later, Node.js 22.15 or later, and the signed-in Codex CLI.
@@ -90,7 +102,7 @@ For full-repository audits, run `pnpm run lint:all` and
 `pnpm run format:check:all`. Append paths after `--` to check selected files.
 
 `python3 workspaces/runtime/apps/server/src/install-cli.py` prepares the pinned Python API environment in
-the user cache and installs command links. Pass `--dev` to prepare a separate
+the user cache and installs command links. It also installs the Rust `codex-diagnostics` binary: if no packaged binary is available, the installer needs Cargo and the pinned Rust 1.99.0 toolchain to build it. Without Cargo or a prebuilt binary, installation fails with an explicit error. Pass `--dev` to prepare a separate
 development environment with mypy. Set `CODEX_AGENTS_PYTHON` to choose a
 Python 3.11+ interpreter with the API dependencies installed; the launcher
 validates it before use. Otherwise Studio uses its prepared environment, then
@@ -230,7 +242,7 @@ For browser access, run `codex-canvas` and open <http://127.0.0.1:4620>.
 Use `codex-control list` to inspect the same runtime from a terminal.
 The desktop package command is owned by its [manifest](../workspaces/client/apps/desktop/package.json).
 
-For a shareable process snapshot, run `python3 workspaces/runtime/apps/server/src/codex-diagnostics` while
+For a shareable process snapshot, run `codex-diagnostics` (or `scripts/codex-diagnostics` from the checkout) while
 Studio runs. The command calls the read-only `/api/diagnostics` endpoint. It
 reports the Studio process tree, resident memory and CPU by process kind,
 loaded Codex threads per connected account, live Claude queries, queue sizes,
@@ -462,6 +474,7 @@ The search control above the transcript searches the current chat.
 
 On a phone, **Add project** opens the server's folder list.
 The first **New chat** opens this list when no project exists.
+When no last-opened chat is saved, Studio opens the managed lead with the most recent activity (`updated`, then `created`, then zero); timestamp ties use ascending chat ID. Saved mobile or desktop selections keep priority.
 **Plan** shows only the plan reported by the agent. Use **Change plan in chat**
 to send instructions. Historical saved plan text remains in storage.
 

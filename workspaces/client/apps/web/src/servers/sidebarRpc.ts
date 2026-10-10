@@ -134,6 +134,7 @@ export async function executeSidebarRequest(
   value: unknown,
   refresh: () => Promise<ServerNavigation>,
   run: (command: ServerCommand) => void | Promise<void>,
+  sessionToken?: string,
 ): Promise<unknown> {
   if (!value || typeof value !== "object")
     throw new Error("Invalid sidebar request.");
@@ -169,7 +170,12 @@ export async function executeSidebarRequest(
         typeof options.requestId !== "string"))
   )
     throw new Error("Invalid sidebar request options.");
-  const result = await post(request.path!, request.body, options);
+  if (!sessionToken)
+    throw new Error("The sidebar server session is not ready.");
+  const result = await post(request.path!, request.body, {
+    ...options,
+    sessionToken,
+  });
   return request.path === "/api/organization"
     ? sidebarAgent(result as Agent)
     : result;

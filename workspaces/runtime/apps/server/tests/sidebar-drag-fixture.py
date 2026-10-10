@@ -47,11 +47,11 @@ canvas.runtime = rt = QuietRuntime(canvas.root, fixture.FakeServer)
 if os.environ.get('SIDEBAR_ALIAS_FIXTURE'):
     access = rt.paired_access()
     with rt.db() as db:
-        peer = {"id": "mbp", "clientId": "mbp", "serverId": "mbp", "kind": "server",
-                "label": "igor-mbp", "origin": "https://igor-mbp.tailf00fa0.ts.net",
+        peer = {"id": "office", "clientId": "office", "serverId": "office", "kind": "server",
+                "label": "office-node", "origin": "https://office-node.tailf00fa0.ts.net",
                 "publicKey": "fixture-key", "tailscaleUser": "owner", "status": "revoked",
                 "created": 1, "lastAccess": None, "revoked": 1}
-        db.execute("INSERT INTO runtime_access_clients VALUES(?,?)", ("mbp", json.dumps(peer)))
+        db.execute("INSERT INTO runtime_access_clients VALUES(?,?)", ("office", json.dumps(peer)))
 paths = {}
 for name in ('Project A', 'Project B', 'Project C'):
     path = canvas.root / name

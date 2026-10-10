@@ -1,0 +1,23 @@
+[Unit]
+Description=layr version control for Studio
+After=local-fs.target codex-studio-grow.service
+Requires=codex-studio-grow.service
+RequiresMountsFor=/var/lib/codex-studio
+ConditionPathIsMountPoint=/var/lib/codex-studio
+
+[Service]
+Type=simple
+User=root
+Environment=LAYR_ROOT=/var/lib/codex-studio/layr
+Environment=LAYR_SOCKET=/run/layr/layr.sock
+RuntimeDirectory=layr
+RuntimeDirectoryMode=0755
+ExecStart=/usr/local/bin/layr daemon
+Restart=on-failure
+RestartSec=2
+KillMode=process
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+

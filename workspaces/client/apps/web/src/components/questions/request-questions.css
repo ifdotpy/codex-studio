@@ -164,18 +164,18 @@
   flex-wrap: wrap;
 }
 .request-answer-form {
-  max-height: min(420px, 55dvh, var(--request-answer-height, 420px));
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: visible;
 }
 .request-answer-form > .request-answer-fields {
-  overflow: auto;
-  min-height: 0;
-  flex: 1 1 auto;
+  overflow: visible;
+  flex: 0 0 auto;
 }
 .request-answer-actions {
   flex: 0 0 auto;
+  position: sticky;
+  bottom: 0;
   padding-block: 8px;
   background: var(--surface);
   z-index: 1;
@@ -216,6 +216,9 @@
   }
   .request-actions {
     width: 100%;
+  }
+  .request-answer-actions {
+    margin-top: 0;
   }
 }
 

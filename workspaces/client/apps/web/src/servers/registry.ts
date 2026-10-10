@@ -1,6 +1,7 @@
 import { isolatedServerView, serverParentOrigin } from "./environment";
 import {
   defaultServerAlias,
+  DEFAULT_LOCAL_SERVER_ALIAS,
   LOCAL_ALIAS_KEY,
   validateServerAlias,
 } from "./serverAliases";
@@ -39,7 +40,8 @@ export function readServers(storage = globalThis.localStorage): StudioServer[] {
   if (!Array.isArray(value))
     throw new Error("The saved server list is invalid.");
   const ids = new Set<string>();
-  const localAlias = storage.getItem(LOCAL_ALIAS_KEY) || "MAC";
+  const localAlias =
+    storage.getItem(LOCAL_ALIAS_KEY) || DEFAULT_LOCAL_SERVER_ALIAS;
   const aliases = new Set<string>([localAlias]);
   for (const item of value) {
     if (item?.alias !== undefined) {
@@ -80,7 +82,9 @@ export function writeServers(
   servers: StudioServer[],
   storage = globalThis.localStorage,
 ) {
-  const aliases = new Set([storage.getItem(LOCAL_ALIAS_KEY) || "MAC"]);
+  const aliases = new Set([
+    storage.getItem(LOCAL_ALIAS_KEY) || DEFAULT_LOCAL_SERVER_ALIAS,
+  ]);
   for (const server of servers) {
     if (server.alias) {
       validateServerAlias(server.alias, aliases);
@@ -101,7 +105,7 @@ export function localServer(): StudioServer {
     id: "local",
     label: localStorage.getItem(LOCAL_NAME_KEY) || "This computer",
     origin: location.origin,
-    alias: localStorage.getItem(LOCAL_ALIAS_KEY) || "MAC",
+    alias: localStorage.getItem(LOCAL_ALIAS_KEY) || DEFAULT_LOCAL_SERVER_ALIAS,
   };
 }
 export function readServerAliases(): Record<string, string> {
@@ -109,11 +113,11 @@ export function readServerAliases(): Record<string, string> {
     return Object.fromEntries(
       [localServer(), ...readServers()].map((server) => [
         server.id,
-        server.alias || "MAC",
+        server.alias || DEFAULT_LOCAL_SERVER_ALIAS,
       ]),
     );
   } catch {
-    return { local: localServer().alias || "MAC" };
+    return { local: localServer().alias || DEFAULT_LOCAL_SERVER_ALIAS };
   }
 }
 export function viewServer(id: string): StudioServer {

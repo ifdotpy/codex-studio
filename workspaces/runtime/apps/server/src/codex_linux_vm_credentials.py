@@ -13,7 +13,7 @@ MAX_CREDENTIAL_BYTES = 1024 * 1024
 def claude_keychain_service(config_dir=None):
     service = 'Claude Code-credentials'
     if config_dir:
-        # Observed with the installed Claude CLI on this Mac. Keep the
+        # Observed with the installed Claude CLI on this computer. Keep the
         # selected CLI directory string, without a trailing slash.
         service += '-' + hashlib.sha256(str(config_dir).rstrip('/').encode()).hexdigest()[:8]
     return service
@@ -81,13 +81,20 @@ def tick(runtime):
             from codex_linux_workspaces import client
             with runtime.read_db() as db:
                 accounts = {agent.get('accountKey', 'default') for agent in runtime.records(db, 'agents')
-                            if agent.get('environment') == 'linux' and agent.get('imageWorkspaceReady')
+                            if agent.get('environment') == 'linux' and agent.get('layrReady')
                             and not agent.get('deletedAt')}
             for account in accounts:
                 hashes = runtime.__dict__.setdefault('linux_credential_hashes', {})
                 try:
                     digest = sync_credentials(runtime, client(runtime), account, previous_hash=hashes.get(account))
                     hashes[account] = digest
+                    for agent_id in list(runtime.__dict__.get('linux_servers', {})):
+                        agent = runtime.agent(agent_id)
+                        if agent.get('executionMode') == 'vm' and agent.get('accountKey', 'default') == account:
+                            client(runtime).request('layr.credentials.sync', {
+                                'agentId': agent_id, 'provider': agent.get('provider', 'codex'),
+                                'profile': profile_path(account, agent.get('provider', 'codex'))},
+                                request_id='layr-credentials:' + agent_id + ':' + digest, timeout=20)
                     from codex_linux_vm_auth import bootstrap_codex
                     for agent_id, server in list(runtime.__dict__.get('linux_servers', {}).items()):
                         agent = runtime.agent(agent_id)

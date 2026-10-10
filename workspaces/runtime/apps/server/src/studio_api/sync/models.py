@@ -564,7 +564,14 @@ class AgentEntityDto(ContractModel):
     concurrency: int | None = None
     accountKey: str | None = None
     cwd: str | None = None
-    workspaceMode: Literal["image", "worktree", "shared"] | None = None
+    workspaceMode: Literal["layr", "image", "worktree", "shared"] | None = None
+    executionMode: Literal["vm", "native"] | None = None
+    hostProjectPath: str | None = None
+    layrReady: bool | None = None
+    layrProjectId: str | None = None
+    layrLine: str | None = None
+    layrStateId: str | None = None
+    layrError: str | None = None
     workspaceBackend: Literal["asif", "vm"] | None = None
     worktree: bool | str | None = None
     worktreePreparation: Literal["waiting", "preparing"] | None = None

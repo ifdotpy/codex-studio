@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.responses import Response
 
 from codex_records import AgentRecord
-from studio_api.models import JsonValue
+from studio_api.models import ErrorResponse, JsonValue
 from studio_api.context import ApiContext
 from studio_api.request_helpers import body_data, first_nonempty_query
 from codex_sync_entities import project
@@ -29,6 +29,8 @@ from .models import (
     CreateAgentRequest,
     CreateLeadRequest,
     DeletedResponse,
+    FinderViewQuery,
+    FinderViewResponse,
     IdRequest,
     ImportListResponse,
     ImportRequest,
@@ -145,6 +147,9 @@ def create_router(context: ApiContext) -> APIRouter:
     def create_lead(http_request: Request, body: CreateLeadRequest) -> Response:
         runtime = current_runtime()
         request = body_data(body)
+        if "workspaceMode" not in request:
+            from codex_vm_agents import workspace_mode
+            request["workspaceMode"] = workspace_mode({}, creation=True)
         created = runtime.new_lead(request)
         return context.send(http_request, agent_entity(runtime, created["id"]))
 
@@ -152,6 +157,9 @@ def create_router(context: ApiContext) -> APIRouter:
     def create_agent(http_request: Request, body: CreateAgentRequest) -> Response:
         runtime = current_runtime()
         request = body_data(body)
+        if body.parent is None and "workspaceMode" not in request:
+            from codex_vm_agents import workspace_mode
+            request["workspaceMode"] = workspace_mode({}, creation=True)
         created = runtime.create(request, parent=body.parent)
         return context.send(http_request, agent_entity(runtime, created["id"]))
 
@@ -293,6 +301,20 @@ def create_router(context: ApiContext) -> APIRouter:
         runtime = current_runtime()
         agent = first_nonempty_query(request, "agent")
         return context.send(request, runtime.capabilities(agent), etag=True, weak_etag_fields=("at",))
+
+    @router.get("/api/agents/finder-view", response_model=FinderViewResponse,
+                responses={404: {"model": ErrorResponse}})
+    def finder_view(request: Request, query: FinderViewQuery = Depends()) -> Response:
+        """Where Finder shows the chat's files. Reads saved records only; never mounts or calls the VM."""
+        runtime = current_runtime()
+        try:
+            with runtime.lock, runtime.db() as db:
+                record = runtime.agent(query.agent, db)
+        except ValueError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        from codex_vm_agents import finder_view as view
+
+        return context.send(request, view(runtime, record))
 
     @router.get("/api/skills", response_model=SkillsResponse)
     def skills(request: Request, query: SkillsQuery = Depends()) -> Response:

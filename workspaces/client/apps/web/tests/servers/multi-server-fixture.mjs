@@ -56,7 +56,7 @@ export async function fixture(
     },
   ];
   const accessRequests = [];
-  const aliases = { local: "MAC", [serverId]: "MAC" };
+  const aliases = { local: "LOC", [serverId]: "LOC" };
   let discoveredPeers = [];
   let autoPair = true;
   let staleSettingsReceipts = false;
@@ -489,7 +489,7 @@ export async function fixture(
     }
     if (url.pathname === "/api/models") {
       json({
-        models: [
+        data: [
           {
             model: "fixture-model",
             displayName: "Fixture",

@@ -11,7 +11,9 @@ if SERVER_SOURCE_ROOT.name == "scripts":
     SERVER_TESTS_ROOT = SERVER_SOURCE_ROOT.parent / "tests"
     RUNTIME_ROOT = REPOSITORY_ROOT
     WORKSPACES_ROOT = REPOSITORY_ROOT
-    PROVIDERS_ROOT = REPOSITORY_ROOT
+    # The package copies the Claude bridge source for the VM guest payload here
+    # (workspaces/client/apps/desktop/package.mjs).
+    PROVIDERS_ROOT = REPOSITORY_ROOT / "workspaces" / "providers"
     CLIENT_ROOT = REPOSITORY_ROOT
     TOOLING_ROOT = REPOSITORY_ROOT
     CLAUDE_BRIDGE_ROOT = SERVER_SOURCE_ROOT / "claude_bridge"

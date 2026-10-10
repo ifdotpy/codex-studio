@@ -10,7 +10,11 @@ import {
 } from "../sync/uiPreferenceStore";
 import { preferenceEvent } from "../sync/uiPreferenceMerge";
 import { serverCredentialAdapter } from "./transport";
-import { defaultServerAlias, LOCAL_ALIAS_KEY } from "./serverAliases";
+import {
+  defaultServerAlias,
+  DEFAULT_LOCAL_SERVER_ALIAS,
+  LOCAL_ALIAS_KEY,
+} from "./serverAliases";
 import {
   readServers,
   SERVER_REGISTRY_EVENT,
@@ -79,7 +83,9 @@ export function useUiPreferenceSync(servers: StudioServer[]) {
           const current =
             typeof alias === "string"
               ? alias
-              : localStorage.getItem(LOCAL_ALIAS_KEY) || local.alias || "MAC";
+              : localStorage.getItem(LOCAL_ALIAS_KEY) ||
+                local.alias ||
+                DEFAULT_LOCAL_SERVER_ALIAS;
           localStorage.setItem(LOCAL_ALIAS_KEY, current);
           used.add(current);
           snapshots.set("local", { alias: current, label: local.label });
@@ -123,7 +129,8 @@ export function useUiPreferenceSync(servers: StudioServer[]) {
       if (localIndex >= 0)
         current.splice(localIndex, 0, {
           ...servers[localIndex],
-          alias: localStorage.getItem(LOCAL_ALIAS_KEY) || "MAC",
+          alias:
+            localStorage.getItem(LOCAL_ALIAS_KEY) || DEFAULT_LOCAL_SERVER_ALIAS,
         });
       for (const server of current) {
         const identity = identities.get(server.id);

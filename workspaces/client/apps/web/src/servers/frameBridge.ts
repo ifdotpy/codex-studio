@@ -83,6 +83,7 @@ export function useServerFrame(
             };
           },
           (command) => handler.current(command),
+          latest.current.data?.token,
         ).then(
           (result) => reply(result),
           (failure) => reply(undefined, failure),

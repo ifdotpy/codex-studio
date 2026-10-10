@@ -1,0 +1,907 @@
+[
+  {
+    "type": "function",
+    "name": "orchestration_complaint",
+    "description": "Every agent, including the lead, can submit to the complaint book. Worker submit sends the complaint to the lead and wakes them. Lead submit assigns it to the user. respond records a decision from that notification: in_progress, resolved, or declined. read optionally retrieves the team book. Only the assigned recipient can respond; user-owned complaints require the user. Respond to notified complaints assigned to you before finishing; a separate read call is not required.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": ["submit", "read", "respond"]
+        },
+        "complaint_id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["in_progress", "resolved", "declined"]
+        }
+      },
+      "required": ["action"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "orchestration_peers",
+    "description": "List agents and readable chat rooms in your team. Returns a paged directory without histories, including equal peer chats grouped by the user. Do not poll.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "scope": {
+          "type": "string",
+          "enum": ["team"]
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "cursor": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "orchestration_message",
+    "description": "Share a finding, question, or answer with other agents during work. target is user (lead only), a teammate, a user-grouped peer chat, parent, lead, or broadcast (your own agent tree). Broadcasts notify only active agents; other recipients can read them in chat history. Private chats are visible to their participants and the user. Direct messages wake idle recipients but never resume stopped agents. Use importance=progress only for routine updates; these batch briefly and keep the latest progress per sender, room and progress_key when progress_version increases. Use the task id as progress_key. Without these fields, every update is retained. Original messages remain in chat history. Questions and blockers deliver immediately. Send when you have new information or an answer for the recipient.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "importance": {
+          "type": "string",
+          "enum": ["message", "progress", "question", "blocker", "result"]
+        },
+        "progress_key": {
+          "type": "string"
+        },
+        "progress_version": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": ["target", "text"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "orchestration_chat_read",
+    "description": "Read messages in your team rooms, a user-grouped peer private room. Use before for older messages; use the returned nextBefore cursor. Do not poll.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "room_id": {
+          "type": "string"
+        },
+        "before": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": ["room_id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "orchestration_title",
+    "description": "Set a short conversation title from the user's task. Call once at the start of a new lead conversation, in the user's language.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        }
+      },
+      "required": ["title"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "orchestration_interrupt",
+    "description": "Stop a descendant and disable its automatic continuation. Use orchestration_send to resume it with a revised task.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "agent_id": {
+          "type": "string"
+        }
+      },
+      "required": ["agent_id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "orchestration_spawn",
+    "description": "Delegate a batch to managed agents. Returns immediately. Each child completion wakes you, even after your final answer. Use these agents instead of native subagents. Implementers receive an image workspace when supported and a Git worktree otherwise. reviewers share your directory read-only. Never poll for their completion. Default: gpt-6-luna with high reasoning, unless the user sets team defaults. environment=linux runs an implementer in the shared Linux VM. The project default applies when omitted. Linux tasks wait for their base before the first provider turn. Reviewers stay on the host. Choose model and effort for each task. Codex and Claude can delegate to each other. Studio selects a connected account that offers the model; optional account_key selects it explicitly. effort=null uses that model's native default. server selects a paired remote server; omit it for local workers. Remote cwd must be absolute. Use one server per batch. Supply a stable request_id for recovery across turns. Reuse it only for the exact same batch; query orchestration_request before any retry. cwd sets the worker's folder (absolute, or relative to your folder); default is your folder. The default is an image when supported, a Git worktree when available, or the selected folder otherwise. Set workspace to image, worktree, or shared to choose an implementer's isolation. Image copies include uncommitted changes and are read-only until ready. Worktrees start from a committed Git base. Shared workers use the selected folder directly. The lead gets the workspace path with the result. Ask an isolated worker to commit on a named branch, then read or fetch that branch from its workspace. Optional per-agent base_ref selects a branch, tag, or commit for an implementer. Otherwise Studio uses the closest project's worker base ref when one is set. Studio gives the requested ref and resolved commit to the worker in its first input. The worker checks it out. Pass task_id to assign an orchestration_task item to the new worker. The worker receives the task id and submits its evidence to it.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "agents": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "role": {
+                "type": "string",
+                "enum": ["implementer", "reviewer"]
+              },
+              "model": {
+                "type": "string"
+              },
+              "account_key": {
+                "type": "string"
+              },
+              "effort": {
+                "type": ["string", "null"]
+              },
+              "workspace": {
+                "type": "string",
+                "enum": ["image", "worktree", "shared"]
+              },
+              "environment": {
+                "type": "string",
+                "enum": ["host", "linux"]
+              },
+              "fast_mode": {
+                "type": "boolean"
+              },
+              "base_ref": {
+                "type": "string",
+                "maxLength": 1024
+              },
+              "server": {
+                "type": "string"
+              },
+              "profile_id": {
+                "type": "string"
+              },
+              "task_id": {
+                "type": "string"
+              },
+              "cwd": {
+                "type": "string"
+              }
+            },
+            "required": ["name", "prompt"],
+            "additionalProperties": false
+          }
+        },
+        "server": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string",
+          "maxLength": 200
+        }
+      },
+      "required": ["agents"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "orchestration_send",
+    "description": "Assign a new or revised instruction to an existing descendant, or explicitly resume its authorized work. Native delivery steers an active turn or starts a turn when idle. Completion returns to its parent automatically. Review corrections travel through orchestration_task action=reject. The delivery field is accepted and ignored for compatibility. Supply a stable request_id for an instruction. Reuse it only for the exact same target and text. Recover the receipt before retrying.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "agent_id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "delivery": {
+          "type": "string",
+          "enum": ["queue", "steer"]
+        },
+        "request_id": {
+          "type": "string",
+          "maxLength": 200
+        }
+      },
+      "required": ["agent_id", "text"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "orchestration_status",
+    "description": "Read active team and monitor states, plus counts of finished items. Finished agents and monitors are omitted by default. Set include_finished=true to read finished items in bounded pages with limit and cursor. since_revision returns only changes and removals. Use for a decision, not repeated waiting: completion events arrive automatically.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "since_revision": {
+          "type": "string"
+        },
+        "include_finished": {
+          "type": "boolean"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "cursor": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "orchestration_monitor",
+    "description": "Run a command under this thread's sandbox and wait outside the model. Returns a watch id immediately. At process exit you receive one event with exit code, bounded output and log path. Every command exit wakes you, including success, failure, signal, or lost process. wake_on cannot suppress exit events. A quiet process wakes you after stall_timeout_seconds (default 1800, 0 disables stall wakes). Finish your turn while waiting. success_exit_codes lists the exit codes that mean success (default [0]); use [0, 1] for grep or diff. The thread's approval policy applies; a required approval appears in the canvas.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "wake_on": {
+          "type": "string",
+          "enum": ["exit", "failure"]
+        },
+        "success_exit_codes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255
+          }
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 86400000
+        },
+        "interactive": {
+          "type": "boolean"
+        },
+        "stall_timeout_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 31536000
+        },
+        "liveness_command": {
+          "type": "string",
+          "maxLength": 12000
+        }
+      },
+      "required": ["command"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "orchestration_cancel_monitor",
+    "description": "Cancel one of your command watches.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "monitor_id": {
+          "type": "string"
+        }
+      },
+      "required": ["monitor_id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "orchestration_servers",
+    "description": "Lead only. add_location(project, server, path) registers a project folder on that server. remove_location removes the association and keeps files and chats. location_matches suggests registered folders with the same Git origin. No credentials move. List paired servers, run Git reads, fetch branches, or run commands as the Studio user on local or paired servers. exec takes command argv or shell text, absolute cwd, env additions, timeout (120 seconds, max 1800), output_limit (256 KiB, max 4 MiB), and request_id. Above 5 seconds it returns a handle; exit events reach the lead. exec_read reads bounded head/tail output with stdout_offset and stderr_offset cursors. exec_input sends input or closes stdin (32 requests per command, 64 KiB each); exec_cancel stops the process group. Exact retries never repeat execution. Unknown outcomes require inspection.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "list",
+            "projects",
+            "folders",
+            "git",
+            "fetch",
+            "receipt",
+            "add_location",
+            "remove_location",
+            "location_matches",
+            "exec",
+            "exec_read",
+            "exec_input",
+            "exec_cancel"
+          ]
+        },
+        "server": {
+          "type": "string"
+        },
+        "project": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "agent_id": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "destination": {
+          "type": "string"
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "command": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "maxItems": 256
+            }
+          ]
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "timeout": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1800
+        },
+        "output_limit": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 4194304
+        },
+        "handle": {
+          "type": "string"
+        },
+        "input": {
+          "type": "string"
+        },
+        "close_stdin": {
+          "type": "boolean"
+        },
+        "stdout_offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stderr_offset": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": ["action"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "orchestration_move",
+    "description": "Move your own conversation and execution to local or a paired server. Prepare the target folder first. Supply an absolute cwd and a stable request_id. Native history, model, instructions, and tool order stay exact. Codex and Claude retain native provider history. Active background commands and pending spawns prevent a move. Finish this turn after acceptance. The next turn continues on the target. Credentials never move. Same account identity preserves the prompt cache. A different Codex account requires explicit accept_cache_loss=true.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "server": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "account_key": {
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "accept_cache_loss": {
+          "type": "boolean",
+          "description": "Explicit approval for this move to a different Codex account. The provider prompt cache will be lost."
+        }
+      },
+      "required": ["server", "cwd"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "orchestration_speak",
+    "description": "Save exact text for the user's voice session. Native voice receives speakable context. Ordinary replies already reach voice. Use only for text the user should hear; this does not end your turn.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": ["text"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "orchestration_agent_manage",
+    "description": "Manage your own descendant workers. inspect returns archive blockers. recover checks exact unconfirmed input IDs in native history, requeues only IDs absent from an idle thread, and reconciles an existing turn. For a transferred thread with no source rollout, recover reports the missing history and does not replay inputs. archive hides an inactive worker, detaches and retains its image workspace, or removes a safe Studio Git worktree. It reports why a workspace stays. archive_finished archives finished descendants with safe workspaces and reports kept workers. For archive or archive_finished, unassign_work=true returns open assigned tasks to the unassigned ready backlog in the same transaction. Task results and decisions remain. The default keeps the assigned_work blocker. Other archive blockers remain. Retry archive with a new tool call after an image detach interruption or partial Git removal. The exact original Git link and archive ref are required. Changed or untracked files stay for inspection. A missing Git link leaves the folder for manual review. reset_tools releases an idle worker subscription after native command and receipt checks. Give a reason. Codex can end its idle session after its configured idle window (60 seconds by default); send new work after confirmed closure to start fresh tools. restore reattaches an archived image or recreates a removed Git worktree, then returns the worker paused; use orchestration_send to resume. Deleting a worker removes its image. list and list_archived are paged. maintenance_report lists old archived or deleted workspaces, bases, and Git worktrees; it does not remove them. For Linux VM workers, it includes VM disk allocation, disk free space, and RAM. park waits for a named event after the current turn. list_parked shows event waits. cancel_park wakes a worker. emit_event wakes every worker waiting for that event once; supply a stable request_id. Only the lead may archive, restore, recover, reset tools, or emit an event.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "inspect",
+            "list",
+            "recover",
+            "reset_tools",
+            "archive",
+            "archive_finished",
+            "restore",
+            "list_archived",
+            "maintenance_report",
+            "park",
+            "list_parked",
+            "cancel_park",
+            "emit_event"
+          ]
+        },
+        "agent_id": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "unassign_work": {
+          "type": "boolean"
+        },
+        "event": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "cursor": {
+          "type": "string"
+        }
+      },
+      "required": ["action"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "orchestration_task",
+    "description": "Manage team assignments and review decisions. list returns brief items with nextCursor; get reads one task; history pages earlier evidence. create and update notify the assigned worker when an assignment becomes ready; title and description edits alone do not wake it. claim reserves ready work atomically. submit saves evidence, sets review, and notifies the lead. Only the lead reviews results. accept and reject require the review decision in result. accept records approval and releases dependent work. reject takes the reason and required corrections in result, sets ready, and delivers those instructions to the owner as work_decision. cancel closes a task without requiring a submit; give a reason. Only the lead or task creator can cancel. Cancellation releases the assignment and sends work_decision to a live owner. The owner continues from that event when automatic continuation is enabled. Explicit stops and native failure holds remain in effect. Mutations return brief receipts; the server owns state changes and event delivery.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "list",
+            "get",
+            "history",
+            "create",
+            "claim",
+            "update",
+            "submit",
+            "accept",
+            "reject",
+            "cancel"
+          ]
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "cursor": {
+          "type": "string"
+        },
+        "state": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "status": {
+          "type": "string",
+          "enum": ["ready", "blocked"]
+        },
+        "result": {
+          "type": "string",
+          "description": "Required for submit, accept, and reject. For accept or reject, put the review decision in result."
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32000
+        },
+        "checks": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "version": {
+          "type": "integer"
+        }
+      },
+      "required": ["action"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "orchestration_search",
+    "description": "Search your own messages and tool results, plus shared team work and complaints. Private rooms remain visible only to their participants. Results include exact record references.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        }
+      },
+      "required": ["query"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "orchestration_watch",
+    "description": "Manage durable file or event watches and scheduled commands. No model runs while waiting. File watches wake after no change for stall_timeout_seconds (default 1800; 0 disables stall wakes). Set liveness_command to run a sandboxed check at the stall point; its result is included in the wake. A normal script rule wakes only on exit code 0, unless its final JSON line has wakeAgent:false. Use bounded schedules, not model polling. A lead can enable low_workers to receive one alert when active subagents stay below minimumWorkers (default 8) for durationMinutes (default 30). Recovery to the threshold arms it again. Active means starting, running, or executing a command monitor; queued or idle workers without active commands do not count. Panel feeds do not count.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": ["list", "save", "pause", "resume", "delete"]
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["interval", "once", "file", "event", "low_workers"]
+        },
+        "intervalSeconds": {
+          "type": "integer",
+          "minimum": 10
+        },
+        "at": {
+          "type": "number"
+        },
+        "path": {
+          "type": "string"
+        },
+        "stallTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 31536000
+        },
+        "livenessCommand": {
+          "type": "string"
+        },
+        "stall_timeout_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 31536000
+        },
+        "liveness_command": {
+          "type": "string"
+        },
+        "event": {
+          "type": "string",
+          "enum": [
+            "worker_completed",
+            "monitor_exit",
+            "work_review",
+            "complaint"
+          ]
+        },
+        "minimumWorkers": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 255
+        },
+        "durationMinutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 525600
+        },
+        "command": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": ["action"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "orchestration_monitor_input",
+    "description": "Write to your interactive monitor session, resize its terminal, or close stdin. Only command/exec monitor ids are supported.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "monitor_id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "closeStdin": {
+          "type": "boolean"
+        },
+        "rows": {
+          "type": "integer"
+        },
+        "cols": {
+          "type": "integer"
+        }
+      },
+      "required": ["monitor_id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "orchestration_request",
+    "description": "Recover your tool request by request_id or callId before retrying an uncertain mutation. List returns the latest 50 requests. Cancel prevents queued work from starting; running work continues and remains pending until its receipt arrives. A missing request has unknown outcome, not proof that it did not execute.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": ["list", "get", "cancel"]
+        },
+        "request_id": {
+          "type": "string"
+        }
+      },
+      "required": ["action"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "orchestration_read",
+    "description": "Read a full saved tool response or orchestration event by output_ref. Offsets are Unicode characters; each page has up to 30000 characters. Use contains to locate relevant output. Same-agent records only. Never rerun a mutation to recover its result.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "output_ref": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "contains": {
+          "type": "string"
+        }
+      },
+      "required": ["output_ref"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "orchestration_context",
+    "description": "Read versioned Studio guidance or team context on demand. Panel set still requires visual validation. Use background guidance for script-driven status with no model polling.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "topic": {
+          "type": "string",
+          "enum": [
+            "panel",
+            "background",
+            "tools",
+            "plan",
+            "complaints",
+            "profiles",
+            "monitor"
+          ]
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": ["topic"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "orchestration_review",
+    "description": "Request native Codex review in a separate read-only Studio child. Defaults to all uncommitted changes. Choose a base branch, commit, or custom instructions through target. When model is omitted, the reviewer uses the team review default if set, then the caller model. Pass model and effort to override them. Another model without effort uses its native default. The result reports the review model and effort. cwd is the repository folder for the review; defaults to the agent cwd. It must be inside a git repository. A relative path starts at the agent cwd, and a shell cd does not change it. The reviewer does not receive your chat history. The result wakes you automatically. Finish your turn while waiting. Use a stable request_id for retries; read orchestration_request after a lost response. Available in Multi agent mode.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": ["uncommittedChanges"]
+                }
+              },
+              "required": ["type"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": ["baseBranch"]
+                },
+                "branch": {
+                  "type": "string"
+                }
+              },
+              "required": ["type", "branch"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": ["commit"]
+                },
+                "sha": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": ["type", "sha"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": ["custom"]
+                },
+                "instructions": {
+                  "type": "string"
+                }
+              },
+              "required": ["type", "instructions"],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "effort": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    }
+  }
+]

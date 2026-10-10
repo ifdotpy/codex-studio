@@ -1,4 +1,7 @@
 export const studioPreferencesStorageKey = "codex-studio-preferences-v1";
+export const DEFAULT_HIDE_OLD_CHATS_THRESHOLD = 3;
+export const MIN_HIDE_OLD_CHATS_THRESHOLD = 1;
+export const MAX_HIDE_OLD_CHATS_THRESHOLD = 50;
 
 export const fontFamilies = {
   system: {
@@ -22,6 +25,7 @@ export interface StudioPreferences {
   contentWidth: number;
   sidebarShortcut: string;
   showMessageAvatars: boolean;
+  hideOldChatsThreshold: number;
 }
 
 export const defaultStudioPreferences: StudioPreferences = {
@@ -34,6 +38,7 @@ export const defaultStudioPreferences: StudioPreferences = {
   contentWidth: 100,
   sidebarShortcut: `${navigator.platform.toLowerCase().includes("mac") ? "Meta" : "Control"}+b`,
   showMessageAvatars: false,
+  hideOldChatsThreshold: DEFAULT_HIDE_OLD_CHATS_THRESHOLD,
 };
 
 const validThemes = new Set(["auto", "light", "dark"]);
@@ -64,6 +69,12 @@ export function parseStudioPreferences(value: string): StudioPreferences {
     Number(candidate.contentWidth) > 100 ||
     (candidate.showMessageAvatars !== undefined &&
       typeof candidate.showMessageAvatars !== "boolean") ||
+    (candidate.hideOldChatsThreshold !== undefined &&
+      (!Number.isInteger(candidate.hideOldChatsThreshold) ||
+        Number(candidate.hideOldChatsThreshold) <
+          MIN_HIDE_OLD_CHATS_THRESHOLD ||
+        Number(candidate.hideOldChatsThreshold) >
+          MAX_HIDE_OLD_CHATS_THRESHOLD)) ||
     typeof candidate.sidebarShortcut !== "string" ||
     !parseSidebarShortcut(candidate.sidebarShortcut)
   )
@@ -79,6 +90,10 @@ export function parseStudioPreferences(value: string): StudioPreferences {
     contentWidth: candidate.contentWidth as number,
     sidebarShortcut: candidate.sidebarShortcut,
     showMessageAvatars: candidate.showMessageAvatars === true,
+    hideOldChatsThreshold:
+      typeof candidate.hideOldChatsThreshold === "number"
+        ? candidate.hideOldChatsThreshold
+        : DEFAULT_HIDE_OLD_CHATS_THRESHOLD,
   };
 }
 

@@ -16,6 +16,9 @@ There are no client packages yet. The desktop app assembles the web build and
 runtime; the web app depends on the server's HTTP contract and must not access
 SQLite or provider credentials directly.
 
-Focused checks: `pnpm --filter codex-agents-web run test:unit -- <pattern>` and
-`pnpm --filter codex-agents-desktop run test`. Each app manifest owns package
-commands.
+For one hypothesis, use `just test codex-agents-web <file-path-substring>`;
+add `--name <pattern>` to select a named Vitest case within that file. For a
+renderer change, use `just check codex-agents-web`. The root
+[`justfile`](../../justfile) discovers package names from manifests. App
+manifests and Vitest own test discovery and selection. The pre-PR server/client
+gate is documented in [docs/testing.md](../../docs/testing.md).

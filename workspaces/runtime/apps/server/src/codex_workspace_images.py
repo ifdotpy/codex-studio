@@ -79,10 +79,8 @@ _build_callbacks: dict[str, list] = {}
 def _backend() -> WorkspaceBackend:
     if sys.platform == 'darwin':
         from codex_workspace_macos import Backend
-    elif sys.platform.startswith('linux'):
-        from codex_workspace_linux import Backend
     else:
-        raise RuntimeError('Image workspaces are not supported on this platform')
+        raise RuntimeError('Image workspaces require macOS ASIF. Use a Git worktree on this server')
     return Backend()
 
 

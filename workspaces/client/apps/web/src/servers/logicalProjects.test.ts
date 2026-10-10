@@ -105,14 +105,14 @@ describe("project locations", () => {
     expect(
       projectLocationOn(project, {
         id: "local",
-        label: "This Mac",
+        label: "This computer",
         serverId: "mac-id",
       })?.path,
     ).toBe("/Projects/chrompile");
     expect(
       projectLocationOn(
         { ...project, locations: [project.locations[1]] },
-        { id: "local", label: "This Mac" },
+        { id: "local", label: "This computer" },
       ),
     ).toBeUndefined();
   });

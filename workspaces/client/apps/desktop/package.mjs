@@ -28,6 +28,31 @@ const bridgeSource = path.join(
   "workspaces/providers/apps/claude-bridge",
 );
 await access(path.join(rendererDist, "index.html"));
+if (!uiOnly) {
+  try {
+    execFileSync(
+      "cargo",
+      ["build", "--locked", "--release", "-p", "studio-diagnostics"],
+      { cwd: repositoryRoot, stdio: "inherit" },
+    );
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      throw new Error(
+        "Desktop packaging requires Cargo; install Rust 1.99.0, then run `cargo build --locked --release -p studio-diagnostics`.",
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+}
+const cargoTargetDirectory = path.resolve(
+  repositoryRoot,
+  process.env.CARGO_TARGET_DIR || "target",
+);
+const diagnosticsBinary = path.join(
+  cargoTargetDirectory,
+  "release/codex-diagnostics",
+);
 const stage = await mkdtemp(path.join(tmpdir(), "codex-desktop-package-"));
 try {
   const speech = path.join(stage, "studio-speech");
@@ -57,6 +82,7 @@ try {
       path.join(repositoryRoot, "requirements.txt"),
       path.join(resources, "requirements.txt"),
     );
+    await mkdir(path.join(resources, "bin"), { recursive: true });
     await cp(
       path.join(repositoryRoot, "workspaces/runtime/apps/server/prompts"),
       path.join(resources, "prompts"),
@@ -70,6 +96,7 @@ try {
         !source.includes("/node_modules") &&
         !source.endsWith(".pyc"),
     });
+    await cp(diagnosticsBinary, path.join(resources, "bin/codex-diagnostics"));
     execFileSync(
       "pnpm",
       [
@@ -122,6 +149,12 @@ try {
           !source.includes("__pycache__") && !source.endsWith(".pyc"),
       },
     );
+    // The vendored layr sources, built inside the guest (docs/vm-layr.md).
+    await cp(
+      path.join(repositoryRoot, "workspaces/runtime/apps/layr"),
+      path.join(resources, "vm/layr"),
+      { recursive: true },
+    );
   }
   await cp(rendererDist, path.join(resources, "web/dist"), {
     recursive: true,
@@ -170,7 +203,7 @@ try {
       NSMicrophoneUsageDescription:
         "Record dictation that you can review and convert to text.",
       NSSpeechRecognitionUsageDescription:
-        "Convert your saved dictation to text on this Mac.",
+        "Convert your saved dictation to text on this computer.",
     },
     ignore: [
       /^\/assets($|\/)/,

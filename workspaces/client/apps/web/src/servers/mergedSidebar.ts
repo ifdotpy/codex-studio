@@ -433,10 +433,9 @@ export function mergeSidebar(
   >();
   for (const source of sources) {
     const compact = new Set(Object.keys(source.sidebar.compact));
-    const collapsed = new Set(Object.keys(source.sidebar.collapsed));
+    const collapsed = new Set<string>();
     const addPath = (path: string) => {
       compact.add(path);
-      collapsed.add(path);
     };
     for (const project of source.sidebar.projects) {
       const path = project.path || "";
@@ -471,6 +470,7 @@ export function mergeSidebar(
     const result: Record<string, boolean> = {};
     for (const source of sources)
       for (const [name, value] of Object.entries(values.get(source.id) || {})) {
+        if (kind === "collapsed" && !name.startsWith("[")) continue;
         const mapped =
           kind === "compact"
             ? projectKey(source.id, name)

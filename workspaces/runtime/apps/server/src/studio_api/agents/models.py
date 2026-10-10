@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from uuid import UUID
-from typing import Literal
+from typing import Literal, TypeAlias
 
 from pydantic import Field, field_validator, model_validator
 
@@ -196,6 +196,7 @@ class TransferRequestReceipt(ResponseModel):
 
 
 class CreateLeadRequest(ContractModel):
+    workspaceMode: Literal["layr", "image", "worktree"] | None = None
     project_id: str | None = Field(default=None, min_length=1, max_length=4096)
     project_server_id: str | None = Field(default=None, min_length=1, max_length=128)
     id: str | None = Field(default=None, min_length=1, max_length=200)
@@ -206,6 +207,11 @@ class CreateLeadRequest(ContractModel):
     account_key: str | None = Field(default=None, min_length=1, max_length=200)
     model: str | None = Field(default=None, min_length=1, max_length=300)
     yolo_mode: bool | None = None
+    effort: str | None = Field(default=None, max_length=100)
+    fast_mode: bool | None = None
+    daybreak_enabled: bool | None = None
+    worker_defaults: WorkerDefaults | None = None
+    review_defaults: ReviewDefaults | None = None
 
     @field_validator("model")
     @classmethod
@@ -243,6 +249,7 @@ class ReviewDefaults(ContractModel):
 
 
 class CreateAgentRequest(ContractModel):
+    workspaceMode: Literal["layr", "image", "worktree"] | None = None
     id: str | None = Field(default=None, min_length=1, max_length=200)
     parent: str | None = Field(default=None, min_length=1, max_length=200)
     cwd: str | None = None
@@ -407,6 +414,10 @@ class CapabilitiesQuery(ContractModel):
 
 class SkillsQuery(ContractModel):
     agent: str | None = None
+
+
+class FinderViewQuery(ContractModel):
+    agent: str = Field(min_length=1, max_length=200)
 
 
 class StopRequest(ContractModel):
@@ -588,6 +599,26 @@ class CapabilitiesResponse(ResponseModel):
     mcp: list[JsonValue]
     skillsCursor: str | None = None
     serversCursor: str | None = None
+
+
+class NativeFinderViewResponse(ResponseModel):
+    """A native chat works in its Mac folder."""
+
+    kind: Literal["native"]
+    path: str | None
+
+
+class VmFinderViewResponse(ResponseModel):
+    """A VM chat: the read-only ~/Studio view of its layr project. The path is set only when mounted."""
+
+    kind: Literal["vm"]
+    state: Literal["mounted", "unmounted", "failed"]
+    path: str | None
+    error: str | None
+
+
+# The literal kind selects the branch; the response validator accepts plain unions only.
+FinderViewResponse: TypeAlias = NativeFinderViewResponse | VmFinderViewResponse
 
 
 class SkillsResponse(ResponseModel):

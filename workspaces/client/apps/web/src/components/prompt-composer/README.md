@@ -31,15 +31,26 @@ the draft clears only when the durable outbox owns the message and only if the
 user has not typed newer text. Changing chats changes the subscription, so each
 chat keeps its own draft.
 
-The prompt uses one fixed-height, scrollable textarea across browsers and screen sizes.
-Keyboard and language-picker viewport changes do not change the height of the focused input
-or force the page to scroll. Long desktop drafts also scroll inside the field. The
-viewport hook continues to keep the composer inside the visible screen. Mobile
-model and account information shares one row so it does not push the send
-controls and usage footer below the keyboard.
+The prompt starts at two rows and grows with its content until the composer
+reaches at most about three fifths of the visible viewport. Longer drafts scroll
+inside the textarea. The same CSS limit applies on desktop and mobile, and uses
+the visual viewport while the on-screen keyboard is open. On short viewports,
+the flex layout shrinks the transcript and composer around the two-row input
+minimum to keep the send controls and usage footer visible. A draft of two rows
+or fewer keeps its input height. Keyboard and language-picker viewport changes
+do not scroll the page. The viewport hook continues to keep the composer inside
+the visible screen. Mobile model and
+account information shares one row so it does not push the send controls and
+usage footer below the keyboard. The limit ratio and approximate chrome
+allowance live in [`style.css`](../../style.css).
+For an empty managed chat, model and worker settings remain below the composer.
+When the keyboard leaves a short visible viewport, that settings panel becomes
+internally scrollable so the send controls and usage footer stay visible.
+Closing the keyboard restores the expanded settings layout.
 `workspaces/client/apps/web/tests/mobile/mobile-keyboard-ui.spec.mjs` checks simulated viewport
-changes with Android and iPhone identities in Chromium and WebKit; it does not
-open a real operating-system language picker.
+changes with Android and iPhone identities in the browser selected by
+`BROWSER`; it does not open a real operating-system keyboard or language
+picker.
 
 The textarea remains controlled. Attachments, dictation, prompt recall, skill
 completion, selection and caret placement, Enter, Tab, Shift+Enter, and IME
@@ -95,12 +106,13 @@ BROWSER=webkit pnpm --filter codex-agents-web run test:browser -- mobile-keyboar
 
 ## Recorded measurements
 
-The paired script uses headless Chromium and a production build. The original
-baseline was measured before extraction. Timing numbers are local observations,
+The paired script uses headless Chromium and a production build. It generates
+the baseline API types from that revision's server schema before building.
+The original baseline was measured before extraction. Timing numbers are local observations,
 not service-level guarantees. Draft persistence counts and render counts are the
 more repeatable contract.
 
-| 500 drafts, 20 edits                          |     Baseline |    Current |
+| 500 drafts, 20 edits (7066718 → current)      |     Baseline |    Current |
 | --------------------------------------------- | -----------: | ---------: |
 | Parent / sidebar / transcript-fixture renders | 20 / 20 / 20 |  0 / 0 / 0 |
 | Composer commits                              |           20 |         20 |

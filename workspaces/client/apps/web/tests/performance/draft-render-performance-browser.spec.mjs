@@ -1,6 +1,12 @@
 // Real draft hook, local durability, and consumer commits with 500 saved chats.
 import { fileURLToPath } from "node:url";
-import { apiSchemaHandshakeSse, test, expect } from "../playwright.mjs";
+import {
+  API_SCHEMA_HASH_HEADER,
+  apiSchemaHandshakeSse,
+  readApiSchemaHash,
+  test,
+  expect,
+} from "../playwright.mjs";
 
 test("Draft Render Performance Browser @performance", async ({
   browser: testBrowser,
@@ -50,7 +56,10 @@ test("Draft Render Performance Browser @performance", async ({
         }),
       );
       await page.route("**/api/sync/identity", (r) =>
-        r.fulfill({ json: { workspaceId } }),
+        r.fulfill({
+          json: { workspaceId },
+          headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+        }),
       );
       await page.route("**/api/sync/drafts", (r) => r.fulfill({ json: [] }));
       await page.route("**/api/sync/pull?*", (r) =>
@@ -404,7 +413,10 @@ test("Draft Render Performance Browser @performance", async ({
         }),
       );
       await other.route("**/api/sync/identity", (route) =>
-        route.fulfill({ json: { workspaceId } }),
+        route.fulfill({
+          json: { workspaceId },
+          headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+        }),
       );
       await other.route("**/api/sync/drafts", (route) =>
         route.fulfill({ json: [] }),

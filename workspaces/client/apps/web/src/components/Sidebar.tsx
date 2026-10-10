@@ -30,7 +30,6 @@ import {
   SquarePen,
   Search,
   Folder,
-  ChevronDown,
   Plus,
   X,
   Settings,
@@ -56,10 +55,14 @@ import {
 
 import SidebarRow from "./SidebarRow";
 import { readServerAliases } from "../servers/registry";
-import { useServerAliases } from "../servers/serverAliases";
+import {
+  DEFAULT_LOCAL_SERVER_ALIAS,
+  useServerAliases,
+} from "../servers/serverAliases";
 import { serverViewId } from "../servers/environment";
 import { ChatServerLine, keepCompactChat } from "../servers/ProjectChatRows";
 import {
+  countProjectChats,
   createSidebarCatalogSelector,
   createSidebarSearchSelector,
   itemGroup,
@@ -68,6 +71,7 @@ import {
 export { isVisibleSidebarAgent } from "./sidebar/catalog";
 import type { ChatIndicator } from "./chat-status/chatStatusModel";
 import { reportPromptComposerRender } from "./prompt-composer/renderProbe";
+import { DEFAULT_HIDE_OLD_CHATS_THRESHOLD } from "../studioPreferences";
 
 type OrganizationRequest =
   paths["/api/organization"]["post"]["requestBody"]["content"]["application/json"];
@@ -104,6 +108,7 @@ export type SidebarProps = {
   indicators: Map<string, ChatIndicator>;
   markUnread: (agent: Agent) => void;
   markingRead: Set<string>;
+  hideOldChatsThreshold?: number;
 };
 type NavigableProject = Project & { path: string; name: string };
 export function projectDisplayName(
@@ -171,14 +176,16 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
   const [query, setQuery] = useState(""),
     [renaming, setRenaming] = useState<string | null>(null),
     [name, setName] = useState(""),
-    [archive, setArchive] = useState(false),
-    [projectsOpen, setProjectsOpen] = useState(true);
+    [archive, setArchive] = useState(false);
+  const hideOldChatsThreshold =
+    p.hideOldChatsThreshold ?? DEFAULT_HIDE_OLD_CHATS_THRESHOLD;
   const sorting = useSidebarOrder(
     `codex-sidebar-order:${p.data.stateDir}`,
     runtime?.sidebarOrder ?? undefined,
     p.refresh,
     p.notify,
     services,
+    p.data.token,
   );
   const [organizing, setOrganizing] = useState<string | null>(null);
   const organizationLock = useRef(false);
@@ -304,11 +311,11 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
   const [collapsed, setCollapsed] = useSidebarVisualState<
     Record<string, boolean>
   >(projectKey, {});
-
-  const toggleProject = (path: string) => {
-    const next = { ...collapsed, [path]: !collapsed[path] };
+  const toggleTree = (key: string) => {
+    const next = { ...collapsed, [key]: !collapsed[key] };
     setCollapsed(writePreferenceEdit(projectKey, collapsed, next));
   };
+
   // Pin and archive show at once; the next snapshot confirms them.
   const [overrides, setOverrides] = useState<
     Record<string, { pinned?: boolean; archived?: boolean }>
@@ -432,20 +439,9 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
       sharedRooms.some((r) => r.id === p.opened)
     ) {
       setQuery("");
-      setProjectsOpen(true);
       const path =
         agents.find((a) => a.id === p.opened)?.cwd ||
         sharedRooms.find((r) => r.id === p.opened)?.projectPath;
-      if (path && collapsed[path]) {
-        const next = { ...collapsed, [path]: false };
-        setCollapsed(
-          (services.cache.viewPreference || writePreferenceEdit)(
-            projectKey,
-            collapsed,
-            next,
-          ),
-        );
-      }
       const folders =
         projects.find((project) => project.path === path)?.folders || [];
       let folder = folders.find((item) => item.id === selectedFolder);
@@ -455,7 +451,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
         folder = folders.find((item) => item.id === folder!.parentId);
       }
       if (path && Object.keys(ancestors).length) {
-        const next = { ...collapsed, [path]: false, ...ancestors };
+        const next = { ...collapsed, ...ancestors };
         setCollapsed(
           (services.cache.viewPreference || writePreferenceEdit)(
             projectKey,
@@ -610,10 +606,17 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
       updated: a.updated || undefined,
       created: a.created || undefined,
     });
+  const viewChatCounts = useMemo(
+    () => countProjectChats(agents, archive),
+    [agents, archive],
+  );
+  const isCompactProject = (path: string) =>
+    compactProjects[path] !== false &&
+    (viewChatCounts.get(path) || 0) >= hideOldChatsThreshold;
   const compactIndicatorKey = agents
     .filter(
       (agent) =>
-        compactProjects[agent.cwd || ""] !== false &&
+        isCompactProject(agent.cwd || "") &&
         p.indicators.get(agent.id)?.kind === "unread",
     )
     .map((agent) => agent.id)
@@ -664,7 +667,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
     for (const a of filtered) {
       if (
         query ||
-        compactProjects[a.cwd || ""] === false ||
+        !isCompactProject(a.cwd || "") ||
         a.id === p.opened ||
         keptInCompact(a)
       )
@@ -679,6 +682,8 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
     filtered,
     query,
     compactProjects,
+    viewChatCounts,
+    hideOldChatsThreshold,
     compactIndicatorKey,
     p.opened,
   ]);
@@ -742,7 +747,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
             "local"
         ] ||
         aliases[services.serverForChat(row.id)] ||
-        "MAC"
+        DEFAULT_LOCAL_SERVER_ALIAS
       }
       indicator={p.indicators.get(row.id)}
       renaming={renaming === row.id}
@@ -899,7 +904,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
           )}
           drop={teamDrop()}
           closed={closed}
-          toggle={() => toggleProject(key)}
+          toggle={() => toggleTree(key)}
           edit={() =>
             setTeamDialog({
               path: group.path,
@@ -955,7 +960,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
     const children = folders
       .filter((folder) => (folder.parentId || null) === (parent?.id || null))
       .filter((folder) => {
-        if (query || compactProjects[group.path] === false) return true;
+        if (query || !isCompactProject(group.path)) return true;
         const contains = (id: string, seen = new Set<string>()): boolean => {
           if (seen.has(id)) return false;
           seen.add(id);
@@ -1021,7 +1026,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                       aria-description="Drag to reorder. Alt + Up or Down also works."
                       className="project-tree-toggle"
                       aria-expanded={!closed}
-                      onClick={() => toggleProject(id)}
+                      onClick={() => toggleTree(id)}
                     >
                       {closed ? <Folder size={16} /> : <FolderOpen size={16} />}
                       <span>
@@ -1244,14 +1249,9 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
         }}
       />
       <div className="projects-heading">
-        <UnstyledButton
-          className="projects-heading-toggle"
-          onClick={() => setProjectsOpen(!projectsOpen)}
-          aria-expanded={projectsOpen}
-        >
+        <span className="projects-heading-label">
           {archive ? "Archived projects" : "Projects"}
-          <ChevronDown size={14} />
-        </UnstyledButton>
+        </span>
         <Menu position="bottom-end" withinPortal>
           <Menu.Target>
             <ActionIcon aria-label="Project list options">
@@ -1261,14 +1261,6 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
           <Menu.Dropdown>
             <Menu.Item onClick={() => setArchive(!archive)}>
               {archive ? "Show active chats" : "Show archived chats"}
-            </Menu.Item>
-            <Menu.Item
-              onClick={() => {
-                setCollapsed(writePreferenceEdit(projectKey, collapsed, {}));
-                setProjectsOpen(true);
-              }}
-            >
-              Expand all projects
             </Menu.Item>
           </Menu.Dropdown>
         </Menu>
@@ -1280,258 +1272,241 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
       </div>
       {teamMove.feedback}
       <nav id="chat-list" className="chat-scroll" aria-label="Chats">
-        {projectsOpen &&
-          projectGroups.map((group) => {
-            const isCollapsed = collapsed[group.path] && !query;
-            return (
-              <section
-                className="sidebar-project"
-                data-project-path={group.path}
-                key={group.path}
-              >
-                <div className="project-tree-heading" {...folderDrop(group)}>
-                  <UnstyledButton
-                    {...sorting.bindings(
-                      "projects",
-                      group.path,
-                      allProjectGroups.map((item) => item.path),
-                    )}
-                    aria-description="Drag to reorder. Alt + Up or Down also works."
-                    className="project-tree-toggle"
-                    title={services.displayPath?.(group.path) || group.path}
-                    aria-expanded={!isCollapsed}
-                    onClick={() => toggleProject(group.path)}
-                  >
-                    {isCollapsed ? (
-                      <Folder size={18} />
-                    ) : (
-                      <FolderOpen size={18} />
-                    )}
-                    <span title={group.name}>{group.name}</span>
-                  </UnstyledButton>
-                  {!archive && (!compact || !!group.path) && (
-                    <ActionIcon
-                      className="project-tree-action"
-                      aria-label={`New chat in ${group.name}`}
-                      onClick={() => p.newChat(group.path || undefined)}
-                      disabled={
-                        p.creating || !canEdit(projectTarget(group.path))
-                      }
-                    >
-                      <Plus size={15} />
-                    </ActionIcon>
+        {projectGroups.map((group) => {
+          const oldChatCount = Math.max(
+            0,
+            filtered.filter((agent) => agent.cwd === group.path).length -
+              group.chats.length,
+          );
+          return (
+            <section
+              className="sidebar-project"
+              data-project-path={group.path}
+              key={group.path}
+            >
+              <div className="project-tree-heading" {...folderDrop(group)}>
+                <UnstyledButton
+                  type="button"
+                  {...sorting.bindings(
+                    "projects",
+                    group.path,
+                    allProjectGroups.map((item) => item.path),
                   )}
-                  {!!group.path && (
-                    <Menu withinPortal position="bottom-end">
-                      <Menu.Target>
-                        <ActionIcon
-                          className="project-tree-action"
-                          aria-label={`Options for project ${group.name}`}
-                        >
-                          <MoreHorizontal size={15} />
-                        </ActionIcon>
-                      </Menu.Target>
-                      <Menu.Dropdown>
-                        <Menu.Label>Create</Menu.Label>
+                  aria-description="Drag to reorder. Alt + Up or Down also works."
+                  className="project-tree-toggle"
+                  title={services.displayPath?.(group.path) || group.path}
+                >
+                  <FolderOpen size={18} />
+                  <span title={group.name}>{group.name}</span>
+                </UnstyledButton>
+                {!archive && (!compact || !!group.path) && (
+                  <ActionIcon
+                    className="project-tree-action"
+                    aria-label={`New chat in ${group.name}`}
+                    onClick={() => p.newChat(group.path || undefined)}
+                    disabled={p.creating || !canEdit(projectTarget(group.path))}
+                  >
+                    <Plus size={15} />
+                  </ActionIcon>
+                )}
+                {!!group.path && (
+                  <Menu withinPortal position="bottom-end">
+                    <Menu.Target>
+                      <ActionIcon
+                        className="project-tree-action"
+                        aria-label={`Options for project ${group.name}`}
+                      >
+                        <MoreHorizontal size={15} />
+                      </ActionIcon>
+                    </Menu.Target>
+                    <Menu.Dropdown>
+                      <Menu.Label>Create</Menu.Label>
+                      <Menu.Item
+                        disabled={!canEdit(projectTarget(group.path))}
+                        onClick={() => editProject(group, "new")}
+                      >
+                        New chat folder
+                      </Menu.Item>
+                      {p.newSharedChat && (
                         <Menu.Item
                           disabled={!canEdit(projectTarget(group.path))}
-                          onClick={() => editProject(group, "new")}
+                          onClick={() => p.newSharedChat?.(group.path)}
                         >
-                          New chat folder
+                          New shared chat
                         </Menu.Item>
-                        {p.newSharedChat && (
-                          <Menu.Item
-                            disabled={!canEdit(projectTarget(group.path))}
-                            onClick={() => p.newSharedChat?.(group.path)}
-                          >
-                            New shared chat
-                          </Menu.Item>
-                        )}
-                        {runtime?.peerTeamsVersion === 1 && (
-                          <Menu.Item
-                            disabled={!canEdit(projectTarget(group.path))}
-                            onClick={() =>
-                              setTeamDialog({
-                                path: group.path,
-                                action: "save",
-                              })
-                            }
-                          >
-                            New team
-                          </Menu.Item>
-                        )}
-                        <Menu.Divider />
-                        <Menu.Label>View</Menu.Label>
+                      )}
+                      {runtime?.peerTeamsVersion === 1 && (
                         <Menu.Item
-                          title="Keep peer team chats, pinned chats, running chats, unread chats, and chats active in the last 24 hours. Search finds all chats."
-                          aria-label={
-                            compactProjects[group.path] !== false
-                              ? "Show more"
-                              : "Show less"
+                          disabled={!canEdit(projectTarget(group.path))}
+                          onClick={() =>
+                            setTeamDialog({
+                              path: group.path,
+                              action: "save",
+                            })
                           }
+                        >
+                          New team
+                        </Menu.Item>
+                      )}
+                      <Menu.Divider />
+                      <Menu.Label>View</Menu.Label>
+                      {(viewChatCounts.get(group.path) || 0) >=
+                        hideOldChatsThreshold && (
+                        <Menu.Item
                           onClick={() =>
                             setCompactProject(
                               group.path,
-                              compactProjects[group.path] === false,
+                              !isCompactProject(group.path),
                             )
                           }
                         >
-                          {compactProjects[group.path] !== false
-                            ? "Show more"
-                            : "Show less"}
-                          <small className="menu-action-help">
-                            Show recent and active chats. Keep pinned, unread,
-                            and team chats.
-                          </small>
+                          {isCompactProject(group.path)
+                            ? `Show old (${oldChatCount})`
+                            : "Hide old"}
                         </Menu.Item>
-                        <Menu.Divider />
-                        <Menu.Label>Project settings</Menu.Label>
+                      )}
+                      <Menu.Divider />
+                      <Menu.Label>Project settings</Menu.Label>
+                      <Menu.Item
+                        disabled={!canEdit(projectTarget(group.path))}
+                        onClick={() => editProject(group)}
+                      >
+                        Rename project
+                      </Menu.Item>
+                      {p.projectFolders && (
                         <Menu.Item
                           disabled={!canEdit(projectTarget(group.path))}
-                          onClick={() => editProject(group)}
+                          onClick={() => p.projectFolders?.(group.path)}
                         >
-                          Rename project
+                          Folders
                         </Menu.Item>
-                        {p.projectFolders && (
-                          <Menu.Item
-                            disabled={!canEdit(projectTarget(group.path))}
-                            onClick={() => p.projectFolders?.(group.path)}
-                          >
-                            Folders
-                          </Menu.Item>
-                        )}
+                      )}
+                      <Menu.Item
+                        disabled={!canEdit(projectTarget(group.path))}
+                        onClick={() => p.projectAccount(group.path)}
+                      >
+                        Project account
+                      </Menu.Item>
+                      {group.registered && !group.hasChats && (
                         <Menu.Item
                           disabled={!canEdit(projectTarget(group.path))}
-                          onClick={() => p.projectAccount(group.path)}
+                          onClick={async () => {
+                            try {
+                              await services
+                                .owner({ kind: "project", path: group.path })
+                                .post("/api/projects", {
+                                  action: "remove",
+                                  path: group.path,
+                                });
+                              await p.refresh?.();
+                            } catch (error) {
+                              p.notify?.(errorText(error));
+                            }
+                          }}
                         >
-                          Project account
+                          Remove from sidebar
                         </Menu.Item>
-                        {group.registered && !group.hasChats && (
-                          <Menu.Item
-                            disabled={!canEdit(projectTarget(group.path))}
-                            onClick={async () => {
-                              try {
-                                await services
-                                  .owner({ kind: "project", path: group.path })
-                                  .post("/api/projects", {
-                                    action: "remove",
-                                    path: group.path,
-                                  });
-                                await p.refresh?.();
-                              } catch (error) {
-                                p.notify?.(errorText(error));
-                              }
-                            }}
-                          >
-                            Remove from sidebar
-                          </Menu.Item>
-                        )}
-                      </Menu.Dropdown>
-                    </Menu>
-                  )}
-                </div>
-                {teamDialog?.path === group.path &&
-                  (teamDialog.id &&
-                  !peerTeams.some((t) => t.id === teamDialog.id) ? (
-                    <p role="alert">
-                      This team is no longer available.{" "}
-                      <UnstyledButton onClick={() => setTeamDialog(null)}>
-                        Close
-                      </UnstyledButton>
-                    </p>
-                  ) : (
-                    <SidebarBackendProvider
-                      value={services.owner(
+                      )}
+                    </Menu.Dropdown>
+                  </Menu>
+                )}
+              </div>
+              {teamDialog?.path === group.path &&
+                (teamDialog.id &&
+                !peerTeams.some((t) => t.id === teamDialog.id) ? (
+                  <p role="alert">
+                    This team is no longer available.{" "}
+                    <UnstyledButton onClick={() => setTeamDialog(null)}>
+                      Close
+                    </UnstyledButton>
+                  </p>
+                ) : (
+                  <SidebarBackendProvider
+                    value={services.owner(
+                      projectTarget(group.path, undefined, teamDialog.id),
+                    )}
+                  >
+                    <PeerTeamForm
+                      key={`${teamDialog.path}:${teamDialog.id || "new"}:${teamDialog.action}`}
+                      project={ownedProject(
+                        group,
                         projectTarget(group.path, undefined, teamDialog.id),
                       )}
-                    >
-                      <PeerTeamForm
-                        key={`${teamDialog.path}:${teamDialog.id || "new"}:${teamDialog.action}`}
-                        project={ownedProject(
-                          group,
-                          projectTarget(group.path, undefined, teamDialog.id),
-                        )}
-                        team={peerTeams.find((t) => t.id === teamDialog.id)}
-                        teams={peerTeams}
-                        agents={agents.filter(
-                          (agent) =>
-                            services.serverForChat(agent.id) ===
-                            services.owner(
-                              projectTarget(
-                                group.path,
-                                undefined,
-                                teamDialog.id,
-                              ),
-                            ).ownerId,
-                        )}
-                        action={teamDialog.action}
-                        refresh={p.refresh}
-                        close={() => setTeamDialog(null)}
-                      />
-                    </SidebarBackendProvider>
-                  ))}
-                {!isCollapsed && (
-                  <div className="project-chats">
-                    {visibleSharedRooms
-                      .filter((r) => r.projectPath === group.path)
-                      .map((room) => (
-                        <div
-                          key={room.id}
-                          className={`sidebar-row lead-row ${p.opened === room.id ? "selected" : ""}`}
-                        >
-                          <UnstyledButton
-                            className="chat-row"
-                            aria-current={
-                              p.opened === room.id ? "page" : undefined
-                            }
-                            onClick={() => p.open(room.id)}
-                          >
-                            <span className="row-copy">
-                              <strong>{room.name}</strong>
-                              <ChatServerLine
-                                provider={
-                                  p.data.threads.find((agent) =>
-                                    room.members?.includes(agent.id),
-                                  )?.provider || undefined
-                                }
-                                alias={
-                                  services.alias?.({
-                                    kind: "chat",
-                                    id: room.id,
-                                  }) ||
-                                  aliases[services.serverForChat(room.id)] ||
-                                  "MAC"
-                                }
-                              />
-                            </span>
-                          </UnstyledButton>
-                        </div>
-                      ))}
-                    {renderProjectChats(group)}
-                    {!query &&
-                      (compactProjects[group.path] !== false
-                        ? filtered.filter((a) => a.cwd === group.path).length >
-                          group.chats.length
-                        : filtered.some((a) => a.cwd === group.path)) && (
-                        <UnstyledButton
-                          className="project-show-all"
-                          onClick={() =>
-                            setCompactProject(
-                              group.path,
-                              compactProjects[group.path] === false,
-                            )
-                          }
-                        >
-                          {compactProjects[group.path] !== false
-                            ? `Show more (${filtered.filter((a) => a.cwd === group.path).length - group.chats.length})`
-                            : "Show less"}
-                        </UnstyledButton>
+                      team={peerTeams.find((t) => t.id === teamDialog.id)}
+                      teams={peerTeams}
+                      agents={agents.filter(
+                        (agent) =>
+                          services.serverForChat(agent.id) ===
+                          services.owner(
+                            projectTarget(group.path, undefined, teamDialog.id),
+                          ).ownerId,
                       )}
-                  </div>
-                )}
-              </section>
-            );
-          })}
+                      action={teamDialog.action}
+                      refresh={p.refresh}
+                      close={() => setTeamDialog(null)}
+                    />
+                  </SidebarBackendProvider>
+                ))}
+              <div className="project-chats">
+                {visibleSharedRooms
+                  .filter((r) => r.projectPath === group.path)
+                  .map((room) => (
+                    <div
+                      key={room.id}
+                      className={`sidebar-row lead-row ${p.opened === room.id ? "selected" : ""}`}
+                    >
+                      <UnstyledButton
+                        className="chat-row"
+                        aria-current={p.opened === room.id ? "page" : undefined}
+                        onClick={() => p.open(room.id)}
+                      >
+                        <span className="row-copy">
+                          <strong>{room.name}</strong>
+                          <ChatServerLine
+                            provider={
+                              p.data.threads.find((agent) =>
+                                room.members?.includes(agent.id),
+                              )?.provider || undefined
+                            }
+                            alias={
+                              services.alias?.({
+                                kind: "chat",
+                                id: room.id,
+                              }) ||
+                              aliases[services.serverForChat(room.id)] ||
+                              DEFAULT_LOCAL_SERVER_ALIAS
+                            }
+                          />
+                        </span>
+                      </UnstyledButton>
+                    </div>
+                  ))}
+                {renderProjectChats(group)}
+                {!query &&
+                  (viewChatCounts.get(group.path) || 0) >=
+                    hideOldChatsThreshold &&
+                  (isCompactProject(group.path)
+                    ? filtered.filter((a) => a.cwd === group.path).length >
+                      group.chats.length
+                    : filtered.some((a) => a.cwd === group.path)) && (
+                    <UnstyledButton
+                      className="project-show-all"
+                      onClick={() =>
+                        setCompactProject(
+                          group.path,
+                          !isCompactProject(group.path),
+                        )
+                      }
+                    >
+                      {isCompactProject(group.path)
+                        ? `Show old (${oldChatCount})`
+                        : "Hide old"}
+                    </UnstyledButton>
+                  )}
+              </div>
+            </section>
+          );
+        })}
         {!filtered.length && !projectGroups.length && (
           <p className="notice">
             {query ? "No matching chats." : "No chats yet."}

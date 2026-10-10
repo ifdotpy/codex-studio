@@ -67,7 +67,7 @@ declare global {
 }
 
 if (window.codexDesktop?.platform === "darwin") {
-  document.documentElement.classList.add("desktop-mac");
+  document.documentElement.classList.add("desktop-inset-titlebar");
 }
 
 // Preview frames cannot access this main-frame bridge.

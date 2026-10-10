@@ -292,7 +292,7 @@ test.describe("sidebar visible parity", () => {
             );
             await expect(
               sidebar.getByRole("button", {
-                name: "Show more (6)",
+                name: "Show old (6)",
                 exact: true,
               }),
             ).toBeVisible();
@@ -344,7 +344,7 @@ test.describe("sidebar visible parity", () => {
               .click();
             await expect(
               sidebar.getByTitle("Local Archived", { exact: true }),
-            ).toHaveCount(0);
+            ).toBeVisible();
             await sidebar
               .getByLabel("Filter projects and chats")
               .fill("Archived");

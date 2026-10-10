@@ -17,6 +17,8 @@ import {
   sidebarOrderWrite,
 } from "./mergedSidebarPreferences";
 
+const acknowledgedOrderRevisions = new WeakMap<SidebarBackend, number>();
+
 export function sidebarOwner(
   model: MergedSidebar,
   target: SidebarTarget,
@@ -182,8 +184,23 @@ export function createMergedSidebarServices(
     ),
   ]);
   const wrapped = new Map<string, SidebarBackend>();
+  const latestOrderRevision = new Map(
+    model.sources.map((source) => [
+      source.id,
+      source.sidebar.sidebarOrder?.revision || 0,
+    ]),
+  );
   for (const owner of owners) {
     const backend = raw.get(owner);
+    const source = model.sourceById.get(owner);
+    if (backend && source)
+      latestOrderRevision.set(
+        owner,
+        Math.max(
+          latestOrderRevision.get(owner) || 0,
+          acknowledgedOrderRevisions.get(backend) || 0,
+        ),
+      );
     const missing: SidebarBackend = {
       ownerId: owner,
       post: async () => {
@@ -235,6 +252,8 @@ export function createMergedSidebarServices(
           );
         const wire =
           stored?.wire || sidebarWireRequest(model, owner, path, body);
+        if (!stored && path === "/api/projects" && wire.action === "reorder")
+          wire.expected_revision = latestOrderRevision.get(owner) ?? 0;
         if (key && !stored) backend.save(key, { path, visible: body, wire });
         let response: PostResult<Path>;
         try {
@@ -252,6 +271,15 @@ export function createMergedSidebarServices(
           throw failure;
         }
         const result = record(response);
+        if (
+          path === "/api/projects" &&
+          wire.action === "reorder" &&
+          typeof result.revision === "number" &&
+          Number.isSafeInteger(result.revision)
+        ) {
+          latestOrderRevision.set(owner, result.revision);
+          if (backend) acknowledgedOrderRevisions.set(backend, result.revision);
+        }
         if (path === "/api/organization" && "projectFolder" in result) {
           const reference = model.chatReferences.get(
             record(body).id as string,

@@ -1,0 +1,157 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  javascript:
+    name: JavaScript checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - name: Install locked JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Tooling tests
+        run: pnpm run test:tooling
+      - name: Pre-commit hook tests
+        run: pnpm run test:pre-commit
+      - name: Web TypeScript application project
+        run: pnpm --filter codex-agents-web run typecheck:focused
+      - name: Web TypeScript API contract project
+        run: pnpm --filter codex-agents-web run test:api-contract-types
+      - name: Web TypeScript test helper project
+        run: pnpm run typecheck:client-helper
+      - name: Prepare the Python runtime used by client unit tests
+        run: |
+          echo "XDG_CACHE_HOME=$RUNNER_TEMP/codex-studio-cache" >> "$GITHUB_ENV"
+          XDG_CACHE_HOME="$RUNNER_TEMP/codex-studio-cache" python3 workspaces/runtime/apps/server/src/install-cli.py --bin-dir "$RUNNER_TEMP/codex-studio-bin"
+      - name: Client unit tests
+        run: pnpm run test:client:unit
+      - name: Server bridge tests
+        run: pnpm run test:server:bridge
+
+  rust:
+    name: Rust checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Read the pinned Rust toolchain
+        id: rust-toolchain
+        run: |
+          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          components="$(sed -n 's/^components = \[\(.*\)\]/\1/p' rust-toolchain.toml | tr -d ' "')"
+          test -n "$channel"
+          test -n "$components"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "components=$components" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+          components: ${{ steps.rust-toolchain.outputs.components }}
+      - name: Rust formatting
+        run: cargo fmt --check
+      - name: Rust Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Rust tests
+        run: cargo test --workspace --locked
+
+  python:
+    name: Python checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: package.json
+      - name: Install locked JavaScript tools for API generation
+        run: pnpm install --frozen-lockfile
+      - name: Prepare the repository-managed Python environments
+        run: |
+          echo "XDG_CACHE_HOME=$RUNNER_TEMP/codex-studio-cache" >> "$GITHUB_ENV"
+          XDG_CACHE_HOME="$RUNNER_TEMP/codex-studio-cache" python3 workspaces/runtime/apps/server/src/install-cli.py --dev --bin-dir "$RUNNER_TEMP/codex-studio-bin"
+      - name: Strict runtime mypy ratchet
+        run: pnpm run typecheck:runtime
+      - name: API generated-types check
+        run: pnpm run api:check
+
+  facade:
+    name: Just facade checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: package.json
+      - name: Read the pinned Rust toolchain
+        id: rust-toolchain
+        run: |
+          channel="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          components="$(sed -n 's/^components = \[\(.*\)\]/\1/p' rust-toolchain.toml | tr -d ' "')"
+          test -n "$channel"
+          test -n "$components"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "components=$components" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+          components: ${{ steps.rust-toolchain.outputs.components }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - name: Download and verify pinned Just 1.58.0
+        run: |
+          archive="$RUNNER_TEMP/just-1.58.0-x86_64-unknown-linux-musl.tar.gz"
+          mkdir -p "$RUNNER_TEMP/just-bin"
+          curl --fail --location --silent --show-error \
+            https://github.com/casey/just/releases/download/1.58.0/just-1.58.0-x86_64-unknown-linux-musl.tar.gz \
+            --output "$archive"
+          echo "4a5cc2f53e6f0f8c59092a6cc38291eb729d46a7dd95d3ae582008881b84931d  $archive" | sha256sum --check
+          tar -xzf "$archive" -C "$RUNNER_TEMP/just-bin" just
+          echo "$RUNNER_TEMP/just-bin" >> "$GITHUB_PATH"
+      - name: Verify Just version
+        run: test "$(just --version)" = "just 1.58.0"
+      - name: Install locked JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Prepare the Python test environment
+        run: |
+          echo "XDG_CACHE_HOME=$RUNNER_TEMP/codex-studio-cache" >> "$GITHUB_ENV"
+          XDG_CACHE_HOME="$RUNNER_TEMP/codex-studio-cache" python3 workspaces/runtime/apps/server/src/install-cli.py --dev --bin-dir "$RUNNER_TEMP/codex-studio-bin"
+      - name: List facade recipes
+        run: just --list
+      - name: Focused JavaScript facade test
+        run: just test codex-studio-tooling
+      - name: Focused Rust facade test
+        run: just test studio-diagnostics
+      - name: Focused Python facade test
+        run: just test server test_codex_python

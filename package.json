@@ -26,12 +26,20 @@
     "lint:staged": "node workspaces/tooling/apps/repository-checks/check-code.mjs staged lint",
     "format:staged": "node workspaces/tooling/apps/repository-checks/check-code.mjs staged format",
     "check:staged": "node workspaces/tooling/apps/repository-checks/check-code.mjs staged",
-    "test:pre-commit": "node workspaces/tooling/apps/repository-checks/tests/pre-commit-hook.mjs"
+    "test:pre-commit": "node workspaces/tooling/apps/repository-checks/tests/pre-commit-hook.mjs",
+    "check:tooling": "pnpm run test:tooling",
+    "test:tooling": "node --test workspaces/tooling/apps/repository-checks/tests/facade.test.mjs"
   },
   "devDependencies": {
     "openapi-typescript": "7.13.0",
     "oxfmt": "0.71.0",
     "oxlint": "1.86.0"
   },
-  "packageManager": "pnpm@12.10.1"
+  "packageManager": "pnpm@12.10.1",
+  "codexStudioChecks": {
+    "test": "test:tooling",
+    "check": [
+      "check:tooling"
+    ]
+  }
 }

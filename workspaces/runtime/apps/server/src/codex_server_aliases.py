@@ -8,15 +8,14 @@ import sqlite3
 from typing import Any
 from urllib.parse import urlsplit
 
+DEFAULT_LOCAL_SERVER_ALIAS = "LOC"
+
 
 def default_alias(server: dict[str, Any], used: Iterable[str]) -> str:
     taken = set(used)
     address = urlsplit(server.get("origin") or "")
     host = (address.hostname or "").split(".")[0]
-    name = f'{server.get("label", "")} {host}'.lower()
-    preferred = ("MAC" if server["id"] == "local" else
-                 "MBP" if "igor-mbp" in name else
-                 ("WIN" if address.port == 8443 else "WSL") if "kukuka-win" in name else
+    preferred = (DEFAULT_LOCAL_SERVER_ALIAS if server["id"] == "local" else
                  (re.sub("[^a-zA-Z]", "", host)[:3] or
                   re.sub("[^a-zA-Z]", "", server.get("label", ""))[:3] or "SRV").upper())
     if preferred not in taken:
@@ -30,7 +29,7 @@ def default_alias(server: dict[str, Any], used: Iterable[str]) -> str:
 
 def ensure_aliases(db: sqlite3.Connection, local: dict[str, Any]) -> dict[str, str]:
     row = db.execute("SELECT alias FROM runtime_access_local_alias WHERE id=1").fetchone()
-    local_alias = row[0] if row else "MAC"
+    local_alias = row[0] if row else DEFAULT_LOCAL_SERVER_ALIAS
     peers = [json.loads(row[0]) for row in db.execute(
         "SELECT record FROM runtime_access_clients WHERE json_extract(record,'$.kind')='server' ORDER BY id")]
     used = {local_alias, *(peer["alias"] for peer in peers if peer.get("alias"))}

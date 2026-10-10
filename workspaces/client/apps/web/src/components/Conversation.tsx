@@ -1958,7 +1958,12 @@ export default function Conversation(p: {
                           />
                           {!items.length && (
                             <span className="composer-context-values">
-                              <span>
+                              <span
+                                title={
+                                  p.limitsAccountLabel ||
+                                  "Account name unavailable"
+                                }
+                              >
                                 {p.limitsAccountLabel ||
                                   "Account name unavailable"}
                               </span>

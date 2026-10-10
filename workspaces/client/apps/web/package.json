@@ -36,7 +36,8 @@
     "test:responsiveness": "pnpm run test:unit && pnpm run build && PLAYWRIGHT_INCLUDE_SPECIAL=1 playwright test --config playwright.config.ts --project=client --project=performance draft-render-performance-browser.spec.mjs transcript-render-performance-browser.spec.mjs completed-markdown-cache-browser.spec.mjs scroll-restart-browser.spec.mjs ui-responsiveness-browser.spec.mjs",
     "storybook": "STORYBOOK_DISABLE_TELEMETRY=1 storybook dev --config-dir .storybook --disable-telemetry --host 127.0.0.1 --no-open",
     "build-storybook": "STORYBOOK_DISABLE_TELEMETRY=1 storybook build --config-dir .storybook --disable-telemetry",
-    "test:storybook": "STORYBOOK_DISABLE_TELEMETRY=1 vitest run --config vitest.config.ts --project=storybook"
+    "test:storybook": "STORYBOOK_DISABLE_TELEMETRY=1 vitest run --config vitest.config.ts --project=storybook",
+    "typecheck:focused": "tsc --noEmit"
   },
   "dependencies": {
     "@mantine/core": "9.6.0",
@@ -72,5 +73,12 @@
     "typescript": "^5.9.0",
     "vite": "8.2.2",
     "vitest": "5.0.3"
+  },
+  "codexStudioChecks": {
+    "test": "test:unit",
+    "check": [
+      "typecheck:focused",
+      "test:unit"
+    ]
   }
 }

@@ -15,12 +15,20 @@
     "test:native": "pnpm exec install-electron && pnpm exec node test.mjs",
     "test:server-frames": "pnpm exec install-electron && pnpm exec node server-frames-native.mjs",
     "test:server-access": "pnpm exec install-electron && pnpm exec node server-access-native.mjs",
-    "test:package": "pnpm exec node package-test.mjs"
+    "test:package": "pnpm exec node package-test.mjs",
+    "test:unit": "vitest run --config vitest.config.mjs",
+    "check:focused": "vitest run --config vitest.config.mjs"
   },
   "devDependencies": {
     "@electron/packager": "20.3.0",
     "electron": "44.2.0",
     "playwright-core": "1.63.0",
     "vitest": "5.0.3"
+  },
+  "codexStudioChecks": {
+    "test": "test:unit",
+    "check": [
+      "check:focused"
+    ]
   }
 }

@@ -29,6 +29,7 @@ export default function CombinedServerSidebar({
   notify,
   notice,
   unreadCount,
+  hideOldChatsThreshold,
 }: {
   model: MergedSidebar;
   backends: ReadonlyMap<string, SidebarBackend>;
@@ -47,6 +48,7 @@ export default function CombinedServerSidebar({
   notify: (message: string) => void;
   notice: string;
   unreadCount: number;
+  hideOldChatsThreshold: number;
 }) {
   const [marking, setMarking] = useState(new Set<string>());
   const visualSession = useRef(createSidebarVisualSession());
@@ -112,6 +114,7 @@ export default function CombinedServerSidebar({
       notify={notify}
       notice={notice}
       unreadCount={unreadCount}
+      hideOldChatsThreshold={hideOldChatsThreshold}
       refresh={refresh}
       open={(id) => {
         try {

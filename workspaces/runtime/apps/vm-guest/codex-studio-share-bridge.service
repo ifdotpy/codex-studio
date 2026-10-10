@@ -1,0 +1,19 @@
+[Unit]
+Description=Studio file share bridge from the Mac over vsock
+After=codex-studio-share.service
+
+[Service]
+Type=simple
+DynamicUser=yes
+ExecStart=/usr/bin/python3 /opt/codex-studio/vm/guest/share_bridge.py
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_VSOCK AF_INET
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

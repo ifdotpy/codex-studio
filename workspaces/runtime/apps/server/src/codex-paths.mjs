@@ -14,11 +14,15 @@ export function outsideClaude(path) {
     try {
       const real = realpathSync(ancestor);
       if (real.split("/").includes(".claude")) {
-        throw new Error(`Codex agent data must be outside .claude: ${absolute}`);
+        throw new Error(
+          `Codex agent data must be outside .claude: ${absolute}`,
+        );
       }
       // A missing suffix can itself contain .claude.
       if (absolute.slice(ancestor.length).split("/").includes(".claude")) {
-        throw new Error(`Codex agent data must be outside .claude: ${absolute}`);
+        throw new Error(
+          `Codex agent data must be outside .claude: ${absolute}`,
+        );
       }
       return absolute;
     } catch (error) {

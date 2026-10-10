@@ -328,6 +328,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/agents/finder-view": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Finder View
+     * @description Where Finder shows the chat's files. Reads saved records only; never mounts or calls the VM.
+     */
+    get: operations["finder_view_api_agents_finder_view_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/analytics": {
     parameters: {
       query?: never;
@@ -2813,6 +2833,8 @@ export interface components {
       epoch?: number | null;
       /** Error */
       error?: components["schemas"]["NativeProviderError"] | string | null;
+      /** Executionmode */
+      executionMode?: ("vm" | "native") | null;
       /** Fastmode */
       fastMode?: boolean | null;
       /** Hasapproval */
@@ -2821,6 +2843,8 @@ export interface components {
       hasQuestion?: boolean | null;
       /** Hasunread */
       hasUnread?: boolean | null;
+      /** Hostprojectpath */
+      hostProjectPath?: string | null;
       /** Id */
       id: string;
       /** Imageworkspace */
@@ -2861,6 +2885,16 @@ export interface components {
       lastReadAt?: number | null;
       /** Launcheralive */
       launcherAlive?: boolean | null;
+      /** Layrerror */
+      layrError?: string | null;
+      /** Layrline */
+      layrLine?: string | null;
+      /** Layrprojectid */
+      layrProjectId?: string | null;
+      /** Layrready */
+      layrReady?: boolean | null;
+      /** Layrstateid */
+      layrStateId?: string | null;
       /** Manualname */
       manualName?: boolean | null;
       /** Model */
@@ -2965,7 +2999,7 @@ export interface components {
       /** Workspacebackend */
       workspaceBackend?: ("asif" | "vm") | null;
       /** Workspacemode */
-      workspaceMode?: ("image" | "worktree" | "shared") | null;
+      workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
       /** Workspaceoperation */
       workspaceOperation?: string | null;
       /** Worktree */
@@ -3161,6 +3195,8 @@ export interface components {
       epoch?: number | null;
       /** Error */
       error?: components["schemas"]["NativeProviderError"] | string | null;
+      /** Executionmode */
+      executionMode?: ("vm" | "native") | null;
       /** Fastmode */
       fastMode?: boolean | null;
       /** Hasapproval */
@@ -3169,6 +3205,8 @@ export interface components {
       hasQuestion?: boolean | null;
       /** Hasunread */
       hasUnread?: boolean | null;
+      /** Hostprojectpath */
+      hostProjectPath?: string | null;
       /** Id */
       id: string;
       /** Imageworkspace */
@@ -3209,6 +3247,16 @@ export interface components {
       lastReadAt?: number | null;
       /** Launcheralive */
       launcherAlive?: boolean | null;
+      /** Layrerror */
+      layrError?: string | null;
+      /** Layrline */
+      layrLine?: string | null;
+      /** Layrprojectid */
+      layrProjectId?: string | null;
+      /** Layrready */
+      layrReady?: boolean | null;
+      /** Layrstateid */
+      layrStateId?: string | null;
       /** Manualname */
       manualName?: boolean | null;
       /** Model */
@@ -3315,7 +3363,7 @@ export interface components {
       /** Workspacebackend */
       workspaceBackend?: ("asif" | "vm") | null;
       /** Workspacemode */
-      workspaceMode?: ("image" | "worktree" | "shared") | null;
+      workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
       /** Workspaceoperation */
       workspaceOperation?: string | null;
       /** Worktree */
@@ -4586,6 +4634,8 @@ export interface components {
       epoch?: number | null;
       /** Error */
       error?: components["schemas"]["NativeProviderError"] | string | null;
+      /** Executionmode */
+      executionMode?: ("vm" | "native") | null;
       /** Fastmode */
       fastMode?: boolean | null;
       /** Hasapproval */
@@ -4594,6 +4644,8 @@ export interface components {
       hasQuestion?: boolean | null;
       /** Hasunread */
       hasUnread?: boolean | null;
+      /** Hostprojectpath */
+      hostProjectPath?: string | null;
       /** Id */
       id: string;
       /** Imageworkspace */
@@ -4634,6 +4686,16 @@ export interface components {
       lastReadAt?: number | null;
       /** Launcheralive */
       launcherAlive?: boolean | null;
+      /** Layrerror */
+      layrError?: string | null;
+      /** Layrline */
+      layrLine?: string | null;
+      /** Layrprojectid */
+      layrProjectId?: string | null;
+      /** Layrready */
+      layrReady?: boolean | null;
+      /** Layrstateid */
+      layrStateId?: string | null;
       /** Manualname */
       manualName?: boolean | null;
       /** Model */
@@ -4740,7 +4802,7 @@ export interface components {
       /** Workspacebackend */
       workspaceBackend?: ("asif" | "vm") | null;
       /** Workspacemode */
-      workspaceMode?: ("image" | "worktree" | "shared") | null;
+      workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
       /** Workspaceoperation */
       workspaceOperation?: string | null;
       /** Worktree */
@@ -5738,6 +5800,8 @@ export interface components {
       /** Tokenbudget */
       tokenBudget?: number | null;
       worker_defaults?: components["schemas"]["WorkerDefaults"] | null;
+      /** Workspacemode */
+      workspaceMode?: ("layr" | "image" | "worktree") | null;
       /** Yolo Mode */
       yolo_mode?: boolean | null;
     };
@@ -5783,6 +5847,12 @@ export interface components {
       account_key?: string | null;
       /** Cwd */
       cwd?: string | null;
+      /** Daybreak Enabled */
+      daybreak_enabled?: boolean | null;
+      /** Effort */
+      effort?: string | null;
+      /** Fast Mode */
+      fast_mode?: boolean | null;
       /** Id */
       id?: string | null;
       /** Model */
@@ -5797,6 +5867,10 @@ export interface components {
       project_server_id?: string | null;
       /** Reuse Empty */
       reuse_empty?: boolean | null;
+      review_defaults?: components["schemas"]["ReviewDefaults"] | null;
+      worker_defaults?: components["schemas"]["WorkerDefaults"] | null;
+      /** Workspacemode */
+      workspaceMode?: ("layr" | "image" | "worktree") | null;
       /** Yolo Mode */
       yolo_mode?: boolean | null;
     };
@@ -5857,6 +5931,10 @@ export interface components {
       /** Backendbuild */
       backendBuild: string;
       browser: components["schemas"]["BrowserStatus"] | null;
+      /** Linuxvm */
+      linuxVm?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
       liveUpdate: components["schemas"]["LiveUpdateStatus"] | null;
       /** Mobileprotocol */
       mobileProtocol: number;
@@ -7427,6 +7505,23 @@ export interface components {
     NativeErrorAccount: {
       /** Error */
       error: string;
+    };
+    /**
+     * NativeFinderViewResponse
+     * @description A native chat works in its Mac folder.
+     */
+    NativeFinderViewResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /**
+       * Kind
+       * @constant
+       */
+      kind: "native";
+      /** Path */
+      path: string | null;
     };
     /**
      * NativeNoticeDto
@@ -12752,6 +12847,30 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
+    /**
+     * VmFinderViewResponse
+     * @description A VM chat: the read-only ~/Studio view of its layr project. The path is set only when mounted.
+     */
+    VmFinderViewResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Error */
+      error: string | null;
+      /**
+       * Kind
+       * @constant
+       */
+      kind: "vm";
+      /** Path */
+      path: string | null;
+      /**
+       * State
+       * @enum {string}
+       */
+      state: "mounted" | "unmounted" | "failed";
+    };
     /** VoiceApprovalResponse */
     VoiceApprovalResponse: {
       /** Syncentities */
@@ -14960,6 +15079,57 @@ export interface operations {
       };
       /** @description JSON required */
       415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  finder_view_api_agents_finder_view_get: {
+    parameters: {
+      query: {
+        agent: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["NativeFinderViewResponse"]
+            | components["schemas"]["VmFinderViewResponse"];
+        };
+      };
+      /** @description Invalid request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Local origin and session token required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Not Found */
+      404: {
         headers: {
           [name: string]: unknown;
         };

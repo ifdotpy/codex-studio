@@ -66,3 +66,17 @@
   justify-content: flex-end;
   gap: 8px;
 }
+.new-chat-run-mode {
+  display: grid;
+  gap: 6px;
+}
+.new-chat-model-settings {
+  margin: 0;
+  padding: 4px 0;
+}
+.new-chat-model-settings .empty-chat-setting {
+  min-width: 0;
+}
+.new-chat-model-settings .execution-menu {
+  max-width: 100%;
+}

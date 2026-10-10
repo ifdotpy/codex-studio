@@ -184,15 +184,16 @@ class ProjectLocationTests(unittest.TestCase):
         resolve.assert_called_with(self.project['path'], 'logical-base')
         self.assertEqual(self.home.agent(receipt['agents'][0]['id'])['workerBaseRef'], 'logical-base')
 
-    def test_bound_chat_worker_environment_uses_abstract_project(self) -> None:
+    def test_bound_chat_workers_stay_on_the_host(self) -> None:
         from codex_project_locations import settings_key
         from codex_worker_environment import select
         project_id = self.abstract_with_local_location('settings-environment')
-        self.home.projects({'action': 'set_worker_environment', 'path': project_id, 'environment': 'linux', 'expected_revision': 0})
+        with self.assertRaisesRegex(ValueError, 'Choose a layr chat'):
+            self.home.projects({'action': 'set_worker_environment', 'path': project_id, 'environment': 'linux', 'expected_revision': 0})
         chat = self.bound_chat(project_id)
         with self.home.read_db() as db:
             key = settings_key(self.home, db, chat['cwd'], chat)
-        self.assertEqual(select(self.home, {}, chat['cwd'], project_key=key), 'linux')
+        self.assertEqual(select(self.home, {}, chat['cwd'], project_key=key), 'host')
 
     def test_logical_folder_with_a_bound_chat_cannot_be_removed(self) -> None:
         import uuid

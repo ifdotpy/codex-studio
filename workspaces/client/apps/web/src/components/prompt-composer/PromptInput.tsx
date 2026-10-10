@@ -155,10 +155,11 @@ export default function PromptInput(p: {
         }
         disabled={!p.canSend}
         value={p.value}
+        autosize
+        minRows={INPUT_ROWS}
         onChange={(event) => p.onChange(event.currentTarget.value)}
         error={p.draftTooLong}
         aria-describedby={p.draftTooLong ? "draft-length-error" : undefined}
-        rows={INPUT_ROWS}
         onClick={skills.updateRange}
         onBlur={skills.blur}
         onKeyUp={skills.updateRange}

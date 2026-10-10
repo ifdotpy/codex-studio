@@ -21,12 +21,21 @@ type Pending = {
   ownerId?: string;
   body: Extract<PostBody<"/api/projects">, { action: "reorder" }>;
 };
+
+export function sidebarOrderCanWrite(
+  sessionToken: string | undefined,
+  available: boolean | undefined,
+): boolean {
+  return available !== false && (!!sessionToken || available === true);
+}
+
 export function useSidebarOrder(
   key: string,
   server: ServerOrder | undefined,
   refresh?: () => Promise<void>,
   notify?: (text: string) => void,
   services: SidebarServices = localSidebarServices,
+  sessionToken?: string,
 ) {
   const { saved, save, storage: localStorage } = services.cache;
   const requestBackend = useRef<SidebarBackend | null>(null);
@@ -47,7 +56,12 @@ export function useSidebarOrder(
     setOrder(saved(key, {}));
   }, [key]);
   useEffect(() => {
-    if (!server) return;
+    const migrationTarget = { kind: "order" as const, group: "projects" };
+    if (
+      !server ||
+      !sidebarOrderCanWrite(sessionToken, services.available?.(migrationTarget))
+    )
+      return;
     if (server.revision > revision.current) {
       revision.current = server.revision;
       if (server.groups !== null) {
@@ -60,7 +74,12 @@ export function useSidebarOrder(
     if (pending?.body) {
       void send(pending);
     } else if (server.groups === null) {
+      const backend = services.owner(migrationTarget);
+      requestBackend.current = backend;
       void send({
+        ...(backend.ownerId === services.cache.ownerId
+          ? {}
+          : { ownerId: backend.ownerId }),
         body: {
           action: "reorder",
           request_id: crypto.randomUUID(),
@@ -72,10 +91,11 @@ export function useSidebarOrder(
     }
     // The server revision controls this effect. The request keeps its exact body.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, server?.revision, server?.groups]);
+  }, [key, server?.revision, server?.groups, sessionToken, services]);
   const send = async (request: Pending, optimistic?: Order) => {
     if (busy.current) return false;
     busy.current = true;
+    let clearPending = false;
     try {
       localStorage.setItem(pendingKey, JSON.stringify(request));
       if (optimistic) setOrder(optimistic);
@@ -88,16 +108,18 @@ export function useSidebarOrder(
       });
       if (!("revision" in result))
         throw new Error("Invalid sidebar order response");
-      localStorage.removeItem(pendingKey);
-      requestBackend.current = null;
       if (result.revision >= revision.current) {
         revision.current = result.revision;
         setOrder(result.groups || {});
         save(key, result.groups || {});
       }
-      void refresh?.().catch((error) =>
-        notify?.(`Could not refresh sidebar order: ${errorText(error)}`),
-      );
+      try {
+        await refresh?.();
+      } catch (error) {
+        notify?.(`Could not refresh sidebar order: ${errorText(error)}`);
+      }
+      requestBackend.current = null;
+      clearPending = true;
       return true;
     } catch (error) {
       if (
@@ -106,8 +128,8 @@ export function useSidebarOrder(
         error.status < 500 &&
         error.status !== 408
       ) {
-        localStorage.removeItem(pendingKey);
         requestBackend.current = null;
+        clearPending = true;
         setOrder(server?.groups || {});
         notify?.(
           error.status === 409
@@ -127,6 +149,7 @@ export function useSidebarOrder(
       return false;
     } finally {
       busy.current = false;
+      if (clearPending) localStorage.removeItem(pendingKey);
     }
   };
   const rank = (group: string, id: string) => {
@@ -143,7 +166,14 @@ export function useSidebarOrder(
     if (from === to || !ids.includes(from) || !ids.includes(to)) return;
     const next = ids.filter((id) => id !== from);
     next.splice(next.indexOf(to) + Number(after), 0, from);
-    if (!server || server.groups === null || busy.current) return;
+    const target = { kind: "order" as const, group };
+    if (
+      !sidebarOrderCanWrite(sessionToken, services.available?.(target)) ||
+      !server ||
+      server.groups === null ||
+      busy.current
+    )
+      return;
     if (saved<Pending | null>(pendingKey, null)) {
       notify?.(
         "Retry the saved sidebar order request before moving another item.",
@@ -151,7 +181,7 @@ export function useSidebarOrder(
       return;
     }
     const value = { ...order, [group]: next };
-    if (services.available && !services.available({ kind: "order", group })) {
+    if (services.available && !services.available(target)) {
       notify?.("The sidebar server is offline or unavailable.");
       return;
     }

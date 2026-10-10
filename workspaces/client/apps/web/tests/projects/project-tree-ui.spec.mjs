@@ -12,7 +12,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-test("project tree ui", async ({ page: runnerPage }) => {
+test("project pointer and keyboard order persist without collapsing", async ({
+  page: runnerPage,
+}) => {
   test.setTimeout(240_000);
   const skill = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const { _electron } = createRequire(
@@ -122,7 +124,24 @@ test("project tree ui", async ({ page: runnerPage }) => {
       );
     }
     const errors = [];
+    const sidebarMigrations = [];
     page.on("pageerror", (e) => errors.push(e.message));
+    page.on("request", (request) => {
+      if (
+        request.method() !== "POST" ||
+        new URL(request.url()).pathname !== "/api/projects"
+      )
+        return;
+      try {
+        const body = request.postDataJSON();
+        if (body.action === "reorder" && body.migration)
+          sidebarMigrations.push({
+            token: request.headers()["x-canvas-token"],
+          });
+      } catch {
+        // Other project requests need not contain JSON migration bodies.
+      }
+    });
     if (process.env.CODEX_TEST_DESKTOP) {
       await page.waitForURL(url + "/");
       await page.locator("#message").waitFor();
@@ -180,17 +199,32 @@ test("project tree ui", async ({ page: runnerPage }) => {
       cwd: folders["Newcrom Case"],
     });
     await post("/api/rename", { id: legal.id, name: "Review evidence" });
+    const stateDir = (await readTestState(url)).stateDir;
+    await page.evaluate(
+      ({ stateDir, path }) =>
+        localStorage.setItem(
+          `codex-project-tree:${stateDir}`,
+          JSON.stringify({ [path]: true }),
+        ),
+      { stateDir, path: folders.assistant },
+    );
     await page.reload();
     const group = (name) =>
       page.locator(".sidebar-project").filter({
         has: page.locator(".project-tree-toggle", { hasText: name }),
       });
     await group("assistant").waitFor();
+    const projectsHeading = page.locator(".projects-heading-label");
+    assert.equal(await projectsHeading.textContent(), "Projects");
+    assert.equal(await projectsHeading.getAttribute("aria-expanded"), null);
+    const projectName = group("assistant").locator(".project-tree-toggle");
+    assert.equal(await projectName.evaluate((node) => node.tagName), "BUTTON");
+    assert.equal(await projectName.getAttribute("aria-expanded"), null);
+    await projectName.click();
     const initialChats = group("assistant").locator("[data-chat]");
-    await expect(
-      initialChats,
-      "Compact projects keep all recent chats.",
-    ).toHaveCount(7);
+    // The list fills in after reload, so wait for the full set before counting.
+    await waitFor(async () => (await initialChats.count()) === 7);
+    assert.equal(await initialChats.count(), 7);
     assert.equal(
       await group("litos").getByText("No chats", { exact: true }).count(),
       1,
@@ -219,6 +253,12 @@ test("project tree ui", async ({ page: runnerPage }) => {
     await waitFor(
       async () =>
         (await readTestState(url)).runtime.sidebarOrder?.groups !== null,
+    );
+    await waitFor(async () => sidebarMigrations.length > 0);
+    assert.ok(sidebarMigrations.length > 0, "Sidebar migration was sent");
+    assert.ok(
+      sidebarMigrations.every(({ token }) => token),
+      "Sidebar migration waits for the session token",
     );
     if (!process.env.CODEX_TEST_DESKTOP) {
       const migrated = (await readTestState(url)).runtime.sidebarOrder;
@@ -250,6 +290,16 @@ test("project tree ui", async ({ page: runnerPage }) => {
         movedProjects.indexOf(folders.assistant),
     );
     assert.notDeepEqual(movedProjects, beforeProjects);
+    await waitForOrderReceipt();
+    const assistantProject = group("assistant").locator(".project-tree-toggle");
+    await assistantProject.focus();
+    await page.keyboard.press("Alt+ArrowUp");
+    const keyboardProjects = await projectOrder();
+    assert.ok(
+      keyboardProjects.indexOf(folders.assistant) <
+        keyboardProjects.indexOf(folders.litos),
+    );
+    await waitForOrderReceipt();
     if (secondPage) {
       await expect
         .poll(() =>
@@ -257,7 +307,7 @@ test("project tree ui", async ({ page: runnerPage }) => {
             .locator(".sidebar-project")
             .evaluateAll((rows) => rows.map((row) => row.dataset.projectPath)),
         )
-        .toEqual(movedProjects);
+        .toEqual(keyboardProjects);
       await secondPage.reload();
       await expect
         .poll(() =>
@@ -265,7 +315,7 @@ test("project tree ui", async ({ page: runnerPage }) => {
             .locator(".sidebar-project")
             .evaluateAll((rows) => rows.map((row) => row.dataset.projectPath)),
         )
-        .toEqual(movedProjects);
+        .toEqual(keyboardProjects);
     }
     const beforeChats = await chatOrder();
     const chatButton = (id) => page.locator(`[data-chat="${id}"]`);
@@ -387,8 +437,8 @@ test("project tree ui", async ({ page: runnerPage }) => {
     await group("assistant").waitFor();
     assert.deepEqual(
       await projectOrder(),
-      movedProjects,
-      "Project order survives reload",
+      keyboardProjects,
+      "Project order after pointer and keyboard moves survives reload",
     );
 
     assert.deepEqual(
@@ -403,10 +453,16 @@ test("project tree ui", async ({ page: runnerPage }) => {
     await waitFor(
       async () => !(await state()).find((a) => a.id === pinnedId).pinned,
     );
-    await group("assistant").locator(".project-tree-toggle").click();
-    assert.equal(await group("assistant").locator("[data-chat]").count(), 0);
-    // A project with the selected chat expands again after reload (e4ef04aa).
-    // Select another project before reload to test collapsed-state persistence.
+    assert.equal(await assistantProject.getAttribute("aria-expanded"), null);
+    const assistantChatCount = await group("assistant")
+      .locator("[data-chat]")
+      .count();
+    await assistantProject.click();
+    assert.equal(
+      await group("assistant").locator("[data-chat]").count(),
+      assistantChatCount,
+      "Clicking a project name leaves its chats visible",
+    );
     await page.locator(`[data-chat="${legal.id}"]`).click();
     await page.reload();
     await group("assistant").waitFor();
@@ -414,9 +470,12 @@ test("project tree ui", async ({ page: runnerPage }) => {
       await group("assistant")
         .locator(".project-tree-toggle")
         .getAttribute("aria-expanded"),
-      "false",
+      null,
     );
-    assert.equal(await group("assistant").locator("[data-chat]").count(), 0);
+    assert.equal(
+      await group("assistant").locator("[data-chat]").count(),
+      assistantChatCount,
+    );
     await page
       .getByLabel("Filter projects and chats")
       .fill("Review component 2");
@@ -563,6 +622,17 @@ test("project tree ui", async ({ page: runnerPage }) => {
     assert.equal(movedChat.accountKey, sourceChat.accountKey);
     const folderHeading = (id) =>
       page.locator(`[data-folder-id="${id}"] > .project-tree-heading`);
+    const workFolderToggle = folderHeading(workFolder).locator(
+      ".project-tree-toggle",
+    );
+    assert.equal(await workFolderToggle.getAttribute("aria-expanded"), "true");
+    await workFolderToggle.click();
+    assert.equal(await workFolderToggle.getAttribute("aria-expanded"), "false");
+    await page
+      .locator(`[data-folder-id="${workFolder}"] [data-chat]`)
+      .waitFor({ state: "detached" });
+    await workFolderToggle.click();
+    assert.equal(await workFolderToggle.getAttribute("aria-expanded"), "true");
     const moveSource = () => page.locator(`[data-chat="${sourceChat.id}"]`);
     const currentSource = async () =>
       (await state()).find((a) => a.id === sourceChat.id);

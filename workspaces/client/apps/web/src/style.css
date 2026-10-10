@@ -267,23 +267,25 @@ p {
   padding: 0 24px;
   border-bottom: 1px solid var(--line);
 }
-.desktop-mac .workspace-header,
-.desktop-mac .sidebar-header {
+.desktop-inset-titlebar .workspace-header,
+.desktop-inset-titlebar .sidebar-header {
   -webkit-app-region: drag;
 }
-.desktop-mac .workspace-header :is(button, a, input, select, [role="button"]),
-.desktop-mac .sidebar-header :is(button, a) {
+.desktop-inset-titlebar
+  .workspace-header
+  :is(button, a, input, select, [role="button"]),
+.desktop-inset-titlebar .sidebar-header :is(button, a) {
   -webkit-app-region: no-drag;
 }
-.desktop-mac .sidebar-header {
+.desktop-inset-titlebar .sidebar-header {
   height: 60px;
   padding: 20px 12px 8px;
 }
-.desktop-mac #sidebar {
+.desktop-inset-titlebar #sidebar {
   padding-top: 0;
 }
 @media (max-width: 760px) {
-  .desktop-mac .workspace-header {
+  .desktop-inset-titlebar .workspace-header {
     padding-left: 96px;
   }
 }
@@ -558,9 +560,14 @@ p {
   display: none;
 }
 #composer {
+  --composer-visible-ratio: 0.6;
+  --composer-chrome-allowance: 69px;
+  display: flex;
+  flex-direction: column;
   width: calc(100% - 64px);
   max-width: 736px;
-  flex-shrink: 0;
+  flex-shrink: 1;
+  min-height: 0;
   margin: 8px auto 0;
   padding: 10px 12px 8px;
   background: light-dark(#f4f5f8, #26262e);
@@ -572,11 +579,21 @@ p {
 #composer:focus-within {
   border-color: light-dark(#737b8c, #636375);
 }
+.composer-bar {
+  flex-shrink: 0;
+}
 #message {
+  max-height: calc(
+    var(--mobile-viewport-height, 100dvh) * var(--composer-visible-ratio) -
+      var(--composer-chrome-allowance)
+  );
   padding: 0;
   line-height: 1.65;
   font-size: 14px;
   color: var(--text);
+  overflow-y: auto;
+  flex-shrink: 1;
+  resize: none;
 }
 #message::placeholder {
   color: light-dark(#515a6c, #9696a5);
@@ -840,9 +857,14 @@ p {
 }
 /* Structured tasks and dialogs use Mantine controls and focus management. */
 #requests {
-  flex-shrink: 0;
-  max-height: 32%;
+  --requests-visible-ratio: 0.5;
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: calc(
+    var(--mobile-viewport-height, 100dvh) * var(--requests-visible-ratio)
+  );
   overflow: auto;
+  overscroll-behavior: contain;
   padding: 0 max(32px, calc((100% - 736px) / 2));
 }
 #requests:empty {
@@ -1832,6 +1854,7 @@ html body #root:has(.terminal-dock) {
     scrollbar-gutter: auto;
   }
   #composer {
+    --composer-chrome-allowance: 143px;
     width: calc(100% - 16px);
     margin-bottom: 0;
     padding: 8px 10px;
