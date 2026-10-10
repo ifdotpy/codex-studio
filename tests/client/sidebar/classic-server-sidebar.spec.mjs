@@ -40,7 +40,7 @@ for (const viewport of [
         },
         { origin: remote.invitation.origin, destination: remote.origin },
       );
-      await page.goto(local.origin);
+      await page.goto(local.origin + "/?studio-navigation=classic");
       await expect(page.getByLabel("Studio server")).toHaveValue("local");
       await expect(page.locator(".server-sidebar")).toHaveCount(0);
       const localFrame = page.frameLocator('iframe[title="Studio on Local"]');

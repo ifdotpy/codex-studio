@@ -1,10 +1,8 @@
-import { serverLocalStorage as localStorage } from "../servers/storage";
+import { useSidebarBackend } from "./sidebar/services";
 import { useRef, useState } from "react";
 import {
-  post,
   ApiError,
   errorText,
-  saved as readSaved,
   type ApiPostPath,
   type PostBody,
   type PostResult,
@@ -24,6 +22,9 @@ export function useProjectSave<Path extends ApiPostPath>(
   validate?: (result: PostResult<Path>) => void,
   storageKey?: string,
 ) {
+  // A retry uses the server connection selected when this form opened.
+  const backend = useRef(useSidebarBackend()).current;
+  const { post, saved: readSaved, storage: localStorage } = backend;
   type StoredRequest = {
     body: PostBody<Path>;
     acknowledged: boolean;

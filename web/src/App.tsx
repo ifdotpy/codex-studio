@@ -1871,7 +1871,9 @@ export default function App() {
       notify(errorText(error));
       return;
     }
-    const project = projects.items.find((row) => row.id === projectId);
+    const project = projects.items.find(
+      (row) => row.id === projectId || row.path === projectId,
+    );
     if (!project?.path || !project.name) return;
     setSidebar(false);
     setModal({
@@ -1964,6 +1966,35 @@ export default function App() {
       )}
     </Modal>
   );
+  const openSidebarProjectAccount = (path: string) => {
+    if (!data) return;
+    setSidebar(false);
+    setModal({
+      title: "Project settings",
+      body: (
+        <ProjectAccount
+          path={path}
+          project={data.runtime?.projects?.find((item) => item.path === path)}
+          accounts={accounts.data}
+          defaultAccountKey={
+            data.runtime?.projects
+              ?.filter(
+                (item) =>
+                  typeof item.path === "string" &&
+                  (path === item.path ||
+                    path.startsWith(item.path.replace(/\/$/, "") + "/")),
+              )
+              .sort((a, b) => (b.path?.length || 0) - (a.path?.length || 0))[0]
+              ?.accountKey || accounts.data.defaultAccountKey
+          }
+          saved={async () => {
+            setModal(null);
+            void refresh().catch((error) => notify(errorText(error)));
+          }}
+        />
+      ),
+    });
+  };
   useServerFrame(
     data,
     opened,
@@ -1975,7 +2006,7 @@ export default function App() {
       } else if (command.action === "new-chat")
         void newChat(
           command.path,
-          undefined,
+          command.folder,
           undefined,
           command.projectId && command.projectServerId
             ? {
@@ -1984,7 +2015,27 @@ export default function App() {
               }
             : undefined,
         );
-      else if (command.action === "add-project") openAddProject();
+      else if (command.action === "refresh") return refresh(false);
+      else if (command.action === "prepare-chat") prepareChat(command.id);
+      else if (command.action === "mark-unread") {
+        const agent = data?.threads.find(
+          (row) =>
+            row.id === command.id &&
+            row.threadId === command.threadId &&
+            row.lastCompletedTurn === command.turnId,
+        );
+        if (agent) return readState.markUnread(agent);
+      } else if (command.action === "remove-chat")
+        remove(command.id, command.room);
+      else if (command.action === "change-project") {
+        const agent = data?.threads.find((row) => row.id === command.id);
+        if (agent) folders(agent);
+      } else if (command.action === "project-account")
+        openSidebarProjectAccount(command.path);
+      else if (command.action === "new-shared-chat") {
+        setSidebar(false);
+        setSharedCreate({ path: command.path });
+      } else if (command.action === "add-project") openAddProject();
       else if (command.action === "project-folders")
         openProjectFolders(command.projectId, command.server);
       else if (command.action === "settings") {
@@ -2018,6 +2069,7 @@ export default function App() {
         .map((agent) => agent.id),
     ),
     publicAccounts,
+    creating,
   );
   if (!data)
     return schemaMismatch ? (
@@ -2221,83 +2273,55 @@ export default function App() {
   };
   return (
     <>
-      <Sidebar
-        data={data}
-        opened={opened}
-        lead={lead}
-        open={open}
-        prepareChat={prepareChat}
-        newChat={(path, folder) => void newChat(path, folder)}
-        newSharedChat={(path) => {
-          setSidebar(false);
-          setSharedCreate({ path });
-        }}
-        addProject={openAddProject}
-        changeProject={folders}
-        projectFolders={(path) => openProjectFolders(path)}
-        projectAccount={(path) => {
-          setSidebar(false);
-          setModal({
-            title: "Project settings",
-            body: (
-              <ProjectAccount
-                path={path}
-                project={data.runtime?.projects?.find(
-                  (item) => item.path === path,
-                )}
-                accounts={accounts.data}
-                defaultAccountKey={
-                  data.runtime?.projects
-                    ?.filter(
-                      (item) =>
-                        typeof item.path === "string" &&
-                        (path === item.path ||
-                          path.startsWith(item.path.replace(/\/$/, "") + "/")),
-                    )
-                    .sort(
-                      (a, b) => (b.path?.length || 0) - (a.path?.length || 0),
-                    )[0]?.accountKey || accounts.data.defaultAccountKey
-                }
-                saved={async () => {
-                  setModal(null);
-                  void refresh().catch((error) => notify(errorText(error)));
-                }}
-              />
-            ),
-          });
-        }}
-        creating={creating}
-        refresh={refresh}
-        notify={notify}
-        indicators={indicators}
-        markUnread={(a) => void readState.markUnread(a)}
-        markingRead={readState.marking}
-        hideOldChatsThreshold={studioPreferences.hideOldChatsThreshold}
-        rename={rename}
-        remove={remove}
-        mobile={sidebar}
-        collapsed={sidebarCollapsed}
-        onSearch={() => {
-          if (isServerView) {
-            window.parent.postMessage(
-              { kind: "studio-server-search" },
-              serverParentOrigin,
-            );
-            return;
-          }
-          setSidebar(false);
-          setSearchOpen(true);
-        }}
-        close={() => {
-          if (isServerView)
-            delete document.documentElement.dataset.serverProjects;
-          if (mobileClient) setSidebar(false);
-          else {
-            setSidebarCollapsed(true);
-            save("codex-sidebar-collapsed", true);
-          }
-        }}
-      />
+      {(!isServerView || isClassicServerView) && (
+        <Sidebar
+          data={data}
+          opened={opened}
+          lead={lead}
+          open={open}
+          prepareChat={prepareChat}
+          newChat={(path, folder) => void newChat(path, folder)}
+          newSharedChat={(path) => {
+            setSidebar(false);
+            setSharedCreate({ path });
+          }}
+          addProject={openAddProject}
+          changeProject={folders}
+          projectFolders={(path) => openProjectFolders(path)}
+          projectAccount={openSidebarProjectAccount}
+          creating={creating}
+          refresh={refresh}
+          notify={notify}
+          indicators={indicators}
+          markUnread={(a) => void readState.markUnread(a)}
+          markingRead={readState.marking}
+          hideOldChatsThreshold={studioPreferences.hideOldChatsThreshold}
+          rename={rename}
+          remove={remove}
+          mobile={sidebar}
+          collapsed={sidebarCollapsed}
+          onSearch={() => {
+            if (isServerView) {
+              window.parent.postMessage(
+                { kind: "studio-server-search" },
+                serverParentOrigin,
+              );
+              return;
+            }
+            setSidebar(false);
+            setSearchOpen(true);
+          }}
+          close={() => {
+            if (isServerView)
+              delete document.documentElement.dataset.serverProjects;
+            if (mobileClient) setSidebar(false);
+            else {
+              setSidebarCollapsed(true);
+              save("codex-sidebar-collapsed", true);
+            }
+          }}
+        />
+      )}
       <main
         className="workspace"
         data-show-message-avatars={studioPreferences.showMessageAvatars}

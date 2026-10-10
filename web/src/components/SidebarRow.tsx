@@ -55,6 +55,7 @@ type Bindings = HTMLAttributes<HTMLElement> & {
   "data-drop-edge"?: string;
 };
 type Props = {
+  disabled?: boolean;
   row: Agent;
   selected: boolean;
   serverAlias: string;
@@ -132,6 +133,7 @@ export default function SidebarRow(props: Props) {
       organizing={props.organizing}
       compact={props.compact}
       markingRead={props.markingRead}
+      disabled={props.disabled}
       bindingValues={bindingValues}
       events={events}
       actions={actions}
@@ -149,6 +151,7 @@ const SidebarRowView = memo(function SidebarRowView({
   organizing,
   compact,
   markingRead,
+  disabled = false,
   bindingValues,
   events,
   actions,
@@ -194,7 +197,7 @@ const SidebarRowView = memo(function SidebarRowView({
           className="row-pin-action"
           aria-label={`${row.pinned ? "Unpin" : "Pin"} ${row.name}`}
           title={row.pinned ? "Unpin chat" : "Pin chat"}
-          disabled={organizing}
+          disabled={organizing || disabled}
           onClick={() => actions.pin()}
         >
           {row.pinned ? <PinOff size={14} /> : <Pin size={14} />}
@@ -212,7 +215,7 @@ const SidebarRowView = memo(function SidebarRowView({
               if (e.key === "Escape") actions.cancelRename();
             }}
           />
-          <Button type="submit" aria-label="Save name">
+          <Button type="submit" aria-label="Save name" disabled={disabled}>
             Save
           </Button>
           <Button onClick={() => actions.cancelRename()}>Cancel</Button>
@@ -229,6 +232,7 @@ const SidebarRowView = memo(function SidebarRowView({
           </Menu.Target>
           <Menu.Dropdown>
             <Menu.Item
+              disabled={disabled}
               leftSection={<Pencil size={14} />}
               onClick={actions.beginRename}
             >
@@ -239,7 +243,10 @@ const SidebarRowView = memo(function SidebarRowView({
               leftSection={<Mail size={14} />}
               aria-label="Mark unread"
               disabled={
-                !a.readStateSupported || !hasCompletedResult(a) || markingRead
+                disabled ||
+                !a.readStateSupported ||
+                !hasCompletedResult(a) ||
+                markingRead
               }
               onClick={() => actions.unread()}
             >
@@ -259,6 +266,7 @@ const SidebarRowView = memo(function SidebarRowView({
             {a && (
               <>
                 <Menu.Item
+                  disabled={disabled}
                   leftSection={
                     a.pinned ? <PinOff size={14} /> : <Pin size={14} />
                   }
@@ -269,6 +277,7 @@ const SidebarRowView = memo(function SidebarRowView({
                 <Menu.Divider />
                 {a.cwd && (
                   <Menu.Item
+                    disabled={disabled}
                     leftSection={<Folder size={14} />}
                     onClick={actions.move}
                   >
@@ -278,7 +287,7 @@ const SidebarRowView = memo(function SidebarRowView({
                 {!compact && (
                   <Menu.Item
                     leftSection={<FolderOpen size={14} />}
-                    disabled={!!a.threadId || !!a.inFlight}
+                    disabled={disabled || !!a.threadId || !!a.inFlight}
                     onClick={() => actions.changeProject()}
                   >
                     Change project directory
@@ -293,7 +302,7 @@ const SidebarRowView = memo(function SidebarRowView({
                       <Archive size={14} />
                     )
                   }
-                  disabled={!!a.inFlight}
+                  disabled={disabled || !!a.inFlight}
                   onClick={() => actions.archive()}
                 >
                   {a.archived ? "Restore chat" : "Archive"}
@@ -302,6 +311,7 @@ const SidebarRowView = memo(function SidebarRowView({
               </>
             )}
             <Menu.Item
+              disabled={disabled}
               color="red"
               leftSection={<Trash2 size={14} />}
               onClick={() => actions.remove()}
