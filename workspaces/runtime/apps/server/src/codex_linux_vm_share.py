@@ -235,6 +235,11 @@ def import_project(client: Client, project_id: str, source: str | Path, owner: s
                 if error.code != 'not_found':
                     raise
             else:
+                # An import that ended before its receipt left no project.json; the
+                # Mac folder still names the Finder view after a VM restart.
+                if not (directory / 'project.json').exists():
+                    _save(directory / 'project.json',
+                          {'projectId': project_id, 'source': str(Path(source).expanduser().resolve())})
                 password = _credential(client)
                 existing['share'] = client.call('share.status', {}, timeout=30)
                 existing['mount'] = _mount_or_report(client, existing, password, share_hint(source))

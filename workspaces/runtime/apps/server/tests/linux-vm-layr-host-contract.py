@@ -63,6 +63,8 @@ class HostImportTests(unittest.TestCase):
             result = self.client.ensure_layr_project("app", "/missing-mac-folder")
         archive.assert_not_called()
         self.assertEqual(result["stateId"], "vm-state")
+        saved = json.loads((self.root / "layr-projects/app/project.json").read_text())
+        self.assertEqual(saved["source"], str(Path("/missing-mac-folder").resolve()))
         self.assertNotIn("project.import", [row[0] for row in self.client.calls])
 
     def test_initial_import_has_stable_upload_and_operation_identities(self):
