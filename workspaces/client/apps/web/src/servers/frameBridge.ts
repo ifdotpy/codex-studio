@@ -2,7 +2,8 @@ import {
   parseStudioPreferences,
   studioPreferencesStorageKey,
 } from "../studioPreferences";
-import { get, errorText } from "../api";
+import { get, errorText, ApiError } from "../api";
+import { executeSidebarRequest } from "./sidebarRpc";
 import { desktopAlerts } from "../desktop/desktopAlerts";
 import { useEffect, useRef } from "react";
 import { serverViewId, serverParentOrigin } from "./environment";
@@ -15,25 +16,79 @@ import {
 } from "./navigation";
 import type { Snapshot } from "../types";
 import { watchResourceConnection } from "../sync/resourceEvents";
+import { preferenceEvent } from "../sync/uiPreferenceMerge";
+import { serverStorageEventKey } from "./storage";
 export function useServerFrame(
   data: Snapshot | null,
   opened: string | null,
   error: string,
-  run: (command: ServerCommand) => void,
+  run: (command: ServerCommand) => void | Promise<void>,
   unread: Set<string>,
   accounts: ServerAccount[],
+  creating = false,
 ) {
   const handler = useRef(run);
   handler.current = run;
+  const latest = useRef({ data, opened, error, unread, creating });
+  latest.current = { data, opened, error, unread, creating };
   useEffect(() => {
     if (!serverViewId || window.parent === window) return;
     const receive = (event: MessageEvent) => {
       if (
+        !event.data ||
+        typeof event.data !== "object" ||
         event.source !== window.parent ||
         event.origin !== serverParentOrigin ||
         event.data.serverId !== serverViewId
       )
         return;
+      if (event.data.kind === "studio-sidebar-request") {
+        if (typeof event.data.correlation !== "string") return;
+        const reply = (result?: unknown, failure?: unknown) =>
+          window.parent.postMessage(
+            {
+              kind: "studio-sidebar-result",
+              serverId: serverViewId,
+              correlation: event.data.correlation,
+              result,
+              ...(failure
+                ? {
+                    error: {
+                      message: errorText(failure),
+                      ...(failure instanceof ApiError
+                        ? { status: failure.status, payload: failure.details }
+                        : {}),
+                    },
+                  }
+                : {}),
+            },
+            serverParentOrigin,
+          );
+        void executeSidebarRequest(
+          event.data.value,
+          async () => {
+            await handler.current({ action: "refresh" });
+            // Hidden frames suspend animation callbacks. Wait for React's next task.
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+            const value = latest.current;
+            return {
+              ...navigationSnapshot(
+                value.data,
+                value.opened,
+                value.error,
+                value.unread,
+                value.data ? desktopAlerts(value.data) : [],
+              ),
+              creating: value.creating,
+            };
+          },
+          (command) => handler.current(command),
+        ).then(
+          (result) => reply(result),
+          (failure) => reply(undefined, failure),
+        );
+        return;
+      }
       if (event.data.kind === "studio-server-preferences") {
         const aliases = event.data.aliases;
         if (
@@ -107,21 +162,48 @@ export function useServerFrame(
   }, []);
   useEffect(() => {
     if (!serverViewId || window.parent === window) return;
-    window.parent.postMessage(
-      {
-        kind: "studio-server-navigation",
-        serverId: serverViewId,
-        navigation: navigationSnapshot(
-          data,
-          opened,
-          error,
-          unread,
-          data ? desktopAlerts(data) : [],
-        ),
-      },
-      serverParentOrigin,
-    );
-  }, [data, opened, error, [...unread].join(":")]);
+    const publish = () =>
+      window.parent.postMessage(
+        {
+          kind: "studio-server-navigation",
+          serverId: serverViewId,
+          navigation: {
+            ...navigationSnapshot(
+              data,
+              opened,
+              error,
+              unread,
+              data ? desktopAlerts(data) : [],
+            ),
+            creating,
+          },
+        },
+        serverParentOrigin,
+      );
+    publish();
+    const keys = new Set([
+      `codex-project-compact:${data?.stateDir}`,
+      `codex-project-tree:${data?.stateDir}`,
+      `codex-sidebar-order:${data?.stateDir}`,
+    ]);
+    const preferencesChanged = (event: Event) => {
+      if (!data) return;
+      if (event instanceof CustomEvent && keys.has(event.detail)) publish();
+      if (
+        event instanceof StorageEvent &&
+        (event.key === null ||
+          keys.has(event.key) ||
+          keys.has(serverStorageEventKey(event) || ""))
+      )
+        publish();
+    };
+    window.addEventListener(preferenceEvent, preferencesChanged);
+    window.addEventListener("storage", preferencesChanged);
+    return () => {
+      window.removeEventListener(preferenceEvent, preferencesChanged);
+      window.removeEventListener("storage", preferencesChanged);
+    };
+  }, [data, opened, error, [...unread].join(":"), creating]);
   useEffect(() => {
     if (!serverViewId || window.parent === window) return;
     const safeAccounts = accounts.map((account) => ({

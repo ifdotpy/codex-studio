@@ -48,7 +48,7 @@ test("Accounts includes a backend-paired server before this UI has credentials",
       if (window === window.top)
         localStorage.setItem("studio-automatic-ui-removals-v1", '["remote"]');
     });
-    await page.goto(local.origin);
+    await page.goto(local.origin + "/?studio-navigation=classic");
     await page
       .getByRole("button", { name: "Studio settings", exact: true })
       .waitFor();
@@ -145,7 +145,7 @@ test("chat Accounts settings show all servers and route remote sign-in", async (
   const remote = await fixture("Remote", true, []);
   try {
     await remoteNetwork(context, remote);
-    await page.goto(local.origin);
+    await page.goto(local.origin + "/?studio-navigation=classic");
     await page.locator("#message").waitFor();
     await page
       .getByRole("button", { name: "Studio settings", exact: true })

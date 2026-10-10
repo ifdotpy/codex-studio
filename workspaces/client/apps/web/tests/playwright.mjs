@@ -527,6 +527,10 @@ function entityValuesFromSnapshot(snapshot) {
       "accountKey",
       "accountRevision",
       "accountKeys",
+      "organizationRevision",
+      "peerTeamsRevision",
+      "folders",
+      "peerTeams",
       "workerBaseRef",
       "workerBaseRevision",
       "workerEnvironment",
@@ -779,7 +783,7 @@ export function updateEntitySyncFixture(snapshot) {
  * Serve the same sync routes from a small Node HTTP fixture backend.
  * @param {import("node:http").IncomingMessage} request
  * @param {import("node:http").ServerResponse} response
- * @param {{ snapshot: EntityFixtureState, workspaceId: string, unixSocket?: boolean, onPull?: () => void, onStreamReady?: (notify: (resources: ResourceRef[]) => void) => void }} fixture
+ * @param {{ snapshot: EntityFixtureState, workspaceId: string, unixSocket?: boolean, initialResources?: ResourceRef[], onPull?: () => void, onStreamReady?: (notify: (resources: ResourceRef[]) => void) => void }} fixture
  * @returns {boolean} whether this was an /api/sync route
  */
 export function handleEntitySyncFixtureRequest(request, response, fixture) {
@@ -853,7 +857,7 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
       epoch,
       protocol: RESOURCE_STREAM_PROTOCOL,
       reason: "initial",
-      resources: [{ kind: "state" }],
+      resources: fixture.initialResources ?? [{ kind: "state" }],
       // No per-resource versions: the page must always pull after a fixture frame.
       resourceVersions: [],
       revision: ++revision,

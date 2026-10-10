@@ -1,4 +1,8 @@
-import { serverLocalStorage as localStorage } from "../servers/storage";
+import {
+  localSidebarServices,
+  type SidebarBackend,
+  type SidebarServices,
+} from "./sidebar/services";
 import {
   useEffect,
   useRef,
@@ -6,7 +10,7 @@ import {
   type DragEvent,
   type KeyboardEvent,
 } from "react";
-import { post, ApiError, errorText, saved, save, type PostBody } from "../api";
+import { ApiError, errorText, type PostBody } from "../api";
 
 import type { components } from "../generated/api";
 
@@ -14,6 +18,7 @@ type Order = Record<string, string[]>;
 type Drag = { group: string; id: string };
 type ServerOrder = components["schemas"]["SidebarOrderDto"];
 type Pending = {
+  ownerId?: string;
   body: Extract<PostBody<"/api/projects">, { action: "reorder" }>;
 };
 export function useSidebarOrder(
@@ -21,7 +26,10 @@ export function useSidebarOrder(
   server: ServerOrder | undefined,
   refresh?: () => Promise<void>,
   notify?: (text: string) => void,
+  services: SidebarServices = localSidebarServices,
 ) {
+  const { saved, save, storage: localStorage } = services.cache;
+  const requestBackend = useRef<SidebarBackend | null>(null);
   const [order, setOrder] = useState<Order>(
     () => server?.groups || saved(key, {}),
   );
@@ -71,12 +79,17 @@ export function useSidebarOrder(
     try {
       localStorage.setItem(pendingKey, JSON.stringify(request));
       if (optimistic) setOrder(optimistic);
-      const result = await post("/api/projects", request.body, {
+      const backend =
+        requestBackend.current ||
+        services.byOwner(request.ownerId || services.cache.ownerId);
+      requestBackend.current = backend;
+      const result = await backend.post("/api/projects", request.body, {
         timeoutMs: 15000,
       });
       if (!("revision" in result))
         throw new Error("Invalid sidebar order response");
       localStorage.removeItem(pendingKey);
+      requestBackend.current = null;
       if (result.revision >= revision.current) {
         revision.current = result.revision;
         setOrder(result.groups || {});
@@ -94,6 +107,7 @@ export function useSidebarOrder(
         error.status !== 408
       ) {
         localStorage.removeItem(pendingKey);
+        requestBackend.current = null;
         setOrder(server?.groups || {});
         notify?.(
           error.status === 409
@@ -137,8 +151,17 @@ export function useSidebarOrder(
       return;
     }
     const value = { ...order, [group]: next };
+    if (services.available && !services.available({ kind: "order", group })) {
+      notify?.("The sidebar server is offline or unavailable.");
+      return;
+    }
+    const backend = services.owner({ kind: "order", group });
+    requestBackend.current = backend;
     void send(
       {
+        ...(backend.ownerId === services.cache.ownerId
+          ? {}
+          : { ownerId: backend.ownerId }),
         body: {
           action: "reorder",
           request_id: crypto.randomUUID(),
