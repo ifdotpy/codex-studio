@@ -647,12 +647,13 @@ def handoff_text(result: dict[str, Any], kind: str) -> str:
 
 
 def lead_for(runtime: Any, project_id: str) -> str | None:
-    """The most recently updated lead chat that works in the project's main line."""
+    """The newest lead chat that works in the project's main line; a failed chat only
+    when no other one exists."""
     with runtime.lock, runtime.db() as db:
         leads = [agent for agent in runtime.records(db, 'agents')
                  if agent.get('isLead') and agent.get('layrProjectId') == project_id
                  and agent.get('layrLine') == 'main' and not agent.get('deletedAt')]
-    leads.sort(key=lambda agent: agent.get('updatedAt') or agent.get('createdAt') or 0, reverse=True)
+    leads.sort(key=lambda agent: (agent.get('status') != 'failed', agent.get('created') or 0), reverse=True)
     return str(leads[0]['id']) if leads else None
 
 

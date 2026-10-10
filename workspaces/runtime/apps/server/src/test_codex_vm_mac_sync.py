@@ -510,12 +510,14 @@ class Choices(unittest.TestCase):
                 return __import__('contextlib').nullcontext()
 
             def records(self, _db: Any, table: str) -> list[dict[str, Any]]:
-                return [{'id': 'old', 'isLead': True, 'layrProjectId': 'p1', 'layrLine': 'main', 'updatedAt': 1},
-                        {'id': 'lead', 'isLead': True, 'layrProjectId': 'p1', 'layrLine': 'main', 'updatedAt': 5},
-                        {'id': 'gone', 'isLead': True, 'layrProjectId': 'p1', 'layrLine': 'main', 'updatedAt': 9,
+                return [{'id': 'old', 'isLead': True, 'layrProjectId': 'p1', 'layrLine': 'main', 'created': 1},
+                        {'id': 'lead', 'isLead': True, 'layrProjectId': 'p1', 'layrLine': 'main', 'created': 5},
+                        {'id': 'failed', 'isLead': True, 'layrProjectId': 'p1', 'layrLine': 'main', 'created': 8,
+                         'status': 'failed'},
+                        {'id': 'gone', 'isLead': True, 'layrProjectId': 'p1', 'layrLine': 'main', 'created': 9,
                          'deletedAt': 9},
-                        {'id': 'other', 'isLead': True, 'layrProjectId': 'p2', 'layrLine': 'main', 'updatedAt': 9},
-                        {'id': 'worker', 'layrProjectId': 'p1', 'layrLine': 'w', 'updatedAt': 9}]
+                        {'id': 'other', 'isLead': True, 'layrProjectId': 'p2', 'layrLine': 'main', 'created': 9},
+                        {'id': 'worker', 'layrProjectId': 'p1', 'layrLine': 'w', 'created': 9}]
 
             def send(self, key: str, text: str, message_id: str, **_: Any) -> None:
                 sent.append((key, text, message_id))
