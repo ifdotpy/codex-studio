@@ -27,7 +27,7 @@
     "source_test": "tool-request-contract.py:133-139",
     "steps": [
       { "kind": "admit", "content": "mutate", "epoch": 4 },
-      { "kind": "cancel", "epoch": 4 }
+      { "kind": "server_restart", "epoch": 4 }
     ],
     "rust_state": "CancelledBeforeDispatch",
     "python_stage": "cancelled",
@@ -58,6 +58,28 @@
     "python_outcome": "unknown"
   },
   {
+    "name": "r15_cached_failure_before_local_dispatch_remains_unknown",
+    "source_test": "tool-request-contract.py::test_cached_failure_before_local_dispatch_remains_unknown",
+    "steps": [
+      { "kind": "admit", "content": "mutate", "epoch": 4 },
+      { "kind": "invalid_response", "epoch": 4 }
+    ],
+    "rust_state": "Unknown",
+    "python_stage": "failed",
+    "python_outcome": "unknown"
+  },
+  {
+    "name": "r18_cached_success_before_local_dispatch_is_applied",
+    "source_test": "tool-request-contract.py::test_cached_success_before_local_dispatch_is_applied",
+    "steps": [
+      { "kind": "admit", "content": "mutate", "epoch": 4 },
+      { "kind": "applied_response", "epoch": 4 }
+    ],
+    "rust_state": "Applied",
+    "python_stage": "completed",
+    "python_outcome": "applied"
+  },
+  {
     "name": "r15_restart_before_execution_is_not_applied",
     "source_test": "tool-request-contract.py:175-188",
     "steps": [
@@ -74,22 +96,22 @@
     "steps": [
       { "kind": "admit", "content": "mutate", "epoch": 4 },
       { "kind": "dispatch", "epoch": 4, "generation": 8 },
-      { "kind": "process_lost", "epoch": 4, "generation": 8 }
+      { "kind": "server_restart", "epoch": 4, "generation": 8 }
     ],
     "rust_state": "Unknown",
     "python_stage": "interrupted",
     "python_outcome": "unknown"
   },
   {
-    "name": "r15_delayed_committed_receipt_resolves_to_applied",
+    "name": "r15_committed_receipt_with_inferred_failure_stays_unknown",
     "source_test": "request-reconciliation-contract.py:89-96",
     "steps": [
       { "kind": "admit", "content": "mutate", "epoch": 4 },
       { "kind": "dispatch", "epoch": 4, "generation": 8 },
       { "kind": "timeout", "epoch": 4, "generation": 8 },
-      { "kind": "applied_evidence", "epoch": 4, "generation": 8 }
+      { "kind": "committed_receipt", "epoch": 4, "generation": 8 }
     ],
-    "rust_state": "Applied",
+    "rust_state": "Unknown",
     "python_stage": "failed",
     "python_outcome": "unknown",
     "python_operation_applied": true

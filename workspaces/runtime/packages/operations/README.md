@@ -17,9 +17,12 @@
 - **Configuration owner:** The Rust workspace owns toolchain, shared lints, and
   lockfile. The caller supplies time, process generation, account/thread epoch,
   and canonical content identity as data.
-- **Dependencies:** Optional `serde` derives let a future caller serialize these
-  types; `serde_json` is test-only and parses the neutral contract fixtures.
-- **Focused check:** `cargo test -p studio-operations --locked`.
+- **Dependencies:** Optional `serde` derives support the in-process PyO3
+  binding; `serde_json` parses the shared fixture in Rust tests and carries the
+  same typed structures through the binding.
+- **Focused check:** `cargo test -p studio-operations --locked`; the Python
+  caller contract is `just test server operations-native-contract.py` after the
+  native module build/install step in [workspace testing](../../../../docs/testing.md).
 
 See [the behavior model and Python mapping](docs/model.md) for the source-derived
-contract, fixture cases, and decisions requiring approval.
+contract, fixture cases, and confirmed lifecycle decisions.

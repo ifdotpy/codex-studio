@@ -224,7 +224,6 @@ pub enum NonExecutionProof {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AppliedProof {
-    CommittedOperationReceipt,
     LateValidResponse,
     ExactNativeAcceptance,
 }
@@ -246,6 +245,10 @@ pub enum EventKind {
     },
     ClaimDispatch,
     Cancel,
+    ServerRestarted,
+    /// A handler committed a nested operation receipt, but the enclosing tool
+    /// response still failed or was inferred not-applied. Preserve uncertainty.
+    CommittedOperationReceipt,
     AppliedResponse,
     DefinitiveRejection(NonExecutionProof),
     Failure(FailureKind),
@@ -515,12 +518,46 @@ pub fn transition(state: &State, event: &Event) -> Decision {
     if same_settled_event(operation, event)
         || matches!(
             (&operation.state, &event.kind),
+            (
+                OperationState::Applied,
+                EventKind::Failure(_)
+                    | EventKind::DefinitiveRejection(_)
+                    | EventKind::NonExecutionEvidence(_)
+            ) | (
+                OperationState::NotApplied | OperationState::CancelledBeforeDispatch,
+                EventKind::AppliedResponse
+                    | EventKind::AppliedEvidence(_)
+                    | EventKind::Failure(_)
+                    | EventKind::DefinitiveRejection(_)
+            )
+        )
+        || matches!(
+            (&operation.state, &event.kind),
             (OperationState::Dispatched, EventKind::ClaimDispatch)
+                | (
+                    OperationState::Unknown,
+                    EventKind::CommittedOperationReceipt
+                )
+                | (
+                    OperationState::Applied,
+                    EventKind::CommittedOperationReceipt
+                )
                 | (OperationState::CancelRequested, EventKind::Cancel)
                 | (OperationState::CancelledBeforeDispatch, EventKind::Cancel)
                 | (OperationState::NotApplied, EventKind::Cancel)
                 | (OperationState::Applied, EventKind::Cancel)
                 | (OperationState::Unknown, EventKind::Cancel)
+                | (OperationState::Unknown, EventKind::ServerRestarted)
+                | (OperationState::Applied, EventKind::ServerRestarted)
+                | (OperationState::NotApplied, EventKind::ServerRestarted)
+                | (
+                    OperationState::NotApplied | OperationState::CancelledBeforeDispatch,
+                    EventKind::AppliedEvidence(_) | EventKind::CommittedOperationReceipt
+                )
+                | (
+                    OperationState::CancelledBeforeDispatch,
+                    EventKind::ServerRestarted
+                )
         )
     {
         return no_effect(state);
@@ -561,6 +598,15 @@ pub fn transition(state: &State, event: &Event) -> Decision {
             });
             DecisionKind::Transitioned
         }
+        (OperationState::Reserved, EventKind::ServerRestarted) => {
+            next_operation.state = OperationState::CancelledBeforeDispatch;
+            intents.push(EffectIntent::PersistOutcome {
+                event_id: event.id.clone(),
+                identity: operation.identity.clone(),
+                outcome: Outcome::NotApplied,
+            });
+            DecisionKind::Transitioned
+        }
         (OperationState::Dispatched, EventKind::Cancel) => {
             next_operation.state = OperationState::CancelRequested;
             intents.push(EffectIntent::RequestCancellation {
@@ -570,11 +616,44 @@ pub fn transition(state: &State, event: &Event) -> Decision {
             DecisionKind::Transitioned
         }
         (
+            OperationState::Reserved | OperationState::Dispatched | OperationState::CancelRequested,
+            EventKind::CommittedOperationReceipt,
+        ) => {
+            next_operation.state = OperationState::Unknown;
+            intents.push(EffectIntent::ReconcileEvidence {
+                event_id: event.id.clone(),
+                identity: operation.identity.clone(),
+                outcome: Outcome::Unknown,
+            });
+            DecisionKind::Transitioned
+        }
+        (
+            OperationState::Reserved | OperationState::Dispatched | OperationState::CancelRequested,
+            EventKind::AppliedEvidence(_),
+        ) => {
+            next_operation.state = OperationState::Applied;
+            intents.push(EffectIntent::ReconcileEvidence {
+                event_id: event.id.clone(),
+                identity: operation.identity.clone(),
+                outcome: Outcome::Applied,
+            });
+            DecisionKind::Transitioned
+        }
+        (
             OperationState::Dispatched | OperationState::CancelRequested,
             EventKind::AppliedResponse,
         ) => {
             next_operation.state = OperationState::Applied;
             intents.push(EffectIntent::PersistOutcome {
+                event_id: event.id.clone(),
+                identity: operation.identity.clone(),
+                outcome: Outcome::Applied,
+            });
+            DecisionKind::Transitioned
+        }
+        (OperationState::Reserved, EventKind::AppliedResponse) => {
+            next_operation.state = OperationState::Applied;
+            intents.push(EffectIntent::ReconcileEvidence {
                 event_id: event.id.clone(),
                 identity: operation.identity.clone(),
                 outcome: Outcome::Applied,
@@ -608,12 +687,54 @@ pub fn transition(state: &State, event: &Event) -> Decision {
             });
             DecisionKind::Transitioned
         }
+        (OperationState::Reserved, EventKind::Failure(_)) => {
+            next_operation.state = OperationState::Unknown;
+            intents.push(EffectIntent::PersistOutcome {
+                event_id: event.id.clone(),
+                identity: operation.identity.clone(),
+                outcome: Outcome::Unknown,
+            });
+            DecisionKind::Transitioned
+        }
+        (
+            OperationState::Dispatched | OperationState::CancelRequested,
+            EventKind::ServerRestarted,
+        ) => {
+            next_operation.state = OperationState::Unknown;
+            intents.push(EffectIntent::PersistOutcome {
+                event_id: event.id.clone(),
+                identity: operation.identity.clone(),
+                outcome: Outcome::Unknown,
+            });
+            DecisionKind::Transitioned
+        }
         (OperationState::Unknown, EventKind::AppliedEvidence(_)) => {
             next_operation.state = OperationState::Applied;
             intents.push(EffectIntent::ReconcileEvidence {
                 event_id: event.id.clone(),
                 identity: operation.identity.clone(),
                 outcome: Outcome::Applied,
+            });
+            DecisionKind::Transitioned
+        }
+        (OperationState::Unknown, EventKind::AppliedResponse) => {
+            next_operation.state = OperationState::Applied;
+            intents.push(EffectIntent::ReconcileEvidence {
+                event_id: event.id.clone(),
+                identity: operation.identity.clone(),
+                outcome: Outcome::Applied,
+            });
+            DecisionKind::Transitioned
+        }
+        (OperationState::Unknown, EventKind::DefinitiveRejection(proof)) => {
+            if *proof == NonExecutionProof::QueuedCancellation {
+                return reject(state, TransitionError::UnsupportedProof);
+            }
+            next_operation.state = OperationState::NotApplied;
+            intents.push(EffectIntent::ReconcileEvidence {
+                event_id: event.id.clone(),
+                identity: operation.identity.clone(),
+                outcome: Outcome::NotApplied,
             });
             DecisionKind::Transitioned
         }
@@ -629,9 +750,7 @@ pub fn transition(state: &State, event: &Event) -> Decision {
             });
             DecisionKind::Transitioned
         }
-        (OperationState::Applied, EventKind::NonExecutionEvidence(_))
-        | (OperationState::NotApplied, EventKind::AppliedEvidence(_))
-        | (OperationState::CancelledBeforeDispatch, EventKind::AppliedEvidence(_)) => {
+        (OperationState::Applied, EventKind::NonExecutionEvidence(_)) => {
             return reject(state, TransitionError::ConflictingEvidence);
         }
         _ => return reject(state, TransitionError::InvalidTransition),

@@ -1,7 +1,7 @@
 use studio_operations::{
-    AccountId, AccountThreadEpoch, AgentId, AppliedProof, ContentFingerprint, DecisionKind, Event,
-    EventId, EventKind, FailureKind, IdentityScope, NonExecutionProof, OperationIdentity,
-    OperationState, OperationTombstone, ProcessGeneration, RequestId, SettledOutcome, State,
+    AccountId, AccountThreadEpoch, AgentId, ContentFingerprint, DecisionKind, Event, EventId,
+    EventKind, FailureKind, IdentityScope, NonExecutionProof, OperationIdentity, OperationState,
+    OperationTombstone, Outcome, ProcessGeneration, RequestId, SettledOutcome, State,
     StateRevision, ThreadId, TransitionError, transition,
 };
 
@@ -260,9 +260,10 @@ fn r18_duplicate_event_delivery_is_idempotent() {
     assert_eq!(replay.next_state, dispatched.next_state);
 }
 
-/// R-18: out-of-order responses cannot promote an absent or reserved slot.
+/// R-18: an absent slot rejects a response; a saved response can settle a
+/// reserved legacy receipt before the current process dispatches it.
 #[test]
-fn r18_out_of_order_events_cannot_regress_or_skip_state() {
+fn r18_saved_result_settles_reserved_but_not_absent_operation() {
     let empty = State::empty(StateRevision(0));
     let response = apply(
         &empty,
@@ -283,11 +284,8 @@ fn r18_out_of_order_events_cannot_regress_or_skip_state() {
         attempt(4, None),
         EventKind::AppliedResponse,
     );
-    assert_eq!(
-        response.kind,
-        DecisionKind::Rejected(TransitionError::InvalidTransition)
-    );
-    assert_eq!(response.next_state, reserved);
+    assert_eq!(response.kind, DecisionKind::Transitioned);
+    assert_eq!(response.next_state.outcome(), Some(Outcome::Applied));
 }
 
 /// R-18: old process generations and attempt epochs cannot change current state.
@@ -416,6 +414,26 @@ fn r15_timeout_lost_connection_and_invalid_response_yield_unknown() {
     }
 }
 
+#[test]
+fn r15_cached_failure_before_local_dispatch_remains_unknown() {
+    let reserved = admitted(attempt(4, None));
+    let failed = apply(
+        &reserved,
+        identity("request-a"),
+        attempt(4, None),
+        EventKind::Failure(FailureKind::InvalidPostExecutionResponse),
+    );
+    assert_eq!(failed.next_state.outcome(), Some(Outcome::Unknown));
+    assert_eq!(
+        failed
+            .next_state
+            .operation
+            .as_ref()
+            .map(|operation| operation.state),
+        Some(OperationState::Unknown)
+    );
+}
+
 /// R-14/R-15: absence of a receipt says unknown, never non-execution.
 #[test]
 fn r14_missing_receipt_alone_does_not_prove_nonexecution() {
@@ -495,15 +513,34 @@ fn r15_missing_receipt_cannot_override_saved_definitive_outcome() {
     assert!(missing_after_not_applied.intents.is_empty());
 }
 
-/// R-15: evidence resolves an unknown result without changing request identity.
+/// A committed operation receipt next to a failed tool result does not settle
+/// whether the tool request itself applied.
 #[test]
-fn r15_recovery_by_evidence_resolves_unknown_without_fresh_id() {
+fn committed_receipt_with_inferred_failure_stays_unknown() {
+    let dispatched = apply(
+        &admitted(attempt(4, None)),
+        identity("request-a"),
+        attempt(4, Some(8)),
+        EventKind::ClaimDispatch,
+    )
+    .next_state;
+    let receipt_with_failure = apply(
+        &dispatched,
+        identity("request-a"),
+        attempt(4, Some(8)),
+        EventKind::CommittedOperationReceipt,
+    );
+    assert_eq!(
+        receipt_with_failure.next_state.outcome(),
+        Some(Outcome::Unknown)
+    );
+
     let unknown = unknown_state();
     let recovered = apply(
         &unknown,
         identity("request-a"),
         attempt(4, Some(8)),
-        EventKind::AppliedEvidence(AppliedProof::CommittedOperationReceipt),
+        EventKind::CommittedOperationReceipt,
     );
     assert_eq!(
         recovered
@@ -513,14 +550,30 @@ fn r15_recovery_by_evidence_resolves_unknown_without_fresh_id() {
             .map(|operation| operation.identity.request_id.clone()),
         Some(RequestId::from("request-a"))
     );
-    assert_eq!(
-        recovered.next_state.outcome(),
-        Some(studio_operations::Outcome::Applied)
+    assert_eq!(recovered.next_state.outcome(), Some(Outcome::Unknown));
+    assert!(recovered.intents.is_empty());
+}
+
+#[test]
+fn late_valid_result_is_distinct_from_committed_operation_receipt() {
+    let recovered = apply(
+        &unknown_state(),
+        identity("request-a"),
+        attempt(4, Some(8)),
+        EventKind::AppliedResponse,
     );
-    assert!(matches!(
-        recovered.intents.as_slice(),
-        [studio_operations::EffectIntent::ReconcileEvidence { .. }]
-    ));
+    assert_eq!(recovered.next_state.outcome(), Some(Outcome::Applied));
+}
+
+#[test]
+fn exact_prewrite_rejection_resolves_unknown_in_core() {
+    let recovered = apply(
+        &unknown_state(),
+        identity("request-a"),
+        attempt(4, Some(8)),
+        EventKind::DefinitiveRejection(NonExecutionProof::ExactPreWriteRejection),
+    );
+    assert_eq!(recovered.next_state.outcome(), Some(Outcome::NotApplied));
 }
 
 /// R-18: completion generation may be absent as in Python's general finish path;
@@ -680,7 +733,8 @@ fn unknown_state() -> State {
 }
 
 /// R-14/R-15/R-18: generated traces preserve settled outcomes, emit at most one
-/// dispatch intent, and leave `Unknown` only when explicit evidence arrives.
+/// dispatch intent, and settle `Unknown` only with proof that establishes the
+/// tool request's outcome (a committed operation receipt alone does not).
 #[test]
 fn property_r14_r15_r18_generated_event_sequences_preserve_invariants() {
     // Exhaustively enumerate 9^5 short traces; this is deterministic and needs
@@ -701,7 +755,7 @@ fn property_r14_r15_r18_generated_event_sequences_preserve_invariants() {
                 2 => EventKind::AppliedResponse,
                 3 => EventKind::DefinitiveRejection(NonExecutionProof::ExactPreWriteRejection),
                 4 => EventKind::Failure(FailureKind::Timeout),
-                5 => EventKind::AppliedEvidence(AppliedProof::CommittedOperationReceipt),
+                5 => EventKind::CommittedOperationReceipt,
                 6 => EventKind::NonExecutionEvidence(NonExecutionProof::ReviewChildAbsent),
                 7 => EventKind::ReceiptMissing,
                 _ => EventKind::Admit {
@@ -740,7 +794,10 @@ fn property_r14_r15_r18_generated_event_sequences_preserve_invariants() {
             {
                 assert!(matches!(
                     kind,
-                    EventKind::AppliedEvidence(_) | EventKind::NonExecutionEvidence(_)
+                    EventKind::AppliedResponse
+                        | EventKind::AppliedEvidence(_)
+                        | EventKind::DefinitiveRejection(_)
+                        | EventKind::NonExecutionEvidence(_)
                 ));
             }
             state = decision.next_state;
@@ -783,14 +840,13 @@ fn ac05_python_contract_cases_are_data_driven() {
                 },
                 "dispatch" => EventKind::ClaimDispatch,
                 "cancel" => EventKind::Cancel,
+                "server_restart" => EventKind::ServerRestarted,
                 "applied_response" => EventKind::AppliedResponse,
                 "timeout" => EventKind::Failure(FailureKind::Timeout),
                 "connection_lost" => EventKind::Failure(FailureKind::ConnectionLost),
                 "invalid_response" => EventKind::Failure(FailureKind::InvalidPostExecutionResponse),
                 "process_lost" => EventKind::Failure(FailureKind::ProcessLost),
-                "applied_evidence" => {
-                    EventKind::AppliedEvidence(AppliedProof::CommittedOperationReceipt)
-                }
+                "committed_receipt" => EventKind::CommittedOperationReceipt,
                 "receipt_missing" => EventKind::ReceiptMissing,
                 other => panic!("unmatched fixture step {other} in {name}"),
             };
@@ -832,4 +888,53 @@ fn ac05_python_contract_cases_are_data_driven() {
             "{name} records Python outcome"
         );
     }
+}
+
+#[test]
+fn server_restart_settles_reserved_and_preserves_dispatched_uncertainty() {
+    let identity = OperationIdentity {
+        scope: IdentityScope::ToolRequest {
+            account: AccountId::from("account-a"),
+            thread: ThreadId::from("thread-a"),
+        },
+        request_id: RequestId::from("restart"),
+    };
+    let reserved = apply(
+        &State::empty(StateRevision(0)),
+        identity.clone(),
+        attempt(4, None),
+        EventKind::Admit {
+            content: content(1),
+        },
+    )
+    .next_state;
+    assert_eq!(
+        apply(
+            &reserved,
+            identity.clone(),
+            attempt(4, None),
+            EventKind::ServerRestarted,
+        )
+        .next_state
+        .outcome(),
+        Some(Outcome::NotApplied)
+    );
+    let dispatched = apply(
+        &reserved,
+        identity.clone(),
+        attempt(4, Some(7)),
+        EventKind::ClaimDispatch,
+    )
+    .next_state;
+    assert_eq!(
+        apply(
+            &dispatched,
+            identity,
+            attempt(4, Some(7)),
+            EventKind::ServerRestarted,
+        )
+        .next_state
+        .outcome(),
+        Some(Outcome::Unknown)
+    );
 }

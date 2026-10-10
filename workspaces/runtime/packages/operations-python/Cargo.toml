@@ -1,0 +1,19 @@
+[package]
+name = "studio-operations-python"
+version.workspace = true
+edition.workspace = true
+description = "In-process Python binding for Codex Studio operation transitions"
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "studio_operations_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3.workspace = true
+serde_json.workspace = true
+studio-operations = { path = "../operations", features = ["serde"] }
+
+[lints]
+workspace = true

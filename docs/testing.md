@@ -65,6 +65,14 @@ renderer before exercising it. The server listing displays discovered suites;
 use the server runner's `--help` for filters and optional categories. The root
 server script also runs the colocated JavaScript bridge tests. For a focused
 Python contract, use `pnpm run test:server:python -- --filter <name>`.
+The backend requires the native lifecycle module. Build and install it into the
+managed Python environment with this one setup command before server tests or
+backend startup; installation copies the built library and never builds it:
+
+```sh
+cargo build --release -p studio-operations-python && python3 workspaces/runtime/apps/server/src/install-cli.py
+```
+
 The Python server runner samples runnable processes for five seconds and uses
 their median. CPU jobs are `max(ceil(allowed CPUs / 4), allowed CPUs - competing
 runnable tasks)`. The plan then applies the hard memory limit and suite-count

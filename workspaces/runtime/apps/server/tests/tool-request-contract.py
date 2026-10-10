@@ -156,10 +156,36 @@ class RequestContract(unittest.TestCase):
         failed = self.runtime.finish_tool_request(record['id'], self.result(False))
         self.assertEqual((failed['stage'], failed['outcome']), ('failed', 'unknown'))
         self.assertFalse(self.runtime.begin_tool_request(record['id']))
+        later_failure = {'success': False, 'contentItems': [
+            {'type': 'inputText', 'text': 'A later transport failure'}]}
+        refreshed = self.runtime.finish_tool_request(record['id'], later_failure)
+        self.assertEqual((refreshed['stage'], refreshed['outcome']), ('failed', 'unknown'))
+        self.assertEqual(refreshed['result'], later_failure)
         # Later authoritative reconciliation may resolve the earlier ambiguity.
         self.assertEqual(self.runtime.finish_tool_request(record['id'], self.result(), 'applied')['outcome'], 'applied')
         absent = self.runtime.request_action('lead', {'action': 'get', 'request_id': 'missing'})
         self.assertEqual((absent['stage'], absent['outcome']), ('not_found', 'unknown'))
+
+    def test_cached_failure_before_local_dispatch_remains_unknown(self):
+        failure = {'success': False, 'contentItems': [
+            {'type': 'inputText', 'text': 'Saved failure from an earlier execution'}]}
+        with self.runtime.lock, self.runtime.db() as db:
+            db.execute('INSERT INTO runtime_tool_results VALUES (?,?)',
+                       ('thread:cached-failure', json.dumps(failure)))
+        record = self.reserve(call='cached-failure')
+        self.assertEqual((record['stage'], record['outcome']), ('failed', 'unknown'))
+        self.assertEqual(record['result'], failure)
+        self.assertFalse(self.runtime.begin_tool_request(record['id']))
+
+    def test_cached_success_before_local_dispatch_is_applied(self):
+        success = self.result()
+        with self.runtime.lock, self.runtime.db() as db:
+            db.execute('INSERT INTO runtime_tool_results VALUES (?,?)',
+                       ('thread:cached-success', json.dumps(success)))
+        record = self.reserve(call='cached-success')
+        self.assertEqual((record['stage'], record['outcome']), ('completed', 'applied'))
+        self.assertEqual(record['result'], success)
+        self.assertFalse(self.runtime.begin_tool_request(record['id']))
 
     def test_account_and_actor_boundaries(self):
         lead = self.reserve()
