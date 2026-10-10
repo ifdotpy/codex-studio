@@ -390,7 +390,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     // Click selection keeps the textarea focused and replaces only the token.
     await composer.fill("before $rel after");
     await composer.evaluate((element) => {
-      const caret = element.value.indexOf("$rel") + 2;
+      const caret = element.value.indexOf("$rel") + 3;
       element.focus();
       element.setSelectionRange(caret, caret);
       element.dispatchEvent(new Event("select", { bubbles: true }));
