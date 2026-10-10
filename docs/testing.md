@@ -212,6 +212,46 @@ arbitrary score gate. A failing baseline test or runner error is a failed run,
 not a successful mutation score. Choose any future merge threshold using a
 measured baseline and an explicit scope.
 
+## Continuous integration
+
+The public GitHub Actions workflow runs on pull requests and pushes to `main`
+on `ubuntu-latest`. It uses read-only repository permissions, no secrets,
+locked dependency installation, and the same package commands listed in each
+check step. The Rust job reads the pinned toolchain in `rust-toolchain.toml`.
+The Node.js jobs use the Node 22 release line; the documented minimum is
+22.15. The Python steps use Python 3.14 (the runtime requires Python 3.11 or
+later) and prepare the digest-keyed managed environments through
+`install-cli.py --dev`; that command creates virtual environments and installs
+the pinned PyPI requirements, without installing provider binaries. Cache and
+command-bin directories stay under the runner temporary directory. The facade
+job downloads the Just 1.58.0 Linux release, checks its pinned SHA-256, and
+checks the reported version before invoking it.
+
+The generated OpenAPI TypeScript files are tied to Python 3.14's standard
+library HTTP status phrases. With the same pinned requirements, Python 3.12
+reports `Request Entity Too Large` for HTTP 413 while Python 3.14 reports
+`Content Too Large`; the generated descriptions and API schema hash therefore
+differ. CI pins 3.14 for API generation and the mypy ratchet until that
+interpreter-dependent output is made reproducible across supported Python
+versions.
+
+The CI gate deliberately excludes these checks until their stated issue work
+provides a green, bounded path:
+
+- `pnpm run lint:all` and `pnpm run format:check:all` currently exit 1 on
+  `main` because of existing findings. M-03.5 will add conservative affected
+  checks; changed-file lint and formatting can then be introduced without
+  making unrelated baseline findings block a pull request.
+- The full Python server suite has 15 failing suites on `main` and requires
+  provider binaries. M-03.1 will add independent package-level test selection
+  before this full suite is reconsidered for the gate.
+- The browser suite exceeds its 15-minute limit on `main`. M-03.6 will add
+  measured timing for representative checks before its CI runtime is selected.
+- Desktop tests that require Electron and a display remain outside this
+  headless Linux gate; M-02.5 tracks the remaining desktop verification.
+- macOS and Windows are not CI targets in this workflow. M-09.1 owns the
+  platform install, update, and rollback matrix that will define those jobs.
+
 ## Interpret evidence
 
 Report which suites actually ran, which failed, and which were excluded. A
