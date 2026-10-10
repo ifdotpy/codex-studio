@@ -26,7 +26,9 @@
     "lint:staged": "node workspaces/tooling/apps/repository-checks/check-code.mjs staged lint",
     "format:staged": "node workspaces/tooling/apps/repository-checks/check-code.mjs staged format",
     "check:staged": "node workspaces/tooling/apps/repository-checks/check-code.mjs staged",
-    "test:pre-commit": "node workspaces/tooling/apps/repository-checks/tests/pre-commit-hook.mjs"
+    "check": "pnpm run test:unit",
+    "test:pre-commit": "node workspaces/tooling/apps/repository-checks/tests/pre-commit-hook.mjs",
+    "test:unit": "node --test workspaces/tooling/apps/repository-checks/tests/facade.test.mjs"
   },
   "devDependencies": {
     "openapi-typescript": "7.13.0",

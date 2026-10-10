@@ -16,6 +16,22 @@ and execution belong to the configurations in `workspaces/client/apps/web/`; the
 to [the server runner](../workspaces/runtime/apps/server/tests/server/run.py). Do not add a second handwritten list
 of the same tests to this document.
 
+## Choose an evidence scope
+
+Use the root [`justfile`](../justfile) for the three independent scopes:
+
+1. **One hypothesis:** `just test <package> [case]`; use `just test-plan` first
+   to print the exact native command and setup without executing it.
+2. **One change:** `just check <package>` runs that package's local checks;
+   `just check <package> --dry-run` prints the planned commands.
+3. **Pre-PR gate:** run the server and client suites described below and report
+   their results separately. A focused hypothesis does not replace this gate.
+
+Package names and directories come from pnpm and Cargo manifests, with `server`
+representing the current Python app. Native manifests and runners remain the
+owners of test discovery and selection. All facade commands work from a
+repository subdirectory and save complete test logs outside the checkout.
+
 ## Choose a suite
 
 Run commands from the repository root after one `pnpm install --frozen-lockfile`.
@@ -94,7 +110,7 @@ linked, so there are no adjacent shared-library paths to allow. The runner
 fails if any blocked access was logged and prints the allowed executable
 separately.
 
-For a focused client check, forward a file filter to Vitest or Playwright:
+For manual native client checks outside the facade, forward a file filter to Vitest or Playwright:
 
 ```sh
 pnpm --filter codex-agents-web run test:unit -- tokenRate
