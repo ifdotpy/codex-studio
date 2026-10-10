@@ -392,12 +392,12 @@
     right: 48px;
   }
   #sidebar .project-tree-toggle {
-    padding-right: 48px;
+    margin-right: 48px;
   }
   #sidebar
     .project-tree-heading:has(.project-tree-action + .project-tree-action)
     .project-tree-toggle {
-    padding-right: 92px;
+    margin-right: 92px;
   }
   #sidebar .project-chats .chat-row {
     padding-right: 52px;

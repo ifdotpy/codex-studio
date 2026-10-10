@@ -171,7 +171,7 @@
     :has(.project-tree-action[aria-expanded="true"])
   )
   .project-tree-toggle {
-  padding-right: 28px;
+  margin-right: 28px;
 }
 #sidebar
   .project-tree-heading:has(.project-tree-action + .project-tree-action):is(
@@ -180,7 +180,7 @@
     :has(.project-tree-action[aria-expanded="true"])
   )
   .project-tree-toggle {
-  padding-right: 54px;
+  margin-right: 54px;
 }
 #sidebar
   .project-tree-heading:is(
@@ -229,7 +229,7 @@
     height: 40px;
   }
   #sidebar .project-tree-toggle {
-    padding-right: 42px;
+    margin-right: 42px;
   }
   #sidebar .project-tree-action:has(+ .project-tree-action) {
     right: 44px;
@@ -237,7 +237,7 @@
   #sidebar
     .project-tree-heading:has(.project-tree-action + .project-tree-action)
     .project-tree-toggle {
-    padding-right: 84px;
+    margin-right: 84px;
   }
 }
 
@@ -249,13 +249,13 @@
 #sidebar
   .project-tree-heading:has(.project-tree-action[aria-haspopup="menu"])
   .project-tree-toggle {
-  padding-right: 28px;
+  margin-right: 28px;
 }
 @media (hover: none), (max-width: 760px) {
   #sidebar
     .project-tree-heading:has(.project-tree-action[aria-haspopup="menu"])
     .project-tree-toggle {
-    padding-right: 84px;
+    margin-right: 84px;
   }
 }
 

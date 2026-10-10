@@ -2070,13 +2070,13 @@ html body #root:has(.terminal-dock) {
   pointer-events: auto;
 }
 #sidebar #chat-list .project-tree-toggle {
-  padding-right: 28px;
+  margin-right: 28px;
 }
 #sidebar
   #chat-list
   .project-tree-heading:has(.project-tree-action + .project-tree-action)
   .project-tree-toggle {
-  padding-right: 54px;
+  margin-right: 54px;
 }
 /* Reserve space for row actions only while they are visible, so idle names
    use the full row width. */
@@ -2098,13 +2098,13 @@ html body #root:has(.terminal-dock) {
     padding-right: 46px;
   }
   #sidebar #chat-list .project-tree-toggle {
-    padding-right: 42px;
+    margin-right: 42px;
   }
   #sidebar
     #chat-list
     .project-tree-heading:has(.project-tree-action + .project-tree-action)
     .project-tree-toggle {
-    padding-right: 84px;
+    margin-right: 84px;
   }
 }
 #sidebar .sidebar-row:has(.inline-rename) > .chat-row {
