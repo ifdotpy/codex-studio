@@ -1,0 +1,320 @@
+#!/usr/bin/env python3
+"""Regression contracts for durable workspace recovery."""
+
+# Support direct execution without runner-provided PYTHONPATH.
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
+
+from concurrent.futures import ThreadPoolExecutor
+import importlib.util
+import copy
+from pathlib import Path
+import threading
+import tempfile
+import unittest
+from unittest.mock import patch
+import uuid
+
+
+HERE = Path(__file__).resolve().parent
+spec = importlib.util.spec_from_file_location(
+    "workspace_contract_fixture", HERE / "workspace-contract.py"
+)
+fixture = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fixture)
+from codex_native_errors import NativeRpcError
+
+
+class CriticalWorkspaceContract(fixture.WorkspaceContract):
+    def test_workspace_blockers_read_only_busy_agents(self):
+        lead = self.lead()
+        busy = self.lead(name="Busy")
+        for index in range(20):
+            self.lead(name=f"Idle {index}", cwd=self.root)
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(busy["id"], db)
+            current["workspaceOperation"] = "checkpoint"
+            self.runtime.put(db, "agents", current)
+        original = self.runtime.records
+        def records(db, table, *args, **kwargs):
+            if table == "agents":
+                raise AssertionError("workspace_blockers decoded every agent under the runtime lock")
+            return original(db, table, *args, **kwargs)
+        self.runtime.records = records
+        try:
+            with self.runtime.lock, self.runtime.db() as db:
+                blockers = self.runtime.workspace_blockers(db, self.runtime.agent(lead["id"], db))
+        finally:
+            self.runtime.records = original
+        self.assertEqual([b["agentId"] for b in blockers], [busy["id"]])
+
+    def test_restore_failure_keeps_durable_recovery_state(self):
+        worker, path = self.isolated_worker()
+        self.agent_update(worker, threadId="original-thread")
+        checkpoint = self.runtime.checkpoint_capture(
+            worker["id"], turn_id="completed-turn"
+        )
+        (path / "tracked.txt").write_text("new edit\n")
+        preview = self.runtime.checkpoint_preview(worker["id"], checkpoint["id"])
+        original_git = self.runtime.git
+
+        def reset_then_fail(agent, args, env=None, input=None):
+            result = original_git(agent, args, env, input)
+            if args[:3] == ["read-tree", "--reset", "-u"]:
+                raise RuntimeError("local reset failed after files changed")
+            return result
+
+        with patch.object(self.runtime, "git", side_effect=reset_then_fail):
+            with self.assertRaisesRegex(RuntimeError, "local reset failed"):
+                self.runtime.restore_checkpoint(
+                    worker["id"],
+                    {
+                        "checkpoint_id": checkpoint["id"],
+                        "expectedTree": preview["expectedTree"],
+                    },
+                )
+
+        agent = self.runtime.agent(worker["id"])
+        self.assertIsNotNone(agent.get("workspaceOperation"))
+        self.assertFalse(agent["autoWake"])
+        self.assertEqual(agent["status"], "interrupted")
+        result = self.runtime.restore_checkpoint(
+            worker["id"],
+            {
+                "checkpoint_id": checkpoint["id"],
+                "expectedTree": preview["expectedTree"],
+            },
+        )
+        self.assertEqual(result["status"], "restored")
+        self.assertIsNone(self.runtime.agent(worker["id"]).get("workspaceOperation"))
+        self.assertEqual(
+            sum(method == "thread/fork" for method, _ in self.runtime.server.calls),
+            1,
+        )
+
+    def test_restore_recovery_survives_restart_without_native_retry(self):
+        worker, path = self.isolated_worker()
+        self.agent_update(worker, threadId="original-thread")
+        checkpoint = self.runtime.checkpoint_capture(
+            worker["id"], turn_id="completed-turn"
+        )
+        (path / "tracked.txt").write_text("new edit\n")
+        preview = self.runtime.checkpoint_preview(worker["id"], checkpoint["id"])
+        original_git = self.runtime.git
+
+        def reset_then_fail(agent, args, env=None, input=None):
+            result = original_git(agent, args, env, input)
+            if args[:3] == ["read-tree", "--reset", "-u"]:
+                raise RuntimeError("local reset failed after files changed")
+            return result
+
+        with patch.object(self.runtime, "git", side_effect=reset_then_fail):
+            with self.assertRaisesRegex(RuntimeError, "local reset failed"):
+                self.runtime.restore_checkpoint(
+                    worker["id"],
+                    {
+                        "checkpoint_id": checkpoint["id"],
+                        "expectedTree": preview["expectedTree"],
+                    },
+                )
+        self.runtime.close()
+        self.runtime = fixture.ControlledRuntime(self.state, fixture.WorkspaceServer)
+        recovered_preview = self.runtime.checkpoint_preview(worker["id"], checkpoint["id"])
+        self.assertEqual(recovered_preview["expectedTree"], preview["expectedTree"])
+        self.assertTrue(recovered_preview["canRestore"])
+        result = self.runtime.restore_checkpoint(
+            worker["id"],
+            {
+                "checkpoint": checkpoint["id"],
+                "expectedTree": recovered_preview["expectedTree"],
+            },
+        )
+        self.assertEqual(result["status"], "restored")
+        self.runtime.prepare(self.runtime.agent(worker["id"]))
+        methods = [
+            method
+            for server in self.runtime.servers.values()
+            for method, _ in server.calls
+        ]
+        self.assertIn("thread/resume", methods)
+        self.assertNotIn("thread/fork", methods)
+        self.assertFalse(
+            any(
+                method == "thread/fork"
+                for server in self.runtime.servers.values()
+                for method, _ in server.calls
+            )
+        )
+
+    def test_branch_unknown_provider_result_blocks_exact_retry(self):
+        lead = self.start(self.lead())
+        self.runtime.notification(
+            {
+                "method": "item/completed",
+                "params": {
+                    "threadId": lead["threadId"],
+                    "turnId": lead["turnId"],
+                    "item": {
+                        "id": "branch-answer-unknown",
+                        "type": "agentMessage",
+                        "text": "Branch point",
+                    },
+                },
+            }
+        )
+        self.runtime.server.complete(lead["threadId"], lead["turnId"])
+        message = next(
+            item
+            for item in self.runtime.transcript(lead["id"])["items"]
+            if item["text"] == "Branch point"
+        )
+        request = {"id": "durable-unknown-branch", "message_id": message["id"]}
+        self.runtime.server.fork_error = NativeRpcError(
+            {"code": -32000, "message": "Provider rejected fork"}
+        )
+        with self.assertRaisesRegex(RuntimeError, "Provider rejected"):
+            self.runtime.branch_conversation(lead["id"], request)
+        self.runtime.server.fork_error = RuntimeError(
+            "thread/fork response timed out; outcome unknown"
+        )
+        with self.assertRaisesRegex(RuntimeError, "outcome unknown"):
+            self.runtime.branch_conversation(lead["id"], request)
+        with self.assertRaisesRegex(ValueError, "recovery"):
+            self.runtime.branch_conversation(lead["id"], request)
+        self.assertEqual(
+            sum(method == "thread/fork" for method, _ in self.runtime.server.calls),
+            2,
+        )
+
+    def test_branch_failure_after_provider_fork_does_not_fork_again(self):
+        lead = self.start(self.lead())
+        self.runtime.notification(
+            {
+                "method": "item/completed",
+                "params": {
+                    "threadId": lead["threadId"],
+                    "turnId": lead["turnId"],
+                    "item": {
+                        "id": "branch-answer",
+                        "type": "agentMessage",
+                        "text": "Branch point",
+                    },
+                },
+            }
+        )
+        self.runtime.server.complete(lead["threadId"], lead["turnId"])
+        message = next(
+            item
+            for item in self.runtime.transcript(lead["id"])["items"]
+            if item["text"] == "Branch point"
+        )
+        request = {"id": "durable-branch", "message_id": message["id"]}
+        original_save = self.runtime.save_receipt
+        failed = [False]
+
+        def fail_once(db, key, signature, result):
+            if not failed[0]:
+                failed[0] = True
+                raise RuntimeError("receipt write failed")
+            return original_save(db, key, signature, result)
+
+        with patch.object(self.runtime, "save_receipt", side_effect=fail_once):
+            with self.assertRaisesRegex(RuntimeError, "receipt write failed"):
+                self.runtime.branch_conversation(lead["id"], request)
+
+        branch = self.runtime.branch_conversation(lead["id"], request)
+        self.assertEqual(branch["forkedFrom"], lead["id"])
+        forks = [method for method, _ in self.runtime.server.calls if method == "thread/fork"]
+        self.assertEqual(len(forks), 1)
+
+    def test_accepted_branch_completes_after_account_delete_and_restart(self):
+        lead = self.start(self.lead())
+        self.runtime.notification(
+            {
+                "method": "item/completed",
+                "params": {
+                    "threadId": lead["threadId"],
+                    "turnId": lead["turnId"],
+                    "item": {
+                        "id": "branch-answer-delete",
+                        "type": "agentMessage",
+                        "text": "Branch point before account removal",
+                    },
+                },
+            }
+        )
+        self.runtime.server.complete(lead["threadId"], lead["turnId"])
+        message = next(
+            item
+            for item in self.runtime.transcript(lead["id"])["items"]
+            if item["text"] == "Branch point before account removal"
+        )
+        request = {"id": "branch-delete-retry", "message_id": message["id"]}
+
+        accounts = self.runtime.accounts
+        replacement = copy.deepcopy(accounts.data["accounts"]["default"])
+        replacement.update(id="replacement", label="Replacement")
+        accounts.data["accounts"]["replacement"] = replacement
+        accounts.data["defaultAccountKey"] = "replacement"
+        accounts._save()
+
+        server = self.runtime.connect(lead["accountKey"])
+        original_call = server.call
+        entered, release = threading.Event(), threading.Event()
+
+        def delayed_fork(method, params, timeout=60):
+            if method == "thread/fork":
+                entered.set()
+                if not release.wait(3):
+                    raise RuntimeError("test gate expired")
+            return original_call(method, params, timeout)
+
+        original_create = self.runtime.create
+
+        def fail_local_once(*args, **kwargs):
+            if kwargs.get("_accepted_provider_operation"):
+                raise RuntimeError("local branch completion interrupted")
+            return original_create(*args, **kwargs)
+
+        with patch.object(server, "call", delayed_fork), patch.object(
+            self.runtime, "create", side_effect=fail_local_once
+        ), ThreadPoolExecutor(1) as pool:
+            pending = pool.submit(self.runtime.branch_conversation, lead["id"], request)
+            self.assertTrue(entered.wait(2))
+            accounts.delete("default", str(uuid.uuid4()))
+            release.set()
+            with self.assertRaisesRegex(RuntimeError, "local branch completion"):
+                pending.result(5)
+
+        with self.runtime.db() as db:
+            operation = self.runtime._workspace_operation(
+                db,
+                self.runtime._workspace_operation_id("branch", lead["id"], request),
+            )
+        self.assertEqual(operation["phase"], "provider_ready")
+        self.assertTrue(accounts.data["accounts"]["default"].get("deleted"))
+        first_server = server
+
+        self.runtime.close()
+        self.runtime = fixture.ControlledRuntime(self.state, fixture.WorkspaceServer)
+        branch = self.runtime.branch_conversation(lead["id"], request)
+        self.assertEqual(branch["forkedFrom"], lead["id"])
+        self.assertEqual(branch["accountKey"], "default")
+        self.assertEqual(
+            sum(method == "thread/fork" for method, _ in first_server.calls), 1
+        )
+        self.assertFalse(
+            any(
+                method == "thread/fork"
+                for retry_server in self.runtime.servers.values()
+                for method, _ in retry_server.calls
+            )
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
