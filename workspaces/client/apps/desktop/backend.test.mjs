@@ -635,25 +635,8 @@ test("the backend build matches the Python source identity", () => {
         ],
         { encoding: "utf8" },
       ).trim();
-    const withoutDiagnostics = backendBuild(root);
-    assert.equal(withoutDiagnostics, pythonBuild());
-    writeFileSync(
-      path.join(root, "scripts/codex-diagnostics"),
-      "rust binary v1",
-    );
     const initial = backendBuild(root);
-    assert.notEqual(initial, withoutDiagnostics);
     assert.equal(initial, pythonBuild());
-    writeFileSync(
-      path.join(root, "scripts/codex-diagnostics"),
-      "rust binary v2",
-    );
-    assert.notEqual(backendBuild(root), initial);
-    assert.equal(backendBuild(root), pythonBuild());
-    writeFileSync(
-      path.join(root, "scripts/codex-diagnostics"),
-      "rust binary v1",
-    );
     writeFileSync(path.join(root, "scripts/ignored.pyc"), "cache");
     writeFileSync(path.join(packageRoot, "tests/ignored.py"), "VALUE = 2\n");
     assert.equal(backendBuild(root), initial);

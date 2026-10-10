@@ -106,7 +106,6 @@ function backendSources(scripts) {
       info.isFile() &&
       (name.endsWith(".py") ||
         name === "codex-canvas" ||
-        name === "codex-diagnostics" ||
         name === "codex_federation_crypto.mjs")
     ) {
       add(file);

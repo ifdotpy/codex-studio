@@ -74,7 +74,7 @@ def source_files(scripts: str | Path = SERVER_SOURCE_ROOT) -> tuple[tuple[str, P
             continue
         if path.is_file() and (
             path.suffix == ".py"
-            or path.name in {"codex-canvas", "codex-diagnostics", _NODE_CRYPTO_HELPER}
+            or path.name in {"codex-canvas", _NODE_CRYPTO_HELPER}
         ):
             add(path)
         elif path.is_dir():

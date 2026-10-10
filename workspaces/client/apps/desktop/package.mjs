@@ -29,11 +29,21 @@ const bridgeSource = path.join(
 );
 await access(path.join(rendererDist, "index.html"));
 if (!uiOnly) {
-  execFileSync(
-    "cargo",
-    ["build", "--locked", "--release", "-p", "studio-diagnostics"],
-    { cwd: repositoryRoot, stdio: "inherit" },
-  );
+  try {
+    execFileSync(
+      "cargo",
+      ["build", "--locked", "--release", "-p", "studio-diagnostics"],
+      { cwd: repositoryRoot, stdio: "inherit" },
+    );
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      throw new Error(
+        "Desktop packaging requires Cargo; install Rust 1.99.0, then run `cargo build --locked --release -p studio-diagnostics`.",
+        { cause: error },
+      );
+    }
+    throw error;
+  }
 }
 const cargoTargetDirectory = path.resolve(
   repositoryRoot,
@@ -72,6 +82,7 @@ try {
       path.join(repositoryRoot, "requirements.txt"),
       path.join(resources, "requirements.txt"),
     );
+    await mkdir(path.join(resources, "bin"), { recursive: true });
     await cp(
       path.join(repositoryRoot, "workspaces/runtime/apps/server/prompts"),
       path.join(resources, "prompts"),
@@ -85,10 +96,7 @@ try {
         !source.includes("/node_modules") &&
         !source.endsWith(".pyc"),
     });
-    await cp(
-      diagnosticsBinary,
-      path.join(resources, "scripts/codex-diagnostics"),
-    );
+    await cp(diagnosticsBinary, path.join(resources, "bin/codex-diagnostics"));
     execFileSync(
       "pnpm",
       [

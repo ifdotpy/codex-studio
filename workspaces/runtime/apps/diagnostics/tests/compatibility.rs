@@ -111,6 +111,10 @@ fn fixture_output_matches_python_golden_and_optional_python_cli() {
         String::from_utf8_lossy(&rust.stderr)
     );
     assert_eq!(rust.stdout, EXPECTED);
+    let printed = std::str::from_utf8(&rust.stdout).expect("CLI UTF-8 JSON output");
+    assert!(printed.contains("\"dup\": 2"));
+    assert!(printed.contains("\"empty-array\": []"));
+    assert!(printed.contains("\"big\": 1234567890123456789012345678901234567890"));
 
     if let Some(python) = python {
         let script = "import json,sys,urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:'+sys.argv[1]+'/api/diagnostics', timeout=30)); print(json.dumps(data, indent=2, sort_keys=True))";

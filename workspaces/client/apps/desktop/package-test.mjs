@@ -60,7 +60,7 @@ try {
   const diagnosticsHelp = execFileSync(
     path.join(
       path.dirname(executable),
-      "../Resources/workspace/scripts/codex-diagnostics",
+      "../Resources/workspace/bin/codex-diagnostics",
     ),
     ["--help"],
     { encoding: "utf8" },
