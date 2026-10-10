@@ -68,6 +68,8 @@ RUNNER_LOCK_PATH = Path.home() / ".cache" / "cs" / "st" / "runner-live.lock"
 REPOSITORY_KEY = hashlib.sha256(str(ROOT.resolve()).encode("utf-8")).hexdigest()[:12]
 PROFILE_PATH = RUNNER_LOCK_PATH.parent / f"runner-profile-{REPOSITORY_KEY}.json"
 MEMORY_RESERVE_BYTES = 4 * 1024**3
+FOCUSED_SUITE_LIMIT = 1
+FOCUSED_SLOT_CAP = 4
 BASELINE_PATH = Path(__file__).with_name("timing-baseline.json")
 TMP_ROOT_OVERRIDE = os.environ.get("CODEX_SERVER_TEST_TMP_ROOT")
 MAX_SHORT_TMP_ROOT_BYTES = 42
@@ -866,6 +868,48 @@ def _runner_live_lock():
         yield
 
 
+def _focused_slot_count(profile=None):
+    """Bound focused-suite peak RSS to the memory already reserved by full runs."""
+    profile = _load_profile() if profile is None else profile
+    baseline_peak = int(_read_profile_file(BASELINE_PATH).get("maxSuiteRssBytes", 0) or 0)
+    measured_peak = max(int(profile.get("maxSuiteRssBytes", 0) or 0), baseline_peak)
+    if measured_peak <= 0:
+        return 0
+    available_memory = available_memory_bytes()
+    memory_budget = min(MEMORY_RESERVE_BYTES,
+                        available_memory // 2,
+                        max(0, available_memory - MEMORY_RESERVE_BYTES))
+    memory_slots = memory_budget // measured_peak
+    cpu_slots = min(FOCUSED_SLOT_CAP, max(1, math.ceil(available_cpu_count() / 4)))
+    return min(cpu_slots, memory_slots)
+
+
+@contextmanager
+def _focused_run_slot(profile=None, slots=None):
+    """Acquire a per-user slot without waiting behind the whole-run lock."""
+    slots = _focused_slot_count(profile) if slots is None else slots
+    if slots < 1:
+        raise RuntimeError("focused run has no memory-safe admission slot")
+    RUNNER_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    import fcntl
+    for index in range(slots):
+        lock_file = (RUNNER_LOCK_PATH.parent / f"runner-focused-{index}.lock").open("a+b")
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            lock_file.close()
+            continue
+        try:
+            yield
+        finally:
+            lock_file.close()
+        return
+    print("waiting for a focused-run admission slot", flush=True)
+    with (RUNNER_LOCK_PATH.parent / "runner-focused-0.lock").open("a+b") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        yield
+
+
 
 def _memory_scratch_root(workers):
     """Use tmpfs only with 256 MiB of measured headroom per planned worker."""
@@ -1169,14 +1213,18 @@ def worker_plan(entries, profile=None, override=None, sample_seconds=5.0):
 def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
                execute=run_process, workers=None, load_sample_seconds=5.0,
                audit_home=False):
-    with _runner_live_lock():
+    runnable, _skipped = _runnable_entries(entries, opted_in)
+    focus_profile = _load_profile() if len(runnable) == FOCUSED_SUITE_LIMIT else None
+    focused_slots = _focused_slot_count(focus_profile) if focus_profile is not None else 0
+    focused = focused_slots > 0
+    lock = _focused_run_slot(focus_profile, focused_slots) if focused else _runner_live_lock()
+    with lock:
         return _run_suites_locked(entries, opted_in, timeout, expensive_timeout,
-                                  root, execute, workers, load_sample_seconds, audit_home)
+                                  root, execute, workers, load_sample_seconds, audit_home,
+                                  focused=focused, focused_slots=focused_slots)
 
 
-def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
-                       execute=run_process, workers=None, load_sample_seconds=5.0,
-                       audit_home=False):
+def _runnable_entries(entries, opted_in):
     runnable = []
     skipped = []
     for path, kind in entries:
@@ -1186,6 +1234,13 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
             runnable.append((path, kind))
         else:
             skipped.append((path, kind))
+    return runnable, skipped
+
+
+def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
+                       execute=run_process, workers=None, load_sample_seconds=5.0,
+                       audit_home=False, focused=False, focused_slots=0):
+    runnable, skipped = _runnable_entries(entries, opted_in)
     failures = []
     with SUITE_OUTCOME_LOCK:
         EXPECTED_FAILURES.clear()
@@ -1259,20 +1314,25 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
     indexed = [(index, relative, kind)
                for index, (relative, kind) in enumerate(runnable, start=1)]
 
-    plan = worker_plan(runnable, profile, override=workers,
-                       sample_seconds=load_sample_seconds if explicit_jobs is None else 0)
+    plan = worker_plan(runnable, profile, override=1 if focused else workers,
+                       sample_seconds=0 if focused or explicit_jobs is not None else load_sample_seconds)
     workers = plan["workers"]
 
     TEST_TMP_ROOT.mkdir(parents=True, exist_ok=True)
     if TMP_ROOT_OVERRIDE:
         print(f"Scratch root: configured {TEST_TMP_ROOT}", flush=True)
-    elif save_measurements:
+    elif save_measurements and not focused:
         owned_tmp_root = _memory_scratch_root(workers)
         if owned_tmp_root is not None:
             suite_tmp_root = owned_tmp_root
             print(f"Scratch root: tmpfs {owned_tmp_root}", flush=True)
         else:
             print(f"Scratch root: disk {TEST_TMP_ROOT} (tmpfs unavailable; standard plan retained)", flush=True)
+    if focused:
+        print(f"Admission path: focused slots ({focused_slots} slots; "
+              f"combined peak RSS bound {MEMORY_RESERVE_BYTES} bytes)", flush=True)
+    else:
+        print("Admission path: whole-run lock", flush=True)
     if explicit_jobs is None:
         print("Selected automatic worker plan: " + json.dumps(plan, sort_keys=True), flush=True)
     else:
@@ -1329,7 +1389,7 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
         if unexpected:
             failures.append(("unexpected-successes", f"expected-failure tests unexpectedly passed: {sorted(unexpected)}"))
     profile.update({"suiteSeconds": suite_seconds, "maxSuiteRssBytes": max_suite_rss})
-    if save_measurements:
+    if save_measurements and not focused:
         _save_profile(profile)
     return runnable, skipped, failures, time.monotonic() - started
 
@@ -1392,15 +1452,25 @@ def main():
             load_sample_seconds = 0.0
     if args.show_jobs:
         opted_in = set(args.include)
-        runnable = [(path, kind) for path, kind in entries
-                    if (kind in {"safe", "component"} or kind in opted_in)
-                    and (path != TERMINALS_SUITE or RESOLVED_CODEX_BIN)]
-        plan = worker_plan(runnable, override=args.jobs, sample_seconds=load_sample_seconds)
-        print("Automatic worker formula: min(max(ceil(CPUs allowed / 4), "
-              f"CPUs allowed - {load_sample_seconds:g}-second median of sampled runnable tasks "
-              "excluding this runner), floor(min(50% of available memory, available memory - "
-              "4 GiB reserve) / measured peak suite RSS), runnable suite count); explicit jobs "
-              "request a count subject to memory and runner capacity")
+        runnable, _skipped = _runnable_entries(entries, opted_in)
+        profile = _load_profile()
+        focused_slots = (_focused_slot_count(profile)
+                         if len(runnable) == FOCUSED_SUITE_LIMIT else 0)
+        focused = focused_slots > 0
+        plan = worker_plan(runnable, profile, override=1 if focused else args.jobs,
+                           sample_seconds=0 if focused else load_sample_seconds)
+        plan["admissionPath"] = "focused-slots" if focused else "whole-run-lock"
+        if focused:
+            plan["focusedSlots"] = focused_slots
+            plan["focusedPeakRssBoundBytes"] = MEMORY_RESERVE_BYTES
+            print(f"Focused worker plan: one worker; {focused_slots} per-user admission slots")
+        else:
+            print("Automatic worker formula: min(max(ceil(CPUs allowed / 4), "
+                  f"CPUs allowed - {load_sample_seconds:g}-second median of sampled runnable tasks "
+                  "excluding this runner), floor(min(50% of available memory, available memory - "
+                  "4 GiB reserve) / measured peak suite RSS), runnable suite count); explicit jobs "
+                  "request a count subject to memory and runner capacity")
+        print("Admission path: " + plan["admissionPath"])
         print("Worker plan: " + json.dumps(plan, sort_keys=True))
         return 0
     if args.list:

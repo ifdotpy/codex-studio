@@ -1,5 +1,6 @@
 """Regression tests for server test discovery and isolated subprocess execution."""
 
+import builtins
 import contextlib
 import ctypes
 from concurrent.futures import ThreadPoolExecutor
@@ -37,6 +38,62 @@ def _save_profile_in_process(profile_path, profile, start_gate):
     RUNNER.TEST_TMP_ROOT = Path(profile_path).parent
     start_gate.wait(timeout=5)
     RUNNER._save_profile(profile)
+
+
+def _focused_runner_process(lock_path, profile_path, scratch_path, started, release,
+                            finished, waiting=None, suite_name="same-suite.py"):
+    RUNNER.RUNNER_LOCK_PATH = Path(lock_path)
+    RUNNER.PROFILE_PATH = Path(profile_path)
+    RUNNER.TEST_TMP_ROOT = Path(scratch_path)
+    RUNNER.available_cpu_count = lambda: 8
+    RUNNER._load_profile = lambda: {
+        "maxSuiteRssBytes": 1024**3,
+        "suiteSeconds": {},
+    }
+    RUNNER._unix_socket_path_error = lambda _path: None
+    original_print = builtins.print
+
+    def fixture_print(*args, **kwargs):
+        if waiting is not None and args and args[0] == "waiting for a focused-run admission slot":
+            waiting.send("waiting")
+        return original_print(*args, **kwargs)
+
+    builtins.print = fixture_print
+
+    def execute(_command, _cwd, _timeout, _environment):
+        started.send("started")
+        release.recv()
+        return 0, None, [], []
+
+    try:
+        result = RUNNER.run_suites(
+            [(suite_name, "safe")], set(), 1, 1,
+            execute=execute, workers=1, load_sample_seconds=0,
+        )
+        finished.send((len(result[0]), result[2]))
+    finally:
+        builtins.print = original_print
+
+
+def _start_focused_process(context, root, observe_wait=False, suite_name="same-suite.py"):
+    started_recv, started_send = context.Pipe(duplex=False)
+    release_recv, release_send = context.Pipe(duplex=False)
+    finished_recv, finished_send = context.Pipe(duplex=False)
+    waiting_recv, waiting_send = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_focused_runner_process,
+        args=(root / "runner-live.lock", root / "runner-profile.json", root / "scratch",
+              started_send, release_recv, finished_send, waiting_send if observe_wait else None,
+              suite_name),
+    )
+    process.start()
+    return process, started_recv, release_send, finished_recv, waiting_recv
+
+
+def _receive(connection):
+    if not connection.poll(10):
+        raise AssertionError("focused-run fixture did not reach its pipe checkpoint")
+    return connection.recv()
 
 
 class ServerSuiteRunner(unittest.TestCase):
@@ -313,7 +370,7 @@ class ServerSuiteRunner(unittest.TestCase):
               mock.patch.object(RUNNER, "TEST_TMP_ROOT", Path(directory)),
               mock.patch.object(RUNNER, "run_process", execute)):
             _runnable, _skipped, failures, _elapsed = RUNNER.run_suites(
-                [("one.py", "safe")], set(), 1, 1, root=ROOT,
+                [("one.py", "safe"), ("two.py", "safe")], set(), 1, 1, root=ROOT,
                 execute=execute, workers=1,
             )
 
@@ -386,6 +443,147 @@ class ServerSuiteRunner(unittest.TestCase):
                         raise RuntimeError("fixture failure")
                 with RUNNER._runner_live_lock():
                     self.assertTrue(lock_path.exists())
+
+    def test_focused_run_completes_while_whole_run_lock_is_held(self):
+        try:
+            context = multiprocessing.get_context("fork")
+        except ValueError:
+            self.skipTest("focused admission process test requires fork")
+        import fcntl
+        with tempfile.TemporaryDirectory(prefix="server-focused-bypass-") as directory:
+            root = Path(directory)
+            lock_path = root / "runner-live.lock"
+            with lock_path.open("a+b") as whole_run_lock:
+                fcntl.flock(whole_run_lock.fileno(), fcntl.LOCK_EX)
+                process, started, release, finished, _waiting = _start_focused_process(context, root)
+                self.assertEqual(_receive(started), "started")
+                release.send("finish")
+                self.assertEqual(_receive(finished), (1, []))
+                process.join(timeout=10)
+                self.assertEqual(process.exitcode, 0)
+
+    def test_focused_admission_never_exceeds_slot_count(self):
+        try:
+            context = multiprocessing.get_context("fork")
+        except ValueError:
+            self.skipTest("focused admission process test requires fork")
+        with tempfile.TemporaryDirectory(prefix="server-focused-capacity-") as directory:
+            root = Path(directory)
+            with mock.patch.object(RUNNER, "FOCUSED_SLOT_CAP", 2):
+                first = _start_focused_process(context, root, suite_name="unrelated-one.py")
+                second = _start_focused_process(context, root, suite_name="unrelated-two.py")
+                self.assertEqual(_receive(first[1]), "started")
+                self.assertEqual(_receive(second[1]), "started")
+                third = _start_focused_process(context, root, observe_wait=True,
+                                               suite_name="third-suite.py")
+                self.assertEqual(_receive(third[4]), "waiting")
+                self.assertFalse(third[1].poll(), "third fake suite started above the two-slot limit")
+                first[2].send("finish")
+                self.assertEqual(_receive(first[3]), (1, []))
+                self.assertEqual(_receive(third[1]), "started")
+                second[2].send("finish")
+                third[2].send("finish")
+                self.assertEqual(_receive(second[3]), (1, []))
+                self.assertEqual(_receive(third[3]), (1, []))
+                for run in (first, second, third):
+                    run[0].join(timeout=10)
+                    self.assertEqual(run[0].exitcode, 0)
+
+    def test_killed_focused_runner_releases_its_slot(self):
+        try:
+            context = multiprocessing.get_context("fork")
+        except ValueError:
+            self.skipTest("focused admission process test requires fork")
+        with tempfile.TemporaryDirectory(prefix="server-focused-kill-") as directory:
+            root = Path(directory)
+            with mock.patch.object(RUNNER, "FOCUSED_SLOT_CAP", 1):
+                killed = _start_focused_process(context, root)
+                self.assertEqual(_receive(killed[1]), "started")
+                killed[0].terminate()
+                killed[0].join(timeout=10)
+                self.assertNotEqual(killed[0].exitcode, 0)
+                replacement = _start_focused_process(context, root)
+                self.assertEqual(_receive(replacement[1]), "started")
+                replacement[2].send("finish")
+                self.assertEqual(_receive(replacement[3]), (1, []))
+                replacement[0].join(timeout=10)
+                self.assertEqual(replacement[0].exitcode, 0)
+
+    def test_simultaneous_same_suite_focus_runs_leave_profile_unchanged(self):
+        try:
+            context = multiprocessing.get_context("fork")
+        except ValueError:
+            self.skipTest("focused admission process test requires fork")
+        with tempfile.TemporaryDirectory(prefix="server-focused-profile-") as directory:
+            root = Path(directory)
+            profile = root / "runner-profile.json"
+            profile.write_bytes(b'{"suiteSeconds":{"same-suite.py":7}}\n')
+            original = profile.read_bytes()
+            with mock.patch.object(RUNNER, "FOCUSED_SLOT_CAP", 2):
+                first = _start_focused_process(context, root)
+                second = _start_focused_process(context, root)
+                self.assertEqual(_receive(first[1]), "started")
+                self.assertEqual(_receive(second[1]), "started")
+                first[2].send("finish")
+                second[2].send("finish")
+                self.assertEqual(_receive(first[3]), (1, []))
+                self.assertEqual(_receive(second[3]), (1, []))
+                for run in (first, second):
+                    run[0].join(timeout=10)
+                    self.assertEqual(run[0].exitcode, 0)
+            self.assertEqual(profile.read_bytes(), original)
+
+    def test_selection_above_focused_threshold_uses_whole_run_lock(self):
+        entered = threading.Event()
+
+        @contextlib.contextmanager
+        def whole_lock():
+            entered.set()
+            yield
+
+        def execute(_command, _cwd, _timeout, _environment):
+            return 0, None, [], []
+
+        with (mock.patch.object(RUNNER, "_runner_live_lock", side_effect=whole_lock),
+              mock.patch.object(RUNNER, "_focused_run_slot",
+                                side_effect=AssertionError("multi-suite selection took focused slot")),
+              mock.patch.object(RUNNER, "_load_profile", return_value={"maxSuiteRssBytes": 100}),
+              mock.patch.object(RUNNER, "_save_profile"),
+              mock.patch.object(RUNNER, "_unix_socket_path_error", return_value=None),
+              contextlib.redirect_stdout(io.StringIO())):
+            _runnable, _skipped, failures, _elapsed = RUNNER.run_suites(
+                [("one.py", "safe"), ("two.py", "safe")], set(), 1, 1,
+                execute=execute, load_sample_seconds=0,
+            )
+        self.assertTrue(entered.is_set())
+        self.assertEqual(failures, [])
+
+    def test_focused_slot_count_respects_measured_rss_and_available_memory(self):
+        with (mock.patch.object(RUNNER, "available_cpu_count", return_value=16),
+              mock.patch.object(RUNNER, "available_memory_bytes", return_value=6 * 1024**3)):
+            self.assertEqual(RUNNER._focused_slot_count({"maxSuiteRssBytes": 100}), 4)
+            self.assertEqual(RUNNER._focused_slot_count({"maxSuiteRssBytes": 3 * 1024**3}), 0)
+        with (mock.patch.object(RUNNER, "available_cpu_count", return_value=16),
+              mock.patch.object(RUNNER, "available_memory_bytes", return_value=3 * 1024**3)):
+            self.assertEqual(RUNNER._focused_slot_count({"maxSuiteRssBytes": 100}), 0)
+
+    def test_show_jobs_reports_focused_and_whole_run_admission(self):
+        entries = [("suite-one.py", "safe"), ("suite-two.py", "safe")]
+        for pattern, expected in (("one", "focused-slots"), ("suite-", "whole-run-lock")):
+            output = io.StringIO()
+            with (mock.patch.object(RUNNER.sys, "argv", ["run.py", "--show-jobs", "--filter", pattern,
+                                                            "--load-sample-seconds", "0"]),
+                  mock.patch.object(RUNNER, "inventory", return_value=entries),
+                  mock.patch.object(RUNNER, "_load_profile", return_value={"maxSuiteRssBytes": 100}),
+                  mock.patch.object(RUNNER, "available_cpu_count", return_value=8),
+                  mock.patch.object(RUNNER, "available_memory_bytes", return_value=16 * 1024**3),
+                  mock.patch.object(RUNNER, "sample_runnable_other_process_count", return_value=0),
+                  contextlib.redirect_stdout(output)):
+                self.assertEqual(RUNNER.main(), 0)
+            self.assertIn(f"Admission path: {expected}", output.getvalue())
+            plan_line = next(line for line in output.getvalue().splitlines()
+                             if line.startswith("Worker plan: "))
+            self.assertEqual(json.loads(plan_line.removeprefix("Worker plan: "))["admissionPath"], expected)
 
     def test_explicit_jobs_reduction_is_reported(self):
         output = io.StringIO()
@@ -726,8 +924,8 @@ class ServerSuiteRunner(unittest.TestCase):
               mock.patch.object(RUNNER, "sample_runnable_other_process_count", return_value=0) as sample,
               contextlib.redirect_stdout(output)):
             self.assertEqual(RUNNER.main(), 0)
-        sample.assert_called_once_with(window_seconds=0.0)
-        self.assertIn("0-second median", output.getvalue())
+        sample.assert_not_called()
+        self.assertIn("Focused worker plan: one worker", output.getvalue())
 
     def test_filtered_show_jobs_skips_load_sampling_when_suites_fit_cpus(self):
         output = io.StringIO()
@@ -739,8 +937,8 @@ class ServerSuiteRunner(unittest.TestCase):
               mock.patch.object(RUNNER, "sample_runnable_other_process_count", return_value=0) as sample,
               contextlib.redirect_stdout(output)):
             self.assertEqual(RUNNER.main(), 0)
-        sample.assert_called_once_with(window_seconds=0.0)
-        self.assertIn("0-second median", output.getvalue())
+        sample.assert_not_called()
+        self.assertIn("Focused worker plan: one worker", output.getvalue())
 
     def test_tmpfs_scratch_root_requires_capacity_for_all_workers_and_cleans_up(self):
         with tempfile.TemporaryDirectory(prefix="server-runner-tmpfs-") as temp:

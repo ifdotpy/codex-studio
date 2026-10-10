@@ -104,10 +104,20 @@ Known product issues and reproductions are in
 [`workspaces/runtime/apps/server/tests/KNOWN-FAILURES.md`](../workspaces/runtime/apps/server/tests/KNOWN-FAILURES.md), while expectation edits
 are tracked in [`workspaces/runtime/apps/server/tests/TEST-STATUS-CHANGES.md`](../workspaces/runtime/apps/server/tests/TEST-STATUS-CHANGES.md).
 Use `python3 workspaces/runtime/apps/server/tests/server/compare_runs.py LOG1 LOG2 ...` to compare failure sets.
-Concurrent runners serialize on one per-user lock held for the whole run. A waiting
-runner prints `waiting for another test run to finish`, then samples load and plans
-workers after the lock is released. The operating system releases the lock if a runner exits abnormally.
-Use `--show-jobs` to inspect the plan. Set `--jobs <count>` or
+Full server runs serialize on one per-user lock held for the whole run. A waiting
+full runner prints `waiting for another test run to finish`, then samples load and
+plans workers after the lock is released. A selection resolving to one runnable
+suite uses a bounded per-user focused slot instead, so it can overlap a full run
+or another focused run. Focused slots are capped at four and by allowed CPUs; their
+combined measured peak RSS is limited by the full planner's available-memory budget
+and existing [4 GiB memory reserve](../workspaces/runtime/apps/server/tests/server/run.py).
+If that budget cannot admit one measured suite, the selection uses the whole-run lock.
+If all focused slots are busy, the runner prints
+`waiting for a focused-run admission slot`. Both lock types are kernel-managed and
+are released when the runner exits. Focused runs keep the same per-suite isolated
+temporary, home, XDG, Codex, Claude, and workspace directories, and do not write
+the shared timing/profile cache. `--show-jobs` reports whether a selection uses
+focused slots or the whole-run lock. Set `--jobs <count>` or
 `CODEX_SERVER_TEST_JOBS` to override it manually.
 Each suite gets separate short temporary, home, XDG, Codex, Claude, and workspace
 directories under the selected scratch root, so parallel suites do not share
