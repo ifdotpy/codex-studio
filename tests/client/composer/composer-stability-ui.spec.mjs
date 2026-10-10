@@ -632,6 +632,12 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         .locator('[data-message="first-send-steady-state"]')
         .waitFor();
       await comparisonPage.waitForFunction(
+        () =>
+          !document.querySelector(".empty-chat-settings") &&
+          document.querySelector(".composer-context-row") &&
+          !document.querySelector(".composer-context-values"),
+      );
+      await comparisonPage.waitForFunction(
         (selectors) =>
           selectors.every((selector) => document.querySelector(selector)),
         geometrySelectors,

@@ -283,29 +283,13 @@ test("draft bootstrap retries pause and recover on explicit activity", async ({
       );
     });
     const waitForIdentityCount = async (count) => {
-      for (let attempt = 0; attempt < 100; attempt++) {
-        if (identityRequests >= count) return;
-        await page.waitForTimeout(20);
-      }
-      throw new Error(
-        `Expected ${count} identity attempts, got ${identityRequests}`,
-      );
+      await expect.poll(() => identityRequests).toBeGreaterThanOrEqual(count);
     };
     const waitForDraftPull = async () => {
-      for (let attempt = 0; attempt < 100; attempt++) {
-        if (draftPulls > 0) return;
-        await page.waitForTimeout(20);
-      }
-      throw new Error(
-        "Recovered draft replication did not issue its baseline pull",
-      );
+      await expect.poll(() => draftPulls).toBeGreaterThan(0);
     };
     const waitForDraftPush = async () => {
-      for (let attempt = 0; attempt < 100; attempt++) {
-        if (draftPushes > 0) return;
-        await page.waitForTimeout(20);
-      }
-      throw new Error("Retained local draft was not pushed after recovery");
+      await expect.poll(() => draftPushes).toBeGreaterThan(0);
     };
     await waitForIdentityCount(1);
     for (const [delay, expected] of [
