@@ -30,6 +30,10 @@ jobs:
           python-version: "3.14"
       - name: Install locked JavaScript dependencies
         run: pnpm install --frozen-lockfile
+      - name: Prepare the Python runtime used by the tooling and client unit tests
+        run: |
+          echo "XDG_CACHE_HOME=$RUNNER_TEMP/codex-studio-cache" >> "$GITHUB_ENV"
+          XDG_CACHE_HOME="$RUNNER_TEMP/codex-studio-cache" python3 workspaces/runtime/apps/server/src/install-cli.py --bin-dir "$RUNNER_TEMP/codex-studio-bin"
       - name: Tooling tests
         run: pnpm run test:tooling
       - name: Pre-commit hook tests
@@ -40,10 +44,6 @@ jobs:
         run: pnpm --filter codex-agents-web run test:api-contract-types
       - name: Web TypeScript test helper project
         run: pnpm run typecheck:client-helper
-      - name: Prepare the Python runtime used by client unit tests
-        run: |
-          echo "XDG_CACHE_HOME=$RUNNER_TEMP/codex-studio-cache" >> "$GITHUB_ENV"
-          XDG_CACHE_HOME="$RUNNER_TEMP/codex-studio-cache" python3 workspaces/runtime/apps/server/src/install-cli.py --bin-dir "$RUNNER_TEMP/codex-studio-bin"
       - name: Client unit tests
         run: pnpm run test:client:unit
       - name: Server bridge tests
