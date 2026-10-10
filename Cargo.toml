@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "workspaces/runtime/apps/diagnostics",
+    "workspaces/runtime/packages/operations",
 ]
 
 [workspace.package]
@@ -21,4 +22,5 @@ let_underscore_must_use = "deny"
 unwrap_used = "warn"
 
 [workspace.dependencies]
+serde = { version = "1.0", default-features = false, features = ["std"] }
 serde_json = { version = "1.0", default-features = false, features = ["std", "arbitrary_precision"] }
