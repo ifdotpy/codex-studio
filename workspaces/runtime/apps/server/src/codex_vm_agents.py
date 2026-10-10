@@ -6,6 +6,7 @@ import json
 from pathlib import Path, PurePosixPath
 import platform
 import subprocess
+import sys
 import time
 from typing import Any, Mapping
 
@@ -34,6 +35,63 @@ def project_id(agent: Mapping[str, Any]) -> str:
         return str(agent["layrProjectId"])
     source = str(agent.get("projectId") or agent.get("hostProjectPath") or agent["cwd"])
     return hashlib.sha256(source.encode()).hexdigest()
+
+
+def project_layr_id(project: Mapping[str, Any]) -> str:
+    """The layr project ID of a new layr chat in this sidebar project. A new chat binds the
+    logical project, and quick creation stores it as the chat's projectId: the project's
+    own ID, or for a destination registration the home project in projectAliases[0], the
+    identity that mergedSidebar groups. An unbound chat uses its folder; a folder project
+    has that folder as its ID."""
+    aliases = project.get("projectAliases") or [None]
+    logical = aliases[0].get("projectId") if isinstance(aliases[0], dict) else None
+    return project_id({"projectId": logical or project.get("id"), "cwd": project.get("path")})
+
+
+def _local_folder(runtime: Any, project: Mapping[str, Any]) -> bool:
+    """Only a project with a folder on this server can start a layr chat here."""
+    locations = project.get("locations")
+    path = str(project.get("path") or "")
+    if isinstance(locations, list) and ("_project_server_id" in runtime.__dict__
+                                        or "_cross_server_service" in runtime.__dict__):
+        from codex_project_locations import local_server
+        server = local_server(runtime)
+        return any(isinstance(row, dict) and row.get("serverId") == server for row in locations)
+    return bool(path) and not path.startswith("project:")
+
+
+def project_readiness(runtime: Any, project: Mapping[str, Any]) -> dict[str, str] | None:
+    """Sidebar readiness for a layr chat: host records only, no VM call. None on a server
+    without layr chats (Linux) or for a project without a folder on this server."""
+    if platform.system() != "Darwin" or not _local_folder(runtime, project):
+        return None
+    from codex_linux_vm_share import import_readiness
+    from codex_linux_workspaces import client
+    try:
+        state_dir = getattr(client(runtime), "state_dir", None)
+    except (RuntimeError, OSError, ValueError):
+        return None  # Without a VM client no layr chat starts; /api/desktop reports the error.
+    return import_readiness(Path(state_dir), project_layr_id(project)) if state_dir else None
+
+
+def project_entity_view(runtime: Any, project: Mapping[str, Any]) -> dict[str, Any]:
+    readiness = project_readiness(runtime, project)
+    return {**project, "layrReadiness": readiness} if readiness else dict(project)
+
+
+def refresh_readiness(runtime: Any) -> None:
+    """Re-project the project entities after an import starts or ends, and after a restart.
+    An unchanged view keeps its sync version. A failure here never stops a chat."""
+    if platform.system() != "Darwin":
+        return
+    from codex_sync_entities import put as sync_entity_put
+    try:
+        with runtime.lock, runtime.db() as db:
+            for row in db.execute("SELECT record FROM runtime_projects").fetchall():
+                record = json.loads(row[0])
+                sync_entity_put(db, "project", str(record["id"]), project_entity_view(runtime, record))
+    except Exception as error:
+        print("layr readiness refresh skipped: " + type(error).__name__ + ": " + str(error)[:300], file=sys.stderr)
 
 
 def finder_view(runtime: Any, agent: Mapping[str, Any]) -> dict[str, Any]:
@@ -73,9 +131,14 @@ def prepare(runtime: Any, agent: Mapping[str, Any]) -> Any:
     key = agent["id"]
     if not agent.get("layrReady"):
         if agent.get("isLead"):
-            result = client(runtime).ensure_layr_project(
-                project_id(agent), str(agent.get("hostProjectPath") or agent["cwd"]),
-                owner=None, request_id="layr-project:" + project_id(agent))
+            try:
+                # The sidebar shows "importing" while this attempt holds the project lock.
+                result = client(runtime).ensure_layr_project(
+                    project_id(agent), str(agent.get("hostProjectPath") or agent["cwd"]),
+                    owner=None, request_id="layr-project:" + project_id(agent),
+                    started=lambda: refresh_readiness(runtime))
+            finally:
+                refresh_readiness(runtime)
             result = request(runtime, "line.bind", {
                 "projectId": result["projectId"], "agentId": key, "line": "main",
             }, "layr-bind:" + key)

@@ -1820,6 +1820,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             startup_memory_mark("monitor-receipt-recovery")
         from codex_project_locations import migrate as migrate_project_locations
         migrate_project_locations(self)
+        # An import that ended with the previous process can leave "importing" in the sidebar.
+        from codex_vm_agents import refresh_readiness
+        refresh_readiness(self)
         startup_memory_mark("runtime-migrations-complete")
         self.prepare_runtime_worker_schema()
         for key in monitor_recovery["acknowledge"]:
@@ -3383,6 +3386,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 sync_monitor_write(db, record)  # type: ignore[no-untyped-call]
             elif table == "complaints":
                 sync_entity_put(db, collection, str(record["id"]), self.complaint_entity_view(db, record))  # type: ignore[no-untyped-call]
+            elif table == "projects":
+                from codex_vm_agents import project_entity_view
+                sync_entity_put(db, collection, str(record["id"]), project_entity_view(self, record))  # type: ignore[no-untyped-call]
             elif table == "work":
                 sync_entity_put(db, collection, str(record["id"]), record)  # type: ignore[no-untyped-call]
                 owners = {result.get("agent") for source in (previous, record) if source

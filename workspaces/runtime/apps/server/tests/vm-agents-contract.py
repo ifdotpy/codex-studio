@@ -25,6 +25,7 @@ fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 from codex_layout import REPOSITORY_ROOT
 from codex_vm_agents import flush_turns, prepare, spawn_spec, workspace_mode
+import codex_linux_vm_share as share
 
 
 class Guest(fixture.NativeGuest):
@@ -37,13 +38,26 @@ class Guest(fixture.NativeGuest):
         self.saves = 0
         self.lost_save = False
         self.merges = 0
+        self.state_dir = root / 'vm-state'
+        self.during_import = []
+        self.fail_import = False
+        self.readiness = lambda: None
         self.script.write_text(fixture.FAKE_NATIVE.replace("import json,sys", "import json,sys,os")
             .replace("'linux-thread'", "'linux-'+str(os.getpid())"))
 
-    def ensure_layr_project(self, project_id, source, owner, request_id):
-        if not self.project.exists():
-            shutil.copytree(source, self.project)
-            self.imports += 1
+    def ensure_layr_project(self, project_id, source, owner, request_id, started=None):
+        # The host records of import_project, under its project lock, for the sidebar state.
+        directory = self.state_dir / 'layr-projects' / project_id
+        with share._project_lock(directory):
+            if started:
+                started()
+            self.during_import.append(started and self.readiness())
+            if self.fail_import:
+                raise ConnectionError('The import upload was lost')
+            if not self.project.exists():
+                shutil.copytree(source, self.project)
+                self.imports += 1
+            (directory / 'project.json').write_text(json.dumps({'projectId': project_id, 'source': source}))
         return {'projectId': project_id, 'cwd': str(self.project), 'owner': 'fixture-lead'}
 
     def request(self, method, params=None, **options):
@@ -160,6 +174,42 @@ class VmAgents(unittest.TestCase):
         second = self.runtime.prepare(self.lead())
         self.assertEqual(second['layrProjectId'], lead['layrProjectId'])
         self.assertEqual(self.guest.imports, 1)
+
+    def sidebar_readiness(self):
+        """The layr state in the project entity that the sidebar receives."""
+        with self.runtime.read_db() as db:
+            row = db.execute("SELECT payload FROM sync_entities WHERE collection='project' AND id=?",
+                             (str(self.project),)).fetchone()
+        return json.loads(row[0])['value'].get('layrReadiness')
+
+    def test_sidebar_shows_the_import_while_the_first_layr_chat_prepares(self):
+        self.guest.readiness = self.sidebar_readiness
+        lead = self.lead()
+        self.assertEqual(self.sidebar_readiness(), {'state': 'not_imported'})
+        self.guest.fail_import = True
+        with self.assertRaises(ConnectionError):
+            prepare(self.runtime, lead)
+        # The attempt ended: the sidebar no longer shows it in progress.
+        self.assertEqual(self.guest.during_import, [{'state': 'importing'}])
+        self.assertEqual(self.sidebar_readiness(), {'state': 'not_imported'})
+        self.guest.fail_import = False
+        prepare(self.runtime, self.runtime.agent(lead['id']))
+        self.assertEqual(self.guest.during_import[-1], {'state': 'importing'})
+        self.assertEqual(self.sidebar_readiness(), {'state': 'ready'})
+
+    def test_restart_replaces_the_importing_state_of_the_previous_process(self):
+        from codex_vm_agents import project_layr_id, refresh_readiness
+        self.lead()
+        key = project_layr_id({'id': str(self.project), 'path': str(self.project)})
+        with share._project_lock(self.guest.state_dir / 'layr-projects' / key):
+            refresh_readiness(self.runtime)
+            self.assertEqual(self.sidebar_readiness(), {'state': 'importing'})
+        # The process stops during the import: nothing refreshes the saved state.
+        self.assertEqual(self.sidebar_readiness(), {'state': 'importing'})
+        self.runtime.close()
+        with patch('codex_linux_workspaces.client', return_value=self.guest):
+            self.runtime = fixture.f.ControlledRuntime(self.root / 'state', fixture.f.f.FakeServer)
+        self.assertEqual(self.sidebar_readiness(), {'state': 'not_imported'})
 
     def test_turn_save_loss_keeps_one_snapshot_and_blocks_next_turn(self):
         lead = prepare(self.runtime, self.lead())

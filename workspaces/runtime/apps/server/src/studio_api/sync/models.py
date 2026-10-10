@@ -924,6 +924,12 @@ class ProjectAliasDto(ContractModel):
     name: str
 
 
+class ProjectLayrReadinessDto(ContractModel):
+    """Whether a new layr chat of the project starts without an import (docs/vm-layr.md)."""
+    state: Literal["ready", "importing", "not_imported", "failed"]
+    error: str | None = None
+
+
 class ProjectEntityDto(ContractModel):
     homeServerId: str | None = None
     locations: list[ProjectLocationDto] | None = None
@@ -945,6 +951,8 @@ class ProjectEntityDto(ContractModel):
     peerTeams: list[ProjectPeerTeamDto] | None = None
     workerBaseRef: str | None = None
     workerBaseRevision: int | None = None
+    # Only macOS servers with a folder of the project set it.
+    layrReadiness: ProjectLayrReadinessDto | None = None
 
 
 class PeerTeamEntityDto(ContractModel):

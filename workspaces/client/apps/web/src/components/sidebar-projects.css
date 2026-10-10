@@ -60,6 +60,53 @@
 .project-tree-heading:focus-within .project-tree-action {
   opacity: 1;
 }
+/* The LAYR chip matches .workspace-mode-badge; the dot tells the VM import state. */
+.project-tree-toggle .project-layr-readiness {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 6px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.project-layr-readiness::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.project-layr-readiness[data-state="ready"]::before {
+  color: light-dark(#18713a, #6ed491);
+}
+.project-layr-readiness[data-state="importing"]::before {
+  color: var(--accent);
+  animation: project-layr-importing 2s ease-in-out infinite;
+}
+.project-layr-readiness[data-state="not_imported"]::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px currentColor;
+}
+.project-layr-readiness[data-state="failed"]::before {
+  color: light-dark(#956000, #f0bb60);
+}
+@keyframes project-layr-importing {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .project-layr-readiness[data-state="importing"]::before {
+    animation: none;
+  }
+}
 .project-chats {
   padding-left: 24px;
 }

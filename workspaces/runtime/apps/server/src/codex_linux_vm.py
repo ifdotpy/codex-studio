@@ -23,7 +23,7 @@ import subprocess
 import tarfile
 import tempfile
 import time
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 import uuid
 import zlib
 
@@ -924,10 +924,12 @@ class Client:
 
     def ensure_layr_project(self, project_id: str, source: str | Path, owner: str | None = None,
                             request_id: str | None = None, *, incremental: bool = False,
-                            expected_state_id: str | None = None) -> dict[str, Any]:
+                            expected_state_id: str | None = None,
+                            started: Callable[[], None] | None = None) -> dict[str, Any]:
         from codex_linux_vm_share import import_project
         return import_project(self, project_id, source, owner, request_id,
-                              incremental=incremental, expected_state_id=expected_state_id)
+                              incremental=incremental, expected_state_id=expected_state_id,
+                              started=started)
 
     def layr_status(self) -> dict[str, Any]:
         state = self.status()

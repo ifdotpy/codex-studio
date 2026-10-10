@@ -11,6 +11,7 @@ import {
   type SidebarTarget,
 } from "../components/sidebar/services";
 import type { Project } from "../types";
+import type { LayrReadinessEntry } from "../components/sidebar/LayrReadiness";
 import { mergeSidebar, type MergedSidebar } from "./mergedSidebar";
 import {
   mergedSidebarPreferences,
@@ -347,5 +348,28 @@ export function createMergedSidebarServices(
         : model.projectReferences.get(path)?.path || path,
     chatPath: (id: string) => model.chatReferences.get(id)?.path || "",
     alias: (target: SidebarTarget) => aliases[sidebarOwner(model, target)],
+    layrReadiness: (path: string) => sidebarLayrReadiness(model, aliases, path),
   };
+}
+
+/** Each server reports layr readiness for its own folder of the project; Linux servers report none. */
+export function sidebarLayrReadiness(
+  model: MergedSidebar,
+  aliases: Record<string, string>,
+  path: string,
+): LayrReadinessEntry[] {
+  const seen = new Set<string>();
+  const entries: LayrReadinessEntry[] = [];
+  for (const member of model.groups.get(path)?.members || []) {
+    const readiness = member.project.layrReadiness;
+    if (!readiness || seen.has(member.source.id)) continue;
+    seen.add(member.source.id);
+    entries.push({
+      ...(model.sources.length > 1
+        ? { server: aliases[member.source.id] || member.source.id }
+        : {}),
+      readiness,
+    });
+  }
+  return entries;
 }

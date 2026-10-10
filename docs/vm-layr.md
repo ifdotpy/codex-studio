@@ -30,6 +30,26 @@ It creates an `import-*` line for review.
 It does not replace the main line.
 Use `layr export` when you need a normal copy outside the VM.
 
+### Sidebar readiness
+
+On macOS, each project with a folder on this server has `layrReadiness` in its
+project entity. A new chat binds the logical project, so its layr project ID is
+the SHA-256 of that project ID (`project_layr_id` in `codex_vm_agents.py`, the
+input of `project_id`). The state comes from the host records in
+`linux-vm/layr-projects/<id>/` (`import_readiness`); Studio does not call the VM
+or read the mount table:
+
+- `ready`: `project.json` exists, so a layr chat starts without an import.
+- `importing`: another holder has `import.lock`, and `project.json` is missing.
+- `failed`: `import-error.json` has the reason of the last attempt, or an import
+  receipt has no result after its attempt ended.
+- `not_imported`: no record; the first layr chat imports the Mac folder.
+
+Each import attempt removes `import-error.json` when it gets the project lock and
+writes it again if the attempt fails. The project entity changes when an attempt
+gets the lock, when it ends, at backend start, and with each project write.
+Linux servers send no `layrReadiness`.
+
 ## Mac share
 
 Samba serves each project's `main/` and `states/` folders.

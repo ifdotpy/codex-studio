@@ -8701,6 +8701,7 @@ export interface components {
       homeServerId?: string | null;
       /** Id */
       id: string;
+      layrReadiness?: components["schemas"]["ProjectLayrReadinessDto"] | null;
       /** Locations */
       locations?: components["schemas"]["ProjectLocationDto"][] | null;
       /** Locationsrevision */
@@ -8736,6 +8737,19 @@ export interface components {
       name: string;
       /** Parentid */
       parentId?: string | null;
+    };
+    /**
+     * ProjectLayrReadinessDto
+     * @description Whether a new layr chat of the project starts without an import (docs/vm-layr.md).
+     */
+    ProjectLayrReadinessDto: {
+      /** Error */
+      error?: string | null;
+      /**
+       * State
+       * @enum {string}
+       */
+      state: "ready" | "importing" | "not_imported" | "failed";
     };
     /** ProjectLocation */
     ProjectLocation: {

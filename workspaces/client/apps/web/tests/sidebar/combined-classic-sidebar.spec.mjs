@@ -85,6 +85,8 @@ for (const [theme, viewport] of [
                   name: "Home project",
                 },
               ],
+              // Only the remote server reports layr support for its folder.
+              layrReadiness: { state: "importing" },
             }
           : {}),
       });
@@ -142,6 +144,19 @@ for (const [theme, viewport] of [
         hasText: "Home project",
       });
       await expect(projectName).toBeVisible();
+      // Only the remote server reports readiness; the button keeps its name.
+      const readiness = projectName.locator(".project-layr-readiness");
+      await expect(readiness).toHaveText("LAYR");
+      await expect(readiness).toHaveAttribute("data-state", "importing");
+      await expect(readiness).toHaveAttribute(
+        "title",
+        "REM: Importing into the VM",
+      );
+      await expect(
+        sidebar.getByRole("button", { name: "Home project", exact: true }),
+      ).toHaveAccessibleDescription(
+        "REM: Importing into the VM. Drag to reorder. Alt + Up or Down also works.",
+      );
       await expect(projectName).not.toHaveAttribute("aria-expanded");
       expect(await projectName.evaluate((element) => element.tagName)).toBe(
         "BUTTON",

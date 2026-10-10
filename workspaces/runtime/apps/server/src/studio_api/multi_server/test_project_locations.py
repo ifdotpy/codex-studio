@@ -310,6 +310,100 @@ class ProjectLocationTests(unittest.TestCase):
         self.assertEqual(len(self.home.projects()['items'][0]['locations']), 1)
 
 
+class LayrReadinessTests(unittest.TestCase):
+    """The project data each server sends to its sidebar predicts the layr project of a new chat."""
+
+    def setUp(self) -> None:
+        from types import SimpleNamespace
+        self.case = CROSS['CrossServer']()
+        self.case.setUp()
+        self.addCleanup(self.case.tearDown)
+        self.case.root = self.case.root.resolve()
+        self.home, self.remote = self.case.home, self.case.remote
+        self.vm = self.case.root / 'vm-state'
+        for runtime in (self.home, self.remote):
+            runtime._linux_vm_client = SimpleNamespace(state_dir=self.vm)
+        system = patch('codex_vm_agents.platform.system', return_value='Darwin')
+        system.start()
+        self.addCleanup(system.stop)
+        self.project = self.home.projects({'path': str(self.case.root / 'home'), 'name': 'Shared'})
+
+    @staticmethod
+    def record(runtime: Any, key: str) -> dict[str, Any]:
+        return cast(dict[str, Any], next(row for row in runtime.projects()['items'] if row['id'] == key))
+
+    @staticmethod
+    def entity(runtime: Any, key: str) -> tuple[int, dict[str, Any]]:
+        with runtime.read_db() as db:
+            row = db.execute("SELECT seq,payload FROM sync_entities WHERE collection='project' AND id=?",
+                             (key,)).fetchone()
+        return int(row[0]), cast(dict[str, Any], json.loads(row[1])['value'])
+
+    def chat(self, runtime: Any, cwd: str, **binding: str) -> dict[str, Any]:
+        import uuid
+        return cast(dict[str, Any], runtime.new_lead({'id': str(uuid.uuid4()), 'cwd': cwd, 'reuse_empty': False,
+                                                      'workspaceMode': 'layr', **binding}))
+
+    def test_new_layr_chats_use_the_project_readiness_key(self) -> None:
+        from codex_vm_agents import project_id, project_layr_id
+        project = self.record(self.home, self.project['id'])
+        key = project_layr_id(project)
+        bound = self.chat(self.home, project['path'], project_id=project['id'], project_server_id='home')
+        unbound = self.chat(self.home, project['path'])
+        self.assertEqual(bound['executionMode'], 'vm')
+        self.assertEqual((project_id(bound), project_id(unbound)), (key, key))
+        # A destination registration names the home project; its chats bind that project.
+        remote_path = str(self.case.root / 'remote')
+        self.home.projects({'action': 'add_location', 'project': project['id'], 'server': 'remote',
+                            'path': remote_path, 'request_id': 'location-one'})
+        registration = self.record(self.remote, remote_path)
+        self.assertEqual(registration['projectAliases'][0]['projectId'], project['id'])
+        destination = self.chat(self.remote, remote_path, project_id=project['id'], project_server_id='home')
+        self.assertEqual(project_id(destination), project_layr_id(registration))
+        self.assertEqual(project_layr_id(registration), key)
+        # A logical project with a folder here: the folder record and the chat use its ID.
+        created = self.home.projects({'server': 'local', 'path': project['path'], 'request_id': 'abstract-local'})
+        logical = self.record(self.home, created['projectId'])
+        chat = self.chat(self.home, project['path'], project_id=logical['id'], project_server_id='home')
+        self.assertEqual(project_id(chat), project_layr_id(logical))
+        self.assertEqual(project_layr_id(self.record(self.home, project['path'])), project_layr_id(logical))
+
+    def test_project_entity_follows_the_host_records(self) -> None:
+        from codex_vm_agents import project_layr_id, refresh_readiness
+        key = project_layr_id(self.record(self.home, self.project['id']))
+        refresh_readiness(self.home)
+        first, value = self.entity(self.home, self.project['id'])
+        self.assertEqual(value['layrReadiness'], {'state': 'not_imported'})
+        directory = self.vm / 'layr-projects' / key
+        directory.mkdir(parents=True)
+        (directory / 'import-error.json').write_text(json.dumps({'projectId': key, 'error': 'The VM is not running.'}))
+        refresh_readiness(self.home)
+        failed, value = self.entity(self.home, self.project['id'])
+        self.assertEqual(value['layrReadiness'], {'state': 'failed', 'error': 'The VM is not running.'})
+        self.assertGreater(failed, first)
+        (directory / 'project.json').write_text(json.dumps({'projectId': key, 'source': self.project['path']}))
+        refresh_readiness(self.home)
+        ready, value = self.entity(self.home, self.project['id'])
+        self.assertEqual(value['layrReadiness'], {'state': 'ready'})
+        refresh_readiness(self.home)
+        self.assertEqual(self.entity(self.home, self.project['id'])[0], ready)
+        # Each project write carries the current state as well.
+        self.home.projects({'action': 'rename', 'path': self.project['id'], 'name': 'Renamed', 'expected_revision': 0})
+        self.assertEqual(self.entity(self.home, self.project['id'])[1]['layrReadiness'], {'state': 'ready'})
+
+    def test_no_readiness_without_layr_support_or_a_folder_here(self) -> None:
+        from codex_vm_agents import refresh_readiness
+        remote_only = self.home.projects({'server': 'remote', 'path': str(self.case.root / 'remote'),
+                                          'request_id': 'remote-only'})['projectId']
+        refresh_readiness(self.home)
+        self.assertNotIn('layrReadiness', self.entity(self.home, remote_only)[1])
+        self.assertIn('layrReadiness', self.entity(self.home, self.project['id'])[1])
+        with patch('codex_vm_agents.platform.system', return_value='Linux'):
+            self.home.projects({'action': 'rename', 'path': self.project['id'], 'name': 'On Linux',
+                                'expected_revision': 0})
+            self.assertNotIn('layrReadiness', self.entity(self.home, self.project['id'])[1])
+
+
 class SignedProjectLocationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.case = SIGNED['SignedIntegration']()

@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from contextlib import nullcontext
 from unittest.mock import patch
@@ -124,6 +125,38 @@ class HostImportTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.client.ensure_layr_project("app", self.root, incremental=True)
 
+    def test_failed_import_keeps_its_reason_until_an_attempt_succeeds(self):
+        self.client.fail_upload = True
+        with patch("codex_linux_workspace_sync.archive_source", side_effect=self.archive):
+            with self.assertRaises(LinuxVMError):
+                self.client.ensure_layr_project("app", self.root, request_id="same")
+            report = json.loads((self.root / "layr-projects/app/import-error.json").read_text())
+            self.assertEqual((report["projectId"], report["error"]), ("app", "lost"))
+            self.assertEqual(share.import_readiness(self.root, "app"), {"state": "failed", "error": "lost"})
+            self.client.fail_upload = False
+            self.client.ensure_layr_project("app", self.root, request_id="same")
+        self.assertFalse((self.root / "layr-projects/app/import-error.json").exists())
+        self.assertEqual(share.import_readiness(self.root, "app"), {"state": "ready"})
+
+    def test_failed_check_of_an_existing_project_is_recorded(self):
+        def stopped(method, params=None, **kwargs):
+            raise LinuxVMError("The VM is not running.")
+        with patch.object(self.client, "call", side_effect=stopped):
+            with self.assertRaises(LinuxVMError):
+                self.client.ensure_layr_project("app", self.root)
+        self.assertEqual(share.import_readiness(self.root, "app"),
+                         {"state": "failed", "error": "The VM is not running."})
+
+    def test_started_runs_once_the_attempt_holds_the_project_lock(self):
+        seen = []
+        with patch("codex_linux_workspace_sync.archive_source", side_effect=self.archive):
+            self.client.ensure_layr_project(
+                "app", self.root, request_id="first",
+                started=lambda: seen.append(share.import_readiness(self.root, "app")))
+        self.assertEqual(seen, [{"state": "importing"}])
+        self.assertEqual(share.import_readiness(self.root, "app"), {"state": "ready"})
+
+
     def test_mac_mount_types_the_password_on_a_controlling_terminal(self):
         # mount_smbfs reads the password only from /dev/tty, never from a pipe.
         with tempfile.TemporaryDirectory() as name:
@@ -243,6 +276,72 @@ class HostImportTests(unittest.TestCase):
                         {"source": "//studio-view@127.0.0.1:45000/app", "options": "smbfs, local"}):
             with self.subTest(foreign=foreign), self.assertRaisesRegex(LinuxVMError, "different filesystem"):
                 self.mount_case([foreign], self.bridge(45000))
+
+
+class ImportReadinessTests(unittest.TestCase):
+    """The sidebar state of a layr project, from the host records of import_project only."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.directory = self.root / "layr-projects/app"
+
+    def state(self):
+        return share.import_readiness(self.root, "app")
+
+    def hold_lock(self):
+        """Hold import.lock from a second open file, as an import in another thread does."""
+        entered, release = threading.Event(), threading.Event()
+
+        def hold():
+            with share._project_lock(self.directory):
+                entered.set()
+                release.wait(10)
+
+        thread = threading.Thread(target=hold)
+        thread.start()
+        self.assertTrue(entered.wait(10))
+        self.addCleanup(thread.join, 10)
+        self.addCleanup(release.set)
+
+    def test_no_record_is_not_imported_and_reading_creates_nothing(self):
+        self.assertEqual(self.state(), {"state": "not_imported"})
+        self.assertFalse((self.root / "layr-projects").exists())
+        self.directory.mkdir(parents=True)
+        (self.directory / "import.lock").touch()
+        self.assertEqual(self.state(), {"state": "not_imported"})
+
+    def test_held_lock_without_a_project_record_is_importing(self):
+        self.hold_lock()
+        self.assertEqual(self.state(), {"state": "importing"})
+
+    def test_project_record_is_ready_even_while_a_chat_start_holds_the_lock(self):
+        self.directory.mkdir(parents=True)
+        (self.directory / "project.json").write_text(json.dumps({"projectId": "app", "source": "/mac"}))
+        self.assertEqual(self.state(), {"state": "ready"})
+        self.hold_lock()
+        self.assertEqual(self.state(), {"state": "ready"})
+
+    def test_failure_record_gives_the_reason(self):
+        self.directory.mkdir(parents=True)
+        (self.directory / "import-error.json").write_text(json.dumps({"projectId": "app", "error": "disk full"}))
+        self.assertEqual(self.state(), {"state": "failed", "error": "disk full"})
+
+    def test_receipt_without_result_after_its_attempt_is_failed(self):
+        self.directory.mkdir(parents=True)
+        receipt = self.directory / ("import-" + "a" * 64 + ".json")
+        receipt.write_text(json.dumps({"uploadId": "a" * 64}))
+        self.assertEqual(self.state()["state"], "failed")
+        self.assertIn("stopped before it finished", self.state()["error"])
+        receipt.write_text(json.dumps({"uploadId": "a" * 64, "result": {"projectId": "app"}}))
+        self.assertEqual(self.state(), {"state": "not_imported"})
+
+    def test_unreadable_record_is_a_visible_failure(self):
+        self.directory.mkdir(parents=True)
+        (self.directory / "import-error.json").write_text("{")
+        self.assertEqual(self.state()["state"], "failed")
+        self.assertIn("unreadable", self.state()["error"])
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ import re
 import secrets
 import subprocess
 import time
-from typing import Any, Iterator, TYPE_CHECKING, cast
+from typing import Any, Callable, Iterator, TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from codex_linux_vm import Client
@@ -47,6 +47,77 @@ def _project_lock(directory: Path) -> Iterator[None]:
             yield
         finally:
             fcntl.flock(lease, fcntl.LOCK_UN)
+
+
+@contextmanager
+def _import_attempt(directory: Path, project_id: str, started: Callable[[], None] | None) -> Iterator[None]:
+    """One import attempt under the project lock. import-error.json describes the last
+    finished attempt: this attempt removes it, and writes it again if the attempt fails.
+    import_readiness shows that reason until the next attempt."""
+    with _project_lock(directory):
+        report = directory / 'import-error.json'
+        report.unlink(missing_ok=True)
+        if started is not None:
+            started()
+        try:
+            yield
+        except Exception as error:
+            try:
+                _save(report, {'projectId': project_id, 'error': (str(error) or type(error).__name__)[:500],
+                               'at': time.time()})
+            except OSError:
+                pass  # The import error stays the visible result.
+            raise
+
+
+def _lock_held(path: Path) -> bool:
+    """Whether another holder has the project lock now. Never creates the lock file.
+    A shared probe delays a waiting _project_lock by one 0.1 s retry at most."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return False
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    else:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(descriptor)
+
+
+_RECEIPT = re.compile(r'import-[0-9a-f]{64}\.json')
+
+
+def import_readiness(state_dir: Path, project_id: str) -> dict[str, str]:
+    """Whether a new layr chat of this project starts without an import. It reads only the
+    host records of import_project: no VM call and no mount table.
+
+    - ready: project.json exists, so the VM had the project at the last import or check.
+    - importing: another thread or process holds import.lock and project.json is missing.
+    - failed: import-error.json has the reason of the last attempt, or an import receipt
+      has no result after its attempt ended (for example, the backend stopped).
+    - not_imported: no record; the first layr chat imports the Mac folder.
+    """
+    directory = state_dir / 'layr-projects' / _id(project_id)
+    try:
+        if (directory / 'project.json').exists():
+            # A held lock here is a chat start or a remount of the existing VM project.
+            return {'state': 'ready'}
+        if _lock_held(directory / 'import.lock'):
+            return {'state': 'importing'}
+        report = directory / 'import-error.json'
+        if report.exists():
+            return {'state': 'failed', 'error': str(json.loads(report.read_text())['error'])[:500]}
+        if directory.is_dir() and any(_RECEIPT.fullmatch(path.name) and 'result' not in json.loads(path.read_text())
+                                      for path in directory.iterdir()):
+            return {'state': 'failed', 'error': 'The last import stopped before it finished. '
+                                                'The next layr chat continues it.'}
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        return {'state': 'failed', 'error': 'The import records are unreadable: ' + str(error)[:300]}
+    return {'state': 'not_imported'}
 
 
 def _credential(client: Client) -> str:
@@ -229,7 +300,9 @@ def upload_archive(client: Client, archive: Path, begin: dict[str, Any], operati
 
 def import_project(client: Client, project_id: str, source: str | Path, owner: str | None,
                    request_id: str | None, *, incremental: bool,
-                   expected_state_id: str | None) -> dict[str, Any]:
+                   expected_state_id: str | None,
+                   started: Callable[[], None] | None = None) -> dict[str, Any]:
+    """`started` runs once this attempt holds the project lock; it must not raise."""
     from codex_linux_vm import LinuxVMError
     from codex_linux_workspace_sync import archive_source
     project_id = _id(project_id)
@@ -239,7 +312,7 @@ def import_project(client: Client, project_id: str, source: str | Path, owner: s
     # UUID-derived subrequest identities stay bounded for the guest protocol.
     operation = hashlib.sha256(identity.encode()).hexdigest()
     directory = client.state_dir / 'layr-projects' / project_id
-    with _project_lock(directory):
+    with _import_attempt(directory, project_id, started):
         if not incremental:
             try:
                 existing = client.call('project.ensure', {'projectId': project_id}, timeout=30)

@@ -54,6 +54,10 @@ import {
 } from "./shell/messages/PeerTeams";
 
 import SidebarRow from "./SidebarRow";
+import ProjectLayrReadiness, {
+  describeWithLayrReadiness,
+  layrReadinessSummary,
+} from "./sidebar/LayrReadiness";
 import { readServerAliases } from "../servers/registry";
 import {
   DEFAULT_LOCAL_SERVER_ALIAS,
@@ -1278,6 +1282,10 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
             filtered.filter((agent) => agent.cwd === group.path).length -
               group.chats.length,
           );
+          const layr = layrReadinessSummary(
+            services.layrReadiness?.(group.path) ??
+              (group.layrReadiness ? [{ readiness: group.layrReadiness }] : []),
+          );
           return (
             <section
               className="sidebar-project"
@@ -1292,12 +1300,16 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                     group.path,
                     allProjectGroups.map((item) => item.path),
                   )}
-                  aria-description="Drag to reorder. Alt + Up or Down also works."
+                  aria-description={describeWithLayrReadiness(
+                    layr,
+                    "Drag to reorder. Alt + Up or Down also works.",
+                  )}
                   className="project-tree-toggle"
                   title={services.displayPath?.(group.path) || group.path}
                 >
                   <FolderOpen size={18} />
                   <span title={group.name}>{group.name}</span>
+                  <ProjectLayrReadiness summary={layr} />
                 </UnstyledButton>
                 {!archive && (!compact || !!group.path) && (
                   <ActionIcon
