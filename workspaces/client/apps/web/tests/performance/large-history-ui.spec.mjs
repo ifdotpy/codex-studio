@@ -1,4 +1,12 @@
-import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
+import {
+  readTestState,
+  readFixtureSyncContract,
+  stubEntityState,
+  installApiSchemaFixtureHeaders,
+  entityPullFixtureForRequest,
+  test,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { mkdtemp } from "node:fs/promises";
@@ -80,10 +88,8 @@ test("Large history @performance", async ({ context }) => {
   page.setDefaultTimeout(30000);
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
+  installApiSchemaFixtureHeaders(page);
   await page.addInitScript(() => {
-    window.EventSource = class extends EventTarget {
-      close() {}
-    };
     window.largeHistoryClickAt = 0;
     document.addEventListener(
       "pointerdown",
@@ -118,13 +124,34 @@ test("Large history @performance", async ({ context }) => {
       ids: items.filter((item) => item.role === "tool").map((item) => item.id),
     },
   );
-  await page.route("**/api/sync/**", (r) =>
-    r.fulfill({
-      status: 404,
-      json: { error: "Isolated transcript transport" },
-    }),
-  );
+  const syncContract = await readFixtureSyncContract(origin);
+  await stubEntityState(page, state, syncContract);
+  const transcript = {
+    items,
+    agent: lead,
+    historyVersion: "large-history-fixture",
+    truncated: false,
+    nextAfterCursor: null,
+    nextCursor: null,
+    tail: null,
+    unavailable: null,
+  };
   const deliveries = [];
+  await page.route("**/api/sync/pull?*", (route) => {
+    const requestUrl = route.request().url();
+    const url = new URL(requestUrl);
+    const scope = url.searchParams.get("scope");
+    if (scope === `transcript:${lead.id}`) deliveries.push(Date.now());
+    return route.fulfill({
+      json: {
+        workspaceId: syncContract.identity.workspaceId,
+        ...entityPullFixtureForRequest(state, requestUrl, {
+          transcriptSeq: 1,
+          ...(scope === `transcript:${lead.id}` ? { transcript } : {}),
+        }),
+      },
+    });
+  });
   let pageRequests = 0;
   const pageRequestUrls = [];
   await page.route("**/api/transcript?*", async (r) => {
@@ -166,6 +193,20 @@ test("Large history @performance", async ({ context }) => {
   );
   const start = Date.now();
   await page.locator(`[data-chat="${lead.id}"]`).click();
+  await page.waitForFunction(
+    (id) => {
+      const root = [...document.querySelectorAll("#messages")].find((node) => {
+        const bounds = node.getBoundingClientRect();
+        return bounds.width > 0 && bounds.height > 0;
+      });
+      if (!root) return false;
+      root.dispatchEvent(
+        new CustomEvent("studio-history-reveal", { detail: id }),
+      );
+      return !!root.querySelector(`[data-message="${CSS.escape(id)}"]`);
+    },
+    `result-${turns - 1}`,
+  );
   await page.locator(`[data-message="result-${turns - 1}"]`).waitFor();
   const clickedAt = await page.evaluate(() => window.largeHistoryClickAt);
   const painted = Date.now();
@@ -241,6 +282,22 @@ test("Large history @performance", async ({ context }) => {
     await page
       .locator(`[data-message="result-${turns - 1}"]`)
       .waitFor({ state: "visible" });
+    await page.waitForFunction(
+      (id) => {
+        const root = [...document.querySelectorAll("#messages")].find(
+          (node) => {
+            const bounds = node.getBoundingClientRect();
+            return bounds.width > 0 && bounds.height > 0;
+          },
+        );
+        if (!root) return false;
+        root.dispatchEvent(
+          new CustomEvent("studio-history-reveal", { detail: id }),
+        );
+        return !!root.querySelector(`[data-message="${CSS.escape(id)}"]`);
+      },
+      `tool-${turns - 1}-0`,
+    );
     await page
       .locator(`[data-turn="turn-${turns - 1}"] .turn-work > summary`)
       .first()
@@ -299,14 +356,16 @@ test("Large history @performance", async ({ context }) => {
       .locator(`[data-turn="turn-${turns - 1}"] .turn-work`)
       .first();
     await group.locator(":scope > summary").click();
-    assert.equal(await tool.evaluate((node) => node.isConnected), true);
-    assert.equal(await output.evaluate((node) => node.isConnected), true);
+    assert.equal(await tool.evaluate((node) => node.isConnected), false);
+    assert.equal(await output.evaluate((node) => node.isConnected), false);
     await group.locator(":scope > summary").click();
     await page
       .locator(`[data-message="tool-${turns - 1}-0"] .tool-output`)
       .waitFor();
     assert.equal(
-      await tool.evaluate((node) => node.open),
+      await page
+        .locator(`[data-message="tool-${turns - 1}-0"]`)
+        .evaluate((node) => node.open),
       true,
       "Reopening the group preserves the selected tool details",
     );

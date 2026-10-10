@@ -11,6 +11,16 @@ owned by this app's installer and service unit. Focused check:
 `python3 -B -m unittest discover -s workspaces/runtime/apps/vm-guest -p test_service.py -v`
 from the repository root.
 
+The layr parts (the root broker `layr_admin.py`, `layr_projects.py`, `layr_agents.py` and
+the host_exec slots) have their own focused checks:
+`python3 -B -m unittest discover -s workspaces/runtime/apps/vm-guest -p 'test_*layr*.py' -v`
+and `test_host_exec_slot_io.py`. `test_layr_e2e.py` is an opt-in end-to-end run with a
+real layr daemon: run it as root on Linux with btrfs, with `LAYR_E2E_ROOT` set to the
+daemon's store. `test_mac_sync_e2e.py` runs Mac folder sync rounds the same way and also
+needs `STUDIO_SERVER_SRC` (the server `src` folder). Provisioning copies the vendored layr sources
+(`workspaces/runtime/apps/layr`) to `/opt/codex-studio/vm/layr`, and `install-layr.sh`
+builds them in the guest.
+
 The service runs as `studio`. It listens on vsock port 4050. The protocol is in
 [linux-vm-workspaces.md](../../../../docs/linux-vm-workspaces.md).
 
@@ -19,11 +29,11 @@ The host sources are `workspaces/runtime/apps/vm-guest` and
 `/opt/codex-studio/vm/guest` and the selected runtime files to
 `/opt/codex-studio/scripts`:
 
-- `codex_workspace_images.py`
-- `codex_workspace_linux.py`
 - `codex_process_supervisor.py`
 - `codex_open_file_limit.py`
 - `codex_records.py`
+- `codex_file_lock.py`
+- `codex_private_paths.py`
 
 Provisioning also stages the Claude bridge workspace and the pinned pnpm
 workspace metadata under `/opt/codex-studio`. The guest installs the same
@@ -37,13 +47,13 @@ Mount the btrfs data disk at `/var/lib/codex-studio`. Use the
 
 The installer creates the user and systemd units. The unit expands the data
 filesystem at each boot. The service reports readiness after it binds its socket.
-A service restart preserves detached provider owners and the workspace namespace.
+A service restart preserves detached provider owners.
 A VM reboot ends those processes. A lost process remains visible as `lost`.
 
-The installer permits unprivileged user namespaces in this dedicated Ubuntu VM.
-It sets runtime files to root ownership. Credential files stay in the service
-user's home with mode 0600. State, source trees, and workspace layers stay on the
-data disk. The installer does not install provider binaries or credentials.
+The installer sets runtime files to root ownership. The guest service stays non-root.
+A separate root broker owns layr metadata, user creation and line lifecycle.
+Provider commands run as the stored line owner. Credential profiles stay private in that user's home.
+State and source trees stay on the data disk. The installer does not provide account credentials.
 
 Run the contract tests:
 
@@ -67,7 +77,8 @@ that service through sudo:
 python3 workspaces/runtime/apps/vm-guest/test_linux_integration.py --socket /var/lib/codex-studio/guest/test.sock
 ```
 
-The test checks a btrfs base, a private workspace, a Git commit, and bundle fetch.
+The test checks source upload and native provider transport on the data disk.
+Use the Studio layr caller suite for owned line and real provider checks.
 It also checks raw and native provider processes across a real systemd restart.
 An exec command runs for 65 seconds and returns its result through the same
 connection. A retry on a new connection retrieves its saved result. The test also

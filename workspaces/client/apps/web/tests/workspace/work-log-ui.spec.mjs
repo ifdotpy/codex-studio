@@ -1,6 +1,16 @@
-import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
+import {
+  readTestState,
+  syncIdentityFixture,
+  entityPullFixtureForRequest,
+  installApiSchemaFixtureHeaders,
+  apiSchemaHeaders,
+  spawnFixture as spawn,
+  test,
+} from "../playwright.mjs";
 // Final answers, work disclosure, manual choice, and scroll intent. No model calls.
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { createInterface } from "node:readline";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -132,40 +142,64 @@ test("work log ui", async ({ browser: _browser }) => {
     });
     browser = _browser;
     page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    installApiSchemaFixtureHeaders(page);
     page.setDefaultTimeout(10000);
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
-    await page.addInitScript(() => {
-      window.streams = [];
-      window.EventSource = class extends EventTarget {
-        constructor(url) {
-          super();
-          this.url = url;
-          window.streams.push(this);
-        }
-        close() {
-          window.streams = window.streams.filter((s) => s !== this);
-        }
-      };
-    });
-    await page.route("**/api/sync/**", (r) =>
-      r.fulfill({ status: 404, json: { error: "HTTP fixture" } }),
+    const backendIdentity = await (
+      await fetch(`${origin}/api/sync/identity`)
+    ).json();
+    const identityResponse = syncIdentityFixture(backendIdentity.workspaceId);
+    const workspaceId = identityResponse.workspaceId;
+    let transcriptSeq = 1;
+    await page.route("**/api/sync/identity", (r) =>
+      r.fulfill({ json: identityResponse }),
     );
+    await page.route("**/api/sync/pull?*", (r) => {
+      const requestUrl = r.request().url();
+      const scope = new URL(requestUrl).searchParams.get("scope");
+      return r.fulfill({
+        json: {
+          workspaceId,
+          ...entityPullFixtureForRequest(state, requestUrl, {
+            transcriptSeq,
+            ...(scope === `transcript:${lead.id}`
+              ? { transcript: transcript() }
+              : {}),
+          }),
+        },
+      });
+    });
     await page.route("**/api/transcript?*", (r) =>
       new URL(r.request().url()).searchParams.get("id") === lead.id
         ? r.fulfill({ json: transcript() })
         : r.fallback(),
     );
     const emit = async () => {
-      await page.evaluate(
-        ({ id, data }) => {
-          for (const s of window.streams)
-            if (new URL(s.url, location.href).searchParams.get("id") === id)
-              s.onmessage?.({ data: JSON.stringify(data) });
+      transcriptSeq++;
+      const updatedTranscript = page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return (
+          url.pathname === "/api/sync/pull" &&
+          url.searchParams.get("scope") === `transcript:${lead.id}` &&
+          Number(url.searchParams.get("after") || 0) < transcriptSeq
+        );
+      });
+      const notification = await fetch(new URL("/api/sync/notify", origin), {
+        method: "POST",
+        headers: {
+          Origin: origin,
+          "Content-Type": "application/json",
+          "X-Canvas-Token": state.token,
+          ...apiSchemaHeaders(),
         },
-        { id: lead.id, data: transcript() },
-      );
-      await page.waitForTimeout(100);
+        body: JSON.stringify({
+          requestId: randomUUID(),
+          resources: [{ kind: "transcript", agentId: lead.id }],
+        }),
+      });
+      assert.equal(notification.status, 200, await notification.text());
+      await updatedTranscript;
     };
     const finish = async () => {
       items.push({
@@ -219,6 +253,8 @@ test("work log ui", async ({ browser: _browser }) => {
       "all current calls are visible without expanding the group",
     );
     const build = page.locator(`[data-message="build-${turn}"]`);
+    await build.scrollIntoViewIfNeeded();
+    assert.equal(await build.isVisible(), true, "the build result is in view");
     await build.evaluate((element) => {
       element.dataset.retained = "yes";
     });
@@ -257,7 +293,7 @@ test("work log ui", async ({ browser: _browser }) => {
     assert.equal(
       await build.getAttribute("data-retained"),
       "yes",
-      "call keeps its DOM node",
+      "updated call keeps its DOM node",
     );
     assert.equal(await build.getAttribute("data-tool-status"), "failed");
     assert.equal(
@@ -275,9 +311,6 @@ test("work log ui", async ({ browser: _browser }) => {
     await build.getByText("fixture build failed", { exact: true }).waitFor();
     if (await page.locator("#jump-latest").isVisible())
       await page.locator("#jump-latest").click();
-    await page.screenshot({
-      path: join(directory, "thinking-tools-desktop.png"),
-    });
     await page.setViewportSize({ width: 390, height: 900 });
     await page.waitForFunction(
       () =>
@@ -358,9 +391,6 @@ test("work log ui", async ({ browser: _browser }) => {
       toolBounds.y >= 0 && toolBounds.y < 900,
       "call is in the mobile viewport",
     );
-    await page.screenshot({
-      path: join(directory, "thinking-tools-mobile.png"),
-    });
     assert.ok(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth,
@@ -383,6 +413,93 @@ test("work log ui", async ({ browser: _browser }) => {
       null,
       "manual expansion survives streamed updates",
     );
+    const visibleBuildBeforeCompletion = await page.evaluate(() => {
+      const root = document.querySelector("#messages");
+      const row = document.querySelector('[data-message="build-first"]');
+      const output = row?.querySelector(".tool-output");
+      return {
+        rowTag: row?.tagName,
+        rowVisible: !!row && row.getBoundingClientRect().height > 0,
+        outputExpanded: row?.hasAttribute("open"),
+        outputVisible: !!output && output.getBoundingClientRect().height > 0,
+        scrollTop: root?.scrollTop,
+      };
+    });
+    const selectedOutputBeforeCompletion = await page.evaluate(() => {
+      const output = document.querySelector(
+        '[data-message="build-first"] .tool-output',
+      );
+      if (!output) return "";
+      const range = document.createRange();
+      range.selectNodeContents(output);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      return selection?.toString() || "";
+    });
+    const buildRowBefore = await build.elementHandle();
+    const toolBodyBefore = await build.locator(".tool-body").elementHandle();
+    const selectedOutputBefore = await build
+      .locator(".tool-output")
+      .elementHandle();
+    const selectedRangeNodeBefore = await page.evaluateHandle(
+      () => window.getSelection()?.getRangeAt(0).commonAncestorContainer,
+    );
+    const inspectHandle = async (handle) =>
+      handle?.evaluate((node) => {
+        const element =
+          node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+        const rect = element?.getBoundingClientRect();
+        const style = element ? getComputedStyle(element) : undefined;
+        return {
+          tag: element?.tagName,
+          className: element?.className,
+          connected: !!element?.isConnected,
+          visible:
+            !!rect &&
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style?.display !== "none" &&
+            style?.visibility !== "hidden",
+          bounds: rect
+            ? {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+              }
+            : null,
+          text: element?.textContent?.trim().slice(0, 120),
+        };
+      });
+    const beforeNodeEvidence = {
+      row: await inspectHandle(buildRowBefore),
+      toolBody: await inspectHandle(toolBodyBefore),
+      selectedOutput: await inspectHandle(selectedOutputBefore),
+      selectedRangeNode: await inspectHandle(selectedRangeNodeBefore),
+      relation: await page.evaluate(
+        ([row, body, output, rangeNode]) => ({
+          rowContainsToolBody: row?.contains(body),
+          toolBodyContainsSelectedOutput: body?.contains(output),
+          selectedRangeNodeIsOutput: rangeNode === output,
+          selectionText: window.getSelection()?.toString() || "",
+        }),
+        [
+          buildRowBefore,
+          toolBodyBefore,
+          selectedOutputBefore,
+          selectedRangeNodeBefore,
+        ],
+      ),
+    };
+    console.log("work-log before completion DOM evidence", beforeNodeEvidence);
+    const beforeCompletionScreenshot = test
+      .info()
+      .outputPath("work-log-before-turn-completion.png");
+    await page.screenshot({ path: beforeCompletionScreenshot });
+    visibleBuildBeforeCompletion.scrollTop = await page.evaluate(
+      () => document.querySelector("#messages")?.scrollTop,
+    );
     items = items.map((item) => ({
       ...item,
       streaming: false,
@@ -390,10 +507,115 @@ test("work log ui", async ({ browser: _browser }) => {
     }));
     turnDone = true;
     await emit();
+    const buildRowAfter = await page
+      .locator('[data-message="build-first"]')
+      .elementHandle();
+    const toolBodyAfter = await page
+      .locator('[data-message="build-first"] .tool-body')
+      .elementHandle();
+    const selectedOutputAfter = await page
+      .locator('[data-message="build-first"] .tool-output')
+      .elementHandle();
+    const selectedRangeNodeAfter = await page.evaluateHandle(
+      () => window.getSelection()?.getRangeAt(0).commonAncestorContainer,
+    );
+    const sameNode = async (before, after) =>
+      !!before &&
+      !!after &&
+      page.evaluate(([a, b]) => a === b, [before, after]);
+    console.log("work-log after completion DOM evidence", {
+      row: await inspectHandle(buildRowAfter),
+      toolBody: await inspectHandle(toolBodyAfter),
+      selectedOutput: await inspectHandle(selectedOutputAfter),
+      selectedRangeNode: await inspectHandle(selectedRangeNodeAfter),
+      identity: {
+        row: await sameNode(buildRowBefore, buildRowAfter),
+        toolBody: await sameNode(toolBodyBefore, toolBodyAfter),
+        selectedOutput: await sameNode(
+          selectedOutputBefore,
+          selectedOutputAfter,
+        ),
+        selectedRangeNode: await sameNode(
+          selectedRangeNodeBefore,
+          selectedRangeNodeAfter,
+        ),
+        oldRowConnected: await inspectHandle(buildRowBefore),
+        oldToolBodyConnected: await inspectHandle(toolBodyBefore),
+        oldSelectedOutputConnected: await inspectHandle(selectedOutputBefore),
+        oldSelectedRangeNodeConnected: await inspectHandle(
+          selectedRangeNodeBefore,
+        ),
+      },
+      selection: await page.evaluate(() => ({
+        text: window.getSelection()?.toString() || "",
+        rangeText: window.getSelection()?.getRangeAt(0).toString() || "",
+      })),
+      matchingMessageNodes: await page.evaluate(() =>
+        Array.from(
+          document.querySelectorAll('[data-message="build-first"]'),
+        ).map((node) => ({
+          tag: node.tagName,
+          className: node.className,
+          lazyPlaceholder: node.hasAttribute("data-lazy-message"),
+          visible: node.getBoundingClientRect().height > 0,
+          text: node.textContent?.trim().slice(0, 120),
+        })),
+      ),
+    });
+    const afterCompletionScreenshot = test
+      .info()
+      .outputPath("work-log-after-turn-completion.png");
+    await page.screenshot({ path: afterCompletionScreenshot });
+    console.log(
+      "work-log completion identity evidence",
+      await page.evaluate(() => {
+        const row = document.querySelector('[data-message="build-first"]');
+        const work = document.querySelector('[data-turn="first"] .turn-work');
+        const root = document.querySelector("#messages");
+        const output = row?.querySelector(".tool-output");
+        return {
+          workOpen: work?.hasAttribute("open"),
+          nodeTag: row?.tagName,
+          lazyPlaceholder: row?.hasAttribute("data-lazy-message"),
+          retained: row?.getAttribute("data-retained"),
+          toolCardsInExpandedWork: work?.querySelectorAll(".tool-card").length,
+          outputVisible: !!output && output.getBoundingClientRect().height > 0,
+          selectedOutputText: window.getSelection()?.toString() || "",
+          scrollTop: root?.scrollTop,
+        };
+      }),
+      "before completion",
+      visibleBuildBeforeCompletion,
+      "selected output text before completion",
+      selectedOutputBeforeCompletion,
+    );
     assert.equal(
-      await build.getAttribute("data-retained"),
-      "yes",
-      "turn completion preserves visible tool nodes",
+      await sameNode(buildRowBefore, buildRowAfter),
+      true,
+      "turn completion preserves the visible build tool node",
+    );
+    assert.equal(
+      await sameNode(toolBodyBefore, toolBodyAfter),
+      true,
+      "turn completion preserves the expanded tool body",
+    );
+    assert.equal(
+      await sameNode(selectedOutputBefore, selectedOutputAfter),
+      true,
+      "turn completion preserves the selected output node",
+    );
+    assert.equal(
+      await sameNode(selectedRangeNodeBefore, selectedRangeNodeAfter),
+      true,
+      "turn completion preserves the selected text range node",
+    );
+    assert.equal((await build.getAttribute("open")) !== null, true);
+    assert.equal(await build.locator(".tool-body").isVisible(), true);
+    assert.equal(await build.locator(".tool-output").isVisible(), true);
+    assert.equal(
+      await page.evaluate(() => window.getSelection()?.toString() || ""),
+      "fixture build failed",
+      "turn completion leaves the output text selected",
     );
     await page.reload();
     await page.locator(`[data-chat="${lead.id}"]`).click();
@@ -409,7 +631,6 @@ test("work log ui", async ({ browser: _browser }) => {
       true,
       "closing work never hides the answer",
     );
-    await page.screenshot({ path: join(directory, "answer-desktop.png") });
 
     turn = "reader";
     turnDone = false;
@@ -454,7 +675,6 @@ test("work log ui", async ({ browser: _browser }) => {
     await work().locator(":scope > summary").click();
     await page.setViewportSize({ width: 390, height: 900 });
     await page.waitForTimeout(250);
-    await page.screenshot({ path: join(directory, "answer-mobile.png") });
     assert.ok(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth,
@@ -570,9 +790,6 @@ test("work log ui", async ({ browser: _browser }) => {
     );
     await page.setViewportSize({ width: 1280, height: 900 });
     await middle.scrollIntoViewIfNeeded();
-    await page.screenshot({
-      path: join(directory, "commentary-between-tools.png"),
-    });
     // New tools preserve the group and the user's open card.
     await blocks
       .first()
@@ -580,11 +797,12 @@ test("work log ui", async ({ browser: _browser }) => {
       .first()
       .locator(":scope > summary")
       .click();
-    await blocks
-      .first()
-      .locator(".tool-card")
-      .first()
-      .evaluate((element) => (element.dataset.retained = "yes"));
+    const firstExpandedTool = blocks.first().locator(".tool-card").first();
+    await firstExpandedTool.scrollIntoViewIfNeeded();
+    assert.equal(await firstExpandedTool.isVisible(), true);
+    await firstExpandedTool.evaluate((element) => {
+      element.dataset.retained = "yes";
+    });
     items.splice(2, 0, tool("third-result", "Third result received"));
     await emit();
     await page.locator('.tool-card[data-message="third-result"]').waitFor();
@@ -606,6 +824,7 @@ test("work log ui", async ({ browser: _browser }) => {
         .first()
         .getAttribute("data-retained"),
       "yes",
+      "the previously expanded tool keeps its DOM node",
     );
     assert.notEqual(
       await blocks.first().locator(".tool-card").first().getAttribute("open"),
@@ -737,7 +956,10 @@ test("work log ui", async ({ browser: _browser }) => {
     await crossTurnWork
       .locator('.tool-card[data-message="cross-tool-b"] > summary')
       .click();
-    await page.locator('[data-message="cross-tool-b"]').evaluate((element) => {
+    const crossToolB = page.locator('[data-message="cross-tool-b"]');
+    await crossToolB.scrollIntoViewIfNeeded();
+    assert.equal(await crossToolB.isVisible(), true);
+    await crossToolB.evaluate((element) => {
       element.dataset.retained = "yes";
     });
     items = items.map((item) =>
@@ -929,7 +1151,6 @@ test("work log ui", async ({ browser: _browser }) => {
       "the ungrouped view renders reasoning duration directly",
     );
     await page.setViewportSize({ width: 390, height: 900 });
-    await page.screenshot({ path: join(directory, "commentary-mobile.png") });
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.unroute("**/api/transcript?*");
     await page.reload();
@@ -990,5 +1211,142 @@ test("work log ui", async ({ browser: _browser }) => {
     throw error;
   } finally {
     fixture.stdin?.end();
+  }
+});
+
+test("reload converges after an in-flight transcript pull", async ({
+  browser,
+}) => {
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const directory = await mkdtemp(join(tmpdir(), "studio-work-log-reload-"));
+  const fixture = spawn(
+    "python3",
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      directory,
+    ],
+    { stdio: ["pipe", "pipe", "pipe"] },
+  );
+  let log = "";
+  fixture.stderr.on("data", (data) => (log += data));
+  const lines = createInterface({ input: fixture.stdout });
+  const fixtureReplies = new Map();
+  let port;
+  const startup = new Promise((resolve, reject) => {
+    lines.once("line", (line) => resolve(Number(line)));
+    fixture.once("exit", () => reject(Error(log)));
+  });
+  lines.on("line", (line) => {
+    let reply;
+    try {
+      reply = JSON.parse(line);
+    } catch {
+      return;
+    }
+    fixtureReplies.get(reply.id)?.(reply);
+  });
+  const fixtureRequest = (method, params) => {
+    const id = randomUUID();
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        fixtureReplies.delete(id);
+        reject(new Error(`fixture request timed out: ${method}: ${log}`));
+      }, 5000);
+      fixtureReplies.set(id, (reply) => {
+        clearTimeout(timeout);
+        resolve(reply);
+      });
+      fixture.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
+    });
+  };
+  let page;
+  let releaseHeldPull;
+  let heldPullResolve;
+  let mutationPublished = false;
+  let heldOnce = false;
+  const heldPull = new Promise((resolve) => (heldPullResolve = resolve));
+  try {
+    port = await startup;
+    const origin = `http://127.0.0.1:${port}`;
+    const state = await readTestState(origin);
+    const lead = state.threads.find((agent) => agent.name === "Other project");
+    assert.ok(lead, "fixture lead is available");
+    page = await browser.newPage({
+      viewport: { width: 1280, height: 900 },
+    });
+    installApiSchemaFixtureHeaders(page);
+    await page.route("**/api/sync/pull?*", async (route) => {
+      const requestUrl = new URL(route.request().url());
+      const scope = requestUrl.searchParams.get("scope");
+      const after = requestUrl.searchParams.get("after");
+      if (scope !== `transcript:${lead.id}`) return route.fallback();
+      const response = await route.fetch();
+      const body = await response.json();
+      const docs = body.documents ?? [];
+      const containsUpdate = docs.some((doc) =>
+        doc.payload?.includes("After in-flight reload update"),
+      );
+      if (
+        mutationPublished &&
+        !heldOnce &&
+        scope === `transcript:${lead.id}` &&
+        containsUpdate
+      ) {
+        heldOnce = true;
+        heldPullResolve({
+          after,
+          docs: docs.map(({ id, seq }) => ({ id, seq })),
+        });
+        await new Promise((resolve) => (releaseHeldPull = resolve));
+      }
+      await route.fulfill({ response, json: body });
+    });
+    await page.goto(origin);
+    await page.locator(`[data-chat="${lead.id}"]`).click();
+    await page.locator("#message").waitFor();
+    mutationPublished = true;
+    const update = await fixtureRequest("fixture/stream-transcript", {
+      agent: lead.id,
+      id: "reload-after",
+      text: "After in-flight reload update",
+    });
+    assert.equal(update.ok, true, "fixture persisted the transcript update");
+    const held = await Promise.race([
+      heldPull,
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error("changed transcript pull not observed")),
+          10_000,
+        ),
+      ),
+    ]);
+    assert.ok(
+      held.docs.length > 0,
+      "the held pull contains the updated transcript",
+    );
+
+    const navigationCommitted = page.waitForEvent("framenavigated", {
+      predicate: (frame) => frame === page.mainFrame(),
+    });
+    const navigation = page.reload();
+    await navigationCommitted;
+    releaseHeldPull?.();
+    await navigation;
+    await page.locator(`[data-chat="${lead.id}"]`).click();
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector("#messages")
+          ?.textContent.includes("After in-flight reload update"),
+      undefined,
+      { timeout: 10_000 },
+    );
+  } finally {
+    releaseHeldPull?.();
+    await page?.unrouteAll({ behavior: "ignoreErrors" });
+    await page?.close();
+    lines.close();
+    fixture.kill("SIGTERM");
   }
 });

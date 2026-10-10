@@ -328,6 +328,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/agents/finder-view": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Finder View
+     * @description Where Finder shows the chat's files. Reads saved records only; never mounts or calls the VM.
+     */
+    get: operations["finder_view_api_agents_finder_view_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/analytics": {
     parameters: {
       query?: never;
@@ -987,6 +1007,46 @@ export interface paths {
     put?: never;
     /** Linux Vm Settings Write */
     post: operations["linux_vm_settings_write_api_linux_vm_settings_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/mac-sync/config": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Mac Sync Config
+     * @description Pause or resume a project's Mac folder sync, or confirm the Mac deletions that paused it.
+     */
+    post: operations["mac_sync_config_api_mac_sync_config_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/mac-sync/resolve": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Mac Sync Resolve
+     * @description Settle one conflicting path of a project's Mac folder sync.
+     */
+    post: operations["mac_sync_resolve_api_mac_sync_resolve_post"];
     delete?: never;
     options?: never;
     head?: never;
@@ -2813,6 +2873,8 @@ export interface components {
       epoch?: number | null;
       /** Error */
       error?: components["schemas"]["NativeProviderError"] | string | null;
+      /** Executionmode */
+      executionMode?: ("vm" | "native") | null;
       /** Fastmode */
       fastMode?: boolean | null;
       /** Hasapproval */
@@ -2821,6 +2883,8 @@ export interface components {
       hasQuestion?: boolean | null;
       /** Hasunread */
       hasUnread?: boolean | null;
+      /** Hostprojectpath */
+      hostProjectPath?: string | null;
       /** Id */
       id: string;
       /** Imageworkspace */
@@ -2861,6 +2925,16 @@ export interface components {
       lastReadAt?: number | null;
       /** Launcheralive */
       launcherAlive?: boolean | null;
+      /** Layrerror */
+      layrError?: string | null;
+      /** Layrline */
+      layrLine?: string | null;
+      /** Layrprojectid */
+      layrProjectId?: string | null;
+      /** Layrready */
+      layrReady?: boolean | null;
+      /** Layrstateid */
+      layrStateId?: string | null;
       /** Manualname */
       manualName?: boolean | null;
       /** Model */
@@ -2965,7 +3039,7 @@ export interface components {
       /** Workspacebackend */
       workspaceBackend?: ("asif" | "vm") | null;
       /** Workspacemode */
-      workspaceMode?: ("image" | "worktree" | "shared") | null;
+      workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
       /** Workspaceoperation */
       workspaceOperation?: string | null;
       /** Worktree */
@@ -3161,6 +3235,8 @@ export interface components {
       epoch?: number | null;
       /** Error */
       error?: components["schemas"]["NativeProviderError"] | string | null;
+      /** Executionmode */
+      executionMode?: ("vm" | "native") | null;
       /** Fastmode */
       fastMode?: boolean | null;
       /** Hasapproval */
@@ -3169,6 +3245,8 @@ export interface components {
       hasQuestion?: boolean | null;
       /** Hasunread */
       hasUnread?: boolean | null;
+      /** Hostprojectpath */
+      hostProjectPath?: string | null;
       /** Id */
       id: string;
       /** Imageworkspace */
@@ -3209,6 +3287,16 @@ export interface components {
       lastReadAt?: number | null;
       /** Launcheralive */
       launcherAlive?: boolean | null;
+      /** Layrerror */
+      layrError?: string | null;
+      /** Layrline */
+      layrLine?: string | null;
+      /** Layrprojectid */
+      layrProjectId?: string | null;
+      /** Layrready */
+      layrReady?: boolean | null;
+      /** Layrstateid */
+      layrStateId?: string | null;
       /** Manualname */
       manualName?: boolean | null;
       /** Model */
@@ -3315,7 +3403,7 @@ export interface components {
       /** Workspacebackend */
       workspaceBackend?: ("asif" | "vm") | null;
       /** Workspacemode */
-      workspaceMode?: ("image" | "worktree" | "shared") | null;
+      workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
       /** Workspaceoperation */
       workspaceOperation?: string | null;
       /** Worktree */
@@ -4586,6 +4674,8 @@ export interface components {
       epoch?: number | null;
       /** Error */
       error?: components["schemas"]["NativeProviderError"] | string | null;
+      /** Executionmode */
+      executionMode?: ("vm" | "native") | null;
       /** Fastmode */
       fastMode?: boolean | null;
       /** Hasapproval */
@@ -4594,6 +4684,8 @@ export interface components {
       hasQuestion?: boolean | null;
       /** Hasunread */
       hasUnread?: boolean | null;
+      /** Hostprojectpath */
+      hostProjectPath?: string | null;
       /** Id */
       id: string;
       /** Imageworkspace */
@@ -4634,6 +4726,16 @@ export interface components {
       lastReadAt?: number | null;
       /** Launcheralive */
       launcherAlive?: boolean | null;
+      /** Layrerror */
+      layrError?: string | null;
+      /** Layrline */
+      layrLine?: string | null;
+      /** Layrprojectid */
+      layrProjectId?: string | null;
+      /** Layrready */
+      layrReady?: boolean | null;
+      /** Layrstateid */
+      layrStateId?: string | null;
       /** Manualname */
       manualName?: boolean | null;
       /** Model */
@@ -4740,7 +4842,7 @@ export interface components {
       /** Workspacebackend */
       workspaceBackend?: ("asif" | "vm") | null;
       /** Workspacemode */
-      workspaceMode?: ("image" | "worktree" | "shared") | null;
+      workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
       /** Workspaceoperation */
       workspaceOperation?: string | null;
       /** Worktree */
@@ -5738,6 +5840,8 @@ export interface components {
       /** Tokenbudget */
       tokenBudget?: number | null;
       worker_defaults?: components["schemas"]["WorkerDefaults"] | null;
+      /** Workspacemode */
+      workspaceMode?: ("layr" | "image" | "worktree") | null;
       /** Yolo Mode */
       yolo_mode?: boolean | null;
     };
@@ -5783,6 +5887,12 @@ export interface components {
       account_key?: string | null;
       /** Cwd */
       cwd?: string | null;
+      /** Daybreak Enabled */
+      daybreak_enabled?: boolean | null;
+      /** Effort */
+      effort?: string | null;
+      /** Fast Mode */
+      fast_mode?: boolean | null;
       /** Id */
       id?: string | null;
       /** Model */
@@ -5797,6 +5907,10 @@ export interface components {
       project_server_id?: string | null;
       /** Reuse Empty */
       reuse_empty?: boolean | null;
+      review_defaults?: components["schemas"]["ReviewDefaults"] | null;
+      worker_defaults?: components["schemas"]["WorkerDefaults"] | null;
+      /** Workspacemode */
+      workspaceMode?: ("layr" | "image" | "worktree") | null;
       /** Yolo Mode */
       yolo_mode?: boolean | null;
     };
@@ -5857,6 +5971,10 @@ export interface components {
       /** Backendbuild */
       backendBuild: string;
       browser: components["schemas"]["BrowserStatus"] | null;
+      /** Linuxvm */
+      linuxVm?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
       liveUpdate: components["schemas"]["LiveUpdateStatus"] | null;
       /** Mobileprotocol */
       mobileProtocol: number;
@@ -6940,6 +7058,93 @@ export interface components {
       /** Login Id */
       login_id: string;
     };
+    /**
+     * MacSyncConfigRequest
+     * @description Pause or resume the sync, or let Mac deletions that paused it go to the VM.
+     */
+    MacSyncConfigRequest: {
+      /**
+       * Allowdeletes
+       * @default false
+       */
+      allowDeletes?: boolean;
+      /** Enabled */
+      enabled?: boolean | null;
+      /** Projectid */
+      projectId: string;
+    };
+    /**
+     * MacSyncResolveRequest
+     * @description Keep the Mac version, keep the VM version, or ask the lead to combine them.
+     */
+    MacSyncResolveRequest: {
+      /**
+       * Choice
+       * @enum {string}
+       */
+      choice: "mac" | "vm" | "agent";
+      /** Path */
+      path: string;
+      /** Projectid */
+      projectId: string;
+    };
+    /** MacSyncResolveResponse */
+    MacSyncResolveResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /**
+       * Choice
+       * @enum {string}
+       */
+      choice: "mac" | "vm" | "agent";
+      /** Kind */
+      kind?: ("file" | "link" | "absent") | null;
+      /** Leadid */
+      leadId?: string | null;
+      /** Line */
+      line?: string | null;
+      /** Mainstateid */
+      mainStateId: string;
+      /** Path */
+      path: string;
+      /** Stateid */
+      stateId?: string | null;
+      status: components["schemas"]["MacSyncStatusResponse"] | null;
+    };
+    /**
+     * MacSyncStatusResponse
+     * @description A project's Mac folder sync. conflicts and choices wait for the user; withAgent waits
+     *     for the lead; deletes counts Mac deletions that wait for a confirmation.
+     */
+    MacSyncStatusResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** At */
+      at: number | null;
+      /** Choices */
+      choices: string[];
+      /** Conflicts */
+      conflicts: string[];
+      /** Deletes */
+      deletes: number;
+      /** Enabled */
+      enabled: boolean;
+      /** Folder */
+      folder: string;
+      /** Reason */
+      reason: string | null;
+      /**
+       * State
+       * @enum {string}
+       */
+      state: "syncing" | "synced" | "waiting" | "conflict" | "paused" | "error";
+      /** Withagent */
+      withAgent: string[];
+    };
     /** ManagedMessageBody */
     ManagedMessageBody: {
       /** Assets */
@@ -7427,6 +7632,23 @@ export interface components {
     NativeErrorAccount: {
       /** Error */
       error: string;
+    };
+    /**
+     * NativeFinderViewResponse
+     * @description A native chat works in its Mac folder.
+     */
+    NativeFinderViewResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /**
+       * Kind
+       * @constant
+       */
+      kind: "native";
+      /** Path */
+      path: string | null;
     };
     /**
      * NativeNoticeDto
@@ -8479,6 +8701,8 @@ export interface components {
       homeServerId?: string | null;
       /** Id */
       id: string;
+      layrReadiness?: components["schemas"]["ProjectLayrReadinessDto"] | null;
+      layrSync?: components["schemas"]["ProjectLayrSyncDto"] | null;
       /** Locations */
       locations?: components["schemas"]["ProjectLocationDto"][] | null;
       /** Locationsrevision */
@@ -8514,6 +8738,45 @@ export interface components {
       name: string;
       /** Parentid */
       parentId?: string | null;
+    };
+    /**
+     * ProjectLayrReadinessDto
+     * @description Whether a new layr chat of the project starts without an import (docs/vm-layr.md).
+     */
+    ProjectLayrReadinessDto: {
+      /** Error */
+      error?: string | null;
+      /**
+       * State
+       * @enum {string}
+       */
+      state: "ready" | "importing" | "not_imported" | "failed";
+    };
+    /**
+     * ProjectLayrSyncDto
+     * @description The Mac folder sync of the project's layr project (docs/vm-mac-sync.md). conflicts and
+     *     choices wait for the user, withAgent for the lead, deletes for a confirmation.
+     */
+    ProjectLayrSyncDto: {
+      /** Choices */
+      choices: string[];
+      /** Conflicts */
+      conflicts: string[];
+      /** Deletes */
+      deletes: number;
+      /** Enabled */
+      enabled: boolean;
+      /** Projectid */
+      projectId: string;
+      /** Reason */
+      reason?: string | null;
+      /**
+       * State
+       * @enum {string}
+       */
+      state: "syncing" | "synced" | "waiting" | "conflict" | "paused" | "error";
+      /** Withagent */
+      withAgent: string[];
     };
     /** ProjectLocation */
     ProjectLocation: {
@@ -12752,6 +13015,30 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
+    /**
+     * VmFinderViewResponse
+     * @description A VM chat: the read-only ~/Studio view of its layr project. The path is set only when mounted.
+     */
+    VmFinderViewResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Error */
+      error: string | null;
+      /**
+       * Kind
+       * @constant
+       */
+      kind: "vm";
+      /** Path */
+      path: string | null;
+      /**
+       * State
+       * @enum {string}
+       */
+      state: "mounted" | "unmounted" | "failed";
+    };
     /** VoiceApprovalResponse */
     VoiceApprovalResponse: {
       /** Syncentities */
@@ -14960,6 +15247,57 @@ export interface operations {
       };
       /** @description JSON required */
       415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  finder_view_api_agents_finder_view_get: {
+    parameters: {
+      query: {
+        agent: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["NativeFinderViewResponse"]
+            | components["schemas"]["VmFinderViewResponse"];
+        };
+      };
+      /** @description Invalid request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Local origin and session token required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Not Found */
+      404: {
         headers: {
           [name: string]: unknown;
         };
@@ -17803,6 +18141,162 @@ export interface operations {
       };
       /** @description Service Unavailable */
       503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  mac_sync_config_api_mac_sync_config_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["MacSyncConfigRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MacSyncStatusResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Local origin and session token required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Request body timed out */
+      408: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Invalid request size */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description JSON required */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  mac_sync_resolve_api_mac_sync_resolve_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["MacSyncResolveRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MacSyncResolveResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Local origin and session token required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Request body timed out */
+      408: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Invalid request size */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description JSON required */
+      415: {
         headers: {
           [name: string]: unknown;
         };

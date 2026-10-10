@@ -113,6 +113,22 @@ def _existing(
 
 def request(rt: "Runtime", actor: "AgentRecord", args: dict[str, Any], key: str) -> dict[str, Any]:
     target = validate(args)
+    if actor.get('executionMode') == 'vm':
+        if not actor.get('isLead'):
+            raise ValueError('Only the lead can create a layr reviewer')
+        from codex_vm_agents import request as guest_request
+        state = target.get('sha')
+        if state is None:
+            state = guest_request(rt, 'line.save', {'agentId': actor['id'], 'turnId': 'review:' + key},
+                                  'layr-review-state:' + key)['stateId']
+        prompt = ('Review layr state ' + state + '. Use layr show and layr diff. '
+                  'Your line is read-only. Report defects with file paths and evidence. '
+                  'Review target: ' + json.dumps(target, ensure_ascii=False))
+        vm_spec: dict[str, Any] = {'name': 'Review', 'role': 'reviewer', 'prompt': prompt[:32000], 'base_ref': state,
+                **{name: args[name] for name in ('model', 'effort', 'cwd') if name in args}}
+        vm_result = rt.spawn_agents(actor, {'agents': [vm_spec]}, key)
+        return {**vm_result, 'agentId': vm_result['agents'][0]['id'], 'stateId': state,
+                'delivery': 'The layr review result wakes you automatically.'}
     if actor.get('provider', 'codex') != 'codex':
         raise ValueError('Native review is available only for Codex agents')
     if actor.get('nativeReview'):

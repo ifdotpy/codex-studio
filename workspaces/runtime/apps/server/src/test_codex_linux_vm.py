@@ -15,7 +15,7 @@ import time
 import unittest
 from unittest.mock import patch, Mock
 
-from codex_layout import VM_GUEST_ROOT
+from codex_layout import REPOSITORY_ROOT, VM_GUEST_ROOT
 import codex_linux_vm as vm
 
 
@@ -53,6 +53,11 @@ class ClientTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix='vm-client-')
         self.directory = Path(self.temporary.name)
         self.client = vm.Client(self.directory)
+        # Bootstrap tests have a socket fixture, not a VM host listener.
+        for hook in ('ensure_service', 'configure_guest'):
+            stub = patch('codex_host_exec.' + hook)
+            stub.start()
+            self.addCleanup(stub.stop)
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -69,11 +74,25 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(frames[0]['data'], 'hello')
         self.assertEqual(frames[-1]['result']['exitCode'], 0)
 
+    def test_host_exec_uses_its_outer_budget_without_expanding_other_methods(self):
+        from contextlib import nullcontext
+        channel = Mock()
+        for timeout in (3960, 7260):
+            with patch.object(self.client, '_channel', return_value=nullcontext(channel)), \
+                 patch.object(self.client, '_read', return_value={'id':'host-budget','result':{}}):
+                self.assertEqual(list(self.client.stream('host.exec', {}, request_id='host-budget', timeout=timeout)),
+                                 [{'id':'host-budget','result':{}}])
+        for method, timeout, maximum in [('host.exec',9000.01,9000),('exec',3600.01,3600)]:
+            with patch.object(self.client, '_channel') as open_channel:
+                with self.assertRaisesRegex(vm.LinuxVMError, 'between 0 and ' + str(maximum)):
+                    list(self.client.stream(method, {}, timeout=timeout))
+                open_channel.assert_not_called()
+
     def test_lost_mutation_response_is_uncertain_without_retry(self):
         applied = []
         guest = Guest(self.directory, lambda channel, request: applied.append(request['id']))
         with self.assertRaises(vm.LinuxVMError) as error:
-            self.client.request('workspace.remove', {}, request_id='remove-once')
+            self.client.request('line.remove', {}, request_id='remove-once')
         guest.finish()
         self.assertTrue(error.exception.uncertain)
         self.assertEqual(applied, ['remove-once'])
@@ -118,7 +137,7 @@ class ClientTests(unittest.TestCase):
     def test_invalid_json_response_preserves_uncertainty(self):
         guest = Guest(self.directory, lambda channel, request: channel.sendall(b'not-json\n'))
         with self.assertRaises(vm.LinuxVMError) as error:
-            self.client.request('workspace.archive', {'agentId': 'one'})
+            self.client.request('line.remove', {'agentId': 'one'})
         guest.finish()
         self.assertTrue(error.exception.uncertain)
 
@@ -318,7 +337,7 @@ class ClientTests(unittest.TestCase):
         (cache / 'bad.pyc').write_text('cache')
         scripts = self.directory / 'runtime-src'
         scripts.mkdir()
-        for name in ['codex_workspace_images.py', 'codex_workspace_linux.py', 'codex_process_supervisor.py', 'codex_open_file_limit.py', 'codex_records.py', 'codex_file_lock.py', 'codex_private_paths.py']:
+        for name in ['codex_process_supervisor.py', 'codex_open_file_limit.py', 'codex_records.py', 'codex_file_lock.py', 'codex_private_paths.py']:
             (scripts / name).write_text('# runtime')
         bridge = self.directory / 'bridge'
         bridge.mkdir()
@@ -328,6 +347,9 @@ class ClientTests(unittest.TestCase):
         nested.mkdir(parents=True)
         (nested / 'package.json').write_text('{}')
         (nested / 'dependency.mjs').write_text('throw new Error("must not ship");')
+        layr = guest.parent / 'layr'
+        layr.mkdir()
+        (layr / 'manifest.json').write_text(json.dumps({'files': {}}))
         config = vm._cloud_config(guest, '1.2.3', '4.5.6', runtime_source=scripts,
                                   bridge_source=bridge)
         paths = [entry['path'] for entry in config['write_files']]
@@ -338,10 +360,58 @@ class ClientTests(unittest.TestCase):
         self.assertIn('/opt/codex-studio/pnpm-workspace.yaml', paths)
         self.assertIn('/opt/codex-studio/pnpm-lock.yaml', paths)
         self.assertIn('/opt/codex-studio/patches/rxdb@17.5.0.patch', paths)
+        self.assertIn('/opt/codex-studio/vm/layr/manifest.json', paths)
         self.assertFalse(any('/claude-bridge/node_modules/' in path for path in paths))
-        self.assertEqual(len(paths), 16)
+        skills = [path for path in paths if '/.agents/skills/' in path]
+        self.assertEqual(len(paths) - len(skills), 16)
         self.assertNotIn('credentials', json.dumps(config))
+        unit = next(row['content'] for row in config['write_files'] if row['path'].endswith('/codex-studio-provision.service'))
+        ready = next(line.split('=!',1)[1] for line in unit.splitlines() if line.startswith('ConditionPathExists='))
+        self.assertRegex(ready, r'^/var/lib/codex-studio/provision-ready-[a-f0-9]{64}$')
+        script = next(row['content'] for row in config['write_files'] if row['path'].endswith('/provision.sh'))
+        self.assertIn('touch ' + ready + '\n', script)
+        # A later boot of the same generation reports readiness without a provision run.
+        report = next(row['content'] for row in config['write_files'] if row['path'].endswith('/codex-studio-ready.service'))
+        self.assertIn('ConditionPathExists=' + ready + '\n', report)
+        self.assertIn('ExecStart=/bin/echo STUDIO_PROVISION_READY\n', report)
+        self.assertIn(['systemctl', 'enable', 'codex-studio-provision.service', 'codex-studio-ready.service'],
+                      config['runcmd'])
+        same = dict(runtime_source=scripts, bridge_source=bridge)
+        self.assertEqual(config, vm._cloud_config(guest, '1.2.3', '4.5.6', **same))
+        (guest / 'install.sh').write_text('# new installation payload')
+        self.assertNotEqual(config, vm._cloud_config(guest, '1.2.3', '4.5.6', **same))
 
+
+
+class ShareBridgePortTests(unittest.TestCase):
+    def test_the_loopback_port_is_chosen_once_and_kept(self):
+        with tempfile.TemporaryDirectory() as name:
+            client = vm.Client(name, helper=Path(name) / 'helper')
+            port = client.share_bridge_port()
+            self.assertTrue(1024 <= port <= 65535)
+            self.assertEqual(json.loads((Path(name) / 'share-bridge.json').read_text()), {'port': port})
+            self.assertEqual(client.share_bridge_port(), port)
+            (Path(name) / 'share-bridge.json').write_text('{"port": 80}')
+            replaced = client.share_bridge_port()
+            self.assertTrue(1024 <= replaced <= 65535)
+
+
+class PackagedLayoutTests(unittest.TestCase):
+    def test_packaged_providers_root_holds_the_bridge_copied_by_the_package(self):
+        import importlib.util
+        import shutil
+        with tempfile.TemporaryDirectory() as name:
+            scripts = Path(name) / 'workspace' / 'scripts'
+            scripts.mkdir(parents=True)
+            shutil.copy(Path(vm.__file__).with_name('codex_layout.py'), scripts / 'codex_layout.py')
+            spec = importlib.util.spec_from_file_location('packaged_layout', scripts / 'codex_layout.py')
+            layout = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(layout)
+            # package.mjs copies the bridge source to workspaces/providers/apps/claude-bridge.
+            self.assertEqual(layout.PROVIDERS_ROOT / 'apps/claude-bridge',
+                             (Path(name) / 'workspace/workspaces/providers/apps/claude-bridge').resolve())
+        package = (vm.DESKTOP_ROOT / 'package.mjs').read_text()
+        self.assertIn('path.join(resources, "workspaces/providers/apps/claude-bridge")', package)
 
 
 class ProvisionTests(unittest.TestCase):
@@ -464,6 +534,11 @@ class ProvisionTests(unittest.TestCase):
 
     def test_runtime_payload_imports_without_host_source_modules(self):
         config = vm._cloud_config(VM_GUEST_ROOT, '0.160.1', '2.1.291')
+        for name in ('codex-orchestrator', 'codex-subagent', 'codex-workspace'):
+            entry = next(row for row in config['write_files']
+                         if row['path'] == '/opt/codex-studio/.agents/skills/' + name + '/SKILL.md')
+            source = REPOSITORY_ROOT / '.agents/skills' / name / 'SKILL.md'
+            self.assertEqual(gzip.decompress(base64.b64decode(entry['content'])), source.read_bytes())
         payload = self.root / 'scripts'
         payload.mkdir()
         bridge_root = '/opt/codex-studio/workspaces/providers/apps/claude-bridge/'
@@ -481,9 +556,11 @@ class ProvisionTests(unittest.TestCase):
             if entry['path'].startswith('/opt/codex-studio/scripts/'):
                 (payload / Path(entry['path']).name).write_bytes(gzip.decompress(base64.b64decode(entry['content'])))
         code = ('import sys;sys.path.insert(0,' + repr(str(payload)) + ');'
-                'import codex_workspace_images,codex_workspace_linux,codex_process_supervisor')
+                'import codex_process_supervisor,codex_file_lock,codex_private_paths')
         result = subprocess.run([__import__('sys').executable,'-I','-c',code],capture_output=True,text=True,timeout=10)
         self.assertEqual(result.returncode,0,result.stderr)
+        self.assertFalse((payload / 'codex_workspace_linux.py').exists())
+        self.assertFalse((payload / 'codex_workspace_images.py').exists())
 
     def test_saved_versions_cannot_inject_shell_commands(self):
         with self.assertRaises(vm.LinuxVMError):

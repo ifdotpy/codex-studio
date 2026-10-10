@@ -12,7 +12,8 @@ test("Sidebar incremental rows and current callbacks @performance", async ({
   const root = join(import.meta.dirname, "../../");
   const require = createRequire(join(root, "package.json"));
   const { build } = require("esbuild");
-  const { createServer } = await import(require.resolve("vite"));
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const directory = await mkdtemp(
     join(tmpdir(), "studio-sidebar-incremental-"),
   );
@@ -99,7 +100,7 @@ window.fixtureAgent=agents[19];window.fixtureReady=true;
             // resource transport has separate protocol and recovery contracts.
             build.onLoad({ filter: /resourceEvents\.ts$/ }, () => ({
               contents:
-                "export function watchResourceChanges(){return()=>{}};export function watchResourceConnection(){return()=>{}};",
+                "export function watchResourceChanges(){return()=>{}};export function watchResourceConnection(){return()=>{}};export function acknowledgeEntitySequences(){};",
               loader: "ts",
             }));
             build.onLoad(
@@ -222,8 +223,8 @@ window.fixtureAgent=agents[19];window.fixtureReady=true;
     );
     assert.equal(
       after.json - before.json,
-      3,
-      "each new RxDB document version converts once",
+      0,
+      "retained immutable RxDB snapshots require no document conversion",
     );
     assert.equal(
       after.renders - before.renders,
@@ -257,12 +258,23 @@ window.fixtureAgent=agents[19];window.fixtureReady=true;
       "an unchanged row calls the current committed callback",
     );
     const unchanged = await page.evaluate(() => window.fixtureRenders);
+    const conversionsBeforeReady = await page.evaluate(
+      () => window.fixtureJsonReads,
+    );
     await page.evaluate(() => window.readyAgain());
-    await page.waitForTimeout(100);
+    await page.waitForFunction(
+      (prior) => window.fixtureRenders > prior,
+      unchanged,
+    );
     assert.equal(
       await page.evaluate(() => window.fixtureRenders),
-      unchanged,
-      "a ready marker alone does not publish the identical snapshot",
+      unchanged + 1,
+      "a changed ready marker republishes the same projection once",
+    );
+    assert.equal(
+      await page.evaluate(() => window.fixtureJsonReads),
+      conversionsBeforeReady,
+      "republishing the same projection reuses cached RxDB documents",
     );
     const rowsBeforeAgent = await page.evaluate(() => window.fixtureRows);
     await page.evaluate(async () => {

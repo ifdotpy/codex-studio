@@ -32,13 +32,21 @@ if (!uiOnly) {
   try {
     execFileSync(
       "cargo",
-      ["build", "--locked", "--release", "-p", "studio-diagnostics"],
+      [
+        "build",
+        "--locked",
+        "--release",
+        "-p",
+        "studio-diagnostics",
+        "-p",
+        "studio-operations-python",
+      ],
       { cwd: repositoryRoot, stdio: "inherit" },
     );
   } catch (error) {
     if (error.code === "ENOENT") {
       throw new Error(
-        "Desktop packaging requires Cargo; install Rust 1.99.0, then run `cargo build --locked --release -p studio-diagnostics`.",
+        "Desktop packaging requires Cargo; install Rust 1.99.0, then run `cargo build --release -p studio-operations-python`.",
         { cause: error },
       );
     }
@@ -53,6 +61,19 @@ const diagnosticsBinary = path.join(
   cargoTargetDirectory,
   "release/codex-diagnostics",
 );
+const operationsLibrary = path.join(
+  cargoTargetDirectory,
+  "release",
+  process.platform === "darwin"
+    ? "libstudio_operations_native.dylib"
+    : process.platform === "win32"
+      ? "studio_operations_native.dll"
+      : "libstudio_operations_native.so",
+);
+const operationsModuleName =
+  process.platform === "win32"
+    ? "studio_operations_native.pyd"
+    : "studio_operations_native.abi3.so";
 const stage = await mkdtemp(path.join(tmpdir(), "codex-desktop-package-"));
 try {
   const speech = path.join(stage, "studio-speech");
@@ -72,6 +93,20 @@ try {
     path.join(root, "native/speech-info.plist"),
   ]);
   signCode(speech, identity);
+  // File events for the Mac folder sync of VM projects (docs/vm-mac-sync.md).
+  const fsEvents = path.join(stage, "studio-fs-events");
+  if (!uiOnly) {
+    execFileSync("xcrun", [
+      "swiftc",
+      path.join(root, "native/fs-events.swift"),
+      "-O",
+      "-target",
+      "arm64-apple-macos13.0",
+      "-o",
+      fsEvents,
+    ]);
+    signCode(fsEvents, identity);
+  }
   const linuxVM = uiOnly
     ? undefined
     : buildLinuxVM(path.join(stage, "studio-linux-vm"), identity);
@@ -83,6 +118,10 @@ try {
       path.join(resources, "requirements.txt"),
     );
     await mkdir(path.join(resources, "bin"), { recursive: true });
+    await cp(
+      operationsLibrary,
+      path.join(resources, "bin", operationsModuleName),
+    );
     await cp(
       path.join(repositoryRoot, "workspaces/runtime/apps/server/prompts"),
       path.join(resources, "prompts"),
@@ -149,6 +188,12 @@ try {
           !source.includes("__pycache__") && !source.endsWith(".pyc"),
       },
     );
+    // The vendored layr sources, built inside the guest (docs/vm-layr.md).
+    await cp(
+      path.join(repositoryRoot, "workspaces/runtime/apps/layr"),
+      path.join(resources, "vm/layr"),
+      { recursive: true },
+    );
   }
   await cp(rendererDist, path.join(resources, "web/dist"), {
     recursive: true,
@@ -191,7 +236,9 @@ try {
     extraResource: [
       resources,
       speech,
-      ...(uiOnly ? [] : [linuxVM, path.join(root, "recover_backend.py")]),
+      ...(uiOnly
+        ? []
+        : [linuxVM, fsEvents, path.join(root, "recover_backend.py")]),
     ],
     extendInfo: {
       NSMicrophoneUsageDescription:

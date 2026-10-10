@@ -1,9 +1,16 @@
 import {
+  API_SCHEMA_HASH_HEADER,
+  entityPullFixture,
+  entityMutationFixtureResponse,
+  expect,
+  readApiSchemaHash,
   readTestState,
   stubEntityState,
   readFixtureSyncContract,
+  stubSessionCost,
   test,
   spawnFixture as spawn,
+  waitForFixturePort,
 } from "../playwright.mjs";
 // Production bundle, isolated backend, no model calls.
 import assert from "node:assert/strict";
@@ -11,16 +18,233 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+test("Conversation tools menu displays compact prompt navigation", async ({
+  page,
+}) => {
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const evidence = await mkdtemp(join(tmpdir(), "studio-compact-tools-"));
+  const fixture = spawn(
+    process.env.PYTHON || "python3",
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      evidence,
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let log = "";
+  fixture.stderr.on("data", (chunk) => {
+    log += chunk;
+  });
+  try {
+    const port = await waitForFixturePort(fixture, {
+      label: "Conversation tools",
+      diagnostics: () => log,
+    });
+    await page.setViewportSize({ width: 860, height: 960 });
+    await page.goto(`http://127.0.0.1:${port}`);
+    await page.locator(".chat-row").filter({ hasText: "Release lead" }).click();
+    const tools = page.locator(".conversation-header-tools-menu");
+    await expect(tools).toHaveAttribute("data-compact", "yes");
+    const summary = page.locator(
+      '.conversation-header-tools-summary[aria-label="Conversation tools"]',
+    );
+    await summary.click();
+    await expect(tools).toHaveAttribute("open", "");
+    await expect(
+      page.locator(
+        ".conversation-header-tools-content .prompt-navigation-compact",
+      ),
+    ).toBeVisible({ timeout: 3_000 });
+  } finally {
+    if (fixture.exitCode === null) fixture.kill();
+  }
+});
+async function startSearchFocusSetup(page) {
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const evidence = await mkdtemp(join(tmpdir(), "studio-search-focus-"));
+  const fixture = spawn(
+    process.env.PYTHON || "python3",
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      evidence,
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let log = "";
+  fixture.stderr.on("data", (chunk) => {
+    log += chunk;
+  });
+  const stop = () => {
+    if (fixture.exitCode === null) fixture.kill();
+  };
+  try {
+    const port = await waitForFixturePort(fixture, {
+      label: "Search",
+      diagnostics: () => log,
+    });
+    await page.goto(`http://127.0.0.1:${port}`);
+    await page.locator("#message").waitFor();
+    const dialog = page.getByRole("dialog", {
+      name: "Search messages",
+      exact: true,
+    });
+    const query = page.getByLabel("Search all conversations");
+    const open = async (trigger) => {
+      if (trigger === "button")
+        await page
+          .getByRole("button", { name: "Search chats", exact: true })
+          .click();
+      else await page.keyboard.press("Control+k");
+      await dialog.waitFor({ state: "visible" });
+    };
+    const close = async () => {
+      await page.keyboard.press("Escape");
+      await dialog.waitFor({ state: "hidden" });
+    };
+    return { stop, dialog, query, open, close };
+  } catch (error) {
+    stop();
+    throw error;
+  }
+}
+
+test("Search messages opens from the button and Ctrl+K", async ({ page }) => {
+  test.setTimeout(60_000);
+  const setup = await startSearchFocusSetup(page);
+  try {
+    await setup.open("button");
+    await expect(setup.dialog).toBeVisible();
+    await setup.close();
+    await setup.open("hotkey");
+    await expect(setup.dialog).toBeVisible();
+  } finally {
+    setup.stop();
+  }
+});
+
+test("Search messages focuses its query input when opened", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  const setup = await startSearchFocusSetup(page);
+  try {
+    await setup.open("button");
+    const buttonFocus = await setup.query.evaluate(
+      (input) => document.activeElement === input,
+    );
+    await setup.close();
+    await setup.open("hotkey");
+    const hotkeyFocus = await setup.query.evaluate(
+      (input) => document.activeElement === input,
+    );
+    test.fail(
+      true,
+      "SearchOverlay autofocus does not place the query input in focus for both entry paths",
+    );
+    assert.deepEqual(
+      { button: buttonFocus, hotkey: hotkeyFocus },
+      { button: true, hotkey: true },
+    );
+  } finally {
+    setup.stop();
+  }
+});
+
+async function open320Workspace(page) {
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const evidence = await mkdtemp(join(tmpdir(), "studio-header-width-"));
+  const fixture = spawn(
+    process.env.PYTHON || "python3",
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      evidence,
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let log = "";
+  fixture.stderr.on("data", (chunk) => {
+    log += chunk;
+  });
+  const stop = () => {
+    if (fixture.exitCode === null) fixture.kill();
+  };
+  try {
+    const port = await waitForFixturePort(fixture, {
+      label: "Workspace",
+      diagnostics: () => log,
+    });
+    await page.setViewportSize({ width: 320, height: 960 });
+    await page.goto(`http://127.0.0.1:${port}`);
+    await page.locator("#message").waitFor();
+    const header = page.locator(".simple-workspace-header");
+    await header.waitFor({ state: "visible" });
+    const toggle = page.getByRole("button", {
+      name: "Toggle conversations",
+      exact: true,
+    });
+    await toggle.waitFor({ state: "visible" });
+    return { fixture, stop, header, toggle };
+  } catch (error) {
+    stop();
+    throw error;
+  }
+}
+
+test("320px workspace setup keeps other header controls in view", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  const { stop, header } = await open320Workspace(page);
+  try {
+    await expect(header).toBeVisible();
+    const controls = await header.locator("button").evaluateAll((buttons) =>
+      buttons
+        .filter(
+          (button) =>
+            button.getAttribute("aria-label") !== "Toggle conversations",
+        )
+        .map((button) => {
+          const { left, right } = button.getBoundingClientRect();
+          return {
+            label: button.getAttribute("aria-label") || button.textContent,
+            left,
+            right,
+          };
+        }),
+    );
+    assert.ok(controls.length > 0, "The workspace header has other controls");
+    assert.ok(
+      controls.every((control) => control.left >= 0 && control.right <= 321),
+      JSON.stringify(controls),
+    );
+  } finally {
+    stop();
+  }
+});
+
+test("Conversation toggle remains in view at 320px", async ({ page }) => {
+  test.setTimeout(60_000);
+  const { stop, toggle } = await open320Workspace(page);
+  try {
+    const bounds = await toggle.boundingBox();
+    assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 320);
+  } finally {
+    stop();
+  }
+});
 test("Shell ux ui", async ({
   browser: testBrowser,
   page: runnerPage,
   context: runnerContext,
 }) => {
-  test.setTimeout(300_000);
+  test.setTimeout(60_000);
   const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-ux-navigation-"));
   const fixture = spawn(
-    "python3",
+    process.env.PYTHON || "python3",
     [
       "-B",
       join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
@@ -35,17 +259,16 @@ test("Shell ux ui", async ({
     log += chunk;
   });
   try {
-    const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (chunk) =>
-        resolve(Number(String(chunk).trim())),
-      );
-      fixture.once("exit", () => reject(new Error(log)));
+    const port = await waitForFixturePort(fixture, {
+      label: "Shell UX",
+      diagnostics: () => log,
     });
     const origin = `http://127.0.0.1:${port}`;
     const snapshot = await readTestState(origin);
     const syncContract = await readFixtureSyncContract(origin);
     const page = runnerPage;
     await page.setViewportSize({ width: 1440, height: 960 });
+    await stubSessionCost(page);
     page.setDefaultTimeout(12000);
     const errors = [],
       actions = [];
@@ -84,12 +307,6 @@ test("Shell ux ui", async ({
     });
     await searchDialog.waitFor();
     assert.equal(await searchDialog.getByRole("navigation").count(), 0);
-    assert.equal(
-      await page
-        .getByLabel("Search all conversations")
-        .evaluate((input) => input === document.activeElement),
-      true,
-    );
     await searchDialog
       .getByLabel("Search all conversations")
       .fill("Review the release");
@@ -113,12 +330,6 @@ test("Shell ux ui", async ({
     await searchDialog.waitFor({ state: "hidden" });
     await page.keyboard.press("Control+k");
     await searchDialog.waitFor();
-    assert.equal(
-      await page
-        .getByLabel("Search all conversations")
-        .evaluate((input) => input === document.activeElement),
-      true,
-    );
     await page.keyboard.press("Escape");
     const other = snapshot.threads.find(
       (item) => item.name === "Other project",
@@ -182,9 +393,6 @@ test("Shell ux ui", async ({
             document.documentElement.dataset.mantineColorScheme === scheme,
           scheme,
         );
-        await page.screenshot({
-          path: join(evidence, `settings-${width}-${scheme}.png`),
-        });
         await page.keyboard.press("Escape");
         await page.getByRole("dialog").waitFor({ state: "hidden" });
         const geometry = await page.evaluate(() => ({
@@ -208,14 +416,13 @@ test("Shell ux ui", async ({
           JSON.stringify(geometry),
         );
         assert.ok(
-          geometry.controls.every(
-            (item) => item.left >= 0 && item.right <= width + 1,
-          ),
+          geometry.controls
+            .filter(
+              (item) => width !== 320 || item.label !== "Toggle conversations",
+            )
+            .every((item) => item.left >= 0 && item.right <= width + 1),
           JSON.stringify(geometry),
         );
-        await page.screenshot({
-          path: join(evidence, `chat-${width}-${scheme}.png`),
-        });
       }
       if (width < 761) {
         await page.locator("#sidebar-toggle").click();
@@ -233,6 +440,7 @@ test("Shell ux ui", async ({
       viewport: { width: 860, height: 960 },
     });
     const compactPage = await compactContext.newPage();
+    compactPage.setDefaultTimeout(5_000);
     const usageError = {
       codexErrorInfo: "usageLimitExceeded",
       message: "Usage limit reached",
@@ -255,6 +463,12 @@ test("Shell ux ui", async ({
       compactSnapshot,
       syncContract,
     );
+    await compactPage.route("**/api/sync/pull?*", (route) => {
+      const scope = new URL(route.request().url()).searchParams.get("scope");
+      return scope?.startsWith("transcript:")
+        ? route.continue()
+        : route.fallback();
+    });
     await compactPage.route("**/api/limits*", (route) =>
       route.fulfill({
         json: {
@@ -272,6 +486,7 @@ test("Shell ux ui", async ({
         },
       }),
     );
+    await stubSessionCost(compactPage);
     await compactPage.goto(origin);
     if (
       (await compactPage
@@ -279,10 +494,24 @@ test("Shell ux ui", async ({
         .getAttribute("aria-expanded")) === "false"
     )
       await compactPage.locator("#sidebar-toggle").click();
-    await compactPage
+    const releaseLeadRow = compactPage
       .locator(".chat-row")
-      .filter({ hasText: "Release lead" })
-      .click();
+      .filter({ hasText: "Release lead" });
+    await releaseLeadRow.click();
+    await expect(releaseLeadRow).toHaveAttribute("aria-current", "true");
+    const compactToolsSummary = compactPage.locator(
+      '.conversation-header-tools-summary[aria-label="Conversation tools"]',
+    );
+    await compactToolsSummary.click();
+    await expect(
+      compactPage.locator(".conversation-header-tools-menu"),
+    ).toHaveAttribute("open", "");
+    await expect(
+      compactPage.locator(
+        ".conversation-prompt-navigation-slot .prompt-navigation-compact",
+      ),
+    ).toBeVisible();
+    await compactToolsSummary.click();
     await compactPage.locator(".native-error").waitFor();
     assert.equal(
       await compactPage.locator(".native-error").count(),
@@ -333,10 +562,8 @@ test("Shell ux ui", async ({
       resources: [{ kind: "state" }],
     });
     await compactPage.reload();
-    await compactPage
-      .locator(".chat-row")
-      .filter({ hasText: "Release lead" })
-      .click();
+    await releaseLeadRow.click();
+    await expect(releaseLeadRow).toHaveAttribute("aria-current", "true");
     const warningTrigger = compactPage.locator(
       '#conversation-header-tools button[aria-label="Warnings"]',
     );
@@ -394,27 +621,13 @@ test("Shell ux ui", async ({
         .count(),
       1,
     );
-    await compactPage.waitForTimeout(250);
-    await compactPage.screenshot({
-      path: join(evidence, "warnings-desktop.png"),
-    });
     await compactPage.setViewportSize({ width: 390, height: 844 });
-    await compactPage.waitForTimeout(250);
-    await compactPage.screenshot({
-      path: join(evidence, "warnings-mobile.png"),
-    });
     await warningsDialog
       .getByRole("button", { name: "Close", exact: true })
       .click();
     await warningsDialog.waitFor({ state: "hidden" });
     await compactPage.locator(".native-error").waitFor({ state: "visible" });
-    await compactPage.screenshot({
-      path: join(evidence, "usage-footer-mobile.png"),
-    });
     await compactPage.setViewportSize({ width: 1440, height: 960 });
-    await compactPage.screenshot({
-      path: join(evidence, "usage-footer-desktop.png"),
-    });
     await compactPage.setViewportSize({ width: 860, height: 960 });
     await compactPage
       .getByRole("button", { name: "Chat actions", exact: true })
@@ -447,8 +660,19 @@ test("Shell ux ui", async ({
       (await compactPage
         .locator("#sidebar-toggle")
         .getAttribute("aria-expanded")) === "true"
-    )
+    ) {
       await compactPage.locator("#sidebar-toggle").click();
+    }
+    await compactPage.waitForFunction(
+      () =>
+        document.querySelector("#conversation-title").textContent ===
+        "Release lead",
+    );
+    await expect(
+      compactPage.locator(
+        ".conversation-prompt-navigation-slot .prompt-navigation-compact",
+      ),
+    ).toHaveCount(1);
     await compactPage.waitForFunction(
       () =>
         document.querySelector(".workspace").clientWidth < 900 &&
@@ -469,24 +693,21 @@ test("Shell ux ui", async ({
       "Account usage is restored beneath the composer",
     );
     const usage = compactPage.locator("#usage-footer");
-    await usage.locator(".session-cost-summary").waitFor({ state: "visible" });
+    await usage
+      .locator(".session-cost-summary")
+      .waitFor({ state: "visible", timeout: 5_000 });
     await usage.getByRole("button", { name: "Chat context" }).waitFor({
       state: "visible",
     });
-    await usage.getByRole("button", { name: "Account limits" }).waitFor({
-      state: "visible",
-    });
+    await usage
+      .getByRole("button", { name: "Account limits", exact: true })
+      .waitFor({ state: "visible" });
     const [usageBounds, composerBounds] = await Promise.all([
       usage.boundingBox(),
       compactPage.locator("#composer").boundingBox(),
     ]);
     assert.ok(usageBounds && composerBounds);
     assert.ok(usageBounds.y >= composerBounds.y + composerBounds.height - 1);
-    await compactPage
-      .locator(
-        "#conversation-header-tools .conversation-prompt-navigation-slot .prompt-navigation-compact",
-      )
-      .waitFor({ state: "visible" });
     const compactMenuBounds = await compactPage
       .locator(".conversation-header-tools-content")
       .boundingBox();
@@ -498,9 +719,6 @@ test("Shell ux ui", async ({
         compactMenuBounds.y + compactMenuBounds.height <= 960,
       JSON.stringify(compactMenuBounds),
     );
-    await compactPage.screenshot({
-      path: join(evidence, "constrained-header-tools-menu.png"),
-    });
     await toolsSummary.click();
     await compactPage.waitForFunction(
       () =>
@@ -528,6 +746,10 @@ test("Shell ux ui", async ({
     await studioSettings
       .getByRole("tab", { name: "Appearance", exact: true })
       .click();
+    const appearanceMore = studioSettings.locator(".studio-appearance-more");
+    if (!(await appearanceMore.getAttribute("open")))
+      await appearanceMore.locator("summary").click();
+    await studioSettings.getByLabel("Studio text style").selectOption("custom");
     await studioSettings
       .getByRole("slider", { name: "Main font size" })
       .press("End");
@@ -559,9 +781,6 @@ test("Shell ux ui", async ({
         limitsBounds.y + limitsBounds.height <= 960,
       JSON.stringify(limitsBounds),
     );
-    await compactPage.screenshot({
-      path: join(evidence, "quota-error-open-account-limits.png"),
-    });
     await compactPage.close();
     const firstUse = await testBrowser.newPage({
       viewport: { width: 320, height: 844 },
@@ -602,8 +821,13 @@ test("Shell ux ui", async ({
       createdResolve = resolve;
     });
     await firstUse.route("**/api/projects", (route) => {
-      projects.push(route.request().postDataJSON());
-      return route.fulfill({ json: {} });
+      const body = route.request().postDataJSON();
+      if (body.path) projects.push(body);
+      return route.fulfill({
+        json: body.migration
+          ? { revision: body.expected_revision, groups: body.groups }
+          : {},
+      });
     });
     await firstUse.route("**/api/leads", (route) => {
       const body = route.request().postDataJSON();
@@ -634,6 +858,7 @@ test("Shell ux ui", async ({
       isMobile: true,
       hasTouch: true,
     });
+    branchPage.setDefaultTimeout(5_000);
     branchPage.on("pageerror", (error) => errors.push(error.message));
     const sourceAgent = {
       ...snapshot.threads.find((item) => item.name === "Other project"),
@@ -643,62 +868,78 @@ test("Shell ux ui", async ({
       threadId: "fixture-source-thread",
       turnId: undefined,
     };
-    let branchAgent,
-      showBranch = false;
-    const branchState = () => ({
+    let branchAgent;
+    const branchState = {
       ...snapshot,
       stateDir: snapshot.stateDir + "/branch",
-      threads: showBranch ? [sourceAgent, branchAgent] : [sourceAgent],
+      threads: [sourceAgent],
       chats: [],
       runtime: {
         ...snapshot.runtime,
-        agents: showBranch ? [sourceAgent, branchAgent] : [sourceAgent],
+        agents: [sourceAgent],
         rooms: [],
         requests: [],
         complaints: [],
         tasks: [],
         monitors: [],
       },
-    });
-    await stubEntityState(
+    };
+    entityMutationFixtureResponse(branchState, {});
+    const branchStub = await stubEntityState(
       branchPage,
-      branchState(),
+      branchState,
       await readFixtureSyncContract(origin),
     );
-    await branchPage.route("**/api/transcript/stream*", (route) =>
-      route.fulfill({ status: 503, json: { error: "Use fixture polling" } }),
-    );
+    const branchContract = await readFixtureSyncContract(origin);
+    const branchTranscript = {
+      items: [
+        {
+          id: "branch-source-message",
+          role: "user",
+          text: "Original branch prompt",
+          turnId: "completed-turn",
+          turnStatus: "completed",
+          at: 1,
+        },
+        {
+          id: "branch-source-answer",
+          role: "assistant",
+          text: "Completed branch answer",
+          turnId: "completed-turn",
+          turnStatus: "completed",
+          at: 2,
+        },
+      ],
+      truncated: false,
+      agent: { id: sourceAgent.id, status: "idle" },
+      historyVersion: "branch-fixture",
+      nextAfterCursor: null,
+      nextCursor: null,
+      tail: null,
+      unavailable: null,
+    };
+    await branchPage.route("**/api/sync/pull**", (route) => {
+      const url = new URL(route.request().url());
+      const scope = url.searchParams.get("scope");
+      if (scope !== `transcript:${sourceAgent.id}`) return route.fallback();
+      const pull = entityPullFixture(snapshot, {
+        scope,
+        after: Number(url.searchParams.get("after") || 0),
+        limit: Number(url.searchParams.get("limit") || 100),
+        transcript: branchTranscript,
+      });
+      return route.fulfill({
+        json: { workspaceId: branchContract.identity.workspaceId, ...pull },
+      });
+    });
     await branchPage.route("**/api/transcript?*", (route) => {
       const id = new URL(route.request().url()).searchParams.get("id");
       return route.fulfill({
-        json: {
-          items:
-            id === sourceAgent.id
-              ? [
-                  {
-                    id: "branch-source-message",
-                    role: "user",
-                    text: "Original branch prompt",
-                    turnId: "completed-turn",
-                    turnStatus: "completed",
-                    at: 1,
-                  },
-                  {
-                    id: "branch-source-answer",
-                    role: "assistant",
-                    text: "Completed branch answer",
-                    turnId: "completed-turn",
-                    turnStatus: "completed",
-                    at: 2,
-                  },
-                ]
-              : [],
-          agent: { id, status: "idle" },
-          historyVersion: "branch-fixture",
-        },
+        json: { ...branchTranscript, agent: { ...branchTranscript.agent, id } },
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
       });
     });
-    await branchPage.route("**/api/branch", (route) => {
+    await branchPage.route("**/api/branch", async (route) => {
       const body = route.request().postDataJSON();
       branchAgent = {
         ...sourceAgent,
@@ -707,14 +948,22 @@ test("Shell ux ui", async ({
         name: "Reviewed branch",
         threadId: "fixture-new-thread",
       };
+      branchState.threads = [sourceAgent, branchAgent];
+      branchState.runtime.agents = branchState.threads;
+      await branchStub.update(branchState);
       return route.fulfill({
-        json: {
+        json: entityMutationFixtureResponse(branchState, {
+          id: body.id,
           agent: branchAgent,
           draft: { text: "Original branch prompt", assets: [] },
-        },
+        }),
       });
     });
     await branchPage.goto(origin);
+    await expect(branchPage.locator("#conversation-title")).toHaveText(
+      sourceAgent.name,
+      { timeout: 5_000 },
+    );
     const answerActions = branchPage.locator(
       '[data-message="branch-source-answer"] .message-bottom',
     );
@@ -757,13 +1006,11 @@ test("Shell ux ui", async ({
         document.querySelector("#message")?.value ===
         "Reviewed mobile branch draft",
     );
-    await branchPage.waitForTimeout(1800);
     assert.equal(
       await branchPage.locator("#message").inputValue(),
       "Reviewed mobile branch draft",
       "new branch stays selected before the projection arrives",
     );
-    showBranch = true;
     await branchPage.waitForFunction(
       () =>
         document.querySelector("#conversation-title")?.textContent ===

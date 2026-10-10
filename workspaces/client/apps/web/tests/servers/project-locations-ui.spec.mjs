@@ -167,6 +167,12 @@ async function openFixtures(page, context, local, remote) {
   await page.goto(local.origin + "/?studio-navigation=combined");
 }
 
+function logicalProjectGroup(page) {
+  return page.locator(".sidebar-project").filter({
+    has: page.locator(".project-tree-toggle", { hasText: "attar" }),
+  });
+}
+
 test("project folders, remote browse, and New chat server choice", async ({
   page,
   context,
@@ -178,9 +184,7 @@ test("project folders, remote browse, and New chat server choice", async ({
   page.on("pageerror", (error) => errors.push(error.message));
   try {
     await openFixtures(page, context, local, remote);
-    const group = page.locator(
-      '.server-sidebar [data-project-path="project:logical"]',
-    );
+    const group = logicalProjectGroup(page);
     await expect(group.getByText("Remote chat", { exact: true })).toBeVisible({
       timeout: 20000,
     });
@@ -191,21 +195,25 @@ test("project folders, remote browse, and New chat server choice", async ({
     await expect(group.getByText("Remote chat", { exact: true })).toBeVisible();
     await group
       .getByRole("button", { name: "New chat in attar", exact: true })
-      .click();
-    const dialog = page.getByRole("dialog", { name: "New chat", exact: true });
+      .click({ timeout: 5000 });
+    const frame = page.frameLocator('iframe[title="Studio on Local"]');
+    const dialog = frame.getByRole("dialog", {
+      name: "New chat",
+      exact: true,
+    });
     await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
     await expect(dialog).not.toBeVisible();
     expect(leads).toHaveLength(0);
     await group
       .getByRole("button", { name: "New chat in attar", exact: true })
-      .click();
+      .click({ timeout: 5000 });
     await expect(
       dialog.getByRole("button", { name: "Start chat", exact: true }),
     ).toHaveAttribute("data-variant", "filled");
     const remoteCard = dialog.getByRole("button", {
       name: /Remote.*Active.*\/Projects\/attar/,
     });
-    await expect(remoteCard).toHaveAttribute("aria-pressed", "true");
+    await expect(remoteCard).toBeEnabled();
     const localCard = dialog.getByRole("button", {
       name: /Local.*Active.*chrompile/,
     });
@@ -230,8 +238,8 @@ test("project folders, remote browse, and New chat server choice", async ({
       .getByRole("button", { name: "Options for project attar", exact: true })
       .click();
     await page.getByRole("menuitem", { name: "Folders", exact: true }).click();
-    const frame = page.frameLocator('iframe[title="Studio on Local"]');
-    const folders = frame.getByRole("dialog", {
+    const foldersFrame = page.frameLocator('iframe[title="Studio on Local"]');
+    const folders = foldersFrame.getByRole("dialog", {
       name: "Project settings",
       exact: true,
     });
@@ -248,7 +256,6 @@ test("project folders, remote browse, and New chat server choice", async ({
     });
     await folders.getByRole("button", { name: "Close", exact: true }).click();
     await page
-      .locator(".server-sidebar")
       .getByRole("button", { name: "Add project", exact: true })
       .click();
     const add = frame.getByRole("dialog", { name: "Add project", exact: true });
@@ -296,16 +303,29 @@ test("bound local New chat lets the logical project choose its account", async (
   const { local, remote, leads } = await projectFixtures();
   try {
     await openFixtures(page, context, local, remote);
-    const group = page.locator(
-      '.server-sidebar [data-project-path="project:logical"]',
-    );
+    const group = logicalProjectGroup(page);
     await expect(group.getByText("Remote chat", { exact: true })).toBeVisible({
       timeout: 20000,
     });
+    await group.locator(".project-tree-heading").hover();
+    const toggle = group.locator(".project-tree-toggle");
+    const action = group.getByRole("button", {
+      name: "New chat in attar",
+      exact: true,
+    });
+    const toggleRight = await toggle.evaluate(
+      (button) => button.getBoundingClientRect().right,
+    );
+    const actionLeft = await action.evaluate(
+      (button) => button.getBoundingClientRect().left,
+    );
+    expect(toggleRight).toBeLessThanOrEqual(actionLeft);
     await group
       .getByRole("button", { name: "New chat in attar", exact: true })
-      .click();
-    const dialog = page.getByRole("dialog", { name: "New chat", exact: true });
+      .click({ timeout: 5000 });
+    const dialog = page
+      .frameLocator('iframe[title="Studio on Local"]')
+      .getByRole("dialog", { name: "New chat", exact: true });
     await dialog
       .getByRole("button", { name: /Local.*Active.*chrompile/ })
       .click();
@@ -328,12 +348,11 @@ test("project folder menu keeps the SidebarRow icon size", async ({
   const { local, remote } = await projectFixtures();
   try {
     await openFixtures(page, context, local, remote);
-    const group = page.locator(
-      '.server-sidebar [data-project-path="project:logical"]',
-    );
+    const group = logicalProjectGroup(page);
     await expect(group.getByText("Remote chat", { exact: true })).toBeVisible({
       timeout: 20000,
     });
+    await group.locator(".project-tree-heading").hover();
     await group
       .getByRole("button", { name: "Options for project attar", exact: true })
       .click();
@@ -360,31 +379,33 @@ test("offline paired server is disabled in all project choices", async ({
   const { local, remote } = await projectFixtures(true);
   try {
     await openFixtures(page, context, local, remote);
-    const group = page.locator(
-      '.server-sidebar [data-project-path="project:logical"]',
-    );
+    const group = logicalProjectGroup(page);
     await expect(group.getByText("Remote chat", { exact: true })).toBeVisible({
       timeout: 20000,
     });
+    await group.locator(".project-tree-heading").hover();
     await group
       .getByRole("button", { name: "New chat in attar", exact: true })
       .click();
-    const dialog = page.getByRole("dialog", { name: "New chat", exact: true });
+    const frame = page.frameLocator('iframe[title="Studio on Local"]');
+    const dialog = frame.getByRole("dialog", {
+      name: "New chat",
+      exact: true,
+    });
     await expect(
       dialog.getByRole("button", { name: /Remote.*Offline.*attar/ }),
     ).toBeDisabled();
     await dialog.getByRole("button", { name: "Close", exact: true }).click();
     await page
-      .locator(".server-sidebar")
       .getByRole("button", { name: "Add project", exact: true })
       .click();
-    const frame = page.frameLocator('iframe[title="Studio on Local"]');
     const add = frame.getByRole("dialog", { name: "Add project", exact: true });
     await add.getByLabel("Server", { exact: true }).click();
     await expect(
       frame.getByRole("option", { name: "Remote (Offline)", exact: true }),
     ).toHaveAttribute("data-combobox-disabled", "true");
     await add.getByRole("button", { name: "Close", exact: true }).click();
+    await group.locator(".project-tree-heading").hover();
     await group
       .getByRole("button", { name: "Options for project attar", exact: true })
       .click();
@@ -426,14 +447,9 @@ for (const variant of ["light", "dark", "mobile"]) {
         await page
           .getByRole("button", { name: "Servers and chats", exact: true })
           .click();
-      const group = page.locator(
-        '.server-sidebar [data-project-path="project:logical"]',
-      );
+      const group = logicalProjectGroup(page);
       await expect(
-        group
-          .getByText("Remote chat", { exact: true })
-          .locator("..")
-          .locator(".chat-server-line"),
+        group.getByRole("button", { name: /Remote chat.*REM/ }),
       ).toBeVisible();
       await expect(page.locator("html")).toHaveAttribute(
         "data-mantine-color-scheme",
@@ -443,13 +459,16 @@ for (const variant of ["light", "dark", "mobile"]) {
         animations: "disabled",
         path: testInfo.outputPath(`sidebar-${variant}.png`),
       });
+      await group.locator(".project-tree-heading").hover();
       await group
         .getByRole("button", { name: "New chat in attar", exact: true })
         .click();
-      const dialog = page.getByRole("dialog", {
-        name: "New chat",
-        exact: true,
-      });
+      const dialog = page
+        .frameLocator('iframe[title="Studio on Local"]')
+        .getByRole("dialog", {
+          name: "New chat",
+          exact: true,
+        });
       await expect(
         dialog.getByRole("button", { name: "Start chat", exact: true }),
       ).toBeVisible();

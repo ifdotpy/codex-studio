@@ -3,21 +3,197 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join, resolve, sep } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { readFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { choosePlaywrightScratchRoot } from "./scratch-root.mjs";
+import { browserExecutablePath } from "./browser-executable.mjs";
+import { waitForFixturePort } from "./fixture-readiness.mjs";
+import {
+  registerFixtureProcessGroup,
+  signalFixtureProcessGroup,
+  stopFixtureProcessGroup,
+  unregisterFixtureProcessGroup,
+} from "./fixture-process-group.mjs";
+import {
+  persistWorkerMemorySample,
+  sampleProcessTreeMemory,
+} from "../playwright-workers.mjs";
+
+const playwrightScratch = choosePlaywrightScratchRoot();
+process.env.TMPDIR = playwrightScratch.root;
+process.env.TMP = playwrightScratch.root;
+process.env.TEMP = playwrightScratch.root;
+process.env.CODEX_PLAYWRIGHT_SCRATCH_PARENT = playwrightScratch.root;
+if (playwrightScratch.ownedRoot)
+  process.once("exit", () => {
+    rmSync(playwrightScratch.root, { recursive: true, force: true });
+  });
+if (!playwrightScratch.inheritedProbe)
+  console.log(
+    `Playwright scratch ${JSON.stringify({
+      root: playwrightScratch.root,
+      memoryBacked: playwrightScratch.memoryBacked,
+      mount: playwrightScratch.mount,
+      availableBytes: playwrightScratch.availableBytes,
+      probeBytes: playwrightScratch.probeBytes,
+      writeFsyncMs: playwrightScratch.writeFsyncMs,
+      tested: playwrightScratch.tested,
+    })}`,
+  );
 
 const require = createRequire(
   fileURLToPath(new URL("../package.json", import.meta.url)),
 );
 const { test: baseTest, expect } = require("@playwright/test");
-const { chromium } = require("playwright");
+export const playwrightScratchRoot = playwrightScratch.root;
+const fixtureViteCaches = new Set();
+const fixtureProcessGroupRegistry = join(
+  playwrightScratch.root,
+  "fixture-process-groups",
+);
+const repositoryScriptsDirectory = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../../../scripts",
+);
+process.once("exit", () => {
+  for (const cacheDir of fixtureViteCaches)
+    rmSync(cacheDir, { recursive: true, force: true });
+});
+// Playwright global setup resolves this once through scripts/codex_python.py
+// before any test runs and places the selected interpreter in the environment.
+export function getFixturePythonCommand() {
+  const command =
+    process.env.CODEX_AGENTS_PYTHON ||
+    process.env.PYTHON_BIN ||
+    process.env.PYTHON;
+  if (!command)
+    throw new Error(
+      "Playwright fixture Python was not resolved; check the configured global setup.",
+    );
+  return command;
+}
+
+function isPythonCommand(command) {
+  return (
+    typeof command === "string" &&
+    /^(?:.*[/\\])?python(?:\d+(?:\.\d+)*)?$/.test(command)
+  );
+}
 
 const generatedApiSchema = readFileSync(
   new URL("../src/generated/apiSchema.ts", import.meta.url),
   "utf8",
 );
+
+export const FIXTURE_OPTIMIZE_DEPS = {
+  noDiscovery: true,
+  include: [
+    "dexie",
+    "react",
+    "react/jsx-runtime",
+    "react/jsx-dev-runtime",
+    "react-dom/client",
+    "react-dom",
+    "@mantine/core",
+    "@mantine/hooks",
+    "lucide-react",
+  ],
+};
+
+/**
+ * Start a Vite fixture server with a private dependency cache. Parallel
+ * Playwright workers otherwise share web/node_modules/.vite, where one
+ * server's optimizer can invalidate modules another server is serving.
+ * @param {{ optimizeDeps?: { include?: string[]; [key: string]: unknown }; [key: string]: unknown }} config
+ */
+export async function createFixtureViteServer(config) {
+  const cacheDir = mkdtempSync(join(playwrightScratch.root, "vite-cache-"));
+  fixtureViteCaches.add(cacheDir);
+  try {
+    const { createServer } = await import(require.resolve("vite"));
+    const configuredOptimizeDeps = config.optimizeDeps ?? {};
+    const include = [
+      ...new Set([
+        ...FIXTURE_OPTIMIZE_DEPS.include,
+        ...(configuredOptimizeDeps.include ?? []),
+      ]),
+    ];
+    const server = await createServer({
+      ...config,
+      cacheDir,
+      optimizeDeps: { ...configuredOptimizeDeps, include },
+    });
+    const dependencyRoot = resolve(cacheDir, "deps");
+    server.middlewares.stack.unshift({
+      route: "",
+      handle(request, response, next) {
+        let pathname;
+        try {
+          pathname = new URL(request.url, "http://fixture.local").pathname;
+        } catch {
+          return next();
+        }
+        const prefix = "/node_modules/.vite/deps/";
+        if (!pathname.startsWith(prefix)) return next();
+        const dependencyPath = resolve(
+          dependencyRoot,
+          decodeURIComponent(pathname.slice(prefix.length)),
+        );
+        if (!dependencyPath.startsWith(`${dependencyRoot}${sep}`)) {
+          response.statusCode = 400;
+          response.end("Invalid optimized dependency path");
+          return;
+        }
+        if (!existsSync(dependencyPath)) return next();
+        const metadata = server.environments.client?.depsOptimizer?.metadata;
+        const dependency =
+          metadata &&
+          Object.values({
+            ...metadata.optimized,
+            ...metadata.chunks,
+            ...metadata.discovered,
+          }).find((entry) => resolve(entry.file) === dependencyPath);
+        if (!dependency?.browserHash) return next();
+        // Keep legacy browser-side imports on Vite's canonical optimized URL.
+        // Serving these bytes at the legacy path creates a second React module
+        // instance beside the /@fs URL imported by transformed application code.
+        response.writeHead(302, {
+          Location: `/@fs${dependencyPath}?v=${dependency.browserHash}`,
+          "Cache-Control": "no-cache",
+        });
+        response.end();
+      },
+    });
+    const close = server.close.bind(server);
+    let closePromise;
+    server.close = () => {
+      closePromise ??= Promise.resolve()
+        .then(() => close())
+        .finally(() => {
+          rmSync(cacheDir, { recursive: true, force: true });
+          fixtureViteCaches.delete(cacheDir);
+        });
+      return closePromise;
+    };
+    return server;
+  } catch (error) {
+    rmSync(cacheDir, { recursive: true, force: true });
+    fixtureViteCaches.delete(cacheDir);
+    throw error;
+  }
+}
 
 export const API_SCHEMA_HASH_HEADER = readGeneratedString(
   "API_SCHEMA_HASH_HEADER",
@@ -43,6 +219,168 @@ export function readApiSchemaHash() {
   return match[1];
 }
 
+export function apiSchemaHeaders(headers = {}) {
+  return { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(), ...headers };
+}
+
+/**
+ * Assert the schema update gate is not visible. Mantine may keep its closed
+ * alertdialog portal in the DOM, so checking for absence would misread it.
+ * @param {import("playwright").Page} page
+ */
+export async function expectNoSchemaGate(page) {
+  await expect(
+    page.getByRole("alertdialog", { name: "Studio update required" }),
+  ).toBeHidden();
+}
+
+const apiSchemaFixtureTargets = new WeakSet();
+const apiSchemaFixtureBrowsers = new WeakSet();
+const apiSchemaFixtureHeaderState = { enabled: true };
+
+function routeMatchersEqual(left, right) {
+  if (Object.is(left, right)) return true;
+  return (
+    left instanceof RegExp &&
+    right instanceof RegExp &&
+    left.source === right.source &&
+    left.flags === right.flags
+  );
+}
+
+/** @param {import("playwright").Page | import("playwright").BrowserContext} target */
+export function installApiSchemaFixtureHeaders(target) {
+  if (apiSchemaFixtureTargets.has(target)) return;
+  apiSchemaFixtureTargets.add(target);
+  const registerRoute = target.route.bind(target);
+  const unregisterRoute = target.unroute.bind(target);
+  const wrappedHandlers = [];
+  target.route = (url, handler, options) => {
+    const wrappedHandler = (route, request) => {
+      if (
+        !apiSchemaFixtureHeaderState.enabled ||
+        !new URL(request.url()).pathname.startsWith("/api/")
+      )
+        return handler(route, request);
+      let fulfillmentPromise;
+      const decoratedRoute = new Proxy(route, {
+        get(target, property) {
+          if (property === "fulfill")
+            return (response = {}) => {
+              // A Route can only be fulfilled once. Keep duplicate calls from
+              // racing through the decorator to Playwright's one-shot API.
+              if (fulfillmentPromise) return fulfillmentPromise;
+              const originalHeaders =
+                typeof response.response?.headers === "function"
+                  ? response.response.headers()
+                  : {};
+              const headers = new Headers(originalHeaders);
+              new Headers(response.headers).forEach((value, key) =>
+                headers.set(key, value),
+              );
+              if (!headers.has(API_SCHEMA_HASH_HEADER))
+                headers.set(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
+              const normalizedHeaders = {};
+              headers.forEach((value, key) => {
+                normalizedHeaders[key] = value;
+              });
+              // The fixture handler owns fulfillment. This proxy only decorates
+              // its arguments and delegates a single call to the real Route.
+              fulfillmentPromise = target.fulfill({
+                ...response,
+                headers: normalizedHeaders,
+              });
+              return fulfillmentPromise;
+            };
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      // Keep this route proxy available if a fixture intentionally holds the
+      // Route and fulfills it after a later UI event.
+      return handler(decoratedRoute, request);
+    };
+    wrappedHandlers.push({ url, handler, wrappedHandler });
+    return registerRoute(url, wrappedHandler, options);
+  };
+  target.unroute = async (url, handler) => {
+    const matching = wrappedHandlers.filter(
+      (entry) =>
+        routeMatchersEqual(entry.url, url) &&
+        (handler === undefined || entry.handler === handler),
+    );
+    if (handler === undefined) {
+      const result = await unregisterRoute(url);
+      for (let index = wrappedHandlers.length - 1; index >= 0; index--) {
+        if (routeMatchersEqual(wrappedHandlers[index].url, url))
+          wrappedHandlers.splice(index, 1);
+      }
+      return result;
+    }
+    if (!matching.length) return unregisterRoute(url, handler);
+    await Promise.all(
+      matching.map((entry) => unregisterRoute(url, entry.wrappedHandler)),
+    );
+    for (const entry of matching) {
+      const index = wrappedHandlers.indexOf(entry);
+      if (index >= 0) wrappedHandlers.splice(index, 1);
+    }
+  };
+}
+
+/** @param {import("playwright").Browser} browser */
+function installApiSchemaFixtureBrowser(browser) {
+  if (apiSchemaFixtureBrowsers.has(browser)) return;
+  apiSchemaFixtureBrowsers.add(browser);
+  const originalNewContext = browser.newContext;
+  const originalNewPage = browser.newPage;
+  browser.newContext = async function (...args) {
+    const context = await originalNewContext.apply(this, args);
+    if (apiSchemaFixtureHeaderState.enabled)
+      installApiSchemaFixtureContext(context);
+    return context;
+  };
+  browser.newPage = async function (...args) {
+    const page = await originalNewPage.apply(this, args);
+    if (apiSchemaFixtureHeaderState.enabled)
+      installApiSchemaFixtureHeaders(page);
+    return page;
+  };
+}
+
+/** @param {import("playwright").BrowserContext} context */
+function installApiSchemaFixtureContext(context) {
+  installApiSchemaFixtureHeaders(context);
+  const originalNewPage = context.newPage;
+  context.newPage = async function (...args) {
+    const page = await originalNewPage.apply(this, args);
+    installApiSchemaFixtureHeaders(page);
+    return page;
+  };
+}
+
+/** @param {import("playwright").Page} page */
+export async function stubSessionCost(page) {
+  await page.route("**/api/session-cost?*", (route) => {
+    const agent = new URL(route.request().url()).searchParams.get("agent");
+    return route.fulfill({
+      headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+      json: {
+        rootId: agent || "fixture-root",
+        generation: 1,
+        totalUSD: 0,
+        pricedSamples: 0,
+        breakdown: { providers: {}, models: {} },
+        unknownModels: [],
+        estimated: false,
+        pricingState: "ready",
+        cacheAgeSeconds: 0,
+        refreshing: false,
+      },
+    });
+  });
+}
+
 export function apiSchemaHandshakeSse(body = "", overrides = {}) {
   return `event: api-schema\ndata: ${JSON.stringify(apiSchemaHandshakeEvent(overrides))}\n\n${body}`;
 }
@@ -58,6 +396,29 @@ export function protocol3SseEvent(name, value) {
 const fixtureScopes = new WeakMap();
 const childTerminationWaitMs = 1_000;
 const fixtureCleanupTimeoutMs = 5_000;
+
+function recordStage(stage, values = {}) {
+  const path = process.env.PLAYWRIGHT_STAGE_LOG;
+  if (!path) return;
+  appendFileSync(
+    path,
+    `${JSON.stringify({ stage, at: Date.now(), ...values })}\n`,
+  );
+}
+
+function directoryBytes(path) {
+  let bytes = 0;
+  for (const entry of readdirSync(path, { withFileTypes: true })) {
+    const entryPath = join(path, entry.name);
+    try {
+      if (entry.isDirectory()) bytes += directoryBytes(entryPath);
+      else if (entry.isFile()) bytes += statSync(entryPath).size;
+    } catch {
+      // A concurrent SQLite write may replace or remove a file mid-sample.
+    }
+  }
+  return bytes;
+}
 
 async function waitForChildExit(child) {
   if (child.exitCode !== null || child.signalCode !== null) return;
@@ -101,24 +462,177 @@ async function waitForChildStart(child) {
 async function stopFixtureChild(child) {
   await waitForChildStart(child);
   if (child.pid === undefined) return;
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  child.kill("SIGTERM");
+  await stopFixtureProcessGroup(child);
   await waitForChildExit(child);
-  if (child.exitCode === null && child.signalCode === null) {
-    child.kill("SIGKILL");
-    await waitForChildExit(child);
-  }
   if (child.exitCode === null && child.signalCode === null)
     throw new Error(`Fixture process ${child.pid} did not exit after SIGKILL`);
 }
 
-const test = baseTest.extend({
-  // @ts-expect-error This module adds a private fixture to the shared test type.
+/** @typedef {import("@playwright/test").PlaywrightTestArgs & import("@playwright/test").PlaywrightTestOptions & {
+ * apiSchemaFixtureHeaders: boolean;
+ * apiSchemaFixtureHeaderSetup: void;
+ * fixtureChildCleanup: void;
+ * }} ClientTestFixtures
+ */
+/** @typedef {import("@playwright/test").PlaywrightWorkerArgs & import("@playwright/test").PlaywrightWorkerOptions & {
+ * apiSchemaFixtureBrowserSetup: void;
+ * browserStageTiming: void;
+ * }} ClientWorkerFixtures
+ */
+/** @type {import("@playwright/test").Fixtures<
+ * ClientTestFixtures,
+ * ClientWorkerFixtures,
+ * import("@playwright/test").PlaywrightTestArgs & import("@playwright/test").PlaywrightTestOptions,
+ * import("@playwright/test").PlaywrightWorkerArgs & import("@playwright/test").PlaywrightWorkerOptions
+ * >}
+ */
+const sharedFixtures = {
+  apiSchemaFixtureHeaders: [true, { option: true }],
+  apiSchemaFixtureBrowserSetup: [
+    async ({ playwright, browserName }, use) => {
+      const browserType = playwright[browserName];
+      const originalLaunch = browserType.launch;
+      const wrappedLaunch = async function (...args) {
+        const browser = await originalLaunch.apply(this, args);
+        installApiSchemaFixtureBrowser(browser);
+        return browser;
+      };
+      browserType.launch = wrappedLaunch;
+      try {
+        await use();
+      } finally {
+        if (browserType.launch === wrappedLaunch)
+          browserType.launch = originalLaunch;
+      }
+    },
+    { scope: "worker", auto: true },
+  ],
+  apiSchemaFixtureHeaderSetup: [
+    async ({ apiSchemaFixtureHeaders }, use) => {
+      const previousEnabled = apiSchemaFixtureHeaderState.enabled;
+      apiSchemaFixtureHeaderState.enabled = apiSchemaFixtureHeaders;
+      try {
+        await use();
+      } finally {
+        apiSchemaFixtureHeaderState.enabled = previousEnabled;
+      }
+    },
+    { auto: true },
+  ],
+  browserStageTiming: [
+    async ({ playwright, browserName }, use, workerInfo) => {
+      const browserType = playwright[browserName];
+      const launch = browserType.launch;
+      const memoryPeak = {
+        rssBytes: 0,
+        pssBytes: 0,
+        processTreeRssBytes: 0,
+        processTreePssBytes: 0,
+        processTreeProcessCount: 0,
+        processTreeBreakdown: [],
+        samples: 0,
+      };
+      const sampleMemory = () => {
+        try {
+          const tree = sampleProcessTreeMemory(process.pid);
+          if (!tree.processCount || !tree.pssBytes) return;
+          if (tree.pssBytes > memoryPeak.processTreePssBytes)
+            memoryPeak.processTreeBreakdown = tree.processes;
+          memoryPeak.processTreeRssBytes = Math.max(
+            memoryPeak.processTreeRssBytes,
+            tree.rssBytes,
+          );
+          memoryPeak.processTreePssBytes = Math.max(
+            memoryPeak.processTreePssBytes,
+            tree.pssBytes,
+          );
+          memoryPeak.processTreeProcessCount = Math.max(
+            memoryPeak.processTreeProcessCount,
+            tree.processCount,
+          );
+          const rollup = readFileSync("/proc/self/smaps_rollup", "utf8");
+          const rssKb = Number(rollup.match(/^Rss:\s+(\d+) kB$/m)?.[1]);
+          const pssKb = Number(rollup.match(/^Pss:\s+(\d+) kB$/m)?.[1]);
+          if (Number.isFinite(rssKb) && Number.isFinite(pssKb)) {
+            memoryPeak.rssBytes = Math.max(memoryPeak.rssBytes, rssKb * 1024);
+            memoryPeak.pssBytes = Math.max(memoryPeak.pssBytes, pssKb * 1024);
+          }
+          memoryPeak.samples += 1;
+        } catch {
+          // Keep tests portable to systems without procfs.
+        }
+      };
+      sampleMemory();
+      const memorySampler = setInterval(sampleMemory, 1_000);
+      memorySampler?.unref();
+      if (process.env.PLAYWRIGHT_STAGE_LOG) {
+        browserType.launch = async function (...args) {
+          const startedAt = Date.now();
+          try {
+            return await launch.apply(this, args);
+          } finally {
+            recordStage("browser_launch", {
+              browserName,
+              workerIndex: workerInfo.workerIndex,
+              durationMs: Date.now() - startedAt,
+            });
+          }
+        };
+      }
+      try {
+        await use();
+      } finally {
+        clearInterval(memorySampler);
+        sampleMemory();
+        let workerMemorySelection = {};
+        try {
+          workerMemorySelection = JSON.parse(
+            process.env.CODEX_PLAYWRIGHT_WORKER_SELECTION || "{}",
+          );
+        } catch {
+          // A malformed inherited selector should not fail fixture cleanup.
+        }
+        persistWorkerMemorySample({
+          runId: workerMemorySelection.workerMemoryRunId,
+          workerPid: process.pid,
+          processTreePssBytes: memoryPeak.processTreePssBytes,
+          processTreeBreakdown: memoryPeak.processTreeBreakdown,
+        });
+        if (process.env.PLAYWRIGHT_STAGE_LOG) {
+          recordStage("worker_memory_peak", {
+            workerPid: process.pid,
+            workerIndex: workerInfo.workerIndex,
+            browserName,
+            rssBytes: memoryPeak.rssBytes,
+            pssBytes: memoryPeak.pssBytes,
+            processTreeRssBytes: memoryPeak.processTreeRssBytes,
+            processTreePssBytes: memoryPeak.processTreePssBytes,
+            processTreeProcessCount: memoryPeak.processTreeProcessCount,
+            processTreeBreakdown: memoryPeak.processTreeBreakdown,
+            samples: memoryPeak.samples,
+          });
+        }
+        browserType.launch = launch;
+      }
+    },
+    { scope: "worker", auto: true },
+  ],
   fixtureChildCleanup: [
     // oxlint-disable-next-line no-empty-pattern
     async ({}, use, testInfo) => {
-      const scope = { children: new Set(), errors: [], closing: false };
+      const scope = {
+        children: new Set(),
+        scratchDirs: new Map(),
+        errors: [],
+        closing: false,
+      };
       fixtureScopes.set(testInfo, scope);
+      const testBodyStartedAt = Date.now();
+      recordStage("test_body_start", {
+        title: testInfo.titlePath.join(" › "),
+        file: testInfo.file,
+        workerIndex: testInfo.workerIndex,
+      });
       let testFailed = false;
       let testError;
       try {
@@ -127,10 +641,42 @@ const test = baseTest.extend({
         testFailed = true;
         testError = error;
       }
+      recordStage("test_body_end", {
+        title: testInfo.titlePath.join(" › "),
+        file: testInfo.file,
+        workerIndex: testInfo.workerIndex,
+        durationMs: Date.now() - testBodyStartedAt,
+        status: testInfo.status,
+        expectedStatus: testInfo.expectedStatus,
+      });
       scope.closing = true;
+      recordStage("fixture_cleanup_started", {
+        title: testInfo.titlePath.join(" › "),
+        file: testInfo.file,
+        workerIndex: testInfo.workerIndex,
+      });
       const results = await Promise.allSettled(
         [...scope.children].map(stopFixtureChild),
       );
+      try {
+        const tree = sampleProcessTreeMemory(process.pid);
+        const rollup = readFileSync("/proc/self/smaps_rollup", "utf8");
+        recordStage("worker_memory_after_test", {
+          workerPid: process.pid,
+          workerIndex: testInfo.workerIndex,
+          title: testInfo.titlePath.join(" › "),
+          file: testInfo.file,
+          rssBytes: Number(rollup.match(/^Rss:\s+(\d+) kB$/m)?.[1]) * 1024,
+          pssBytes: Number(rollup.match(/^Pss:\s+(\d+) kB$/m)?.[1]) * 1024,
+          processTreeRssBytes: tree.rssBytes,
+          processTreePssBytes: tree.pssBytes,
+          processTreeProcessCount: tree.processCount,
+          processTreeBreakdown: tree.processes,
+          nodeMemoryUsage: process.memoryUsage(),
+        });
+      } catch {
+        // Keep per-test telemetry optional on platforms without procfs.
+      }
       fixtureScopes.delete(testInfo);
       const cleanupFailures = [
         ...scope.errors,
@@ -147,7 +693,9 @@ const test = baseTest.extend({
     },
     { auto: true, timeout: fixtureCleanupTimeoutMs },
   ],
-});
+};
+
+const test = baseTest.extend(sharedFixtures);
 
 export { test, expect };
 
@@ -166,25 +714,195 @@ export function spawnFixture(command, args, options) {
       "spawnFixture is only available before test cleanup begins",
     );
 
-  const child = spawn(command, args, {
-    ...options,
-    env: {
-      ...process.env,
-      ...options?.env,
-      XDG_CACHE_HOME: join(process.env.TMPDIR || tmpdir(), "fixture-cache"),
+  const fixtureScratch = mkdtempSync(join(playwrightScratch.root, "fixture-"));
+  const home = join(fixtureScratch, "home");
+  const inheritedCodexHome = options?.env?.CODEX_HOME;
+  const parentCodexHome =
+    process.env.CODEX_HOME || join(process.env.HOME || homedir(), ".codex");
+  // Callers that explicitly pass a separate CODEX_HOME own its contents. A
+  // value copied from the parent environment is not an explicit fixture
+  // profile: never expose the host's installed plugins or account config to a
+  // spawned test backend.
+  const ownsCodexHome = !(
+    typeof inheritedCodexHome === "string" &&
+    resolve(inheritedCodexHome) !== resolve(parentCodexHome)
+  );
+  const codexHome = ownsCodexHome
+    ? join(fixtureScratch, "codex-home")
+    : inheritedCodexHome;
+  const state = join(fixtureScratch, "state");
+  const cache = join(fixtureScratch, "cache");
+  for (const directory of [home, codexHome, state, cache])
+    mkdirSync(directory, { recursive: true });
+  if (ownsCodexHome)
+    writeFileSync(
+      join(codexHome, "config.toml"),
+      '[plugins."chrome@openai-bundled"]\nenabled = false\n',
+    );
+  // Use synthetic local status metadata so renderer fixtures are independent
+  // of host credentials. Signed-out fixtures opt out with
+  // CODEX_PLAYWRIGHT_SIGNED_OUT=1; this token is never sent to a provider.
+  if (ownsCodexHome && options?.env?.CODEX_PLAYWRIGHT_SIGNED_OUT !== "1")
+    writeFileSync(
+      join(codexHome, "auth.json"),
+      JSON.stringify({
+        tokens: {
+          account_id: "playwright-fixture-account",
+          access_token: "playwright-fixture-only-token",
+        },
+      }),
+    );
+  const child = spawn(
+    isPythonCommand(command) ? getFixturePythonCommand() : command,
+    args,
+    {
+      ...options,
+      detached: process.platform !== "win32",
+      env: {
+        ...process.env,
+        ...options?.env,
+        TMPDIR: playwrightScratch.root,
+        TMP: playwrightScratch.root,
+        TEMP: playwrightScratch.root,
+        HOME: home,
+        CODEX_HOME: codexHome,
+        XDG_STATE_HOME: state,
+        XDG_CACHE_HOME: cache,
+        PYTHONPATH: [
+          repositoryScriptsDirectory,
+          options?.env?.PYTHONPATH,
+          process.env.PYTHONPATH,
+        ]
+          .filter(Boolean)
+          .join(delimiter),
+      },
     },
+  );
+  const childKill = child.kill.bind(child);
+  child.kill = (signal) =>
+    signalFixtureProcessGroup(child, signal) || childKill(signal);
+  child.once("spawn", () => {
+    try {
+      registerFixtureProcessGroup(fixtureProcessGroupRegistry, child.pid);
+    } catch (error) {
+      scope.errors.push(error);
+    }
+  });
+  let scratchFailure = "";
+  child.stderr?.on("data", (chunk) => {
+    const text = String(chunk);
+    if (
+      /ENOSPC|EDQUOT|No space left on device|disk quota exceeded|database or disk is full/i.test(
+        text,
+      )
+    )
+      scratchFailure = (scratchFailure + text).slice(-2048);
+  });
+  const fixtureStartedAt = Date.now();
+  const fixtureStateDirectory = args.find((argument) => {
+    if (
+      typeof argument !== "string" ||
+      !argument.startsWith(`${playwrightScratch.root}/`) ||
+      !existsSync(argument)
+    )
+      return false;
+    try {
+      return statSync(argument).isDirectory();
+    } catch {
+      return false;
+    }
+  });
+  const sampleScratch =
+    process.env.PLAYWRIGHT_SCRATCH_MEASURE === "1" &&
+    fixtureStateDirectory !== undefined;
+  let scratchInterval;
+  const recordScratchSize = () =>
+    recordStage("fixture_scratch_size", {
+      title: testInfo.titlePath.join(" › "),
+      file: testInfo.file,
+      workerIndex: testInfo.workerIndex,
+      path: fixtureStateDirectory,
+      bytes: directoryBytes(fixtureStateDirectory),
+    });
+  if (sampleScratch) {
+    recordScratchSize();
+    scratchInterval = setInterval(recordScratchSize, 1000);
+    scratchInterval.unref?.();
+  }
+  recordStage("fixture_spawn", {
+    title: testInfo.titlePath.join(" › "),
+    file: testInfo.file,
+    workerIndex: testInfo.workerIndex,
+    pid: child.pid,
+    fixtureStateDirectory,
+  });
+  child.once("spawn", () => {
+    recordStage("fixture_process_started", {
+      title: testInfo.titlePath.join(" › "),
+      file: testInfo.file,
+      workerIndex: testInfo.workerIndex,
+      pid: child.pid,
+      durationMs: Date.now() - fixtureStartedAt,
+    });
+  });
+  child.stdout?.once("data", () => {
+    recordStage("fixture_ready_output", {
+      title: testInfo.titlePath.join(" › "),
+      file: testInfo.file,
+      workerIndex: testInfo.workerIndex,
+      pid: child.pid,
+      durationMs: Date.now() - fixtureStartedAt,
+    });
   });
   scope.children.add(child);
+  scope.scratchDirs.set(child, fixtureScratch);
   child.on("error", (error) => {
     if (/** @type {NodeJS.ErrnoException} */ (error).code !== "ESRCH")
       scope.errors.push(error);
   });
-  child.once("close", () => scope.children.delete(child));
+  child.once("close", async (code, signal) => {
+    if (child.pid !== undefined) {
+      try {
+        // A descendant may outlive the direct fixture after it closes its
+        // pipes. Keep the group registered until every process has exited.
+        await stopFixtureProcessGroup(child);
+        unregisterFixtureProcessGroup(fixtureProcessGroupRegistry, child.pid);
+      } catch (error) {
+        scope.errors.push(error);
+      }
+    }
+    scope.children.delete(child);
+    if (scratchFailure)
+      scope.errors.push(
+        new Error(
+          `Playwright fixture scratch exhausted (exit ${code ?? signal}): ${scratchFailure.slice(-2048)}`,
+        ),
+      );
+    if (scratchInterval) clearInterval(scratchInterval);
+    if (sampleScratch) recordScratchSize();
+    const scratch = scope.scratchDirs.get(child);
+    if (scratch) {
+      try {
+        rmSync(scratch, { recursive: true, force: true });
+      } catch (error) {
+        scope.errors.push(error);
+      }
+      scope.scratchDirs.delete(child);
+    }
+    recordStage("fixture_exit", {
+      title: testInfo.titlePath.join(" › "),
+      file: testInfo.file,
+      workerIndex: testInfo.workerIndex,
+      pid: child.pid,
+      durationMs: Date.now() - fixtureStartedAt,
+      code,
+      signal,
+    });
+  });
   return child;
 }
 
-export const browserExecutablePath =
-  process.env.CHROME_BIN?.trim() || chromium.executablePath();
+export { browserExecutablePath, waitForFixturePort };
 /** @typedef {import("../src/generated/api").components["schemas"]["JsonValue"]} JsonValue */
 /** @typedef {import("../src/generated/api").components["schemas"]["SessionResponse"]} SessionResponse */
 /** @typedef {import("../src/generated/api").components["schemas"]["SyncPullResponse"]} SyncPullResponse */
@@ -237,7 +955,7 @@ export const browserExecutablePath =
  *   "nativeError" | "retryAt" | "hasUnread" | "hasQuestion" | "hasApproval" |
  *   "statusDetail" | "lastAnswer" | "lastCompletedTurn" | "nextTurnSettingsSupported" |
  *   "readStateSupported" | "pinned" | "archived" | "projectFolder" |
- *   "projectFolderRevision" | "project" | "projectId" | "projectServerId" | "serverId"
+ *   "projectFolderRevision" | "project"
  * >} TestAgent */
 
 /** @typedef {Pick<RoomEntityDto, "id" | "name" | "kind" | "members" | "rootId" | "updated" | "userHidden" | "projectPath" | "radio" | "peerTeamId" | "peerTeamName" | "lastMessage" | "peerLabel" | "localMembers">} TestRoom */
@@ -251,7 +969,7 @@ export const browserExecutablePath =
 /** @typedef {Record<string, JsonValue>} JsonObject */
 /** @typedef {{ collection: string, id: string, value: JsonValue }} EntityEnvelope */
 
-/** @typedef {{ scope?: string, after?: number, limit?: number, fresh?: boolean, initialHigh?: number, reset?: boolean, floor?: number, maxSeq?: number, generation?: number, priorityId?: string, tombstones?: SyncEntity[], transcript?: TranscriptPageResponse, drafts?: SyncEntity[], documents?: SyncEntity[] }} EntityPullFixtureOptions */
+/** @typedef {{ scope?: string, after?: number, limit?: number, fresh?: boolean, initialHigh?: number, reset?: boolean, floor?: number, maxSeq?: number, generation?: number, priorityId?: string, tombstones?: SyncEntity[], transcript?: TranscriptPageResponse, transcriptSeq?: number, drafts?: SyncEntity[], documents?: SyncEntity[] }} EntityPullFixtureOptions */
 
 /** @type {number} */
 const ENTITY_PAGE_SIZE = 500;
@@ -445,7 +1163,6 @@ const snapshotOnlyAgentKeys = new Set([
   "activeTools",
   "compactionsObservedOnly",
   "complaintsPresented",
-  "cyberAccessProgram",
   "events",
   "executionSettingsAccountKey",
   "maxAgents",
@@ -535,6 +1252,8 @@ function entityValuesFromSnapshot(snapshot) {
       "workerBaseRevision",
       "workerEnvironment",
       "workerEnvironmentRevision",
+      "layrReadiness",
+      "layrSync",
     ]),
   );
   append("request", runtime.requests);
@@ -723,11 +1442,17 @@ function reconcileMutableEntityPullState(pullState, snapshot) {
     if (previous._deleted) continue;
     const next = nextById.get(id);
     if (!next) {
+      const previousEntity = JSON.parse(previous.payload);
       pullState.documents.set(
         id,
         generatedSyncEntity({
           ...previous,
           seq: ++pullState.maxSeq,
+          payload: JSON.stringify({
+            collection: previousEntity.collection,
+            id: previousEntity.id,
+            value: {},
+          }),
           _deleted: true,
         }),
       );
@@ -780,10 +1505,38 @@ export function updateEntitySyncFixture(snapshot) {
 }
 
 /**
+ * Build a mutation response that both carries the changed entities to the
+ * current client and leaves the entity-pull fixture at the same state.
+ * Mutate the snapshot before calling this helper.
+ * @param {EntityFixtureState} snapshot
+ * @param {Record<string, unknown>} response
+ * @returns {Record<string, unknown>}
+ */
+export function entityMutationFixtureResponse(snapshot, response) {
+  return {
+    ...response,
+    _syncEntities: updateEntitySyncFixture(snapshot),
+  };
+}
+
+/** @param {import("@playwright/test").Page | import("@playwright/test").Locator} page @param {string} label */
+export function accountTileGroup(page, label) {
+  return page.getByRole("group", { name: label, exact: true });
+}
+
+/** @param {import("@playwright/test").Page | import("@playwright/test").Locator} page @param {string} label @param {string} accountName */
+export function accountTileButton(page, label, accountName) {
+  return accountTileGroup(page, label).getByRole("button", {
+    name: `Select account ${accountName}`,
+    exact: true,
+  });
+}
+
+/**
  * Serve the same sync routes from a small Node HTTP fixture backend.
  * @param {import("node:http").IncomingMessage} request
  * @param {import("node:http").ServerResponse} response
- * @param {{ snapshot: EntityFixtureState, workspaceId: string, unixSocket?: boolean, initialResources?: ResourceRef[], onPull?: () => void, onStreamReady?: (notify: (resources: ResourceRef[]) => void) => void }} fixture
+ * @param {{ snapshot: EntityFixtureState, workspaceId: string, unixSocket?: boolean, versionedResources?: boolean, epoch?: string, onPull?: () => void, onStreamReady?: (notify: (resources: ResourceRef[]) => void) => void }} fixture
  * @returns {boolean} whether this was an /api/sync route
  */
 export function handleEntitySyncFixtureRequest(request, response, fixture) {
@@ -834,9 +1587,20 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
     return true;
   }
   if (url.pathname === "/api/sync/stream") {
-    const epoch = randomUUID().replaceAll("-", "");
+    const epoch = fixture.epoch || randomUUID().replaceAll("-", "");
+    const requestedResources = JSON.parse(
+      url.searchParams.get("resources") || "[]",
+    );
     let revision = 0;
     let eventId = 0;
+    const resourceRevisions = new Map();
+    const withResourceVersions = (resources, advance = false) =>
+      resources.map((resource) => {
+        const key = JSON.stringify(resource);
+        const next = (resourceRevisions.get(key) || 0) + (advance ? 1 : 0);
+        resourceRevisions.set(key, next || 1);
+        return { resource, revision: next || 1 };
+      });
     response.writeHead(200, {
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
@@ -857,9 +1621,11 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
       epoch,
       protocol: RESOURCE_STREAM_PROTOCOL,
       reason: "initial",
-      resources: fixture.initialResources ?? [{ kind: "state" }],
+      resources: requestedResources,
       // No per-resource versions: the page must always pull after a fixture frame.
-      resourceVersions: [],
+      resourceVersions: fixture.versionedResources
+        ? withResourceVersions(requestedResources)
+        : [],
       revision: ++revision,
       workspaceId: identity.workspaceId,
     };
@@ -896,7 +1662,9 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
         protocol: RESOURCE_STREAM_PROTOCOL,
         reason: "change",
         resources,
-        resourceVersions: [],
+        resourceVersions: fixture.versionedResources
+          ? withResourceVersions(resources, true)
+          : [],
         revision: ++revision,
         workspaceId: identity.workspaceId,
       };
@@ -940,7 +1708,7 @@ export function entityPullFixture(snapshot, optionsOrAfter = {}) {
     };
   }
   if (scope.startsWith("transcript:")) {
-    const high = 1;
+    const highWatermark = options.transcriptSeq ?? 1;
     const limit = Math.min(100, Math.max(1, options.limit ?? 100));
     /** @type {TranscriptPageResponse} */
     const transcript = options.transcript ?? {
@@ -953,16 +1721,26 @@ export function entityPullFixture(snapshot, optionsOrAfter = {}) {
       tail: null,
       unavailable: null,
     };
-    const doc = generatedSyncEntity({
-      id: scope,
-      seq: high,
-      payload: JSON.stringify(transcript),
-      _deleted: false,
-    });
+    const availableDocuments = [
+      generatedSyncEntity({
+        id: scope,
+        seq: highWatermark,
+        payload: JSON.stringify(transcript),
+        _deleted: false,
+      }),
+    ];
+    const page = availableDocuments
+      .filter((document) => document.seq > after)
+      .slice(0, limit);
     return {
       generation,
-      documents: after < high ? [doc].slice(0, limit) : [],
-      checkpoint: { seq: after < high ? high : after },
+      documents: page,
+      checkpoint: {
+        seq:
+          page.length === limit
+            ? page.at(-1).seq
+            : Math.max(after, highWatermark),
+      },
     };
   }
   if (scope !== "state:entities:v1")

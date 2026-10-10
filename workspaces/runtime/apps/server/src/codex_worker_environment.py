@@ -26,18 +26,15 @@ def project_default(runtime, cwd, db):
 
 
 def select(runtime, spec, cwd, *, project_key=None):
-    if spec.get("role", "implementer") != "implementer":
-        if spec.get("environment", "host") != "host":
-            raise ValueError("Reviewers must use the host environment")
-        return "host"
-    if "environment" in spec:
-        return validate(spec["environment"])
-    with runtime.lock, runtime.read_db() as db:
-        return project_default(runtime, project_key or cwd, db)
+    if spec.get("environment", "host") != "host":
+        raise ValueError('Choose a layr chat to run agents in the VM')
+    return "host"
 
 
 def set_project_default(runtime, data):
     environment = validate(data.get("environment"))
+    if environment != "host":
+        raise ValueError('Choose a layr chat to run agents in the VM')
     revision = data.get("expected_revision")
     if type(revision) is not int or revision < 0:
         raise ValueError("Supply the current worker environment revision")

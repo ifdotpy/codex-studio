@@ -17,6 +17,7 @@ for (const [theme, viewport] of [
       colorScheme: theme === "dark" ? "dark" : "light",
     });
     const calls = { local: [], remote: [] };
+    const syncCalls = [];
     const handler =
       (owner) =>
       ({ url, body, json, snapshot }) => {
@@ -34,6 +35,17 @@ for (const [theme, viewport] of [
             projectFolder: row.projectFolder || null,
             pinned: !!row.pinned,
             archived: !!row.archived,
+          });
+          return true;
+        }
+        if (url.pathname === "/api/mac-sync/resolve") {
+          expect(owner).toBe("remote");
+          syncCalls.push(body);
+          json({
+            path: body.path,
+            choice: body.choice,
+            mainStateId: "m1",
+            status: null,
           });
           return true;
         }
@@ -85,6 +97,8 @@ for (const [theme, viewport] of [
                   name: "Home project",
                 },
               ],
+              // Only the remote server reports layr support for its folder.
+              layrReadiness: { state: "ready" },
             }
           : {}),
       });
@@ -142,6 +156,19 @@ for (const [theme, viewport] of [
         hasText: "Home project",
       });
       await expect(projectName).toBeVisible();
+      // Only the remote server reports readiness; the button keeps its name.
+      const readiness = projectName.locator(".project-layr-readiness");
+      await expect(readiness).toHaveText("LAYR");
+      await expect(readiness).toHaveAttribute("data-state", "ready");
+      await expect(readiness).toHaveAttribute(
+        "title",
+        "REM: Ready for layr chats",
+      );
+      await expect(
+        sidebar.getByRole("button", { name: "Home project", exact: true }),
+      ).toHaveAccessibleDescription(
+        "REM: Ready for layr chats. Drag to reorder. Alt + Up or Down also works.",
+      );
       await expect(projectName).not.toHaveAttribute("aria-expanded");
       expect(await projectName.evaluate((element) => element.tagName)).toBe(
         "BUTTON",
@@ -313,6 +340,104 @@ for (const [theme, viewport] of [
         await page.keyboard.press("Escape");
       }).toPass({ timeout: 15000 });
       await expect(row).toBeVisible();
+      expect(calls.local).toEqual([]);
+
+      // layr shows only where it is active: an import in progress shows nothing.
+      remote.offline(false);
+      remote.snapshot.runtime.projects[0].layrReadiness = {
+        state: "importing",
+      };
+      await page.reload();
+      if (viewport.width < 760)
+        await page
+          .getByRole("button", { name: "Servers and chats", exact: true })
+          .click();
+      await expect(projectName).toBeVisible();
+      await expect(projectName.locator("small")).toHaveCount(0);
+      await expect(
+        sidebar.getByRole("button", { name: "Home project", exact: true }),
+      ).toHaveAccessibleDescription(
+        "Drag to reorder. Alt + Up or Down also works.",
+      );
+
+      // The remote server now syncs its Mac folder: one chip tells that the project is
+      // ready and that one file waits for a choice, and the remote server takes it.
+      Object.assign(remote.snapshot.runtime.projects[0], {
+        layrReadiness: { state: "ready" },
+        layrSync: {
+          projectId: "remote-layr",
+          state: "conflict",
+          enabled: true,
+          conflicts: ["src/app.txt"],
+          choices: [],
+          withAgent: [],
+          deletes: 0,
+          reason: null,
+        },
+      });
+      await page.reload();
+      if (viewport.width < 760)
+        await page
+          .getByRole("button", { name: "Servers and chats", exact: true })
+          .click();
+      const syncChip = projectName.locator(".project-layr-sync");
+      await expect(syncChip).toHaveText("SYNC 1");
+      await expect(syncChip).toHaveAttribute("data-state", "conflict");
+      await expect(syncChip).toHaveAttribute(
+        "title",
+        "REM: Ready for layr chats\nREM: Mac folder sync: 1 file changed on both sides",
+      );
+      await expect(projectName.locator(".project-layr-readiness")).toHaveCount(
+        0,
+      );
+      await expect(
+        sidebar.getByRole("button", { name: "Home project", exact: true }),
+      ).toHaveAccessibleDescription(
+        "REM: Ready for layr chats. REM: Mac folder sync: 1 file changed on both sides. " +
+          "Drag to reorder. Alt + Up or Down also works.",
+      );
+      await page.screenshot({
+        path: testInfo.outputPath(`sync-row-${theme}.png`),
+      });
+      // The remote server takes the choice for its Mac folder.
+      const heading = sidebar.locator(".project-tree-heading", {
+        hasText: "Home project",
+      });
+      await heading.hover();
+      await heading
+        .getByRole("button", {
+          name: "Options for project Home project",
+          exact: true,
+        })
+        .click();
+      await page
+        .getByRole("menuitem", {
+          name: "Choose versions (1) (REM)",
+          exact: true,
+        })
+        .click();
+      const syncDialog = page.getByRole("dialog", {
+        name: "Mac folder sync: Home project (REM)",
+      });
+      await expect(syncDialog.getByText("src/app.txt")).toBeVisible();
+      await page.screenshot({
+        path: testInfo.outputPath(`mac-sync-${theme}.png`),
+      });
+      await syncDialog
+        .getByRole("button", { name: "Keep VM", exact: true })
+        .click();
+      await expect.poll(() => syncCalls.length).toBe(1);
+      expect(syncCalls[0]).toEqual({
+        projectId: "remote-layr",
+        path: "src/app.txt",
+        choice: "vm",
+      });
+      await expect(
+        syncDialog.getByText("No files wait for a choice."),
+      ).toBeVisible();
+      // Escape would also close the mobile sidebar drawer.
+      await syncDialog.getByRole("button", { name: "Close" }).click();
+      await expect(syncDialog).toHaveCount(0);
       expect(calls.local).toEqual([]);
       expect(errors).toEqual([]);
       await testInfo.attach("owner-requests", {

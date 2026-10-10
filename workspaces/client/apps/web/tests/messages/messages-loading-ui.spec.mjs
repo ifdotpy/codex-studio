@@ -3,27 +3,24 @@ import {
   entityPullFixtureForRequest,
   entityPullFixture,
   syncIdentityFixture,
+  installApiSchemaFixtureHeaders,
+  apiSchemaHeaders,
   test,
-  browserExecutablePath,
   spawnFixture as spawn,
 } from "../playwright.mjs";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRequire } from "node:module";
-test("Messages loading", async () => {
-  test.setTimeout(180_000);
+test("Messages loading", async ({ browser }) => {
+  test.setTimeout(45_000);
   const testRepo = fileURLToPath(
     new URL("../../../../../../", import.meta.url),
   );
   // Production UI with isolated HTTP reads. No model or user task writes.
   const repo = testRepo;
-  const { chromium, webkit } = createRequire(
-    join(repo, "workspaces/client/apps/web/package.json"),
-  )("playwright-core");
-  const engine = process.env.BROWSER === "webkit" ? webkit : chromium;
   const root = await mkdtemp(join(tmpdir(), "studio-messages-loading-"));
   const fixture = spawn(
     process.env.PYTHON || "python3",
@@ -41,8 +38,7 @@ test("Messages loading", async () => {
       },
     },
   );
-  let browser,
-    page,
+  let page,
     log = "";
   fixture.stderr.on("data", (value) => {
     log += value;
@@ -160,19 +156,12 @@ test("Messages loading", async () => {
       roomFails = true,
       holdNextComplaintDetail = false,
       releaseComplaintDetail;
-    browser = await engine.launch({
-      headless: true,
-      ...(engine === chromium
-        ? {
-            executablePath: browserExecutablePath,
-          }
-        : {}),
-    });
     const prepare = async (width) => {
       const next = await browser.newPage({
         viewport: { width, height: 900 },
         serviceWorkers: "block",
       });
+      installApiSchemaFixtureHeaders(next);
       next.setDefaultTimeout(12000);
       next.on("pageerror", (error) => errors.push(error.message));
       const backendIdentity = await (
@@ -193,10 +182,11 @@ test("Messages loading", async () => {
         const requestUrl = route.request().url();
         const projection = entityPullFixtureForRequest(current, requestUrl);
         const parsedUrl = new URL(requestUrl);
+        const after = Number(parsedUrl.searchParams.get("after") || 0);
         if (
           parsedUrl.searchParams.get("scope") === "state:entities:v1" &&
           projection.documents.length === 0 &&
-          Number(parsedUrl.searchParams.get("after") || 0) >= projection.maxSeq
+          after >= projection.maxSeq
         ) {
           const initial = entityPullFixture(current, {
             scope: "state:entities:v1",
@@ -206,7 +196,7 @@ test("Messages loading", async () => {
             (document) => document.id === `entity:agent:${lead.id}`,
           );
           if (update) {
-            const seq = projection.maxSeq + 1;
+            const seq = Math.max(projection.maxSeq, after) + 1;
             projection.documents.push({ ...update, seq });
             projection.checkpoint.seq = seq;
             projection.maxSeq = seq;
@@ -343,7 +333,22 @@ test("Messages loading", async () => {
       if (row.id === lead.id) row.name = refreshedName;
     for (const row of state.runtime.agents)
       if (row.id === lead.id) row.name = refreshedName;
-    await page.evaluate(() => window.dispatchEvent(new Event("pageshow")));
+    const notification = await fetch(`${origin}/api/sync/notify`, {
+      method: "POST",
+      headers: apiSchemaHeaders({
+        "content-type": "application/json",
+        "X-Canvas-Token": state.token,
+      }),
+      body: JSON.stringify({
+        requestId: randomUUID(),
+        resources: [{ kind: "state" }],
+      }),
+    });
+    assert.equal(
+      notification.status,
+      200,
+      `state resource notification: ${await notification.text()}`,
+    );
     await page
       .locator("#conversation-title")
       .filter({ hasText: refreshedName })
@@ -384,10 +389,6 @@ test("Messages loading", async () => {
       .click();
     await roomDetail.locator(".team-message").waitFor();
     await roomDetail.getByRole("alert").waitFor({ state: "hidden" });
-    await page.screenshot({
-      path: join(root, "messages-desktop.png"),
-      animations: "disabled",
-    });
     const mobile = await prepare(390);
     const mobileDrawer = await openMessages(mobile);
     await mobileDrawer
@@ -454,10 +455,6 @@ test("Messages loading", async () => {
       mobileLayout[".team-room-detail"].bottom <= 901,
       "the room detail stays inside the mobile window",
     );
-    await mobile.screenshot({
-      path: join(root, "messages-mobile.png"),
-      animations: "disabled",
-    });
     await mobileDrawer
       .getByRole("button", { name: "Back to chats", exact: true })
       .click();
@@ -474,7 +471,7 @@ test("Messages loading", async () => {
       JSON.stringify({
         ok: true,
         evidence: root,
-        engine: process.env.BROWSER || "chromium",
+        engine: browser.browserType().name(),
         stateReads,
         detailReads,
         roomReads,
@@ -495,6 +492,7 @@ test("Messages loading", async () => {
     console.error("Evidence:", root, error);
     throw error;
   } finally {
-    await browser?.close();
+    for (const page of browser.contexts().flatMap((context) => context.pages()))
+      await page.close();
   }
 });

@@ -105,6 +105,19 @@ test("selecting a remote chat leaves saved project collapse state untouched", as
         .locator("[data-chat]")
         .first(),
     ).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          ({ scope, path }) =>
+            JSON.parse(
+              localStorage.getItem(
+                ":server:remote:codex-project-tree:" + scope,
+              ) || "{}",
+            )[path],
+          { scope, path: sourcePath("remote") },
+        ),
+      )
+      .toBe(true);
     await page.evaluate(() => {
       window.__reviewWrites = [];
     });

@@ -70,17 +70,40 @@ bridge used by fixture-backed provider replay checks.
 Choose the root `test:*` script that matches the layer being changed; the root
 [package manifest](../package.json) owns the available command names and wiring.
 Client unit checks run without a production build. Browser checks build the
-renderer before exercising it. The server listing displays discovered suites;
+renderer before exercising it. The browser runner plans workers from its
+measured per-worker CPU budget, memory headroom, and competing runnable tasks;
+an explicit Playwright `--workers` value overrides the plan. It reports the
+selected worker count before discovery. Fixture scratch is selected by a
+write-and-fsync probe: tmpfs is preferred when it has the per-worker reserve,
+with disk scratch as the fallback. Set `PLAYWRIGHT_SCRATCH_ROOT` to request a
+specific writable location. The global setup resolves the equipped fixture
+Python once, checks its API dependencies before workers start, and passes that
+interpreter to fixtures. Shared fixtures isolate `HOME`, `CODEX_HOME`, and
+`XDG_*` state; tests that need a signed-out account opt out of the synthetic
+fixture account explicitly. Registered fixture process groups are reaped after
+success, failure, and timeout.
+
+The server listing displays discovered suites;
 use the server runner's `--help` for filters and optional categories. The root
 server script also runs the colocated JavaScript bridge tests. For a focused
 Python contract, use `pnpm run test:server:python -- --filter <name>`.
+The backend requires the native lifecycle module. Build and install it into the
+managed Python environment with this one setup command before server tests or
+backend startup; installation copies the built library and never builds it:
+
+```sh
+cargo build --release -p studio-operations-python && python3 workspaces/runtime/apps/server/src/install-cli.py
+```
+
 The Python server runner samples runnable processes for five seconds and uses
 their median. CPU jobs are `max(ceil(allowed CPUs / 4), allowed CPUs - competing
 runnable tasks)`. The plan then applies the hard memory limit and suite-count
 limit. Memory jobs divide the smaller of half `MemAvailable` and
 `MemAvailable - 4 GiB` by peak suite RSS. Linux `MemAvailable` already reflects
 memory currently occupied by tmpfs/shmem, so scratch is not counted a second
-time. The runner selects tmpfs only when free space is at least 256 MiB per planned
+time. macOS has neither `/proc/stat` nor `MemAvailable`: there the competing
+runnable count is the one-minute load average less one, and available memory is
+the free, inactive and speculative pages from `vm_stat`. The runner selects tmpfs only when free space is at least 256 MiB per planned
 worker, then runs a 64 MiB write+fsync quota probe. The bound rounds up the
 measured peak of about 4.5 GiB across 25 workers (184 MiB per worker) to leave
 headroom for concurrent suite scratch. The probe has caught roots that report free
@@ -113,10 +136,20 @@ Known product issues and reproductions are in
 [`workspaces/runtime/apps/server/tests/KNOWN-FAILURES.md`](../workspaces/runtime/apps/server/tests/KNOWN-FAILURES.md), while expectation edits
 are tracked in [`workspaces/runtime/apps/server/tests/TEST-STATUS-CHANGES.md`](../workspaces/runtime/apps/server/tests/TEST-STATUS-CHANGES.md).
 Use `python3 workspaces/runtime/apps/server/tests/server/compare_runs.py LOG1 LOG2 ...` to compare failure sets.
-Concurrent runners serialize on one per-user lock held for the whole run. A waiting
-runner prints `waiting for another test run to finish`, then samples load and plans
-workers after the lock is released. The operating system releases the lock if a runner exits abnormally.
-Use `--show-jobs` to inspect the plan. Set `--jobs <count>` or
+Full server runs serialize on one per-user lock held for the whole run. A waiting
+full runner prints `waiting for another test run to finish`, then samples load and
+plans workers after the lock is released. A selection resolving to one runnable
+suite uses a bounded per-user focused slot instead, so it can overlap a full run
+or another focused run. Focused slots are capped at four and by allowed CPUs; their
+combined measured peak RSS is limited by the full planner's available-memory budget
+and existing [4 GiB memory reserve](../workspaces/runtime/apps/server/tests/server/run.py).
+If that budget cannot admit one measured suite, the selection uses the whole-run lock.
+If all focused slots are busy, the runner prints
+`waiting for a focused-run admission slot`. Both lock types are kernel-managed and
+are released when the runner exits. Focused runs keep the same per-suite isolated
+temporary, home, XDG, Codex, Claude, and workspace directories, and do not write
+the shared timing/profile cache. `--show-jobs` reports whether a selection uses
+focused slots or the whole-run lock. Set `--jobs <count>` or
 `CODEX_SERVER_TEST_JOBS` to override it manually.
 Each suite gets separate short temporary, home, XDG, Codex, Claude, and workspace
 directories under the selected scratch root, so parallel suites do not share

@@ -564,7 +564,14 @@ class AgentEntityDto(ContractModel):
     concurrency: int | None = None
     accountKey: str | None = None
     cwd: str | None = None
-    workspaceMode: Literal["image", "worktree", "shared"] | None = None
+    workspaceMode: Literal["layr", "image", "worktree", "shared"] | None = None
+    executionMode: Literal["vm", "native"] | None = None
+    hostProjectPath: str | None = None
+    layrReady: bool | None = None
+    layrProjectId: str | None = None
+    layrLine: str | None = None
+    layrStateId: str | None = None
+    layrError: str | None = None
     workspaceBackend: Literal["asif", "vm"] | None = None
     worktree: bool | str | None = None
     worktreePreparation: Literal["waiting", "preparing"] | None = None
@@ -917,6 +924,25 @@ class ProjectAliasDto(ContractModel):
     name: str
 
 
+class ProjectLayrReadinessDto(ContractModel):
+    """Whether a new layr chat of the project starts without an import (docs/vm-layr.md)."""
+    state: Literal["ready", "importing", "not_imported", "failed"]
+    error: str | None = None
+
+
+class ProjectLayrSyncDto(ContractModel):
+    """The Mac folder sync of the project's layr project (docs/vm-mac-sync.md). conflicts and
+    choices wait for the user, withAgent for the lead, deletes for a confirmation."""
+    projectId: str
+    state: Literal["syncing", "synced", "waiting", "conflict", "paused", "error"]
+    enabled: bool
+    conflicts: list[str]
+    choices: list[str]
+    withAgent: list[str]
+    deletes: int
+    reason: str | None = None
+
+
 class ProjectEntityDto(ContractModel):
     homeServerId: str | None = None
     locations: list[ProjectLocationDto] | None = None
@@ -938,6 +964,10 @@ class ProjectEntityDto(ContractModel):
     peerTeams: list[ProjectPeerTeamDto] | None = None
     workerBaseRef: str | None = None
     workerBaseRevision: int | None = None
+    # Only macOS servers with a folder of the project set it.
+    layrReadiness: ProjectLayrReadinessDto | None = None
+    # Set with layrReadiness "ready" when the layr project syncs a Mac folder.
+    layrSync: ProjectLayrSyncDto | None = None
 
 
 class PeerTeamEntityDto(ContractModel):
