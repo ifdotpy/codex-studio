@@ -109,7 +109,7 @@
     flex-basis: var(--studio-sidebar-width);
     padding-inline: 16px;
   }
-  .desktop-mac .sidebar-header {
+  .desktop-inset-titlebar .sidebar-header {
     padding-inline: 0;
   }
 }
@@ -142,7 +142,7 @@
   margin-top: 8px;
 }
 
-/* Questions belong to the transcript, so they cannot shrink its viewport. */
+/* Questions stay in transcript order and use their own bounded scroll region. */
 #conversation #messages #requests {
   width: 100%;
   max-width: none;
@@ -182,7 +182,7 @@
   display: none;
   list-style: none;
 }
-.desktop-mac .conversation-header-tools-summary {
+.desktop-inset-titlebar .conversation-header-tools-summary {
   -webkit-app-region: no-drag;
 }
 .conversation-header-tools-menu > summary::-webkit-details-marker {
@@ -251,6 +251,23 @@
   padding-inline: 6px;
   font-size: var(--studio-main-font-size, inherit);
   white-space: nowrap;
+}
+.conversation-header-tools-content
+  .prompt-history-toggle
+  .mantine-Button-label {
+  display: grid;
+}
+.conversation-header-tools-content .prompt-history-toggle-label,
+.conversation-header-tools-content
+  .prompt-history-toggle
+  .mantine-Button-label::before {
+  grid-area: 1 / 1;
+}
+.conversation-header-tools-content
+  .prompt-history-toggle
+  .mantine-Button-label::before {
+  content: "Search chat";
+  visibility: hidden;
 }
 .conversation-header-tools-menu[data-compact="yes"][open]
   > .conversation-header-tools-content {

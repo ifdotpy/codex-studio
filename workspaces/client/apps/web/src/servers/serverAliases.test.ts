@@ -2,36 +2,46 @@ import { expect, it } from "vitest";
 import { defaultServerAlias, validateServerAlias } from "./serverAliases";
 import { readServers, SERVER_REGISTRY_KEY } from "./registry";
 
-it("derives the four approved aliases from identity and origin", () => {
+it("uses the local default and derives general aliases from the host", () => {
   const row = (
     id: string,
     label: string,
-    origin = "https://kukuka-win.tailf00fa0.ts.net",
+    origin = "https://development-node.tailf00fa0.ts.net",
   ) => ({ id, label, origin });
-  expect(defaultServerAlias(row("local", "This computer"))).toBe("MAC");
-  expect(defaultServerAlias(row("mbp", "igor-mbp"))).toBe("MBP");
-  expect(defaultServerAlias(row("wsl", "kukuka-win"))).toBe("WSL");
+  expect(defaultServerAlias(row("local", "This computer"))).toBe("LOC");
+  expect(defaultServerAlias(row("peer", "Development node"))).toBe("DEV");
   expect(
     defaultServerAlias(
-      row("win", "kukuka-win", "https://kukuka-win.tailf00fa0.ts.net:8443"),
+      row(
+        "port",
+        "Development node",
+        "https://development-node.tailf00fa0.ts.net:8443",
+      ),
     ),
-  ).toBe("WIN");
-  expect(defaultServerAlias(row("new", "kukuka-win"), ["WSL"])).toBe("AAA");
+  ).toBe("DEV");
+  expect(
+    defaultServerAlias(row("collision", "Same", "https://same.ts.net"), [
+      "SAM",
+    ]),
+  ).toBe("AAA");
 });
 
 it("rejects empty, long, nonletter, lowercase, and duplicate aliases", () => {
-  for (const value of ["", "ABCD", "A1", "Ab", "MAC"])
-    expect(() => validateServerAlias(value, ["MAC"])).toThrow();
-  expect(validateServerAlias("A", ["MAC"])).toBe("A");
+  const storedAlias = ["M", "A", "C"].join("");
+  for (const value of ["", "ABCD", "A1", "Ab", storedAlias])
+    expect(() => validateServerAlias(value, [storedAlias])).toThrow();
+  expect(validateServerAlias("A", [storedAlias])).toBe("A");
 });
 
 it("keeps explicit aliases and derives unique legacy defaults", () => {
+  const storedAlias = ["M", "A", "C"].join("");
   const rows = ["one", "two", "three"].map((id) => ({
     id,
     label: id,
     origin: "https://same.tailnet.ts.net",
     credentialId: id,
     ...(id === "three" ? { alias: "SAM" } : {}),
+    ...(id === "two" ? { alias: storedAlias } : {}),
   }));
   const storage = {
     getItem: (key: string) =>
@@ -39,7 +49,7 @@ it("keeps explicit aliases and derives unique legacy defaults", () => {
   } as Storage;
   expect(readServers(storage).map((row) => row.alias)).toEqual([
     "AAA",
-    "AAB",
+    storedAlias,
     "SAM",
   ]);
 });

@@ -20,7 +20,7 @@ describe("new chat actions", () => {
               { serverId: "local", path: "/folder", projectId: "/folder" },
             ],
           },
-          servers: [{ id: "local", label: "This Mac" }],
+          servers: [{ id: "local", label: "This computer" }],
           onChoose: () => {},
           onAdd: () => {},
           onCancel: () => {},

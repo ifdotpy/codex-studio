@@ -19,6 +19,7 @@ import {
 import { Settings } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import App from "../App";
+import { DEFAULT_LOCAL_SERVER_ALIAS } from "./serverAliases";
 import CombinedServerSidebar from "./CombinedServerSidebar";
 import {
   createMergedSidebarSelector,
@@ -362,7 +363,7 @@ export default function MultiServerApp() {
           discovery.snapshot?.aliases?.[server.id] ||
             server.alias ||
             (server.id === "local"
-              ? "MAC"
+              ? DEFAULT_LOCAL_SERVER_ALIAS
               : server.label
                   .replace(/[^a-z]/gi, "")
                   .slice(0, 3)
@@ -902,6 +903,7 @@ export default function MultiServerApp() {
               notify={setFailure}
               notice={failure}
               unreadCount={unread}
+              hideOldChatsThreshold={preferences.hideOldChatsThreshold}
             />
           ) : (
             <aside className="server-sidebar" aria-label="Servers and projects">

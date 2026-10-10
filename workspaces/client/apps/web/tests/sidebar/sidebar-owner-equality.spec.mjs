@@ -219,7 +219,7 @@ test("the owner adapter preserves saved organization in standalone and classic s
       "Project B",
       "Project A",
     ]);
-    expect(before.projects[0].expanded).toBe("false");
+    expect(before.projects[0].expanded).toBeNull();
     expect(before.folders).toEqual([
       { id: "parent", parent: null, name: "Parent", expanded: "true" },
       { id: "nested", parent: "parent", name: "Nested", expanded: "false" },
@@ -232,7 +232,7 @@ test("the owner adapter preserves saved organization in standalone and classic s
       "Saved pin",
     ]);
     expect(before.chats.find((row) => row.id === "overlap").pinned).toBe(true);
-    expect(before.compact).toEqual(["Show less"]);
+    expect(before.compact).toEqual(["Hide old"]);
     await standalone.screenshot({
       path: testInfo.outputPath("standalone-saved-sidebar.png"),
     });

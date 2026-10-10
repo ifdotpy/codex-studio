@@ -10,7 +10,7 @@
     if (status) status.textContent = text;
     if (help)
       help.textContent =
-        "Check the connection to your Mac, then reload Studio.";
+        "Check the connection to your computer, then reload Studio.";
   };
   const timeout = setTimeout(
     () => notice("Studio is taking longer to open."),

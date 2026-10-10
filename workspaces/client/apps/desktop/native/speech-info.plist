@@ -3,5 +3,5 @@
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>local.codex.agents.speech</string>
 <key>CFBundleName</key><string>Codex Studio</string>
-<key>NSSpeechRecognitionUsageDescription</key><string>Convert your saved dictation to text on this Mac.</string>
+<key>NSSpeechRecognitionUsageDescription</key><string>Convert your saved dictation to text on this computer.</string>
 </dict></plist>

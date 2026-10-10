@@ -37,7 +37,7 @@ export default function ProjectDirectoryPicker({
   submitLabel?: string;
 }) {
   const [servers, setServers] = useState<ProjectServerChoice[]>(
-    serverChoices || [{ id: "local", label: "This Mac" }],
+    serverChoices || [{ id: "local", label: "This computer" }],
   );
   const [server, setServer] = useState(
     initialServer || serverChoices?.[0]?.id || "local",

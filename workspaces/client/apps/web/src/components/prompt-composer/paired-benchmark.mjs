@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const BASELINE_REVISION = "e681bcc618d9ea4f4a0799de3fa81d01eee92687";
+const BASELINE_REVISION = "7066718";
 const commandTimeoutMs = 90_000;
 const benchmarkGlobalTimeoutMs = 360_000;
 const benchmarkCommandTimeoutMs = 390_000;
@@ -98,14 +98,22 @@ async function prepareBaseline() {
       "--no-cone",
       "/web/**",
       "/web/playwright.config.ts",
-      "/tests/performance/draft-render-performance-browser.spec.mjs",
-      "/tests/performance/ui-responsiveness-browser.spec.mjs",
-      "/tests/playwright.mjs",
+      "/tests/client/performance/draft-render-performance-browser.spec.mjs",
+      "/tests/client/performance/ui-responsiveness-browser.spec.mjs",
+      "/tests/client/playwright.mjs",
+      "/tests/client/playwright.d.mts",
       "/tests/simple-ui-fixture.py",
+      "/tests/test_isolation.py",
       "/tests/runtime-contract.py",
       "/scripts/claude_bridge/**",
       "/scripts/codex_canvas.py",
       "/scripts/codex_runtime.py",
+      "/scripts/**",
+      "/package.json",
+      "/package-lock.json",
+      "/requirements.txt",
+      "/requirements-dev.txt",
+      "/.oxfmtrc.json",
     ],
     repo,
   );
@@ -119,6 +127,12 @@ async function prepareBaseline() {
     join(baselineWeb, "node_modules"),
     "dir",
   );
+  await symlink(
+    join(repo, "node_modules"),
+    join(baseline, "node_modules"),
+    "dir",
+  );
+  command("npm", ["run", "api:generate"], baseline);
   const probeDir = join(baselineWeb, "src/components/prompt-composer");
   await mkdir(probeDir, { recursive: true });
   await copyFile(
