@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = [
+    "workspaces/runtime/apps/diagnostics",
+]
+# The vendored layr sources (scripts update-vm-layr.py) build inside the Linux VM guest with
+# their own lints; they are not part of this workspace.
+exclude = ["workspaces/runtime/apps/layr"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "LicenseRef-Proprietary"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+let_underscore_future = "deny"
+let_underscore_must_use = "deny"
+unwrap_used = "warn"
+
+[workspace.dependencies]
+serde_json = { version = "1.0", default-features = false, features = ["std", "arbitrary_precision"] }

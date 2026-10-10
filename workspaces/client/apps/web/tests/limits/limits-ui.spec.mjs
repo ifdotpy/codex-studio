@@ -1,0 +1,991 @@
+import {
+  readTestState,
+  test,
+  expect,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
+// Production UI and local fixture. Account variants replace only read responses.
+import assert from "node:assert/strict";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+test("limits-ui", async ({ page: fixturePage }) => {
+  test.setTimeout(120_000);
+  const skill = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const root = await mkdtemp(join(tmpdir(), "codex-limits-ui-"));
+  const fixture = spawn(
+    "python3",
+    [
+      "-B",
+      join(skill, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      root,
+    ],
+    {
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
+  let log = "";
+  fixture.stderr.on("data", (data) => (log += data));
+  const port = await new Promise((resolve, reject) => {
+    fixture.stdout.once("data", (data) => resolve(Number(String(data).trim())));
+    fixture.once("exit", () => reject(Error(log)));
+  });
+  const origin = `http://127.0.0.1:${port}`;
+  const initial = await readTestState(origin);
+  const lead = initial.threads.find((agent) => agent.name === "Release lead");
+  const leadAgent = initial.runtime.agents.find(
+    (agent) => agent.threadId === lead.threadId,
+  );
+  let selectedChat = lead;
+  const now = Date.now() / 1000;
+  const primary = {
+    usedPercent: 42,
+    windowDurationMins: 300,
+    resetsAt: now + 3600,
+  };
+  const secondary = {
+    usedPercent: 21,
+    windowDurationMins: 10080,
+    resetsAt: now + 86400,
+  };
+  let limits = {
+    data: {
+      rateLimits: {
+        limitId: "codex",
+        planType: "pro",
+        primary,
+        secondary,
+        credits: { balance: "12.50" },
+      },
+    },
+    at: now,
+  };
+  const page = fixturePage;
+  await page.exposeFunction("__readTestState", () => readTestState(origin));
+  await fixturePage.setViewportSize({ width: 1440, height: 960 });
+  page.setDefaultTimeout(12000);
+  await page.route("**/api/accounts", (route) =>
+    route.fulfill({
+      json: {
+        defaultAccountKey: "default",
+        accounts: [
+          {
+            id: "default",
+            label: "Fixture",
+            status: "ready",
+            accountId: "test-account",
+          },
+          {
+            id: "claude-local",
+            label: "Claude fixture",
+            provider: "claude",
+            status: "ready",
+            accountId: "claude-test-account",
+          },
+        ],
+      },
+    }),
+  );
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  let failLimits = false;
+  await page.route("**/api/limits", (route) =>
+    failLimits
+      ? route.fulfill({
+          status: 503,
+          json: { error: "Fixture quota refresh failed" },
+        })
+      : route.fulfill({ json: { ...limits, accountKey: selectedAccount } }),
+  );
+  // The server cache holds the same fixture limits as a provider read.
+  await page.route(/\/api\/limits\?.*cached=1/, (route) =>
+    route.fulfill({
+      json: {
+        ...limits,
+        accountKey:
+          new URL(route.request().url()).searchParams.get("account_key") ||
+          "default",
+      },
+    }),
+  );
+  let costs = {
+    at: now,
+    stale: false,
+    refreshing: false,
+    data: {
+      todayUSD: 12.5,
+      last30DaysUSD: 1234.56,
+      sourceUpdatedAt: new Date().toISOString(),
+      coverage: "unverified",
+      unknownModels: [],
+    },
+  };
+  let deferCosts = false,
+    pendingCosts;
+  await page.route("**/api/costs?*", (route) => {
+    const accountKey =
+      new URL(route.request().url()).searchParams.get("account_key") ||
+      "default";
+    if (accountKey === "claude-local")
+      return route.fulfill({
+        json: {
+          accountKey,
+          at: now,
+          refreshing: false,
+          stale: false,
+          data: {
+            todayUSD: 2.5,
+            last30DaysUSD: 24.5,
+            coverage: "reported",
+            unknownModels: [],
+            note: "API-rate estimate from Claude Code logs.",
+          },
+        },
+      });
+    if (deferCosts) {
+      pendingCosts = route;
+      return;
+    }
+    return route.fulfill({ json: { ...costs, accountKey } });
+  });
+  let selectedAccount = "default";
+  let sessionPricing = "loading";
+  let sessionCostValue = 0.42;
+  let holdSessionCost = false;
+  let pendingSessionCost;
+  const teamRoot = (agentId) =>
+    initial.threads.find((agent) => agent.id === agentId)?.rootId || lead.id;
+  const sessionCostResult = (agentId) => ({
+    rootId: teamRoot(agentId),
+    totalUSD: sessionCostValue,
+    estimated: true,
+    pricingState: "ready",
+    refreshing: false,
+    cacheAgeSeconds: 0,
+    breakdown: { providers: { openai: 0.3, anthropic: 0.12 } },
+    unknownModels: ["gpt-5.6-luna"],
+    method: "API rates",
+  });
+  await page.route("**/api/session-cost?*", (route) => {
+    const agentId = new URL(route.request().url()).searchParams.get("agent");
+    if (sessionPricing === "loading")
+      return route.fulfill({
+        json: {
+          rootId: teamRoot(agentId),
+          totalUSD: null,
+          pricingState: "loading",
+          unknownModels: [],
+          method: "Loading public API prices.",
+        },
+      });
+    if (holdSessionCost) {
+      pendingSessionCost = route;
+      return;
+    }
+    return route.fulfill({ json: sessionCostResult(agentId) });
+  });
+  await page.route("**/api/sync/pull?*", async (route) => {
+    const response = await route.fetch();
+    const projection = await response.json();
+    for (const document of projection.documents ?? []) {
+      if (document.id !== "entity:workspace:current" || document._deleted)
+        continue;
+      const entity = JSON.parse(document.payload);
+      entity.value.rateLimits = { ...limits, accountKey: selectedAccount };
+      document.payload = JSON.stringify(entity);
+    }
+    await route.fulfill({ response, json: projection });
+  });
+  const toggle = () =>
+    page.getByRole("button", { name: "Account limits", exact: true });
+  const details = () =>
+    page.getByRole("region", {
+      name: "Account limits details",
+      exact: true,
+    });
+  const load = async () => {
+    await page.goto(origin);
+    if (page.viewportSize().width <= 600)
+      await page.locator("#sidebar-toggle").click();
+    await page.locator(`[data-chat="${selectedChat.id}"]`).click();
+    await toggle().waitFor();
+  };
+  await load();
+  assert.equal((await toggle().innerText()).trim(), "Limits");
+  assert.match(await page.locator("#usage-footer").innerText(), /Context 40%/);
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".session-cost-summary")?.textContent?.trim() ===
+      "",
+  );
+  assert.doesNotMatch(
+    await page.locator("#usage-footer").innerText(),
+    /Unpriced:/,
+  );
+  sessionPricing = "ready";
+  await load();
+  await page.getByText("Session estimate: $0.42", { exact: false }).waitFor();
+  assert.match(
+    await page.locator("#usage-footer").innerText(),
+    /Session estimate: \$0\.42/,
+  );
+  assert.match(
+    await page.locator(".session-cost-summary").getAttribute("title"),
+    /anthropic/,
+  );
+  selectedChat = initial.threads.find(
+    (agent) => agent.name === "Other project",
+  );
+  sessionCostValue = 0.84;
+  holdSessionCost = true;
+  await page.locator(`[data-chat="${selectedChat.id}"]`).click();
+  for (let n = 0; n < 100 && !pendingSessionCost; n++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(pendingSessionCost, "team refresh waits in the fixture");
+  assert.doesNotMatch(
+    await page.locator("#usage-footer").innerText(),
+    /Updating/,
+  );
+  holdSessionCost = false;
+  await pendingSessionCost.fulfill({
+    json: sessionCostResult(selectedChat.id),
+  });
+  pendingSessionCost = undefined;
+  await page.getByText("Session estimate: $0.84", { exact: false }).waitFor();
+
+  selectedChat = lead;
+  sessionCostValue = 1.26;
+  holdSessionCost = true;
+  await page.locator(`[data-chat="${selectedChat.id}"]`).click();
+  for (let n = 0; n < 100 && !pendingSessionCost; n++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(pendingSessionCost, "switch refresh waits in the fixture");
+  assert.match(
+    await page.locator("#usage-footer").innerText(),
+    /Session estimate: \$0\.42/,
+  );
+  assert.doesNotMatch(
+    await page.locator("#usage-footer").innerText(),
+    /Updating/,
+  );
+  holdSessionCost = false;
+  await pendingSessionCost.fulfill({
+    json: sessionCostResult(selectedChat.id),
+  });
+  pendingSessionCost = undefined;
+  await page.getByText("Session estimate: $1.26", { exact: false }).waitFor();
+
+  sessionCostValue = 1.68;
+  holdSessionCost = true;
+  await load();
+  for (let n = 0; n < 100 && !pendingSessionCost; n++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(pendingSessionCost, "reload refresh waits in the fixture");
+  assert.match(
+    await page.locator("#usage-footer").innerText(),
+    /Session estimate: \$1\.26/,
+  );
+  assert.doesNotMatch(
+    await page.locator("#usage-footer").innerText(),
+    /Updating/,
+  );
+  holdSessionCost = false;
+  await pendingSessionCost.fulfill({
+    json: sessionCostResult(selectedChat.id),
+  });
+  pendingSessionCost = undefined;
+  await page.getByText("Session estimate: $1.68", { exact: false }).waitFor();
+  await page.getByRole("button", { name: "Chat context", exact: true }).click();
+  await page.getByText("Compacted 2 times.", { exact: true }).waitFor();
+  await page.keyboard.press("Escape");
+  await toggle().click();
+  await details().waitFor();
+  await page.waitForFunction(() => {
+    const value = document.querySelector(
+      ".account-limits-panel .account-limit-window strong",
+    )?.textContent;
+    return value?.replace(/\s+/g, " ").trim() === "58% left";
+  });
+  assert.equal(await details().getByRole("progressbar").count(), 2);
+  assert.match(await details().innerText(), /7d/);
+  assert.match(await details().innerText(), /Credits\s+12.50/);
+  assert.match(await details().innerText(), /Updated/);
+  assert.match(await details().innerText(), /Resets in 1h/);
+  assert.equal(await details().locator("time[datetime]").count(), 2);
+  assert.match(
+    await details()
+      .getByRole("region", { name: "Local cost estimates" })
+      .innerText(),
+    /\$12.50/,
+  );
+  assert.match(await details().innerText(), /\$1,234.56/);
+  assert.match(await details().innerText(), /Estimated API cost/);
+  assert.doesNotMatch(
+    await details().innerText(),
+    /All local chats|All accounts/,
+  );
+  selectedAccount = "claude-local";
+  fixture.stdin.write(
+    JSON.stringify({
+      method: "fixture/account-key",
+      agent: leadAgent.id,
+      accountKey: selectedAccount,
+    }) + "\n",
+  );
+  await load();
+  await toggle().click();
+  await details().waitFor();
+  await details().getByText("$24.50", { exact: true }).waitFor();
+  assert.match(await details().innerText(), /\$2\.50/);
+  selectedAccount = "default";
+  fixture.stdin.write(
+    JSON.stringify({
+      method: "fixture/account-key",
+      agent: leadAgent.id,
+      accountKey: selectedAccount,
+    }) + "\n",
+  );
+  assert.doesNotMatch(
+    await details().innerText(),
+    /CodexBar|coverage unverified|ChatGPT bill|Costs as of/,
+  );
+  assert.ok(
+    (await details().locator(".account-limit-group").boundingBox()).height <
+      150,
+    "quota pool remains compact",
+  );
+  await page.waitForFunction(
+    () =>
+      getComputedStyle(document.querySelector(".account-limits-popover"))
+        .opacity === "1",
+  );
+  await page.screenshot({
+    path: join(root, "limits-desktop.png"),
+    animations: "disabled",
+  });
+  await page.clock.install();
+  failLimits = true;
+  const beforeQuotaFailure = await page.locator("#usage-footer").boundingBox();
+  await details().getByRole("button", { name: "Refresh", exact: true }).click();
+  await details()
+    .getByText(/^Saved limits/)
+    .waitFor();
+  assert.match(
+    await details().innerText(),
+    /58% left[\s\S]*79% left/,
+    "a failed refresh retains confirmed quota values for this account",
+  );
+  assert.equal(await details().getByRole("progressbar").count(), 2);
+  assert.deepEqual(
+    await page.locator("#usage-footer").boundingBox(),
+    beforeQuotaFailure,
+    "refresh error cannot add a footer row",
+  );
+  failLimits = false;
+  await page.clock.fastForward(30050);
+  await details()
+    .getByText(/^Saved limits/)
+    .waitFor({ state: "hidden" });
+
+  const resetCredit = {
+    id: "credit-test",
+    title: "Full reset",
+    description: "Restore Codex limits.",
+    resetType: "codexRateLimits",
+    status: "available",
+    expiresAt: now + 86400,
+  };
+  limits.data.accountId = "test-account";
+  limits.data.rateLimitResetCredits = {
+    availableCount: 3,
+    credits: [resetCredit],
+  };
+  let resetOutcome = "uncertain";
+  const resetRequests = [];
+  let releaseReset;
+  let holdReset = false;
+  await page.route("**/api/limits/reset", async (route) => {
+    resetRequests.push(route.request().postDataJSON());
+    if (holdReset)
+      await new Promise((resolve) => {
+        releaseReset = resolve;
+      });
+    if (resetOutcome === "reset") {
+      limits.data.rateLimitResetCredits = {
+        availableCount: 2,
+        credits: [{ ...resetCredit, status: "redeemed" }],
+      };
+    }
+    await route.fulfill({
+      json: {
+        outcome: resetOutcome,
+        error:
+          resetOutcome === "uncertain"
+            ? "Reset result uncertain. Refresh to check."
+            : undefined,
+      },
+    });
+  });
+  await load();
+  await toggle().click();
+  await details().getByText("3 available", { exact: true }).waitFor();
+  const resetPanel = () =>
+    details().getByRole("region", { name: "Limit reset credits" });
+  await resetPanel()
+    .getByRole("button", { name: "Apply reset", exact: true })
+    .click();
+  await resetPanel()
+    .getByRole("button", { name: "Cancel", exact: true })
+    .click();
+  assert.equal(resetRequests.length, 0, "cancel never spends a credit");
+  await resetPanel()
+    .getByRole("button", { name: "Apply reset", exact: true })
+    .click();
+  await resetPanel()
+    .getByRole("button", { name: "Use one reset credit", exact: true })
+    .click();
+  await resetPanel()
+    .getByRole("alert")
+    .getByText(/uncertain/)
+    .waitFor();
+  assert.equal(resetRequests.length, 1);
+  assert.equal(resetRequests[0].account_id, "test-account");
+  assert.equal(resetRequests[0].credit_id, "credit-test");
+  assert.match(resetRequests[0].request_id, /^[0-9a-f-]{36}$/);
+  resetOutcome = "reset";
+  holdReset = true;
+  await resetPanel()
+    .getByRole("button", { name: "Use one reset credit", exact: true })
+    .evaluate((button) => {
+      button.click();
+      button.click();
+    });
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".account-reset-confirm button:last-child")
+        ?.disabled === true,
+  );
+  for (let attempt = 0; attempt < 100 && !releaseReset; attempt++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(
+    resetRequests.length,
+    2,
+    "duplicate click starts only one request",
+  );
+  assert.equal(
+    resetRequests[1].request_id,
+    resetRequests[0].request_id,
+    "uncertain retry reuses its receipt",
+  );
+  assert.match(
+    await resetPanel().innerText(),
+    /3 available/,
+    "no optimistic credit count",
+  );
+  releaseReset();
+  await resetPanel()
+    .getByRole("status")
+    .getByText(/Reset applied/)
+    .waitFor();
+  await resetPanel().getByText("2 available", { exact: true }).waitFor();
+  assert.equal(
+    await resetPanel()
+      .getByRole("button", { name: "Apply reset", exact: true })
+      .count(),
+    0,
+  );
+  holdReset = false;
+  for (const outcome of ["nothingToReset", "noCredit", "alreadyRedeemed"]) {
+    resetOutcome = outcome;
+    limits.data.rateLimitResetCredits = {
+      availableCount: 3,
+      credits: [resetCredit],
+    };
+    await load();
+    await toggle().click();
+    await resetPanel()
+      .getByRole("button", { name: "Apply reset", exact: true })
+      .click();
+    await resetPanel()
+      .getByRole("button", { name: "Use one reset credit", exact: true })
+      .click();
+    await resetPanel()
+      .getByText(
+        outcome === "nothingToReset"
+          ? "No limits need a reset."
+          : outcome === "noCredit"
+            ? "This reset credit is no longer available."
+            : "This reset credit was already used.",
+        { exact: true },
+      )
+      .waitFor();
+    assert.doesNotMatch(await resetPanel().innerText(), /Reset applied/);
+  }
+  resetOutcome = "reset";
+  limits.data.rateLimitResetCredits = {
+    availableCount: 3,
+    credits: [
+      resetCredit,
+      { ...resetCredit, id: "credit-two" },
+      { ...resetCredit, id: "credit-three" },
+    ],
+  };
+  await load();
+  await toggle().click();
+  await resetPanel()
+    .getByRole("button", { name: "Apply reset", exact: true })
+    .first()
+    .click();
+  assert.equal(
+    await resetPanel().locator("strong[title='Restore Codex limits.']").count(),
+    3,
+  );
+  assert.equal(
+    await resetPanel()
+      .getByText("Restore Codex limits.", { exact: true })
+      .count(),
+    0,
+  );
+  await page.waitForFunction(
+    () =>
+      getComputedStyle(document.querySelector(".account-limits-popover"))
+        .opacity === "1",
+  );
+  await page.screenshot({
+    path: join(root, "limits-reset-credits.png"),
+    animations: "disabled",
+  });
+  limits = {
+    data: {
+      rateLimitsByLimitId: {
+        unrelated: {
+          limitName: "GPT-5.3-Codex-Spark",
+          primary: { ...primary, usedPercent: 1 },
+        },
+        codex: { limitId: "codex", primary },
+        [lead.model]: {
+          limitName: lead.model,
+          primary: { ...primary, usedPercent: 92 },
+          secondary,
+        },
+      },
+    },
+    at: now + 1,
+  };
+  await load();
+  assert.match(await toggle().innerText(), /Low allowance/);
+  assert.doesNotMatch(await toggle().innerText(), /99%/);
+  await toggle().click();
+  await details().waitFor();
+  assert.equal(await details().locator(".account-limit-group").count(), 3);
+  await details().getByText("99% left", { exact: true }).waitFor();
+  await details().getByText("8% left", { exact: true }).waitFor();
+  const names = await details()
+    .locator(".account-limit-group > header > strong")
+    .allTextContents();
+  assert.equal(names[0], "Codex");
+  assert.equal(names.at(-1), "GPT-5.3-Codex-Spark");
+  await page.screenshot({
+    path: join(root, "limits-pools-desktop.png"),
+    animations: "disabled",
+  });
+
+  limits = {
+    data: {
+      rateLimitsByLimitId: {
+        unrelated: { limitName: "Other model", primary },
+        another: { limitName: "Another model", secondary },
+      },
+    },
+    at: now + 2,
+  };
+  await load();
+  assert.equal((await toggle().innerText()).trim(), "Limits");
+  await toggle().click();
+  await details().locator(".account-limit-group").nth(1).waitFor();
+  assert.equal(await details().locator(".account-limit-group").count(), 2);
+  assert.doesNotMatch(await details().innerText(), /Codex/);
+
+  limits = {
+    data: {
+      rateLimits: {
+        limitId: "codex",
+        primary: { windowDurationMins: 300 },
+        secondary: { ...secondary, usedPercent: 99.5 },
+        credits: {},
+      },
+    },
+    at: now + 3,
+  };
+  await load();
+  assert.match(await toggle().innerText(), /Low allowance/);
+  await toggle().click();
+  await details().getByText("<1% left", { exact: true }).waitFor();
+  assert.match(
+    await details().locator(".account-limit-window").first().innerText(),
+    /Unavailable/,
+  );
+  await details().waitFor();
+  assert.equal(await details().getByRole("progressbar").count(), 1);
+  assert.match(await details().innerText(), /Reset time unavailable/);
+  assert.match(
+    await details().locator(".account-limit-credits").innerText(),
+    /Unavailable/,
+  );
+  assert.doesNotMatch(await details().innerText(), /0%/);
+
+  limits = {
+    data: {
+      rateLimits: {
+        limitId: "codex",
+        primary: { ...primary, resetsAt: now - 60 },
+        secondary: { ...secondary, usedPercent: 100 },
+      },
+    },
+    at: now + 4,
+    error: "Account connection failed",
+  };
+  await load();
+  assert.match(await toggle().innerText(), /Low allowance/);
+  assert.doesNotMatch(await toggle().innerText(), /Update failed/);
+  await toggle().click();
+  await details().waitFor();
+  await details().getByText("Awaiting update", { exact: true }).waitFor();
+  await details().getByText("0% left", { exact: true }).waitFor();
+  assert.equal(await details().getByRole("progressbar").count(), 1);
+  assert.doesNotMatch(await details().innerText(), /58%/);
+  assert.match(await details().innerText(), /Saved limits/);
+  assert.doesNotMatch(
+    await details().innerText(),
+    /Account connection failed|outcome unknown/,
+  );
+
+  costs = {
+    at: now,
+    stale: true,
+    refreshing: false,
+    error: "Scanner unavailable",
+    data: {
+      todayUSD: null,
+      last30DaysUSD: null,
+      coverage: "partial",
+      unknownModels: ["unknown-astra"],
+    },
+  };
+  limits = { data: null, at: now + 5 };
+  await load();
+  assert.equal((await toggle().innerText()).trim(), "Limits");
+  await toggle().click();
+  await details().waitFor();
+  assert.equal(await details().getByRole("progressbar").count(), 0);
+  assert.match(await details().innerText(), /has not supplied/);
+  assert.match(await details().innerText(), /Estimate unavailable/);
+  assert.doesNotMatch(
+    await details().innerText(),
+    /unknown-astra|Scanner unavailable/,
+  );
+  assert.doesNotMatch(await details().innerText(), /\$0\.00/);
+
+  limits = {
+    data: {
+      rateLimitsByLimitId: {},
+      rateLimits: {
+        limitId: "codex",
+        limitName: "Codex",
+        primary,
+        secondary,
+        credits: { unlimited: true },
+      },
+    },
+    at: now + 6,
+  };
+  await page.setViewportSize({ width: 780, height: 844 });
+  await load();
+  assert.equal((await toggle().innerText()).trim(), "Limits");
+  await toggle().click();
+  await details().waitFor();
+  await details().waitFor();
+  await page.waitForFunction(
+    () =>
+      getComputedStyle(document.querySelector(".account-limits-popover"))
+        .opacity === "1",
+  );
+  await page.screenshot({
+    path: join(root, "limits-narrow-desktop.png"),
+    animations: "disabled",
+  });
+  const box = await details().boundingBox();
+  assert.ok(
+    box &&
+      box.x >= 0 &&
+      box.x + box.width <= 780 &&
+      box.y >= 0 &&
+      box.y + box.height <= 844,
+    "narrow desktop limits stay in viewport",
+  );
+  assert.equal(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth > innerWidth,
+    ),
+    false,
+    "narrow desktop page has no horizontal overflow",
+  );
+  assert.equal(
+    await details().evaluate(
+      (element) => element.scrollWidth > element.clientWidth,
+    ),
+    false,
+    "narrow desktop limits have no horizontal overflow",
+  );
+  // Late cost data must not add a footer row or lift the composer.
+  for (const width of [780, 1280]) {
+    await page.setViewportSize({ width, height: 900 });
+    deferCosts = true;
+    pendingCosts = undefined;
+    await load();
+    await page.waitForTimeout(150);
+    const before = await page.locator("#usage-footer").boundingBox();
+    const composerBefore = await page.locator("#composer").boundingBox();
+    for (let n = 0; n < 100 && !pendingCosts; n++)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.ok(pendingCosts, "cost request is delayed");
+    await pendingCosts.fulfill({
+      json: {
+        ...costs,
+        accountKey: "default",
+        error: null,
+        data: { ...costs.data, todayUSD: 123456.78 },
+      },
+    });
+    await toggle().click();
+    await details().getByText("$123,456.78", { exact: true }).waitFor();
+    await toggle().click();
+    assert.deepEqual(
+      await page.locator("#usage-footer").boundingBox(),
+      before,
+      `cost response preserves footer geometry at ${width}px`,
+    );
+    assert.deepEqual(
+      await page.locator("#composer").boundingBox(),
+      composerBefore,
+      `cost response preserves composer geometry at ${width}px`,
+    );
+    const summaryBox = await toggle().boundingBox();
+    assert.equal(summaryBox.height, 26, "quota trigger remains a single line");
+    deferCosts = false;
+  }
+  selectedChat = initial.threads.find(
+    (agent) => agent.name === "Other project",
+  );
+  let previousTurn;
+  for (const [reached, kind, expected] of [
+    [
+      "workspace_owner_credits_depleted",
+      "rateLimitExceeded",
+      "Add credits to continue using Codex.",
+    ],
+    [
+      "workspace_member_credits_depleted",
+      "rateLimitExceeded",
+      "Ask your workspace owner to add credits.",
+    ],
+    [
+      "workspace_owner_credits_depleted",
+      "usageLimitExceeded",
+      "Increase your workspace usage limit",
+    ],
+    [
+      "workspace_member_credits_depleted",
+      "usageLimitExceeded",
+      "Ask your workspace owner to increase your usage limit.",
+    ],
+  ]) {
+    const nativeLimitError = {
+      message: `Usage limit reached: ${reached} (${kind}).`,
+      codexErrorInfo: kind,
+    };
+    limits = {
+      at: Date.now() / 1000,
+      data: {
+        rateLimits: { rateLimitReachedType: reached, primary, secondary },
+      },
+    };
+    fixture.stdin.write(
+      JSON.stringify({ method: "fixture/limits", params: limits.data }) + "\n",
+    );
+    await load();
+    await page.locator("#message").fill("Exercise native usage recovery.");
+    await page.locator("#send").click();
+    let active;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const state = await readTestState(origin);
+      active = state.runtime.agents.find(
+        (agent) => agent.id === selectedChat.id,
+      );
+      if (
+        active.status === "running" &&
+        active.turnId &&
+        active.turnId !== previousTurn
+      )
+        break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(
+      active.status,
+      "running",
+      "native limit fixture starts a real runtime turn",
+    );
+    assert.ok(
+      active.turnId && active.turnId !== previousTurn,
+      "each recovery case has a new turn identity",
+    );
+    previousTurn = active.turnId;
+    for (const [method, params] of [
+      ["error", { willRetry: false, error: nativeLimitError }],
+      [
+        "turn/completed",
+        {
+          turn: {
+            id: active.turnId,
+            status: "failed",
+            error: nativeLimitError,
+          },
+        },
+      ],
+    ]) {
+      fixture.stdin.write(
+        JSON.stringify({
+          method,
+          params: {
+            threadId: active.threadId,
+            turnId: active.turnId,
+            ...params,
+          },
+        }) + "\n",
+      );
+    }
+    const notice = page.locator(".native-error.usage-limit");
+    // A previous case's notice can remain visible while the new turn ends.
+    // Select this case's recorded error before opening its disclosure.
+    await notice
+      .locator("details pre")
+      .filter({ hasText: nativeLimitError.message })
+      .waitFor({ state: "attached" });
+    await notice.locator(".account-limit-recovery > strong").waitFor();
+    await notice.locator("details summary").click();
+    await notice
+      .locator("details pre")
+      .filter({ hasText: nativeLimitError.message })
+      .waitFor();
+    await notice.locator("details summary").click();
+    assert.equal(
+      await notice.locator(":scope > span").count(),
+      0,
+      "raw error is in Details only",
+    );
+    assert.equal(
+      await notice
+        .locator(".account-limit-recovery")
+        .evaluate((el) => getComputedStyle(el).borderTopWidth),
+      "0px",
+      "one border for the notice",
+    );
+    await page.screenshot({
+      path: join(root, "usage-limit-notice.png"),
+      animations: "disabled",
+    });
+    await page.waitForFunction(async (id) => {
+      const snapshot = await window.__readTestState();
+      return (
+        snapshot.runtime.agents.find((agent) => agent.id === id)?.status ===
+        "failed"
+      );
+    }, selectedChat.id);
+    assert.equal(
+      await page.locator('[data-phase="failed"]').count(),
+      0,
+      "The terminal error does not need a duplicate phase card",
+    );
+    await toggle().click();
+    await page
+      .locator(".account-limits-panel .account-limit-recovery")
+      .waitFor();
+    const recoveryPanel = page.locator(
+      ".account-limits-panel .account-limit-recovery",
+    );
+    if (reached.includes("owner")) {
+      const link = recoveryPanel.getByRole("link");
+      assert.match(
+        await link.getAttribute("href"),
+        kind === "usageLimitExceeded" ? /usage-limits/ : /admin\/billing/,
+      );
+    } else {
+      await page.evaluate(() =>
+        Object.defineProperty(navigator, "clipboard", {
+          configurable: true,
+          value: {
+            writeText: async (value) => {
+              window.fixtureOwnerRequest = value;
+            },
+          },
+        }),
+      );
+      await recoveryPanel
+        .getByRole("button", {
+          name: "Copy request for owner",
+          exact: true,
+        })
+        .click();
+      assert.match(
+        await page.evaluate(() => window.fixtureOwnerRequest),
+        kind === "usageLimitExceeded" ? /increase my limit/ : /add credits/,
+      );
+    }
+    assert.ok(
+      (
+        await page
+          .locator(".account-limits-panel .account-limit-recovery")
+          .innerText()
+      ).includes(expected),
+    );
+  }
+  expect(errors).toEqual([]);
+  console.log(
+    JSON.stringify({
+      ok: true,
+      evidence: root,
+      cases: [
+        "visible summary",
+        "native owner/member recovery and usage precedence",
+        "context preserved",
+        "active model",
+        "multiple pools",
+        "missing values",
+        "nonzero floor",
+        "expired windows",
+        "zero remaining",
+        "error",
+        "empty data",
+        "empty map fallback",
+        "narrow desktop",
+        "compact pools",
+        "Codex before Spark",
+        "reset countdown and exact time",
+        "local cost scope and coverage",
+        "session pricing loading state",
+        "session estimate cache on chat switch and reload",
+        "unknown cost never zero",
+        "reset confirmation and cancel",
+        "reset account binding",
+        "uncertain reset retry receipt",
+        "reset duplicate click lock",
+        "server credit count",
+        "all reset outcomes",
+        "delayed cost geometry at 780/1280px",
+        "failed quota refresh preserves account values and geometry",
+      ],
+    }),
+  );
+});

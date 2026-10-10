@@ -1,0 +1,94 @@
+export interface DesktopBridge {
+  serverViewOrigin?: string;
+  serverCredentialAction?(
+    request: import("./servers/desktopCredentials").CredentialRequest,
+  ): Promise<unknown>;
+  onServerStream?(
+    callback: (
+      chunk: import("./servers/desktopCredentials").StreamChunk,
+    ) => void,
+  ): () => void;
+  serverNativeAction?(
+    serverId: string,
+    method: string,
+    value?: unknown,
+  ): Promise<unknown>;
+  platform: string;
+  requestMicrophone(): Promise<boolean>;
+  prepareTranscription(): Promise<string>;
+  transcribeAudio(value: {
+    id: string;
+    permit: string;
+    audio: ArrayBuffer;
+    locale: string;
+  }): Promise<{ text: string; provider: string; onDevice: boolean }>;
+  cancelTranscription(id: string): Promise<boolean>;
+  onTranscriptionProgress(
+    callback: (value: { id: string; completed: number; total: number }) => void,
+  ): () => void;
+  pickDirectory(): Promise<string | null>;
+  pickFiles(): Promise<
+    { name: string; path: string; mime: string; data: string }[]
+  >;
+  revealPath(path: string): Promise<void>;
+  saveFile?(value: { name: string; data: ArrayBuffer }): Promise<boolean>;
+  fileAction?(value: {
+    action: "open" | "reveal" | "preview";
+    target: { agent?: string; path?: string; asset?: string };
+  }): Promise<boolean>;
+  openExternal(url: string): Promise<void>;
+  getBackendUpdate?(): Promise<{
+    availableBackendBuild: string | null;
+    updateRequired: boolean | null;
+  }>;
+  onNavigate(
+    callback: (target: {
+      serverId?: string;
+      agentId: string;
+      section: "messages";
+      itemId?: string;
+    }) => void,
+  ): () => void;
+  notify(value: {
+    title: string;
+    body: string;
+    target: {
+      serverId?: string;
+      agentId: string;
+      section: "messages";
+      itemId?: string;
+    };
+  }): Promise<boolean>;
+}
+declare global {
+  interface Window {
+    codexDesktop?: DesktopBridge;
+  }
+}
+
+if (window.codexDesktop?.platform === "darwin") {
+  document.documentElement.classList.add("desktop-inset-titlebar");
+}
+
+// Preview frames cannot access this main-frame bridge.
+document.addEventListener("click", (event) => {
+  if (!window.codexDesktop || event.defaultPrevented || event.button !== 0)
+    return;
+  const link = (event.target as Element)?.closest?.("a[href]");
+  if (!(link instanceof HTMLAnchorElement) || link.hasAttribute("download"))
+    return;
+  const url = new URL(link.href, location.href);
+  if (
+    !["http:", "https:"].includes(url.protocol) ||
+    url.origin === location.origin
+  )
+    return;
+  event.preventDefault();
+  void window.codexDesktop.openExternal(url.href).catch((error) => {
+    window.dispatchEvent(
+      new CustomEvent("desktop-error", {
+        detail: String(error.message || error),
+      }),
+    );
+  });
+});

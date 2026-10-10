@@ -1,0 +1,414 @@
+// Current activity lifecycle through the real component. HTTP calls use fixtures.
+import { createRequire } from "node:module";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  test,
+  expect,
+  API_SCHEMA_HASH_HEADER,
+  readApiSchemaHash,
+} from "../playwright.mjs";
+
+test("Background Current Browser", async ({
+  browser: _testBrowser,
+  context: _testContext,
+  page: testPage,
+}) => {
+  const assert = {
+    equal: (actual, expected, message) =>
+      expect(actual, message).toBe(expected),
+    notEqual: (actual, expected, message) =>
+      expect(actual, message).not.toBe(expected),
+    deepEqual: (actual, expected, message) =>
+      expect(actual, message).toEqual(expected),
+    ok: (actual, message) => expect(actual, message).toBeTruthy(),
+    match: (actual, expected, message) =>
+      expect(actual, message).toMatch(expected),
+    doesNotMatch: (actual, expected, message) =>
+      expect(actual, message).not.toMatch(expected),
+    fail: (message) => {
+      throw new Error(message);
+    },
+  };
+
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const require = createRequire(
+    join(root, "workspaces/client/apps/web/package.json"),
+  );
+  const { createServer } = await import(require.resolve("vite"));
+  const temporary = await mkdtemp(join(tmpdir(), "studio-current-background-"));
+  const harness = `
+import React from 'react';
+import {createRoot} from 'react-dom/client';
+import {MantineProvider} from '@mantine/core';
+import '@mantine/core/styles.css';
+import '/src/style.css';
+import BackgroundTasks from '/src/components/shell/BackgroundTasks.tsx';
+const root=createRoot(document.getElementById('root'));
+window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
+ React.createElement(MantineProvider,{defaultColorScheme:"dark"},React.createElement(BackgroundTasks,{
+  opened:true,close:()=>{},data,leadId,initialFocus,
+  openAgent:()=>{},refresh:async()=>{window.refreshCalls=(window.refreshCalls||0)+1;if(window.holdRefresh)await new Promise((resolve,reject)=>{window.resolveRefresh=resolve;window.rejectRefresh=reject;});},notify:error=>(window.notifications??=[]).push(error)
+ })));
+`;
+  const server = await createServer({
+    configFile: false,
+    root: join(root, "workspaces/client/apps/web"),
+    cacheDir: join(temporary, "vite"),
+    plugins: [
+      {
+        name: "current-background-fixture",
+        resolveId(id) {
+          if (id === "virtual:current-background") return "\0" + id;
+        },
+        load(id) {
+          if (
+            process.env.BASELINE_SYNC_WAIT === "1" &&
+            id ===
+              join(
+                root,
+                "workspaces/client/apps/web/src/components/shell/BackgroundTasks.tsx",
+              )
+          )
+            return execFileSync(
+              "git",
+              ["show", "HEAD:web/src/components/shell/BackgroundTasks.tsx"],
+              { cwd: root, encoding: "utf8" },
+            );
+          if (id === "\0virtual:current-background") return harness;
+        },
+      },
+    ],
+    server: { host: "127.0.0.1", port: 0, hmr: false },
+  });
+  await server.listen();
+  try {
+    const page = testPage;
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const errors = [],
+      calls = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.route("**/fixture", (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: '<!doctype html><div id="root"></div><script type="module">import "/@id/__x00__virtual:current-background";</script>',
+      }),
+    );
+    let holdAnswer = false,
+      releaseAnswer;
+    await page.route("**/api/**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      calls.push({
+        method: request.method(),
+        path: url.pathname,
+        id: url.searchParams.get("id"),
+      });
+      if (url.pathname === "/api/sync/identity")
+        return route.fulfill({
+          headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+          json: {
+            workspaceId: "1234567890abcdef1234567890abcdef",
+            syncProtocol: 2,
+          },
+        });
+      if (url.pathname === "/api/workspace/tasks")
+        return route.fulfill({
+          status: 503,
+          json: { error: "Fixture uses embedded task snapshots" },
+        });
+      if (
+        request.method() === "POST" &&
+        url.pathname === "/api/answer" &&
+        holdAnswer
+      )
+        await new Promise((resolve) => {
+          releaseAnswer = resolve;
+        });
+      return route.fulfill({
+        json: { id: url.searchParams.get("id"), tail: "Live fixture output" },
+      });
+    });
+    await page.goto(server.resolvedUrls.local[0] + "fixture");
+    await page.waitForFunction(() => !!window.renderFixture);
+    const agents = [
+      { id: "lead", rootId: "lead", name: "Lead" },
+      { id: "worker", rootId: "lead", name: "Worker" },
+      { id: "other", rootId: "other", name: "Other" },
+    ];
+    const task = (id, status, agent = "lead") => ({
+      id,
+      status,
+      agent,
+      kind: "command",
+      command: "command " + id,
+      created: Date.now() / 1000 - 30,
+      processId: "123",
+    });
+    const data = {
+      token: "fixture",
+      threads: agents,
+      runtime: {
+        requests: [
+          {
+            id: "approve-id",
+            method: "monitor/approve",
+            params: { monitorId: "approval" },
+          },
+        ],
+        monitors: [{ ...task("approval", "approval"), kind: "monitor" }],
+        tasks: [
+          task("active", "running"),
+          {
+            ...task("tool", "running"),
+            kind: "tool",
+            name: "webSearch",
+            command: undefined,
+          },
+          task("child", "running", "worker"),
+          task("other-active", "running", "other"),
+          ...["completed", "failed", "cancelled", "interrupted", "lost"].map(
+            (status) => task(status, status),
+          ),
+          task("starting", "starting"),
+          task("pending", "pending"),
+          task("stopping", "stopping"),
+        ],
+      },
+    };
+    const render = async (leadId = "lead", focus) => {
+      await page.evaluate(
+        ({ data, leadId, focus }) => window.renderFixture(data, leadId, focus),
+        { data, leadId, focus },
+      );
+    };
+    const rows = () => page.locator("[data-task]");
+    await render();
+    await page.waitForFunction(
+      () => document.querySelectorAll("[data-task]").length === 6,
+    );
+    assert.deepEqual(
+      (
+        await rows().evaluateAll((nodes) =>
+          nodes.map((node) => node.dataset.task),
+        )
+      ).sort(),
+      ["active", "approval", "child", "pending", "starting", "stopping"],
+    );
+    assert.equal(
+      await page.getByRole("radiogroup", { name: "Task status" }).count(),
+      0,
+    );
+    assert.equal(await page.getByText("History", { exact: true }).count(), 0);
+    for (const name of ["Commands", "Monitors"]) {
+      await page.getByRole("region", { name, exact: true }).waitFor();
+      assert.equal(
+        await page.getByRole("heading", { name, exact: true }).count(),
+        1,
+      );
+    }
+    assert.equal(
+      await page
+        .getByRole("region", { name: "Other tools", exact: true })
+        .count(),
+      0,
+    );
+
+    assert.equal(await page.locator(".tasks-footnote").count(), 0);
+    assert.equal(
+      await page.getByText("Current activity", { exact: true }).count(),
+      1,
+    );
+    const activeCommand = data.runtime.tasks.find(
+      (task) => task.id === "active",
+    );
+    activeCommand.turnId = "original-turn";
+    agents[0].inFlight = true;
+    agents[0].turnId = "original-turn";
+    await render();
+    await page
+      .locator('[data-task="active"] .task-row-kind')
+      .getByText("Command", { exact: true })
+      .waitFor();
+    agents[0].turnId = "next-turn";
+    await render();
+    await page
+      .locator('[data-task="active"] .task-row-kind')
+      .getByText("Background command", { exact: true })
+      .waitFor();
+    agents[0].turnId = "original-turn";
+    agents[0].inFlight = false;
+    await render();
+    await page
+      .locator('[data-task="active"] .task-row-kind')
+      .getByText("Background command", { exact: true })
+      .waitFor();
+    delete agents[0].inFlight;
+    delete agents[0].turnId;
+    await render();
+    await page
+      .locator('[data-task="active"] .task-row-kind')
+      .getByText("Command", { exact: true })
+      .waitFor();
+    assert.equal(
+      await page.locator('[data-task="approval"] .task-row-kind').innerText(),
+      "Monitor",
+    );
+    await page.locator('[data-task="active"]').click();
+    await page.getByRole("region", { name: "Command controls" }).waitFor();
+    data.runtime.tasks.find((task) => task.id === "active").status =
+      "completed";
+    await render();
+    await page.locator('[data-task="active"]').waitFor({ state: "detached" });
+    assert.equal(
+      await page.locator('[data-task-detail="active"]').count(),
+      0,
+      "Completion removes the selected command details",
+    );
+    await render("lead", {
+      id: "completed",
+      leadId: "lead",
+      requestId: "historical-focus",
+    });
+    await page
+      .getByText("The selected task is no longer active in this chat.", {
+        exact: true,
+      })
+      .waitFor();
+    assert.equal(
+      await page.locator('[data-task-detail="completed"]').count(),
+      0,
+    );
+    assert.equal(
+      calls.filter((call) => call.id === "completed").length,
+      0,
+      "Historical focus cannot fetch old output",
+    );
+    await page.locator('[data-task="approval"]').click();
+    await page
+      .getByRole("button", { name: "Approve command", exact: true })
+      .waitFor();
+    await page
+      .getByRole("button", { name: "Cancel monitor", exact: true })
+      .waitFor();
+    await page.evaluate(() => {
+      window.holdRefresh = true;
+      window.refreshCalls = 0;
+    });
+    holdAnswer = true;
+    const approve = page.getByRole("button", {
+      name: "Approve command",
+      exact: true,
+    });
+    const pendingControl = page.getByRole("button", {
+      name: "Download task log",
+      exact: true,
+    });
+    await approve.click();
+    await expect
+      .poll(async () => ({
+        release: typeof releaseAnswer,
+        notifications: await page.evaluate(() => window.notifications || []),
+      }))
+      .toMatchObject({ release: "function" });
+    await expect(pendingControl).toBeDisabled();
+    assert.equal(await page.evaluate(() => window.refreshCalls), 0);
+    holdAnswer = false;
+    releaseAnswer();
+    await expect(pendingControl).toBeEnabled({ timeout: 2000 });
+    await page.waitForFunction(
+      () => window.refreshCalls === 1 && !!window.rejectRefresh,
+    );
+    await page.evaluate(() => {
+      window.holdRefresh = false;
+      window.rejectRefresh(new Error("Credential refresh unavailable"));
+    });
+    await page.waitForFunction(() =>
+      window.notifications?.includes("Credential refresh unavailable"),
+    );
+    assert.equal(
+      calls.filter(
+        (call) => call.method === "POST" && call.path === "/api/answer",
+      ).length,
+      1,
+    );
+    await page.getByLabel("Task type", { exact: true }).selectOption("command");
+    assert.equal(await page.locator('[data-task="approval"]').count(), 0);
+    await page.getByLabel("Task type", { exact: true }).selectOption("all");
+    await page.getByLabel("Find a task", { exact: true }).fill("child");
+    assert.deepEqual(
+      await rows().evaluateAll((nodes) =>
+        nodes.map((node) => node.dataset.task),
+      ),
+      ["child"],
+    );
+    await page.getByLabel("Find a task", { exact: true }).fill("");
+    await render("other");
+    await page.locator('[data-task="other-active"]').waitFor();
+    assert.deepEqual(
+      await rows().evaluateAll((nodes) =>
+        nodes.map((node) => node.dataset.task),
+      ),
+      ["other-active"],
+    );
+    for (const width of [320, 1920]) {
+      await page.setViewportSize({ width, height: 900 });
+      await render("lead", {
+        id: "child",
+        leadId: "lead",
+        requestId: "child-focus-" + width,
+      });
+      await page.locator('[data-task-detail="child"]').waitFor();
+      await page.getByRole("region", { name: "Command controls" }).waitFor();
+      assert.equal(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth > innerWidth,
+        ),
+        false,
+        "No page overflow at " + width,
+      );
+      await page.screenshot({
+        path: join(tmpdir(), "studio-current-activity-" + width + ".png"),
+      });
+      data.runtime.tasks.find((task) => task.id === "child").status =
+        "completed";
+      await render("lead");
+      await page
+        .locator('[data-task-detail="child"]')
+        .waitFor({ state: "detached" });
+      data.runtime.tasks.find((task) => task.id === "child").status = "running";
+    }
+    data.runtime.tasks = data.runtime.tasks.map((task) => ({
+      ...task,
+      status: "completed",
+    }));
+    data.runtime.monitors = data.runtime.monitors.map((task) => ({
+      ...task,
+      status: "completed",
+    }));
+    await render("lead");
+    await page.getByText("No active tasks", { exact: true }).waitFor();
+    assert.equal(await rows().count(), 0);
+    assert.equal(await page.locator("[data-task-detail]").count(), 0);
+    assert.equal(
+      calls.filter((call) => call.path === "/api/workspace").length,
+      0,
+      "Current activity does not fetch command history",
+    );
+    assert.equal(
+      calls.filter((call) => call.method !== "GET").length,
+      1,
+      "Visibility changes cannot replay or cancel work",
+    );
+    assert.deepEqual(errors, []);
+    console.log(
+      "PASS: current snapshot only, completion hides details, approval acknowledgment releases controls before refresh, filters, chat scope, 320/1920 viewports, no history reads or duplicate writes",
+    );
+  } finally {
+    await server.close();
+    await rm(temporary, { recursive: true, force: true });
+  }
+});

@@ -257,7 +257,7 @@ start the new server against an occupied state directory.
 
 - [Tailscale Serve command](https://tailscale.com/docs/reference/tailscale-cli/serve)
 - [Tailscale Serve examples, including Windows](https://tailscale.com/docs/reference/examples/serve)
-- [Microsoft Service Control Manager](https://learn.microsoft.com/en-us/windows/desktop/services/service-control-manager)
+- [Microsoft Service Control Manager](https://learn.microsoft.com/en-us/windows/workspaces/client/apps/desktop/services/service-control-manager)
 - [Windows named-pipe security](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)
 - [Windows `LockFileEx`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-lockfileex)
 - [Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)

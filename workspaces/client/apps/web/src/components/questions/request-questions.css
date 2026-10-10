@@ -1,0 +1,266 @@
+#requests .request-card {
+  display: block;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--text);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border-radius: 10px;
+}
+.request-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.request-heading {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.request-status {
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+}
+.request-async .request-status {
+  color: var(--accent);
+}
+.request-card .request-copy .request-prompt {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.request-card pre {
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.request-card pre.request-command {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+}
+.request-actions .request-delete:not(:disabled) {
+  color: var(--muted);
+}
+.request-card .request-copy p {
+  overflow-wrap: anywhere;
+}
+.request-card .request-copy .request-cwd {
+  margin-top: 6px;
+  font-size: var(--studio-text-meta);
+}
+.request-inline-answer {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.request-answer-fields {
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.request-question-label {
+  overflow-wrap: anywhere;
+  font-size: var(--studio-text-body);
+  margin: 0 0 10px;
+}
+.request-answer-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.request-answer-option {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 11px;
+  font-size: var(--studio-text-meta);
+  overflow-wrap: anywhere;
+}
+.request-answer-option small {
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+}
+.request-answer-option:hover {
+  background: var(--raised);
+}
+.request-answer-option[aria-pressed="true"] {
+  background: #8075ff25;
+  border-color: var(--accent);
+}
+.request-answer-checkbox:has(input:checked) {
+  background: #8075ff25;
+  border-color: var(--accent);
+}
+.request-answer-checkbox .mantine-Checkbox-labelWrapper {
+  min-width: 0;
+}
+.request-answer-option:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.request-answer-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+@media (max-width: 560px) {
+  .request-summary {
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .request-summary .request-copy {
+    flex-basis: 65%;
+  }
+  .request-answer-option {
+    flex: 1 1 140px;
+  }
+}
+
+.request-history {
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+  margin: 8px 0;
+}
+.request-history > summary {
+  cursor: pointer;
+  padding: 7px 0;
+  width: fit-content;
+}
+.request-history > summary:hover {
+  color: var(--text);
+}
+.request-history > summary span {
+  margin-left: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.request-deferred-note {
+  margin: 8px 0;
+  font-size: var(--studio-text-meta);
+}
+
+/* Compact requests keep the question above secondary details. */
+.request-copy {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+.request-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.request-answer-form {
+  display: flex;
+  flex-direction: column;
+  overflow: visible;
+}
+.request-answer-form > .request-answer-fields {
+  overflow: visible;
+  flex: 0 0 auto;
+}
+.request-answer-actions {
+  flex: 0 0 auto;
+  position: sticky;
+  bottom: 0;
+  padding-block: 8px;
+  background: var(--surface);
+  z-index: 1;
+}
+.request-permissions dl {
+  margin: 8px 0;
+  font-size: var(--studio-text-meta);
+}
+.request-permissions dl > div {
+  display: grid;
+  grid-template-columns: minmax(70px, 1fr) minmax(0, 4fr);
+  gap: 8px;
+  margin-top: 4px;
+}
+.request-permissions dt {
+  text-transform: capitalize;
+  color: var(--muted);
+}
+.request-permissions dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.request-permissions summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: var(--studio-text-meta);
+}
+.request-card {
+  scroll-margin-top: 12px;
+}
+@media (max-width: 560px) {
+  .request-summary .request-copy {
+    flex-basis: calc(100% - 30px);
+  }
+  .request-actions {
+    width: 100%;
+  }
+  .request-answer-actions {
+    margin-top: 0;
+  }
+}
+
+.request-option-copy {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.request-option-number {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  background: var(--raised);
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+  font-variant-numeric: tabular-nums;
+}
+.request-answer-checkbox {
+  display: block;
+}
+.request-answer-checkbox .mantine-Checkbox-body {
+  align-items: center;
+}
+.request-answer-checkbox .mantine-Checkbox-label {
+  padding-inline-start: 8px;
+}
+.request-answer-checkbox .mantine-Checkbox-description {
+  margin-top: 4px;
+  color: var(--muted);
+}
+.answer-field > .mantine-Textarea-root,
+.answer-field > .mantine-TextInput-root {
+  margin-top: 10px;
+}
+.request-answer-actions > :first-child {
+  margin-right: auto;
+}
+
+.request-status-hidden {
+  display: none;
+}

@@ -1,0 +1,271 @@
+.projects-heading,
+.project-tree-heading {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 2px;
+}
+.projects-heading {
+  margin: 0;
+  color: var(--muted);
+}
+.projects-heading-label {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+.projects-heading .mantine-ActionIcon-root {
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+}
+.sidebar-project {
+  margin: 0 0 12px;
+}
+.project-tree-heading {
+  padding: 0 4px;
+}
+#sidebar .project-tree-heading[data-folder-drop="true"] {
+  border-radius: 8px;
+  background: var(--mantine-primary-color-light);
+  box-shadow: inset 0 0 0 1px var(--mantine-primary-color-filled);
+}
+.project-tree-toggle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 1;
+  min-width: 0;
+  padding: 7px 4px;
+  color: var(--text);
+  font-size: 13px;
+}
+.project-tree-toggle svg {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.project-tree-toggle span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.project-tree-action {
+  opacity: 0;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+}
+.project-tree-heading:hover .project-tree-action,
+.project-tree-heading:focus-within .project-tree-action {
+  opacity: 1;
+}
+.project-chats {
+  padding-left: 24px;
+}
+.project-folder {
+  margin: 4px 0;
+}
+.project-folder-chats {
+  padding-left: 14px;
+}
+.project-directory {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+#sidebar .project-tree-toggle span {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+}
+.project-chats .sidebar-row {
+  margin: 1px 0;
+}
+.project-chats .chat-row {
+  min-height: 34px;
+  padding: 7px 44px 7px 8px;
+}
+.project-chats .row-actions {
+  right: 4px;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+}
+@media (max-width: 760px) {
+  .project-chats .chat-row {
+    padding-right: 56px;
+  }
+}
+.project-chats .row-copy strong {
+  font-weight: 400;
+}
+.project-empty,
+.project-show-more {
+  display: block;
+  margin: 0;
+  padding: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.project-show-more:hover {
+  color: var(--text);
+}
+@media (hover: none) {
+  .project-tree-action {
+    opacity: 1;
+  }
+}
+
+/* Titles own the row until pointer or keyboard interaction reveals controls. */
+#sidebar .project-chats .chat-row {
+  padding-right: 8px;
+}
+#sidebar .project-chats .row-actions,
+#sidebar .row-pin-action {
+  position: absolute;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  opacity: 0;
+  pointer-events: none;
+}
+#sidebar .row-pin-action {
+  right: 31px;
+}
+#sidebar .project-chats .row-actions {
+  right: 3px;
+}
+#sidebar
+  .sidebar-row:is(:hover, :has(:focus-visible), :has([aria-expanded="true"]))
+  .chat-row {
+  padding-right: 62px;
+}
+#sidebar
+  .sidebar-row:is(:hover, :has(:focus-visible), :has([aria-expanded="true"]))
+  :is(.row-actions, .row-pin-action) {
+  opacity: 1;
+  pointer-events: auto;
+}
+.chat-pin {
+  margin-right: 5px;
+  vertical-align: -1px;
+  color: var(--muted);
+}
+#sidebar .project-tree-heading {
+  position: relative;
+}
+#sidebar .project-tree-action {
+  z-index: 1;
+  position: absolute;
+  right: 2px;
+  opacity: 0;
+  pointer-events: none;
+}
+#sidebar .project-tree-action:has(+ .project-tree-action) {
+  right: 28px;
+}
+#sidebar
+  .project-tree-heading:is(
+    :hover,
+    :has(:focus-visible),
+    :has(.project-tree-action[aria-expanded="true"])
+  )
+  .project-tree-toggle {
+  padding-right: 28px;
+}
+#sidebar
+  .project-tree-heading:has(.project-tree-action + .project-tree-action):is(
+    :hover,
+    :has(:focus-visible),
+    :has(.project-tree-action[aria-expanded="true"])
+  )
+  .project-tree-toggle {
+  padding-right: 54px;
+}
+#sidebar
+  .project-tree-heading:is(
+    :hover,
+    :has(:focus-visible),
+    :has(.project-tree-action[aria-expanded="true"])
+  )
+  .project-tree-action {
+  opacity: 1;
+  pointer-events: auto;
+}
+#sidebar [draggable="true"] {
+  position: relative;
+}
+#sidebar [data-drop-edge]::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--mantine-primary-color-filled);
+  pointer-events: none;
+}
+#sidebar [data-drop-edge="before"]::after {
+  top: 0;
+}
+#sidebar [data-drop-edge="after"]::after {
+  bottom: 0;
+}
+@media (hover: none), (max-width: 760px) {
+  #sidebar .row-pin-action {
+    display: none;
+  }
+  #sidebar .project-chats .chat-row,
+  #sidebar
+    .sidebar-row:is(:hover, :has(:focus-visible), :has([aria-expanded="true"]))
+    .chat-row {
+    padding-right: 46px;
+  }
+  #sidebar .project-chats .row-actions,
+  #sidebar .project-tree-action {
+    opacity: 1;
+    pointer-events: auto;
+    width: 40px;
+    height: 40px;
+  }
+  #sidebar .project-tree-toggle {
+    padding-right: 42px;
+  }
+  #sidebar .project-tree-action:has(+ .project-tree-action) {
+    right: 44px;
+  }
+  #sidebar
+    .project-tree-heading:has(.project-tree-action + .project-tree-action)
+    .project-tree-toggle {
+    padding-right: 84px;
+  }
+}
+
+/* Project and team menus remain reachable without a prior pointer hover. */
+#sidebar .project-tree-action[aria-haspopup="menu"] {
+  opacity: 1;
+  pointer-events: auto;
+}
+#sidebar
+  .project-tree-heading:has(.project-tree-action[aria-haspopup="menu"])
+  .project-tree-toggle {
+  padding-right: 28px;
+}
+@media (hover: none), (max-width: 760px) {
+  #sidebar
+    .project-tree-heading:has(.project-tree-action[aria-haspopup="menu"])
+    .project-tree-toggle {
+    padding-right: 84px;
+  }
+}
+
+#sidebar .chat-row[data-folder-drop="true"] {
+  background: var(--mantine-primary-color-light);
+  box-shadow: inset 0 0 0 1px var(--mantine-primary-color-filled);
+}
+.project-show-all {
+  display: block;
+  padding: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}

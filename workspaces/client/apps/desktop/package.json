@@ -1,0 +1,34 @@
+{
+  "name": "codex-agents-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Native desktop host for the Codex Studio workspace",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "pnpm exec install-electron && pnpm exec electron .",
+    "dev": "pnpm --filter codex-agents-web run build && pnpm exec install-electron && pnpm exec electron .",
+    "start:hidden": "pnpm exec install-electron && pnpm exec electron . --hidden",
+    "package": "pnpm exec install-electron && pnpm exec node package.mjs",
+    "package:ui": "pnpm exec install-electron && pnpm exec node package.mjs --ui-only",
+    "start:ui": "pnpm exec install-electron && pnpm exec electron . --ui-only",
+    "test": "pnpm exec vitest run --config vitest.config.mjs && python3 -B recovery-test.py",
+    "test:native": "pnpm exec install-electron && pnpm exec node test.mjs",
+    "test:server-frames": "pnpm exec install-electron && pnpm exec node server-frames-native.mjs",
+    "test:server-access": "pnpm exec install-electron && pnpm exec node server-access-native.mjs",
+    "test:package": "pnpm exec node package-test.mjs",
+    "test:unit": "vitest run --config vitest.config.mjs",
+    "check:focused": "vitest run --config vitest.config.mjs"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "electron": "44.2.0",
+    "playwright-core": "1.63.0",
+    "vitest": "5.0.3"
+  },
+  "codexStudioChecks": {
+    "test": "test:unit",
+    "check": [
+      "check:focused"
+    ]
+  }
+}

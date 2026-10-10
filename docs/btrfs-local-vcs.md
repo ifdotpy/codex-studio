@@ -1,6 +1,9 @@
 # Local version control on btrfs: design contract
 
-Status: design, not implemented (2026-10-09). Owner of the decisions: the user. Technical advice
+Status: implemented in [layr](https://github.com/ifdotpy/layr) (private repository, commit
+`510d605`, 2026-10-10). This document keeps Studio's decisions about local version control and
+their reasons. layr itself is a general tool: its own design is in layr `docs/design.md`;
+commands, formats, measurements and limits are in the layr README. Owner of the decisions: the user. Technical advice
 and prototypes: [agent workspace isolation research](research/2026-10-03-agent-workspace-isolation.md).
 
 ## Intent
@@ -40,6 +43,71 @@ so models learn it quickly, and it has equal convenience. It does not take the n
 10. Everything local goes through `layr`, reading commands included. The long-term ambition is a
     `layrhub` that replaces GitHub for these projects.
 11. The read-only share also exposes `states/`, so the project history is browsable as folders.
+
+## Decisions from the implementation and its reviews (2026-10-10)
+
+12. Records: one SQLite database per project holds the signed records and the tables derived from
+    them; a record and its derived rows are written in one transaction. The database has its own
+    subvolume (`meta/db`), so its `fsync` costs about 6 ms after a snapshot instead of about
+    100 ms. JSONL is the exchange format: replication, backups, `layr op export` and `import`.
+    Changed from a JSONL log per machine plus a rebuildable index (user decision): two commit
+    points per operation caused the bugs that the reviews found.
+13. Review and merge use an exact state. `layr try <state> -- <tests>` runs the tests in a
+    temporary copy of that state and records the result. `layr merge <line> --expect <state>`
+    refuses a line that moved after the review. With `push.require_check true`, a push needs a
+    passing check of the exact state.
+14. Undo reverts only the changes of the operation (a snapshot right after it) and keeps work made
+    later. The default is the newest operation of the same user and agent. Undo is available while
+    the states it needs exist (retention below). A push cannot be undone; a revert can be pushed.
+15. Machines: records are taken only from trusted machines. `layr sync` trusts the peer that the
+    lead chose; other machines need `layr machines trust`, or a trust record of a trusted machine.
+    Every setting acts on one machine (lead, members, merge commands, remotes, retention, backups).
+    Records of other machines never change a line that has its working folder here.
+16. The root service: every write into a line goes through descriptors (`openat2`, no symbolic
+    links); commands for users (git network access, tests, sync, merge drivers) run with that
+    user's uid, groups and a clean environment; merge drivers run as the caller of the merge
+    (changed from "as the lead", see 18). Unsafe Rust code is limited to one module.
+
+## Decisions after layr became a general tool (2026-10-10)
+
+17. Boundary (user decision): layr knows Unix users and groups, projects, lines, states, rules
+    and checks, and nothing about agents, leads, tasks or turns. A feature goes into layr when
+    people on a shared Linux server would want it with the same meaning; otherwise it is Studio's.
+    Studio's part (the guest service in `vm/guest`, "layr-agent") uses only layr's public
+    commands, never its database or store folders. Every security rule is a layr rule (roles,
+    deny rules, protection rules); Studio only sets them, because an agent can call layr
+    directly. Studio labels operations with `LAYR_SESSION` (the agent id); layr shows labels and
+    never decides by them.
+18. Roles in a Studio project (layr's model, docs/design.md section 3): the user is the admin;
+    the lead agent is a maintainer; worker and reviewer agents are writers. All agent users are
+    in one Unix group with a deny rule for `sync`, `remote`, `access`, `config`, `records` and
+    `backup`, so no role given to an agent later reaches these. main is protected: it changes
+    only through `layr merge <line> --expect <reviewed state>` by a maintainer, after the
+    project's named checks pass on the merge result. Only the owner changes a line; the lead no
+    longer writes into a worker's line (it makes its own line from it, or deletes it).
+19. One commit per task (decision 5) is Studio's choice: `layr push --squash -m <task title>`.
+    layr's default push keeps every state as a commit.
+20. Exploration groups (below) and the `host_exec` slots are Studio workflows built from lines,
+    `merge --expect`, `layr export` and the line folders; layr no longer has `group` and `slot`.
+21. The end of an agent turn: `layr layer repair`, then `layr save -m "Studio turn <n>"`
+    (replaces `layr save --turn-end`).
+22. The layr copy in `vm/layr` is vendored from a fixed revision (`scripts/update-vm-layr.py`).
+    Moving it to `510d605` also needs the guest changes of 18, 21 and 23; revisions before
+    `9254261` lack fixes for reading root files through merge drivers, for signed backups and
+    stream checks, and for files too large for memory.
+23. The rule of main in a Studio project (layr `docs/design.md`, sections 3 and 5):
+    - a merge needs one approval of the reviewed state from the user's group of people
+      (`--approvals 1 --approvers @<people group>`): an agent's approval never counts, because
+      agents are not in that group;
+    - changes of CI configuration need the user (`--path .github=admin`, and the like for other
+      CI folders);
+    - the project's checks run on every merge result; their command sets its own `PATH`
+      (checks get a clean environment). Their build output becomes the shared warm layer
+      (`target`, `node_modules`) of main, so a new agent line starts warm, without one copy of
+      the build per agent;
+    - Studio merges as the lead agent's user, not as root: root passes every rule;
+    - a task that needs more rights for a while gets a role for a time
+      (`layr access grant <agent> maintainer --until 2h`).
 
 ## Data model
 
@@ -128,54 +196,61 @@ generation at the previous snapshot.
 4. Every 10 minutes during a turn, only if the generation changed. This is the safety net for long
    turns. Such a state is marked "taken while processes ran", because it is crash-consistent only.
 
-Retention:
+Retention (`layr gc`, hourly in the service). A state stays when any of these refers to it:
 
-- Named states stay while a line, the operation log, a tag or the export table refers to them.
-- Automatic states: the last 50 per line, and one per hour for the last day.
-- When a line is merged or archived, its automatic states are deleted.
+- a line head on any machine, or the history of one (parents);
+- a tag, a remote ref, an exploration group, a stash, a host_exec slot;
+- the newest export of each remote branch;
+- a conflict of a kept state (its base, ours and theirs states);
+- a record inside the undo window (default 7 days, `undo.days`);
+- automatic states: the newest 50 per line (`retention.auto`) and one per hour for the last 24
+  hours (`retention.hours`).
+
+Other states are deleted, and a `gc` record lists them. Undo of an operation whose states were
+deleted is refused with a message. The automatic states of a deleted line are not kept by a line
+head, so they go when the undo window ends.
 
 ## Metadata and replication
 
-The source of truth is an append-only operation log. Everything else can be rebuilt from it.
+The source of truth is the signed records. Every other table can be rebuilt from them
+(`layr reindex`); a newer schema version rebuilds the derived tables on open.
 
 ```text
-/studio/projects/<project-id>/
-  states/<state-id>             read-only snapshots
-  lines/<line-id>               writable snapshots
-  meta/log/<machine-id>.jsonl   operation log, one file per machine
-  meta/index.sqlite             query index, rebuilt from the logs
-  meta/git/                     git object store for the remote bridge
+/studio/projects/<project>/
+  states/<state-id>             read-only snapshots (0700)
+  lines/<line>                  writable snapshots (0711; each line 0700, its owner)
+  git/                          git object store for the remote bridge
+  meta/db/layr.sqlite           signed records and derived tables (own subvolume, 0700)
+  meta/stage, meta/scan, meta/work   staging lines and temporary snapshots
 ```
 
-A log record contains: id (UUIDv7), machine id, operation, parent state ids, line id, btrfs
-subvolume UUID, author, description, time.
+A record contains: id (UUIDv7), machine id, sequence number, operation, project id, actor, the
+states it creates, the line pointers before and after, and the operation's data. It is stored as
+the exact signed JSON line, so its signature can be checked after any copy.
 
 Write order:
 
-1. Create the snapshot.
-2. Append the record and run `fsync`.
-3. Update the index.
+1. Create the snapshots.
+2. Write the record and its derived rows in one transaction (`synchronous=FULL`).
 
-After a crash, only a snapshot without a record can exist. Cleanup deletes it. A record without a
-snapshot cannot exist.
+After a crash, only a snapshot without a record can exist; `layr fsck --repair` deletes it. A
+record without its snapshot cannot exist.
 
-Replication between machines uses the paired server channel
-([multiple Studio servers](multi-server.md)):
+Replication between machines (`layr sync -- <command>` with `layr serve-peer` on the other side,
+over ssh or the paired server channel, [multiple Studio servers](multi-server.md)):
 
-- Logs: each machine writes only its own file, so there are no write conflicts. Machines exchange
-  missing records by per-machine sequence numbers. The union of all records is the full log.
-- Data: for each state that the peer lacks, `btrfs send -p <latest common state>`. btrfs records
-  `received_uuid` on the peer. The index maps that UUID to the state id.
-- Regenerable layers: sent for a live agent move to another machine (warm builds). Not sent for
-  backup or long-term replication; the peer rebuilds them.
-- Divergence: when two machines continue one line, the graph gets two heads. The merge engine joins
-  them, and the result is a normal merge operation in the log.
-
-The log can only grow, so merging logs cannot corrupt them. The index can be rebuilt at any time.
-
-Each record also stores the line pointers before and after the operation. States never change, so
-undo of any operation only restores the previous pointers: O(1). Undo is itself a new record, so
-it can be undone too.
+- Records: each side sends the records the other lacks, by per-machine sequence numbers. The
+  receiver checks the project id, every id and name in the record, the machine's key, the
+  signatures and contiguous sequence numbers, and refuses a changed copy of a record it has.
+- Data: for each state that the peer lacks, `btrfs send -p <latest common state>`. The receiver
+  takes only a state that a signed record names, as exactly one subvolume with the received UUID
+  that record names. The file content is trusted together with the machine that made the state.
+- Regenerable layers: sent only for a live agent move (`--auto --layers`), checked against the
+  subvolume ids in the signed `save.layers` record. Not in backups.
+- Divergence: when two machines continue one line, each machine keeps its own head; the other one
+  is `<line>@<machine>`, and a normal merge joins them.
+- Derived rows keep the order key of their record (time, machine, sequence number), so the result
+  does not depend on the order in which records arrive.
 
 ## Access model in the VM
 
@@ -184,6 +259,10 @@ it can be undone too.
 - Each agent has its own Linux user. It owns only its line (mode `0700`).
 - An agent reads history only through `layr` (`log`, `show`, `diff`), not through the state paths.
 - Creating, deleting and renaming lines and states is a `layr` operation.
+- Roles, deny rules and protection rules decide merges into main, pushes, tags and gc
+  (decision 18); only root makes lines owned by root.
+- The git object store is open to all local users when everyone has a role, otherwise `0750`
+  with an access list for the users and groups with a role and the line owners on this machine.
 
 A state snapshot keeps the owner of the line root, so its owner could clear the read-only flag if it
 could reach the path. The `0700` root folder above `states/` is what prevents this, so it is a hard
@@ -202,7 +281,8 @@ The user views files through a read-only network share (below).
 
 ### `host_exec`: macOS commands for agents in the VM
 
-One general tool. Studio does not know what the command does.
+One general tool. Studio does not know what the command does. The slot copies below are Studio's
+(decision 20): it makes them from `layr export` and the line folders; layr has no slot command.
 
 1. Each project has a pool of slots on the Mac. A slot is a folder at a stable path, with its own
    `DerivedData` and package folders next to it. A stable path keeps Xcode builds warm: Xcode does
@@ -215,15 +295,20 @@ One general tool. Studio does not know what the command does.
    available.
 4. After the command, the Mac side lists files that the command changed in the slot (FSEvents or a
    compare with the start marker, on the Mac itself; the VM's view of a shared folder can have
-   stale attributes). Changed sources go back into the agent line. Build outputs stay outside the
-   slot folder. Artifacts are returned as files.
+   stale attributes). `layr slot collect` copies them back with three versions per path: the state
+   the slot held, the slot, and the line now. A path that the line changed too is a conflict: text
+   files get markers, other files keep the line version and the slot version is saved next to it
+   as `<path>.slot-conflict`. Build outputs stay outside the slot folder. Artifacts are returned as
+   files.
 5. Output paths are mapped from the slot path to the line path in the VM, including the short
    forms of macOS path aliases (`/tmp` is `/private/tmp`). Slots should use a path without
    aliases.
-6. One command at a time per slot. The agent waits for the result, so there is one writer.
+6. One command at a time per slot. Waiting does not guarantee one writer (a background process can
+   still write), which is why the copy back compares three versions. After a lost response, Studio
+   must check the result of the command before it runs it again.
 
 The channel is a request from the guest to the host. The VM helper today only connects from the
-host to the guest (`connect(toPort: 4050)` in `desktop/native/linux-vm/main.swift`).
+host to the guest (`connect(toPort: 4050)` in `workspaces/client/apps/desktop/native/linux-vm/main.swift`).
 Recommendation (not tested): reverse requests on the existing connection. The guest sends a request
 frame with a request id; the host runs it and answers with a receipt, like the other guest calls.
 This needs no new Virtualization.framework listener, keeps one connection to supervise, and reuses
@@ -248,16 +333,20 @@ that holds a state from an older base is reset by a full copy.
 
 - `layr export <folder>` writes a normal copy of a state to a folder on the Mac, for use without
   Studio or without the VM.
-- Backups are files: one full `btrfs send` stream and incremental streams after it, written once
-  into a backup folder on the Mac. Time Machine backs up that folder; the VM disk image itself is
+- Backups are files: one full `btrfs send` stream and incremental streams after it, git bundles of
+  the object store, and all records as JSONL, written once into a backup folder on the Mac as the
+  user who runs the backup. Time Machine backs up that folder; the VM disk image itself is
   excluded from Time Machine. The same files can go to another machine or later to `layrhub`.
 - Schedule: an incremental stream for every named state and at least hourly for the main line; a
   new full stream weekly. Streams are compressed with zstd. A manifest stores the SHA-256 of each
   stream.
 - Retention: the last two full chains.
-- Restore: check the manifest, receive the full stream, then the incremental streams in order.
-  `btrfs receive` rejects a corrupted stream (CRC32C per command) and a stream whose parent is
-  missing.
+- Restore: check the manifest, receive the full stream, then the incremental streams in order,
+  import the records, rebuild the derived tables, and give every line a working folder from its
+  newest automatic state. The restoring machine trusts the machines of the backup and takes over
+  the settings of the machine that wrote it. `btrfs receive` rejects a corrupted stream (CRC32C per
+  command) and a stream whose parent is missing. Tested: history, lines, undo and push after a
+  restore on another file system.
 
 ### Ownership guarantees
 
@@ -277,13 +366,13 @@ These rules apply to `layr export` and to `host_exec` slots:
 
 ## Review
 
-| Step             | How                                                                                                                                                                      |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| see the diff     | `layr diff <worker base>..<worker line>` in the VM: the btrfs change list plus a unified diff of those files                                                             |
-| read whole files | directly in the worker state folder in the VM, or `layr show <line>:<path>`                                                                                              |
-| run tests        | Linux: in a temporary writable snapshot of the worker line, deleted afterwards, so the worker line does not change. macOS: `host_exec` in a slot synced to that snapshot |
-| decide           | accept: `layr merge <worker line>` into the main line. Return: a message to the worker through the existing Studio messages                                              |
-| conflicts        | the merge result is a state with conflict markers and a conflict list. The lead fixes the files, and the next state clears the list                                      |
+| Step             | How                                                                                                                                                                       |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| see the diff     | `layr diff <worker base>..<worker line>` in the VM: the btrfs change list plus a unified diff of those files                                                              |
+| read whole files | `layr show <state>:<path>` and `layr grep <pattern> <state>` (agents do not read state folders directly)                                                                  |
+| run tests        | Linux: `layr try <state> -- <tests>`, in a temporary writable snapshot of that state; the result is recorded. macOS: `host_exec` in a slot synced to that state           |
+| decide           | accept: `layr merge <worker line> --expect <reviewed state>` into the main line. Return: a message to the worker through the existing Studio messages                     |
+| conflicts        | the merge result is a state with conflict markers and a conflict list. A content conflict stays listed while its file has markers; the next commit clears the other kinds |
 
 Reviewer agents use the same steps with read-only access. No branches, fetches or worktrees are
 used for review.
@@ -319,21 +408,24 @@ delete, edits of different lines, delete against change.
 
 ## Exploration groups
 
-Several agents can try the same task in parallel lines with a common base state. The group has an
-epoch counter. When the user or the lead accepts one result, that line is merged and the epoch
-increments. The other lines of the group become stale: the utility refuses to merge them and
-offers to archive them. This is an optional policy for "best of N" work. Normal lines use the merge
-engine.
+Several agents can try the same task in parallel lines with a common base state. When the user or
+the lead accepts one result, that line is merged and the other lines of the attempt are archived.
+This is a Studio workflow (decision 20): Studio keeps the attempt and its lines, merges the
+accepted line with `merge --expect`, and deletes the others. layr had a `group` command for this
+until 2026-10-10.
 
 ## Remote bridge
 
 - Import (`fetch`, `pull`): `git fetch` into the project git object store. The new state is a snapshot of the
   previous imported state plus the paths from `git diff --name-only <old> <new>`. Cost O(changes).
-- Export (`push`, pull request): build the git tree from the tree of the previous export, with
-  `git hash-object` only for changed paths, then `git commit-tree` and push to a branch that exists
-  only on the remote. Ignored paths are never exported.
-- A table maps state ids to git commits. The same state always gives the same tree, so an export
-  can be repeated safely.
+- Export (`push`, pull request): build the git tree from the tree of the nearest exported or
+  imported ancestor, with only the changed paths, then `git commit-tree` with the author and time
+  of the state, and push to a branch. Ignored paths are never exported.
+- The exact commit id is recorded before the push (`export`, status prepared), and again after it
+  (status pushed). After a lost response, a repeated push reads the remote ref first: if it is that
+  commit, the push is recorded as done; nothing is pushed twice.
+- Network access runs as the caller (its ssh agent and tokens). Fetched objects reach the store
+  through a pipe, so root never reads the caller's temporary repository.
 
 ## Platform scope
 
@@ -524,7 +616,7 @@ The slot held exactly the target state after each switch.
 | [BranchFS, branch context](https://arxiv.org/html/2602.08199) (March 2026)                      | FUSE copy-on-write branches for agents; first commit wins; epochs invalidate siblings                     | exploration groups with an epoch. Not taken: FUSE and file-level copy-on-write |
 | [Pulumi Neo with Kopia](https://www.pulumi.com/blog/neo-kopia-workspace-snapshots/) (Sept 2026) | workspace snapshots instead of git for agents; regenerable caches are not saved                           | regenerable data as a separate layer with its own replication policy           |
 | [BtrFsGit](https://github.com/koo5/BtrFsGit), [btrbk](https://github.com/digint/btrbk)          | git-like commands and incremental replication for btrfs subvolumes, for backups                           | finding the common parent by subvolume UUIDs for `send -p`                     |
-| [Morph Infinibranch](https://cloud.morph.so/web/product/devboxes)                               | snapshot and branch of whole running VMs                                                                  | not taken: this design branches files, not processes                           |
+| [Morph Infinibranch](https://cloud.morph.so/workspaces/client/apps/web/product/devboxes)        | snapshot and branch of whole running VMs                                                                  | not taken: this design branches files, not processes                           |
 
 No project found on 2026-10-09 combines a git-like local tool, btrfs states, a real merge and
 replication between machines.
@@ -533,16 +625,31 @@ replication between machines.
 
 Design:
 
-- The reverse guest to host channel: implement and measure the recommended reverse requests.
-- The `layrhub` protocol: signed records, stream transport, the fallback transport by content.
+- The reverse guest to host channel for `host_exec` (Studio): implement and measure the
+  recommended reverse requests.
+- The `layrhub` protocol: signed records and stream transport exist; the fallback transport by
+  content does not.
+- Content checks of replicated states: a hash of the tree in the signed record, computed in
+  O(changes).
+
+Studio integration:
+
+- Use layr for Linux workspaces instead of the overlayfs engine
+  ([image workspaces](workspace-images.md)) and the git status change detector
+  ([Linux VM workspaces](linux-vm-workspaces.md)), behind the same public API.
+- Call `layr save --turn-end` at the end of each agent turn; run `layr daemon` in the VM.
+- The read-only network share of the main line and `states/`.
 
 Measurements:
 
 - `host_exec` with simulators, UI tests and a large Xcode project.
-- The read-only share: SMB against NFS for Finder use on a large tree, and the `states/` share.
+- The read-only share: SMB against NFS for Finder use on a large tree.
 - The loop-file option on a real ext4 host.
+- `merge` on large trees (1.35 s for 50 + 50 changed files on 200,000 files; it makes one
+  snapshot more than it needs).
 
 Later:
 
 - Layr on Linux hosts.
 - APFS backend (deferred).
+- Structured (AST) merge drivers; format drivers already plug in through `merge.driver.<name>`.

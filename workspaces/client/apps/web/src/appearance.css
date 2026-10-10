@@ -1,0 +1,856 @@
+:root {
+  --raised: #26262e;
+  --inset: #141418;
+  --hover: #ffffff08;
+  --accent: #a5b4fc;
+}
+:root[data-mantine-color-scheme="light"] {
+  color-scheme: light;
+  --surface: #ffffff;
+  --sidebar: #eef0f5;
+  --studio-warning: #9c4b00;
+  --studio-warning-hover: #783900;
+  --raised: #eef0f5;
+  --inset: #f7f8fa;
+  --hover: #18244708;
+  --line: #18244724;
+  --muted: #596174;
+  --text: #222737;
+  --accent: #3b4fc4;
+}
+.workspace-header.simple-workspace-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 56px;
+  height: auto;
+  padding: 8px 16px;
+}
+.simple-workspace-header .conversation-heading {
+  display: block;
+  flex: 1;
+  min-width: 0;
+}
+.simple-workspace-header #conversation-status {
+  max-width: none;
+}
+.simple-workspace-header #sidebar-toggle,
+.simple-workspace-header #team-toggle,
+#team-close {
+  display: inline-flex;
+}
+.simple-workspace-header > button {
+  flex-shrink: 0;
+}
+/* Status and agent mode share one line so the header stays one row high. */
+.conversation-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  margin-top: 2px;
+}
+.conversation-meta #conversation-status {
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  margin-top: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-mode-badge {
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 6px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.conversation-meta .agent-mode-control {
+  flex-wrap: wrap;
+  flex-shrink: 1;
+  margin-top: 0;
+}
+.conversation-meta .agent-mode-apply {
+  min-height: 20px;
+  margin-block: -4px;
+  padding: 2px 4px;
+  border: 0;
+  color: var(--muted);
+}
+.conversation-meta .agent-mode-apply:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.chat-settings-panel {
+  display: grid;
+  gap: 20px;
+}
+.settings-group {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.settings-group h2 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.settings-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.federation-settings > p,
+.federation-peer > p,
+.federation-room > p,
+.federation-room-create > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.federation-identity {
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono, monospace);
+}
+.federation-peer,
+.federation-room {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.federation-peer > span,
+.federation-room > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.federation-room-create {
+  display: grid;
+  gap: 10px;
+  padding-top: 8px;
+}
+.federation-room-create h3 {
+  margin: 0;
+  font-size: 13px;
+}
+.settings-label {
+  font-size: 12px;
+}
+.chat-settings-panel .settings-group .mantine-Button-root {
+  width: 100%;
+  max-width: 100%;
+  min-height: 36px;
+  height: auto;
+  margin: 0;
+  padding: 8px 10px;
+  justify-content: flex-start;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.chat-settings-panel .settings-group .mantine-Button-inner {
+  justify-content: flex-start;
+}
+.chat-settings-panel
+  .settings-group
+  .mantine-Button-section[data-position="right"] {
+  margin-left: auto;
+}
+.chat-settings-panel .settings-new-chat {
+  justify-self: start;
+  font-size: 12px;
+  min-height: 30px;
+  padding: 0 8px;
+  margin-left: -8px;
+}
+.sidebar-nav {
+  display: grid;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.sidebar-nav-button {
+  width: 100%;
+  height: auto;
+  min-height: 34px;
+  padding-block: 4px;
+  padding-inline: 10px;
+  color: var(--text);
+}
+.sidebar-nav-button .mantine-Button-inner {
+  justify-content: flex-start;
+}
+@media (max-width: 760px) {
+  .workspace-header.simple-workspace-header {
+    gap: 2px;
+    padding: 8px;
+    flex-wrap: wrap;
+  }
+  .workspace-header.simple-workspace-header {
+    flex-wrap: nowrap;
+  }
+  .simple-workspace-header .conversation-heading {
+    flex: 1 1 0;
+  }
+  .conversation-meta .agent-mode-apply {
+    min-height: 32px;
+    margin-block: -8px;
+  }
+  .conversation-meta .agent-mode-note {
+    display: none;
+  }
+  .simple-workspace-header #messages-toggle {
+    padding-inline: 8px;
+  }
+  .simple-workspace-header .messages-toggle-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .simple-workspace-header #team-toggle {
+    min-height: 36px;
+  }
+}
+:root[data-mantine-color-scheme="light"] body {
+  color: var(--text);
+  background: var(--surface);
+}
+:root[data-mantine-color-scheme="light"] a {
+  color: var(--accent);
+}
+:root[data-mantine-color-scheme="light"]
+  :is(
+    .message-content,
+    .message-text,
+    .prose,
+    .markdown-body,
+    .task-note,
+    .task-record,
+    .worker,
+    .chat-row
+  ) {
+  color: var(--text);
+}
+:root[data-mantine-color-scheme="light"]
+  :is(
+    #chat-search,
+    .composer,
+    .composer-shell,
+    .chat-composer,
+    .draft-version,
+    .user-message,
+    .task-detail,
+    .task-row,
+    .task-input pre,
+    .task-output,
+    .task-terminal,
+    .agent-error,
+    .sync-status
+  ) {
+  background: var(--inset);
+  color: var(--text);
+  border-color: var(--line);
+}
+:root[data-mantine-color-scheme="light"]
+  :is(.chat-row:hover, .worker:hover, .task-row:hover, .read-activity:hover) {
+  background: var(--hover);
+}
+:root[data-mantine-color-scheme="light"]
+  :is(.chat-row.selected, .worker.selected, .task-row.selected) {
+  background: var(--raised);
+}
+:root[data-mantine-color-scheme="light"] :is(code, pre) {
+  color: var(--text);
+}
+:root[data-mantine-color-scheme="light"]
+  :is(.attention-count, .team-button-count) {
+  background: var(--raised);
+  color: var(--accent);
+}
+.chat-settings-panel #project {
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  min-height: 36px;
+  padding-inline: 12px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 400;
+  border: 1px solid var(--line);
+}
+.chat-settings-panel #project .mantine-Button-inner {
+  justify-content: flex-start;
+}
+/* In the unified inbox, request cards align with the message cards. */
+.unified-messages #requests {
+  padding: 0;
+}
+/* Mantine fills disabled buttons. Subtle controls stay flat and only dim. */
+:is(.mantine-ActionIcon-root, .mantine-Button-root)[data-variant="subtle"]:is(
+    :disabled,
+    [data-disabled]
+  ) {
+  background: transparent;
+}
+
+/* Phone controls must work with a finger, including menus and disclosures. */
+@media (max-width: 760px) {
+  html
+    body
+    :is(button, summary, [role="option"], [role="tab"]):not(
+      .account-limits-dot-target
+    ) {
+    /* Compact component sizes cannot reduce the phone's minimum target. */
+    min-width: 44px !important;
+    min-height: 44px !important;
+    touch-action: manipulation;
+  }
+  html body :is(input:not([type="checkbox"]):not([type="radio"]), select) {
+    min-height: 44px !important;
+  }
+  html body summary {
+    align-content: center;
+  }
+  html body :is(.mantine-Menu-dropdown, .mantine-Combobox-dropdown) {
+    max-width: calc(100vw - 24px);
+    max-height: calc(var(--mobile-viewport-height, 100dvh) - 32px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  html body .mantine-Menu-itemLabel {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  html body :is(.mantine-Modal-close, .mantine-Drawer-close) {
+    flex-shrink: 0;
+  }
+
+  /* The status keeps its space after the mode control moves to settings. */
+  .simple-workspace-header .conversation-meta {
+    gap: 0;
+  }
+  .simple-workspace-header #conversation-status {
+    flex: 1;
+  }
+  .simple-workspace-header #messages-toggle {
+    width: 44px;
+    padding: 0;
+    position: relative;
+  }
+  .simple-workspace-header #messages-toggle .mantine-Button-section {
+    margin: 0;
+  }
+  .simple-workspace-header #messages-toggle .attention-count {
+    position: absolute;
+    top: 1px;
+    right: 1px;
+    min-width: 14px;
+    padding-inline: 3px;
+    font-size: var(--studio-text-meta);
+  }
+  .simple-workspace-header #team-toggle {
+    width: 44px;
+  }
+  .workspace-header.simple-workspace-header:has(#back-lead) {
+    height: auto;
+    min-height: 100px;
+  }
+  .chat-settings-panel .agent-mode-control {
+    margin: 0;
+  }
+  .chat-settings-panel .agent-mode-apply {
+    font-size: 13px;
+    padding-inline: 10px;
+  }
+  .chat-settings-panel :is(.mantine-Button-label, .account-picker-label) {
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  /* Visible project actions need dedicated space instead of a hover overlay. */
+  #sidebar .projects-heading .mantine-ActionIcon-root,
+  #sidebar .project-tree-action,
+  #sidebar .project-chats .row-actions {
+    width: 44px;
+    height: 44px;
+  }
+  #sidebar .project-tree-action:has(+ .project-tree-action) {
+    right: 48px;
+  }
+  #sidebar .project-tree-toggle {
+    padding-right: 48px;
+  }
+  #sidebar
+    .project-tree-heading:has(.project-tree-action + .project-tree-action)
+    .project-tree-toggle {
+    padding-right: 92px;
+  }
+  #sidebar .project-chats .chat-row {
+    padding-right: 52px;
+  }
+  #sidebar .sidebar-nav-button {
+    height: 44px;
+  }
+
+  #team :is(.worker-heading, .team-filters) {
+    gap: 8px;
+  }
+  #team .worker-error-details summary {
+    width: 100%;
+  }
+  #team .team-filters button {
+    font-size: 12px;
+  }
+  #team .worker-text {
+    min-width: 0;
+  }
+  #team .worker-model-summary {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  /* Portals use the visible viewport, including the keyboard and safe areas. */
+  html body .mantine-Drawer-content {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    max-height: 100%;
+    padding-top: var(--mobile-safe-area-top, env(safe-area-inset-top));
+    padding-bottom: var(--mobile-safe-area-bottom, env(safe-area-inset-bottom));
+  }
+  html body .mantine-Drawer-header {
+    flex-shrink: 0;
+  }
+  html body .mantine-Drawer-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  html body .mantine-Drawer-content:has(:is(#sidebar, #team)) {
+    padding: 0;
+  }
+  html body :is(#sidebar, #team) {
+    height: 100%;
+  }
+  html body .mantine-Modal-inner {
+    padding-top: max(
+      16px,
+      var(--mobile-safe-area-top, env(safe-area-inset-top))
+    );
+    padding-bottom: max(
+      16px,
+      var(--mobile-safe-area-bottom, env(safe-area-inset-bottom))
+    );
+  }
+  html body .mantine-Modal-content {
+    max-height: calc(
+      var(--mobile-viewport-height, 100dvh) -
+        max(16px, var(--mobile-safe-area-top, env(safe-area-inset-top))) -
+        max(16px, var(--mobile-safe-area-bottom, env(safe-area-inset-bottom)))
+    );
+  }
+  .execution-dropdown,
+  .model-picker-options {
+    max-height: calc(var(--mobile-viewport-height, 100dvh) - 64px);
+    overscroll-behavior: contain;
+  }
+  .model-picker-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+    padding: 10px;
+  }
+  .model-picker-value > span:first-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .model-picker-value .model-picker-tag {
+    flex-shrink: 0;
+  }
+  .analytics-scroll {
+    min-height: 0;
+    max-height: calc(var(--mobile-viewport-height, 100dvh) - 270px);
+  }
+  .workspace-shell:not(.workspace-focused-messages) {
+    min-height: 0;
+  }
+  .workspace-messages .workspace-heading {
+    padding-inline: 14px;
+  }
+}
+
+@media (min-width: 761px) {
+  .simple-workspace-header :is(.mantine-ActionIcon-root, .mantine-Button-root) {
+    height: var(--studio-action-size);
+    min-height: var(--studio-action-size);
+  }
+  .simple-workspace-header .mantine-ActionIcon-root {
+    width: var(--studio-action-size);
+  }
+}
+
+/* Chat configuration and composer context share the existing section layout. */
+.chat-settings-panel .execution-menu {
+  width: 100%;
+  justify-content: space-between;
+  height: auto;
+  min-height: 36px;
+}
+.chat-settings-footer {
+  display: flex;
+  justify-content: flex-end;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+.chat-settings-panel .agent-mode-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.chat-settings-panel .agent-mode-visible-label {
+  display: none;
+}
+.chat-settings-panel .agent-mode-limit-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.chat-settings-panel .agent-mode-limit-label input {
+  width: 64px;
+}
+.chat-settings-panel .account-picker-label {
+  flex: 1;
+}
+.chat-settings-panel .account-picker .mantine-Button-label::after {
+  content: "Change";
+  margin-left: 12px;
+  color: var(--muted);
+}
+.settings-change-label {
+  color: var(--muted);
+  margin-left: 12px;
+}
+.composer-context-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 8px 8px;
+  flex: 1 1 180px;
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+.composer-context-row .execution-menu {
+  height: 28px;
+  padding: 0 6px;
+  font-size: 12px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.composer-context-values {
+  display: flex;
+  flex: 1 1 0;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  min-width: 0;
+}
+.composer-context-values > span {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 240px;
+}
+.composer-timing {
+  font-size: 12px;
+  color: var(--muted);
+}
+.message-queue-preview:not(.expanded) {
+  -webkit-line-clamp: 1;
+}
+.message-queue-row {
+  align-items: center;
+}
+.message-queue-actions {
+  flex-wrap: nowrap;
+  max-width: none;
+  flex-shrink: 0;
+}
+.queue-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+@media (max-width: 600px) {
+  .composer-submit-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  .composer-timing {
+    width: 100%;
+    text-align: right;
+  }
+  .message-queue-row {
+    flex-wrap: nowrap;
+  }
+  .message-queue-actions {
+    width: auto;
+    padding-left: 0;
+  }
+  .message-queue-actions button {
+    width: 44px;
+    height: 44px;
+  }
+  .message-queue-number {
+    min-width: 16px;
+  }
+  .message-queue-expand {
+    font-size: 12px !important;
+  }
+}
+
+.composer-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 0;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.composer-tools .attachment-list {
+  flex-basis: 100%;
+}
+.outbox-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.outbox-controls p {
+  margin: 0;
+  font-size: 12px;
+}
+
+.chat-settings-panel .execution-menu .mantine-Button-label {
+  display: flex;
+  width: 100%;
+  gap: 12px;
+  justify-content: space-between;
+}
+.execution-selected {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.message-queue-content:has(.message-queue-preview) {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.message-queue-content .message-queue-preview {
+  flex: 1;
+  min-width: 0;
+}
+.message-queue-content .message-queue-assets {
+  flex-basis: 100%;
+}
+.message-queue-content .message-queue-expand {
+  padding: 0 4px;
+}
+
+.chat-settings-panel .execution-menu {
+  padding: 8px 0;
+  border: 0;
+  background: transparent;
+}
+.chat-settings-panel .execution-menu .mantine-Button-inner {
+  width: 100%;
+  min-width: 0;
+}
+.chat-settings-panel .execution-menu .mantine-Button-label {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+.chat-settings-panel .execution-menu .mantine-Button-section {
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+.chat-settings-panel #project {
+  border: 0;
+  background: transparent;
+}
+.composer-tools .composer-context-row {
+  margin: 0;
+  padding: 0;
+  gap: 8px;
+}
+.composer-tools .execution-menu {
+  padding: 0 6px;
+  height: 30px;
+  min-height: 30px;
+  border: 0;
+  background: transparent;
+}
+.composer-tools .execution-menu .mantine-Button-section {
+  display: flex;
+  margin-left: 4px;
+}
+.chat-settings-panel
+  .execution-menu
+  .mantine-Button-section[data-position="right"],
+.composer-tools .execution-menu .mantine-Button-section[data-position="right"] {
+  position: static;
+  width: 14px;
+  margin-left: 8px;
+  flex-shrink: 0;
+}
+
+.conversation-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar-shared-chat .mantine-Button-label {
+  display: block;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+
+/* In Chat settings the agent setup trigger reads as one full-width field:
+   provider logo, model, reasoning and account from the left, chevron right. */
+.chat-settings-panel .execution-menu {
+  width: 100%;
+  height: 44px;
+  padding-inline: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.chat-settings-panel .execution-menu .mantine-Button-inner {
+  justify-content: flex-start;
+  width: 100%;
+}
+.chat-settings-panel .execution-menu .mantine-Button-label {
+  flex: 1;
+  justify-content: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+.chat-settings-panel
+  .execution-menu
+  .mantine-Button-section[data-position="right"] {
+  margin-left: auto;
+}
+
+/* Chat settings keeps its six controls in compact rows at every width. */
+.chat-settings-rows {
+  gap: 0;
+}
+.chat-settings-rows > .ui-settings-row,
+.chat-settings-rows #chat-settings-permissions > .ui-settings-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  min-width: 0;
+}
+.chat-settings-rows .ui-row-control {
+  min-width: 0;
+  max-width: calc(100% - 86px);
+}
+.chat-settings-rows .execution-menu {
+  max-width: 100%;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-md);
+}
+.chat-settings-rows .execution-menu .mantine-Button-label {
+  min-width: 0;
+  gap: 6px;
+}
+.chat-settings-rows .execution-selected {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-settings-rows .execution-selected[data-inherited] {
+  color: var(--mantine-color-dimmed);
+}
+.chat-settings-rows .agent-mode-compact {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.chat-settings-rows .agent-mode-limit-label {
+  display: flex;
+  gap: 0;
+}
+.chat-settings-rows .agent-mode-limit-label input {
+  width: 64px;
+  min-height: 32px;
+}
+.chat-settings-rows .chat-settings-footer {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.chat-settings-rows .chat-settings-more {
+  margin-top: 12px;
+}
+.chat-settings-rows .chat-settings-more > summary {
+  cursor: pointer;
+  color: var(--mantine-color-dimmed);
+  padding: 8px 0;
+}
+@media (max-width: 760px) {
+  .chat-settings-rows .execution-menu,
+  .chat-settings-rows .agent-mode-limit-label input {
+    min-height: 44px;
+  }
+}
+.chat-settings-rows > .ui-settings-row > .ui-label,
+.chat-settings-rows #chat-settings-permissions .ui-label {
+  flex: 0 0 86px;
+  white-space: nowrap;
+}
+.chat-settings-rows .ui-row-control {
+  width: auto;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+.chat-settings-rows .execution-selected {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+/* Keep the chevron apart from the role chip text. */
+.chat-settings-rows
+  .execution-menu
+  .mantine-Button-section[data-position="right"] {
+  margin-left: 8px;
+}

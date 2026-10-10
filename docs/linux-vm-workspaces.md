@@ -96,8 +96,8 @@ The frozen runtime references are not documentation that can be revised.
 Run checks one at a time:
 
 ```sh
-python3 scripts/codex_python.py --exec tests/vm-agents-contract.py
-python3 scripts/codex_python.py --exec tests/linux-vm-studio-native.py --state-dir <isolated-vm-state> --helper <native-helper>
+python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/tests/vm-agents-contract.py
+python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/tests/linux-vm-studio-native.py --state-dir <isolated-vm-state> --helper <native-helper>
 ```
 
 The first suite uses a local native provider fixture. It sends no model request.
