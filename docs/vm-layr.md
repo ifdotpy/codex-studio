@@ -72,8 +72,8 @@ Run each command separately:
 
 ```sh
 python3 -B -m unittest discover -s workspaces/runtime/apps/vm-guest -p test_layr_admin.py -v
-PYTHONPATH=scripts python3 -B -m unittest test_codex_linux_vm -q
-python3 -B tests/linux-vm-layr-host-contract.py -q
+python3 scripts/codex_python.py --exec workspaces/runtime/apps/server/src/test_codex_linux_vm.py
+python3 -B workspaces/runtime/apps/server/tests/linux-vm-layr-host-contract.py -q
 npm run typecheck:runtime
 ```
 

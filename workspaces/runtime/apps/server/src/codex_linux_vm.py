@@ -512,11 +512,29 @@ StandardError=journal+console
 [Install]
 WantedBy=multi-user.target
 '''.replace('@READY_PATH@', ready_path)})
+    # The provision unit runs once per payload generation, and the helper clears
+    # console.log on every boot. Each later boot of the same generation reports
+    # its readiness again, so a restarted VM does not wait for a provision run.
+    files.append({'path': '/etc/systemd/system/codex-studio-ready.service', 'permissions': '0644', 'content': '''[Unit]
+Description=Report the provisioned Codex Studio Linux VM
+After=codex-studio-provision.service
+RequiresMountsFor=/var/lib/codex-studio
+ConditionPathExists=@READY_PATH@
+
+[Service]
+Type=oneshot
+ExecStart=/bin/echo STUDIO_PROVISION_READY
+RemainAfterExit=yes
+StandardOutput=journal+console
+
+[Install]
+WantedBy=multi-user.target
+'''.replace('@READY_PATH@', ready_path)})
     return {'hostname': 'studio-linux', 'manage_etc_hosts': True, 'ssh_pwauth': False,
             'disable_root': True, 'users': [{'name': 'studio', 'lock_passwd': True,
                                           'shell': '/bin/bash'}],
             'write_files': files, 'runcmd': [['systemctl', 'daemon-reload'],
-                ['systemctl', 'enable', 'codex-studio-provision.service'],
+                ['systemctl', 'enable', 'codex-studio-provision.service', 'codex-studio-ready.service'],
                 ['timeout', '--kill-after=5', '2510', 'systemctl', 'restart', 'codex-studio-provision.service']]}
 
 

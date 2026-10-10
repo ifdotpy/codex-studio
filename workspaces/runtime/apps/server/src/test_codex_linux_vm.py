@@ -363,13 +363,19 @@ class ClientTests(unittest.TestCase):
         self.assertIn('/opt/codex-studio/vm/layr/manifest.json', paths)
         self.assertFalse(any('/claude-bridge/node_modules/' in path for path in paths))
         skills = [path for path in paths if '/.agents/skills/' in path]
-        self.assertEqual(len(paths) - len(skills), 15)
+        self.assertEqual(len(paths) - len(skills), 16)
         self.assertNotIn('credentials', json.dumps(config))
         unit = next(row['content'] for row in config['write_files'] if row['path'].endswith('/codex-studio-provision.service'))
         ready = next(line.split('=!',1)[1] for line in unit.splitlines() if line.startswith('ConditionPathExists='))
         self.assertRegex(ready, r'^/var/lib/codex-studio/provision-ready-[a-f0-9]{64}$')
         script = next(row['content'] for row in config['write_files'] if row['path'].endswith('/provision.sh'))
         self.assertIn('touch ' + ready + '\n', script)
+        # A later boot of the same generation reports readiness without a provision run.
+        report = next(row['content'] for row in config['write_files'] if row['path'].endswith('/codex-studio-ready.service'))
+        self.assertIn('ConditionPathExists=' + ready + '\n', report)
+        self.assertIn('ExecStart=/bin/echo STUDIO_PROVISION_READY\n', report)
+        self.assertIn(['systemctl', 'enable', 'codex-studio-provision.service', 'codex-studio-ready.service'],
+                      config['runcmd'])
         same = dict(runtime_source=scripts, bridge_source=bridge)
         self.assertEqual(config, vm._cloud_config(guest, '1.2.3', '4.5.6', **same))
         (guest / 'install.sh').write_text('# new installation payload')
