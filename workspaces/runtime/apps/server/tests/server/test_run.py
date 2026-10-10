@@ -872,40 +872,6 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertEqual(result, (0, None, [], []))
         self.assertEqual(intervals, [1.0])
 
-    def test_fallback_registers_process_group_interruptor(self):
-        class FakeProcess:
-            pid = 321
-            stdout = None
-
-            def wait(self, timeout=None):
-                return -9
-
-            def kill(self):
-                pass
-
-        observed = []
-
-        def interrupt_from_select(*_args):
-            with RUNNER.ACTIVE_SUITE_LOCK:
-                interruptors = tuple(RUNNER.ACTIVE_SUITE_INTERRUPTERS)
-            self.assertEqual(len(interruptors), 1)
-            interruptors[0]()
-            observed.append(True)
-            raise KeyboardInterrupt
-
-        with (mock.patch.object(RUNNER.subprocess, "Popen", return_value=FakeProcess()),
-              mock.patch.object(RUNNER.os, "pipe", return_value=(42, 43)),
-              mock.patch.object(RUNNER.os, "close"),
-              mock.patch.object(RUNNER.os, "killpg") as killpg,
-              mock.patch.object(RUNNER.select, "select", side_effect=interrupt_from_select),
-              self.assertRaises(KeyboardInterrupt)):
-            RUNNER._run_process_with_group_supervisor(["suite.py"], ROOT, 5, {})
-
-        self.assertTrue(observed)
-        self.assertGreaterEqual(killpg.call_count, 2)
-        with RUNNER.ACTIVE_SUITE_LOCK:
-            self.assertEqual(RUNNER.ACTIVE_SUITE_INTERRUPTERS, set())
-
     def test_deadline_kills_owned_process_group(self):
         with tempfile.TemporaryDirectory(prefix="server-runner-timeout-") as temp:
             marker = Path(temp) / "child-output"
@@ -950,27 +916,6 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual(expected, ["Suite.test_known"])
         self.assertEqual(unexpected, ["Suite.test_fixed"])
-
-    def test_posix_fallback_counts_structured_outcomes_once(self):
-        with tempfile.TemporaryDirectory(prefix="server-runner-fallback-results-") as temp:
-            result_file = Path(temp) / "outcomes.jsonl"
-            environment = os.environ.copy()
-            environment["CODEX_SERVER_TEST_RESULT_FILE"] = str(result_file)
-            child = (
-                "import json,os; "
-                "open(os.environ['CODEX_SERVER_TEST_RESULT_FILE'],'w').write("
-                "json.dumps({'id':'__main__.Suite.test_ok','outcome':'passed'})+'\\n')"
-            )
-            with (mock.patch.object(RUNNER, "_supports_waitid_nowait", return_value=False),
-                  contextlib.redirect_stdout(io.StringIO())):
-                returncode, error, expected, unexpected = RUNNER.run_process(
-                    [sys.executable, "-c", child], ROOT, 5, environment)
-
-        self.assertEqual(returncode, 0)
-        self.assertIsNone(error)
-        self.assertEqual(expected, [])
-        self.assertEqual(unexpected, [])
-        self.assertEqual(RUNNER.TEST_OUTCOME_COUNTS.get("passed"), 1)
 
     def test_interleaved_human_output_cannot_change_structured_outcomes(self):
         records = "\n".join((

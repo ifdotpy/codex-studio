@@ -28,7 +28,6 @@ const { createRendererRecovery } = require("./renderer-recovery.cjs");
 const { frameOwner } = require("./frame-owner.cjs");
 const { pairApproved } = require("./approved-pair.cjs");
 const { startUiHost } = require("./ui-host.cjs");
-const DEFAULT_DESKTOP_FRAME_PORT = 4621;
 const { uiOnlyInstallation } = require("./install-mode.cjs");
 const uiOnly = uiOnlyInstallation({ packaged: app.isPackaged });
 const hidden = process.argv.includes("--hidden");
@@ -218,23 +217,11 @@ function nativeDownload(event, item, contents) {
     return;
   }
   const url = item.getURL();
-  let serverFrameBlob = false;
-  try {
-    const download = new URL(url);
-    if (download.protocol === "blob:") {
-      serverFrameBlob = (contents.mainFrame.frames || []).some((frame) => {
-        if (frame.isDestroyed?.()) return false;
-        const owner = frameOwner(frame.url, frameHost?.origin, backend.origin);
-        return !!owner && new URL(frame.url).origin === download.origin;
-      });
-    }
-  } catch {}
   if (
     contents !== win.webContents ||
     contents.getURL() !== workspaceURL() ||
     !(
       url.startsWith(`blob:${backend.origin}/`) ||
-      serverFrameBlob ||
       url.startsWith(workspaceURL())
     )
   ) {
@@ -889,11 +876,7 @@ async function start() {
       });
   frameHost = uiOnly
     ? backend
-    : // Server views keep browser storage under this origin across app restarts.
-      await startUiHost({
-        resources: backendResources,
-        port: DEFAULT_DESKTOP_FRAME_PORT,
-      });
+    : await startUiHost({ resources: backendResources, port: 0 });
   serverCredentials =
     require("./server-credentials.cjs").createServerCredentials({
       fetchRequest: (request) => fetch(request),

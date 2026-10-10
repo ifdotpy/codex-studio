@@ -154,12 +154,7 @@ class MultiServerBoundary:
             nonlocal response_started
             if message["type"] == "http.response.start":
                 response_started = True
-                replaced = {b"access-control-allow-origin", b"access-control-expose-headers"}
-                existing = [
-                    (key, value)
-                    for key, value in message.get("headers", [])
-                    if key.lower() not in replaced
-                ]
+                existing = [(key, value) for key, value in message.get("headers", []) if not key.lower().startswith(b"access-control-")]
                 message = {**message, "headers": [*existing, *CORS_HEADERS]}
             await send(message)
 
@@ -237,10 +232,9 @@ class MultiServerBoundary:
                     raise AccessError(400, "invalid_json", "The signed request requires valid JSON") from None
                 if not isinstance(decoded, dict):
                     raise AccessError(400, "invalid_json", "The signed request requires a JSON object")
-                if target in {"/api/multi-server/v1/pair", "/api/multi-server/v1/auto-pair"}:
-                    for name in ("requestId", "request_id"):
-                        if name in decoded and decoded[name] != principal["requestId"]:
-                            raise AccessError(409, "request_conflict", "The pairing ID does not match its signature")
+                for name in ("requestId", "request_id"):
+                    if name in decoded and decoded[name] != principal["requestId"]:
+                        raise AccessError(409, "request_conflict", "The operation ID does not match its signature")
             sent_body = False
 
             async def replay_receive() -> Message:

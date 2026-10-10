@@ -44,28 +44,20 @@ it("preserves an unresolved write across retries and releases only a confirmed w
     }))!.requestId,
   ).not.toBe(first.requestId);
 });
-it("separates operation references from durable transport receipt identities", async () => {
-  const cancelBody = { action: "cancel", request_id: "transfer-operation" };
-  const retryBody = { action: "retry", request_id: "transfer-operation" };
-  const cancel = await beginServerMutation(
-    "/api/agents/account-transfer",
-    cancelBody,
-  );
-  const retry = await beginServerMutation(
-    "/api/agents/account-transfer",
-    retryBody,
-  );
-  const cancelRetry = await beginServerMutation(
-    "/api/agents/account-transfer",
-    cancelBody,
-  );
-  expect(cancel!.requestId).not.toBe("transfer-operation");
-  expect(retry!.requestId).not.toBe("transfer-operation");
-  expect(retry!.requestId).not.toBe(cancel!.requestId);
-  expect(cancelRetry!.requestId).toBe(cancel!.requestId);
-  expect(cancelBody.request_id).toBe("transfer-operation");
-  expect(retryBody.request_id).toBe("transfer-operation");
-  expect(rows.size).toBe(2);
+it("uses caller operation identities for sends and explicit request identities", async () => {
+  expect(
+    (await beginServerMutation("/api/messages", { id: "send-once" }))!
+      .requestId,
+  ).toBe("send-once");
+  expect(
+    (await beginServerMutation("/api/projects", { requestId: "create-once" }))!
+      .requestId,
+  ).toBe("create-once");
+  expect(
+    (await beginServerMutation("/api/accounts", { request_id: "edit-once" }))!
+      .requestId,
+  ).toBe("edit-once");
+  expect(rows.size).toBe(0);
 });
 it("releases a successful JSON write through the API facade after a lost response retry", async () => {
   const requests: Request[] = [];

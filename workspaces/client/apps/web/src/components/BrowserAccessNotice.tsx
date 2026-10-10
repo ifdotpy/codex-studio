@@ -30,8 +30,7 @@ export default function BrowserAccessNotice({
     return () => controller.abort();
   }, [accountKey, active]);
 
-  if (compact) {
-    if (!active || !status) return null;
+  if (compact)
     return (
       <SettingsRow label="Browser">
         <Tooltip
@@ -46,7 +45,6 @@ export default function BrowserAccessNotice({
         </Tooltip>
       </SettingsRow>
     );
-  }
   if (!active || !status || status.enabled) return null;
   return (
     <div className="browser-access-notice" role="status">

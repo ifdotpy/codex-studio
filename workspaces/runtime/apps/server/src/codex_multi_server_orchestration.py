@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import os
+import selectors
 from pathlib import Path
 import shutil
 import subprocess
@@ -22,8 +23,6 @@ import time
 import traceback
 from typing import Any, Protocol, cast
 import uuid
-
-from codex_paths import is_absolute_on_any_platform
 
 TIMEOUT = 20
 MAX_BUNDLE = 256 * 1024 * 1024
@@ -568,7 +567,7 @@ class MultiServerService:
         if server not in {s['id'] for s in self.transport.servers()}:
             raise ValueError('Select a paired server')
         for spec in specs:
-            if not isinstance(spec, dict) or not isinstance(spec.get('cwd'), str) or not is_absolute_on_any_platform(spec['cwd']):
+            if not isinstance(spec, dict) or not isinstance(spec.get('cwd'), str) or not Path(spec['cwd']).is_absolute():
                 raise ValueError('Supply an absolute cwd on the remote server for every worker')
             if not isinstance(spec.get('name'), str) or not 1 <= len(spec['name'].strip()) <= 100 or not isinstance(spec.get('prompt'), str) or not 1 <= len(spec['prompt'].strip()) <= 32000:
                 raise ValueError('Every worker needs a name and task')
@@ -1489,115 +1488,63 @@ def export_bundle(directory: Path, branch: str, path: Path, exclusions: list[str
     process = subprocess.Popen(command.argv, env=command.environment, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     assert process.stdout is not None
     size = 0
-    overflow = threading.Event()
-    reader_errors: list[BaseException] = []
-
-    def copy_output() -> None:
-        nonlocal size
-        try:
-            with path.open('wb') as output:
-                while chunk := process.stdout.read(CHUNK):
-                    size += len(chunk)
-                    if size > MAX_BUNDLE:
-                        overflow.set()
-                        process.kill()
-                        return
-                    output.write(chunk)
-        except BaseException as error:
-            reader_errors.append(error)
-            if process.poll() is None:
-                process.kill()
-
-    reader = threading.Thread(target=copy_output, name='studio-git-bundle-reader', daemon=True)
-    completed = False
+    deadline = time.monotonic() + 60
     try:
-        reader.start()
-        try:
-            returncode = process.wait(timeout=60)
-        except subprocess.TimeoutExpired:
-            if process.poll() is None:
-                process.kill()
-            process.wait()
-            reader.join()
-            raise subprocess.TimeoutExpired(command.argv, 60) from None
-        reader.join(timeout=2)
-        if reader.is_alive():
-            if process.poll() is None:
-                process.kill()
-            process.wait()
-            reader.join()
-            raise TimeoutError('Git bundle output did not close')
-        if reader_errors:
-            raise ValueError('Git could not export the worker branch') from reader_errors[0]
-        if overflow.is_set():
-            raise ValueError('The Git bundle exceeds 256 MiB')
-        if returncode != 0:
+        with path.open('wb') as output, selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command.argv, 60)
+                if not selector.select(remaining):
+                    continue
+                chunk = os.read(process.stdout.fileno(), 128 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_BUNDLE:
+                    raise ValueError('The Git bundle exceeds 256 MiB')
+                output.write(chunk)
+        if process.wait(timeout=2) != 0:
             raise ValueError('Git could not export the worker branch')
-        completed = True
     except BaseException:
+        path.unlink(missing_ok=True)
         raise
     finally:
         if process.poll() is None:
             process.kill()
-        process.wait()
-        if reader.ident is not None:
-            reader.join()
+        process.wait(timeout=2)
         process.stdout.close()
-        if not completed:
-            path.unlink(missing_ok=True)
 
 
 def bounded_command(command: GitCommand) -> tuple[bytes, int, bool]:
     process = subprocess.Popen(command.argv, env=command.environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     assert process.stdout is not None
     data = bytearray()
+    deadline = time.monotonic() + 10
     truncated = False
-    reader_errors: list[BaseException] = []
-
-    def read_output() -> None:
-        nonlocal truncated
-        try:
-            while chunk := process.stdout.read(8192):
-                remaining = 64 * 1024 - len(data)
-                if remaining > 0:
-                    data.extend(chunk[:remaining])
-                if len(chunk) > remaining:
-                    truncated = True
-                    if process.poll() is None:
-                        process.kill()
-                    return
-        except BaseException as error:
-            reader_errors.append(error)
-            if process.poll() is None:
-                process.kill()
-
-    reader = threading.Thread(target=read_output, name='studio-git-command-reader', daemon=True)
     try:
-        reader.start()
-        try:
-            returncode = process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            if process.poll() is None:
-                process.kill()
-            process.wait()
-            reader.join()
-            raise subprocess.TimeoutExpired(command.argv, 10) from None
-        reader.join(timeout=2)
-        if reader.is_alive():
-            if process.poll() is None:
-                process.kill()
-            process.wait()
-            reader.join()
-            raise TimeoutError('Git command output did not close')
-        if reader_errors:
-            raise OSError('Could not read Git command output') from reader_errors[0]
-        return bytes(data), returncode, truncated
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command.argv, 10)
+                if not selector.select(remaining):
+                    continue
+                chunk = os.read(process.stdout.fileno(), 8192)
+                if not chunk:
+                    break
+                data.extend(chunk)
+                if len(data) > 64 * 1024:
+                    truncated = True
+                    process.kill()
+                    break
+        return bytes(data[:64 * 1024]), process.wait(timeout=2), truncated
     finally:
         if process.poll() is None:
             process.kill()
-        process.wait()
-        if reader.ident is not None:
-            reader.join()
+        process.wait(timeout=2)
         process.stdout.close()
 
 

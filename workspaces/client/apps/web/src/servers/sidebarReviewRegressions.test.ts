@@ -144,12 +144,7 @@ except Passed: print("validated")`;
   expect(
     execFileSync(
       "python3",
-      [
-        "../../../runtime/apps/server/src/codex_python.py",
-        "--exec",
-        "-c",
-        code,
-      ],
+      ["../../../runtime/apps/server/src/codex_python.py", "--exec", "-c", code],
       {
         input: JSON.stringify({
           action: "reorder",

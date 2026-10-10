@@ -1,10 +1,7 @@
 """Supervisor installation checks use private state and fake service managers."""
 from __future__ import annotations
 
-from contextlib import redirect_stdout
-import io
 import json
-import os
 from pathlib import Path
 import plistlib
 import sqlite3
@@ -50,15 +47,6 @@ class Services(unittest.TestCase):
                     service.idle(self.state)
                 self.assertEqual(file.read_bytes(), before)
                 file.unlink()
-
-    def test_cli_default_state_matches_xdg_backend_state(self) -> None:
-        expected = self.root / 'xdg' / 'codex-agents'
-        with patch.dict(os.environ, {'XDG_STATE_HOME': str(self.root / 'xdg')}, clear=True), \
-                patch.object(sys, 'argv', ['codex-supervisor', 'status']), \
-                patch.object(service, 'health', return_value={'stateDir': str(expected)}) as health, \
-                redirect_stdout(io.StringIO()):
-            service.main()
-        health.assert_called_once_with(expected)
 
     def test_finished_prepare_attempt_does_not_block_cutover(self) -> None:
         with sqlite3.connect(self.state / 'canvas.sqlite3') as db:

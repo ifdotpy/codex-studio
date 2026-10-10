@@ -136,7 +136,6 @@ function AnswerForm({
   request,
   sending,
   post,
-  deferLater,
   close,
   notify,
   draftKey,
@@ -145,7 +144,6 @@ function AnswerForm({
   request: RequestDto;
   sending: boolean;
   post: (body: Json) => Promise<void>;
-  deferLater: () => Promise<void>;
   close: () => void;
   notify: Props["notify"];
 }) {
@@ -253,10 +251,11 @@ function AnswerForm({
       <div className="request-answer-actions">
         <Button
           type="button"
+          aria-label="Close reply"
           variant="subtle"
           disabled={sending}
           onClick={() => {
-            void deferLater();
+            close();
           }}
         >
           Answer later
@@ -380,7 +379,7 @@ function RequestCard({
       if (mounted.current) setSending(false);
     }
   };
-  const defer = async (remove = false, deferred = !r.deferred) => {
+  const defer = async (remove = false) => {
     if (pending.current) return;
     pending.current = true;
     setSending(true);
@@ -390,7 +389,7 @@ function RequestCard({
       else
         await apiPost("/api/questions/defer", {
           id: r.id,
-          deferred,
+          deferred: !r.deferred,
         });
       if (mounted.current) setOpen(false);
       await refresh();
@@ -432,7 +431,6 @@ function RequestCard({
       className={`request request-card${asynchronous ? " request-async" : ""}`}
       ref={card}
       data-request={r.id}
-      data-deferred={r.deferred ? "true" : undefined}
     >
       <div className="request-summary">
         <Icon size={18} className="request-icon" />
@@ -590,7 +588,6 @@ function RequestCard({
             draftKey={draftKey}
             sending={sending}
             post={post}
-            deferLater={() => defer(false, true)}
             close={close}
             notify={notify}
           />

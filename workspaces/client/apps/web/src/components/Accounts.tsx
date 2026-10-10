@@ -593,7 +593,6 @@ export default function Accounts({
   renderPicker?: (
     selectAccount: (key: string) => void,
     disabled: boolean,
-    accountDisabled?: (account: Account) => boolean,
   ) => ReactNode;
   changeAccount?: (key: string) => Promise<void>;
   onError: (message: string) => void;
@@ -839,34 +838,24 @@ export default function Accounts({
       )}
       {!managerOnly &&
         renderPicker &&
-        renderPicker(
-          selectAccount,
-          !!pending || (pinned && !owner),
-          (account) =>
-            transferring && account.id !== teamTransfer?.targetAccountKey,
-        )}
-      {!managerOnly &&
-        renderPicker &&
-        teamTransfer &&
-        (teamTransfer.status === "pending" ||
-          !!teamTransfer.leftOnSource?.length ||
-          !!teamTransfer.blocked?.length) && (
-          <AccountTransferStatus
-            transfer={teamTransfer}
-            targetLabel={transferTarget?.email || transferTarget?.label}
-            pending={!!pending}
-            onAction={(kind) => {
-              const requestId = teamTransfer.id;
-              if (typeof requestId !== "string") return;
-              void action(`${kind}-transfer`, () =>
-                post("/api/agents/account-transfer", {
-                  action: kind,
-                  request_id: requestId,
-                }),
-              );
-            }}
-          />
-        )}
+        renderPicker(selectAccount, !!pending || (pinned && !owner))}
+      {!managerOnly && renderPicker && teamTransfer?.status === "pending" && (
+        <AccountTransferStatus
+          transfer={teamTransfer}
+          targetLabel={transferTarget?.email || transferTarget?.label}
+          pending={!!pending}
+          onAction={(kind) => {
+            const requestId = teamTransfer.id;
+            if (typeof requestId !== "string") return;
+            void action(`${kind}-transfer`, () =>
+              post("/api/agents/account-transfer", {
+                action: kind,
+                request_id: requestId,
+              }),
+            );
+          }}
+        />
+      )}
       {!managerOnly && !renderPicker && (
         <Menu
           position="bottom-end"

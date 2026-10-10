@@ -195,24 +195,6 @@ test("desktop native settings, notification and speech boundaries work with fixt
       ).updateRequired,
       false,
     );
-    const sameOriginLocalFrame = {
-      url: "http://localhost:1234/?studio-server=local&studio-parent=http%3A%2F%2Flocalhost%3A1234&studio-origin=http%3A%2F%2Flocalhost%3A1234&studio-credential=",
-      parent: f.event.senderFrame,
-    };
-    f.event.senderFrame.frames = [sameOriginLocalFrame];
-    assert.equal(
-      (
-        await f.handler(
-          { sender: f.event.sender, senderFrame: sameOriginLocalFrame },
-          {
-            method: "serverNativeAction",
-            value: { serverId: "local", method: "getBackendUpdate" },
-          },
-        )
-      ).updateRequired,
-      false,
-    );
-    f.event.senderFrame.frames = [serverFrame];
     await assert.rejects(
       f.handler(serverEvent, {
         method: "serverNativeAction",

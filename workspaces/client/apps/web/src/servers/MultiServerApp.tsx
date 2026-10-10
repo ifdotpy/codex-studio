@@ -29,7 +29,6 @@ import { createSidebarRpcClient } from "./sidebarRpc";
 import { frameSidebarBackend } from "./frameSidebarBackend";
 import { projectChatCommand } from "./projectChatCommand";
 import { frameURL } from "./frameOrigin";
-import { setServerFrame } from "./frameReadiness";
 import { canUnloadFrame } from "./idleFrames";
 import { fetchServerSummary } from "./summary";
 import { bindShellTransport } from "./shellTransport";
@@ -141,9 +140,6 @@ export default function MultiServerApp() {
   preferencesRef.current = preferences;
   const [mobileOpen, setMobileOpen] = useState(false);
   const frames = useRef(new Map<string, HTMLIFrameElement>());
-  const frameRefCallbacks = useRef(
-    new Map<string, (frame: HTMLIFrameElement | null) => void>(),
-  );
   const pending = useRef(new Map<string, ServerCommand>());
   const [unloaded, setUnloaded] = useState(new Set<string>());
   const unloadedRef = useRef(unloaded);
@@ -201,24 +197,6 @@ export default function MultiServerApp() {
   };
   const targetOrigin = (id: string) =>
     new URL(frames.current.get(id)?.src || location.href).origin;
-  const frameRefFor = (id: string) => {
-    let callback = frameRefCallbacks.current.get(id);
-    if (!callback) {
-      callback = (frame) => {
-        if (frame)
-          setServerFrame(
-            id,
-            frame,
-            frames.current,
-            readyFrames.current,
-            lifecycle.current,
-          );
-        else frames.current.delete(id);
-      };
-      frameRefCallbacks.current.set(id, callback);
-    }
-    return callback;
-  };
   useEffect(() => bindShellTransport(frames.current), []);
   const publishPreferences = (value: unknown) => {
     for (const [id, frame] of frames.current)
@@ -960,7 +938,10 @@ export default function MultiServerApp() {
             <iframe
               key={`${server.id}:${server.credentialId || "local"}`}
               title={`Studio on ${server.label}`}
-              ref={frameRefFor(server.id)}
+              ref={(frame) => {
+                if (frame) frames.current.set(server.id, frame);
+                else frames.current.delete(server.id);
+              }}
               src={frameURL(server)}
               hidden={current !== server.id}
               allow="microphone; clipboard-read; clipboard-write"

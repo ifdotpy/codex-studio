@@ -15,7 +15,6 @@ import os
 from pathlib import Path
 import subprocess
 import sqlite3
-import sys
 import tempfile
 import threading
 import time
@@ -25,11 +24,7 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('ms_fixture', Path(__file__).with_name('worker-defaults-contract.py'))
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
-from codex_multi_server_orchestration import (
-    GitCommand, MultiServerService, bounded_command, export_bundle, identity,
-)
-from codex_paths import is_absolute_on_any_platform
-from codex_server_exec import validate as validate_server_command
+from codex_multi_server_orchestration import MultiServerService, identity
 
 
 class FakeTransport:
@@ -434,43 +429,6 @@ class CrossServer(unittest.TestCase):
             work = self.home.work_by_id(db, task['id'], self.lead['rootId'])
         self.assertIsNone(work['owner'])
         self.assertFalse(self.home.agent(result['agents'][0]['id'])['inFlight'])
-
-    def test_remote_windows_paths_are_validated_by_the_destination(self):
-        windows_cwd = r'C:\projects\repo'
-        self.assertTrue(is_absolute_on_any_platform(windows_cwd))
-        self.assertTrue(is_absolute_on_any_platform('/projects/repo'))
-        self.assertFalse(is_absolute_on_any_platform('projects/repo'))
-        command = validate_server_command({
-            'cwd': windows_cwd,
-            'command': ['git', 'status'],
-        })
-        self.assertEqual(command['cwd'], windows_cwd)
-        self.transports['home'].offline = True
-        result = self.spawn(cwd=windows_cwd)
-        self.assertEqual(result['outcome'], 'unknown')
-        self.assertEqual(result['agents'][0]['cwd'], windows_cwd)
-
-    def test_git_pipe_output_is_bounded_and_bundle_export_is_portable(self):
-        command = GitCommand(
-            [sys.executable, '-c', "import sys; sys.stdout.write('x' * 70000)"],
-            os.environ.copy(),
-        )
-        output, _returncode, truncated = bounded_command(command)
-        self.assertEqual(len(output), 64 * 1024)
-        self.assertTrue(truncated)
-
-        repository = self.root / 'git-source'
-        repository.mkdir()
-        subprocess.run(['git', '-C', str(repository), 'init', '-q', '-b', 'main'], check=True)
-        (repository / 'README').write_text('portable bundle fixture')
-        subprocess.run(['git', '-C', str(repository), 'add', 'README'], check=True)
-        subprocess.run([
-            'git', '-C', str(repository), '-c', 'user.name=Fixture',
-            '-c', 'user.email=fixture@example.invalid', 'commit', '-m', 'fixture', '-q',
-        ], check=True)
-        bundle = self.root / 'worker.bundle'
-        export_bundle(repository, 'main', bundle, [])
-        self.assertGreater(bundle.stat().st_size, 0)
 
     def test_remote_state_cannot_move_back_to_an_older_snapshot(self):
         worker = self.spawn()['agents'][0]['id']

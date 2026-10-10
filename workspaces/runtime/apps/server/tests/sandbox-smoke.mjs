@@ -1,7 +1,12 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -12,22 +17,16 @@ const BLOCKED = join(ROOT, "blocked");
 mkdirSync(WORKTREE);
 mkdirSync(BLOCKED);
 
-const proc = spawn(
-  process.env.CODEX_BIN || "codex",
-  ["app-server", "--listen", "stdio://"],
-  {
-    stdio: ["pipe", "pipe", "pipe"],
-  },
-);
+const proc = spawn(process.env.CODEX_BIN || "codex", ["app-server", "--listen", "stdio://"], {
+  stdio: ["pipe", "pipe", "pipe"],
+});
 let nextId = 1;
 const pending = new Map();
 let passed = false;
 
 function call(method, params = {}) {
   const id = nextId++;
-  proc.stdin.write(
-    JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n",
-  );
+  proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
   return new Promise((resolveCall, rejectCall) => {
     const timeout = setTimeout(() => {
       pending.delete(id);
@@ -57,9 +56,7 @@ createInterface({ input: proc.stdout }).on("line", (line) => {
   const request = pending.get(message.id);
   pending.delete(message.id);
   if (message.error) {
-    request.rejectCall(
-      new Error(message.error.message || JSON.stringify(message.error)),
-    );
+    request.rejectCall(new Error(message.error.message || JSON.stringify(message.error)));
   } else {
     request.resolveCall(message.result);
   }

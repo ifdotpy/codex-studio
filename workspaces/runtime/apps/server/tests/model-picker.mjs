@@ -10,9 +10,8 @@ const listFor = (picker) =>
 
 export async function openModelList(picker) {
   if (await isSetup(picker)) {
-    const options = picker.locator('[role="option"]');
-    await options.first().waitFor();
-    return options;
+    await listFor(picker).first().waitFor();
+    return listFor(picker);
   }
   if ((await picker.getAttribute("aria-expanded")) !== "true")
     await picker.click();
@@ -37,18 +36,14 @@ export async function modelOptions(picker) {
   return values;
 }
 
-const optionFor = async (picker, value) =>
-  (await isSetup(picker))
-    ? picker.locator(`[role="option"][data-value="${value}"]`)
-    : picker
-        .page()
-        .locator(
-          `[role="listbox"]:visible [role="option"][data-value="${value}"]`,
-        );
+const optionFor = (picker, value) =>
+  picker
+    .page()
+    .locator(`[role="listbox"]:visible [role="option"][data-value="${value}"]`);
 
 export async function modelOptionDisabled(picker, value) {
   await openModelList(picker);
-  const option = await optionFor(picker, value);
+  const option = optionFor(picker, value);
   const disabled = (await option.getAttribute("aria-disabled")) === "true";
   await closeModelList(picker);
   return disabled;
@@ -56,7 +51,7 @@ export async function modelOptionDisabled(picker, value) {
 
 export async function selectModel(picker, value) {
   await openModelList(picker);
-  await (await optionFor(picker, value)).click();
+  await optionFor(picker, value).click();
   if (!(await isSetup(picker)))
     await listFor(picker).first().waitFor({ state: "hidden" });
 }

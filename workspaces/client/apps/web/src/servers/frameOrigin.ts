@@ -21,16 +21,12 @@ export function frameURL(
   assets = window.codexDesktop?.serverViewOrigin,
 ): string {
   const root = new URL(shell);
-  const base = new URL(
-    server.id === "local" ? root.origin : assets || root.origin,
-  );
+  const base = new URL(assets || root.origin);
   const isolated =
     !!assets ||
     (base.protocol === "http:" &&
       ["127.0.0.1", "localhost"].includes(base.hostname));
-  // Keep the local workspace on the shell's existing origin so pairing a
-  // remote server does not strand its IndexedDB and localStorage state.
-  if (isolated && server.id !== "local") {
+  if (isolated) {
     base.hostname = serverFrameHost(server.id);
   }
   base.pathname = "/";

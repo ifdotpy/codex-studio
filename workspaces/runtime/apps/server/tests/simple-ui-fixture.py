@@ -8,7 +8,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
 import importlib.util
-import json
 from pathlib import Path
 import sys
 import os
@@ -24,22 +23,6 @@ sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_canvas import Canvas, make_server
 from codex_runtime import Runtime
 from studio_api.testing import read_runtime_state
-if os.environ.get('CODEX_PLAYWRIGHT_WEB_DIST'):
-    import codex_canvas
-    codex_canvas.WEB = Path(os.environ['CODEX_PLAYWRIGHT_WEB_DIST']).resolve()
-
-if os.environ.get('CAPACITY_UI_FIXTURE'):
-    import codex_capacity_retry
-
-    retry_delays_json = os.environ.get('CAPACITY_UI_RETRY_DELAYS')
-    if retry_delays_json is not None:
-        retry_delays = json.loads(retry_delays_json)
-        if (not isinstance(retry_delays, list) or len(retry_delays) != len(codex_capacity_retry.DELAYS)
-                or any(not isinstance(delay, (int, float)) or delay <= 0 for delay in retry_delays)):
-            raise ValueError('CAPACITY_UI_RETRY_DELAYS must contain four positive numbers')
-        # Keep the real retry state machine, but scale its configured deadlines for
-        # this browser fixture. Production defaults remain covered by the contract test.
-        codex_capacity_retry.DELAYS = tuple(retry_delays)
 
 spec = importlib.util.spec_from_file_location('fixture', SERVER_TESTS_ROOT / 'runtime-contract.py')
 m = importlib.util.module_from_spec(spec)
@@ -168,11 +151,7 @@ for sender in [r for r in roster if r['name'] in {'Worker 38', 'Worker 39'}]:
             c.runtime.chat_message(sender['id'], recipient['id'], 'Review coordination', 'room-fixture:' + sender['id'] + recipient['id'])
 with c.runtime.lock, c.runtime.db() as db:
     a = c.runtime.agent(lead['id'], db)
-    a['compactions'] = 2
-    if os.environ.get('MOBILE_KEYBOARD_CONTEXT_USAGE') == 'unknown':
-        a.pop('contextUsage', None)
-    else:
-        a['contextUsage'] = {'tokens':80000,'window':200000,'at':__import__('time').time()}
+    a.update(compactions=2, contextUsage={'tokens':80000,'window':200000,'at':__import__('time').time()})
     c.runtime.put(db, 'agents', a)
 other = c.runtime.create({'name': 'Other project', 'cwd': str(c.root), 'prompt': 'Separate task'}, defer=True)
 with c.runtime.lock, c.runtime.db() as db:

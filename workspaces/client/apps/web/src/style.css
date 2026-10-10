@@ -655,11 +655,7 @@ p {
   box-shadow: 0 4px 20px #0003;
 }
 /* Keep the Latest button clear of pending request actions. */
-#conversation:has(
-    .request-answer-form,
-    #requests .request-card:not([data-deferred="true"])
-  )
-  .jump-slot {
+#conversation:has(.request-answer-form, #requests .request-card) .jump-slot {
   display: none;
 }
 

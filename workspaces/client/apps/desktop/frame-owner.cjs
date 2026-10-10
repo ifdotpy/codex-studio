@@ -28,12 +28,10 @@ function frameOwner(url, assetsOrigin, shellOrigin) {
     )
       return;
     const host = serverFrameHost(owner);
-    const isLocalWorkspace = owner === "local" && value.origin === shellOrigin;
     if (
-      (!isLocalWorkspace &&
-        (value.protocol !== base.protocol ||
-          value.port !== base.port ||
-          value.hostname !== host)) ||
+      value.protocol !== base.protocol ||
+      value.port !== base.port ||
+      value.hostname !== host ||
       value.searchParams.get("studio-parent") !== shellOrigin
     )
       return;

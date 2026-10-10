@@ -429,9 +429,6 @@ class AccessTests(unittest.TestCase):
         result = self.client.options("/api/probe", headers=headers)
         self.assertEqual(result.status_code, 204)
         self.assertEqual(result.headers["Access-Control-Allow-Origin"], "*")
-        self.assertIn("POST", result.headers["Access-Control-Allow-Methods"])
-        self.assertIn("x-studio-client", result.headers["Access-Control-Allow-Headers"].lower())
-        self.assertIn("content-type", result.headers["Access-Control-Allow-Headers"].lower())
         self.assertNotIn("Access-Control-Allow-Credentials", result.headers)
         self.assertIn("X-Studio-API-Schema", result.headers["Access-Control-Expose-Headers"])
         invalid = self.client.get("/api/session", headers={**self.proxy(), "X-Forwarded-Host": "other.example.ts.net"})
@@ -548,20 +545,9 @@ class AccessTests(unittest.TestCase):
         headers["X-Studio-Server"] = "different-server"
         response = self.client.get("/api/probe", headers=headers)
         self.assertEqual(response.json()["code"], "server_mismatch")
-        raw = b'{"request_id":"operation-reference"}'
-        separated = self.client.post("/api/probe", content=raw, headers=self.signed("POST", "/api/probe", raw, "transport-receipt"))
-        self.assertEqual(separated.status_code, 200, separated.text)
-        pair_body = self.pair_body(
-            invitation=self.invitation("invite-mismatch"),
-            request_id="operation-reference",
-        )
-        pair_raw = json.dumps(pair_body).encode()
-        pair_mismatch = self.client.post(
-            PAIR_PATH,
-            content=pair_raw,
-            headers=self.signed("POST", PAIR_PATH, pair_raw, "transport-receipt", pair_body["clientId"]),
-        )
-        self.assertEqual(pair_mismatch.json()["code"], "invalid_pairing", pair_mismatch.text)
+        raw = b'{"request_id":"different-id"}'
+        mismatch = self.client.post("/api/probe", content=raw, headers=self.signed("POST", "/api/probe", raw, "signed-id"))
+        self.assertEqual(mismatch.json()["code"], "request_conflict")
         with patch.object(self.runtime.service.crypto, "call", side_effect=RuntimeError("private error")):
             # Build the proof before the verifier fails.
             verification = self.client.get("/api/probe", headers=headers)
@@ -573,10 +559,10 @@ class AccessTests(unittest.TestCase):
         self.assertNotIn("private error", unavailable.text)
         audit = self.client.get("/api/multi-server/audit", headers=self.signed("GET", "/api/multi-server/audit", request_id="audit-1"))
         self.assertEqual(audit.status_code, 200, audit.text)
-        pair_audit = next(record for record in audit.json()["records"] if record["action"] == "pair")
-        self.assertEqual(pair_audit["actorId"], "client-1")
+        self.assertEqual(audit.json()["records"][0]["actorId"], "client-1")
+        self.assertEqual(audit.json()["records"][0]["action"], "pair")
         self.assertNotIn(body["token"], audit.text)
-        self.assertEqual(self.effects(), 1)
+        self.assertEqual(self.effects(), 0)
 
 
     def test_review_mobile_probe_and_token_session_remain_supported(self) -> None:

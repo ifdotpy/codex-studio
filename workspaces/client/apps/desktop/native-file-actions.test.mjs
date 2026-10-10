@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
-import frameOwnerModule from "./frame-owner.cjs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import vm from "node:vm";
@@ -8,8 +7,6 @@ import { createRequire } from "node:module";
 import { EventEmitter } from "node:events";
 
 import { test } from "vitest";
-
-const { serverFrameHost } = frameOwnerModule;
 
 test("main and preload enforce safe native file action boundaries", async () => {
   const require = createRequire(new URL("./main.cjs", import.meta.url));
@@ -22,7 +19,7 @@ test("main and preload enforce safe native file action boundaries", async () => 
     writeFails = false,
     navigateOnWrite = false;
   const origin = "http://127.0.0.1:4620";
-  const mainFrame = { url: origin + "/", frames: [] };
+  const mainFrame = { url: origin + "/" };
   const contents = { mainFrame, getURL: () => mainFrame.url };
   const win = {
     webContents: contents,
@@ -64,24 +61,20 @@ test("main and preload enforce safe native file action boundaries", async () => 
             dialog,
             shell,
           }
-        : name === "./frame-owner.cjs"
-          ? require("./frame-owner.cjs")
-          : name === "node:fs/promises"
-            ? {
-                ...fs,
-                writeFile: async (...args) => {
-                  if (writeFails) throw new Error("fixture disk full");
-                  const result = await fs.writeFile(...args);
-                  if (navigateOnWrite)
-                    mainFrame.url = "https://elsewhere.test/";
-                  return result;
-                },
-              }
-            : require(name),
+        : name === "node:fs/promises"
+          ? {
+              ...fs,
+              writeFile: async (...args) => {
+                if (writeFails) throw new Error("fixture disk full");
+                const result = await fs.writeFile(...args);
+                if (navigateOnWrite) mainFrame.url = "https://elsewhere.test/";
+                return result;
+              },
+            }
+          : require(name),
     process: { argv: [], env: {}, platform: "darwin" },
     ArrayBuffer,
     Buffer,
-    URL,
     URLSearchParams,
     AbortSignal,
     console,
@@ -100,11 +93,11 @@ test("main and preload enforce safe native file action boundaries", async () => 
     "(function(){\n" +
       source.slice(0, source.indexOf("async function start()")) +
       `
-    globalThis.actions = { nativeAction, nativeDownload, setup(window, connection, host) { win = window; backend = connection; frameHost = host; } };
+    globalThis.actions = { nativeAction, nativeDownload, setup(window, connection) { win = window; backend = connection; } };
   })()`,
     context,
   );
-  context.actions.setup(win, { origin }, { origin: "https://assets.example" });
+  context.actions.setup(win, { origin });
   const event = { sender: contents, senderFrame: mainFrame };
   const invoke = (method, value, caller = event) =>
     context.actions.nativeAction(caller, { method, value });
@@ -277,23 +270,6 @@ test("main and preload enforce safe native file action boundaries", async () => 
     win.destroyed = true;
     assert.equal(download("blob:" + origin + "/id").prevented, true);
     win.destroyed = false;
-    const serverId = "paired-server";
-    const serverFrame = {
-      url: `https://${serverFrameHost(serverId)}?studio-server=${serverId}&studio-parent=${encodeURIComponent(origin)}`,
-      isDestroyed: () => false,
-    };
-    mainFrame.frames = [serverFrame];
-    const serverBlob = download(
-      `blob:${new URL(serverFrame.url).origin}/export`,
-    );
-    assert.equal(serverBlob.prevented, false);
-    const untrustedBlob = download("blob:https://attacker.example/export");
-    assert.equal(untrustedBlob.prevented, true);
-    mainFrame.frames = [];
-    assert.equal(
-      download(`blob:${new URL(serverFrame.url).origin}/export`).prevented,
-      true,
-    );
     const transfer = download("blob:" + origin + "/export");
     assert.equal(transfer.prevented, false);
     assert.equal(transfer.options.title, "Save As");
