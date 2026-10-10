@@ -169,5 +169,30 @@ class PolicyTests(unittest.IsolatedAsyncioTestCase):
                 ["--project", "app", "protect", "main", "--direct"],
                 ["--project", "app", "access", "deny", "@studio-agents", "access", "sync", "remote", "records", "backup"]])
 
+
+class ServiceUmaskTests(unittest.TestCase):
+    """The guest units run with UMask=0077; shared folders still get their modes."""
+
+    def test_socket_and_slot_folders_keep_their_modes_under_umask_077(self):
+        import stat
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import host_exec_slot
+        import layr_admin
+        previous = os.umask(0o077)
+        try:
+            with tempfile.TemporaryDirectory() as name:
+                run = Path(name) / "run"
+                with patch.object(layr_admin.os, "chown"), \
+                        patch.object(layr_admin.pwd, "getpwnam", return_value=SimpleNamespace(pw_gid=os.getgid())):
+                    layr_admin.socket_directory(run)
+                self.assertEqual(stat.S_IMODE(run.stat().st_mode), 0o750)
+                slots = Path(name) / "host-slots"
+                slots.mkdir(mode=0o700)
+                host_exec_slot.traversable(slots)
+                self.assertEqual(stat.S_IMODE(slots.stat().st_mode), 0o711)
+        finally:
+            os.umask(previous)
+
 if __name__ == "__main__":
     unittest.main()

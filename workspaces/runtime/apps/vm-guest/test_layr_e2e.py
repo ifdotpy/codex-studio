@@ -34,6 +34,9 @@ class Share:
 @unittest.skipUnless(ROOT and os.geteuid() == 0 and sys.platform == "linux", "needs LAYR_E2E_ROOT, root and Linux")
 class LayrEndToEnd(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        # The guest units run with UMask=0077; folders shared with agent users must not depend on umask.
+        self.umask = os.umask(0o077)
+        self.addCleanup(os.umask, self.umask)
         import layr_agents
         from host_exec_slot import HostSlotHandlers
         from layr_projects import Projects

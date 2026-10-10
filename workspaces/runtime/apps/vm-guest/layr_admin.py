@@ -142,13 +142,19 @@ class Broker:
             writer.close()
 
 
+def socket_directory(path: Path) -> None:
+    """The studio group reaches the socket. The unit's UMask=0077 masks mkdir's mode, so set it."""
+    path.mkdir(mode=0o750, parents=True, exist_ok=True)
+    path.chmod(0o750)
+    os.chown(path, 0, pwd.getpwnam("studio").pw_gid)
+
+
 async def serve():
     require(os.getuid() == 0, "The layr admin service requires root")
     broker = Broker()
     # Mounts disappear at reboot. Recreate only exports already registered.
     await broker.share.restore()
-    SOCKET.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
-    os.chown(SOCKET.parent, 0, pwd.getpwnam("studio").pw_gid)
+    socket_directory(SOCKET.parent)
     SOCKET.unlink(missing_ok=True)
     server = await asyncio.start_unix_server(broker.client, path=str(SOCKET), limit=MAX_LINE + 1)
     os.chown(SOCKET, 0, pwd.getpwnam("studio").pw_gid)

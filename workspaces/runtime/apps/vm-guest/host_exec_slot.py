@@ -22,11 +22,18 @@ METHODS = {"host.slot.prepare", "host.slot.manifest", "host.slot.read", "host.sl
 READ_METHODS = {"host.slot.manifest", "host.slot.read"}
 
 
+def traversable(path: Path) -> None:
+    """A folder the line owner passes through to its own slot. The services run with
+    UMask=0077, which would make mkdir's 0711 a 0700."""
+    path.mkdir(exist_ok=True, mode=0o711)
+    path.chmod(0o711)
+
+
 class HostSlotHandlers:
     def __init__(self, state: Path, layr_root: Path, agents: Any):
         self.state, self.layr_root, self.agents = state, layr_root, agents
         self.root = layr_root.parent / "host-slots"
-        self.root.mkdir(exist_ok=True, mode=0o711)
+        traversable(self.root)
 
     def layr_env(self, context: dict[str, Any]) -> dict[str, str]:
         return {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8", "LAYR_ROOT": str(self.layr_root),
@@ -74,7 +81,7 @@ class HostSlotHandlers:
         parent = self.root
         for part in (key(context["projectId"]), key(context["agentId"]), params["slotId"], params["generation"]):
             parent /= part
-            parent.mkdir(exist_ok=True, mode=0o711)
+            traversable(parent)
         source = parent / "source"
         source.mkdir(exist_ok=True, mode=0o700)
         os.chown(source, context["uid"], context["gid"])
