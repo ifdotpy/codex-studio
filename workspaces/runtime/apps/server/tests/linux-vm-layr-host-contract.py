@@ -74,6 +74,25 @@ class HostImportTests(unittest.TestCase):
         self.assertTrue(all(identity.startswith(imported[0][2].split(":")[0]) for identity in identities))
         self.assertEqual(list((self.root / "layr-projects/app").glob("*.tar.gz")), [])
 
+    def test_failed_finder_mount_keeps_the_import_and_stays_visible(self):
+        # macOS blocks a background Python without Local Network permission ("No route to host").
+        self.mount.stop()
+        self.addCleanup(self.mount.start)
+        refused = LinuxVMError("The authenticated SMB mount failed: server connection failed")
+        with patch("codex_linux_workspace_sync.archive_source", side_effect=self.archive), \
+                patch.object(share, "mount_project", side_effect=refused):
+            result = self.client.ensure_layr_project("app", self.root, request_id="first")
+        self.assertEqual(result["stateId"], "import-state")
+        self.assertEqual(result["mount"]["state"], "failed")
+        self.assertIn("server connection failed", result["mount"]["error"])
+        self.assertTrue((self.root / "layr-projects/app/project.json").exists())
+        status = share.mount_status(self.root)
+        self.assertEqual(status["state"], "failed")
+        self.assertEqual(status["projects"][0]["projectId"], "app")
+        with patch.object(share, "mount_project", return_value={"state": "mounted", "readOnly": True}):
+            self.client.ensure_layr_project("app", self.root)
+        self.assertEqual(share.mount_status(self.root), {"state": "unmounted", "projects": []})
+
     def test_unknown_upload_retains_archive_and_uses_same_identity_on_retry(self):
         self.client.fail_upload = True
         with patch("codex_linux_workspace_sync.archive_source", side_effect=self.archive) as archive:

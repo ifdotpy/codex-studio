@@ -161,6 +161,22 @@ def mount_project(client: Client, project: dict[str, Any], password: str) -> dic
     return {'state': 'mounted', 'path': str(destination), 'readOnly': True}
 
 
+def _mount_or_report(client: Client, project: dict[str, Any], password: str) -> dict[str, Any]:
+    """The Finder view is a convenience: agents work in the VM without it. A failed mount
+    stays visible in mount_status and in the project result, and the chat continues.
+    For example, macOS blocks a background Python without Local Network permission."""
+    from codex_linux_vm import LinuxVMError
+    directory = client.state_dir / 'layr-projects' / _id(project['projectId'])
+    report = directory / 'mount-error.json'
+    try:
+        mounted = mount_project(client, project, password)
+    except LinuxVMError as error:
+        _save(report, {'projectId': _id(project['projectId']), 'error': str(error)[:500], 'at': time.time()})
+        return {'state': 'failed', 'readOnly': True, 'error': str(error)[:500]}
+    report.unlink(missing_ok=True)
+    return mounted
+
+
 def import_project(client: Client, project_id: str, source: str | Path, owner: str | None,
                    request_id: str | None, *, incremental: bool,
                    expected_state_id: str | None) -> dict[str, Any]:
@@ -183,7 +199,7 @@ def import_project(client: Client, project_id: str, source: str | Path, owner: s
             else:
                 password = _credential(client)
                 existing['share'] = client.call('share.status', {}, timeout=30)
-                existing['mount'] = mount_project(client, existing, password)
+                existing['mount'] = _mount_or_report(client, existing, password)
                 return cast(dict[str, Any], existing)
         state_path = directory / ('import-' + operation + '.json')
         archive = directory / ('source-' + operation + '.tar.gz')
@@ -198,7 +214,7 @@ def import_project(client: Client, project_id: str, source: str | Path, owner: s
                 project = pending['result']
                 password = _credential(client)
                 project['share'] = client.call('share.status', {}, timeout=30)
-                project['mount'] = mount_project(client, project, password)
+                project['mount'] = _mount_or_report(client, project, password)
                 return cast(dict[str, Any], project)
             if not archive.exists():
                 raise LinuxVMError('The pending import archive is unavailable; inspect the guest receipt.', uncertain=True)
@@ -221,7 +237,7 @@ def import_project(client: Client, project_id: str, source: str | Path, owner: s
         project = client.call('project.import', params, request_id=operation + ':import', timeout=1810)
         password = _credential(client)
         project['share'] = client.call('share.status', {}, timeout=30)
-        project['mount'] = mount_project(client, project, password)
+        project['mount'] = _mount_or_report(client, project, password)
         _save(directory / 'project.json', {'projectId': project_id, 'source': source_path})
         # Keep the small receipt association. Never remove an uncertain archive.
         pending['result'] = project
@@ -239,13 +255,15 @@ def remount_registered(client: Client) -> None:
         identity = _id(json.loads(record.read_text())['projectId'])
         project = client.call('project.ensure', {'projectId': identity}, timeout=30)
         project['share'] = client.call('share.status', {}, timeout=30)
-        mount_project(client, project, password)
+        _mount_or_report(client, project, password)
 
 
 def mount_status(state_dir: Path) -> dict[str, Any]:
     records = list((state_dir / 'layr-projects').glob('*/mount.json'))
+    failures = [json.loads(path.read_text()) for path in sorted((state_dir / 'layr-projects').glob('*/mount-error.json'))]
+    failed = [{'projectId': row['projectId'], 'state': 'failed', 'error': row['error']} for row in failures]
     if not records:
-        return {'state': 'unmounted', 'projects': []}
+        return {'state': 'failed' if failed else 'unmounted', 'projects': failed}
     entries = _mount_entries()
     result = []
     for record in records:
@@ -254,5 +272,6 @@ def mount_status(state_dir: Path) -> dict[str, Any]:
         result.append({'projectId': saved['projectId'], 'path': saved['path'],
                        'state': 'mounted' if entry else 'unmounted',
                        'readOnly': bool(entry and 'read-only' in entry['options'].split(', '))})
-    return {'state': 'mounted' if all(row['state'] == 'mounted' for row in result) else 'unmounted',
-            'projects': result}
+    failed = [row for row in failed if row['projectId'] not in {item['projectId'] for item in result}]
+    state = 'failed' if failed else 'mounted' if all(row['state'] == 'mounted' for row in result) else 'unmounted'
+    return {'state': state, 'projects': result + failed}
