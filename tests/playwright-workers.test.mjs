@@ -153,26 +153,38 @@ test("worker memory uses measured p90 or conservative fallback without double-co
   );
 });
 
-test("measured per-worker CPU demand limits workers when memory has room", () => {
+test("CPU budget plans eight workers on an idle 32-CPU host", () => {
   assert.deepEqual(
     choosePlaywrightWorkerCount({
       cpuLimit: 32,
-      competingRunnable: 8,
+      competingRunnable: 0,
       memoryWorkers: 32,
     }),
     {
-      workers: 11,
-      availableCpus: 24,
-      cpuBudgetCores: 12,
-      cpuWorkerSlots: 11,
+      workers: 8,
+      availableCpus: 32,
+      cpuBudgetCores: 9,
+      cpuWorkerSlots: 8,
       measuredWorkerCpuCores: 0.54,
       workerCpuSafetyFactor: 2,
-      maximumWorkerCpuFraction: 0.5,
+      maximumWorkerCpuFraction: 0.3,
       plannedWorkerCpuCores: 1.08,
       bound: "cpu-capacity",
       memorySafeToStart: true,
     },
   );
+});
+
+test("competing runnable work reduces the automatic worker plan", () => {
+  const selection = choosePlaywrightWorkerCount({
+    cpuLimit: 32,
+    competingRunnable: 8,
+    memoryWorkers: 32,
+  });
+  assert.equal(selection.workers, 6);
+  assert.equal(selection.availableCpus, 24);
+  assert.equal(selection.cpuBudgetCores, 7);
+  assert.equal(selection.maximumWorkerCpuFraction, 0.3);
 });
 
 test("the available CPU count has a one-worker floor", () => {
@@ -189,7 +201,7 @@ test("the available CPU count has a one-worker floor", () => {
       cpuWorkerSlots: 1,
       measuredWorkerCpuCores: 0.54,
       workerCpuSafetyFactor: 2,
-      maximumWorkerCpuFraction: 0.5,
+      maximumWorkerCpuFraction: 0.3,
       plannedWorkerCpuCores: 1.08,
       bound: "cpu-capacity",
       memorySafeToStart: true,

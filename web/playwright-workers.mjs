@@ -14,7 +14,11 @@ const minimumAvailableMemoryReserveBytes = 4 * 1024 * 1024 * 1024;
 // 2-worker calibration (four client cases; /proc CPU-time deltas sampled 0.5 s).
 const measuredWorkerCpuCores = 0.54;
 const workerCpuSafetyFactor = 2;
-const maximumWorkerCpuFraction = 0.5;
+// 30% yields eight workers on an idle 32-CPU host at the 1.08-core planned
+// allowance. Fourteen workers produced a runnable peak of 21 and 6.5 s median
+// fixture starts; eight reduced those to 11 and 3.9 s with similar wall time.
+// Competing runnable work is subtracted before applying this CPU budget.
+const maximumWorkerCpuFraction = 0.3;
 const runnableSampleCount = 11;
 const runnableSampleIntervalMs = 500;
 
