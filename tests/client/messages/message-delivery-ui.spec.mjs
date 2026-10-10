@@ -152,11 +152,9 @@ test("message delivery ui", async ({ browser: _browser }) => {
     throw new Error(label);
   }
   try {
-    const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (chunk) =>
-        resolve(Number(String(chunk).trim())),
-      );
-      fixture.once("exit", () => reject(new Error(log)));
+    const port = await waitForFixturePort(fixture, {
+      label: "Message delivery",
+      diagnostics: () => log,
     });
     const origin = `http://127.0.0.1:${port}`;
     const original = await readTestState(origin);

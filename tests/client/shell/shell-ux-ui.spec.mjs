@@ -33,11 +33,9 @@ test("Conversation tools menu displays compact prompt navigation", async ({
     log += chunk;
   });
   try {
-    const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (chunk) =>
-        resolve(Number(String(chunk).trim())),
-      );
-      fixture.once("exit", () => reject(new Error(log)));
+    const port = await waitForFixturePort(fixture, {
+      label: "Conversation tools",
+      diagnostics: () => log,
     });
     await page.setViewportSize({ width: 860, height: 960 });
     await page.goto(`http://127.0.0.1:${port}`);
@@ -249,11 +247,9 @@ test("Shell ux ui", async ({
     log += chunk;
   });
   try {
-    const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (chunk) =>
-        resolve(Number(String(chunk).trim())),
-      );
-      fixture.once("exit", () => reject(new Error(log)));
+    const port = await waitForFixturePort(fixture, {
+      label: "Shell UX",
+      diagnostics: () => log,
     });
     const origin = `http://127.0.0.1:${port}`;
     const snapshot = await readTestState(origin);
