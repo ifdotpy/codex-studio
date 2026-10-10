@@ -18,6 +18,7 @@ There are no runtime packages yet. The server app consumes provider integrations
 through their app interfaces. Shared packages must not import apps or acquire
 runtime state without a real caller and a focused test.
 
-Focused server check: `pnpm run test:server:python -- --filter <name>` from the
-repository root. The root [`package.json`](../../package.json) owns suite
-commands; the server runner owns test discovery and filters.
+For one hypothesis, use `just test server <suite-filter>`; for a server change,
+use `just check server`. The root [`justfile`](../../justfile) is the discoverable
+entry point; the Python runner owns suite discovery and filtering. The pre-PR
+server/client gate is documented in [docs/testing.md](../../docs/testing.md).
