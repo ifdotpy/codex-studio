@@ -1,6 +1,6 @@
 # Mac folder sync for layr projects
 
-Status: phase 1 implemented (2026-10-10), decision 24 in
+Status: phases 1 to 3 implemented (2026-10-10), decision 24 in
 [btrfs-local-vcs.md](btrfs-local-vcs.md).
 Owner of the decisions: the user.
 
@@ -49,9 +49,11 @@ so a lost response repeats the same step with the same ID and never applies it t
 2. **Inbound.** Upload the changed files and the deletions with the tree upload
    protocol. The guest broker applies them to the `mac` line as the project user and
    saves state Sm (label `mac-sync`).
-3. **Merge.** As the project user: `layr merge mac --expect Sm` into main. A clean merge
-   gives main'. A conflict leaves main unchanged (layr refuses a conflicted merge into
-   a protected line), and the project enters the conflict state below.
+3. **Merge.** As the project user: `layr merge mac --expect Sm` into main. The `mac` line
+   starts each round at main, so the merge is normally a fast-forward. When main moved
+   during the round, layr refuses the merge: main stays unchanged, the `mac` line goes
+   back to main, and the next round sends the same Mac files again and folds them onto
+   the new main file by file.
 4. **Outbound.** For each path that changed from A to main': when the Mac file still has
    its agreed content, or the content uploaded in this round, write the main' version
    atomically (temporary file and rename, same mode). When the user changed it again
@@ -60,13 +62,23 @@ so a lost response repeats the same step with the same ID and never applies it t
 
 ## Conflicts
 
+A conflict is always per file: the Mac and main changed the same lines of one file
+since their agreed content, or one side deleted a file that the other changed.
+
 - Studio never writes conflict markers into the Mac folder.
 - In the conflict state, other paths keep syncing in both directions; conflicted
-  paths wait.
-- The project's lead chat gets a message to resolve the conflict in the `mac` line
-  (`layr merge main`, fix, `layr commit`); Studio then merges `mac` into main and the
-  round continues. A user who does not read code can choose per path in the UI:
-  **Keep Mac version** or **Keep VM version**.
+  paths wait. A held path is not sent again until the Mac file changes.
+- The user chooses per path:
+  - **Keep Mac version**: the next round sends the Mac file on top of main.
+  - **Keep VM version**: Studio writes main's file into the Mac folder.
+  - **Ask the agent**: Studio puts the Mac version in the `mac-conflict` line at main and
+    sends the project's lead chat a message with the state to read
+    (`layr show <state>:<path>`). The lead commits one combined file to main; the next
+    round writes it to the Mac. A new Mac edit of the path ends the handoff.
+- Unmerged handoffs stay in the `mac-conflict` line; a handoff after a merge starts the
+  line again at main.
+- A project imported before `importStateId` existed starts with a choice for every
+  path that differs from main (`choices`); the same three answers apply.
 
 ## Git
 
@@ -86,8 +98,18 @@ so a lost response repeats the same step with the same ID and never applies it t
 
 ## Watcher
 
-A small signed Swift helper in the app reports FSEvents file events as JSON lines to
-the backend. A dropped-events flag or a helper restart triggers a full scan.
+`studio-fs-events` (`workspaces/client/apps/desktop/native/fs-events.swift`), a small
+signed helper in the app, reports FSEvents file events for every synced folder as JSON
+lines: `{"path"}` per changed path, `{"rescan"}` when macOS dropped events or the root
+changed, and `{"ready"}` once. It exits when the backend closes its input.
+
+- A round starts 2 s after the last event of a folder and reads only the named paths.
+- A dropped-events report, a helper start, and a change of the folder list cause a
+  full scan of the affected folders.
+- Every 10 s the backend asks the VM for the main state (`sync.mac.head`); a round
+  without a Mac scan runs only when main moved.
+- A full scan runs every 10 minutes as a safety net, and every 10 s when the helper is
+  missing.
 
 ## User interface
 
@@ -98,16 +120,28 @@ the backend. A dropped-events flag or a helper restart triggers a full scan.
 ## Implementation
 
 - Mac side: `workspaces/runtime/apps/server/src/codex_vm_mac_sync.py`. The runtime
-  maintenance tick starts rounds every 10 s for each VM project with a Mac folder
+  maintenance tick schedules rounds (see Watcher) for each VM project with a Mac folder
   (`layr-projects/<id>/project.json`), only while the VM runs. Per project, the folder
-  `layr-projects/<id>/sync/` holds `manifest.json` (agreed content and its base state
-  per path), `held.json` (sent content that is not agreed yet: a conflict, or Mac work
-  waiting for a merge), `pending.json` (the round to repeat after a lost reply) and
-  `status.json`. `config.json` with `{"enabled": false}` pauses the project.
+  `layr-projects/<id>/sync/` holds:
+  - `manifest.json`: agreed content and its base state per path;
+  - `held.json`: Mac content in a conflict, or handed to the lead (`why`: `conflict` or
+    `agent`, with the handoff's main state as `base`);
+  - `pending.json`: the round to repeat after a lost reply;
+  - `allow-deletes.json`: the user's confirmation of the Mac deletions that paused the
+    project, used by the next round;
+  - `config.json`: `{"enabled": false}` pauses the project;
+  - `status.json`: `state` (`syncing`, `synced`, `waiting`, `conflict`, `paused` or
+    `error`), `conflicts`, `choices`, `withAgent`, `deletes`, `reason`, and `rescan` (paths
+    that a refused merge or a choice left unsent).
 - Guest side: `workspaces/runtime/apps/vm-guest/mac_sync.py`, broker methods
-  `sync.mac.apply`, `sync.mac.read` and `sync.mac.hashes`. Receipts per operation make a
-  repeated call return the first result. The project user owns the `mac` and `mac-view`
-  lines; layr adds Mac files that Git ignores by name, so they reach main.
+  `sync.mac.apply`, `sync.mac.read`, `sync.mac.hashes`, `sync.mac.head` and
+  `sync.mac.handoff`. Receipts per operation make a repeated call return the first
+  result. The project user owns the `mac`, `mac-view` and `mac-conflict` lines; layr adds
+  Mac files that Git ignores by name, so they reach main. The first round of a synced
+  project denies `push` to the agents group.
+- HTTP API: `POST /api/mac-sync/resolve` (`projectId`, `path`, `choice`: `mac`, `vm` or
+  `agent`) and `POST /api/mac-sync/config` (`projectId`, `enabled`, `allowDeletes`). The
+  lead message has one ID per handoff state, so a repeated request does not repeat it.
 - `project.json` records `importStateId`, the base of a project's first round. A project
   imported before this change has none: its first round agrees only on files equal to
   main, and every other difference waits in `status.json` (`choices`).
@@ -118,6 +152,7 @@ the backend. A dropped-events flag or a helper restart triggers a full scan.
 
 1. Manifest, scan, inbound into the `mac` line, merge, outbound and agree, with a
    polling scan. Tests with fakes, the guest end-to-end test, and a live round. (Done.)
-2. The FSEvents helper.
-3. Conflict UI, the lead message, and the push rule.
-4. Sync state in the sidebar.
+2. The FSEvents helper. (Done.)
+3. Conflict choices, the lead handoff, the push rule, pause and the deletion
+   confirmation in the API. (Done.)
+4. Sync state, conflict choices, pause and resume in the sidebar.

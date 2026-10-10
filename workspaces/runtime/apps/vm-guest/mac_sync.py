@@ -28,8 +28,9 @@ from common import GuestError, atomic_json, require
 from host_exec_protocol import inside, relative
 from layr_share import command, project_id
 
-METHODS = {"sync.mac.apply", "sync.mac.read", "sync.mac.hashes"}
-READ_METHODS = {"sync.mac.read", "sync.mac.hashes"}
+METHODS = {"sync.mac.apply", "sync.mac.read", "sync.mac.hashes", "sync.mac.head", "sync.mac.handoff"}
+READ_METHODS = {"sync.mac.read", "sync.mac.hashes", "sync.mac.head"}
+KEPT_RECEIPTS = 200
 LINE, VIEW = "mac", "mac-view"
 CHUNK = 512 * 1024
 MAX_ENTRIES = 20_000
@@ -239,6 +240,7 @@ class MacSync:
             return json.loads(receipt.read_text())
         async with self.locks.setdefault(project, asyncio.Lock()):
             owner, main, mac, view = await self.lines(project)
+            await self.deny_push(project, receipts)
             await self.clean(mac, owner, LINE)
             main_head, mac_head = await self.head(main, owner), await self.head(mac, owner)
             # The line follows main between rounds; unmerged Mac work stays where it is.
@@ -273,14 +275,16 @@ class MacSync:
             if mac_state != main_head:
                 code, output, errors = await self.run(["merge", "-q", LINE, "--expect", mac_state], cwd=main, owner=owner)
                 if code:
-                    # A conflict waits for a resolution in the VM. Without one, main was
-                    # busy (for example uncommitted lead work); the next round tries again.
+                    # main moved during the round or holds uncommitted lead work. The Mac
+                    # work leaves the line, and the next round folds it onto the new main
+                    # file by file, so a lasting conflict is always a per-file one.
                     merged = await self.merge_conflicts(main, owner, operation)
                     merge, detail = ("conflict" if merged else "refused"), (errors or output).strip()[-300:]
+                    applied = []
                 else:
                     merge = "merged"
             main_state = await self.head(main, owner)
-            if merge in {"none", "merged"} and await self.head(mac, owner) != main_state:
+            if await self.head(mac, owner) != main_state:
                 await self.layr(["reset", "-q", "--hard", main_state], cwd=mac, owner=owner)
             await self.checkout(view, owner, main_state)
             result = {"projectId": project, "mainStateId": main_state, "macStateId": await self.head(mac, owner),
@@ -289,10 +293,78 @@ class MacSync:
                       "outbound": await self.outbound(view, owner, [_state(base) for base in since], main_state)}
             receipts.mkdir(parents=True, mode=0o700, exist_ok=True)
             atomic_json(receipt, result)
+            # Old receipts go; a retry comes within seconds, not after 200 rounds.
+            for old in sorted(receipts.glob("mac-*.json"), key=lambda path: path.stat().st_mtime)[:-KEPT_RECEIPTS]:
+                old.unlink(missing_ok=True)
             # The receipt answers a retry, so the upload is no longer needed.
             if entries:
                 shutil.rmtree(params["upload"], ignore_errors=True)
             return result
+
+    async def deny_push(self, project: str, receipts: Path) -> None:
+        """Git lives on the Mac for a synced project: agents may not push from the VM,
+        or two publishers would fork the history (docs/vm-mac-sync.md, Git)."""
+        marker = receipts / "push-denied"
+        if marker.exists():
+            return
+        from layr_agents import AGENTS_GROUP
+        await self.projects.layr(["--project", project, "access", "deny", "@" + AGENTS_GROUP, "push"])
+        receipts.mkdir(parents=True, mode=0o700, exist_ok=True)
+        marker.touch()
+
+    async def handoff(self, request_id: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Put the Mac version of a conflicting file in the `mac-conflict` line at main, so
+        the lead can merge both versions into main."""
+        project = project_id(params.get("projectId"))
+        rel = relative(params.get("path"))
+        require(rel.split("/")[0] not in SKIPPED and params.get("kind") in {"file", "link", "absent"},
+                "Invalid conflict entry")
+        operation = params.get("operationId")
+        require(isinstance(operation, str) and OPERATION.fullmatch(operation), "Invalid sync operation ID")
+        receipts = self.state / "mac-sync" / project
+        receipt = receipts / (operation + ".json")
+        if receipt.exists():
+            return json.loads(receipt.read_text())
+        async with self.locks.setdefault(project, asyncio.Lock()):
+            owner, main, _mac, _view = await self.lines(project)
+            line = main.parent / "mac-conflict"
+            if not line.is_dir():
+                await self.layr(["branch", "mac-conflict", "main", "--owner", owner], cwd=main, owner=owner)
+            await self.clean(line, owner, "mac-conflict")
+            main_state, line_state = await self.head(main, owner), await self.head(line, owner)
+            # Earlier handoffs the lead has not merged stay in the line; merged ones leave it.
+            code, _, _ = await self.run(["merge-base", "--is-ancestor", line_state, main_state], cwd=line, owner=owner)
+            if code == 0 and line_state != main_state:
+                await self.layr(["reset", "-q", "--hard", main_state], cwd=line, owner=owner)
+            user = self.projects.owner(project)
+            entry = None
+            if params["kind"] != "absent":
+                source = params.get("upload")
+                require(isinstance(source, str) and Path(source).parent == UPLOADS
+                        and Path(source).resolve() == Path(source) and Path(source).is_dir(),
+                        "The handoff upload must be a completed upload root")
+                entry = _entry(inside(Path(source), rel, leaf=True))
+                require(entry is not None and entry[0] == params["kind"], "The upload does not hold " + rel)
+            self.write(line, rel, entry, user["uid"], user["gid"])
+            await self.layr(["add", "-A"], cwd=line, owner=owner)
+            if entry is not None:
+                await self.layr(["add", "-f", "--", rel], cwd=line, owner=owner)
+            await self.layr(["commit", "-q", "--allow-empty", "-m", "Mac version of " + rel], cwd=line, owner=owner)
+            result = {"projectId": project, "line": "mac-conflict", "path": rel, "mainStateId": main_state,
+                      "stateId": await self.head(line, owner)}
+            receipts.mkdir(parents=True, mode=0o700, exist_ok=True)
+            atomic_json(receipt, result)
+            if entry is not None:
+                shutil.rmtree(params["upload"], ignore_errors=True)
+            return result
+
+    async def main_head(self, request_id: str, params: dict[str, Any]) -> dict[str, Any]:
+        project = project_id(params.get("projectId"))
+        owner = self.projects.owner(project)["owner"]
+        main = self.projects.folder(project) / "lines/main"
+        if not main.is_dir():
+            raise GuestError("not_found", "The layr project does not exist")
+        return {"projectId": project, "mainStateId": await self.head(main, owner)}
 
     async def read(self, request_id: str, params: dict[str, Any]) -> dict[str, Any]:
         project = project_id(params.get("projectId"))
@@ -336,4 +408,8 @@ class MacSync:
             return await self.apply(request_id, params)
         if method == "sync.mac.read":
             return await self.read(request_id, params)
+        if method == "sync.mac.head":
+            return await self.main_head(request_id, params)
+        if method == "sync.mac.handoff":
+            return await self.handoff(request_id, params)
         return await self.hashes(request_id, params)

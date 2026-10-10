@@ -72,6 +72,20 @@ try {
     path.join(root, "native/speech-info.plist"),
   ]);
   signCode(speech, identity);
+  // File events for the Mac folder sync of VM projects (docs/vm-mac-sync.md).
+  const fsEvents = path.join(stage, "studio-fs-events");
+  if (!uiOnly) {
+    execFileSync("xcrun", [
+      "swiftc",
+      path.join(root, "native/fs-events.swift"),
+      "-O",
+      "-target",
+      "arm64-apple-macos13.0",
+      "-o",
+      fsEvents,
+    ]);
+    signCode(fsEvents, identity);
+  }
   const linuxVM = uiOnly
     ? undefined
     : buildLinuxVM(path.join(stage, "studio-linux-vm"), identity);
@@ -197,7 +211,9 @@ try {
     extraResource: [
       resources,
       speech,
-      ...(uiOnly ? [] : [linuxVM, path.join(root, "recover_backend.py")]),
+      ...(uiOnly
+        ? []
+        : [linuxVM, fsEvents, path.join(root, "recover_backend.py")]),
     ],
     extendInfo: {
       NSMicrophoneUsageDescription:

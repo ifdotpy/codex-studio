@@ -420,6 +420,29 @@ class FinderViewQuery(ContractModel):
     agent: str = Field(min_length=1, max_length=200)
 
 
+_LAYR_PROJECT = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$"
+
+
+class MacSyncProjectRequest(ContractModel):
+    """A layr project with a Mac folder (docs/vm-mac-sync.md)."""
+
+    projectId: str = Field(pattern=_LAYR_PROJECT)
+
+
+class MacSyncConfigRequest(MacSyncProjectRequest):
+    """Pause or resume the sync, or let Mac deletions that paused it go to the VM."""
+
+    enabled: bool | None = None
+    allowDeletes: bool = False
+
+
+class MacSyncResolveRequest(MacSyncProjectRequest):
+    """Keep the Mac version, keep the VM version, or ask the lead to combine them."""
+
+    path: str = Field(min_length=1, max_length=4096)
+    choice: Literal["mac", "vm", "agent"]
+
+
 class StopRequest(ContractModel):
     id: str = Field(min_length=1, max_length=200)
     descendants: bool = True
@@ -619,6 +642,32 @@ class VmFinderViewResponse(ResponseModel):
 
 # The literal kind selects the branch; the response validator accepts plain unions only.
 FinderViewResponse: TypeAlias = NativeFinderViewResponse | VmFinderViewResponse
+
+
+class MacSyncStatusResponse(ResponseModel):
+    """A project's Mac folder sync. conflicts and choices wait for the user; withAgent waits
+    for the lead; deletes counts Mac deletions that wait for a confirmation."""
+
+    state: Literal["syncing", "synced", "waiting", "conflict", "paused", "error"]
+    folder: str
+    enabled: bool
+    conflicts: list[str]
+    choices: list[str]
+    withAgent: list[str]
+    deletes: int
+    reason: str | None
+    at: float | None
+
+
+class MacSyncResolveResponse(ResponseModel):
+    path: str
+    choice: Literal["mac", "vm", "agent"]
+    mainStateId: str
+    line: str | None = None
+    stateId: str | None = None
+    kind: Literal["file", "link", "absent"] | None = None
+    leadId: str | None = None
+    status: MacSyncStatusResponse | None
 
 
 class SkillsResponse(ResponseModel):

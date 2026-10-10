@@ -96,6 +96,12 @@ class MacSyncRounds(base.LayrEndToEnd):
         self.assertEqual((mac / "app.txt").read_text(), "ONE\ntwo\nTHREE\n")
         self.assertEqual((mac / "agent.txt").read_text(), "from an agent\n")
 
+        # Git lives on the Mac: agents may not push a synced project from the VM.
+        rules = await self.projects.layr(["--project", self.project, "access"])
+        self.assertRegex(rules, r"@studio-agents\tdeny [^\n]*push")
+        head = await sync.dispatch("h1", "sync.mac.head", {"projectId": self.project}, None)
+        self.assertEqual(head["mainStateId"], status["mainStateId"])
+
         # Nothing changed: a quiet round sends and writes nothing.
         quiet = await round_()
         self.assertEqual((quiet["state"], quiet["sent"], quiet["received"]), ("synced", 0, 0))
@@ -121,3 +127,33 @@ class MacSyncRounds(base.LayrEndToEnd):
         self.assertEqual((mac / "agent.txt").read_text(), "from an agent, edited\n")
         self.assertEqual((main / "notes.md").read_text(), "mac notes\n")
         self.assertEqual(moving["conflicts"], ["app.txt"])
+
+        # Ask the agent: the Mac version waits in the mac-conflict line, and the Mac takes
+        # the file the lead commits to main.
+        handed = await asyncio.to_thread(project.resolve, "app.txt", "agent")
+        line = self.projects.folder(self.project) / "lines/mac-conflict"
+        self.assertEqual(handed["line"], "mac-conflict")
+        self.assertEqual((line / "app.txt").read_text(), "ONE\ntwo\nmac\n")
+        self.assertEqual((main / "app.txt").read_text(), "ONE\ntwo\nagent\n")
+        waiting = await round_()
+        self.assertEqual((waiting["state"], waiting["withAgent"], waiting["sent"]), ("waiting", ["app.txt"], 0))
+        (main / "app.txt").write_text("ONE\ntwo\nagent and mac\n")
+        await sync.layr(["commit", "-qam", "combine the Mac version"], cwd=main, owner=owner)
+        combined = await round_()
+        self.assertEqual((mac / "app.txt").read_text(), "ONE\ntwo\nagent and mac\n")
+        self.assertEqual((combined["state"], combined["withAgent"], combined["conflicts"]), ("synced", [], []))
+
+        # Keep the Mac version, and keep the VM version.
+        (main / "agent.txt").write_text("agent v3\n")
+        (main / "notes.md").write_text("vm notes\n")
+        await sync.layr(["commit", "-qam", "agent v3"], cwd=main, owner=owner)
+        (mac / "agent.txt").write_text("mac v3\n")
+        (mac / "notes.md").write_text("mac notes 2\n")
+        both = await round_()
+        self.assertEqual(both["conflicts"], ["agent.txt", "notes.md"])
+        await asyncio.to_thread(project.resolve, "agent.txt", "mac")
+        self.assertEqual((main / "agent.txt").read_text(), "mac v3\n")
+        await asyncio.to_thread(project.resolve, "notes.md", "vm")
+        self.assertEqual((mac / "notes.md").read_text(), "vm notes\n")
+        settled = await round_()
+        self.assertEqual((settled["state"], settled["conflicts"], settled["sent"]), ("synced", [], 0))

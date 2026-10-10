@@ -590,6 +590,38 @@ def test_finder_view_publishes_a_closed_response_union() -> None:
     assert vm["properties"]["state"]["enum"] == ["mounted", "unmounted", "failed"]
 
 
+
+def test_mac_sync_routes_pause_resume_and_reject_bad_choices() -> None:
+    app, _runtime, _context = _app()
+    vm = Mock()
+    with tempfile.TemporaryDirectory() as name:
+        state, folder = Path(name) / "state", Path(name) / "project"
+        folder.mkdir()
+        record = state / "layr-projects" / "p1"
+        record.mkdir(parents=True)
+        (record / "project.json").write_text(json.dumps({"projectId": "p1", "source": str(folder)}))
+        vm.state_dir = state
+        with unittest.TestCase().assertNoLogs("studio_api.context", "ERROR"), \
+                patch("codex_linux_workspaces.client", return_value=vm):
+            client = TestClient(app)
+            paused = client.post("/api/mac-sync/config", json={"projectId": "p1", "enabled": False})
+            resumed = client.post("/api/mac-sync/config", json={"projectId": "p1", "enabled": True})
+            missing = client.post("/api/mac-sync/config", json={"projectId": "p2", "enabled": False})
+            nothing = client.post("/api/mac-sync/resolve", json={"projectId": "p1", "path": "a.txt", "choice": "vm"})
+            choice = client.post("/api/mac-sync/resolve", json={"projectId": "p1", "path": "a.txt", "choice": "both"})
+            escape = client.post("/api/mac-sync/config", json={"projectId": "../p1", "enabled": False})
+            with patch("codex_vm_mac_sync.resolve", side_effect=BlockingIOError):
+                busy = client.post("/api/mac-sync/resolve", json={"projectId": "p1", "path": "a.txt", "choice": "vm"})
+
+    assert paused.status_code == 200, paused.text
+    assert (paused.json()["state"], paused.json()["enabled"]) == ("paused", False)
+    assert (resumed.json()["state"], resumed.json()["enabled"]) == ("syncing", True)
+    assert missing.status_code == 400 and "no Mac folder" in missing.json()["error"]
+    assert nothing.status_code == 400 and "no conflict" in nothing.json()["error"]
+    assert (choice.status_code, escape.status_code) == (400, 400)
+    assert busy.status_code == 409
+
+
 class AgentRouterTests(unittest.TestCase):
     def test_durable_action_rejection_happens_before_runtime_call(self) -> None:
         test_durable_action_rejection_happens_before_runtime_call()
@@ -641,3 +673,6 @@ class AgentRouterTests(unittest.TestCase):
 
     def test_finder_view_schema(self) -> None:
         test_finder_view_publishes_a_closed_response_union()
+
+    def test_mac_sync_routes(self) -> None:
+        test_mac_sync_routes_pause_resume_and_reject_bad_choices()

@@ -31,6 +31,10 @@ from .models import (
     DeletedResponse,
     FinderViewQuery,
     FinderViewResponse,
+    MacSyncConfigRequest,
+    MacSyncResolveRequest,
+    MacSyncResolveResponse,
+    MacSyncStatusResponse,
     IdRequest,
     ImportListResponse,
     ImportRequest,
@@ -315,6 +319,37 @@ def create_router(context: ApiContext) -> APIRouter:
         from codex_vm_agents import finder_view as view
 
         return context.send(request, view(runtime, record))
+
+    @router.post("/api/mac-sync/resolve", response_model=MacSyncResolveResponse,
+                 responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}})
+    def mac_sync_resolve(request: Request, body: MacSyncResolveRequest) -> Response:
+        """Settle one conflicting path of a project's Mac folder sync."""
+        from codex_vm_mac_sync import resolve
+
+        try:
+            result = resolve(current_runtime(), body.projectId, body.path, body.choice)
+        except BlockingIOError:
+            return context.send(request, {"error": "A sync round of this project runs; try again"}, status=409)
+        except (ValueError, OSError, RuntimeError) as error:
+            return context.send(request, {"error": str(error)[:500]}, status=400)
+        return context.send(request, result)
+
+    @router.post("/api/mac-sync/config", response_model=MacSyncStatusResponse,
+                 responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}})
+    def mac_sync_config(request: Request, body: MacSyncConfigRequest) -> Response:
+        """Pause or resume a project's Mac folder sync, or confirm the Mac deletions that paused it."""
+        from codex_vm_mac_sync import configure
+
+        try:
+            status = configure(current_runtime(), body.projectId, enabled=body.enabled,
+                               allow_deletes=body.allowDeletes)
+        except BlockingIOError:
+            return context.send(request, {"error": "A sync round of this project runs; try again"}, status=409)
+        except (ValueError, OSError, RuntimeError) as error:
+            return context.send(request, {"error": str(error)[:500]}, status=400)
+        if status is None:
+            return context.send(request, {"error": "The project has no Mac folder to sync"}, status=400)
+        return context.send(request, status)
 
     @router.get("/api/skills", response_model=SkillsResponse)
     def skills(request: Request, query: SkillsQuery = Depends()) -> Response:
