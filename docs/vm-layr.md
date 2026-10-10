@@ -12,11 +12,20 @@ An unfinished request keeps its unknown outcome after a restart.
 
 The first VM chat imports the Mac folder through the existing tree upload protocol.
 `project.import` creates the layr project and its main line.
+
+The import takes code, not data or build output (`archive_source` in
+`codex_linux_workspace_sync.py`). For each Git repository it takes the files that Git
+tracks or would track, the files that Git ignores (such as `.env`), and the Git metadata.
+It leaves on the Mac the folders that Git ignores (data, downloads, copies of other
+projects), except a folder that is itself a nested repository, which keeps its own rules,
+and regenerable folders (`REGENERABLE`, and `target` next to a `Cargo.toml`): in the VM a
+build makes them again, or they come from a layr layer. `.worktrees` and the Studio store
+stay too. A folder without Git is taken whole, without regenerable folders.
 The project ID determines a Linux user for all leads of that project.
 `project.ensure` returns the project ID, main path, user, home, and current state ID.
 Later chats use the existing VM main line.
-The Mac folder remains separate for native chats.
-Studio does not synchronize those two folders automatically.
+The Mac folder stays the working copy for native chats; Mac folder sync keeps it equal to
+the VM main line ([vm-mac-sync.md](vm-mac-sync.md)).
 
 `project.import` and `project.ensure` also set the project's layr rules once
 (docs/btrfs-local-vcs.md, decision 23): main stays protected, but its owner, the
@@ -44,6 +53,8 @@ or read the mount table:
 - `failed`: `import-error.json` has the reason of the last attempt, or an import
   receipt has no result after its attempt ended.
 - `not_imported`: no record; the first layr chat imports the Mac folder.
+
+The sidebar shows the LAYR chip only in the `ready` state; the other states show nothing.
 
 Each import attempt removes `import-error.json` when it gets the project lock and
 writes it again if the attempt fails. The project entity changes when an attempt
