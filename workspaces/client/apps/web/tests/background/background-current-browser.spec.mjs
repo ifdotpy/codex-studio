@@ -75,7 +75,10 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
           )
             return execFileSync(
               "git",
-              ["show", "HEAD:web/src/components/shell/BackgroundTasks.tsx"],
+              [
+                "show",
+                "HEAD:workspaces/client/apps/web/src/components/shell/BackgroundTasks.tsx",
+              ],
               { cwd: root, encoding: "utf8" },
             );
           if (id === "\0virtual:current-background") return harness;

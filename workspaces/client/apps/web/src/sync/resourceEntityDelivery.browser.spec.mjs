@@ -16,8 +16,8 @@ test("state stream persists records across tabs without pulls and repairs missin
   browser,
 }) => {
   test.setTimeout(60_000);
-  const { createServer } =
-    await import("../../node_modules/vite/dist/node/index.js");
+  const { createFixtureViteServer: createServer } =
+    await import("../../tests/playwright.mjs");
   const workspaceId = "b".repeat(32);
   const streams = new Set();
   const pulls = [];

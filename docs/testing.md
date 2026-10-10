@@ -61,7 +61,20 @@ bridge used by fixture-backed provider replay checks.
 Choose the root `test:*` script that matches the layer being changed; the root
 [package manifest](../package.json) owns the available command names and wiring.
 Client unit checks run without a production build. Browser checks build the
-renderer before exercising it. The server listing displays discovered suites;
+renderer before exercising it. The browser runner plans workers from its
+measured per-worker CPU budget, memory headroom, and competing runnable tasks;
+an explicit Playwright `--workers` value overrides the plan. It reports the
+selected worker count before discovery. Fixture scratch is selected by a
+write-and-fsync probe: tmpfs is preferred when it has the per-worker reserve,
+with disk scratch as the fallback. Set `PLAYWRIGHT_SCRATCH_ROOT` to request a
+specific writable location. The global setup resolves the equipped fixture
+Python once, checks its API dependencies before workers start, and passes that
+interpreter to fixtures. Shared fixtures isolate `HOME`, `CODEX_HOME`, and
+`XDG_*` state; tests that need a signed-out account opt out of the synthetic
+fixture account explicitly. Registered fixture process groups are reaped after
+success, failure, and timeout.
+
+The server listing displays discovered suites;
 use the server runner's `--help` for filters and optional categories. The root
 server script also runs the colocated JavaScript bridge tests. For a focused
 Python contract, use `pnpm run test:server:python -- --filter <name>`.

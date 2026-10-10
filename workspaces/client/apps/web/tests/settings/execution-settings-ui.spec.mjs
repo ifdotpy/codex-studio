@@ -31,7 +31,7 @@ test.afterEach(async ({ browser }, testInfo) => {
 });
 
 test("execution settings ui", async ({ browser: _browser }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(60_000);
   const skill = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "codex-execution-settings-ui-"));
   const models = [
@@ -151,9 +151,6 @@ test("execution settings ui", async ({ browser: _browser }) => {
         if (result) return result;
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
-      await page
-        .screenshot({ path: join(root, "timeout.png") })
-        .catch(() => {});
       throw Error("Timed out: " + predicate.toString() + " " + log);
     };
     const openSettings = async (name) => {
@@ -166,6 +163,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
           .getByRole("button", { name: "Chat settings", exact: true })
           .click();
       if (name === "Main agent settings") {
+        await settings.getByText("Browser", { exact: true }).waitFor();
         assert.deepEqual(
           await settings.locator(".ui-row-label").allTextContents(),
           ["Model", "Workers", "Review", "Parallel", "Permissions", "Browser"],
@@ -225,7 +223,6 @@ test("execution settings ui", async ({ browser: _browser }) => {
         .getAttribute("aria-selected"),
       "true",
     );
-    await page.screenshot({ path: join(root, "model-picker-open.png") });
     const listBox = page.locator('[role="listbox"]:visible');
     assert.ok(
       await listBox.evaluate(
@@ -272,6 +269,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
       const row = (await state()).find((a) => a.id === lead.id);
       return (row.pendingSettings?.model || row.model) === lead.model;
     });
+    await waitFor(async () => (await modelValue(leadModel)) === lead.model);
     assert.equal(await modelValue(leadModel), lead.model);
     const leadReasoning = setupControl(
       page.getByLabel("Main agent reasoning", { exact: true }),
@@ -389,7 +387,6 @@ test("execution settings ui", async ({ browser: _browser }) => {
           (node) => node.scrollWidth <= node.clientWidth + 1,
         ),
       );
-      await page.screenshot({ path: join(root, `defaults-${width}.png`) });
       // The open model list stays inside the window at every width.
       await openModelList(defaultModel);
       const box = await listBox.boundingBox();
@@ -397,7 +394,6 @@ test("execution settings ui", async ({ browser: _browser }) => {
         box.x >= 0 && box.x + box.width <= width + 1,
         `model list fits ${width}`,
       );
-      await page.screenshot({ path: join(root, `model-picker-${width}.png`) });
     }
     await waitFor(
       async () =>
@@ -449,13 +445,9 @@ test("execution settings ui", async ({ browser: _browser }) => {
     );
     await selectModel(defaultModel, "test-slow");
     assert.ok((await slowModelSaved).ok());
-    assert.equal(
-      await dialog
-        .getByRole("button", { name: "Fast mode", exact: true })
-        .count(),
-      0,
-      "Unsupported modes stay hidden",
-    );
+    await dialog
+      .getByRole("button", { name: "Fast mode", exact: true })
+      .waitFor({ state: "hidden" });
     await dialog
       .getByRole("status")
       .filter({ hasText: "Fast mode is unavailable and was turned off" })
@@ -488,7 +480,14 @@ test("execution settings ui", async ({ browser: _browser }) => {
       lead.id,
       (body) => body.worker_defaults?.effort === "high",
     );
-    await defaultReasoning.selectOption("high");
+    const highReasoningOption = dialog
+      .getByRole("radiogroup", {
+        name: "Default subagent reasoning",
+        exact: true,
+      })
+      .getByText("High", { exact: true });
+    await highReasoningOption.waitFor({ state: "visible" });
+    await highReasoningOption.click();
     assert.ok((await higherWorkerReasoningSaved).ok());
     await waitFor(() => defaultReasoning.isEnabled());
     const lowReasoningSaved = settingsResponse(
@@ -536,7 +535,6 @@ test("execution settings ui", async ({ browser: _browser }) => {
       (await state()).find((a) => a.id === first.id).model,
       "gpt-6-luna",
     );
-    await page.screenshot({ path: join(root, "team-defaults.png") });
     for (const width of [1440, 768, 390, 320]) {
       await page.setViewportSize({ width, height: 960 });
 
@@ -598,7 +596,6 @@ test("execution settings ui", async ({ browser: _browser }) => {
         (await state()).find((a) => a.id === fresh.id).yoloMode === true,
     );
     await waitFor(async () => !(await freshYolo.isDisabled()));
-    await page.screenshot({ path: join(root, "lead-yolo.png") });
     await page.keyboard.press("Escape");
     const chatSettings = page.getByRole("dialog", {
       name: "Chat settings",

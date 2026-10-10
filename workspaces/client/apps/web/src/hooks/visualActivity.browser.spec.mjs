@@ -8,8 +8,8 @@ test("hidden visual rows stop timers and rate renders and resume current values"
   browser,
 }) => {
   test.setTimeout(60_000);
-  const { createServer } =
-    await import("../../node_modules/vite/dist/node/index.js");
+  const { createFixtureViteServer: createServer } =
+    await import("../../tests/playwright.mjs");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-visual-activity-"));
   const entry = `
     import React from 'react';

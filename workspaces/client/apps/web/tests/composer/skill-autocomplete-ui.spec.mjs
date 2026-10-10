@@ -1,11 +1,16 @@
-import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
+import {
+  readTestState,
+  installApiSchemaFixtureHeaders,
+  test,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 test("Skill autocomplete", async ({ browser: testBrowser }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(75_000);
   const testRepo = fileURLToPath(
     new URL("../../../../../../", import.meta.url),
   );
@@ -13,6 +18,12 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
 
   const repo = testRepo;
   const evidence = await mkdtemp(join(tmpdir(), "studio-skill-autocomplete-"));
+  const codexHome = join(evidence, "codex-home");
+  await mkdir(codexHome, { recursive: true });
+  await writeFile(
+    join(codexHome, "config.toml"),
+    '[plugins."chrome@openai-bundled"]\nenabled = false\n',
+  );
   const fixture = spawn(
     "python3",
     [
@@ -20,13 +31,18 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
       join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
       evidence,
     ],
-    { stdio: ["ignore", "pipe", "pipe"] },
+    {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, CODEX_HOME: codexHome },
+    },
   );
   const contexts = [];
   const newPage = async (options) => {
     const context = await testBrowser.newContext(options);
     contexts.push(context);
-    return context.newPage();
+    const page = await context.newPage();
+    installApiSchemaFixtureHeaders(page);
+    return page;
   };
   let log = "";
   fixture.stderr.on("data", (data) => (log += data));
@@ -62,7 +78,6 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     const skillRequests = [];
     const sends = [];
     const queues = [];
-    let typingFrameMs = null;
     let catalogSkillCount = 0;
     let sendHandled = deferred();
     page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -106,6 +121,26 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     );
     const composer = page.locator("#message");
     await composer.waitFor();
+    await page
+      .locator("#messages [data-message]")
+      .first()
+      .waitFor()
+      .catch(async (error) => {
+        console.error(
+          "prompt recall transcript not rendered",
+          await page.evaluate(() => ({
+            title: document.querySelector("#conversation-title")?.textContent,
+            messages: Array.from(
+              document.querySelectorAll("#messages [data-message]"),
+            ).map((node) => ({
+              id: node.getAttribute("data-message"),
+              text: node.textContent,
+            })),
+            text: document.querySelector("#messages")?.textContent,
+          })),
+        );
+        throw error;
+      });
 
     // Existing prompt recall still works outside an active suggestion.
     await page.waitForFunction(() =>
@@ -205,6 +240,12 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     });
     await page.waitForTimeout(50);
     assert.equal(await page.locator("#skill-suggestions").count(), 0);
+    await page.locator(`[data-chat="${lead.id}"]`).click();
+    await page.waitForFunction(() =>
+      document
+        .querySelector("#conversation-title")
+        ?.textContent.includes("Release lead"),
+    );
     await composer.fill("$re");
     const review = page.getByRole("option", { name: /review Review a change/ });
     await review.waitFor();
@@ -218,32 +259,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
       505,
       "fixture has 500+ local catalog entries",
     );
-    const timingSession = await page.context().newCDPSession(page);
-    await timingSession.send("Emulation.setCPUThrottlingRate", { rate: 4 });
-    await composer.evaluate((element) => {
-      element.addEventListener(
-        "keydown",
-        (event) => {
-          if (event.key !== "v") return;
-          const started = performance.now();
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-              window.__skillTypingFrameMs = performance.now() - started;
-            });
-          });
-        },
-        { once: true },
-      );
-    });
     await composer.press("v");
-    await page.waitForFunction(() => window.__skillTypingFrameMs != null);
-    typingFrameMs = await page.evaluate(() => window.__skillTypingFrameMs);
-    await timingSession.send("Emulation.setCPUThrottlingRate", { rate: 1 });
-    await timingSession.detach();
-    assert.ok(
-      typingFrameMs < 250,
-      `500-entry local filter next-frame latency ${typingFrameMs.toFixed(1)} ms at 4x CPU`,
-    );
     assert.equal(await composer.inputValue(), "$rev");
     await composer.press("Tab");
     assert.equal(await composer.inputValue(), "$review ");
@@ -265,11 +281,12 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     await composer.fill("");
     await composer.fill("before $plugin-management:plugin-wrong suffix");
     await composer.evaluate((element) => {
-      const caret = element.value.indexOf("-wrong") + 1;
+      const caret = element.value.indexOf("-wrong");
       element.focus();
       element.setSelectionRange(caret, caret);
       element.dispatchEvent(new Event("select", { bubbles: true }));
     });
+    await composer.press("ArrowRight");
     await page
       .getByRole("option", { name: /plugin-management:plugin-management/ })
       .waitFor();
@@ -373,11 +390,12 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     // Click selection keeps the textarea focused and replaces only the token.
     await composer.fill("before $rel after");
     await composer.evaluate((element) => {
-      const caret = element.value.indexOf(" after");
+      const caret = element.value.indexOf("$rel") + 3;
       element.focus();
       element.setSelectionRange(caret, caret);
       element.dispatchEvent(new Event("select", { bubbles: true }));
     });
+    await composer.press("ArrowRight");
     const release = page.getByRole("option", {
       name: /release Prepare a release/,
     });
@@ -482,7 +500,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     await composer.press("Escape");
     await composer.fill("");
     const refreshedCatalog = deferred();
-    gates.set(other.id, refreshedCatalog);
+    gates.set(lead.id, refreshedCatalog);
     await composer.fill("$r");
     await page.getByText("Loading skills…", { exact: true }).waitFor();
     await composer.press("Tab");
@@ -498,7 +516,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
       .waitFor();
     assert.deepEqual(
       skillRequests,
-      [lead.id, other.id],
+      [lead.id, lead.id],
       "reopening after expiry refreshes the scoped catalog",
     );
 
@@ -715,11 +733,6 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
       JSON.stringify({
         ok: true,
         evidence,
-        timing: {
-          cpuThrottle: "4x",
-          catalogSkills: catalogSkillCount,
-          keydownToPostPaintFrameMs: Number(typingFrameMs.toFixed(1)),
-        },
         checks: [
           "slow lazy fetch keeps typing responsive and deduplicates",
           "local filtering, default Enter/Tab insertion, caret and click focus",
@@ -727,7 +740,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
           "fresh catalogs are reused and refreshed after bounded expiry",
           "loading/error keys cannot choose hidden stale matches; blur closes popup",
           "failed and no-match lists retain normal send/queue behavior",
-          "long namespaced skill fits 390px and measured local-filter responsiveness",
+          "long namespaced skill fits 390px; large-catalog filtering and keyboard selection",
           "prompt recall and modified Enter behavior",
           "responsive error, empty, and partial-catalog feedback",
         ],
@@ -739,5 +752,138 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     throw error;
   } finally {
     await Promise.all(contexts.map((context) => context.close()));
+  }
+});
+
+test("500-entry local skill filter latency @performance", async ({ page }) => {
+  test.setTimeout(75_000);
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const evidence = await mkdtemp(join(tmpdir(), "studio-skill-filter-perf-"));
+  const fixture = spawn(
+    "python3",
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      evidence,
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let log = "";
+  fixture.stderr.on("data", (data) => (log += data));
+
+  try {
+    const port = await new Promise((resolve, reject) => {
+      fixture.stdout.once("data", (data) =>
+        resolve(Number(String(data).trim())),
+      );
+      fixture.once("exit", () => reject(Error(log)));
+    });
+    const origin = `http://127.0.0.1:${port}`;
+    const state = await readTestState(origin);
+    const lead = state.threads.find((agent) => agent.name === "Release lead");
+    assert.ok(lead);
+
+    const catalogSkills = [
+      {
+        name: "review",
+        description: "Review a change",
+        path: "/skills/review",
+      },
+      {
+        name: "release",
+        description: "Prepare a release",
+        path: "/skills/release",
+      },
+      {
+        name: "research",
+        description: "Research a topic",
+        path: "/skills/research",
+      },
+      {
+        name: "plugin-management:plugin-management",
+        description: "Installed namespaced skill",
+        path: "/skills/plugin-management/plugin-management",
+      },
+      {
+        name: "openai-templates:artifact-template-analytics-dashboard",
+        description:
+          "A long namespaced native skill for narrow composer layouts",
+        path: "/skills/openai-templates/artifact-template-analytics-dashboard",
+      },
+      ...Array.from({ length: 500 }, (_, index) => ({
+        name: `review-extra-${index}`,
+        description: "Large-catalog fixture",
+        path: `/skills/review-extra-${index}`,
+      })),
+    ];
+    assert.equal(catalogSkills.length, 505);
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.route("**/api/session-cost?*", (route) =>
+      route.fulfill({ json: { totalUSD: 0, breakdown: { providers: {} } } }),
+    );
+    await page.route("**/api/skills?*", (route) =>
+      route.fulfill({ json: { skills: catalogSkills, errors: [] } }),
+    );
+    await page.goto(origin);
+    await page.locator(`[data-chat="${lead.id}"]`).click();
+    await page.waitForFunction(() =>
+      document
+        .querySelector("#conversation-title")
+        ?.textContent.includes("Release lead"),
+    );
+    const composer = page.locator("#message");
+    await composer.fill("$re");
+    await page
+      .getByRole("option", { name: /review Review a change/ })
+      .waitFor();
+    assert.equal(await page.getByRole("option").count(), 8);
+
+    const timingSession = await page.context().newCDPSession(page);
+    await timingSession.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+    await composer.evaluate((element) => {
+      element.addEventListener(
+        "keydown",
+        (event) => {
+          if (event.key !== "v") return;
+          const started = performance.now();
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              window.__skillTypingFrameMs = performance.now() - started;
+            });
+          });
+        },
+        { once: true },
+      );
+    });
+    await composer.press("v");
+    await page.waitForFunction(() => window.__skillTypingFrameMs != null);
+    const typingFrameMs = await page.evaluate(
+      () => window.__skillTypingFrameMs,
+    );
+    await timingSession.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+    await timingSession.detach();
+    assert.ok(
+      typingFrameMs < 250,
+      `500-entry local filter next-frame latency ${typingFrameMs.toFixed(1)} ms at 4x CPU`,
+    );
+    assert.equal(await composer.inputValue(), "$rev");
+    console.log(
+      JSON.stringify({
+        ok: true,
+        evidence,
+        timing: {
+          cpuThrottle: "4x",
+          catalogSkills: catalogSkills.length,
+          keydownToPostPaintFrameMs: Number(typingFrameMs.toFixed(1)),
+          boundMs: 250,
+        },
+      }),
+    );
+  } catch (error) {
+    console.error(error);
+    console.error(log);
+    throw error;
+  } finally {
+    if (fixture.exitCode === null) fixture.kill("SIGTERM");
   }
 });

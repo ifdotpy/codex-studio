@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 test("message-queue-ui", async ({ browser }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(45_000);
   const repo = join(import.meta.dirname, "../../../../../../");
   const root = await mkdtemp(join(tmpdir(), "studio-message-queue-ui-"));
   const models = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna"].map(
@@ -104,6 +104,16 @@ test("message-queue-ui", async ({ browser }) => {
       }
       throw Error(label + "\n" + log);
     };
+    const waitForQueueMutationToSettle = (label) =>
+      wait(
+        async () =>
+          page.evaluate(() =>
+            Object.keys(localStorage)
+              .filter((key) => key.startsWith("studio-queue-change:"))
+              .every((key) => localStorage.getItem(key) === null),
+          ),
+        label,
+      );
     // Fault injection must observe fetches after reload, including in WebKit.
     context = await browser.newContext({
       viewport: { width: 1440, height: 960 },
@@ -204,9 +214,6 @@ test("message-queue-ui", async ({ browser }) => {
           `Short text occupies one row: ${JSON.stringify(size)}`,
         );
         assert.equal(size.previewText, "First input");
-        await page.screenshot({
-          path: join(root, `queue-${width}-${colorScheme}.png`),
-        });
       }
     }
     await page.setViewportSize({ width: 1440, height: 960 });
@@ -233,12 +240,14 @@ test("message-queue-ui", async ({ browser }) => {
       async () => (await queue()).items[0].text === "Revised first input",
       "Edit persists",
     );
+    await waitForQueueMutationToSettle("Edit acknowledgement completes");
     assert.equal((await queue()).items[0].assets[0].id, asset);
     await button("Move queued message 3 up").click();
     await wait(
       async () => (await queue()).items[1].text === "Third input",
       "Reorder persists",
     );
+    await waitForQueueMutationToSettle("Reorder acknowledgement completes");
     const order = (await queue()).items.map((item) => item.id);
     await page.reload();
     await panel.waitFor();

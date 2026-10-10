@@ -1,19 +1,21 @@
 #!/usr/bin/env node
 // Actual queue component, isolated browser storage, no backend or model service.
 
+import {
+  createFixtureViteServer,
+  FIXTURE_OPTIMIZE_DEPS,
+  playwrightScratchRoot,
+} from "../playwright.mjs";
 import { createServer } from "node:http";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
 import { test, expect } from "../playwright.mjs";
 
 test("Message Queue Drafts Ui", async ({
   browser: testBrowser,
   context: _testContext,
   page: _testPage,
-}) => {
+}, testInfo) => {
   const assert = {
     equal: (actual, expected, message) =>
       expect(actual, message).toBe(expected),
@@ -31,13 +33,15 @@ test("Message Queue Drafts Ui", async ({
     },
   };
 
-  const repo = join(import.meta.dirname, "../../../../../../");
-  const require = createRequire(
-    join(repo, "workspaces/client/apps/web/package.json"),
+  const repo = join(import.meta.dirname, "../../..");
+
+  const createViteServer = createFixtureViteServer;
+  const root = await mkdtemp(
+    join(playwrightScratchRoot, "message-queue-drafts-"),
   );
-  const { build } = await import(pathToFileURL(require.resolve("vite")));
-  const root = await mkdtemp(join(tmpdir(), "studio-message-queue-drafts-"));
   const entry = join(root, "entry.tsx");
+  const entryUrl = `/@fs${entry}`;
+  let vite;
   let browser;
   let server;
   let quotaContext;
@@ -48,11 +52,19 @@ test("Message Queue Drafts Ui", async ({
     await writeFile(
       entry,
       `
-import { useState } from ${JSON.stringify(require.resolve("react"))};
-import { createRoot } from ${JSON.stringify(require.resolve("react-dom/client"))};
-import MessageQueue from ${JSON.stringify(join(repo, "workspaces/client/apps/web/src/components/MessageQueue.tsx"))};
+import { useState } from "react";
+import { createRoot } from "react-dom/client";
+import MessageQueue from "/src/components/MessageQueue.tsx";
 function App() {
-  const [items, setItems] = useState([{ id: "q1", text: "Original message" }]);
+  const [items, setItems] = useState([
+    {
+      id: "q1",
+      text: "Original message",
+      created: 1,
+      status: "pending",
+      kind: "user",
+    },
+  ]);
   return <MessageQueue scope="journal-fixture" items={items} canReorder={true}
     onEdit={async (item, text) => setItems([{ ...item, text }])}
     onCancel={async () => setItems([])} onReorder={async () => {}} />;
@@ -60,44 +72,34 @@ function App() {
 createRoot(document.getElementById("root")!).render(<App />);
 `,
     );
-    await build({
+    await writeFile(
+      join(root, "index.html"),
+      `<div id="root"></div><script type="module" src="${entryUrl}"></script>`,
+    );
+    vite = await createViteServer({
+      optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
       configFile: false,
-      root,
+      root: join(repo, "web"),
       logLevel: "error",
-      resolve: {
-        alias: {
-          "react/jsx-runtime": require.resolve("react/jsx-runtime"),
-          "react/jsx-dev-runtime": require.resolve("react/jsx-dev-runtime"),
-        },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        fs: { allow: [repo, playwrightScratchRoot] },
       },
       define: { "process.env.NODE_ENV": JSON.stringify("test") },
-      build: {
-        outDir: root,
-        emptyOutDir: false,
-        lib: {
-          entry,
-          formats: ["iife"],
-          name: "QueueDraftTest",
-          fileName: () => "app.js",
-          cssFileName: "app",
-        },
-        minify: false,
-      },
     });
-    const files = {
-      "/app.js": ["text/javascript", await readFile(join(root, "app.js"))],
-      "/app.css": ["text/css", await readFile(join(root, "app.css"))],
-      "/": [
-        "text/html",
-        '<link rel="stylesheet" href="/app.css"><div id="root"></div><script src="/app.js"></script>',
-      ],
-    };
     server = createServer((request, response) => {
-      const file = files[request.url];
-      response.writeHead(file ? 200 : 404, {
-        "Content-Type": file?.[0] || "text/plain",
+      if (request.url === "/") {
+        response.setHeader("Content-Type", "text/html");
+        response.end(
+          `<div id="root"></div><script type="module" src="${entryUrl}"></script>`,
+        );
+        return;
+      }
+      vite.middlewares(request, response, () => {
+        response.statusCode = 404;
+        response.end("Not found");
       });
-      response.end(file?.[1] || "Not found");
     });
     await new Promise((resolve, reject) => {
       server.once("error", reject);
@@ -219,7 +221,7 @@ createRoot(document.getElementById("root")!).render(<App />);
       browser?.contexts().flatMap((context) => context.pages()) || []
     ).entries()) {
       await page
-        .screenshot({ path: join(root, `failure-${index}.png`) })
+        .screenshot({ path: testInfo.outputPath(`failure-${index}.png`) })
         .catch(() => {});
     }
     console.error(`Failure evidence: ${root}`);
@@ -229,6 +231,7 @@ createRoot(document.getElementById("root")!).render(<App />);
     await context?.close();
     if (server?.listening)
       await new Promise((resolve) => server.close(resolve));
+    await vite?.close();
     if (passed && !process.env.KEEP_TEST_ARTIFACTS)
       await rm(root, { recursive: true, force: true });
     else if (passed) console.log(`Evidence: ${root}`);

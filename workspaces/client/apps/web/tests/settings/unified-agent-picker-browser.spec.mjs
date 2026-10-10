@@ -4,7 +4,6 @@ import {
   apiSchemaHandshakeSse,
 } from "../playwright.mjs";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,10 +14,11 @@ import { chooseSetupValue } from "../../../../../runtime/apps/server/tests/setup
 test("unified agent picker roles, accounts and project/shared flows", async ({
   browser,
 }) => {
-  test.setTimeout(180000);
-  const root = join(import.meta.dirname, "../../");
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+  test.setTimeout(45_000);
+  const root = join(import.meta.dirname, "../../../web");
+
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-unified-picker-vite-"));
   const output =
     process.env.PICKER_SCREENSHOTS ||
@@ -64,7 +64,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         load(id) {
           if (id !== entry) return;
           return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {flushSync} from 'react-dom';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';import {theme} from '/src/theme.ts';import '/src/style.css';import {ExecutionSettings} from '/src/components/agents/ExecutionSettings.tsx';import {SettingsRow} from '/src/components/ui/primitives.tsx';import '/src/appearance.css';import {AccountTiles} from '/src/components/AccountTiles.tsx';import ProjectAccount from '/src/components/ProjectAccount.tsx';import SharedChatCreate from '/src/components/SharedChatCreate.tsx';
-      const accounts=Array.from({length:7},(_,i)=>({id:'account-'+i,home:'/fixture/'+i,label:i<3?'Work '+(i+1):'Personal '+(i-2),email:'fixture'+i+'@example.com',source:'fixture',provider:i<4?'codex':'claude',status:'ready'}));
+      const accounts=Array.from({length:7},(_,i)=>({id:'account-'+i,home:'/fixture/'+i,label:i<3?'Work '+(i+1):'Personal '+(i-2),email:'fixture'+i+'@example.com',source:'fixture',provider:i<4?'codex':'claude',status:i===6?'signedOut':'ready'}));
       const codex=['gpt-6-astra','gpt-6-luna'].map((model,i)=>({model,displayName:i?'Luna':'Astra',isDefault:!i,provider:'codex',defaultReasoningEffort:'medium',supportedReasoningEfforts:['low','medium','high'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:i?[]:[{id:'priority'}],availableAccessPrograms:{cyber:i?['standard']:['standard','daybreakBlue']}}));
       const claudeRow=(model,displayName,extra)=>({model,displayName,provider:'claude',defaultReasoningEffort:'medium',supportedReasoningEfforts:['low','medium','high'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:[],...extra});const claude=[claudeRow('default','Claude · Default (recommended)',{isDefault:true,resolvedModel:'claude-opus-5-5'}),claudeRow('opus','Claude · Opus 5.5',{resolvedModel:'claude-opus-5-5'}),claudeRow('claude-sonnet-5-5','Claude Sonnet 5.5',{})];
       const initial={id:'lead',accountKey:'account-0',provider:'codex',name:'Lead',source:'managed',model:'gpt-6-astra',effort:'medium',fastMode:false,daybreakEnabled:false,isLead:true,status:'idle',created:1,yoloMode:false,nextTurnSettingsSupported:true,workerDefaults:{model:'gpt-6-luna',effort:'high',fastMode:false},reviewDefaults:{model:null,effort:null}};
@@ -136,9 +136,6 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
           .evaluate((node) => node.scrollWidth <= node.clientWidth),
         true,
       );
-      await page.screenshot({
-        path: join(output, `${profile}-composer-trigger.png`),
-      });
       await page
         .getByRole("button", { name: "Main agent settings", exact: true })
         .click();
@@ -146,9 +143,6 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         page.getByRole("listbox", { name: "Main agent model" }),
       ).toBeVisible();
       const capture = async (scene) => {
-        await page.screenshot({
-          path: join(output, `${profile}-${scene}.png`),
-        });
         if (process.env.PICKER_CLIP_DETECTOR) {
           const { detectTextClipping } = await import(
             process.env.PICKER_CLIP_DETECTOR
@@ -352,6 +346,9 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         await group.locator("label").filter({ hasText: "Claude" }).click();
         await capture(scene + "-claude");
         if (scene === "project") {
+          await expect(
+            group.locator('[data-account-key="account-6"]'),
+          ).toHaveAttribute("data-exhausted", "true");
           await group.locator('[data-account-key="account-4"]').click();
           await page
             .getByRole("button", { name: "Save accounts", exact: true })
@@ -400,7 +397,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       join(output, "clipping.json"),
       JSON.stringify(results, null, 2),
     );
-    console.log(`Screenshots: ${output}`);
+    console.log(`Clipping measurements: ${output}`);
     assert.deepEqual(
       results.filter((row) => !row.intentional),
       [],

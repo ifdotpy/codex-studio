@@ -1,15 +1,31 @@
 // Unsupported endpoints fail visibly and never bypass the durable outbox.
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { test, expect, apiSchemaHandshakeSse } from "../playwright.mjs";
+import {
+  apiSchemaHeaders,
+  apiSchemaHandshakeSse,
+  FIXTURE_OPTIMIZE_DEPS,
+  installApiSchemaFixtureHeaders,
+  test,
+  expect,
+} from "../playwright.mjs";
 
 test("sync required browser", async ({ page: runnerPage }) => {
-  const { createServer } = await import(
-    new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
-  );
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const server = await createServer({
     configFile: false,
-    root: fileURLToPath(new URL("../../", import.meta.url)),
+    root: fileURLToPath(new URL("../../../web", import.meta.url)),
+    optimizeDeps: {
+      ...FIXTURE_OPTIMIZE_DEPS,
+      include: [
+        ...FIXTURE_OPTIMIZE_DEPS.include,
+        "rxdb",
+        "rxdb/plugins/storage-dexie",
+        "rxdb/plugins/leader-election",
+        "rxdb/plugins/replication",
+      ],
+    },
     server: { host: "127.0.0.1", port: 0 },
   });
   await server.listen();
@@ -20,6 +36,7 @@ test("sync required browser", async ({ page: runnerPage }) => {
     let status = 404,
       probes = 0,
       sends = 0;
+    installApiSchemaFixtureHeaders(page);
     await page.route("**/sync-check", (route) =>
       route.fulfill({
         contentType: "text/html",
@@ -164,9 +181,8 @@ test("draft bootstrap retries pause and recover on explicit activity", async ({
   page: runnerPage,
 }) => {
   test.setTimeout(120_000);
-  const { createServer } = await import(
-    new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
-  );
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const workspaceId = "c".repeat(32);
   let identityStatus = 503;
   let identityRequests = 0;
@@ -175,7 +191,17 @@ test("draft bootstrap retries pause and recover on explicit activity", async ({
   const streams = new Set();
   const server = await createServer({
     configFile: false,
-    root: fileURLToPath(new URL("../../", import.meta.url)),
+    root: fileURLToPath(new URL("../../../web", import.meta.url)),
+    optimizeDeps: {
+      ...FIXTURE_OPTIMIZE_DEPS,
+      include: [
+        ...FIXTURE_OPTIMIZE_DEPS.include,
+        "rxdb",
+        "rxdb/plugins/storage-dexie",
+        "rxdb/plugins/leader-election",
+        "rxdb/plugins/replication",
+      ],
+    },
     server: { host: "127.0.0.1", port: 0 },
   });
   server.middlewares.stack.unshift({
@@ -183,7 +209,10 @@ test("draft bootstrap retries pause and recover on explicit activity", async ({
     handle(req, res, next) {
       const url = new URL(req.url, "http://localhost");
       const json = (value, status = 200) => {
-        res.writeHead(status, { "Content-Type": "application/json" });
+        res.writeHead(
+          status,
+          apiSchemaHeaders({ "Content-Type": "application/json" }),
+        );
         res.end(JSON.stringify(value));
       };
       if (url.pathname === "/check") {
@@ -254,29 +283,13 @@ test("draft bootstrap retries pause and recover on explicit activity", async ({
       );
     });
     const waitForIdentityCount = async (count) => {
-      for (let attempt = 0; attempt < 100; attempt++) {
-        if (identityRequests >= count) return;
-        await page.waitForTimeout(20);
-      }
-      throw new Error(
-        `Expected ${count} identity attempts, got ${identityRequests}`,
-      );
+      await expect.poll(() => identityRequests).toBeGreaterThanOrEqual(count);
     };
     const waitForDraftPull = async () => {
-      for (let attempt = 0; attempt < 100; attempt++) {
-        if (draftPulls > 0) return;
-        await page.waitForTimeout(20);
-      }
-      throw new Error(
-        "Recovered draft replication did not issue its baseline pull",
-      );
+      await expect.poll(() => draftPulls).toBeGreaterThan(0);
     };
     const waitForDraftPush = async () => {
-      for (let attempt = 0; attempt < 100; attempt++) {
-        if (draftPushes > 0) return;
-        await page.waitForTimeout(20);
-      }
-      throw new Error("Retained local draft was not pushed after recovery");
+      await expect.poll(() => draftPushes).toBeGreaterThan(0);
     };
     await waitForIdentityCount(1);
     for (const [delay, expected] of [
@@ -284,7 +297,7 @@ test("draft bootstrap retries pause and recover on explicit activity", async ({
       [3_000, 3],
       [10_000, 4],
     ]) {
-      await page.clock.fastForward(delay);
+      await page.clock.runFor(delay);
       await waitForIdentityCount(expected);
     }
     await page.waitForFunction(

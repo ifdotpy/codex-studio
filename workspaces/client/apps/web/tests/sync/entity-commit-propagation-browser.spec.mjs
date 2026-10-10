@@ -68,7 +68,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
   const waitFor = async (predicate, message, timeoutMs = 8000) => {
     const end = Date.now() + timeoutMs;
     while (Date.now() < end) {
-      if (predicate()) return;
+      if (await predicate()) return;
       await new Promise((resolve) => setTimeout(resolve, 40));
     }
     assert.fail(message);
@@ -106,6 +106,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
         const OriginalEventSource = window.EventSource;
         window.__entityFrames = [];
         window.__entityStreamUrls = [];
+        window.__entityStreamAttempts = [];
         window.__entityPersisterCompletions = [];
         window.__entityMutationDecodes = [];
         const responseJson = Response.prototype.json;
@@ -128,7 +129,12 @@ test("committed entities propagate between renderer tabs @sync", async ({
           constructor(...args) {
             super(...args);
             const streamIndex = window.__entityStreamUrls.length;
-            window.__entityStreamUrls.push(String(args[0]));
+            const url = String(args[0]);
+            const attempt = { url, opened: false, errored: false };
+            window.__entityStreamUrls.push(url);
+            window.__entityStreamAttempts.push(attempt);
+            this.addEventListener("open", () => (attempt.opened = true));
+            this.addEventListener("error", () => (attempt.errored = true));
             this.addEventListener("resources", (event) =>
               window.__entityFrames.push({
                 at: performance.timeOrigin + performance.now(),
@@ -168,42 +174,58 @@ test("committed entities propagate between renderer tabs @sync", async ({
       () => pulls.every((rows) => rows.length > 0),
       "all tabs did not finish their initial entity pull",
     );
+    const currentState = await readTestState(origin);
+    const lead = currentState.threads.find(
+      (agent) => agent.name === "Release lead",
+    );
+    const leadId = lead.id;
     await waitFor(
       () =>
         Promise.all(
           pages.map((page) =>
-            page.evaluate(() => {
-              const lastStream = window.__entityStreamUrls.length - 1;
+            page.evaluate((expectedLeadId) => {
               return (
-                // The fourth URL is the chat transcript stage after the shell
-                // baseline, drafts/state, foreground transcript, and prefetch stages.
-                window.__entityStreamUrls.length >= 4 &&
+                // Subscription updates are coalesced. Verify the current
+                // stream's resource coverage instead of requiring one URL per
+                // shell, drafts, foreground, and opened-chat stage.
+                window.__entityStreamUrls.length > 0 &&
                 window.__entityFrames.some(
-                  ({ event, streamIndex }) =>
-                    streamIndex === lastStream &&
+                  ({ event }) =>
                     event.reason === "initial" &&
                     event.resources.some(
                       (resource) => resource.kind === "state",
+                    ) &&
+                    event.resources.some(
+                      (resource) => resource.kind === "drafts",
+                    ) &&
+                    event.resources.some(
+                      (resource) =>
+                        resource.kind === "transcript" &&
+                        resource.agentId === expectedLeadId,
                     ),
                 )
               );
-            }),
+            }, leadId),
           ),
         ).then((ready) => ready.every(Boolean)),
-      "all tabs did not complete the shell, drafts/state, foreground transcript, prefetch, and opened-chat stream stages",
+      "the coalesced stream did not include state, drafts, and the opened chat transcript in every tab",
     );
     for (const page of pages) {
-      const urls = await page.evaluate(() => window.__entityStreamUrls);
-      assert.equal(
-        new Set(urls).size,
-        urls.length,
-        "a stream URL was reopened unchanged",
+      const attempts = await page.evaluate(() => window.__entityStreamAttempts);
+      const liveReopens = attempts.filter((attempt, index) => {
+        if (index === 0) return false;
+        const previousAttempt = attempts
+          .slice(0, index)
+          .filter((prior) => prior.url === attempt.url)
+          .at(-1);
+        return previousAttempt?.opened && !previousAttempt.errored;
+      });
+      assert.deepEqual(
+        liveReopens,
+        [],
+        `a successfully opened stream URL was reopened before error: ${JSON.stringify(liveReopens)}`,
       );
     }
-    const currentState = await readTestState(origin);
-    const leadId = currentState.threads.find(
-      (agent) => agent.name === "Release lead",
-    ).id;
     const results = [];
     const operations = [
       {
@@ -325,6 +347,11 @@ test("committed entities propagate between renderer tabs @sync", async ({
           persisterDoneAt,
           persisterAdvanced: persisterCompletion.advanced,
           persisterCompletion,
+          mutationEntity: {
+            id: createdEntity.id,
+            seq: createdEntity.seq,
+            deleted: createdEntity._deleted ?? false,
+          },
           collection: "agent",
           deleted: false,
         };
@@ -333,61 +360,103 @@ test("committed entities propagate between renderer tabs @sync", async ({
       }
       assert.equal(reply.ok, true, JSON.stringify(reply));
       const entityId = reply.entityId;
-      const matchingDocument = (pull) =>
-        pull.documents.find(
-          (document) =>
-            document.id === `entity:${params.collection}:${entityId}` &&
-            document.seq >= (reply.entitySequence ?? reply.seq) &&
-            document._deleted === params.deleted,
-        );
-      const tabsToConfirm = params.operation === "chat" ? [1, 2] : [0, 1, 2];
-      let staleAfterMs;
-      try {
-        await waitFor(
-          () =>
-            tabsToConfirm.every((tab) =>
-              pulls[tab].slice(previousPulls[tab]).some(matchingDocument),
-            ),
-          `${params.operation} did not reach required tabs through entity pulls within 8s`,
-        );
-      } catch {
-        staleAfterMs = 8000;
+      const expectedEntitySequence = reply.entitySequence ?? reply.seq;
+      const entityDocumentId = `entity:${params.collection}:${entityId}`;
+      // The actor gets a new chat's row in its mutation response; peers get it
+      // through their state stream.
+      if (params.operation === "chat") {
+        assert.deepEqual(reply.mutationEntity, {
+          id: entityDocumentId,
+          seq: expectedEntitySequence,
+          deleted: false,
+        });
       }
-      if (staleAfterMs !== undefined) {
-        results.push({
-          operation: params.operation,
-          entityId,
-          seq: reply.seq,
-          elapsedMs: null,
-          staleAfterMs,
-          pulls: pulls.map((rows, tab) =>
-            rows
-              .slice(previousPulls[tab])
-              .map((pull) => pull.documents.map((row) => row.seq)),
-          ),
-          stateFrames: await Promise.all(
-            pages.map((page, tab) =>
+      await waitFor(
+        () =>
+          Promise.all(
+            pages.map(async (page, tab) => {
+              if (tab === 0 && params.operation === "chat") return true;
+              return page.evaluate(
+                ({ from, documentId, seq, deleted }) =>
+                  window.__entityFrames
+                    .slice(from)
+                    .some(({ event }) =>
+                      event.resourceVersions?.some(
+                        (version, index) =>
+                          (version.resource ?? event.resources[index])?.kind ===
+                            "state" &&
+                          version.entityChanges?.documents.some(
+                            (row) =>
+                              row.id === documentId &&
+                              row.seq === seq &&
+                              row._deleted === deleted,
+                          ),
+                      ),
+                    ),
+                {
+                  from: previousFrames[tab],
+                  documentId: entityDocumentId,
+                  seq: expectedEntitySequence,
+                  deleted: params.deleted,
+                },
+              );
+            }),
+          ).then((received) => received.every(Boolean)),
+        `${params.operation} did not publish its exact entity row to every tab`,
+      );
+      await waitFor(
+        () =>
+          Promise.all(
+            pages.map((page) =>
               page.evaluate(
-                (from) => window.__entityFrames.slice(from),
-                previousFrames[tab],
+                (seq) =>
+                  window.__entityPersisterCompletions.some(
+                    (completion) =>
+                      completion.sequences.includes(seq) &&
+                      completion.checkpoint >= seq,
+                  ),
+                expectedEntitySequence,
               ),
             ),
-          ),
-        });
-        continue;
-      }
+          ).then((persisted) => persisted.every(Boolean)),
+        `${params.operation} entity row was not persisted on every tab`,
+      );
       const observedTab = params.operation === "chat" ? 1 : 0;
-      const observed = pulls[observedTab]
-        .slice(previousPulls[observedTab])
-        .find((pull) => matchingDocument(pull));
-      const document = matchingDocument(observed);
+      const observed = await pages[observedTab].evaluate(
+        ({ from, documentId, seq }) => {
+          for (const frame of window.__entityFrames.slice(from)) {
+            for (const [index, version] of (
+              frame.event.resourceVersions || []
+            ).entries()) {
+              if (
+                (version.resource ?? frame.event.resources[index])?.kind !==
+                "state"
+              )
+                continue;
+              const document = version.entityChanges?.documents.find(
+                (row) => row.id === documentId && row.seq === seq,
+              );
+              if (document) return { at: frame.at, document };
+            }
+          }
+          return null;
+        },
+        {
+          from: previousFrames[observedTab],
+          documentId: entityDocumentId,
+          seq: expectedEntitySequence,
+        },
+      );
+      assert.ok(observed, `${params.operation} pushed row must be observable`);
+      const document = observed.document;
       if (params.operation === "chat") {
+        await pages[0].locator(`[data-chat="${entityId}"]`).waitFor();
         await pages[1].locator(`[data-chat="${entityId}"]`).waitFor();
         await pages[2].locator(`[data-chat="${entityId}"]`).waitFor();
       }
       // Attribute the delayed stream-reopen baseline to this operation before
-      // starting the next one. The baseline can arrive after the other tabs
-      // have already pulled the mutation response.
+      // starting the next one. A coalesced baseline can arrive after the
+      // mutation's pushed entity row was already persisted.
       await new Promise((resolve) => setTimeout(resolve, 600));
       const operationFrames = await Promise.all(
         pages.map((page, tab) =>
@@ -568,6 +637,9 @@ test("committed entities propagate between renderer tabs @sync", async ({
       });
     }
     const batchPulls = pulls.map((rows) => rows.length);
+    const batchFrameOffsets = await Promise.all(
+      pages.map((page) => page.evaluate(() => window.__entityFrames.length)),
+    );
     const batchFrames = await Promise.all(
       pages.map((page) =>
         page.evaluate(
@@ -578,27 +650,52 @@ test("committed entities propagate between renderer tabs @sync", async ({
         ),
       ),
     );
+    const batchState = await readTestState(origin);
+    const batchLead = batchState.threads.find((agent) => agent.id === leadId);
+    const batchBeforeTokensUsed = Number(batchLead.tokensUsed || 0);
     const batch = await command("entity-change-batch-30", {
       operation: "batch",
       agent: leadId,
       count: 30,
     });
     assert.equal(batch.ok, true, JSON.stringify(batch));
-    try {
-      await waitFor(
-        () =>
-          pulls.every((rows, index) =>
-            rows
-              .slice(batchPulls[index])
-              .some((pull) =>
-                pull.documents.some((row) => row.seq >= batch.seq),
-              ),
+    await waitFor(async () => {
+      const frames = await Promise.all(
+        pages.map((page, tab) =>
+          page.evaluate(
+            ({ from, seq }) =>
+              window.__entityFrames
+                .slice(from)
+                .some(({ event }) =>
+                  event.resourceVersions?.some(
+                    (version, index) =>
+                      (version.resource ?? event.resources[index])?.kind ===
+                        "state" && version.entityChanges?.through >= seq,
+                  ),
+                ),
+            { from: batchFrameOffsets[tab], seq: batch.seq },
           ),
-        "both tabs did not pull the final sequence from the 30-commit burst",
+        ),
       );
-    } catch {
-      // The base has no commit publisher; retain zero-event counts in its red run.
-    }
+      return frames.every(Boolean);
+    }, "all tabs did not receive the pushed final entity sequence");
+    await waitFor(
+      () =>
+        Promise.all(
+          pages.map((page) =>
+            page.evaluate(
+              (seq) =>
+                window.__entityPersisterCompletions.some(
+                  (completion) =>
+                    completion.sequences.includes(seq) &&
+                    completion.checkpoint >= seq,
+                ),
+              batch.seq,
+            ),
+          ),
+        ).then((persisted) => persisted.every(Boolean)),
+      "all tabs did not persist the pushed final entity sequence",
+    );
     const afterBatchFrames = await Promise.all(
       pages.map((page) =>
         page.evaluate(
@@ -622,19 +719,41 @@ test("committed entities propagate between renderer tabs @sync", async ({
         batchCounts.frames[tab] >= 1,
         `tab ${tab} should receive a publication for the 30-commit burst`,
       );
-      assert.ok(
-        batchCounts.pulls[tab] >= 1 &&
-          batchCounts.pulls[tab] <= batchCounts.frames[tab],
-        `tab ${tab} should coalesce pulls without missing state publications`,
+      const delivered = await pages[tab].evaluate(
+        ({ from, leadId, seq }) => {
+          for (const { event } of window.__entityFrames.slice(from)) {
+            for (const [index, version] of (
+              event.resourceVersions || []
+            ).entries()) {
+              if (
+                (version.resource ?? event.resources[index])?.kind !==
+                  "state" ||
+                version.entityChanges?.through < seq
+              )
+                continue;
+              const document = version.entityChanges.documents.find(
+                (row) => row.id === `entity:agent:${leadId}` && row.seq === seq,
+              );
+              if (document)
+                return {
+                  seq: document.seq,
+                  value: JSON.parse(document.payload).value,
+                };
+            }
+          }
+          return null;
+        },
+        { from: batchFrameOffsets[tab], leadId, seq: batch.seq },
       );
-      const deliveredRows = pulls[tab]
-        .slice(batchPulls[tab])
-        .flatMap((pull) => pull.documents);
-      assert.ok(deliveredRows.length > 0);
       assert.equal(
-        Math.max(...deliveredRows.map((row) => row.seq)),
+        delivered?.seq,
         batch.seq,
-        `tab ${tab} must pull the final entity sequence`,
+        `tab ${tab} must persist the final entity sequence from its stream frame`,
+      );
+      assert.equal(
+        Number(delivered?.value.tokensUsed),
+        batchBeforeTokensUsed + 30,
+        `tab ${tab} must persist all thirty committed token increments`,
       );
     }
     // Browser scheduling varies under load, so publication counts are not

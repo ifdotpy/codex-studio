@@ -2,7 +2,10 @@ import {
   handleEntitySyncFixtureRequest,
   legacySnapshotRoute,
   syncIdentityFixture,
+  API_SCHEMA_HASH_HEADER,
+  readApiSchemaHash,
   test,
+  updateEntitySyncFixture,
 } from "../playwright.mjs";
 // Production React build with isolated account fixtures. No credentials or model calls.
 import assert from "node:assert/strict";
@@ -27,7 +30,7 @@ test.afterEach(async ({ browser }, testInfo) => {
 });
 
 test("account project ui", async ({ browser: _browser }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(60_000);
   const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const webDist =
     process.env.STUDIO_WEB_DIST ||
@@ -155,6 +158,24 @@ test("account project ui", async ({ browser: _browser }) => {
     };
   };
   const syncWorkspaceId = syncIdentityFixture().workspaceId;
+  const stateForEntities = {
+    stateDir: evidence,
+    threads: agents,
+    chats: [],
+    runtime: {
+      agents,
+      projects,
+      projectOrganizationVersion: 1,
+      rooms: [],
+      complaints: [],
+      requests: [],
+      monitors: [],
+      tasks: [],
+      work: [],
+      userTasks: [],
+      rateLimitsByAccount: snapshotLimits,
+    },
+  };
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
     let body = {};
@@ -166,24 +187,8 @@ test("account project ui", async ({ browser: _browser }) => {
     }
     const json = (data) => {
       res.setHeader("Content-Type", "application/json");
+      res.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
       res.end(JSON.stringify(data));
-    };
-    const stateForEntities = {
-      stateDir: evidence,
-      threads: agents,
-      chats: [],
-      runtime: {
-        agents,
-        projects,
-        rooms: [],
-        complaints: [],
-        requests: [],
-        monitors: [],
-        tasks: [],
-        work: [],
-        userTasks: [],
-        rateLimitsByAccount: snapshotLimits,
-      },
     };
     if (
       handleEntitySyncFixtureRequest(req, res, {
@@ -243,6 +248,7 @@ test("account project ui", async ({ browser: _browser }) => {
         };
         projects.push(project);
       }
+      if (body.action == null && body.account_key == null) return json(project);
       if (body.action === "set_worker_base") {
         assert.equal(body.expected_revision, project.workerBaseRevision);
         project.workerBaseRef = body.base_ref;
@@ -263,7 +269,8 @@ test("account project ui", async ({ browser: _browser }) => {
     if (url.pathname === "/api/agents/account") {
       const agent = agents.find((a) => a.id === body.id);
       agent.accountKey = body.account_key;
-      return json(agent);
+      const syncEntities = updateEntitySyncFixture(stateForEntities);
+      return json({ ...agent, _syncEntities: syncEntities });
     }
     if (url.pathname === "/api/directories") {
       const path = url.searchParams.get("path") || "/projects";
@@ -360,12 +367,27 @@ test("account project ui", async ({ browser: _browser }) => {
     debugPage = page;
     page.setDefaultTimeout(10000);
     const syncPullRequests = [],
-      stateRequests = [];
+      stateRequests = [],
+      syncPullResponses = [];
     page.on("request", (request) => {
       const path = new URL(request.url()).pathname;
       if (path === "/api/sync/pull") syncPullRequests.push(request.url());
       if (legacySnapshotRoute.test(request.url()))
         stateRequests.push(request.url());
+    });
+    await page.route("**/api/sync/pull**", async (route) => {
+      const response = await route.fetch();
+      const payload = await response.json();
+      const entity = payload.documents
+        ?.map((document) => JSON.parse(document.payload))
+        .find(
+          (entity) => entity.collection === "agent" && entity.id === "empty",
+        );
+      syncPullResponses.push({
+        after: new URL(route.request().url()).searchParams.get("after"),
+        accountKey: entity?.value?.accountKey,
+      });
+      await route.fulfill({ response, body: JSON.stringify(payload) });
     });
     const errors = [];
     page.on("pageerror", (error) => {
@@ -382,50 +404,162 @@ test("account project ui", async ({ browser: _browser }) => {
     assert.deepEqual(stateRequests, []);
     await page.getByRole("button", { name: "Studio settings" }).click();
     await page
-      .getByRole("button", { name: /Personal.*personal@example\.com/ })
+      .getByRole("button", { name: "Edit name for personal@example.com" })
       .waitFor();
     await page.getByRole("button", { name: "Close", exact: true }).click();
-    const picker = page.locator(".account-picker");
-    const settings = page.getByRole("dialog", {
+    const chatSettings = page.getByRole("dialog", {
       name: "Chat settings",
       exact: true,
     });
+    const mainSettings = page.getByRole("dialog", {
+      name: "Main agent settings",
+      exact: true,
+    });
+    const picker = mainSettings.getByRole("group", {
+      name: "Main agent account",
+      exact: true,
+    });
     const openSettings = async () => {
-      if (!(await settings.isVisible()))
+      if (!(await chatSettings.isVisible()))
         await page
           .getByRole("button", { name: "Chat settings", exact: true })
           .click();
+      await chatSettings.waitFor({ state: "visible" });
+      if (!(await mainSettings.isVisible()))
+        await chatSettings
+          .getByRole("button", { name: "Main agent settings", exact: true })
+          .click();
+      await mainSettings.waitFor({ state: "visible" });
+      await picker.waitFor();
     };
     const closeSettings = async () => {
-      if (await settings.isVisible()) {
-        await settings.locator(".mantine-Modal-close").click();
-        await settings.waitFor({ state: "hidden" });
-      }
+      if (await mainSettings.isVisible())
+        await chatSettings
+          .getByRole("button", { name: "Main agent settings", exact: true })
+          .click();
+      await mainSettings.waitFor({ state: "hidden" });
+      if (await chatSettings.isVisible())
+        await chatSettings
+          .getByRole("button", { name: "Close", exact: true })
+          .click();
+      await chatSettings.waitFor({ state: "hidden" });
     };
+    const studioSettings = page.getByTestId("studio-settings");
+    const openStudioAccounts = async () => {
+      await closeSettings();
+      if (!(await studioSettings.isVisible()))
+        await page.getByRole("button", { name: "Studio settings" }).click();
+      await studioSettings.locator('[data-account="default"]').waitFor();
+    };
+    await page.locator('[data-chat="empty"]').click();
     await openSettings();
     await picker.waitFor();
-    await page.waitForFunction(() =>
-      document
-        .querySelector(".account-picker")
-        ?.textContent.includes("personal@example.com"),
+    await page.waitForFunction(
+      () =>
+        document.querySelector(
+          '[role="group"][aria-label="Main agent account"]',
+        )?.dataset.value === "default",
     );
     const choose = async (email) => {
       await openSettings();
-      await picker.click();
-      await page.getByRole("menuitem").filter({ hasText: email }).click();
+      const mutationResponse = page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname === "/api/agents/account",
+      );
+      await picker
+        .getByRole("button", {
+          name: `Select account ${email === "work@example.com" ? "Work" : email === "personal@example.com" ? "Personal" : "Second workspace"}`,
+          exact: true,
+        })
+        .click();
+      return mutationResponse;
     };
-    await choose("work@example.com");
+    const accountMutationResponse = await choose("work@example.com");
+    const accountMutationBody = await accountMutationResponse.json();
+    console.log(
+      "ACCOUNT ENTITY MUTATION RESPONSE",
+      JSON.stringify({
+        request: bodies
+          .filter((request) => request.path === "/api/agents/account")
+          .at(-1),
+        rows: accountMutationBody._syncEntities.map((document) =>
+          JSON.parse(document.payload),
+        ),
+      }),
+    );
+    const changedAgentEntity = accountMutationBody._syncEntities
+      .map((document) => JSON.parse(document.payload))
+      .find((entity) => entity.collection === "agent" && entity.id === "empty");
+    assert.equal(changedAgentEntity.value.accountKey, "work");
+    assert.equal(agents.find((a) => a.id === "empty").accountKey, "work");
+    const freshPage = await browser.newPage({
+      viewport: { width: 1440, height: 900 },
+    });
+    freshPage.setDefaultTimeout(5000);
+    const initialEntityPull = freshPage.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === "/api/sync/pull" &&
+        url.searchParams.get("scope") === "state:entities:v1"
+      );
+    });
+    await freshPage.goto(`http://127.0.0.1:${server.address().port}`);
+    const initialEntityPullBody = await (await initialEntityPull).json();
+    const pulledEmptyLead = initialEntityPullBody.documents
+      .map((document) => JSON.parse(document.payload))
+      .find((entity) => entity.collection === "agent" && entity.id === "empty");
+    assert.equal(pulledEmptyLead.value.accountKey, "work");
+    await freshPage.locator('[data-chat="empty"]').click();
+    await freshPage
+      .getByRole("button", { name: "Chat settings", exact: true })
+      .click();
+    await freshPage
+      .getByRole("dialog", { name: "Chat settings", exact: true })
+      .getByRole("button", { name: "Main agent settings", exact: true })
+      .click();
+    const freshAccountTile = freshPage.getByRole("group", {
+      name: "Main agent account",
+      exact: true,
+    });
+    await freshPage.waitForFunction(
+      () =>
+        document.querySelector(
+          '[role="group"][aria-label="Main agent account"]',
+        )?.dataset.value === "work",
+    );
+    console.log(
+      "FRESH CHAT ENTITY AND ACCOUNT TILE",
+      JSON.stringify({
+        pulledAccountKey: pulledEmptyLead.value.accountKey,
+        renderedTileValue: await freshAccountTile.getAttribute("data-value"),
+      }),
+    );
+    await freshPage.context().close();
     await page.reload();
     await page.getByRole("button", { name: "Studio settings" }).click();
-    await page.getByText("work@example.com", { exact: true }).waitFor();
+    await page
+      .getByTestId("studio-settings")
+      .getByText("work@example.com", { exact: true })
+      .waitFor();
     await page.getByRole("button", { name: "Close", exact: true }).click();
-    await page.locator('[data-chat="started"]').click();
+    await page.locator('[data-chat="empty"]').click();
     await openSettings();
     await picker.waitFor();
-    await page.waitForFunction(() =>
-      document
-        .querySelector(".account-picker")
-        ?.textContent.includes("work@example.com"),
+    const latestPull = await Promise.all(syncPullResponses);
+    console.log(
+      "ACCOUNT ENTITY SYNC AFTER MUTATION",
+      JSON.stringify({
+        mutationResponseAccountKey: agents.find((a) => a.id === "empty")
+          .accountKey,
+        pulls: latestPull,
+        renderedTileValue: await picker.getAttribute("data-value"),
+      }),
+    );
+    await page.waitForFunction(
+      () =>
+        document.querySelector(
+          '[role="group"][aria-label="Main agent account"]',
+        )?.dataset.value === "work",
     );
     assert.equal(agents.find((a) => a.id === "empty").cwd, "/tmp/fixture");
     assert.equal(
@@ -435,43 +569,79 @@ test("account project ui", async ({ browser: _browser }) => {
       0,
       "Account choice does not force folder choice",
     );
+    await closeSettings();
     await page
-      .getByRole("button", { name: "Choose project folder", exact: true })
+      .getByRole("button", { name: "Add project", exact: true })
       .click();
     const folder = page.getByRole("dialog", {
-      name: "Choose project folder",
+      name: "Add project",
       exact: true,
     });
-    await folder.getByLabel("Folder path").fill("/anywhere/arbitrary");
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector(".directory-picker")
+          ?.getAttribute("aria-busy") === "false",
+    );
+    const folderPath = folder.getByLabel("Folder path");
+    await folderPath.fill("");
+    await folderPath.fill("/anywhere/arbitrary");
+    assert.equal(await folderPath.inputValue(), "/anywhere/arbitrary");
     await folder
       .getByRole("button", { name: "Open path", exact: true })
       .click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector(".directory-location")?.textContent ===
+        "/anywhere/arbitrary",
+    );
     await folder
       .getByRole("button", { name: "Add project", exact: true })
       .click();
     await folder.waitFor({ state: "hidden" });
-    assert.equal(
-      agents.find((a) => a.id === "empty").cwd,
-      "/anywhere/arbitrary",
+    assert.ok(
+      projects.some((project) => project.path === "/anywhere/arbitrary"),
+      "Add project creates the selected directory as a project",
     );
     assert.equal(agents.find((a) => a.id === "empty").accountKey, "work");
     const newChat = async (name) => {
       await closeSettings();
+      if (name.startsWith("folder ")) {
+        const project = page.locator('[data-project-path="/projects/Lumina"]');
+        const toggle = project.locator(
+          ":scope > .project-tree-heading > .project-tree-toggle",
+        );
+        if ((await toggle.getAttribute("aria-expanded")) === "false")
+          await toggle.click();
+        const folderHeading = page.locator(
+          '[data-folder-id="review"] > .project-tree-heading',
+        );
+        await folderHeading.hover();
+        await folderHeading
+          .getByRole("button", { name: `New chat in ${name}`, exact: true })
+          .click();
+        return;
+      }
       const button = page.getByRole("button", {
         name: `New chat in ${name}`,
         exact: true,
       });
       await button.locator("..").hover();
-      await button.click();
+      await button.focus();
+      await button.press("Enter");
     };
     const openProject = async (name) => {
       await closeSettings();
+      await page.locator(".mantine-Modal-overlay").waitFor({
+        state: "hidden",
+      });
       const button = page.getByRole("button", {
         name: `Options for project ${name}`,
         exact: true,
       });
       await button.locator("..").hover();
-      await button.click();
+      await button.focus();
+      await button.press("Enter");
       await page
         .getByRole("menuitem", { name: "Project account", exact: true })
         .click();
@@ -527,7 +697,9 @@ test("account project ui", async ({ browser: _browser }) => {
       "default",
       "Existing running session keeps its account",
     );
-    const saves = bodies.filter((r) => r.path === "/api/projects");
+    const saves = bodies.filter(
+      (r) => r.path === "/api/projects" && r.body.account_key != null,
+    );
     assert.deepEqual(
       saves[0].body,
       saves[1].body,
@@ -575,10 +747,11 @@ test("account project ui", async ({ browser: _browser }) => {
     await choose("personal@example.com");
     await newChat("arbitrary");
     await openSettings();
-    await page.waitForFunction(() =>
-      document
-        .querySelector(".account-picker")
-        ?.textContent.includes("work@example.com"),
+    await page.waitForFunction(
+      () =>
+        document.querySelector(
+          '[role="group"][aria-label="Main agent account"]',
+        )?.dataset.value === "work",
     );
     assert.equal(
       agents.at(-1).accountKey,
@@ -718,7 +891,12 @@ test("account project ui", async ({ browser: _browser }) => {
       assert.equal(agents.filter((item) => item.id === request.id).length, 1);
     const pendingKey = `codex-pending-creation:${evidence}:request:external`;
     await page.evaluate((key) => {
-      const value = JSON.stringify({ id: "external", cwd: "/projects/Lumina" });
+      const value = JSON.stringify({
+        id: "external",
+        previous: null,
+        reuse_empty: false,
+        cwd: "/projects/Lumina",
+      });
       localStorage.setItem(key, value);
       window.dispatchEvent(
         new StorageEvent("storage", { key, newValue: value }),
@@ -756,12 +934,8 @@ test("account project ui", async ({ browser: _browser }) => {
       0,
       "Confirmed requests in another tab must remove the stale retry notice",
     );
-    await openSettings();
-    await picker.click();
-    await page
-      .getByRole("menuitem", { name: "Manage accounts · 3", exact: true })
-      .click();
-    const manager = page.getByRole("dialog", { name: "Accounts", exact: true });
+    await openStudioAccounts();
+    const manager = studioSettings;
     assert.equal(
       await manager.getByText("Edit rules", { exact: true }).count(),
       0,
@@ -772,9 +946,8 @@ test("account project ui", async ({ browser: _browser }) => {
         .count(),
       0,
     );
-    await manager.locator(".mantine-Modal-close").click();
-    await manager.waitFor({ state: "hidden" });
-    await closeSettings();
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+    await studioSettings.waitFor({ state: "hidden" });
     holdCreation = true;
     const delayedCreate = page.waitForResponse((response) =>
       response.url().endsWith("/api/leads"),
@@ -820,10 +993,6 @@ test("account project ui", async ({ browser: _browser }) => {
         (element) => getComputedStyle(element).opacity === "1",
         await dialog.elementHandle(),
       );
-      await page.screenshot({
-        path: join(evidence, `project-account-${width}.png`),
-        animations: "disabled",
-      });
       const bounds = await dialog.boundingBox();
       assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width);
       assert.ok(
@@ -841,15 +1010,8 @@ test("account project ui", async ({ browser: _browser }) => {
       await dialog.waitFor({ state: "hidden" });
     }
     await page.setViewportSize({ width: 1440, height: 900 });
-    await openSettings();
-    await picker.click();
-    await page
-      .getByRole("menuitem", { name: "Manage accounts · 3", exact: true })
-      .click();
-    const removalManager = page.getByRole("dialog", {
-      name: "Accounts",
-      exact: true,
-    });
+    await openStudioAccounts();
+    const removalManager = studioSettings;
     const otherRow = removalManager.locator('[data-account="other"]');
     await otherRow
       .getByRole("button", {
@@ -869,9 +1031,12 @@ test("account project ui", async ({ browser: _browser }) => {
       .click();
     await otherRow.waitFor({ state: "detached" });
     assert.equal(archivedAccounts[0].id, "other");
-    await removalManager.locator(".mantine-Modal-close").click();
+    await deletion.waitFor({ state: "hidden" });
+    await page
+      .getByRole("dialog", { name: "Studio settings", exact: true })
+      .getByRole("button", { name: "Close", exact: true })
+      .click();
     await removalManager.waitFor({ state: "hidden" });
-    await closeSettings();
 
     await openProject("fixture");
     const deletedMembership = memberships.locator('[data-account-key="other"]');

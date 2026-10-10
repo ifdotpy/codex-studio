@@ -1,3 +1,4 @@
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -14,15 +15,30 @@ const webkitPath = webkit.executablePath();
 
 async function runDeadlineChecks(name, engine, executablePath) {
   // Browser request deadlines still expire after mobile JavaScript suspension.
-  const { createServer } = await import(require.resolve("vite"));
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const server = await createServer({
+    optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
     configFile: false,
     root: join(repo, "workspaces/client/apps/web"),
     server: { host: "127.0.0.1", port: 0 },
   });
   await server.listen();
   try {
-    const browser = await engine.launch({ headless: true, executablePath });
+    let browser;
+    try {
+      browser = await engine.launch({ headless: true, executablePath });
+    } catch (error) {
+      const missingLibrary = String(error).match(
+        /error while loading shared libraries: ([^:]+): cannot open shared object file/,
+      )?.[1];
+      if (name === "webkit" && missingLibrary)
+        test.skip(
+          true,
+          `WebKit system library is unavailable: ${missingLibrary}`,
+        );
+      throw error;
+    }
     try {
       const page = await browser.newPage();
       await page.route("**/deadline-fixture", (r) =>
@@ -37,7 +53,7 @@ async function runDeadlineChecks(name, engine, executablePath) {
       );
       await page.goto(server.resolvedUrls.local[0] + "deadline-fixture");
       await page.evaluate(async () => {
-        const { api, syncApi } = await import("/src/api.ts");
+        const { get, post, syncPost } = await import("/src/api.ts");
         window.outcomes = {};
         window.start = Date.now();
         const realNow = Date.now;
@@ -48,9 +64,9 @@ async function runDeadlineChecks(name, engine, executablePath) {
             () => (window.outcomes[key] = "success"),
             (e) => (window.outcomes[key] = e.name),
           );
-        record("read", api("/api/held-read"));
-        record("durable", syncApi("/api/held-durable", { id: "fixed-id" }));
-        record("ordinary", api("/api/held-ordinary", { action: "one-time" }));
+        record("read", get("/api/held-read"));
+        record("durable", syncPost("/api/held-durable", { id: "fixed-id" }));
+        record("ordinary", post("/api/held-ordinary", { action: "one-time" }));
       });
       await page.waitForTimeout(100);
       assert.equal(held.size, 3);
@@ -68,7 +84,7 @@ async function runDeadlineChecks(name, engine, executablePath) {
       await held.get("/api/held-ordinary").fulfill({ json: { ok: true } });
       await page.waitForFunction(() => window.outcomes.ordinary === "success");
       await page.evaluate(async () => {
-        const { api } = await import("/src/api.ts");
+        const { get, post } = await import("/src/api.ts");
         const record = (key, promise) =>
           promise.then(
             () => (window.outcomes[key] = "success"),
@@ -80,14 +96,14 @@ async function runDeadlineChecks(name, engine, executablePath) {
         alreadyAborted.abort();
         record(
           "cancelledRead",
-          api("/api/held-cancel-read", undefined, {
+          get("/api/held-cancel-read", {
             signal: window.cancelWithDeadline.signal,
             timeoutMs: 15000,
           }),
         );
         record(
           "cancelledPost",
-          api(
+          post(
             "/api/held-cancel-post",
             {},
             {
@@ -97,7 +113,7 @@ async function runDeadlineChecks(name, engine, executablePath) {
         );
         record(
           "alreadyAborted",
-          api(
+          post(
             "/api/held-already-aborted",
             {},
             {

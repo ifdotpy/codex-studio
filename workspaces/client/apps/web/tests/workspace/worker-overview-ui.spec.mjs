@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 import {
+  API_SCHEMA_HASH_HEADER,
   test,
   expect,
   spawnFixture as spawn,
+  readApiSchemaHash,
   readTestState,
   entityPullFixture,
 } from "../playwright.mjs";
 // Production renderer with an isolated fixture. No model calls or user state.
 
+import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -94,6 +97,11 @@ test("Worker Overview Ui", async ({
       "All observed cases and their evidence remain in the report. "
         .repeat(10)
         .trim();
+    const mobileReport =
+      "Independent worker output preserves the mobile progress disclosure. " +
+      "All observed cases and their evidence remain in the report. "
+        .repeat(10)
+        .trim();
     const longName =
       "Review the continuation receipt across concurrent requests and uncertain responses";
     let workerFailure = {
@@ -108,6 +116,7 @@ test("Worker Overview Ui", async ({
     let deferred = false;
     let fixtureRefreshStage = 0;
     let appliedFixtureRefreshStage = 0;
+    let fixtureEntitySeq = 0;
     page = testPage;
     await page.setViewportSize({ width: 1440, height: 980 });
     page.setDefaultTimeout(10000);
@@ -164,7 +173,7 @@ test("Worker Overview Ui", async ({
               name: longName,
               model: "gpt-6-astra",
               effort: "high",
-              overview: { task, result: "" },
+              overview: { task, result: mobileReport },
             });
           if (agent.id === worker(25).id)
             Object.assign(agent, {
@@ -179,7 +188,7 @@ test("Worker Overview Ui", async ({
         }
         document.payload = JSON.stringify(entity);
       }
-      if (isEntityPull) {
+      if (isEntityPull && Array.isArray(data.documents)) {
         const requests = [];
         if (pending)
           requests.push({
@@ -203,7 +212,7 @@ test("Worker Overview Ui", async ({
             questions: [{ id: "done", question: "Already answered" }],
           },
         });
-        let seq = data.checkpoint.seq;
+        let seq = Math.max(data.checkpoint?.seq ?? 0, data.maxSeq ?? 0);
         data.documents.push(
           ...requests.map((value) => {
             seq += 1;
@@ -219,7 +228,7 @@ test("Worker Overview Ui", async ({
             };
           }),
         );
-        data.checkpoint.seq = seq;
+        if (data.checkpoint) data.checkpoint.seq = seq;
         data.maxSeq = seq;
         if (!pending) {
           const tombstoneSeq = data.maxSeq + 1;
@@ -229,11 +238,15 @@ test("Worker Overview Ui", async ({
             _deleted: true,
             payload: "{}",
           });
-          data.checkpoint.seq = tombstoneSeq;
+          if (data.checkpoint) data.checkpoint.seq = tombstoneSeq;
           data.maxSeq = tombstoneSeq;
         }
       }
-      if (isEntityPull && fixtureRefreshStage > appliedFixtureRefreshStage) {
+      if (
+        isEntityPull &&
+        Array.isArray(data.documents) &&
+        fixtureRefreshStage > appliedFixtureRefreshStage
+      ) {
         appliedFixtureRefreshStage = fixtureRefreshStage;
         const changedAgents = initial.runtime.agents.map((agent) => ({
           ...agent,
@@ -244,11 +257,14 @@ test("Worker Overview Ui", async ({
             changedAgents[index] = { ...changedAgents[index], ...updates };
         };
         updateAgent(worker(24).id, {
-          status: "failed",
+          status: typeof workerStopError === "string" ? "paused" : "failed",
           autoWake: false,
           error: workerStopError,
         });
         updateAgent(worker(7).id, { status: "failed", error: workerFailure });
+        updateAgent(worker(0).id, {
+          status: deferred ? "approval" : "running",
+        });
         const changedState = {
           ...initial,
           threads: changedAgents,
@@ -258,8 +274,8 @@ test("Worker Overview Ui", async ({
           scope: "state:entities:v1",
           fresh: true,
         });
-        let seq = data.maxSeq;
-        for (const id of [worker(24).id, worker(7).id]) {
+        let seq = Math.max(data.maxSeq, fixtureEntitySeq);
+        for (const id of [worker(24).id, worker(7).id, worker(0).id]) {
           const source = projected.documents.find(
             (document) => document.id === `entity:agent:${id}`,
           );
@@ -267,23 +283,11 @@ test("Worker Overview Ui", async ({
           seq++;
           data.documents.push({ ...source, seq });
         }
-        data.checkpoint.seq = seq;
+        if (data.checkpoint) data.checkpoint.seq = seq;
         data.maxSeq = seq;
+        fixtureEntitySeq = seq;
       }
       await route.fulfill({ response, json: data });
-    });
-    await page.addInitScript(() => {
-      const NativeEventSource = window.EventSource;
-      window.EventSource = class extends NativeEventSource {
-        constructor(url, options) {
-          super(url, options);
-          if (!String(url).includes("/api/sync/stream")) return;
-          window.workerOverviewStream = this;
-          this.addEventListener("resources", (event) => {
-            window.workerOverviewResource = JSON.parse(event.data);
-          });
-        }
-      };
     });
     await page.goto(origin);
     const selectLead = () =>
@@ -323,21 +327,20 @@ test("Worker Overview Ui", async ({
     assert.equal(await card(7).locator(".chat-status-error svg").count(), 1);
     const refreshFromEntityPull = async () => {
       fixtureRefreshStage++;
-      await page.evaluate(() => {
-        const source = window.workerOverviewStream;
-        const current = window.workerOverviewResource;
-        if (!source || !current)
-          throw new Error("The real sync resource stream is not connected");
-        const next = {
-          ...current,
-          reason: "change",
-          revision: current.revision + 1,
-        };
-        window.workerOverviewResource = next;
-        source.dispatchEvent(
-          new MessageEvent("resources", { data: JSON.stringify(next) }),
-        );
+      const response = await fetch(origin + "/api/sync/notify", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Canvas-Token": initial.token,
+          Origin: origin,
+          [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
+        },
+        body: JSON.stringify({
+          requestId: randomUUID(),
+          resources: [{ kind: "state" }],
+        }),
       });
+      assert.equal(response.status, 200, await response.clone().text());
     };
     assert.equal(
       await page.locator("#conversation-title").innerText(),
@@ -492,9 +495,7 @@ test("Worker Overview Ui", async ({
         .count(),
       0,
     );
-    await page
-      .getByRole("button", { name: "Back to main agent", exact: true })
-      .click();
+    await page.locator("#back-lead").click();
     await search.fill("");
     deferred = true;
     await page.reload();
@@ -583,5 +584,6 @@ test("Worker Overview Ui", async ({
     console.error("Failure evidence:", root);
     throw error;
   } finally {
+    await page?.unrouteAll({ behavior: "ignoreErrors" });
   }
 });

@@ -1,11 +1,20 @@
-import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
+import {
+  readTestState,
+  installApiSchemaFixtureHeaders,
+  test,
+  expect,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { mkdtemp, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+test.use({ apiSchemaFixtureHeaders: false });
+
 test("Chat controls", async ({ page }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(45_000);
   const testRepo = fileURLToPath(
     new URL("../../../../../../", import.meta.url),
   );
@@ -41,7 +50,14 @@ test("Chat controls", async ({ page }) => {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   // Durable attachments use the real workspace identity and sync store.
+  installApiSchemaFixtureHeaders(page);
   await page.goto(origin);
+  await expect(
+    page.getByRole("alertdialog", {
+      name: "Studio update required",
+      exact: true,
+    }),
+  ).toHaveCount(0, { timeout: 2000 });
   await page.locator("[data-chat]").first().waitFor();
   const initial = await state();
   const lead = initial.threads.find((agent) => agent.name === "Other project");
@@ -49,6 +65,11 @@ test("Chat controls", async ({ page }) => {
   await row().click();
   const actions = () =>
     page.getByRole("button", {
+      name: "Actions for Other project",
+      exact: true,
+    });
+  const actionMenu = () =>
+    page.getByRole("menu", {
       name: "Actions for Other project",
       exact: true,
     });
@@ -96,7 +117,8 @@ test("Chat controls", async ({ page }) => {
           .querySelector('button[aria-label="Actions for Other project"]')
           ?.getAttribute("aria-expanded") === "true",
     );
-    await page.getByRole("menu").waitFor({ state: "visible" });
+    // Project list options is a second menu since product commit 10aebff1.
+    await actionMenu().waitFor({ state: "visible" });
   };
   await openActions();
   // The pin shows at once, before a slow entity pull arrives.
@@ -142,7 +164,9 @@ test("Chat controls", async ({ page }) => {
         .cwd.endsWith("/Release checks"),
     "project directory is persisted",
   );
-  await page.getByText("Release checks", { exact: true }).waitFor();
+  await page
+    .getByRole("button", { name: "Release checks", exact: true })
+    .waitFor();
   await openActions();
   const archiveAction = page.getByRole("menuitem", {
     name: "Archive",
@@ -151,7 +175,7 @@ test("Chat controls", async ({ page }) => {
   try {
     await archiveAction.waitFor({ state: "visible" });
   } catch (error) {
-    const menuText = await page.getByRole("menu").allTextContents();
+    const menuText = await actionMenu().allTextContents();
     const thread = (await state()).threads.find((item) => item.id === lead.id);
     throw Error(
       `Archive action missing: ${JSON.stringify({ menuText, archived: thread?.archived, cwd: thread?.cwd, inFlight: thread?.inFlight })}. ${error}`,
@@ -359,13 +383,8 @@ test("Chat controls", async ({ page }) => {
     false,
     "empty Tab retains keyboard navigation",
   );
-  await page.locator("#message").fill("Keyboard check");
-  await page.locator("#message").press("Tab");
-  assert.equal(
-    (await queue()).items.some((item) => item.text === "Keyboard check"),
-    false,
-  );
-  assert.equal(await page.locator("#message").inputValue(), "Keyboard check");
+  // Tab with text intentionally queues during an active turn; the queue flow
+  // is covered by idle-send-queue-ui. Keep the Shift+Tab focus check here.
   await page.locator("#message").fill("Keyboard navigation draft");
   await page.locator("#message").press("Shift+Tab");
   assert.equal(
@@ -382,7 +401,6 @@ test("Chat controls", async ({ page }) => {
       () => document.documentElement.scrollWidth <= innerWidth + 1,
     ),
   );
-  await page.screenshot({ path: join(root, "message-shortcuts-mobile.png") });
   await page.setViewportSize({ width: 1440, height: 960 });
   await page
     .locator("#message")
@@ -472,9 +490,7 @@ test("Chat controls", async ({ page }) => {
     .getByRole("button", { name: "evidence.txt", exact: true })
     .waitFor();
   await page.locator("#toast").waitFor({ state: "hidden" });
-  await page.screenshot({ path: join(root, "chat-controls-desktop.png") });
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.screenshot({ path: join(root, "chat-controls-mobile.png") });
   assert.ok(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= window.innerWidth + 1,

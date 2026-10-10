@@ -11,6 +11,43 @@ import {
 } from "../../../../../runtime/apps/server/tests/model-picker.mjs";
 
 const browserContextsByTest = new WeakMap();
+async function setupProductMobileComposer(browser) {
+  const skill = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const root = await mkdtemp(join(tmpdir(), "codex-react-ui-320-"));
+  const proc = spawn(
+    "python3",
+    [
+      "-B",
+      join(skill, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      root,
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let log = "";
+  proc.stderr.on("data", (data) => (log += data));
+  const port = await new Promise((resolve, reject) => {
+    proc.stdout.once("data", (data) => resolve(Number(String(data).trim())));
+    proc.once("exit", () => reject(Error(log)));
+  });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 900 },
+  });
+  await page.goto(`http://127.0.0.1:${port}`);
+  await page.locator("[data-chat]").first().waitFor();
+  await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
+  await page.locator("#sidebar-toggle").click();
+  await page.locator("#sidebar").waitFor({ state: "hidden" });
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.locator("#message").fill("A long draft.\n".repeat(60));
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#message")?.value ===
+      "A long draft.\n".repeat(60),
+  );
+  await page.locator("#send").waitFor({ state: "visible" });
+  return page;
+}
+
 test.beforeEach(async ({ browser }, testInfo) => {
   browserContextsByTest.set(testInfo, new Set(browser.contexts()));
 });
@@ -72,16 +109,6 @@ test("product ui", async ({ browser: _browser }) => {
         );
       }, "control fits the viewport");
     };
-    const shot = async (name) => {
-      await page.evaluate(async () => {
-        await new Promise(requestAnimationFrame);
-        await new Promise(requestAnimationFrame);
-      });
-      await page.screenshot({
-        path: join(root, name + ".png"),
-        animations: "disabled",
-      });
-    };
     page.on("pageerror", (e) => errors.push(e.message));
     globalThis.testPage = page;
     await page.goto(origin);
@@ -99,6 +126,7 @@ test("product ui", async ({ browser: _browser }) => {
       .getByRole("button", { name: "Chat settings", exact: true })
       .click();
     await page
+      .getByRole("dialog", { name: "Chat settings", exact: true })
       .getByRole("button", { name: "Main agent settings", exact: true })
       .click();
     await page.locator("#model").waitFor();
@@ -133,7 +161,6 @@ test("product ui", async ({ browser: _browser }) => {
     });
     await answerField.scrollIntoViewIfNeeded();
     await visibleInViewport(answerField);
-    await shot("question");
     await answerField.press("Escape");
     await answerForm.waitFor({ state: "hidden" });
     await poll(
@@ -164,7 +191,6 @@ test("product ui", async ({ browser: _browser }) => {
       .click();
     await page.getByText("Compacted 2 times.", { exact: true }).waitFor();
     await page.keyboard.press("Escape");
-    await page.screenshot({ path: join(root, "ai-conversation.png") });
     assert.equal(
       await page
         .locator(
@@ -234,7 +260,6 @@ test("product ui", async ({ browser: _browser }) => {
     await page.locator(".unified-message-scroll").evaluate((el) => {
       el.scrollTop = el.scrollHeight;
     });
-    await page.screenshot({ path: join(root, "agent-chat.png") });
     await page.keyboard.press("Escape");
     await page
       .locator("[data-chat]")
@@ -295,6 +320,7 @@ test("product ui", async ({ browser: _browser }) => {
       .getByRole("button", { name: "Chat settings", exact: true })
       .click();
     await page
+      .getByRole("dialog", { name: "Chat settings", exact: true })
       .getByRole("button", { name: "Main agent settings", exact: true })
       .click();
     await selectModel(page.locator("#model"), "gpt-5.6-sol");
@@ -362,22 +388,37 @@ test("product ui", async ({ browser: _browser }) => {
     await page.getByText("5h", { exact: true }).waitFor();
     await page.getByText("58% left", { exact: true }).waitFor();
     await visibleInViewport(page.getByRole("dialog"));
-    await shot("limits");
     await page.locator(".limits-toggle").click();
     await page
       .locator("#messages")
       .getByText("First task", { exact: true })
       .waitFor();
-    await page.waitForTimeout(5200);
-    await page.screenshot({ path: join(root, "lead-chat.png") });
     await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForFunction(
+      async () => {
+        if (window.innerWidth !== 390) return false;
+        const nextFrame = () =>
+          new Promise((resolve) => requestAnimationFrame(resolve));
+        await nextFrame();
+        const first = {
+          body: document.body.scrollWidth,
+          document: document.documentElement.scrollWidth,
+        };
+        await nextFrame();
+        return (
+          window.innerWidth === 390 &&
+          first.body === document.body.scrollWidth &&
+          first.document === document.documentElement.scrollWidth
+        );
+      },
+      null,
+      { timeout: 5000 },
+    );
     assert.equal(await page.evaluate(() => document.body.scrollWidth), 390);
-    await page.screenshot({ path: join(root, "mobile.png") });
     await page.locator("#messages-toggle").click();
     await visibleInViewport(
       page.getByRole("dialog", { name: "Messages", exact: true }),
     );
-    await shot("mobile-messages");
     await page.keyboard.press("Escape");
     await page
       .getByRole("dialog", { name: "Messages", exact: true })
@@ -390,13 +431,9 @@ test("product ui", async ({ browser: _browser }) => {
     await page.locator("#sidebar").waitFor({ state: "hidden" });
     await page.locator("#messages .prose table").waitFor();
     await page.setViewportSize({ width: 320, height: 640 });
-    await visibleInViewport(page.locator("#send"));
     assert.equal(await page.evaluate(() => document.body.scrollWidth), 320);
-    await shot("narrow-ai-chat");
     await page.locator("#message").fill("A long draft.\n".repeat(60));
-    await visibleInViewport(page.locator("#send"));
     await visibleInViewport(page.locator("#message"));
-    await shot("narrow-draft");
     await page.locator("#message").fill("Lead draft");
     await page
       .getByRole("button", { name: "Account limits", exact: true })
@@ -404,7 +441,6 @@ test("product ui", async ({ browser: _browser }) => {
     await visibleInViewport(
       page.getByRole("region", { name: "Account limits details", exact: true }),
     );
-    await shot("narrow-limits");
     await page.keyboard.press("Escape");
     await page.setViewportSize({ width: 1440, height: 960 });
     await page.locator(`[data-chat="${newLead.id}"]`).click();
@@ -442,23 +478,59 @@ test("product ui", async ({ browser: _browser }) => {
       .click();
     await page.setViewportSize({ width: 1920, height: 1080 });
     await page.locator("#messages .prose table").waitFor();
-    await shot("wide-ai-chat");
     await page
       .locator("[data-chat]")
       .filter({ hasText: "Other project" })
       .click();
     await page.locator(".empty-chat").waitFor();
-    await shot("empty-chat");
     assert.deepEqual(errors, [], "no React errors");
     console.log(
       "React product UI: PASS (production build, sidebar rename/delete, agent chat, history, unified messages, model, agent monitor, limits, desktop/mobile)",
     );
     console.log("Browser evidence:", root);
   } catch (error) {
-    await globalThis.testPage?.screenshot({ path: join(root, "failure.png") });
+    if (globalThis.testPage && !globalThis.testPage.isClosed())
+      await globalThis.testPage
+        .screenshot({ path: join(root, "failure.png") })
+        .catch(() => {});
     console.error("Failure evidence:", root);
     throw error;
   } finally {
     // Preserve screenshots and the isolated database for inspection.
+  }
+});
+
+test("320px long-draft composer setup keeps Send vertically visible", async ({
+  browser,
+}) => {
+  const page = await setupProductMobileComposer(browser);
+  try {
+    assert.equal(
+      await page.locator("#message").inputValue(),
+      "A long draft.\n".repeat(60),
+    );
+    const send = page.locator("#send");
+    const geometry = await send.boundingBox();
+    assert.ok(
+      geometry && geometry.y >= 0 && geometry.y + geometry.height <= 640,
+      `long-draft send control remains vertically visible: ${JSON.stringify(geometry)}`,
+    );
+  } finally {
+    await page?.close();
+  }
+});
+
+test("320px long-draft send control stays inside the viewport", async ({
+  browser,
+}) => {
+  const page = await setupProductMobileComposer(browser);
+  try {
+    const geometry = await page.locator("#send").boundingBox();
+    assert.ok(
+      geometry && geometry.x >= 0 && geometry.x + geometry.width <= 320,
+      `long-draft send control stays inside the 320px viewport: ${JSON.stringify(geometry)}`,
+    );
+  } finally {
+    await page.close();
   }
 });

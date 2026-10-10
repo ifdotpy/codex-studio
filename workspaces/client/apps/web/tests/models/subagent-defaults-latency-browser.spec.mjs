@@ -1,4 +1,9 @@
-import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
+import {
+  readTestState,
+  expect,
+  test,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
@@ -141,12 +146,15 @@ test("Subagent defaults latency @performance", async ({ context }) => {
     await button.click();
   };
   await openDefaults();
-  const dialog = page.getByRole("region", {
+  const dialog = page.getByRole("dialog", {
     name: "Subagent defaults",
     exact: true,
   });
   await dialog.waitFor();
-  const account = dialog.getByLabel(/account/i).first();
+  const account = dialog.getByRole("button", {
+    name: `Select account ${second.label}`,
+    exact: true,
+  });
   const legacy =
     (await dialog
       .getByRole("button", { name: "Save subagent settings" })
@@ -162,7 +170,7 @@ test("Subagent defaults latency @performance", async ({ context }) => {
       .workerDefaults;
   // 1. Account change on a 40-worker team.
   const accountStart = performance.now();
-  await account.selectOption(second.id);
+  await account.click();
   timings.accountShownMs = Math.round(performance.now() - accountStart);
   if (legacy) {
     const save = dialog.getByRole("button", {
@@ -188,7 +196,10 @@ test("Subagent defaults latency @performance", async ({ context }) => {
         .accountKey;
     }, lead.id);
   } else {
-    await saved().waitFor();
+    await dialog
+      .getByRole("status")
+      .filter({ hasText: /^Account transfer accepted\./ })
+      .waitFor();
   }
   timings.accountSavedMs = Math.round(performance.now() - accountStart);
   if (timings.transferResponseAt)
@@ -201,7 +212,7 @@ test("Subagent defaults latency @performance", async ({ context }) => {
   // Entity sync carries workerDefaults.accountKey and the transfer summary.
   const transferStatus = dialog
     .getByRole("status")
-    .filter({ hasText: "moved to second-account" });
+    .filter({ hasText: /Moved \d+ subagents to second-account/ });
   if (legacy) {
     timings.transferStatusShown = await transferStatus
       .waitFor({ timeout: 3000 })
@@ -219,13 +230,6 @@ test("Subagent defaults latency @performance", async ({ context }) => {
   timings.dialogText = (await dialog.innerText())
     .replace(/\s+/g, " ")
     .slice(0, 400);
-  for (const width of [390, 1440]) {
-    await page.setViewportSize({ width, height: 900 });
-    await page.waitForTimeout(150);
-    await page.screenshot({
-      path: join(root, `${timings.variant}-account-${width}.png`),
-    });
-  }
   // 2. Model change.
   const model = dialog.getByLabel(/model/i).first();
   await page.waitForFunction(() =>
@@ -260,11 +264,6 @@ test("Subagent defaults latency @performance", async ({ context }) => {
     }, lead.id);
   }
   timings.modelSavedMs = Math.round(performance.now() - modelStart);
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await page.waitForTimeout(150);
-  await page.screenshot({
-    path: join(root, `${timings.variant}-model-1440.png`),
-  });
   if (!legacy) {
     // The stored account and the transfer summary survive a reload on the entity path.
     await page.reload();
@@ -274,13 +273,18 @@ test("Subagent defaults latency @performance", async ({ context }) => {
       .click();
     await openDefaults();
     await dialog.waitFor();
-    await page.waitForFunction(
-      (id) =>
-        [...document.querySelectorAll('[role="dialog"] select')].some(
-          (node) => node.value === id,
-        ),
-      second.id,
-    );
+    await dialog
+      .getByRole("button", {
+        name: `Select account ${second.label}`,
+        exact: true,
+      })
+      .waitFor();
+    await expect(
+      dialog.getByRole("button", {
+        name: `Select account ${second.label}`,
+        exact: true,
+      }),
+    ).toHaveAttribute("aria-pressed", "true");
     await transferStatus.waitFor();
     assert.equal(
       await modelValue(dialog.getByLabel(/model/i).first()),

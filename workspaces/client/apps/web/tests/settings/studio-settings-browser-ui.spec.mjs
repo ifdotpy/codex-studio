@@ -13,6 +13,10 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+// This spec validates legacy local-preference migration, not schema handshakes.
+test.use({ apiSchemaFixtureHeaders: false });
+
 test("studio settings browser ui", async ({
   browser: runnerBrowser,
   page: runnerPage,
