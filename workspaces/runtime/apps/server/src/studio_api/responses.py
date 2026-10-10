@@ -23,6 +23,8 @@ ERROR_STATUS_DESCRIPTIONS = {
 }
 WRITE_METHODS = frozenset({"POST", "PUT", "PATCH"})
 OPENAPI_COMPONENTS_EXTENSION = "x-studio-components"
+OPENAPI_413_DESCRIPTION = "Content Too Large"
+PYTHON_413_DESCRIPTIONS = frozenset({"Request Entity Too Large", OPENAPI_413_DESCRIPTION})
 
 
 def error_response(
@@ -99,6 +101,12 @@ def install_error_response_docs(app: FastAPI) -> None:
                 responses = operation.setdefault("responses", {})
                 if not isinstance(responses, dict):
                     continue
+                response_413 = responses.get("413")
+                if (
+                    isinstance(response_413, dict)
+                    and response_413.get("description") in PYTHON_413_DESCRIPTIONS
+                ):
+                    response_413["description"] = OPENAPI_413_DESCRIPTION
                 for status, description in ERROR_STATUS_DESCRIPTIONS.items():
                     if status in {408, 409, 413, 415} and method.upper() not in WRITE_METHODS:
                         continue
