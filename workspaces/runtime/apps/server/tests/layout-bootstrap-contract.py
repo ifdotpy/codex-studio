@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Keep top-level server contracts runnable without the suite runner."""
 
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import ast
 from pathlib import Path
 import unittest
