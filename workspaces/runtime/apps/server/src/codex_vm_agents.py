@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path, PurePosixPath
 import platform
 import time
@@ -119,9 +120,14 @@ def tick(runtime: Any) -> None:
     with runtime.lock:
         if runtime.closed or runtime.__dict__.get("_layr_turn_busy"):
             return
+        # Filter in SQLite: native chats must not add an agent decode to each scheduler pass.
+        from codex_agent_modes import mode_fields
         with runtime.read_db() as db:
-            agents = [a for a in runtime.records(db, "agents") if is_vm(a) and a.get("layrTurnRetryAt", 0) <= time.time()
-                      and any(s.get("status") != "saved" for s in a.get("layrTurnSaves", {}).values())]
+            agents = [mode_fields(json.loads(row[0])) for row in db.execute(
+                "SELECT record FROM runtime_agents WHERE json_extract(record, '$.executionMode') = 'vm' "
+                "AND COALESCE(json_extract(record, '$.layrTurnRetryAt'), 0) <= ? "
+                "AND EXISTS (SELECT 1 FROM json_each(record, '$.layrTurnSaves') "
+                "WHERE COALESCE(json_extract(value, '$.status'), '') != 'saved')", (time.time(),))]
         if not agents:
             return
         runtime._layr_turn_busy = True

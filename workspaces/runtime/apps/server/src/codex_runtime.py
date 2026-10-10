@@ -4729,7 +4729,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def new_lead(self, data):
         from codex_vm_agents import workspace_mode
-        selected_workspace = workspace_mode(data, creation=True)
+        selected_workspace = workspace_mode(data)
         if "dangerously_skip_rules" in data:
             raise ValueError("Unsupported setting: dangerously_skip_rules")
         if "reuse_empty" in data and type(data["reuse_empty"]) is not bool:
@@ -5357,15 +5357,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             return TOOLS
         if actor.get('frozenNativeParams'):
             return copy.deepcopy(actor['frozenNativeParams']['dynamicTools'])
-        if actor.get("nativeToolDefinitions") is not None:
-            return copy.deepcopy(actor["nativeToolDefinitions"])
         if actor.get("nativeReview"):
             return []
         lead = bool(actor.get("isLead"))
         federation_enabled = self.federation().enabled()
         definitions = []
         definitions_source = TOOLS
-        if actor.get("threadId") and actor.get("executionMode") != "vm":
+        source = actor.get("nativeToolSource", "legacy" if actor.get("threadId") else "current")
+        if source == "legacy" and actor.get("executionMode") != "vm":
             path = REPOSITORY_ROOT / ".agents/skills/codex-workspace/references/native-tools.json"
             definitions_source = json.loads(path.read_text())
         for definition in definitions_source:
@@ -5840,8 +5839,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if a.get("imageWorkspace"):
                 params["studioImageWorkspaceTempDir"] = (
                     self.image_workspace_temp(a) if not a.get("imageWorkspaceReady") else None)
+        # Threads started before the VM tool change keep the saved pre-change catalog.
+        a.setdefault("nativeToolSource", "legacy" if a.get("threadId") else "current")
         params["dynamicTools"] = self.tool_definitions(a)
-        a.setdefault("nativeToolDefinitions", copy.deepcopy(params["dynamicTools"]))
         if a.get("portableHistory"):
             from codex_portable_history import history_context
             params["developerInstructions"] += "\n" + history_context(self, a["portableHistory"])
@@ -6142,7 +6142,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 # take effect, including when its reply is lost.
                 latest['nativeTeleportTool'] = a['nativeTeleportTool']
                 latest['nativeRoleGuidance'] = a['nativeRoleGuidance']
-                latest['nativeToolDefinitions'] = a['nativeToolDefinitions']
+                latest['nativeToolSource'] = a['nativeToolSource']
                 self.put(db, "agents", latest)
                 self.preparations[a["id"]] = operation
                 db.commit()
@@ -7994,9 +7994,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         notice(self, db, a, "error:" + str(turn.get("id")), error_message(turn["error"]),
                                "error", turnId=turn.get("id"), threadId=tid, nativeError=turn["error"],
                                cyberAccessProgram=a.get("cyberAccessProgram"))
-                    from codex_vm_agents import queue_turn
-                    queue_turn(self, db, a, turn.get("id"))
-                    self.put(db, "agents", a)
+                    from codex_vm_agents import is_vm, queue_turn
+                    if is_vm(a):
+                        queue_turn(self, db, a, turn.get("id"))
+                        self.put(db, "agents", a)
                     db.execute("INSERT OR IGNORE INTO runtime_completed_turns VALUES (?)", (completion,))
                     from codex_turn_item_links import update_turn_status
                     update_turn_status(db, a["id"], turn.get("id"), turn.get("status") or "ended")

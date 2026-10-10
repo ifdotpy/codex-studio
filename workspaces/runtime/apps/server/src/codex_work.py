@@ -507,7 +507,6 @@ class WorkMixin:
         if work.get('owner') != owner_id or work.get('status') != 'accepted':
             return {'status': 'kept', 'reason': 'The accepted task owner changed'}
         if owner.get('executionMode') == 'vm':
-            from codex_agent_management import manage_agent
             archived = manage_agent(cast('Runtime', self), agent_id, {'action': 'archive', 'agent_id': owner_id,
                 'reason': 'Accepted task result is on main'}, epoch)
             if archived.get('status') == 'archived':

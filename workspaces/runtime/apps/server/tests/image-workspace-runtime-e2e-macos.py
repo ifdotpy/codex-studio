@@ -57,7 +57,7 @@ class ImageWorkspaceRuntimeMacE2E(unittest.TestCase):
             rt = fixture.ControlledRuntime(root / 'state', fixture.f.FakeServer)
             rt.catalog = lambda account='default': copy.deepcopy(fixture.CATALOG)
             rt.image_workspace_support = lambda path: engine.supported(path)
-            lead = rt.new_lead({'cwd': str(repo)})
+            lead = rt.new_lead({'cwd': str(repo), 'workspaceMode': 'image'})
             worker_id = None
             try:
                 def create_after_first_read_only_turn(path, agent_id):

@@ -13,11 +13,13 @@ import shutil
 import sys
 import subprocess
 import tempfile
+import time
 from types import ModuleType, MethodType
 import unittest
 from unittest.mock import patch
 import uuid
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 spec = importlib.util.spec_from_file_location('vm_fixture', Path(__file__).with_name('vm-native-fixture.py'))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
@@ -210,7 +212,46 @@ class VmAgents(unittest.TestCase):
             self.assertEqual(response.json()['workspaceMode'], 'layr')
             self.assertEqual(response.json()['executionMode'], 'vm')
 
-    def test_mode_receipt_and_native_session_definition_freeze(self):
+    def test_only_http_creation_applies_the_macos_layr_default(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from studio_api.context import ApiContext
+        from studio_api.agents.router import create_router
+        context = ApiContext.for_schema()
+        context.canvas.runtime = self.runtime
+        app = FastAPI()
+        app.include_router(create_router(context))
+        with patch('codex_vm_agents.platform.system', return_value='Darwin'):
+            with TestClient(app) as client:
+                response = client.post('/api/leads', json={'cwd': str(self.project)})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()['workspaceMode'], 'layr')
+            internal = self.runtime.new_lead({'id': str(uuid.uuid4()), 'cwd': str(self.project), 'reuse_empty': False})
+            self.assertEqual((internal['workspaceMode'], internal['executionMode']), ('worktree', 'native'))
+
+    def test_turn_tick_selects_only_vm_agents_with_unsaved_turns(self):
+        from codex_vm_agents import tick
+        base = self.runtime.new_lead({'cwd': str(self.project), 'workspaceMode': 'worktree'})
+        records = {
+            'vm-due': {'executionMode': 'vm', 'layrTurnSaves': {'t1': {'status': 'saved'}, 't2': {'status': 'pending'}}},
+            'vm-saved': {'executionMode': 'vm', 'layrTurnSaves': {'t1': {'status': 'saved'}}},
+            'vm-later': {'executionMode': 'vm', 'layrTurnRetryAt': time.time() + 600,
+                         'layrTurnSaves': {'t1': {'status': 'failed'}}},
+            'native': {'executionMode': 'native', 'layrTurnSaves': {'t1': {'status': 'pending'}}},
+        }
+        with self.runtime.lock, self.runtime.db() as db:
+            for key, fields in records.items():
+                self.runtime.put(db, 'agents', {**copy.deepcopy(base), 'id': key, **fields})
+        selected = []
+        class Pool:
+            def submit(self, function):
+                function()
+        with patch('codex_vm_agents.flush_turns', lambda runtime, agent: selected.append(agent['id'])), \
+             patch.object(self.runtime, 'pool', Pool()):
+            tick(self.runtime)
+        self.assertEqual(selected, ['vm-due'])
+
+    def test_mode_receipt_and_native_tool_source(self):
         key = str(uuid.uuid4())
         request = {'id': key, 'cwd': str(self.project), 'workspaceMode': 'worktree'}
         native = self.runtime.new_lead(request)
@@ -218,10 +259,16 @@ class VmAgents(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'different settings'):
             self.runtime.new_lead({**request, 'workspaceMode': 'layr'})
         prepared = self.runtime.prepare(native)
+        # A new native thread keeps a small source marker, not a copy of the tool list,
+        # so its tools follow the provider and lead filters on every call, as before layr chats.
+        stored = self.runtime.agent(native['id'])
+        self.assertEqual(stored.get('nativeToolSource'), 'current')
+        self.assertNotIn('nativeToolDefinitions', stored)
         original = self.runtime.tool_definitions(prepared)
-        with patch('codex_runtime.TOOLS', []):
-            self.assertEqual(self.runtime.tool_definitions(prepared), original)
         self.assertNotIn('host_exec', {t['name'] for t in original})
+        self.assertIn('orchestration_review', {t['name'] for t in original})
+        claude = self.runtime.tool_definitions({**prepared, 'provider': 'claude'})
+        self.assertNotIn('orchestration_review', {t['name'] for t in claude})
 
     def test_host_exec_actual_runtime_tool_binds_actor_and_replays_receipt(self):
         if not hasattr(self.host_tool, 'run_tool'):

@@ -145,6 +145,9 @@ def create_router(context: ApiContext) -> APIRouter:
     def create_lead(http_request: Request, body: CreateLeadRequest) -> Response:
         runtime = current_runtime()
         request = body_data(body)
+        if "workspaceMode" not in request:
+            from codex_vm_agents import workspace_mode
+            request["workspaceMode"] = workspace_mode({}, creation=True)
         created = runtime.new_lead(request)
         return context.send(http_request, agent_entity(runtime, created["id"]))
 

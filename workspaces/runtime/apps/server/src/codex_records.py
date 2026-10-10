@@ -1263,7 +1263,7 @@ class AgentRecord(TypedDict):
     frozenNativeParams: NotRequired[JsonObject]
     nativeTeleportTool: NotRequired[str]
     nativeRoleGuidance: NotRequired[str]
-    nativeToolDefinitions: NotRequired[list[JsonObject]]
+    nativeToolSource: NotRequired[Literal["legacy", "current"]]
     workspaceMode: NotRequired[Literal["layr", "image", "worktree", "shared"] | None]
     executionMode: NotRequired[Literal["vm", "native"]]
     hostProjectPath: NotRequired[str]
