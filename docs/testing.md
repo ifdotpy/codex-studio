@@ -216,10 +216,13 @@ The public GitHub Actions workflow runs on pull requests and pushes to `main`
 on `ubuntu-latest`. It uses read-only repository permissions, no secrets,
 locked dependency installation, and the same package commands listed in each
 check step. The Rust job reads the pinned toolchain in `rust-toolchain.toml`.
-The Python jobs use Python 3.12 (the runtime requires Python 3.11 or later) and
-prepare the digest-keyed managed environments through `install-cli.py --dev`;
-their cache and command-bin directories are isolated to the runner temporary
-directory. The facade job installs Just 1.58.0 from its locked Cargo crate and
+The Node.js jobs use the Node 22 release line; the documented minimum is
+22.15. The Python jobs use Python 3.12 (the runtime requires Python 3.11 or
+later) and prepare the digest-keyed managed environments through
+`install-cli.py --dev`; that command creates virtual environments and installs
+the pinned PyPI requirements, without installing provider binaries. Cache and
+command-bin directories stay under the runner temporary directory. The facade
+job downloads the Just 1.58.0 Linux release, checks its pinned SHA-256, and
 checks the reported version before invoking it.
 
 The CI gate deliberately excludes these checks until their stated issue work
