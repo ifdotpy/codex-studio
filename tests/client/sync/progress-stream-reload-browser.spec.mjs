@@ -9,9 +9,9 @@ test("active panel resource stream reconnects promptly after repeated reloads", 
   page,
 }) => {
   test.setTimeout(120_000);
-  test.fail(
+  test.fixme(
     true,
-    "Known product race: a reloaded panel stream can be rejected during progress-watch detachment; see KNOWN-FAILURES.md.",
+    "Intermittent product race: the expected failure occurred in 10/10 focused ordinary repeats but unexpectedly passed in two ordinary full-suite runs; see KNOWN-FAILURES.md.",
   );
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
