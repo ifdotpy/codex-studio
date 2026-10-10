@@ -22,7 +22,8 @@ class GuestClient(Protocol):
 
 
 def tool_definition() -> dict[str, Any]:
-    return {"name": "host_exec", "description": (
+    # The same canonical format as TOOLS: the app-server rejects a mixed list.
+    return {"type": "function", "name": "host_exec", "description": (
         "Run a macOS command from your VM line. Sources return through layr. Slots keep stable paths and caches. "
         "Use HOST_EXEC_DERIVED_DATA, HOST_EXEC_PACKAGE_CACHE and HOST_EXEC_ARTIFACTS for build output. "
         "Supply the same request_id for exact retries. Lost results never repeat the command. "

@@ -275,6 +275,9 @@ class VmAgents(unittest.TestCase):
             self.skipTest('Merge host-exec dependency, or set STUDIO_HOST_EXEC_TEST_SOURCE')
         lead = self.runtime.prepare(self.lead())
         self.assertIn('host_exec', {t['name'] for t in self.runtime.tool_definitions(lead)})
+        # Codex rejects dynamic tools that mix the canonical and legacy formats.
+        self.assertEqual({tuple(sorted(t)) for t in self.runtime.tool_definitions(lead)},
+                         {('description', 'inputSchema', 'name', 'type')})
         calls = []
         def stream(method, params, **options):
             calls.append((method, copy.deepcopy(params), options))
