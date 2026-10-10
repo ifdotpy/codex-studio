@@ -15,7 +15,7 @@ import { busy, type Agent } from "../types";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
 import AccountSignInNotice from "./AccountSignInNotice";
 import type { Account } from "./Accounts";
-import { requiresThinking } from "../../../../../providers/apps/claude-bridge/thinking.mjs";
+import { requiresThinking } from "studio-claude-bridge/thinking.mjs";
 import "./claude-settings.css";
 
 type ClaudeValues = {

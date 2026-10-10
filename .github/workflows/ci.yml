@@ -151,6 +151,10 @@ jobs:
         run: just --list
       - name: Focused JavaScript facade test
         run: just test codex-studio-tooling
+      - name: Generated contract drift check
+        run: just contracts-check
+      - name: Workspace boundary check
+        run: just boundaries-check
       - name: Focused Rust facade test
         run: just test studio-diagnostics
       - name: Focused Python facade test
