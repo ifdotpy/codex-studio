@@ -521,6 +521,69 @@ def patch(db: sqlite3.Connection, collection: str, key: str, changes: Any) -> bo
     return put(db, collection, key, {**value, **changes})
 
 
+def refresh_workspace_limit_timestamps(
+    db: sqlite3.Connection, account_key: str, snapshot: JsonValue,
+) -> bool:
+    """Persist cache timestamps without creating a visible entity revision."""
+    if not isinstance(snapshot, dict):
+        return False
+    _ensure_sequence_transaction(db)
+    row = db.execute(
+        "SELECT seq,hash,payload FROM sync_entities "
+        "WHERE collection='workspace' AND id='current' AND deleted=0"
+    ).fetchone()
+    if not row or not row[2]:
+        return False
+    try:
+        envelope = json.loads(row[2])
+        value = envelope.get("value") if isinstance(envelope, dict) else None
+        if not isinstance(value, dict):
+            return False
+        snapshots = value.get("rateLimitsByAccount")
+        if not isinstance(snapshots, dict):
+            snapshots = {}
+        current = snapshots.get(account_key)
+        if not isinstance(current, dict):
+            current = {"accountKey": account_key}
+        else:
+            current = dict(current)
+        for field in ("at", "readAt", "checkedAt", "processedAt"):
+            if field in snapshot:
+                current[field] = snapshot[field]
+            else:
+                current.pop(field, None)
+        snapshots[account_key] = current
+        value["rateLimitsByAccount"] = snapshots
+        if account_key == "default":
+            default = value.get("rateLimits")
+            if not isinstance(default, dict):
+                default = {"accountKey": account_key}
+            else:
+                default = dict(default)
+            for field in ("at", "readAt", "checkedAt", "processedAt"):
+                if field in snapshot:
+                    default[field] = snapshot[field]
+                else:
+                    default.pop(field, None)
+            value["rateLimits"] = default
+        projected = project("workspace", value)
+        if not isinstance(projected, dict):
+            return False
+        payload, digest, _deleted = encoded(
+            "workspace", "current", cast(JsonValue, projected),
+        )
+    except (AttributeError, TypeError, ValueError):
+        return False
+    if payload == row[2]:
+        return False
+    cursor = db.execute(
+        "UPDATE sync_entities SET hash=?,payload=? "
+        "WHERE collection='workspace' AND id='current' AND seq=? AND hash=? AND deleted=0",
+        (digest, payload, row[0], row[1]),
+    )
+    return cursor.rowcount == 1
+
+
 def retire_closed_requests(db: sqlite3.Connection) -> int:
     """Remove answered or deleted requests that an older server kept as live entities."""
     rows = db.execute("SELECT id FROM sync_entities WHERE collection='request' AND deleted=0 "

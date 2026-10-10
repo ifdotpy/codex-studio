@@ -9112,13 +9112,22 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.rate_limits_by_account[account_key] = value
             if account_key == "default":
                 self.rate_limits = value
-            from codex_sync_entities import patch as sync_entity_patch
-            if not sync_entity_patch(db, "workspace", "current", {
-                "rateLimits": self.rate_limits,
-                "rateLimitsByAccount": self.rate_limits_by_account.copy(),
-            }):
-                from codex_sync_entities import put as sync_entity_put
-                sync_entity_put(db, "workspace", "current", self.workspace_entity_view(db))
+            if changed:
+                from codex_sync_entities import patch as sync_entity_patch
+                if not sync_entity_patch(db, "workspace", "current", {
+                    "rateLimits": self.rate_limits,
+                    "rateLimitsByAccount": self.rate_limits_by_account.copy(),
+                }):
+                    from codex_sync_entities import put as sync_entity_put
+                    sync_entity_put(db, "workspace", "current", self.workspace_entity_view(db))
+            else:
+                from codex_sync_entities import refresh_workspace_limit_timestamps
+                refresh_workspace_limit_timestamps(db, account_key, value)
+                if not db.execute(
+                    "SELECT 1 FROM sync_entities WHERE collection='workspace' AND id='current' AND deleted=0"
+                ).fetchone():
+                    from codex_sync_entities import put as sync_entity_put
+                    sync_entity_put(db, "workspace", "current", self.workspace_entity_view(db))
             if changed:
                 from studio_api.sync.resources.models import LimitsResource, ResourceRef
 
