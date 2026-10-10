@@ -1,7 +1,7 @@
 # Local version control on btrfs: design contract
 
 Status: implemented in [layr](https://github.com/ifdotpy/layr) (private repository, commit
-`1405682`, 2026-10-10). This document keeps Studio's decisions about local version control and
+`510d605`, 2026-10-10). This document keeps Studio's decisions about local version control and
 their reasons. layr itself is a general tool: its own design is in layr `docs/design.md`;
 commands, formats, measurements and limits are in the layr README. Owner of the decisions: the user. Technical advice
 and prototypes: [agent workspace isolation research](research/2026-10-03-agent-workspace-isolation.md).
@@ -92,9 +92,22 @@ so models learn it quickly, and it has equal convenience. It does not take the n
 21. The end of an agent turn: `layr layer repair`, then `layr save -m "Studio turn <n>"`
     (replaces `layr save --turn-end`).
 22. The layr copy in `vm/layr` is vendored from a fixed revision (`scripts/update-vm-layr.py`).
-    Moving it to `1405682` also needs the guest changes of 18 and 21; revisions before
+    Moving it to `510d605` also needs the guest changes of 18, 21 and 23; revisions before
     `9254261` lack fixes for reading root files through merge drivers, for signed backups and
     stream checks, and for files too large for memory.
+23. The rule of main in a Studio project (layr `docs/design.md`, sections 3 and 5):
+    - a merge needs one approval of the reviewed state from the user's group of people
+      (`--approvals 1 --approvers @<people group>`): an agent's approval never counts, because
+      agents are not in that group;
+    - changes of CI configuration need the user (`--path .github=admin`, and the like for other
+      CI folders);
+    - the project's checks run on every merge result; their command sets its own `PATH`
+      (checks get a clean environment). Their build output becomes the shared warm layer
+      (`target`, `node_modules`) of main, so a new agent line starts warm, without one copy of
+      the build per agent;
+    - Studio merges as the lead agent's user, not as root: root passes every rule;
+    - a task that needs more rights for a while gets a role for a time
+      (`layr access grant <agent> maintainer --until 2h`).
 
 ## Data model
 
