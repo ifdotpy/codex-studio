@@ -143,6 +143,8 @@ class CompatibilityLauncherTests(unittest.TestCase):
                 source_root = project / "workspaces/runtime/apps/server/src"
                 scripts.mkdir(parents=True)
                 source_root.mkdir(parents=True)
+                if name == "codex-diagnostics":
+                    continue
                 shim = scripts / name
                 shim.write_bytes((REPOSITORY_ROOT / "scripts" / name).read_bytes())
                 shim.chmod(0o755)
@@ -199,6 +201,20 @@ class CompatibilityLauncherTests(unittest.TestCase):
             self.assertEqual(report["argv"], ["value with spaces"])
             self.assertEqual(Path(report["source"]), source)
 
+class DiagnosticsLauncherTests(unittest.TestCase):
+    def test_root_compatibility_launcher_executes_rust_help(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-B", str(REPOSITORY_ROOT / "scripts/codex-diagnostics"), "--help"],
+            cwd=REPOSITORY_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--port PORT", result.stdout)
+
+
 class InstallerCompatibilityTests(unittest.TestCase):
     def setUp(self: InstallerCompatibilityTests) -> None:
         self.installer = load_installer()
@@ -209,6 +225,7 @@ class InstallerCompatibilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "bin"
             environment = {**os.environ, "CODEX_AGENTS_PYTHON": sys.executable}
+            diagnostic = REPOSITORY_ROOT / "target/release/codex-diagnostics"
             with (
                 patch.dict(os.environ, environment, clear=True),
                 patch.object(self.installer, "resolve_python", return_value=Path(sys.executable)),
@@ -218,7 +235,35 @@ class InstallerCompatibilityTests(unittest.TestCase):
             for name in self.installer.COMMANDS:
                 link = target / name
                 self.assertTrue(link.is_symlink(), name)
-                self.assertEqual(link.resolve(), SERVER_SOURCE_ROOT / name)
+                expected = diagnostic if name == "codex-diagnostics" else SERVER_SOURCE_ROOT / name
+                self.assertEqual(link.resolve(), expected)
+
+    def test_install_fails_before_creating_bin_dir_without_binary_or_cargo(
+        self: InstallerCompatibilityTests,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory) / "project"
+            source_root = project / "workspaces/runtime/apps/server/src"
+            source_root.mkdir(parents=True)
+            for name in self.installer.COMMANDS:
+                if name == "codex-diagnostics":
+                    continue
+                source = source_root / name
+                source.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                source.chmod(0o755)
+            target = Path(directory) / "bin"
+            with patch.object(self.installer.shutil, "which", return_value=None):
+                with self.assertRaisesRegex(RuntimeError, "Cargo is unavailable"):
+                    self.installer.install(project, target)
+            self.assertFalse(target.exists())
+
+    def test_missing_diagnostics_binary_without_cargo_fails_clearly(
+        self: InstallerCompatibilityTests,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(self.installer.shutil, "which", return_value=None):
+                with self.assertRaisesRegex(RuntimeError, "not prebuilt and Cargo is unavailable"):
+                    self.installer.diagnostics_binary(directory)
 
     def test_replaces_only_links_into_old_scripts_tree(
         self: InstallerCompatibilityTests,
@@ -228,10 +273,16 @@ class InstallerCompatibilityTests(unittest.TestCase):
             project = root / "new"
             source_root = project / "workspaces/runtime/apps/server/src"
             source_root.mkdir(parents=True)
+            diagnostic = project / "target/release/codex-diagnostics"
+            diagnostic.parent.mkdir(parents=True)
+            diagnostic.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            diagnostic.chmod(0o755)
             old = root / "old"
             target = root / "bin"
             target.mkdir()
             for name in self.installer.COMMANDS:
+                if name == "codex-diagnostics":
+                    continue
                 source = source_root / name
                 source.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
                 source.chmod(0o755)
@@ -240,7 +291,8 @@ class InstallerCompatibilityTests(unittest.TestCase):
             links = self.installer.install(project, target, old)
             self.assertEqual(len(links), len(self.installer.COMMANDS))
             for name in self.installer.COMMANDS:
-                self.assertEqual((target / name).resolve(), source_root / name)
+                expected = diagnostic if name == "codex-diagnostics" else source_root / name
+                self.assertEqual((target / name).resolve(), expected)
 
 
 if __name__ == "__main__":

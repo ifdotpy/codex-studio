@@ -28,6 +28,21 @@ const bridgeSource = path.join(
   "workspaces/providers/apps/claude-bridge",
 );
 await access(path.join(rendererDist, "index.html"));
+if (!uiOnly) {
+  execFileSync(
+    "cargo",
+    ["build", "--locked", "--release", "-p", "studio-diagnostics"],
+    { cwd: repositoryRoot, stdio: "inherit" },
+  );
+}
+const cargoTargetDirectory = path.resolve(
+  repositoryRoot,
+  process.env.CARGO_TARGET_DIR || "target",
+);
+const diagnosticsBinary = path.join(
+  cargoTargetDirectory,
+  "release/codex-diagnostics",
+);
 const stage = await mkdtemp(path.join(tmpdir(), "codex-desktop-package-"));
 try {
   const speech = path.join(stage, "studio-speech");
@@ -70,6 +85,10 @@ try {
         !source.includes("/node_modules") &&
         !source.endsWith(".pyc"),
     });
+    await cp(
+      diagnosticsBinary,
+      path.join(resources, "scripts/codex-diagnostics"),
+    );
     execFileSync(
       "pnpm",
       [

@@ -4,6 +4,7 @@
 import argparse
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import uuid
@@ -22,10 +23,44 @@ COMMANDS = (
     "codex-report",
     "codex-steer",
     "codex-stop",
+    "codex-diagnostics",
     "codex-swarm.mjs",
     "codex-watch",
     "luna",
 )
+
+
+def diagnostics_binary(project, packaged_source=None):
+    project = Path(project).resolve(strict=True)
+    packaged = Path(packaged_source) if packaged_source else None
+    configured_target = Path(os.environ.get("CARGO_TARGET_DIR", project / "target"))
+    if not configured_target.is_absolute():
+        configured_target = project / configured_target
+    if os.environ.get("CARGO_TARGET_DIR"):
+        candidates = [configured_target / "release/codex-diagnostics"]
+    else:
+        candidates = [project / "target/release/codex-diagnostics"]
+    if packaged is not None:
+        candidates.append(packaged / "codex-diagnostics")
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        raise RuntimeError(
+            "codex-diagnostics is not prebuilt and Cargo is unavailable. "
+            "Install Rust 1.99.0 with rustfmt and clippy, or provide the "
+            "packaged codex-diagnostics binary."
+        )
+    subprocess.run(
+        [cargo, "build", "--locked", "--release", "-p", "studio-diagnostics"],
+        cwd=project,
+        check=True,
+    )
+    binary = configured_target / "release/codex-diagnostics"
+    if not binary.is_file() or not os.access(binary, os.X_OK):
+        raise RuntimeError(f"Cargo build did not produce executable: {binary}")
+    return binary
 
 
 def install(project, destination, replace_from=None):
@@ -41,6 +76,8 @@ def install(project, destination, replace_from=None):
         source_root = project / "scripts"
     links = []
     for name in COMMANDS:
+        if name == "codex-diagnostics":
+            continue
         source = source_root / name
         if not source.is_file() or not os.access(source, os.X_OK):
             raise ValueError(f"Missing executable: {source}")
@@ -60,6 +97,26 @@ def install(project, destination, replace_from=None):
                     f"Refusing to replace an unrelated command link: {target}"
                 )
         links.append((source, target))
+    diagnostic_source = diagnostics_binary(project, source_root)
+    diagnostic_target = destination / "codex-diagnostics"
+    if diagnostic_target.exists() or diagnostic_target.is_symlink():
+        if not diagnostic_target.is_symlink():
+            raise ValueError(
+                f"Refusing to replace an existing executable: {diagnostic_target}"
+            )
+        resolved = diagnostic_target.resolve()
+        old_sources = () if old is None else (
+            old / "scripts" / "codex-diagnostics",
+            old / "workspaces/runtime/apps/server/src" / "codex-diagnostics",
+            old / "target/release/codex-diagnostics",
+        )
+        if resolved != diagnostic_source and all(
+            resolved != path.resolve() for path in old_sources
+        ):
+            raise ValueError(
+                f"Refusing to replace an unrelated command link: {diagnostic_target}"
+            )
+    links.append((diagnostic_source, diagnostic_target))
     destination.mkdir(parents=True, exist_ok=True)
     for source, target in links:
         if target.is_symlink() and target.resolve() == source:

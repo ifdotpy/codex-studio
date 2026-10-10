@@ -57,6 +57,15 @@ try {
   );
   assert.equal(speech.helperReady, true);
   assert.equal(speech.onDeviceOnly, true);
+  const diagnosticsHelp = execFileSync(
+    path.join(
+      path.dirname(executable),
+      "../Resources/workspace/scripts/codex-diagnostics",
+    ),
+    ["--help"],
+    { encoding: "utf8" },
+  );
+  assert.ok(diagnosticsHelp.includes("--port PORT"));
   const roleSkills = JSON.parse(
     execFileSync(
       "python3",

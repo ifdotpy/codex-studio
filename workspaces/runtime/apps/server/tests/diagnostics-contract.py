@@ -192,7 +192,7 @@ class DiagnosticsContract(unittest.TestCase):
                     self.assertEqual(body, {key: value for key, value in fixture.items() if key != "supervisor"})
                     self.assertIs(type(supervisor["mode"]), bool)
                     connection.close()
-                    cli = subprocess.run([sys.executable, str(SERVER_SOURCE_ROOT / "codex-diagnostics"), "--port",
+                    cli = subprocess.run([str(REPOSITORY_ROOT / "scripts/codex-diagnostics"), "--port",
                                           str(server.server_port)], capture_output=True,
                                          text=True, timeout=5, check=True)
                     printed = json.loads(cli.stdout)

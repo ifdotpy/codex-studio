@@ -45,7 +45,7 @@ The remaining sections describe app-server mode unless they explicitly mention n
 ## Paths and protocol
 
 - State dir: `$CODEX_AGENTS_STATE_DIR`, else `$XDG_STATE_HOME/codex-agents`, else `~/.local/state/codex-agents`. Scripts create it.
-- `CODEX_HOME` selects the Codex login (default `~/.codex`). Install commands with `python3 workspaces/runtime/apps/server/src/install-cli.py`.
+- `CODEX_HOME` selects the Codex login (default `~/.codex`). Install commands with `python3 workspaces/runtime/apps/server/src/install-cli.py`; this also requires a prebuilt diagnostics binary or Cargo with the pinned Rust toolchain.
 - Codex state and profile directories must resolve outside `.claude`. Scripts reject these paths and do not discover legacy Claude job directories.
 - Move historical state only with explicit authorization. Preserve messages.
 - Schemas move; before depending on a protocol field: `codex --version; codex app-server generate-json-schema --experimental --out /tmp/codex-schema` (drop `--experimental` if it fails; read `v2`). Goal methods need `capabilities.experimentalApi: true` at `initialize`.
