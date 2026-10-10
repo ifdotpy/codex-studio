@@ -850,7 +850,7 @@ test("progress-fit-browser", async ({ browser, page }) => {
       [
         "-B",
         "-c",
-        'import json,sys;sys.path.insert(0,"scripts");from codex_progress_layout import _report;[_report(row) for row in json.load(sys.stdin)];print("Browser report payloads match backend validator")',
+        'import json,sys;sys.path.insert(0,"workspaces/runtime/apps/server/src");from codex_progress_layout import _report;[_report(row) for row in json.load(sys.stdin)];print("Browser report payloads match backend validator")',
       ],
       {
         cwd: join(root, "../../../../"),
