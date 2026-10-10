@@ -1,131 +1,15 @@
 #!/usr/bin/env python3
-"""Send one mailbox message to a worker owned by an active launcher.
-
-usage: codex-steer [--wave WAVE] WORKER MESSAGE
-"""
-
-import argparse
-import json
+"""Compatibility exec shim for the relocated runtime command."""
 import os
-import re
+from pathlib import Path
 import sys
-import time
-import uuid
-# Keep import caches out of the project checkout.
-sys.dont_write_bytecode = True
-from codex_state import state_dir, process_is_alive, read_threads
 
 
-COMPONENT_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
-
-
-def component(value: str) -> str:
-    if not COMPONENT_PATTERN.fullmatch(value):
-        raise argparse.ArgumentTypeError("use only letters, digits, dot, underscore, or hyphen")
-    return value
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--wave", type=component, default=os.environ.get("CODEX_WAVE"))
-    parser.add_argument("--expected-run", type=component)
-    parser.add_argument("--expected-thread", type=component)
-    parser.add_argument("worker", type=component)
-    parser.add_argument("message", nargs="+")
-    args = parser.parse_args()
-    message = " ".join(args.message).strip()
-    if not message:
-        parser.error("MESSAGE must not be empty")
-
-    if os.environ.get("CODEX_BOARD_OWNER"):
-        print("CODEX_BOARD_OWNER is unsupported. Start the worker with the current launcher.", file=sys.stderr)
-        return 2
-    root = state_dir()
-    owner = os.environ.get("CODEX_AGENT_OWNER")
-    actor = None
-    if owner:
-        actors = [row for row in read_threads(root) if row.get("agentOwner") == owner]
-        if len(actors) != 1:
-            print("The inherited owner must identify one current launcher worker. Managed agents must use runtime tools.", file=sys.stderr)
-            return 2
-        actor = actors[0]
-        if not actor.get("runId") or not process_is_alive(actor.get("launcherPid")):
-            print("The inherited worker has no active launcher team. Use runtime tools.", file=sys.stderr)
-            return 2
-    if args.wave:
-        paths = [root / f"codex-swarm-status.{args.wave}.json"]
-    else:
-        paths = sorted(root.glob("codex-swarm-status.*.json"))
-
-    matches = []
-    for path in paths:
-        try:
-            threads = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(threads, list):
-            continue
-        for thread in threads:
-            if not isinstance(thread, dict):
-                continue
-            if thread.get("name") == args.worker:
-                wave = thread.get("wave") or path.stem.removeprefix("codex-swarm-status.")
-                if not isinstance(wave, str) or not COMPONENT_PATTERN.fullmatch(wave):
-                    print(f"invalid wave in {path}", file=sys.stderr)
-                    return 2
-                matches.append((wave, thread))
-
-    if not matches:
-        print(f"no worker named {args.worker}", file=sys.stderr)
-        return 2
-    if len(matches) > 1:
-        waves = ", ".join(sorted(wave for wave, _thread in matches))
-        print(f"worker name is present in multiple waves: {waves}; use --wave", file=sys.stderr)
-        return 2
-
-    wave, thread = matches[0]
-    run_id = thread.get("runId")
-    if actor and (actor["wave"], actor["runId"]) != (wave, run_id):
-        print("Communication is limited to one team. The target belongs to another wave or run.", file=sys.stderr)
-        return 2
-    if ((args.expected_run and args.expected_run != run_id)
-            or (args.expected_thread and args.expected_thread != thread.get("threadId"))):
-        print("worker identity changed; refresh before sending", file=sys.stderr)
-        return 2
-    if not isinstance(run_id, str) or not COMPONENT_PATTERN.fullmatch(run_id):
-        print(f"worker {args.worker} has no valid run id", file=sys.stderr)
-        return 2
-    pid = int(thread.get("launcherPid") or 0)
-    if not process_is_alive(pid):
-        print(f"launcher for wave {wave} is not active", file=sys.stderr)
-        return 1
-
-    inbox = root / f"codex-inbox.{wave}.{run_id}"
-    inbox.mkdir(parents=True, exist_ok=True)
-    destination = inbox / f"{args.worker}.json"
-    temporary = inbox / f".{args.worker}.{os.getpid()}.tmp"
-    payload = {
-        "id": str(uuid.uuid4()),
-        "text": message + "\n",
-        "attempts": 0,
-        "nextAttemptAt": 0,
-        "createdAt": time.time(),
-    }
-    temporary.write_text(json.dumps(payload) + "\n", encoding="utf-8")
-    try:
-        os.link(temporary, destination)
-    except FileExistsError:
-        print(f"a pending message already exists for {args.worker}", file=sys.stderr)
-        return 1
-    finally:
-        temporary.unlink(missing_ok=True)
-
-    print(f"CODEX STEERED wave={wave} worker={args.worker}")
-    return 0
-
-
-if __name__ == "__main__":
-    try:
-        sys.exit(main())
-    except RuntimeError as error:
-        sys.exit(f"codex-steer: {error}")
+# Installed command links may reach this file through one or more symlinks.
+project = Path(__file__).resolve().parents[1]
+source = project / "workspaces" / "runtime" / "apps" / "server" / "src" / "codex-steer"
+arguments = [sys.executable]
+if sys.dont_write_bytecode:
+    arguments.append("-B")
+arguments.extend((str(source), *sys.argv[1:]))
+os.execv(sys.executable, arguments)

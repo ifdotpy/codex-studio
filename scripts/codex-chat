@@ -1,76 +1,15 @@
 #!/usr/bin/env python3
-"""Create chat nodes, edit membership connections, and read or post messages."""
-import argparse
-import json
+"""Compatibility exec shim for the relocated runtime command."""
 import os
+from pathlib import Path
 import sys
-import uuid
-sys.dont_write_bytecode = True
-from codex_canvas import Canvas
-from studio_api.sync.resources.models import ResourceRef, RoomResource, StateResource
-from studio_api.sync.resources.relay.client import NotifyCommittedWriteError, notify_external_write
 
-parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("action", choices=["list", "create", "connect", "disconnect", "read", "post"])
-parser.add_argument("chat", nargs="?")
-parser.add_argument("text", nargs="?")
-parser.add_argument("--owner", default=os.environ.get("CODEX_AGENT_OWNER"))
-parser.add_argument("--agent", help="Exact agent identity for a connection or native author")
-parser.add_argument("--id", help="Stable request identity for creation or message retries")
-args = parser.parse_args()
-try:
-    if os.environ.get("CODEX_BOARD_OWNER"):
-        raise ValueError("CODEX_BOARD_OWNER is unsupported. Start the worker with the current launcher.")
-    inherited_owner = os.environ.get("CODEX_AGENT_OWNER")
-    if inherited_owner and args.owner != inherited_owner:
-        raise ValueError("The owner must match the inherited worker identity.")
-    canvas = Canvas(read_only=args.action in ('read', 'list'))
-    # Resolve the inherited worker identity first. --agent selects a connection
-    # target and must not replace that identity.
-    actor = None
-    if args.owner or args.agent:
-        rows = [t for t in canvas.threads() if (
-            t.get("agentOwner") == args.owner if args.owner else t['id'] == args.agent)]
-        if len(rows) != 1:
-            raise ValueError("The owner must identify one current worker.")
-        actor = rows[0]
-        if actor.get("source") == "managed":
-            raise ValueError("Managed agents must use their runtime chat tools, which verify the current team.")
-        canvas._team_id(actor["id"])
-    if args.action == "list":
-        result = canvas.agent_chats(actor["id"]) if actor else canvas.chats()
-    elif args.action == "create" and args.chat:
-        request_id = args.id or str(uuid.uuid4())
-        result = canvas.create_chat(args.chat, [actor["id"]] if actor else [], request_id)
-        notify_external_write(request_id, [
-            ResourceRef(StateResource(kind="state")),
-            ResourceRef(RoomResource(kind="room", roomId=result["id"])),
-        ], source_root=canvas.root)
-    elif args.action in ('connect', 'disconnect') and args.chat and args.agent:
-        group = next((g for g in canvas.chats() if g["id"] == args.chat), None)
-        if not group:
-            raise ValueError("The target must be a chat.")
-        canvas._check_chat_team(args.chat, [*group["members"], args.agent], actor["id"])
-        result = canvas.connect_chat(args.agent, args.chat, args.action == 'connect')
-        notify_external_write(str(uuid.uuid4()), [
-            ResourceRef(StateResource(kind="state")),
-            ResourceRef(RoomResource(kind="room", roomId=args.chat)),
-        ], source_root=canvas.root)
-    elif args.action == "read" and args.chat:
-        result = canvas.agent_messages(args.chat, actor["id"]) if actor else canvas.messages(args.chat)
-    elif args.action == "post" and args.chat and args.text and actor:
-        if args.agent and args.agent != actor["id"]:
-            raise ValueError("The agent must match the inherited worker identity.")
-        request_id = args.id or str(uuid.uuid4())
-        result = canvas.post(args.chat, args.text, request_id, author=actor["id"], notify=False)
-        notify_external_write(request_id, [
-            ResourceRef(StateResource(kind="state")),
-            ResourceRef(RoomResource(kind="room", roomId=args.chat)),
-        ], source_root=canvas.root)
-    else:
-        parser.error("create needs NAME. connect/disconnect need CHAT --agent ID. post needs CHAT TEXT and --owner or --agent.")
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-except NotifyCommittedWriteError as error:
-    sys.exit(f"Source change committed; UI invalidation is unconfirmed. Do not repeat the source operation. {error}")
-except (ValueError, RuntimeError) as error:
-    sys.exit(str(error))
+
+# Installed command links may reach this file through one or more symlinks.
+project = Path(__file__).resolve().parents[1]
+source = project / "workspaces" / "runtime" / "apps" / "server" / "src" / "codex-chat"
+arguments = [sys.executable]
+if sys.dont_write_bytecode:
+    arguments.append("-B")
+arguments.extend((str(source), *sys.argv[1:]))
+os.execv(sys.executable, arguments)

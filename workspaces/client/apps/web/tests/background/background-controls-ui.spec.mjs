@@ -1,0 +1,354 @@
+import {
+  handleEntitySyncFixtureRequest,
+  readFixtureSyncContract,
+  syncIdentityFixture,
+  stubEntityState,
+  test,
+  updateEntitySyncFixture,
+} from "../playwright.mjs";
+import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
+import { createServer } from "node:http";
+import { readFile, mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, extname } from "node:path";
+test("Background controls", async ({ context }) => {
+  test.setTimeout(60000);
+  const testRepo = fileURLToPath(
+    new URL("../../../../../../", import.meta.url),
+  );
+  // Browser contract for process controls. The HTTP transport is a deterministic fixture.
+  const skill = testRepo;
+  const root = await mkdtemp(join(tmpdir(), "codex-background-controls-"));
+  let syncFixture;
+  const server = createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url, "http://localhost");
+      if (req.method === "POST" && url.pathname === "/api/monitor/cancel") {
+        for await (const _chunk of req) {
+          // The fixture action has no body fields beyond its id.
+        }
+        monitor.cancelRequested = true;
+        monitor.error = "Stop requested; waiting for the command to exit";
+        const syncEntities = updateEntitySyncFixture(state);
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ ...monitor, _syncEntities: syncEntities }));
+        return;
+      }
+      if (syncFixture && handleEntitySyncFixtureRequest(req, res, syncFixture))
+        return;
+      const name = new URL(req.url, "http://localhost").pathname;
+      const path = join(
+        skill,
+        "workspaces/client/apps/web/dist",
+        name === "/" ? "index.html" : name,
+      );
+      res.setHeader(
+        "Content-Type",
+        { ".js": "text/javascript", ".css": "text/css", ".html": "text/html" }[
+          extname(path)
+        ] || "application/octet-stream",
+      );
+      res.end(await readFile(path));
+    } catch {
+      res.statusCode = 404;
+      res.end();
+    }
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const agent = {
+    id: "lead",
+    rootId: "lead",
+    isLead: true,
+    source: "managed",
+    status: "idle",
+    name: "Release lead",
+    model: "gpt-5.6-sol",
+    created: Date.now() / 1000 - 30,
+    canSend: true,
+  };
+  const native = {
+    id: "native-task",
+    agent: "lead",
+    kind: "command",
+    name: "commandExecution",
+    command: "native test process",
+    processId: "9042",
+    status: "running",
+    created: Date.now() / 1000 - 20,
+    tail: "Waiting for input",
+  };
+  const monitor = {
+    id: "6f2ed4dd-f6ab-4d46-94a5-8a774333876a",
+    agent: "lead",
+    kind: "monitor",
+    command: "read value; echo $value",
+    interactive: true,
+    timeout_ms: 1800000,
+    status: "running",
+    created: Date.now() / 1000,
+    tail: "Monitor output text",
+    error: "Monitor error line",
+    log: "/fixture/monitor.log",
+  };
+  const state = {
+    token: "fixture-token",
+    stateDir: root,
+    threads: [agent],
+    chats: [],
+    runtime: {
+      agents: [agent],
+      rooms: [],
+      complaints: [],
+      monitors: [monitor],
+      tasks: [native],
+      requests: [],
+    },
+  };
+  const workspaceId = syncIdentityFixture().workspaceId;
+  updateEntitySyncFixture(state);
+  syncFixture = {
+    snapshot: state,
+    workspaceId,
+  };
+  const writes = [];
+  let failInput = false;
+  let page;
+  try {
+    page = await context.newPage();
+    await page.setViewportSize({ width: 1440, height: 980 });
+    const errors = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    await page.route("**/api/**", async (route) => {
+      const req = route.request(),
+        path = new URL(req.url()).pathname;
+      let body = {};
+      if (req.method() === "POST") {
+        body = req.postDataJSON();
+        assert.equal(req.headers()["x-canvas-token"], "fixture-token", path);
+        writes.push({ path, body });
+      }
+      let value = {};
+      if (path === "/api/session") value = { token: "fixture-token" };
+      else if (path === "/api/accounts")
+        value = { accounts: [], defaultAccountKey: "default" };
+      else if (path === "/api/voice/records")
+        value = { records: [], delivered: [], cursor: 0 };
+      else if (path === "/api/workspace")
+        value = { tasks: [native], monitors: [monitor] };
+      else if (path === "/api/task") value = native;
+      else if (path === "/api/transcript") value = { items: [], agent };
+      else if (path === "/api/transcript/stream")
+        return route.fulfill({ status: 503, body: "fixture polling" });
+      else if (path === "/api/limits") value = { data: null };
+      else if (path === "/api/monitor")
+        return route.fulfill({ status: 404, json: { error: "Not found" } });
+      else if (path === "/api/monitor/log")
+        return route.fulfill({
+          status: 200,
+          body: Buffer.from("full saved log\n"),
+          headers: {
+            "Content-Type": "text/plain",
+            "Content-Disposition": 'attachment; filename="monitor.log"',
+            "X-Log-Truncated": "true",
+          },
+        });
+      else if (path === "/api/monitor/cancel") {
+        return route.continue();
+      } else if (path === "/api/monitor/input" && failInput) {
+        failInput = false;
+        return route.fulfill({
+          status: 409,
+          json: { error: "The command already exited" },
+        });
+      } else if (req.method() === "GET") {
+        return route.fulfill({
+          status: 404,
+          json: { error: "Not part of this fixture" },
+        });
+      }
+      await route.fulfill({ json: value });
+    });
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    await stubEntityState(page, state, await readFixtureSyncContract(origin));
+    await page.goto(origin);
+    await page
+      .getByRole("button", { name: "Chat actions", exact: true })
+      .click();
+    await page.locator("#tasks-toggle").click();
+    const drawer = page.getByRole("dialog", { name: /Current activity/ });
+    assert.equal(
+      await drawer
+        .getByRole("button", { name: /^(New monitor|Start monitor)$/ })
+        .count(),
+      0,
+    );
+    await drawer.locator(`[data-task="${monitor.id}"]`).click();
+    assert.match(
+      await drawer.locator(".task-output").innerText(),
+      /Monitor output text/,
+    );
+    assert.ok(
+      (await drawer
+        .getByRole("alert")
+        .filter({ hasText: "Monitor error line" })
+        .count()) >= 1,
+    );
+    await drawer
+      .getByRole("button", { name: "Send line", exact: true })
+      .waitFor();
+    assert.equal(
+      writes.some((w) => w.path === "/api/monitor"),
+      false,
+      "opening an agent monitor does not start a command",
+    );
+    const created = monitor;
+    const input = drawer.getByLabel("Terminal input");
+    await input.fill("hello");
+    await drawer
+      .getByRole("button", { name: "Send line", exact: true })
+      .click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[aria-label="Terminal input"]').value === "",
+    );
+    assert.deepEqual(writes.at(-1), {
+      path: "/api/monitor/input",
+      body: { id: created.id, text: "hello\n" },
+    });
+    failInput = true;
+    await input.fill("keep this input");
+    await drawer
+      .getByRole("button", { name: "Send line", exact: true })
+      .click();
+    await page
+      .getByText("The command already exited", { exact: true })
+      .waitFor();
+    assert.equal(await input.inputValue(), "keep this input");
+    await drawer.getByRole("button", { name: "Ctrl+C", exact: true }).click();
+    assert.equal(writes.at(-1).body.text, "\u0003");
+    await drawer.locator(".process-resize summary").click();
+    await drawer.getByLabel("Rows", { exact: true }).fill("30");
+    await drawer.getByLabel("Columns", { exact: true }).fill("100");
+    await drawer.getByRole("button", { name: "Resize", exact: true }).click();
+    assert.deepEqual(writes.at(-1).body, {
+      id: created.id,
+      rows: 30,
+      cols: 100,
+    });
+    const downloaded = page.waitForEvent("download");
+    await drawer.getByLabel("Download task log").click();
+    const download = await downloaded;
+    assert.equal(download.suggestedFilename(), "monitor.log");
+    assert.equal(
+      await readFile(await download.path(), "utf8"),
+      "full saved log\n",
+    );
+    await page
+      .getByText("The download contains the retained part of the log.", {
+        exact: true,
+      })
+      .waitFor();
+    await page.screenshot({ path: join(root, "interactive-desktop.png") });
+    // The mobile client closes desktop drawers below 761px. Exercise this drawer
+    // at a narrow desktop width; mobile has its own client tests.
+    await page.setViewportSize({ width: 780, height: 740 });
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+      780,
+    );
+    await drawer.locator(".process-input").scrollIntoViewIfNeeded();
+    await page.screenshot({
+      path: join(root, "interactive-narrow-desktop.png"),
+    });
+    await drawer
+      .getByRole("button", { name: "Close input (EOF)", exact: true })
+      .click();
+    await drawer
+      .getByRole("button", { name: "Input closed", exact: true })
+      .waitFor();
+    assert.equal(writes.at(-1).body.closeStdin, true);
+    assert.equal(await input.isDisabled(), true);
+    await drawer
+      .getByRole("button", { name: "Cancel monitor", exact: true })
+      .click();
+    const stopRequested = drawer.getByRole("button", {
+      name: "Stop requested",
+      exact: true,
+    });
+    await stopRequested.waitFor();
+    assert.equal(await stopRequested.isDisabled(), true);
+    assert.equal(
+      await drawer.getByText("Waiting for exit", { exact: true }).count(),
+      2,
+    );
+    assert.equal(
+      monitor.status,
+      "running",
+      "Cancellation preserves the active process",
+    );
+    await drawer.locator('[data-task="native-task"]').click();
+    await drawer
+      .getByRole("button", { name: "Send via agent", exact: true })
+      .waitFor();
+    await drawer.getByLabel("Terminal input").fill("continue");
+    await drawer
+      .getByRole("button", { name: "Send via agent", exact: true })
+      .click();
+    assert.deepEqual(writes.at(-1), {
+      path: "/api/native-command",
+      body: { id: "native-task", text: "continue\n", action: "input" },
+    });
+    await drawer
+      .getByRole("button", { name: "Stop command", exact: true })
+      .click();
+    assert.deepEqual(writes.at(-1), {
+      path: "/api/native-command",
+      body: { id: "native-task", action: "cancel" },
+    });
+    await page.screenshot({ path: join(root, "native-command-controls.png") });
+    assert.equal(
+      writes.some(
+        (w) => w.path === "/api/monitor/input" && w.body.id === "9042",
+      ),
+      false,
+    );
+    agent.status = "starting";
+    agent.startAttempt = {
+      prepareError: "Thread preparation acknowledgement pending",
+    };
+    agent.error = agent.startAttempt.prepareError;
+    const failedWorker = {
+      ...agent,
+      id: "pending-review",
+      parentId: agent.id,
+      isLead: false,
+      name: "pending-review",
+      role: "reviewer",
+      status: "failed",
+      error: "thread/resume response timed out; outcome unknown",
+    };
+    state.threads.push(failedWorker);
+    state.runtime.agents.push(failedWorker);
+    await page.setViewportSize({ width: 1440, height: 980 });
+    await page.reload();
+    await page.locator('[data-chat="lead"]').click();
+    await page.locator('.agent-phase[data-phase="acknowledgement"]').waitFor();
+    await page.getByRole("button", { name: "Team", exact: true }).click();
+    await page
+      .locator('[data-worker="pending-review"] .worker-error')
+      .waitFor();
+    assert.equal(
+      await page
+        .locator('[data-worker="pending-review"] .worker-error')
+        .innerText(),
+      failedWorker.error,
+    );
+    await page.screenshot({ path: join(root, "harness-status.png") });
+    assert.deepEqual(errors, []);
+    console.log(`PASS background controls browser contract. Evidence: ${root}`);
+  } finally {
+    await page?.close();
+    await new Promise((r) => server.close(r));
+  }
+});

@@ -265,7 +265,7 @@ One general tool. Studio does not know what the command does.
    must check the result of the command before it runs it again.
 
 The channel is a request from the guest to the host. The VM helper today only connects from the
-host to the guest (`connect(toPort: 4050)` in `desktop/native/linux-vm/main.swift`).
+host to the guest (`connect(toPort: 4050)` in `workspaces/client/apps/desktop/native/linux-vm/main.swift`).
 Recommendation (not tested): reverse requests on the existing connection. The guest sends a request
 frame with a request id; the host runs it and answers with a receipt, like the other guest calls.
 This needs no new Virtualization.framework listener, keeps one connection to supervise, and reuses
@@ -576,7 +576,7 @@ The slot held exactly the target state after each switch.
 | [BranchFS, branch context](https://arxiv.org/html/2602.08199) (March 2026)                      | FUSE copy-on-write branches for agents; first commit wins; epochs invalidate siblings                     | exploration groups with an epoch. Not taken: FUSE and file-level copy-on-write |
 | [Pulumi Neo with Kopia](https://www.pulumi.com/blog/neo-kopia-workspace-snapshots/) (Sept 2026) | workspace snapshots instead of git for agents; regenerable caches are not saved                           | regenerable data as a separate layer with its own replication policy           |
 | [BtrFsGit](https://github.com/koo5/BtrFsGit), [btrbk](https://github.com/digint/btrbk)          | git-like commands and incremental replication for btrfs subvolumes, for backups                           | finding the common parent by subvolume UUIDs for `send -p`                     |
-| [Morph Infinibranch](https://cloud.morph.so/web/product/devboxes)                               | snapshot and branch of whole running VMs                                                                  | not taken: this design branches files, not processes                           |
+| [Morph Infinibranch](https://cloud.morph.so/workspaces/client/apps/web/product/devboxes)        | snapshot and branch of whole running VMs                                                                  | not taken: this design branches files, not processes                           |
 
 No project found on 2026-10-09 combines a git-like local tool, btrfs states, a real merge and
 replication between machines.

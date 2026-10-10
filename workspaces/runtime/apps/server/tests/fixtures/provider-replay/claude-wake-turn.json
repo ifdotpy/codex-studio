@@ -1,0 +1,125 @@
+{
+  "source": "hand-authored Studio bridge protocol shape based on workspaces/runtime/apps/server/tests/claude-bridge-contract.py",
+  "provider": "claude",
+  "sdkEvents": [
+    { "type": "system", "subtype": "init", "claude_code_version": "replay" },
+    {
+      "type": "assistant",
+      "message": {
+        "id": "claude-first-answer",
+        "content": [{ "type": "text", "text": "Claude first answer." }]
+      }
+    },
+    {
+      "type": "result",
+      "subtype": "success",
+      "usage": { "input_tokens": 16, "output_tokens": 5 },
+      "result": "Claude first answer."
+    },
+    {
+      "type": "system",
+      "subtype": "task_started",
+      "task_id": "wake-worker",
+      "description": "Replay background completion",
+      "task_type": "agent"
+    },
+    {
+      "type": "system",
+      "subtype": "task_notification",
+      "task_id": "wake-worker",
+      "status": "completed",
+      "summary": "Background work finished"
+    },
+    {
+      "type": "assistant",
+      "message": {
+        "id": "claude-wake-answer",
+        "content": [{ "type": "text", "text": "Claude wake answer." }]
+      }
+    },
+    {
+      "type": "result",
+      "subtype": "success",
+      "usage": { "input_tokens": 9, "output_tokens": 3 },
+      "result": "Claude wake answer."
+    }
+  ],
+  "events": [
+    {
+      "method": "item/completed",
+      "params": {
+        "threadId": "$threadId",
+        "turnId": "$turnId",
+        "item": {
+          "id": "wake-answer",
+          "type": "agentMessage",
+          "text": "Wake turn result."
+        }
+      }
+    },
+    {
+      "method": "turn/completed",
+      "params": {
+        "threadId": "$threadId",
+        "turn": { "id": "$turnId", "status": "completed" }
+      }
+    }
+  ],
+  "expectedStatus": "completed",
+  "rpcReplies": {
+    "initialize": {
+      "direction": "in",
+      "responseFor": "initialize",
+      "message": {
+        "result": {
+          "userAgent": "studio-claude-bridge",
+          "platform": "$platform",
+          "capabilities": { "claudeVersion": 15 }
+        }
+      }
+    },
+    "model/list": {
+      "direction": "in",
+      "responseFor": "model/list",
+      "message": {
+        "result": {
+          "data": [
+            {
+              "id": "default",
+              "model": "default",
+              "resolvedModel": "claude-replay",
+              "displayName": "Claude · Default",
+              "isDefault": true,
+              "hidden": false,
+              "supportedReasoningEfforts": [
+                { "reasoningEffort": "low", "description": "low" },
+                { "reasoningEffort": "medium", "description": "medium" },
+                { "reasoningEffort": "high", "description": "high" }
+              ],
+              "defaultReasoningEffort": "medium",
+              "serviceTiers": []
+            }
+          ],
+          "nextCursor": null
+        }
+      }
+    }
+  },
+  "assert": {
+    "eventKinds": ["user"],
+    "usage": ["inputTokens", "16"],
+    "turnStarts": 2,
+    "answerItems": [
+      {
+        "owner": "lead",
+        "nativeId": "claude-first-answer",
+        "text": "Claude first answer."
+      },
+      {
+        "owner": "lead",
+        "nativeId": "claude-wake-answer",
+        "text": "Claude wake answer."
+      }
+    ]
+  }
+}

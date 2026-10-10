@@ -1,0 +1,52 @@
+{
+  "source": "hand-authored supervisor event frames based on workspaces/runtime/apps/server/tests/process-supervisor-contract.py",
+  "supervisorReplay": true,
+  "events": [
+    {
+      "method": "item/agentMessage/delta",
+      "params": {
+        "threadId": "$threadId",
+        "turnId": "$turnId",
+        "itemId": "resume-answer",
+        "delta": "Recovered output."
+      }
+    },
+    {
+      "method": "item/completed",
+      "params": {
+        "threadId": "$threadId",
+        "turnId": "$turnId",
+        "item": {
+          "id": "resume-answer",
+          "type": "agentMessage",
+          "text": "Recovered output."
+        }
+      }
+    },
+    {
+      "method": "turn/completed",
+      "params": {
+        "threadId": "$threadId",
+        "turn": { "id": "$turnId", "status": "completed" }
+      }
+    }
+  ],
+  "expectedStatus": "completed",
+  "allowedOrphanResponses": [
+    {
+      "id": "supervisor-orphan-3",
+      "result": { "turn": { "id": "replay-turn-1", "status": "inProgress" } }
+    }
+  ],
+  "expectedMissingReplies": [{ "method": "turn/start", "id": 3 }],
+  "assert": {
+    "eventKinds": ["user"],
+    "answerItems": [
+      {
+        "owner": "lead",
+        "nativeId": "resume-answer",
+        "text": "Recovered output."
+      }
+    ]
+  }
+}
