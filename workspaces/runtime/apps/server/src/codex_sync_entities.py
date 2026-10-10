@@ -649,7 +649,14 @@ def _refresh_runtime_entities(db: sqlite3.Connection, runtime_owner: "Runtime | 
     for key, raw in _rows(db, "runtime_projects"):
         record = _stored_record("project", key, raw)
         if record is not None:
-            changed += bool(put(db, "project", key, cast(dict[str, object], record)))
+            project_view: JsonObject = record
+            if runtime_owner is not None:
+                from codex_vm_agents import project_entity_view
+                try:
+                    project_view = project_entity_view(runtime_owner, record)
+                except Exception as error:
+                    _report_bad_entity("project", key, error)
+            changed += bool(put(db, "project", key, cast(dict[str, object], project_view)))
     for key, raw in _rows(db, "runtime_requests"):
         record = _stored_record("request", key, raw)
         if record is not None:

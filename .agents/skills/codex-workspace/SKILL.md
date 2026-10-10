@@ -38,28 +38,22 @@ worker base setting, then repository HEAD. Studio resolves and saves the commit
 before it creates workers. Check the spawn result for the commit and any warning
 that it is behind main. A retry with the same request_id keeps the same commit.
 Supply bounded ownership, a completion check, and explicit commit authority.
-Set `workspace` per implementer in `orchestration_spawn` when you need to choose
-its isolation. Use `image` for isolated work that must include uncommitted
-changes. macOS uses an ASIF image; Linux uses an overlay. The worker has read-only
-access until the image is ready. Use `worktree` for a quick task from a committed
-Git base; it requires a Git repository and does not copy uncommitted changes.
-Use `shared` only when you deliberately want the worker to edit the selected
-folder. Omit `workspace` to keep the current platform defaults. Reviewers always
-use the shared folder with read-only access.
+Chat creation selects `workspaceMode`: `layr`, `image`, or `worktree`.
+Mac servers default to `layr`. Linux servers support `worktree` only.
 
-Use `environment: "linux"` for a Linux toolchain. Linux workers require
-`workspace: "image"`. Use `server` to run the worker on another paired machine;
-remote `cwd` must be absolute. Studio gives a requested `base_ref` and its
-resolved commit to the worker in its first input. The worker checks it out.
-Studio does not create Git checkpoints or collect changes inside image copies.
-Ask image or worktree workers to commit on a named branch. Integrate work by
-reading the image copy or fetching the worktree branch, for example
-`git fetch <path> <branch>`.
+| Chat mode  | Environment                         | Worker workspace |
+| ---------- | ----------------------------------- | ---------------- |
+| `layr`     | Studio Linux VM, including the lead | Owned layr line  |
+| `image`    | Native macOS                        | ASIF image       |
+| `worktree` | Native host                         | Git worktree     |
 
-The worker chat shows a small workspace badge. `ASIF` means a macOS image,
-`VM` means a Linux virtual machine, `WT` means a Git worktree, and `SHARED`
-means the selected folder. Hover or focus the badge to see its full name and
-workspace path.
+Workers inherit the chat mode. Native workers can select `workspace: "image"`,
+`"worktree"`, or deliberate `"shared"` edits. Images require macOS and include
+uncommitted changes. Worktrees require Git and use a committed base.
+Native reviewers use the selected folder with read-only access.
+Layr reviewers use read-only VM lines. All agents in a layr chat stay in the VM.
+Use `server` with an absolute remote `cwd` for native work on a paired machine.
+Commit native results on a named Git branch. Submit VM results as exact layr state IDs.
 After a lost reply, use `orchestration_request` to recover the saved result.
 `applied` confirms the operation receipt, not worker completion. Check current
 registry states before counting workers. Use a new spawn ID only after
@@ -317,24 +311,19 @@ Do not treat silence as proof of failure. Do not archive a worker to hide an err
 
 Add `reason` for `archive`. Never replace the worker ID with a thread ID.
 
-## Linux VM workers
+## Layr VM chats
 
-The lead can select `environment: "linux"` for an implementer in
-`orchestration_spawn`. An omitted environment uses the project default.
-An explicit `host` choice overrides it. Leads and reviewers stay on the host.
-Linux workers wait for their source base before the first provider turn.
-The guest copy contains Git metadata and uncommitted changes.
+Read [the layr reference](references/layr.md) when the chat uses `layr`.
+The first chat imports the project once. Later chats reuse the VM main line.
+The Mac source folder stays separate. Export only on the user's request.
+Each worker has its own line and Linux user. A reviewer has a read-only line.
+Studio saves a state after each turn and checks the exact revision before acceptance.
+Acceptance merges the reviewed state into main. Archive removes the worker line.
+The host keeps account sign-in and credential refresh. Guest profiles receive access credentials only.
+Preserve exact request IDs after a disconnect. A disconnect does not prove failure.
 
-Commit a Linux result on a named branch. The worker result contains the guest
-path and a host fetch command. Fetch writes `FETCH_HEAD`. Review the commit
-before merging. A shell `cd` does not change the stored guest path.
-The guest receives access tokens only. The host owns OAuth refresh.
-If an access token expires before sync, check the host sign-in.
-Resume the worker after a successful token sync. Preserve uncertain input receipts.
-
-Archive retains the guest snapshot. Restore returns the worker paused.
-A VM disconnect does not prove that a native operation failed.
-Preserve its request ID and inspect the result before another operation.
+Existing sessions keep the frozen role and tool references loaded by the runtime.
+Do not edit those references. Their original text preserves the provider prompt cache.
 
 ## Teleport your own execution
 

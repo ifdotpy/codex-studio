@@ -17,8 +17,8 @@ for (const writerTab of [0, 1]) {
     browser,
   }) => {
     test.setTimeout(45_000);
-    const { createServer } =
-      await import("../../node_modules/vite/dist/node/index.js");
+    const { createFixtureViteServer: createServer } =
+      await import("../../tests/playwright.mjs");
     const workspaceId = "e".repeat(32);
     const streams = new Set();
     const rows = new Map();

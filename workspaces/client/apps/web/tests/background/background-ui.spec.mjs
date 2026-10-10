@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 test("background-ui", async ({ page: fixturePage }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(60_000);
   const skill = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "codex-background-ui-"));
   const proc = spawn(
@@ -56,7 +56,16 @@ test("background-ui", async ({ page: fixturePage }) => {
         command: "must-not-run",
       }),
     });
-    assert.equal(manual.status, 404, "manual monitor creation route is absent");
+    assert.equal(
+      manual.status,
+      405,
+      "the GET-only catch-all rejects manual monitor creation",
+    );
+    assert.deepEqual(
+      (await state()).runtime.monitors.map((monitor) => monitor.id),
+      initial.runtime.monitors.map((monitor) => monitor.id),
+      "a rejected manual creation request does not start a monitor",
+    );
     const page = fixturePage;
     await fixturePage.setViewportSize({ width: 1440, height: 980 });
     const errors = [];
@@ -143,18 +152,30 @@ test("background-ui", async ({ page: fixturePage }) => {
       0,
     );
     await poll(
-      async () => (await drawer.locator("[data-task]").count()) === 3,
-      "only tasks from the selected chat",
+      async () => (await drawer.locator("[data-task]").count()) === 2,
+      "the selected chat's command and monitor are visible",
     );
     const nativeRow = drawer
       .locator("[data-task]")
       .filter({ hasText: "npm run build" });
+    const selectedMonitorRow = drawer
+      .locator("[data-task]")
+      .filter({ hasText: "watch-fixture --tests" });
+    assert.equal(await nativeRow.count(), 1);
+    assert.equal(await selectedMonitorRow.count(), 1);
+    assert.equal(
+      await drawer
+        .locator("[data-task]")
+        .filter({ hasText: "check_deployment" })
+        .count(),
+      0,
+      "Current activity lists background commands and monitors, not tool calls",
+    );
     await nativeRow.click();
     await drawer
       .locator(".task-output")
       .filter({ hasText: "Building 48 packages" })
       .waitFor();
-    await page.screenshot({ path: join(root, "tasks-desktop.png") });
     const output = drawer.locator(".task-output");
     await output.evaluate((el) => {
       el.scrollTop = 0;
@@ -191,14 +212,11 @@ test("background-ui", async ({ page: fixturePage }) => {
         .count(),
       0,
     );
-    assert.equal(await drawer.locator("[data-task]").count(), 3);
-    await drawer.getByLabel("Task type").selectOption("tool");
+    assert.equal(await drawer.locator("[data-task]").count(), 2);
+    await drawer.getByLabel("Task type").selectOption("command");
     assert.equal(await drawer.locator("[data-task]").count(), 1);
-    await drawer.locator(".task-input summary").click();
-    await drawer
-      .locator(".task-input pre")
-      .filter({ hasText: "staging" })
-      .waitFor();
+    await drawer.getByLabel("Task type").selectOption("monitor");
+    assert.equal(await drawer.locator("[data-task]").count(), 1);
     await drawer.getByLabel("Task type").selectOption("all");
     await drawer.getByLabel("Find a task").fill("not-a-task");
     await drawer.getByText("No matching tasks", { exact: true }).waitFor();
@@ -229,9 +247,7 @@ test("background-ui", async ({ page: fixturePage }) => {
       await page.evaluate(() => document.documentElement.scrollWidth),
       390,
     );
-    await page.screenshot({ path: join(root, "tasks-mobile-output.png") });
     await drawer.getByRole("button", { name: "Activity", exact: true }).click();
-    await page.screenshot({ path: join(root, "tasks-mobile-list.png") });
     await page.setViewportSize({ width: 320, height: 740 });
     assert.equal(
       await page.evaluate(() => document.documentElement.scrollWidth),
@@ -244,7 +260,6 @@ test("background-ui", async ({ page: fixturePage }) => {
         .evaluate((el) => el.scrollWidth <= el.clientWidth),
       true,
     );
-    await page.screenshot({ path: join(root, "tasks-narrow.png") });
     await page.setViewportSize({ width: 1440, height: 980 });
     event("item/completed", {
       item: {
@@ -266,7 +281,6 @@ test("background-ui", async ({ page: fixturePage }) => {
     assert.equal(await drawer.getByText("History", { exact: true }).count(), 0);
     assert.equal(await drawer.getByLabel("Task status").count(), 0);
     assert.equal(await drawer.getByText("Exit 7", { exact: true }).count(), 0);
-    await page.screenshot({ path: join(root, "tasks-completed-hidden.png") });
     await drawer
       .locator("[data-task]")
       .filter({ hasText: "watch-fixture --tests" })
@@ -323,7 +337,6 @@ test("background-ui", async ({ page: fixturePage }) => {
     await drawer
       .getByRole("button", { name: "Approve command", exact: true })
       .waitFor();
-    await page.screenshot({ path: join(root, "tasks-approval.png") });
     await drawer
       .getByRole("button", { name: "Approve command", exact: true })
       .click();
@@ -336,7 +349,6 @@ test("background-ui", async ({ page: fixturePage }) => {
       .getByRole("button", { name: "Cancel monitor", exact: true })
       .click();
     await drawer.getByText("No active tasks", { exact: true }).waitFor();
-    await page.screenshot({ path: join(root, "tasks-empty.png") });
     await page.keyboard.press("Escape");
     await drawer.waitFor({ state: "hidden" });
     await poll(

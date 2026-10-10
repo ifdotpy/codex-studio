@@ -99,6 +99,8 @@ export function sidebarSnapshot(
         "accountRevision",
         "created",
         "updated",
+        "layrReadiness",
+        "layrSync",
       ]),
     ),
     rooms: (runtime?.rooms || []).map((room) =>

@@ -194,6 +194,8 @@ class Moves(f.SignedIntegration):
                 actor = {**self.lead, 'provider': provider, 'isLead': lead, 'cwd': '/fixture/project'}
                 actor.pop('nativeTeleportTool', None)
                 actor.pop('nativeRoleGuidance', None)
+                # A record saved before layr chats has no tool source marker.
+                actor.pop('nativeToolSource', None)
                 definitions = self.a.runtime.tool_definitions(actor)
                 wire = json.dumps(definitions, separators=(',', ':'), ensure_ascii=False).encode()
                 self.assertEqual(hashlib.sha256(wire).hexdigest(), expected)

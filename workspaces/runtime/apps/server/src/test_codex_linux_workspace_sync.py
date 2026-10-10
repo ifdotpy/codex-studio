@@ -52,6 +52,35 @@ class SourceArchives(unittest.TestCase):
         self.assertIn('extra', names)
         self.assertNotIn('.worktrees/excluded', names)
 
+    def test_full_copy_takes_code_not_ignored_folders_or_build_output(self):
+        (self.repo / '.gitignore').write_text('data/\nbuild-cache/\n.env\nnested/\n')
+        self.git('add', '.gitignore')
+        self.git('commit', '-qm', 'Ignore data')
+        (self.repo / '.env').write_text('SECRET=1')
+        for folder in ('data/clone', 'build-cache', 'node_modules/x', 'crate/target/debug', 'src/__pycache__'):
+            (self.repo / folder).mkdir(parents=True)
+            (self.repo / folder / 'file').write_text('regenerable or data')
+        (self.repo / 'crate/Cargo.toml').write_text('[package]')
+        (self.repo / 'crate/src.rs').write_text('fn main() {}')
+        # A copy of another project inside the ignored data folder goes with it.
+        subprocess.run(['git', 'init', '-q', str(self.repo / 'data/clone')], check=True)
+        # A nested project that the parent ignores keeps its own rules.
+        nested = self.repo / 'nested'
+        subprocess.run(['git', 'init', '-q', '-b', 'main', str(nested)], check=True)
+        (nested / '.gitignore').write_text('out/\n')
+        (nested / 'code.txt').write_text('nested code')
+        (nested / 'out').mkdir()
+        (nested / 'out/big').write_text('nested output')
+        (nested / '.worktrees/fix').mkdir(parents=True)
+        (nested / '.worktrees/fix/.git').write_text('gitdir: elsewhere')
+        result, names = self.archive('code.tar.gz')
+        for kept in ('.env', 'crate/src.rs', 'crate/Cargo.toml', 'nested/code.txt', 'nested/.git/HEAD', '.git/HEAD'):
+            self.assertIn(kept, names)
+        for skipped in ('data', 'data/clone/.git', 'build-cache', 'node_modules', 'crate/target',
+                        'src/__pycache__', 'nested/out', 'nested/.worktrees'):
+            self.assertNotIn(skipped, names)
+        self.assertEqual(sorted(repo['path'] for repo in result['repositories']), ['.', 'nested'])
+
     def test_delta_uses_head_changes_dirty_paths_and_deletions(self):
         baseline, _ = self.archive('first.tar.gz')
         (self.repo / 'one').unlink()

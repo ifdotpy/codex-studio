@@ -1,5 +1,9 @@
 import {
+  apiSchemaHeaders,
+  entityPullFixtureForRequest,
+  installApiSchemaFixtureHeaders,
   readTestState,
+  readFixtureSyncContract,
   test,
   expect,
   spawnFixture as spawn,
@@ -8,6 +12,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 test("Reasoning History Ui", async ({
   browser: _testBrowser,
   context: _testContext,
@@ -112,18 +117,49 @@ test("Reasoning History Ui", async ({
     await page.setViewportSize({ width: 1440, height: 1000 });
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
-    await page.route("**/api/sync/identity", (r) =>
-      r.fulfill({ status: 404, json: { error: "Unsupported sync" } }),
+    installApiSchemaFixtureHeaders(page);
+    const syncContract = await readFixtureSyncContract(origin);
+    let transcriptSeq = 1;
+    await page.route("**/api/sync/identity", (route) =>
+      route.fulfill({ json: syncContract.identity }),
     );
-    await page.route("**/api/transcript**", (route) => {
-      if (new URL(route.request().url()).searchParams.get("id") !== lead.id)
-        return route.continue();
-      return route.request().url().includes("/stream?")
-        ? route.fulfill({
-            contentType: "text/event-stream",
-            body: "data: " + JSON.stringify(transcript) + "\n\n",
-          })
-        : route.fulfill({ json: transcript });
+    await page.route("**/api/sync/protocol", (route) =>
+      route.fulfill({ json: syncContract.protocol }),
+    );
+    await page.route("**/api/sync/stream?*", (route) => route.continue());
+    await page.route("**/api/sync/pull?*", (route) => {
+      const requestUrl = route.request().url();
+      const url = new URL(requestUrl);
+      const scope = url.searchParams.get("scope") || "state:entities:v1";
+      if (scope === `transcript:${lead.id}`) {
+        const after = Number(url.searchParams.get("after") || 0);
+        const documents =
+          after < transcriptSeq
+            ? [
+                {
+                  id: scope,
+                  seq: transcriptSeq,
+                  payload: JSON.stringify(transcript),
+                  _deleted: false,
+                },
+              ]
+            : [];
+        return route.fulfill({
+          json: {
+            workspaceId: syncContract.identity.workspaceId,
+            generation: 1,
+            documents,
+            checkpoint: { seq: Math.max(after, transcriptSeq) },
+            maxSeq: transcriptSeq,
+          },
+        });
+      }
+      return route.fulfill({
+        json: {
+          workspaceId: syncContract.identity.workspaceId,
+          ...entityPullFixtureForRequest(state, requestUrl),
+        },
+      });
     });
     await page.goto(origin);
     await page
@@ -156,6 +192,23 @@ test("Reasoning History Ui", async ({
     assert.equal((await live.boundingBox()).height, bounds.height);
     items.at(-1).reasoningSince = null;
     items.at(-1).reasoningMs = 123000;
+    transcriptSeq++;
+    const notification = await fetch(`${origin}/api/sync/notify`, {
+      method: "POST",
+      headers: apiSchemaHeaders({
+        "content-type": "application/json",
+        "X-Canvas-Token": state.token,
+      }),
+      body: JSON.stringify({
+        requestId: randomUUID(),
+        resources: [{ kind: "transcript", agentId: lead.id }],
+      }),
+    });
+    assert.equal(
+      notification.status,
+      200,
+      `transcript resource notification: ${await notification.text()}`,
+    );
     await page
       .getByText("Thought 2m 3s", { exact: true })
       .waitFor({ timeout: 15000 });
@@ -165,9 +218,7 @@ test("Reasoning History Ui", async ({
       "Status update preserves the DOM node",
     );
     assert.equal(await page.locator(".reasoning-duration").count(), 2);
-    await page.screenshot({ path: join(directory, "reasoning-desktop.png") });
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.screenshot({ path: join(directory, "reasoning-mobile.png") });
     assert.equal(
       await page.evaluate(
         () => document.documentElement.scrollWidth > innerWidth,

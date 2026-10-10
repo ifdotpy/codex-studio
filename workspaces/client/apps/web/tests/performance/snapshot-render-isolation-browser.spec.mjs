@@ -59,13 +59,20 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
   page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript(() => {
     window.resourceFrames = [];
+    let resourceStreamSequence = 0;
+    window.activeResourceStreamId = 0;
     const NativeEventSource = window.EventSource;
     window.EventSource = class extends NativeEventSource {
       constructor(...args) {
         super(...args);
+        const streamId = ++resourceStreamSequence;
         window.activeResourceStream = this;
+        window.activeResourceStreamId = streamId;
         this.addEventListener("resources", (event) => {
-          window.resourceFrames.push(JSON.parse(event.data));
+          window.resourceFrames.push({
+            ...JSON.parse(event.data),
+            streamId,
+          });
           window.latestResourceFrameSource = this;
         });
       }
@@ -112,19 +119,24 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
       .locator("#message")
       .fill("Keep this draft while other agents update.");
     // The idle prefetch pump mounts transcript subscriptions after 1000 ms.
-    // Wait for their stream baseline and completed reads before measuring
-    // entity changes. Require the current source because an older baseline
-    // can precede a failed replacement stream and its pending reconnect.
+    // Wait for the settled stream's initial baseline and completed reads before
+    // measuring entity changes. Later change frames on that source can arrive
+    // before this poll runs, so select its initial frame rather than requiring
+    // the latest frame to still be an initial baseline.
     await expect
       .poll(() =>
         page.evaluate(
           (ids) => {
-            const event = window.resourceFrames.at(-1);
+            const streamId = window.activeResourceStreamId;
+            const event = [...window.resourceFrames]
+              .reverse()
+              .find(
+                (frame) =>
+                  frame.streamId === streamId && frame.reason === "initial",
+              );
             return (
               window.activeResourceStream?.readyState === EventSource.OPEN &&
-              window.latestResourceFrameSource ===
-                window.activeResourceStream &&
-              event?.reason === "initial" &&
+              event !== undefined &&
               ids.every((id) =>
                 event.resources.some(
                   (resource) =>
@@ -168,8 +180,11 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
     console.log(JSON.stringify({ idle, unrelated, unrelatedModelWork }));
     // No baseline or reconnect can explain renders in this measured interval.
     const measuredFrames = (await frames()).slice(firstMeasuredFrame);
-    expect(measuredFrames.length).toBeGreaterThan(0);
-    for (const frame of measuredFrames) {
+    const measuredStateFrames = measuredFrames.filter((frame) =>
+      frame.resources.some((resource) => resource.kind === "state"),
+    );
+    expect(measuredStateFrames.length).toBeGreaterThan(0);
+    for (const frame of measuredStateFrames) {
       expect(frame.reason).toBe("change");
       expect(
         frame.resources.every((resource) => resource.kind === "state"),

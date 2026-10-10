@@ -24,7 +24,13 @@ test("sidebar status, alias validation, and compact choices", async ({
     ],
     {
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, SIDEBAR_ALIAS_FIXTURE: "1" },
+      // This fixture tests paired-server status and alias validation, not
+      // account sign-in. A synthetic Codex account changes its fixture state.
+      env: {
+        ...process.env,
+        CODEX_PLAYWRIGHT_SIGNED_OUT: "1",
+        SIDEBAR_ALIAS_FIXTURE: "1",
+      },
     },
   );
   let log = "";

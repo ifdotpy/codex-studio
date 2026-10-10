@@ -101,18 +101,66 @@ def _object_pack(root, prior, current, directory, floor):
             (pack.with_suffix('.idx'), metadata+'/objects/pack/'+name+'.idx')]
 
 
+# Folders that a build makes again. They stay on the Mac; in the VM they are layr layers.
+REGENERABLE = {'node_modules', '.venv', 'venv', '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache',
+               '.turbo', '.next'}
+
+
+def _code_only_skips(root, repositories, excludes):
+    """The folders that each repository's Git ignores, as paths below root. A folder that is
+    itself a repository stays (a nested project that its parent ignores keeps its own rules);
+    repositories inside a skipped folder (copies of other projects in a data folder) go with it."""
+    skipped = set()
+    def inside(relative, folders):
+        parts = relative.split('/')
+        return any('/'.join(parts[:index]) in folders for index in range(1, len(parts) + 1))
+    for repo in sorted(repositories, key=lambda path: (path != '.', path.count('/'), path)):
+        if repo != '.' and (inside(repo, skipped) or inside(repo, set(excludes))):
+            continue
+        directory = root if repo == '.' else root / repo
+        listing = _git(directory, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z')
+        for item in listing.split(b'\0'):
+            if not item.endswith(b'/'):
+                continue
+            relative = item.decode('utf-8', 'surrogateescape').rstrip('/')
+            full = relative if repo == '.' else repo + '/' + relative
+            if not (root / full / '.git').exists():
+                skipped.add(full)
+    return skipped
+
+
+def _regenerable(root, relative):
+    parts = relative.split('/')
+    if '.git' in parts:
+        return False
+    name = parts[-1]
+    if name in REGENERABLE:
+        return True
+    return name == 'target' and (root / '/'.join(parts[:-1]) / 'Cargo.toml').exists()
+
+
 def archive_source(root, archive_path, baseline=None):
     root = Path(root).expanduser().resolve()
     if not root.is_dir():
         raise ValueError('The source folder does not exist')
     detected = _repo_snapshots(root)
-    current = [dict(repo) for repo in detected]
-    full = baseline is None or not any(r['path'] == '.' for r in current)
     excludes = _workspace_excludes(root)
+    # The VM gets code, not data or build output: folders that Git ignores and regenerable
+    # folders stay on the Mac (docs/vm-layr.md). Files that Git ignores, such as .env, go.
+    skipped = _code_only_skips(root, [repo['path'] for repo in detected], excludes) | set(excludes)
+    def in_skipped(relative):
+        parts = relative.split('/')
+        # Worktrees of nested repositories too: they are lines of their own, not code here.
+        return '.worktrees' in parts or any('/'.join(parts[:index]) in skipped for index in range(1, len(parts) + 1))
+    current = [dict(repo) for repo in detected if repo['path'] == '.' or not in_skipped(repo['path'])]
+    full = baseline is None or not any(r['path'] == '.' for r in current)
     object_excludes = {('.git' if repo['path'] == '.' else repo['path']+'/.git')+'/objects' for repo in current}
     def excluded(relative):
-        skip = excludes if full else [*excludes, *object_excludes]
-        return any(relative == item or relative.startswith(item + '/') for item in skip)
+        if relative == '.':
+            return False
+        if in_skipped(relative) or _regenerable(root, relative):
+            return True
+        return not full and any(relative == item or relative.startswith(item + '/') for item in object_excludes)
 
     if full:
         selected = {'.'}

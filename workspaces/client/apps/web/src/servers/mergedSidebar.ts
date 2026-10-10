@@ -2,6 +2,7 @@ import { decodeSidebarRanks } from "./sidebarOrderRanks";
 import type { Agent, PeerTeam, Project, Room, Snapshot } from "../types";
 import type { ChatIndicator } from "../components/chat-status/chatStatusModel";
 import { sidebarIdentity } from "../components/sidebar/services";
+import { isVisibleSidebarAgent } from "../components/sidebar/catalog";
 import type { ServerSidebarSnapshot } from "./sidebarSnapshot";
 
 export type SidebarSource = {
@@ -209,7 +210,9 @@ export function mergeSidebar(
         id: chat.id,
         path: chat.cwd || "",
       });
-      if (!single && !projectPaths.has(path)) {
+      // Only a chat that the sidebar shows makes a project group: workers and imported
+      // sessions live in worktree folders and would add empty "No chats" groups.
+      if (!single && !projectPaths.has(path) && isVisibleSidebarAgent(chat)) {
         projectPaths.add(path);
         projects.push({
           id: path,

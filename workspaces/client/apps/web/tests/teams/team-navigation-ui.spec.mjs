@@ -11,8 +11,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+test.use({ apiSchemaFixtureHeaders: false });
+
 test("team-navigation-ui", async ({ page: fixturePage }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(60_000);
   const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "codex-team-navigation-"));
   const proc = spawn(
@@ -132,6 +134,12 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       await route.fulfill({ response, json: data });
     });
     await page.goto(origin);
+    await expect(
+      page.getByRole("alertdialog", {
+        name: "Studio update required",
+        exact: true,
+      }),
+    ).toHaveCount(0, { timeout: 2000 });
     const selectLead = () => page.locator(`[data-chat="${lead.id}"]`).click();
     await selectLead();
     assert.equal(
@@ -337,7 +345,6 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       titleLayout.height > titleLayout.lineHeight * 2,
       "the full worker name wraps",
     );
-    await page.screenshot({ path: join(root, "team-desktop.png") });
     await team.locator("#workers").evaluate((node) => {
       node.scrollTop = node.scrollHeight;
     });
@@ -375,7 +382,6 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       true,
     );
     await waitForTeamInViewport();
-    await page.screenshot({ path: join(root, "team-narrow.png") });
     await row(2).click();
     await team.waitFor({ state: "hidden" });
     await page.locator("#back-lead").click();
@@ -449,7 +455,6 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
           layout.scrollWidth <= layout.clientWidth,
         `the team list fits the mobile viewport: ${JSON.stringify(layout)}`,
       );
-      await page.screenshot({ path: join(root, `team-mobile-${width}.png`) });
       await row(39).click();
       await team.waitFor({ state: "hidden" });
       assert.equal(
@@ -465,9 +470,6 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
         "Back to main agent remains inside the mobile header",
       );
       await page.locator("#message").fill(`Worker draft ${width}`);
-      await page.screenshot({
-        path: join(root, `worker-mobile-${width}.png`),
-      });
       await page.reload();
       await page
         .locator("#conversation-title")
@@ -478,9 +480,21 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
         `Worker draft ${width}`,
       );
       await openChatSettingsFromHeader();
-      await page.getByTestId("account-picker").click();
-      const accountOptions = page.getByRole("menuitem").filter({
-        has: page.locator(".account-menu-identity"),
+      const chatSettings = page.getByRole("dialog", {
+        name: "Chat settings",
+        exact: true,
+      });
+      await chatSettings
+        .getByRole("button", { name: "Subagent settings", exact: true })
+        .click();
+      const subagentSettings = page.getByRole("dialog").filter({
+        has: page.getByRole("heading", {
+          name: "Subagent settings",
+          exact: true,
+        }),
+      });
+      const accountOptions = subagentSettings.getByRole("button", {
+        name: /^Select account /,
       });
       await accountOptions.first().waitFor({ state: "visible" });
       assert.ok(await accountOptions.count(), "saved accounts are visible");
@@ -490,18 +504,17 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
           true,
           "a subagent cannot change accounts",
         );
-      await page.getByTestId("account-picker").click();
-      await page
-        .getByRole("dialog")
+      await subagentSettings.getByRole("button").first().click();
+      await subagentSettings.waitFor({ state: "hidden" });
+      await chatSettings
         .getByRole("button", { name: "Close", exact: true })
         .click();
-      await page.getByRole("dialog").waitFor({ state: "hidden" });
+      await chatSettings.waitFor({ state: "hidden" });
       await page.locator("#back-lead").click();
       assert.equal(
         await page.locator("#message").inputValue(),
         `Lead draft ${width}`,
       );
-      await page.screenshot({ path: join(root, `chat-mobile-${width}.png`) });
       assert.ok(
         await page
           .locator(".workspace-header")
@@ -523,7 +536,11 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       }),
     );
   } catch (error) {
-    await page?.screenshot({ path: join(root, "failure.png") });
+    try {
+      await page?.screenshot({ path: join(root, "failure.png") });
+    } catch {
+      // Preserve the original test failure if Playwright already closed the page.
+    }
     console.error("Failure evidence:", root);
     throw error;
   }

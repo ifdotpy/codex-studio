@@ -1,7 +1,7 @@
 import { get, post, refreshSession } from "../api";
 import { serverLocalStorage } from "./storage";
 import type { ResourceConnectionState } from "../sync/resourceEvents";
-import type { StudioServer } from "./registry";
+import { readServers, type StudioServer } from "./registry";
 
 export type ProjectLocation = {
   serverId: string;
@@ -27,6 +27,8 @@ export type ProjectServerChoice = {
   label: string;
   disabled?: boolean;
   serverId?: string;
+  system?: string;
+  connection?: StudioServer;
 };
 export function projectServerChoices(
   servers: StudioServer[],
@@ -35,6 +37,7 @@ export function projectServerChoices(
 ): ProjectServerChoice[] {
   return servers.map((server) => ({
     id: server.id,
+    connection: server,
     label: server.label,
     disabled:
       reachability[server.id] === "unreachable" ||
@@ -45,6 +48,7 @@ export function projectServerChoices(
 }
 export async function readProjectServers(): Promise<ProjectServerChoice[]> {
   const snapshot = await get("/api/multi-server");
+  const connections = globalThis.localStorage ? readServers() : [];
   return [
     {
       id: "local",
@@ -58,6 +62,7 @@ export async function readProjectServers(): Promise<ProjectServerChoice[]> {
       )
       .map((server) => ({
         id: server.id,
+        connection: connections.find((row) => row.id === server.id),
         label: server.label,
         disabled:
           server.status === "unreachable" ||
@@ -167,6 +172,13 @@ export function projectLocationOn(
       ? project.locations?.find(
           (location) => location.serverId === project.homeServerId,
         )
+      : undefined) ||
+    (!project.locations?.length && server.id === "local"
+      ? {
+          serverId: "local",
+          path: project.path,
+          projectId: project.id,
+        }
       : undefined)
   );
 }

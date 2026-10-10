@@ -198,7 +198,6 @@ test("Original Typography Browser", async ({
       assert.ok(geometry.page <= geometry.viewport, JSON.stringify(geometry));
     }
     await page.setViewportSize({ width: 1440, height: 960 });
-    await page.screenshot({ path: join(evidence, "original.png") });
     settings = await openSettings();
     assert.equal(
       await settings

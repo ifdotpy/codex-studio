@@ -124,6 +124,7 @@ type SettingsProps = {
   permissionsTargetId?: string;
   onAccountChange?: (key: string) => void;
   accountDisabled?: boolean;
+  onDraftChange?: (patch: Partial<ConversationBody>) => void;
 };
 const accountOf = (agent: Pick<Agent, "accountKey">) =>
   agent.accountKey || "default";
@@ -260,6 +261,7 @@ function ScopedExecutionSettings({
   permissionsTargetId,
   onAccountChange,
   accountDisabled = false,
+  onDraftChange,
   role,
   onRole,
   opened,
@@ -322,7 +324,7 @@ function ScopedExecutionSettings({
   const receiptKey = `next-turn-settings:${JSON.stringify([agent.id, accountOf(agent)])}`;
   const [unconfirmed, setUnconfirmed] = useState<ConversationBody | null>(
     () => {
-      if (teamDefaults) return null;
+      if (teamDefaults || onDraftChange) return null;
       const value = saved<ConversationBody | null>(receiptKey, null);
       return value?.id === agent.id && value?.next_turn === true ? value : null;
     },
@@ -543,6 +545,10 @@ function ScopedExecutionSettings({
       disabled: true,
     });
   const submit = async (request: ConversationBody, notice = "") => {
+    if (onDraftChange) {
+      onDraftChange(request);
+      return;
+    }
     if (saveLock.current) return;
     saveLock.current = true;
     request = { ...request, expected_account_key: accountOf(agent) };
@@ -615,6 +621,10 @@ function ScopedExecutionSettings({
   };
   const changeAccount = async (target: string | null) => {
     if (saveLock.current || target === current.account_key) return;
+    if (onDraftChange) {
+      onDraftChange({ worker_defaults: { ...current, account_key: target } });
+      return;
+    }
     if (!target) {
       await submit({
         id: agent.id,
@@ -841,6 +851,10 @@ function ScopedExecutionSettings({
     if (disabled || saveLock.current) return;
     const next = { ...reviewCurrent, ...patch };
     if ("model" in patch) next.effort = null;
+    if (onDraftChange) {
+      onDraftChange({ review_defaults: next });
+      return;
+    }
     saveLock.current = true;
     const previousPending = reviewPending;
     setSaving(true);
@@ -1027,7 +1041,7 @@ function ScopedExecutionSettings({
         daybreak={daybreakEnabled}
         onDaybreak={() => void change({ daybreak_enabled: !daybreakEnabled })}
       />
-      {role === "worker" && (
+      {role === "worker" && !onDraftChange && (
         <p className="notice">
           For new subagents. An account change also moves existing ones.
         </p>

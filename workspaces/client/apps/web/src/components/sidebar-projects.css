@@ -50,6 +50,11 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+/* The project name keeps room before the chip. */
+.project-tree-toggle > span {
+  flex: 0 1 auto;
+  min-width: min(6em, 45%);
+}
 .project-tree-action {
   opacity: 0;
   width: 24px;
@@ -59,6 +64,86 @@
 .project-tree-heading:hover .project-tree-action,
 .project-tree-heading:focus-within .project-tree-action {
   opacity: 1;
+}
+/* The LAYR chip matches .workspace-mode-badge; the dot tells the VM import state.
+   The SYNC chip next to it tells the Mac folder sync state. */
+.project-tree-toggle .project-layr-readiness,
+.project-tree-toggle .project-layr-sync {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 6px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.project-layr-readiness::before,
+.project-layr-sync::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.project-layr-readiness[data-state="ready"]::before {
+  color: light-dark(#18713a, #6ed491);
+}
+.project-layr-readiness[data-state="importing"]::before {
+  color: var(--accent);
+  animation: project-layr-importing 2s ease-in-out infinite;
+}
+.project-layr-readiness[data-state="not_imported"]::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px currentColor;
+}
+.project-layr-readiness[data-state="failed"]::before {
+  color: light-dark(#956000, #f0bb60);
+}
+.project-layr-sync[data-state="synced"]::before {
+  color: light-dark(#18713a, #6ed491);
+}
+.project-layr-sync[data-state="syncing"]::before,
+.project-layr-sync[data-state="waiting"]::before {
+  color: var(--accent);
+}
+.project-layr-sync[data-state="syncing"]::before {
+  animation: project-layr-importing 2s ease-in-out infinite;
+}
+.project-layr-sync[data-state="conflict"]::before {
+  color: light-dark(#956000, #f0bb60);
+}
+.project-layr-sync[data-state="conflict"] {
+  color: light-dark(#956000, #f0bb60);
+}
+.project-layr-sync[data-state="paused"]::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px currentColor;
+}
+.project-layr-sync[data-state="error"]::before {
+  color: light-dark(#b42318, #ff8a80);
+}
+.mac-sync-conflict-path {
+  flex: 1 1 12em;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--mantine-font-family-monospace);
+}
+@keyframes project-layr-importing {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .project-layr-sync[data-state="syncing"]::before,
+  .project-layr-readiness[data-state="importing"]::before {
+    animation: none;
+  }
 }
 .project-chats {
   padding-left: 24px;
@@ -171,7 +256,7 @@
     :has(.project-tree-action[aria-expanded="true"])
   )
   .project-tree-toggle {
-  padding-right: 28px;
+  margin-right: 28px;
 }
 #sidebar
   .project-tree-heading:has(.project-tree-action + .project-tree-action):is(
@@ -180,7 +265,7 @@
     :has(.project-tree-action[aria-expanded="true"])
   )
   .project-tree-toggle {
-  padding-right: 54px;
+  margin-right: 54px;
 }
 #sidebar
   .project-tree-heading:is(
@@ -229,7 +314,7 @@
     height: 40px;
   }
   #sidebar .project-tree-toggle {
-    padding-right: 42px;
+    margin-right: 42px;
   }
   #sidebar .project-tree-action:has(+ .project-tree-action) {
     right: 44px;
@@ -237,7 +322,7 @@
   #sidebar
     .project-tree-heading:has(.project-tree-action + .project-tree-action)
     .project-tree-toggle {
-    padding-right: 84px;
+    margin-right: 84px;
   }
 }
 
@@ -249,13 +334,13 @@
 #sidebar
   .project-tree-heading:has(.project-tree-action[aria-haspopup="menu"])
   .project-tree-toggle {
-  padding-right: 28px;
+  margin-right: 28px;
 }
 @media (hover: none), (max-width: 760px) {
   #sidebar
     .project-tree-heading:has(.project-tree-action[aria-haspopup="menu"])
     .project-tree-toggle {
-    padding-right: 84px;
+    margin-right: 84px;
   }
 }
 

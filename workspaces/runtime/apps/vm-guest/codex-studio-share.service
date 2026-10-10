@@ -1,0 +1,16 @@
+[Unit]
+Description=Studio read-only file share
+After=network-online.target codex-studio-layr.service
+Wants=network-online.target
+RequiresMountsFor=/var/lib/codex-studio
+ConditionPathExists=/var/lib/codex-studio/layr-admin/smb.conf
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/sbin/smbd --foreground --no-process-group --configfile=/var/lib/codex-studio/layr-admin/smb.conf
+ExecReload=/usr/bin/smbcontrol --configfile=/var/lib/codex-studio/layr-admin/smb.conf all reload-config
+Restart=on-failure
+RestartSec=2
+UMask=0077
+

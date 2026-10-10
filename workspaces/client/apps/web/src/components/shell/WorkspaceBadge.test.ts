@@ -13,37 +13,18 @@ const agent = (values: Partial<Agent>) =>
   }) as Agent;
 
 test.each([
-  ["image", "host", "ASIF", "Apple Sparse Image Format workspace"],
-  ["image", "linux", "VM", "Linux virtual machine workspace"],
-  ["worktree", "host", "WT", "Git worktree"],
-  ["shared", "host", "SHARED", "Shared folder"],
-] as const)(
-  "shows %s workspace as %s",
-  (workspaceMode, environment, label, name) => {
-    const current = agent({ workspaceMode, environment });
-    const info = workspaceBadgeInfo(current);
-    expect(info).toEqual({ label, title: `${name} · /projects/example` });
-    const markup = renderToStaticMarkup(
-      createElement(WorkspaceBadge, { agent: current }),
-    );
-    expect(markup).toContain(`title="${name} · /projects/example"`);
-    expect(markup).toContain(`>${label}</span>`);
-  },
-);
-
-test("uses the Linux overlay badge when the host environment uses an overlay", () => {
-  expect(
-    workspaceBadgeInfo(
-      agent({
-        workspaceMode: "image",
-        environment: "host",
-        workspaceBackend: "vm",
-      }),
-    ),
-  ).toEqual({
-    label: "VM",
-    title: "Linux virtual machine workspace · /projects/example",
-  });
+  ["image", "ASIF", "Apple Sparse Image Format workspace"],
+  ["worktree", "WT", "Git worktree"],
+  ["shared", "SHARED", "Shared folder"],
+] as const)("shows %s workspace as %s", (workspaceMode, label, name) => {
+  const current = agent({ workspaceMode });
+  const info = workspaceBadgeInfo(current);
+  expect(info).toEqual({ label, title: `${name} · /projects/example` });
+  const markup = renderToStaticMarkup(
+    createElement(WorkspaceBadge, { agent: current }),
+  );
+  expect(markup).toContain(`title="${name} · /projects/example"`);
+  expect(markup).toContain(`>${label}</span>`);
 });
 
 test("hides the badge for leads and unknown remote workspaces", () => {
@@ -67,7 +48,6 @@ test.each([
           cwd: "/remote/repo",
           remoteWorker: { server: "remote", link: "link" },
           workspaceMode,
-          workspaceBackend: workspaceMode === "image" ? "asif" : null,
           imageWorkspace: false,
           worktree: false,
         }),
@@ -75,3 +55,29 @@ test.each([
     ).toEqual({ label, title: `${name} · /remote/repo` });
   },
 );
+
+test.each([
+  ["layr", "LAYR"],
+  ["image", "ASIF"],
+  ["worktree", "WT"],
+])("shows the chat workspace %s as %s", (mode, label) => {
+  const current = { ...agent({ isLead: true }), workspaceMode: mode } as Agent;
+  const markup = renderToStaticMarkup(
+    createElement(WorkspaceBadge, { agent: current }),
+  );
+  expect(workspaceBadgeInfo(current)?.label).toBe(label);
+  expect(markup).toContain(`>${label}</span>`);
+});
+
+test.each([false, true])("shows the layr worker badge, remote=%s", (remote) => {
+  const current = {
+    ...agent(
+      remote ? { remoteWorker: { server: "remote", link: "link" } } : {},
+    ),
+    workspaceMode: "layr",
+  } as unknown as Agent;
+  expect(workspaceBadgeInfo(current)).toEqual({
+    label: "LAYR",
+    title: "Linux VM with layr · /projects/example",
+  });
+});

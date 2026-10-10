@@ -134,6 +134,14 @@ test("Background controls", async ({ context }) => {
         value = { accounts: [], defaultAccountKey: "default" };
       else if (path === "/api/voice/records")
         value = { records: [], delivered: [], cursor: 0 };
+      else if (path === "/api/workspace/tasks")
+        value = {
+          tasks: [native],
+          cursor: { updated: native.created, id: native.id },
+          hasMore: false,
+          hasMoreChanges: false,
+          reset: false,
+        };
       else if (path === "/api/workspace")
         value = { tasks: [native], monitors: [monitor] };
       else if (path === "/api/task") value = native;
@@ -153,6 +161,22 @@ test("Background controls", async ({ context }) => {
             "X-Log-Truncated": "true",
           },
         });
+      else if (path === "/api/multi-server")
+        value = {
+          protocol: 1,
+          identity: {
+            serverId: "fixture-server",
+            label: "Studio server",
+            origin: null,
+            publicKey:
+              "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA03Gf93BzL6we9QAue5E1GRzfNBfEMRLv97mjj9pUqPU=\n-----END PUBLIC KEY-----\n",
+            tailscaleUser: null,
+          },
+          clients: [],
+          servers: [],
+          invites: [],
+          settings: { autoPair: true },
+        };
       else if (path === "/api/monitor/cancel") {
         return route.continue();
       } else if (path === "/api/monitor/input" && failInput) {
@@ -249,7 +273,6 @@ test("Background controls", async ({ context }) => {
         exact: true,
       })
       .waitFor();
-    await page.screenshot({ path: join(root, "interactive-desktop.png") });
     // The mobile client closes desktop drawers below 761px. Exercise this drawer
     // at a narrow desktop width; mobile has its own client tests.
     await page.setViewportSize({ width: 780, height: 740 });
@@ -258,9 +281,6 @@ test("Background controls", async ({ context }) => {
       780,
     );
     await drawer.locator(".process-input").scrollIntoViewIfNeeded();
-    await page.screenshot({
-      path: join(root, "interactive-narrow-desktop.png"),
-    });
     await drawer
       .getByRole("button", { name: "Close input (EOF)", exact: true })
       .click();
@@ -306,7 +326,6 @@ test("Background controls", async ({ context }) => {
       path: "/api/native-command",
       body: { id: "native-task", action: "cancel" },
     });
-    await page.screenshot({ path: join(root, "native-command-controls.png") });
     assert.equal(
       writes.some(
         (w) => w.path === "/api/monitor/input" && w.body.id === "9042",
@@ -332,7 +351,10 @@ test("Background controls", async ({ context }) => {
     state.runtime.agents.push(failedWorker);
     await page.setViewportSize({ width: 1440, height: 980 });
     await page.reload();
-    await page.locator('[data-chat="lead"]').click();
+    await page
+      .locator("#conversation-title")
+      .getByText("Release lead", { exact: true })
+      .waitFor();
     await page.locator('.agent-phase[data-phase="acknowledgement"]').waitFor();
     await page.getByRole("button", { name: "Team", exact: true }).click();
     await page
@@ -344,7 +366,6 @@ test("Background controls", async ({ context }) => {
         .innerText(),
       failedWorker.error,
     );
-    await page.screenshot({ path: join(root, "harness-status.png") });
     assert.deepEqual(errors, []);
     console.log(`PASS background controls browser contract. Evidence: ${root}`);
   } finally {

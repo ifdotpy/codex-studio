@@ -179,6 +179,35 @@ describe("complete multi-server sidebar projection", () => {
     expect(original.writes).toEqual([]);
   });
 
+  it("makes project groups only for chats that the sidebar shows", () => {
+    const a = source("local");
+    a.sidebar.threads.push(
+      agent("worker", {
+        isLead: false,
+        parentId: "same",
+        rootId: "same",
+        cwd: "/same/project/.worktrees/worker",
+      }),
+      agent("imported", { source: "app-server", cwd: "/elsewhere/imported" }),
+      agent("lead", { cwd: "/elsewhere/lead" }),
+    );
+    const model = mergeSidebar([a, source("remote")]);
+    const groups = model.data.runtime.projects.map((project) => project.path);
+    expect(groups).toContain(model.projectKey("local", "/elsewhere/lead"));
+    expect(groups).not.toContain(
+      model.projectKey("local", "/same/project/.worktrees/worker"),
+    );
+    expect(groups).not.toContain(
+      model.projectKey("local", "/elsewhere/imported"),
+    );
+    // The worker stays a row of its lead's team.
+    expect(
+      model.data.threads.find(
+        (row) => row.id === model.chatKey("local", "worker"),
+      )?.parentId,
+    ).toBe(model.chatKey("local", "same"));
+  });
+
   it("separates overlapping chat, worker, room, folder and team IDs", () => {
     const a = source("local");
     const b = source("remote");
@@ -427,7 +456,7 @@ describe("original saved sidebar state", () => {
     expect(remote.sidebar.collapsed).toEqual({});
   });
 
-  it("reads fresh source preferences before stale shell cache values", () => {
+  it("uses the owner's saved compact preference despite its stale snapshot", () => {
     const local = source("local");
     const remote = source("remote");
     const a = backend(local);
@@ -459,9 +488,25 @@ describe("original saved sidebar state", () => {
         `codex-project-compact:${model.data.stateDir}`,
         {},
       )[model.projectKey("remote", path)],
-    ).toBe(false);
+    ).toBe(true);
     expect(a.writes).toEqual([]);
     expect(b.writes).toEqual([]);
+    const compactKey = `codex-project-compact:${model.data.stateDir}`;
+    const field = model.projectKey("remote", path);
+    cache.editPreference(compactKey, { [field]: true }, { [field]: false });
+    expect(b.values.get(`codex-project-compact:${scope}`)).toBe(
+      JSON.stringify({ [path]: false }),
+    );
+    const reopened = mergedSidebarPreferences(
+      model,
+      new Map([
+        ["local", a.backend],
+        ["remote", b.backend],
+      ]),
+    );
+    expect(reopened.saved<Record<string, boolean>>(compactKey, {})[field]).toBe(
+      false,
+    );
   });
 
   it("reads original namespaces without writing and ignores project collapse with shared compact visibility", () => {

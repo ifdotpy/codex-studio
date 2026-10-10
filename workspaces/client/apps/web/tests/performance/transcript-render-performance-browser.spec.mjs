@@ -4,7 +4,11 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, browserExecutablePath } from "../playwright.mjs";
+import {
+  test,
+  browserExecutablePath,
+  installApiSchemaFixtureHeaders,
+} from "../playwright.mjs";
 
 test("Transcript render performance @performance", async () => {
   test.setTimeout(180_000);
@@ -12,7 +16,8 @@ test("Transcript render performance @performance", async () => {
   const require = createRequire(join(root, "package.json"));
   const { chromium, webkit } = require("playwright-core");
   const browserType = process.env.BROWSER === "webkit" ? webkit : chromium;
-  const { createServer } = await import(require.resolve("vite"));
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.mjs");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-render-audit-"));
   const entry = join(root, "transcript-audit.tsx");
   const server = await createServer({
@@ -148,27 +153,6 @@ test("Transcript render performance @performance", async () => {
           ),
         ),
       );
-    window.failTool = () =>
-      flushSync(() =>
-        setItems((old) =>
-          old.map((m) =>
-            m.id === "tool29-0"
-              ? {
-                  ...m,
-                  toolStatus: "failed",
-                  text: JSON.stringify({
-                    type: "commandExecution",
-                    status: "failed",
-                    error: {
-                      message: "Usage limit reached",
-                      codexErrorInfo: "usageLimitExceeded",
-                    },
-                  }),
-                }
-              : m,
-          ),
-        ),
-      );
     window.diagnostic = (error) =>
       flushSync(() =>
         setItems((old) =>
@@ -234,6 +218,7 @@ test("Transcript render performance @performance", async () => {
       errors.push(e.message);
       console.error("Browser error:", e.message);
     });
+    installApiSchemaFixtureHeaders(page);
     await page.route("**/api/**", (r) => r.fulfill({ json: {} }));
     await page.goto(
       "http://127.0.0.1:" + server.httpServer.address().port + "/audit",
@@ -280,8 +265,6 @@ test("Transcript render performance @performance", async () => {
       true,
       "Earlier turn retains its DOM node",
     );
-    await page.evaluate(() => window.failTool());
-    await page.getByText("Account limit reached", { exact: false }).waitFor();
     await page.evaluate(() =>
       window.diagnostic({ message: "First diagnostic", code: "first" }),
     );

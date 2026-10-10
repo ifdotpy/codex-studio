@@ -3,12 +3,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import time
 import uuid
-from typing import TYPE_CHECKING, Protocol
+from typing import Any, TYPE_CHECKING, Protocol
 
 from codex_records import RecordStore
+from codex_operations_adapter import (
+    _legacy_state,
+    apply_decision,
+    content_for_record,
+    missing_receipt_outcome,
+    require_decision,
+    transition_record,
+)
 
 if TYPE_CHECKING:
     import sqlite3
@@ -102,7 +111,8 @@ def request_result_outcome(record: "ToolRequestRecord", result: "JsonObject") ->
         return "not_applied"
     if tool == "orchestration_message" and error in _MESSAGE_REJECTIONS:
         return "not_applied"
-    # Exact pre-write guards. Committed operation receipts still take precedence.
+    # Exact pre-write guards. A matching committed operation receipt later
+    # makes an inferred rejection unknown rather than not-applied.
     rejections = {
         "orchestration_task": {"Supply a review decision with 1 to 32000 characters",
                                "Supply result with 1 to 32000 characters for accept or reject"},
@@ -218,16 +228,27 @@ class RequestMixin:
         for row in rows:
             from codex_payloads import resolve_record, state_root
             record = resolve_record(state_root(self), json.loads(row[0]))
+            try:
+                _legacy_state(record)
+            except ValueError:
+                logging.getLogger(__name__).warning(
+                    "Skipping unsupported stored tool request lifecycle during restart: %s/%s",
+                    record.get("stage"), record.get("outcome"),
+                )
+                continue
             cached = self.tool_result(db, record["id"])
             if cached:
                 self.finish_tool_request(record["id"], cached, db=db)
                 continue
             record["updated"] = time.time()
-            if record["stage"] == "queued":
-                record.update(stage="cancelled", outcome="not_applied", error="Server restarted before execution")
+            decision, _ = transition_record(record, "ServerRestarted")
+            apply_decision(record, decision)
+            if record["stage"] == "cancelled":
+                record["error"] = "Server restarted before execution"
                 record["result"] = _cancel_result(record, record["error"])
             else:
-                record.update(stage="interrupted", outcome="unknown", error="Server restarted before the execution receipt")
+                record["stage"] = "interrupted"
+                record["error"] = "Server restarted before the execution receipt"
             self.put(db, "tool_requests", record)
 
     @staticmethod
@@ -331,9 +352,10 @@ class RequestMixin:
             if actor is None or actor.get("deletedAt"):
                 raise ValueError("Unknown managed agent")
             record = self.tool_request(key, db)
-            if record and (record["signature"] != signature or record["agent"] != actor["id"]):
-                raise ValueError("This request id has different content")
             if record:
+                admission = {**record, "signature": signature, "agent": actor["id"]}
+                decision, _ = transition_record(record, "Admit", content=content_for_record(admission))
+                require_decision(decision)
                 record = self._refresh_tool_request(db, record)
             call_id = str(params.get("callId", message.get("id")))
             if not record:
@@ -362,6 +384,11 @@ class RequestMixin:
                         record["callbackQueueDelayMs"] = max(0, dispatched - received) * 1000
                 if identity_tool in {"orchestration_spawn", "orchestration_send", "orchestration_review", "orchestration_servers", "orchestration_move", "orchestration_teleport"} and "request_id" in identity_args:
                     record["request_id"] = identity_args["request_id"]
+                decision, _ = transition_record(
+                    record, {"Admit": {"content": content_for_record(record)}}, empty=True
+                )
+                require_decision(decision)
+                apply_decision(record, decision)
                 self.put(db, "tool_requests", record)
                 cached = self.tool_result(db, key)
                 if cached:
@@ -382,10 +409,14 @@ class RequestMixin:
     def begin_tool_request(self: "RequestRuntime", key: str) -> bool:
         with self.lock, self.db() as db:
             record = self.tool_request(key, db)
-            if not record or record["stage"] != "queued" or record.get("cancelRequested"):
+            if not record:
+                return False
+            decision, _ = transition_record(record, "ClaimDispatch")
+            if isinstance(decision["kind"], dict) or decision["kind"] != "Transitioned":
                 return False
             now = time.time()
-            record.update(stage="running", updated=now, started=now)
+            apply_decision(record, decision)
+            record.update(updated=now, started=now)
             record.setdefault("timing", {})["handlerStartedAt"] = time.monotonic_ns()
             record["executionQueueDelayMs"] = max(0, now - record["created"]) * 1000
             if "wireReceivedAt" in record:
@@ -395,12 +426,13 @@ class RequestMixin:
 
     def finish_tool_request(self: "RequestRuntime", key: str, result: "JsonObject", outcome: str | None = None,
                             db: "sqlite3.Connection | None" = None, *,
-                            prepared_record: "ToolRequestRecord | None" = None) -> "ToolRequestRecord":
+                            prepared_record: "ToolRequestRecord | None" = None,
+                            proof: str | None = None) -> "ToolRequestRecord":
         """Save a completion; prepared_record is internal list snapshot evidence."""
         if db is None:
             with self.lock, self.db() as own:
                 return self.finish_tool_request(key, result, outcome, own,
-                                                prepared_record=prepared_record)
+                                                prepared_record=prepared_record, proof=proof)
         if outcome not in (None, "applied", "not_applied", "unknown"):
             raise ValueError("Invalid request outcome")
         if prepared_record is None:
@@ -416,20 +448,34 @@ class RequestMixin:
                 raise ValueError("This request receipt changed while reading its result")
         if record is None:
             raise ValueError("Unknown tool request")
-        # Definitive receipts cannot be replaced by a late transport error.
-        if record["outcome"] in {"applied", "not_applied"}:
-            return record
-        if outcome is None:
+        inferred_outcome = outcome is None
+        if inferred_outcome:
             outcome = request_result_outcome(record, result)
-            if outcome == "not_applied" and operation_receipt_evidence(db, key):
-                # A committed operation overrides an inferred rejection. Keep its
-                # final error and uncertainty; recovery exposes the commit.
-                outcome = "unknown"
-        if record["outcome"] == outcome and record.get("result") == result:
+        event_kind: Any
+        # Preserve the old uncertainty rule for inferred rejections; explicitly
+        # supplied outcomes retain their existing caller semantics.
+        committed = (operation_receipt_evidence(db, key)
+                     if inferred_outcome and outcome == "not_applied" else None)
+        if outcome == "applied":
+            event_kind = "AppliedResponse"
+        elif committed:
+            event_kind = "CommittedOperationReceipt"
+        elif proof == "ReviewChildAbsent":
+            event_kind = {"DefinitiveRejection": "ReviewChildAbsent"}
+        elif outcome == "not_applied":
+            proof_kind = "ReadOnlyRejection" if record.get("readOnly") is True else "ExactPreWriteRejection"
+            event_kind = {"DefinitiveRejection": proof_kind}
+        else:
+            event_kind = {"Failure": "InvalidPostExecutionResponse"}
+        decision, _ = transition_record(record, event_kind)
+        require_decision(decision)
+        changed = apply_decision(record, decision)
+        if not changed and not (
+            record.get("outcome") == "unknown" and record.get("result") != result
+        ):
             return record
         now = time.time()
-        record.update(stage="completed" if outcome == "applied" else "failed",
-                      outcome=outcome, result=result, updated=now, finished=record.get("finished", now))
+        record.update(result=result, updated=now, finished=record.get("finished", now))
         record.setdefault("timing", {})["handlerEndedAt"] = time.monotonic_ns()
         record.pop("error", None)
         if record.get("tool") in {"orchestration_spawn", "orchestration_review"}:
@@ -470,7 +516,8 @@ class RequestMixin:
                     # Keep the original failure payload; only settle the
                     # execution outcome now that absence of the child is proven.
                     after = self.finish_tool_request(after["id"], after.get("result"),
-                                                     outcome="not_applied", db=db)
+                                                     outcome="not_applied", db=db,
+                                                     proof="ReviewChildAbsent")
             if after["outcome"] in {"applied", "not_applied"}:
                 reconciled.append(after["id"])
             elif after["outcome"] == "unknown":
@@ -571,20 +618,26 @@ class RequestMixin:
                         from codex_session_tools import session_tool_name
                         return {'id': request_id, 'stage': 'complete', 'outcome': 'applied',
                                 'tool': session_tool_name(actor), 'operationResult': move['acceptance'], 'move': move}
-                return {"id": request_id, "stage": "not_found", "outcome": "unknown",
+                outcome = missing_receipt_outcome(request_id)
+                return {"id": request_id, "stage": "not_found", "outcome": outcome,
                         "message": "No receipt found. This does not prove that the operation did not execute."}
             record = self._refresh_tool_request(db, record)
-            if action == "cancel" and record["stage"] in {"queued", "running"}:
-                record.update(cancelRequested=True, updated=time.time())
-                if record["stage"] == "queued":
-                    record.update(stage="cancelled", outcome="not_applied", finished=time.time())
+            if action == "cancel":
+                decision, _ = transition_record(record, "Cancel")
+                changed = apply_decision(record, decision)
+                if changed:
+                    record.update(cancelRequested=True, updated=time.time())
+                if changed and record["stage"] == "cancelled":
+                    record["finished"] = time.time()
                     record["result"] = _cancel_result(record, "Cancelled before execution")
-                self.put(db, "tool_requests", record)
+                if changed:
+                    self.put(db, "tool_requests", record)
             result = {k: v for k, v in record.items() if k != "signature"}
             if isinstance(result.get("result"), dict):
                 from codex_server_exec import expire_tool_output
                 result["result"] = expire_tool_output(result["result"])
-            if action == "get" and record.get("outcome") not in {"applied", "not_applied"} and "operationResult" not in record:
+            if (action == "get" and record.get("outcome") not in {"applied", "not_applied"}
+                    and "operationResult" not in record):
                 result.update(operation_receipt_evidence(db, record["id"]) or {})
             if action == "get" and record.get("agentIds"):
                 # The receipt remains immutable. These observations show the

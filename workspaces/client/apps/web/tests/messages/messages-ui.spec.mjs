@@ -217,10 +217,6 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
       await drawer.locator(".team-room-rows").evaluate((node) => {
         node.scrollTop = 0;
       });
-      await page.screenshot({
-        path: join(root, `messages-${width}.png`),
-        animations: "disabled",
-      });
       assert.ok(
         await page.evaluate(
           () => document.documentElement.scrollWidth <= innerWidth,
@@ -243,10 +239,6 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
       assert.deepEqual(overflow, [], `message overflow at ${width}`);
       if (width < 700) {
         await drawer.locator(`[data-room="${direct.id}"]`).click();
-        await page.screenshot({
-          path: join(root, `room-${width}.png`),
-          animations: "disabled",
-        });
         assert.ok(
           await drawer
             .locator(".team-room-detail")

@@ -279,8 +279,8 @@ class Contract(unittest.TestCase):
         self.rt.native_state='systemError'
         self.assertEqual(self.call('archive')['status'],'archived')
         self.assertEqual(self.rt.calls,[('thread/read','worker')])
-    def test_linux_worker_archive_reads_guest_thread_status(self):
-        self.worker(status='failed', environment='linux', imageWorkspaceReady=True,
+    def test_layr_worker_archive_reads_guest_thread_status(self):
+        self.worker(status='failed', environment='linux', executionMode='vm', layrReady=True,
                     lastCompletedTurn='done', startAttempt={'turnId':'done'}, turnId=None,
                     nativeRelease={'id':'old', 'phase':'blocked', 'targetEpoch':0})
         guest_calls=[]

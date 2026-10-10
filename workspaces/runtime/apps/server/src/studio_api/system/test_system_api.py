@@ -100,6 +100,9 @@ class SystemApiTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name).resolve()
         self.context = FakeContext(self.root)
+        vm_status = patch("studio_api.system.router.linux_vm_status", return_value=None)
+        vm_status.start()
+        self.addCleanup(vm_status.stop)
         app = FastAPI()
         app.include_router(create_router(cast("ApiContext", self.context)))
         self.app = app
@@ -160,6 +163,10 @@ class SystemApiTests(unittest.TestCase):
             }},
         }
         with patch("codex_native_runtime.status", return_value=None) as native, \
+                patch("studio_api.system.router.linux_vm_status", return_value={
+                    "state": "running", "layr": {"version": "layr 0.1.0", "storeBytes": 4096},
+                    "share": {"state": "mounted", "readOnly": True},
+                }), \
                 patch("codex_provider_versions.status", return_value={
                     "checkedAt": 11.0, "providers": [], "warnings": [],
                 }), \
@@ -174,6 +181,8 @@ class SystemApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["application"], "codex-agents")
+        self.assertEqual(body["linuxVm"]["layr"]["storeBytes"], 4096)
+        self.assertTrue(body["linuxVm"]["share"]["readOnly"])
         self.assertIsNone(body["publicOrigin"])
         self.assertEqual(body["nativeRuntime"]["selected"]["version"], "1.2.3")
         self.assertEqual(body["liveUpdate"], {"status": "idle", "pid": 3})

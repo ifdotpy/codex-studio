@@ -107,6 +107,7 @@ describe("server sidebar projection", () => {
             name: "Remote project",
           },
         ],
+        layrReadiness: { state: "failed", error: "The VM is not running." },
       },
     ];
     data.runtime.peerTeams = [

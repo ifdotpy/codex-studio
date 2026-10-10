@@ -23,11 +23,18 @@ from common import (GuestError, MAX_LINE, PORT, PROTOCOL, atomic_bytes,
 from native import Native
 from upload import Uploads, sha, tree_space
 
-READ_METHODS = {"health", "workspace.status", "provider.attach", "provider.list", "provider.rpc",
+READ_METHODS = {"health", "provider.attach", "provider.list", "provider.rpc",
                 "upload.begin", "upload.chunk", "upload.commit", "file.stat", "file.read"}
-METHODS = READ_METHODS | {"exec", "sync.push", "workspace.startBase", "workspace.create",
-                          "workspace.archive", "workspace.remove", "provider.start", "provider.write",
+READ_METHODS |= {"project.ensure", "share.status", "layr.health", "sync.mac.read", "sync.mac.hashes", "sync.mac.head"}
+METHODS = READ_METHODS | {"exec", "sync.push", "provider.start", "provider.write",
                           "provider.stop", "credentials.put"}
+LAYR_READ_METHODS = {"agent.context", "line.status", "line.evidence", "agent.progress", "layr.provider.list", "layr.provider.rpc", "layr.file.stat", "layr.file.read"}
+LAYR_METHODS = LAYR_READ_METHODS | {"line.bind", "line.branch", "line.save", "line.merge", "line.remove", "agent.release", "layr.provider.start", "layr.provider.stop", "layr.credentials.sync", "layr.exec"}
+READ_METHODS |= LAYR_READ_METHODS
+METHODS |= LAYR_METHODS
+METHODS |= {"project.import", "share.configure", "share.name", "sync.mac.apply", "sync.mac.handoff",
+            "sync.mac.worktree"}
+METHODS |= {"host.exec", "host.configure"}
 CLIENT_IDLE_SECONDS = 60
 
 
@@ -46,6 +53,10 @@ class Service:
         self.db = connect_db(self.state / "receipts.sqlite3")
         self.uploads = Uploads(self.state, self.projects, self.db)
         self.native = Native(self.state)
+        self.layr_path = self.state / "layr-associations.json"
+        self.layr_agents = json.loads(self.layr_path.read_text()) if self.layr_path.exists() else {}
+        from host_exec import HostExec
+        self.host_exec = HostExec(self)
         self.active = {}
         self.operations = set()
         self.root_locks = {}
@@ -55,8 +66,8 @@ class Service:
         self.environment = {key: value for key, value in os.environ.items()
                             if key in {"PATH", "LANG", "TZ", "TERM", "USER", "LOGNAME", "SHELL",
                                        "SSL_CERT_FILE", "SSL_CERT_DIR"} or key.startswith("LC_")
-                            or key.startswith("CODEX_WORKSPACE_")}
-        self.environment.update(HOME=str(self.home), CODEX_WORKSPACE_STORE=str(self.store))
+                            }
+        self.environment.update(HOME=str(self.home))
 
     def close(self):
         self.db.close()
@@ -135,41 +146,7 @@ class Service:
             raise GuestError("output_limit", "The guest helper exceeded its output limit")
         return process.returncode, stdout
 
-    async def workspace(self, method, params):
-        if method in {"workspace.archive", "workspace.remove", "workspace.create"}:
-            async with bounded_lock(self.agent_locks, params.get("agentId", "missing")):
-                return await self.workspace_guarded(method, params)
-        return await self.workspace_guarded(method, params)
 
-    async def workspace_guarded(self, method, params):
-        values = dict(params)
-        if "root" in values:
-            values["root"] = str(self.path(values["root"], projects_only=True))
-        if "agentId" in values:
-            agent = identifier(values["agentId"])
-            require(all(char.isascii() and (char.isalnum() or char in "-_") for char in agent),
-                    "agentId must contain ASCII letters, digits, hyphens, or underscores")
-        if method in {"workspace.startBase", "workspace.create"}:
-            require("root" in values, "The workspace root is required")
-            timeout = number(values.get("timeoutSeconds"), 1800, 1, 1800)
-            values["timeoutSeconds"] = timeout
-        else:
-            timeout = 15 if method == "workspace.status" else 120
-        if method in {"workspace.create", "workspace.archive", "workspace.remove"}:
-            require("agentId" in values, "The workspace agentId is required")
-        if method in {"workspace.archive", "workspace.remove"}:
-            require(not any(row.get("agentId") == values["agentId"] and row["state"] in {"starting", "running", "lost"}
-                            for row in self.list_providers()), "A provider still uses this workspace")
-        root = values.get("root", "agent:" + str(values.get("agentId", "status")))
-        async with bounded_lock(self.root_locks, root):
-            code, output = await self.worker("workspace.py", {"method": method, "params": values}, timeout)
-        marker = b"GUEST_RESULT:"
-        if marker not in output:
-            raise GuestError("internal", "The workspace engine returned no result")
-        result = json.loads(output.rsplit(marker, 1)[1])
-        if code or "error" in result:
-            raise GuestError("internal", "The workspace engine failed: " + str(result.get("error", "unknown error"))[:1000])
-        return result["result"]
 
     async def launch_config(self, params):
         argv = params.get("argv")
@@ -184,19 +161,8 @@ class Service:
         require("HOME" not in env or env["HOME"] == str(self.home), "HOME must identify the service user's home")
         environment = {**self.environment, **env}
         agent = params.get("agentId")
-        if agent:
-            status = await self.workspace("workspace.status", {"agentId": agent})
-            require(len(status["workspaces"]) == 1, "The workspace agentId does not exist")
-            workspace_path = Path(status["workspaces"][0].get("path", ""))
-            require(cwd.is_relative_to(workspace_path), "The command cwd is outside its workspace")
-
-        else:
-            require(cwd.is_dir(), "The command cwd does not exist")
-        if agent:
-            # The stable wrapper enters the current namespace only on a new
-            # launch. A reattach preserves the original native launch signature.
-            argv = [sys.executable, str(Path(__file__).with_name("namespace_exec.py")), agent, str(cwd), *argv]
-            cwd = self.home
+        require(not agent, "Choose a layr chat for an agent command")
+        require(cwd.is_dir(), "The command cwd does not exist")
         return {"argv": argv, "cwd": str(cwd), "env": environment, "agentId": agent}
 
     async def start(self, request_id, params, *, execute=False):
@@ -213,10 +179,11 @@ class Service:
         directory = self.providers / (str(uuid.uuid5(uuid.NAMESPACE_URL, "native:" + handle)) if native else handle)
         if directory.exists() and not native:
             raise GuestError("outcome_unknown", "The provider launch directory already exists")
-        from common import runtime_source_dir
-        sys.path.insert(0, str(runtime_source_dir()))
-        import codex_workspace_images as images
-        floor = images._minimum_free_bytes(images._AGENT_MIN_FREE_ENV, images._DEFAULT_AGENT_MIN_FREE_BYTES)
+        try:
+            floor = int(os.environ.get("CODEX_WORKSPACE_AGENT_MIN_FREE_BYTES", str(5 * 1024**3)))
+        except ValueError:
+            raise GuestError("invalid_params", "The provider free-space floor must be an integer") from None
+        require(floor >= 0, "The provider free-space floor must not be negative")
         if shutil.disk_usage(self.state).free < floor + 80 * 1024**2:
             raise GuestError("busy", "The data disk has insufficient free space for the provider journal")
         private_dir(directory)
@@ -383,28 +350,8 @@ class Service:
         root = next(root for root in (self.projects, self.store, self.home) if path.is_relative_to(root))
         values = {**params, "method": method, "path": str(path), "allowedRoot": str(root)}
         timeout = 300 if method == "file.stat" else 15
-        if params.get("agentId"):
-            status = await self.workspace("workspace.status", {"agentId": params["agentId"]})
-            require(len(status["workspaces"]) == 1, "The workspace does not exist")
-            root = Path(status["workspaces"][0]["path"])
-            require(path.is_relative_to(root), "The file path is outside its workspace")
-            values["allowedRoot"] = str(root)
-            # The namespace wrapper executes a maintained file reader, not a shell.
-            config = await self.launch_config({"argv": [sys.executable, str(Path(__file__).with_name("files.py"))],
-                                               "cwd": str(root), "agentId": params["agentId"]})
-            process = await asyncio.create_subprocess_exec(sys.executable, str(Path(__file__).with_name("deadline.py")),
-                str(timeout), *config["argv"], cwd=config["cwd"], env=config["env"],
-                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
-            try:
-                output, _ = await asyncio.wait_for(process.communicate(json.dumps(values).encode()), timeout + 6)
-            except asyncio.TimeoutError as exc:
-                process.kill()
-                await asyncio.wait_for(process.wait(), 5)
-                raise GuestError("timeout", "The file read exceeded its deadline") from exc
-            if process.returncode in {124, 125}:
-                raise GuestError("timeout", "The file reader exceeded its deadline or size limit")
-        else:
-            _, output = await self.worker("files.py", values, timeout)
+        require(not params.get("agentId"), "The layr agent association does not exist")
+        _, output = await self.worker("files.py", values, timeout)
         result = json.loads(output)
         if "error" in result:
             raise GuestError(result["error"]["code"], result["error"]["message"])
@@ -420,7 +367,54 @@ class Service:
         except (OSError, ValueError, KeyError):
             return {"totalBytes": None, "availableBytes": None}
 
+    async def host_context(self, agent_id):
+        from layr_admin_client import admin_request
+        return await admin_request(str(uuid.uuid4()), "agent.context", {"agentId": agent_id})
+
     async def dispatch(self, request_id, method, params, emit):
+        async def admin_request(request_id, method, params, emit=None):
+            from layr_admin_client import admin_request as forward
+            return await forward(request_id, method, params, emit=emit)
+        if method in LAYR_METHODS:
+            if method in {"line.bind", "line.branch"}:
+                self.layr_agents[params["agentId"]] = {"handle": "linux-worker:" + params["agentId"]}
+                atomic_json(self.layr_path, self.layr_agents)
+            return await admin_request(request_id, method, params, emit=emit)
+        layr_agent = params.get("agentId") in self.layr_agents
+        layr_handle = any(value["handle"] == params.get("handle") for value in self.layr_agents.values())
+        if method == "provider.start" and params.get("layr") is True:
+            require(layr_agent, "The layr agent association does not exist")
+            return await admin_request(request_id, "layr.provider.start", params, emit=emit)
+        if method in {"provider.rpc", "provider.stop"} and layr_handle:
+            return await admin_request(request_id, "layr." + method, params, emit=emit)
+        if method == "exec" and layr_agent:
+            return await admin_request(request_id, "layr.exec", params, emit=emit)
+        if method in {"file.stat", "file.read"} and layr_agent:
+            return await admin_request(request_id, "layr." + method, params, emit=emit)
+        if method in {"project.ensure", "project.import", "share.configure", "share.name", "share.status", "layr.health",
+                      "sync.mac.apply", "sync.mac.read", "sync.mac.hashes", "sync.mac.head",
+                      "sync.mac.handoff", "sync.mac.worktree"}:
+            return await admin_request(request_id, method, params, emit=emit)
+        if method in {"host.configure", "host.exec"}:
+            from host_exec_protocol import HostExecError
+            try:
+                if method == "host.configure":
+                    return self.host_exec.configure(params)
+                if params.get("action", "execute") == "execute":
+                    async def heartbeat():
+                        while True:
+                            await asyncio.sleep(15)
+                            await emit("host.heartbeat", {"operationId": params.get("operationId", request_id)})
+                    pulse = asyncio.create_task(heartbeat())
+                    try:
+                        async with bounded_lock(self.agent_locks, params.get("agentId", "missing")):
+                            return await self.host_exec.handle(request_id, params, emit)
+                    finally:
+                        pulse.cancel()
+                        await asyncio.gather(pulse, return_exceptions=True)
+                return await self.host_exec.handle(request_id, params, emit)
+            except HostExecError as exc:
+                raise GuestError(exc.code, str(exc)) from exc
         if method == "health":
             process = await asyncio.create_subprocess_exec("stat", "-f", "-c", "%T", str(self.store), stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL)
@@ -430,15 +424,18 @@ class Service:
                 process.kill()
                 await asyncio.wait_for(process.wait(), 5)
                 output = b"unknown"
+            try:
+                from layr_admin_client import admin_request
+                layr = await admin_request(request_id + ":layr", "layr.health", {})
+            except GuestError as error:
+                layr = {"state": "unavailable", "error": error.code}
             return {"protocol": PROTOCOL, "uid": os.getuid(), "home": str(self.home), "store": str(self.store),
                     "projects": str(self.projects), "state": str(self.state), "filesystem": output.decode().strip(),
                     "providers": len(self.list_providers()),
                     "disk": {"freeBytes": shutil.disk_usage(self.store).free, "totalBytes": shutil.disk_usage(self.store).total},
-                    "memory": self.memory()}
+                    "memory": self.memory(), "layr": layr}
         if method.startswith("file."):
             return await self.file(method, params)
-        if method.startswith("workspace."):
-            return await self.workspace(method, params)
         if method.startswith("upload."):
             return await self.uploads.run(method, params, self.apply_upload)
         if method == "sync.push":
@@ -455,7 +452,10 @@ class Service:
         if method == "provider.start":
             return await self.start(request_id, params)
         if method == "provider.list":
-            return {"providers": self.list_providers()}
+            providers = self.list_providers()
+            if self.layr_agents:
+                providers += (await admin_request(request_id, "layr.provider.list", {}, emit=emit))["providers"]
+            return {"providers": providers}
         if method == "provider.attach":
             return await self.attach(params, emit)
         if method == "provider.rpc":
@@ -493,6 +493,8 @@ class Service:
         raise GuestError("invalid_request", "The method is not supported")
 
     async def replay_exec(self, result, emit):
+        if "stdout" in result:
+            return
         cursor = 0
         while cursor < result["lastSeq"]:
             replay = await self.attach({"handle": result["handle"], "afterSeq": cursor, "waitMs": 0}, emit)
@@ -657,7 +659,7 @@ async def serve(args):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--state", type=Path, default=Path("/var/lib/codex-studio/guest"))
-    parser.add_argument("--store", type=Path, default=Path("/var/lib/codex-studio/workspaces"))
+    parser.add_argument("--store", type=Path, default=Path("/var/lib/codex-studio/guest"))
     parser.add_argument("--projects", type=Path, default=Path("/var/lib/codex-studio/projects"))
     parser.add_argument("--unix-socket", type=Path, help="Use a private Unix socket for integration tests")
     asyncio.run(serve(parser.parse_args()))

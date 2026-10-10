@@ -25,12 +25,11 @@ def select(
             raise ValueError("workspace applies to implementers; reviewers use the shared folder with read-only access")
         return "shared", None
 
-    if environment == "linux":
-        if explicit and requested != "image":
-            raise ValueError('environment "linux" requires workspace "image"')
-        if platform.system() == "Windows":
-            raise ValueError('workspace "image" is unavailable on Windows')
-        return "image", None
+    if environment != "host":
+        raise ValueError('Choose a layr chat to run agents in the VM')
+    if platform.system() == "Linux" and (requested == "image" or spec.get("_defaultWorkspaceMode") == "image" or not explicit and not spec.get("_defaultWorkspaceMode")):
+        mode = "worktree" if git_repo else "shared"
+        return mode, "Image workspaces require macOS ASIF; Studio uses " + ("a Git worktree" if git_repo else "the shared folder")
 
     if explicit:
         if not isinstance(requested, str):
@@ -46,6 +45,10 @@ def select(
             raise ValueError('workspace "worktree" requires a Git repository')
         return requested, None
 
+    if spec.get("_defaultWorkspaceMode") == "worktree":
+        if git_repo:
+            return "worktree", None
+        return "shared", "This folder has no Git repository; the worker uses the shared folder"
     supported, reason = runtime.image_workspace_support(workspace_root)
     if supported:
         return "image", None
@@ -55,4 +58,4 @@ def select(
 
 
 def image_backend(environment: str) -> str:
-    return "vm" if environment == "linux" or platform.system() == "Linux" else "asif"
+    return "asif"

@@ -1,7 +1,7 @@
 # Local version control on btrfs: design contract
 
 Status: implemented in [layr](https://github.com/ifdotpy/layr) (private repository, commit
-`1405682`, 2026-10-10). This document keeps Studio's decisions about local version control and
+`942c1b6`, 2026-10-10). This document keeps Studio's decisions about local version control and
 their reasons. layr itself is a general tool: its own design is in layr `docs/design.md`;
 commands, formats, measurements and limits are in the layr README. Owner of the decisions: the user. Technical advice
 and prototypes: [agent workspace isolation research](research/2026-10-03-agent-workspace-isolation.md).
@@ -21,7 +21,7 @@ so models learn it quickly, and it has equal convenience. It does not take the n
 1. The utility is `layr`, with git-like commands and its own implementation. It is not installed as
    `git` (changed on 2026-10-09 from a drop-in `git` replacement). Real git stays available for the
    remote bridge and for tools that call it.
-2. Platform: btrfs on Linux, and the Studio Linux VM on macOS
+2. Platform: btrfs in the Studio Linux VM on macOS. Layr on Linux hosts comes later
    ([Linux VM workspaces](linux-vm-workspaces.md)). APFS (macOS projects such as Xcode) is
    deferred. Windows is not supported.
 3. Snapshot rules and metadata design: as in this document.
@@ -33,9 +33,9 @@ so models learn it quickly, and it has equal convenience. It does not take the n
    share. There is no mirror copy. `layr export` makes a normal copy on request, and backups use
    `btrfs send` and the remote (changed on 2026-10-09: first from "the Mac folder is the source of
    truth", then from a one-way mirror, to remove sync and the extra copy).
-7. The current work continues: the image workspace engine ([image workspaces](workspace-images.md),
-   overlayfs on Linux) and [Linux VM workspaces](linux-vm-workspaces.md) (git status change
-   detector). The utility later replaces their internals behind the same public API.
+7. Chat creation selects `layr`, `image`, or `worktree`. On macOS, `layr` is the default.
+   Layr runs the lead and all agents in the VM. Native image workspaces use macOS ASIF only.
+   Native Git worktrees remain available. Linux servers use worktrees until host layr support arrives.
 8. No staged rollout: all parts of the utility are built together.
 9. All agents run in the VM: the lead, workers and reviewers. The Mac is reached only through the
    general `host_exec` tool, for work that needs macOS (Xcode builds and tests, signing, simulators).
@@ -73,28 +73,57 @@ so models learn it quickly, and it has equal convenience. It does not take the n
 17. Boundary (user decision): layr knows Unix users and groups, projects, lines, states, rules
     and checks, and nothing about agents, leads, tasks or turns. A feature goes into layr when
     people on a shared Linux server would want it with the same meaning; otherwise it is Studio's.
-    Studio's part (the guest service in `vm/guest`, "layr-agent") uses only layr's public
-    commands, never its database or store folders. Every security rule is a layr rule (roles,
+    Studio's part (the guest service in `workspaces/runtime/apps/vm-guest`, "layr-agent") uses
+    only layr's public commands, never its database or store folders. Every security rule is a layr rule (roles,
     deny rules, protection rules); Studio only sets them, because an agent can call layr
     directly. Studio labels operations with `LAYR_SESSION` (the agent id); layr shows labels and
     never decides by them.
-18. Roles in a Studio project (layr's model, docs/design.md section 3): the user is the admin;
-    the lead agent is a maintainer; worker and reviewer agents are writers. All agent users are
-    in one Unix group with a deny rule for `sync`, `remote`, `access`, `config`, `records` and
-    `backup`, so no role given to an agent later reaches these. main is protected: it changes
-    only through `layr merge <line> --expect <reviewed state>` by a maintainer, after the
-    project's named checks pass on the merge result. Only the owner changes a line; the lead no
-    longer writes into a worker's line (it makes its own line from it, or deletes it).
+18. Roles in a Studio project (layr's model, docs/design.md section 3). The user changes the
+    rules through Studio, which runs layr as root in the guest. The project user
+    (`studio-p-<hash>`, the lead agent's user) owns main and is the project admin from
+    `layr init --owner`. A worker owns its line and has no role: a line owner may read, try and
+    export (layr `dd497ad`). Every agent user is in the `studio-agents` Unix group, with a deny
+    rule for `access`, `sync`, `remote`, `records` and `backup`. `access` covers roles, deny
+    rules, protection rules and the commands of named checks, so no agent changes the rules,
+    whatever role it gets later. The lead keeps `config` for layers and merge drivers. Only the
+    owner changes a line; the lead does not write into a worker's line (it makes its own line
+    from it, or deletes it).
 19. One commit per task (decision 5) is Studio's choice: `layr push --squash -m <task title>`.
     layr's default push keeps every state as a commit.
 20. Exploration groups (below) and the `host_exec` slots are Studio workflows built from lines,
     `merge --expect`, `layr export` and the line folders; layr no longer has `group` and `slot`.
 21. The end of an agent turn: `layr layer repair`, then `layr save -m "Studio turn <n>"`
     (replaces `layr save --turn-end`).
-22. The layr copy in `vm/layr` is vendored from a fixed revision (`scripts/update-vm-layr.py`).
-    Moving it to `1405682` also needs the guest changes of 18 and 21; revisions before
-    `9254261` lack fixes for reading root files through merge drivers, for signed backups and
-    stream checks, and for files too large for memory.
+22. The layr copy in `workspaces/runtime/apps/layr` is vendored from a fixed revision
+    (`workspaces/runtime/apps/server/src/update-vm-layr.py`). Moving it to `942c1b6` also needs
+    the guest changes of 18, 21 and 23; revisions before `9254261` lack fixes for reading root
+    files through merge drivers, for signed backups and stream checks, and for files too large
+    for memory, and revisions before `942c1b6` let a user with `config` change check commands.
+23. The rule of main in a Studio project (layr `docs/design.md`, sections 3 and 5), set by
+    `project.import` and `project.ensure` (`workspaces/runtime/apps/vm-guest/layr_projects.py`,
+    policy version 1):
+    - `layr protect main --direct`: the lead commits in main, and it takes a worker's line only
+      with `layr merge <line> --expect <reviewed state>`; a worker cannot merge into main;
+    - no required approvals by default: the user does not review code in Studio, so a required
+      person's approval would stop every task. A user who wants one sets
+      `--approvals 1 --approvers @<people group>` (an agent's approval never counts, because
+      agents are not in that group), and `--path .github=admin` for CI configuration;
+    - named checks (`layr config check.<name>`, then `layr protect main --check <name>`) run on
+      every merge result; their command sets its own `PATH` (checks get a clean environment).
+      layr does not keep the build output of a check (changed on 2026-10-10, layr ec725b4): a
+      warm layer comes only from an explicit `layr save --layers` on main, and which tools'
+      output is valid in a new line is Studio's choice (layr `docs/design.md`, section 5).
+      Studio does not configure layers yet;
+    - Studio merges as the lead agent's user, not as root: root passes every rule;
+    - a task that needs more rights for a while gets a role for a time
+      (`layr access grant <agent> maintainer --until 2h`).
+
+24. Mac folder sync (user decision): the user's Mac project folder stays the working copy,
+    and Studio keeps it equal to the VM project in both directions through a `mac` line
+    owned by the project user, a manifest of the agreed state, and protected merges into
+    main. Conflicts are resolved in the VM, never with markers in the Mac folder; Git
+    stays on the Mac, so `layr push` is off for a synced project. The read-only Finder
+    view stays. Design: [vm-mac-sync.md](vm-mac-sync.md).
 
 ## Data model
 
@@ -282,7 +311,7 @@ One general tool. Studio does not know what the command does. The slot copies be
    available.
 4. After the command, the Mac side lists files that the command changed in the slot (FSEvents or a
    compare with the start marker, on the Mac itself; the VM's view of a shared folder can have
-   stale attributes). `layr slot collect` copies them back with three versions per path: the state
+   stale attributes). The guest copies them back (decision 20) with three versions per path: the state
    the slot held, the slot, and the line now. A path that the line changed too is a conflict: text
    files get markers, other files keep the line version and the slot version is saved next to it
    as `<path>.slot-conflict`. Build outputs stay outside the slot folder. Artifacts are returned as
@@ -427,18 +456,15 @@ privileged helper.
 
 ## Linux hosts without btrfs
 
-| Option                               | How                                                                            | Root                                       | Capabilities                                |
-| ------------------------------------ | ------------------------------------------------------------------------------ | ------------------------------------------ | ------------------------------------------- |
-| **btrfs on a loop file**             | a sparse file in the Studio store, `mkfs.btrfs`, mounted through a loop device | once, at setup (a systemd mount unit)      | all btrfs functions                         |
-| btrfs partition or disk              | a separate partition for the Studio store                                      | at setup                                   | all btrfs functions, no extra layer         |
-| VM, as on macOS                      | KVM with QEMU, Firecracker or cloud-hypervisor                                 | no, but access to `/dev/kvm` (group `kvm`) | all, like macOS                             |
-| ZFS host                             | ZFS snapshot, clone and `zfs send`                                             | delegation with `zfs allow`                | the same as btrfs, as a second backend      |
-| ext4 or XFS without any of the above | overlayfs, as in the current workspace engine                                  | no                                         | layers only: no state history and no `send` |
+| Option                               | How                                                                            | Root                                       | Capabilities                           |
+| ------------------------------------ | ------------------------------------------------------------------------------ | ------------------------------------------ | -------------------------------------- |
+| **btrfs on a loop file**             | a sparse file in the Studio store, `mkfs.btrfs`, mounted through a loop device | once, at setup (a systemd mount unit)      | all btrfs functions                    |
+| btrfs partition or disk              | a separate partition for the Studio store                                      | at setup                                   | all btrfs functions, no extra layer    |
+| VM, as on macOS                      | KVM with QEMU, Firecracker or cloud-hypervisor                                 | no, but access to `/dev/kvm` (group `kvm`) | all, like macOS                        |
+| ZFS host                             | ZFS snapshot, clone and `zfs send`                                             | delegation with `zfs allow`                | the same as btrfs, as a second backend |
+| ext4 or XFS without any of the above | Git worktrees until host layr support arrives                                  | no                                         | Git history                            |
 
-Containers do not add btrfs. Docker and Podman on ext4 store layers with overlay2. A rootless
-container cannot mount btrfs: the kernel allows only some file systems in a user namespace (for
-example tmpfs, overlay and FUSE). A privileged container is the loop option with the rights of the
-container engine.
+Containers do not provide btrfs storage. A loop file or a separate btrfs disk is still required.
 
 With the loop option, the main line lives in the btrfs store on the same machine. The user can read
 it at its path directly, or through a read-only bind mount at a convenient place. `layr export`
@@ -475,8 +501,8 @@ Findings:
 - Default: direct I/O off, because cold metadata reads matter more for git and search than large
   writes. Measure again on a real ext4 host before release.
 
-Recommendation: the loop file by default; the VM when root is not allowed but KVM is; overlayfs as
-the reduced mode; a ZFS backend only when users on ZFS appear.
+Future host options: a loop file with root setup, or a VM with KVM access.
+Until host layr support arrives, Linux servers use Git worktrees.
 
 ## Prototype results (2026-10-09)
 
@@ -627,7 +653,8 @@ Studio integration:
 - Use layr for Linux workspaces instead of the overlayfs engine
   ([image workspaces](workspace-images.md)) and the git status change detector
   ([Linux VM workspaces](linux-vm-workspaces.md)), behind the same public API.
-- Call `layr save --turn-end` at the end of each agent turn; run `layr daemon` in the VM.
+- Call `layr layer repair` and `layr save` at the end of each agent turn; run `layr daemon` in the
+  VM.
 - The read-only network share of the main line and `states/`.
 
 Measurements:
@@ -640,5 +667,6 @@ Measurements:
 
 Later:
 
+- Layr on Linux hosts.
 - APFS backend (deferred).
 - Structured (AST) merge drivers; format drivers already plug in through `merge.driver.<name>`.

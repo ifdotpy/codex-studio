@@ -1,0 +1,139 @@
+[
+  {
+    "name": "r14_same_identity_and_content_returns_saved_running_operation",
+    "source_test": "tool-request-contract.py:93-111",
+    "steps": [
+      { "kind": "admit", "content": "spawn-audit", "epoch": 4 },
+      { "kind": "dispatch", "epoch": 4 },
+      { "kind": "admit", "content": "spawn-audit", "epoch": 5 }
+    ],
+    "rust_state": "Dispatched",
+    "python_stage": "running",
+    "python_outcome": "pending"
+  },
+  {
+    "name": "r14_changed_content_rejects_before_effect",
+    "source_test": "tool-request-contract.py:93-111",
+    "steps": [
+      { "kind": "admit", "content": "spawn-audit", "epoch": 4 },
+      { "kind": "admit", "content": "spawn-other", "epoch": 4 }
+    ],
+    "rust_state": "Reserved",
+    "python_stage": "queued",
+    "python_outcome": "pending"
+  },
+  {
+    "name": "r18_cancel_before_dispatch_proves_not_applied",
+    "source_test": "tool-request-contract.py:133-139",
+    "steps": [
+      { "kind": "admit", "content": "mutate", "epoch": 4 },
+      { "kind": "server_restart", "epoch": 4 }
+    ],
+    "rust_state": "CancelledBeforeDispatch",
+    "python_stage": "cancelled",
+    "python_outcome": "not_applied"
+  },
+  {
+    "name": "r18_cancel_after_dispatch_keeps_pending_outcome",
+    "source_test": "tool-request-contract.py:141-151",
+    "steps": [
+      { "kind": "admit", "content": "mutate", "epoch": 4 },
+      { "kind": "dispatch", "epoch": 4, "generation": 8 },
+      { "kind": "cancel", "epoch": 4, "generation": 8 }
+    ],
+    "rust_state": "CancelRequested",
+    "python_stage": "running",
+    "python_outcome": "pending"
+  },
+  {
+    "name": "r15_failed_mutation_response_remains_unknown",
+    "source_test": "tool-request-contract.py:153-162",
+    "steps": [
+      { "kind": "admit", "content": "mutate", "epoch": 4 },
+      { "kind": "dispatch", "epoch": 4, "generation": 8 },
+      { "kind": "invalid_response", "epoch": 4, "generation": 8 }
+    ],
+    "rust_state": "Unknown",
+    "python_stage": "failed",
+    "python_outcome": "unknown"
+  },
+  {
+    "name": "r15_cached_failure_before_local_dispatch_remains_unknown",
+    "source_test": "tool-request-contract.py::test_cached_failure_before_local_dispatch_remains_unknown",
+    "steps": [
+      { "kind": "admit", "content": "mutate", "epoch": 4 },
+      { "kind": "invalid_response", "epoch": 4 }
+    ],
+    "rust_state": "Unknown",
+    "python_stage": "failed",
+    "python_outcome": "unknown"
+  },
+  {
+    "name": "r18_cached_success_before_local_dispatch_is_applied",
+    "source_test": "tool-request-contract.py::test_cached_success_before_local_dispatch_is_applied",
+    "steps": [
+      { "kind": "admit", "content": "mutate", "epoch": 4 },
+      { "kind": "applied_response", "epoch": 4 }
+    ],
+    "rust_state": "Applied",
+    "python_stage": "completed",
+    "python_outcome": "applied"
+  },
+  {
+    "name": "r15_restart_before_execution_is_not_applied",
+    "source_test": "tool-request-contract.py:175-188",
+    "steps": [
+      { "kind": "admit", "content": "mutate", "epoch": 4 },
+      { "kind": "cancel", "epoch": 4 }
+    ],
+    "rust_state": "CancelledBeforeDispatch",
+    "python_stage": "cancelled",
+    "python_outcome": "not_applied"
+  },
+  {
+    "name": "r15_restart_after_execution_is_unknown",
+    "source_test": "tool-request-contract.py:175-188",
+    "steps": [
+      { "kind": "admit", "content": "mutate", "epoch": 4 },
+      { "kind": "dispatch", "epoch": 4, "generation": 8 },
+      { "kind": "server_restart", "epoch": 4, "generation": 8 }
+    ],
+    "rust_state": "Unknown",
+    "python_stage": "interrupted",
+    "python_outcome": "unknown"
+  },
+  {
+    "name": "r15_committed_receipt_with_inferred_failure_stays_unknown",
+    "source_test": "request-reconciliation-contract.py:89-96",
+    "steps": [
+      { "kind": "admit", "content": "mutate", "epoch": 4 },
+      { "kind": "dispatch", "epoch": 4, "generation": 8 },
+      { "kind": "timeout", "epoch": 4, "generation": 8 },
+      { "kind": "committed_receipt", "epoch": 4, "generation": 8 }
+    ],
+    "rust_state": "Unknown",
+    "python_stage": "failed",
+    "python_outcome": "unknown",
+    "python_operation_applied": true
+  },
+  {
+    "name": "r18_saved_result_reconciles_before_cancel",
+    "source_test": "tool-request-contract.py:227-240",
+    "steps": [
+      { "kind": "admit", "content": "mutate", "epoch": 4 },
+      { "kind": "dispatch", "epoch": 4, "generation": 8 },
+      { "kind": "applied_response", "epoch": 4, "generation": 8 }
+    ],
+    "rust_state": "Applied",
+    "python_stage": "completed",
+    "python_outcome": "applied"
+  },
+  {
+    "name": "r15_missing_receipt_is_unknown_not_proof",
+    "source_test": "tool-request-contract.py:153-162",
+    "steps": [{ "kind": "receipt_missing", "epoch": 4 }],
+    "rust_state": "Absent",
+    "python_stage": "not_found",
+    "python_outcome": "unknown"
+  }
+]
