@@ -18,6 +18,13 @@ Later chats use the existing VM main line.
 The Mac folder remains separate for native chats.
 Studio does not synchronize those two folders automatically.
 
+`project.import` and `project.ensure` also set the project's layr rules once
+(docs/btrfs-local-vcs.md, decision 23): main stays protected, but its owner, the
+lead, may also commit in it; the `studio-agents` group, which holds every agent
+user, may not change roles, replicate, change remotes, import or export records,
+or make backups. Workers own their lines; the lead merges a reviewed state with
+`layr merge <line> --expect <state>`.
+
 An explicit re-import requires a new request ID and the expected main state ID.
 It creates an `import-*` line for review.
 It does not replace the main line.
@@ -45,7 +52,7 @@ Linux servers return `linuxVm: null`.
 
 ## Source update
 
-The repository contains the clean layr source at `vm/layr`.
+The repository contains the clean layr source at `workspaces/runtime/apps/layr`.
 Its manifest records the commit, Git tree, and SHA-256 hashes.
 The guest installer verifies those hashes before a build.
 It uses Rust 1.90.0 and the committed Cargo lock file.
@@ -53,7 +60,7 @@ It uses Rust 1.90.0 and the committed Cargo lock file.
 Run this command to select another committed layr revision:
 
 ```sh
-python3 scripts/update-vm-layr.py --source ~/Projects/layr --revision <commit>
+python3 workspaces/runtime/apps/server/src/update-vm-layr.py --source ~/Projects/layr --revision <commit>
 ```
 
 The command reads the Git commit through `git archive`.
@@ -64,7 +71,7 @@ It does not read or change that repository's work files.
 Run each command separately:
 
 ```sh
-python3 -B -m unittest discover -s vm/guest -p test_layr_admin.py -v
+python3 -B -m unittest discover -s workspaces/runtime/apps/vm-guest -p test_layr_admin.py -v
 PYTHONPATH=scripts python3 -B -m unittest test_codex_linux_vm -q
 python3 -B tests/linux-vm-layr-host-contract.py -q
 npm run typecheck:runtime

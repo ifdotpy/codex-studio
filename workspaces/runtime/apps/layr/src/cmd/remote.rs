@@ -41,7 +41,7 @@ pub fn remote(ctx: &Ctx, args: &[String]) -> Result<i32> {
                 (Some(n), Some(u)) => (n, u),
                 _ => return Err(exit(128, "usage: layr remote add <name> <url>")),
             };
-            repo.require_lead(ctx, "change remotes")?;
+            repo.require(ctx, "remote")?;
             crate::store::check_name("remote", n)?;
             if sub == "add" && repo.p.config_value(&format!("remote.{n}.url"))?.is_some() {
                 return Err(exit(3, format!("error: remote {n} already exists.")));
@@ -53,7 +53,7 @@ pub fn remote(ctx: &Ctx, args: &[String]) -> Result<i32> {
         }
         "remove" | "rm" => {
             let n = args.get(1).ok_or_else(|| exit(128, "usage: layr remote remove <name>"))?;
-            repo.require_lead(ctx, "change remotes")?;
+            repo.require(ctx, "remote")?;
             let _lock = repo.p.lock()?;
             set_config(ctx, repo, &format!("remote.{n}.url"), serde_json::Value::Null)?;
             Ok(0)
@@ -190,6 +190,7 @@ pub fn push(ctx: &Ctx, args: &[String]) -> Result<i32> {
         .flag("-u|--set-upstream")
         .flag("-q|--quiet")
         .value("-m|--message")
+        .flag("--squash")
         .flag("--no-verify")
         .flag("--tags");
     let a = parse(&spec, args)?;
@@ -210,10 +211,7 @@ pub fn push(ctx: &Ctx, args: &[String]) -> Result<i32> {
         },
         None => ("HEAD".to_string(), h.line()?.name.clone()),
     };
-    // The lead decides when a task goes to the remote (members with push.members = true too).
-    if !repo.is_lead(ctx) && !repo.p.config_bool("push.members", false) {
-        return Err(exit(1, "permission denied: only the project lead pushes (set push.members true to allow members)"));
-    }
+    repo.require(ctx, "push").map_err(|e| exit(1, e.to_string()))?;
     let state_id = revs::resolve(repo, line.as_ref(), &rev)?;
     let state = repo.state(&state_id)?;
     if !state.conflicts.is_empty() {
@@ -267,10 +265,23 @@ pub fn push(ctx: &Ctx, args: &[String]) -> Result<i32> {
             (eid, c)
         }
         None => {
-            let (c, parent) = gitbridge::make_commit(repo, &state, a.get("-m"))?;
+            if a.get("-m").is_some() && !a.has("--squash") {
+                return Err(exit(128, "fatal: -m names the message of a squashed commit: add --squash"));
+            }
+            // The line's history as commits (merges stay merges), or with --squash one commit on
+            // top of the last exported state.
+            let (c, parent, made) = if a.has("--squash") {
+                let (c, parent) = gitbridge::make_commit(repo, &state, a.get("-m"))?;
+                (c, parent, Vec::new())
+            } else {
+                let (c, made) = gitbridge::export_history(repo, &state_id)?;
+                (c, None, made)
+            };
+            let commits: serde_json::Map<String, serde_json::Value> =
+                made.into_iter().map(|(s, c)| (s, serde_json::Value::String(c))).collect();
             let eid = ids::new_id();
             let mut rec = Record::new("export");
-            rec.data = serde_json::json!({"export": eid, "state": state_id, "remote": remote, "branch": branch, "commit": c, "parent": parent, "status": "prepared"});
+            rec.data = serde_json::json!({"export": eid, "state": state_id, "remote": remote, "branch": branch, "commit": c, "parent": parent, "commits": commits, "status": "prepared"});
             repo.commit_record(ctx, rec)?;
             (eid, c)
         }

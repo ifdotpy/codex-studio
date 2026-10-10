@@ -1,6 +1,6 @@
 //! The remote bridge to git, and the `.git` layer of each line for tools that call git.
 //!
-//! The project git object store is `<project>/git` (a bare repository, readable by agents).
+//! The project git object store is `<project>/git` (a bare repository, readable by the readers).
 //! Import makes a state from a git commit with only the changed paths. Export builds a git tree
 //! from the tree of the previous mapped commit plus the changed paths, makes one commit with
 //! fixed author and committer data, records the exact commit id, then pushes it. After a lost
@@ -13,6 +13,7 @@ use crate::ids;
 use crate::model::{Line, Record, StateKind, StateRec};
 use crate::repo::{skip_path, Repo};
 use anyhow::{anyhow, bail, Context, Result};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -45,35 +46,31 @@ pub fn git_out(git_dir: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// Who can read the git object store. With `members = "*"` every local user may read the
-/// project history, so the store is 0755. With a list of members it is 0750 for root, plus an
-/// access list (POSIX ACL) with read access for the lead, the members and the owners of lines
-/// on this machine: the objects are the project history too.
+/// Who can read the git object store: the objects are the project history too. When everyone
+/// may read the project the store is 0755; otherwise 0750 for root, plus an access list (POSIX
+/// ACL) with read access for the users and groups with a role of reader or more, and the owners
+/// of lines on this machine.
 pub fn sync_store_access(repo: &Repo) -> Result<()> {
     let s = store(repo);
     if !s.join("objects").is_dir() {
         return Ok(());
     }
-    if repo.members_all() {
+    let (everyone, users, groups) = repo.policy().readers();
+    if everyone {
         std::fs::set_permissions(&s, std::fs::Permissions::from_mode(0o755))?;
         let _ = remove_acl(&s);
         return Ok(());
     }
-    let mut uids: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
-    uids.insert(repo.p.lead());
-    if let Some(v) = repo.p.config_value("members")? {
-        if let Some(a) = v.as_array() {
-            uids.extend(a.iter().filter_map(|x| x.as_u64()).map(|x| x as u32));
-        }
-    }
+    let mut uids: std::collections::BTreeSet<u32> = users.into_iter().collect();
     for l in repo.lines()? {
         if l.machine == repo.p.store.machine.id {
             uids.insert(l.owner);
         }
     }
     uids.remove(&0);
+    let gids: std::collections::BTreeSet<u32> = groups.into_iter().collect();
     std::fs::set_permissions(&s, std::fs::Permissions::from_mode(0o750))?;
-    set_acl(&s, &uids.into_iter().collect::<Vec<_>>())
+    set_acl(&s, &uids.into_iter().collect::<Vec<_>>(), &gids.into_iter().collect::<Vec<_>>())
 }
 
 fn acl_entry(buf: &mut Vec<u8>, tag: u16, perm: u16, id: u32) {
@@ -82,7 +79,7 @@ fn acl_entry(buf: &mut Vec<u8>, tag: u16, perm: u16, id: u32) {
     buf.extend_from_slice(&id.to_le_bytes());
 }
 
-fn set_acl(path: &Path, users: &[u32]) -> Result<()> {
+fn set_acl(path: &Path, users: &[u32], groups: &[u32]) -> Result<()> {
     const UNDEFINED: u32 = u32::MAX;
     let mut buf = 2u32.to_le_bytes().to_vec();
     acl_entry(&mut buf, 0x01, 7, UNDEFINED); // owner rwx
@@ -90,6 +87,9 @@ fn set_acl(path: &Path, users: &[u32]) -> Result<()> {
         acl_entry(&mut buf, 0x02, 5, *u); // listed users r-x
     }
     acl_entry(&mut buf, 0x04, 5, UNDEFINED); // group r-x
+    for g in groups {
+        acl_entry(&mut buf, 0x08, 5, *g); // listed groups r-x
+    }
     acl_entry(&mut buf, 0x10, 5, UNDEFINED); // mask r-x
     acl_entry(&mut buf, 0x20, 0, UNDEFINED); // others none
     rustix::fs::setxattr(path, "system.posix_acl_access", &buf, rustix::fs::XattrFlags::empty())
@@ -476,7 +476,7 @@ pub fn import_commit(ctx: &Ctx, repo: &Repo, commit: &str, refname: &str, author
         }
         let (name, email, msg, time) = commit_info(&s, commit)?;
         let mut st = repo.new_state(ctx, &work, StateKind::Import, parents, &msg, None)?;
-        st.author = crate::model::Author { name, email, uid: 0, agent: None };
+        st.author = crate::model::Author { name, email, uid: 0, session: None };
         st.time = time.max(1);
         Ok(st)
     })();
@@ -556,17 +556,88 @@ pub fn mapped_ancestor(repo: &Repo, state: &str) -> Result<Option<(String, Strin
     Ok(None)
 }
 
-/// Build the commit for a state: the tree of the nearest mapped ancestor plus changed paths,
-/// one parent, author and committer from the state. The same state gives the same commit.
+/// One commit for a state on top of the nearest exported ancestor (`push --squash`): the tree of
+/// the state, one parent. The same state gives the same commit.
 pub fn make_commit(repo: &Repo, state: &StateRec, message: Option<&str>) -> Result<(String, Option<String>)> {
+    let anc = mapped_ancestor(repo, &state.id)?;
+    if let Some((ast, ac)) = &anc {
+        if ast == &state.id {
+            return Ok((ac.clone(), None));
+        }
+    }
+    let parents: Vec<String> = anc.iter().map(|(_, c)| c.clone()).collect();
+    let c = commit_tree(repo, state, anc.as_ref(), &parents, message)?;
+    Ok((c, parents.into_iter().next()))
+}
+
+/// The commit of a state in the git store, if it has one.
+fn commit_of(repo: &Repo, state: &str) -> Result<Option<String>> {
+    if let Some(c) = repo.p.db.git_commit_of(state)? {
+        if git_out(&store(repo), &["cat-file", "-e", &format!("{c}^{{commit}}")]).is_ok() {
+            return Ok(Some(c));
+        }
+    }
+    Ok(None)
+}
+
+/// Commits for a state and every ancestor state without one, parents first, each with the same
+/// parents as its state (a merge stays a merge). The same states give the same commits. Returns
+/// the commit of `state` and the new (state, commit) pairs.
+pub fn export_history(repo: &Repo, state: &str) -> Result<(String, Vec<(String, String)>)> {
+    let mut known: BTreeMap<String, String> = BTreeMap::new();
+    let mut order: Vec<String> = Vec::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut stack: Vec<(String, bool)> = vec![(state.to_string(), false)];
+    while let Some((s, parents_done)) = stack.pop() {
+        if parents_done {
+            order.push(s);
+            continue;
+        }
+        if !seen.insert(s.clone()) {
+            continue;
+        }
+        if let Some(c) = commit_of(repo, &s)? {
+            known.insert(s, c);
+            continue;
+        }
+        let rec = repo.state(&s)?;
+        stack.push((s, true));
+        for p in rec.parents.iter().rev() {
+            stack.push((p.clone(), false));
+        }
+    }
+    let mut made = Vec::new();
+    for s in order {
+        let rec = repo.state(&s)?;
+        let parents: Vec<String> = rec
+            .parents
+            .iter()
+            .map(|p| known.get(p).cloned().ok_or_else(|| anyhow!("no commit for state {}", ids::short(p))))
+            .collect::<Result<_>>()?;
+        let base = rec.parents.first().map(|p| (p.clone(), known[p].clone()));
+        let c = commit_tree(repo, &rec, base.as_ref(), &parents, None)?;
+        known.insert(s.clone(), c.clone());
+        made.push((s, c));
+    }
+    let tip = known.get(state).cloned().ok_or_else(|| anyhow!("no commit for state {}", ids::short(state)))?;
+    Ok((tip, made))
+}
+
+/// Write the commit of a state: the tree from the index of `base` (a state with its commit) plus
+/// the paths that changed since, the given parent commits, author and committer from the state.
+fn commit_tree(
+    repo: &Repo,
+    state: &StateRec,
+    base: Option<&(String, String)>,
+    parents: &[String],
+    message: Option<&str>,
+) -> Result<String> {
     let s = init_store(repo)?;
     let root = repo.state_root(&state.id)?;
-    let anc = mapped_ancestor(repo, &state.id)?;
     let tmp_idx = std::env::temp_dir().join(format!("layr-index-{}", ids::new_id()));
-    let res = (|| -> Result<(String, Option<String>)> {
+    let res = (|| -> Result<String> {
         let mut paths: Vec<String> = Vec::new();
-        let parent_commit = match &anc {
-            Some((ast, ac)) if ast == &state.id => return Ok((ac.clone(), None)),
+        match base {
             Some((ast, ac)) => {
                 let ai = index_path(repo, ast);
                 if ai.exists() {
@@ -591,7 +662,6 @@ pub fn make_commit(repo: &Repo, state: &StateRec, message: Option<&str>) -> Resu
                         paths.push(p);
                     }
                 }
-                Some(ac.clone())
             }
             None => {
                 let rules = crate::ignore_rules::Rules::new(&root);
@@ -604,9 +674,8 @@ pub fn make_commit(repo: &Repo, state: &StateRec, message: Option<&str>) -> Resu
                     }
                     Ok(true)
                 })?;
-                None
             }
-        };
+        }
         let mut input = Vec::new();
         for p in &paths {
             input.extend_from_slice(p.as_bytes());
@@ -644,7 +713,7 @@ pub fn make_commit(repo: &Repo, state: &StateRec, message: Option<&str>) -> Resu
         let date = format!("{secs} +0000");
         let mut c = base_cmd(&s);
         c.args(["commit-tree", &tree]);
-        if let Some(p) = &parent_commit {
+        for p in parents {
             c.args(["-p", p]);
         }
         c.env("GIT_AUTHOR_NAME", &state.author.name)
@@ -668,7 +737,7 @@ pub fn make_commit(repo: &Repo, state: &StateRec, message: Option<&str>) -> Resu
             std::fs::copy(&tmp_idx, &dst).context("keep the git index of the exported state")?;
             let _ = refresh_index(repo, &state.id);
         }
-        Ok((commit, parent_commit))
+        Ok(commit)
     })();
     let _ = std::fs::remove_file(&tmp_idx);
     res
@@ -778,7 +847,7 @@ pub fn refresh_git_layer(repo: &Repo, line: &Line) -> Result<()> {
         Ok(d) => d,
         Err(_) => return Ok(()),
     };
-    // Only the layer layr made (a nested subvolume); a .git folder the agent made is its own.
+    // Only the layer layr made (a nested subvolume); a .git folder the line owner made is its own.
     {
         use std::os::unix::fs::MetadataExt;
         if dir.metadata()?.ino() != 256 {

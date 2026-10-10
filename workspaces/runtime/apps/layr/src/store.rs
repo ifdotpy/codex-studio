@@ -6,7 +6,9 @@
 //!   states/<state-id>                 read-only snapshots (0700)
 //!   lines/<line-name>                 writable snapshots (0711, no listing)
 //!   git/                              git object store for the remote bridge (0755)
-//!   meta/layr.sqlite                  signed operation records and derived tables (0700)
+//!   meta/db/layr.sqlite               signed operation records and derived tables (0700); meta/db
+//!                                     is its own subvolume, so a snapshot elsewhere does not turn
+//!                                     its fsync into a full transaction commit (100 ms against 6)
 //!   meta/stage/<line-id>              staging lines (the index of `layr add`)
 //!   meta/scan, meta/work              temporary snapshots
 //! ```
@@ -37,7 +39,7 @@ pub struct Store {
 }
 
 pub fn default_root() -> PathBuf {
-    std::env::var_os("LAYR_ROOT").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/studio"))
+    std::env::var_os("LAYR_ROOT").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/var/lib/layr"))
 }
 
 fn mkdir_mode(p: &Path, mode: u32) -> Result<()> {
@@ -82,12 +84,22 @@ impl Store {
     pub fn project_names(&self) -> Result<Vec<String>> {
         let mut v = Vec::new();
         for e in fs::read_dir(self.projects_dir())?.flatten() {
-            if e.path().join("meta").join("layr.sqlite").is_file() {
+            if db_file(&e.path()).is_file() {
                 v.push(e.file_name().to_string_lossy().into_owned());
             }
         }
         v.sort();
         Ok(v)
+    }
+}
+
+/// The database of a project (`meta/db/layr.sqlite`; older projects: `meta/layr.sqlite`).
+pub fn db_file(project_dir: &Path) -> PathBuf {
+    let old = project_dir.join("meta").join("layr.sqlite");
+    if old.is_file() {
+        old
+    } else {
+        project_dir.join("meta").join("db").join("layr.sqlite")
     }
 }
 
@@ -102,6 +114,18 @@ pub fn check_name(kind: &str, name: &str) -> Result<()> {
         bail!("invalid {kind} name '{name}': use letters, digits, '-', '_' and '.'; start with a letter or digit");
     }
     Ok(())
+}
+
+/// Which machines an import takes records from: this machine, machines this project trusts,
+/// and machines vouched for by a `machine.trust` record of a trusted machine in the same batch.
+#[derive(Clone, Copy)]
+pub enum Trust<'a> {
+    Known,
+    /// Also this machine with this key, for this batch only (the peer of a sync; the sync records
+    /// its trust after the records were taken).
+    Peer(&'a str, &'a str),
+    /// Every machine of the batch (a new replica or a restore).
+    All,
 }
 
 pub struct Project<'a> {
@@ -166,7 +190,7 @@ impl<'a> Project<'a> {
     pub fn create(store: &'a Store, name: &str, actor: &Actor, config: serde_json::Value) -> Result<Project<'a>> {
         check_name("project", name)?;
         let dir = store.projects_dir().join(name);
-        if dir.join("meta").join("layr.sqlite").exists() {
+        if db_file(&dir).exists() {
             bail!("project '{name}' already exists");
         }
         if !crate::btrfs::is_btrfs(&store.projects_dir()) {
@@ -179,8 +203,12 @@ impl<'a> Project<'a> {
         for d in ["stage", "scan", "work"] {
             mkdir_mode(&dir.join("meta").join(d), 0o700)?;
         }
+        if !dir.join("meta").join("db").exists() {
+            crate::btrfs::create_subvolume(&dir.join("meta").join("db"))?;
+            std::fs::set_permissions(dir.join("meta").join("db"), fs::Permissions::from_mode(0o700))?;
+        }
         let id = ids::new_id();
-        let db = Db::open(&dir.join("meta").join("layr.sqlite"))?;
+        let db = Db::open(&db_file(&dir))?;
         let p = Project { store, name: name.to_string(), dir, id: id.clone(), db };
         let mut rec = Record::new("project");
         rec.data = serde_json::json!({"name": name, "id": id, "config": config});
@@ -192,7 +220,7 @@ impl<'a> Project<'a> {
     pub fn create_empty(store: &'a Store, name: &str) -> Result<Project<'a>> {
         check_name("project", name)?;
         let dir = store.projects_dir().join(name);
-        if dir.join("meta").join("layr.sqlite").exists() {
+        if db_file(&dir).exists() {
             bail!("project '{name}' already exists");
         }
         if !crate::btrfs::is_btrfs(&store.projects_dir()) {
@@ -205,31 +233,36 @@ impl<'a> Project<'a> {
         for d in ["stage", "scan", "work"] {
             mkdir_mode(&dir.join("meta").join(d), 0o700)?;
         }
-        let db = Db::open(&dir.join("meta").join("layr.sqlite"))?;
+        if !dir.join("meta").join("db").exists() {
+            crate::btrfs::create_subvolume(&dir.join("meta").join("db"))?;
+            std::fs::set_permissions(dir.join("meta").join("db"), fs::Permissions::from_mode(0o700))?;
+        }
+        let db = Db::open(&db_file(&dir))?;
         Ok(Project { store, name: name.to_string(), dir, id: String::new(), db })
     }
 
     /// Open a project that may not have its records yet.
     pub fn open_partial(store: &'a Store, name: &str) -> Result<Project<'a>> {
         let dir = store.projects_dir().join(name);
-        let db = Db::open(&dir.join("meta").join("layr.sqlite"))?;
+        let db = Db::open(&db_file(&dir))?;
         let mut p = Project { store, name: name.to_string(), dir, id: String::new(), db };
         p.id = p.project_id().unwrap_or_default();
         Ok(p)
     }
 
     pub fn open(store: &'a Store, name: &str) -> Result<Project<'a>> {
+        let _t = crate::trace::span("open project");
         check_name("project", name)?;
         let dir = store.projects_dir().join(name);
-        if !dir.join("meta").join("layr.sqlite").is_file() {
+        if !db_file(&dir).is_file() {
             bail!("project '{name}' not found");
         }
-        let db = Db::open(&dir.join("meta").join("layr.sqlite"))?;
+        let db = Db::open(&db_file(&dir))?;
         let mut p = Project { store, name: name.to_string(), dir, id: String::new(), db };
         if p.db.stale {
             // A schema upgrade: derived tables come back from the records.
             p.rebuild_index()?;
-            p.db.stale = false;
+            p.db.mark_current()?;
         }
         p.id = p.project_id()?;
         Ok(p)
@@ -285,6 +318,7 @@ impl<'a> Project<'a> {
     /// Write a record: sign it and store it with its derived rows in one transaction.
     /// The caller holds the project lock and has created all snapshots the record names.
     pub fn append(&self, mut rec: Record, actor: &Actor) -> Result<Record> {
+        let _t = crate::trace::span(format!("record {}", rec.op));
         let m = &self.store.machine;
         let present = self.state_present();
         let project = if rec.op == "project" { rec.data["id"].as_str().unwrap_or("").to_string() } else { self.id.clone() };
@@ -327,10 +361,8 @@ impl<'a> Project<'a> {
     /// from its first record, contiguous sequence numbers, signatures) and the project id, then
     /// store them with their derived rows in one transaction. Returns the number of new records.
     ///
-    /// Only records of trusted machines are taken: this machine, machines trusted by a
-    /// `machine.trust` record of a trusted machine (in the store or in the same batch), or, with
-    /// `bootstrap` (a new replica or a restore), every machine of the batch.
-    pub fn import_lines(&self, lines: &[String], bootstrap: bool) -> Result<usize> {
+    /// Only records of trusted machines are taken (see `Trust`).
+    pub fn import_lines(&self, lines: &[String], trust: Trust) -> Result<usize> {
         use std::collections::{BTreeMap, BTreeSet};
         let mut parsed: Vec<oplog::Signed> = Vec::new();
         for l in lines {
@@ -376,6 +408,10 @@ impl<'a> Project<'a> {
                 }
                 oplog::machine_key(&f.record)?
             };
+            // Records that claim this machine must carry this machine's key.
+            if machine == &self.store.machine.id && key != self.store.machine.key.verifying_key() {
+                bail!("records claim this machine's id with another key");
+            }
             keys.insert(machine.clone(), hex::encode(key.to_bytes()));
             for s in recs.iter() {
                 if s.record.seq <= last {
@@ -395,18 +431,28 @@ impl<'a> Project<'a> {
                 }
                 oplog::parse_line(&s.line, Some(&key))
                     .with_context(|| format!("record {} of machine {machine}", s.record.seq))?;
+                for st in &s.record.states {
+                    if self.db.state(&st.id)?.is_some() || fresh.iter().any(|f| f.record.states.iter().any(|x| x.id == st.id)) {
+                        bail!("record {} of machine {machine} reuses state id {}", s.record.seq, st.id);
+                    }
+                }
                 last = s.record.seq;
                 fresh.push(oplog::Signed { record: s.record.clone(), line: s.line.clone() });
             }
         }
         // Trust: known machines, then machines vouched for by trusted ones in this batch.
-        if !bootstrap {
+        if !matches!(trust, Trust::All) {
             let mut trusted: BTreeSet<String> = BTreeSet::new();
             for m in keys.keys() {
                 if let Some(k) = self.db.trusted(m)? {
                     if Some(&k) == keys.get(m) {
                         trusted.insert(m.clone());
                     }
+                }
+            }
+            if let Trust::Peer(m, k) = trust {
+                if keys.get(m).map(|x| x == k).unwrap_or(false) {
+                    trusted.insert(m.to_string());
                 }
             }
             trusted.insert(self.store.machine.id.clone());
@@ -525,7 +571,8 @@ impl<'a> Project<'a> {
             .unwrap_or_default()
     }
 
-    pub fn lead(&self) -> u32 {
-        self.config_u64("lead", 0) as u32
+    /// The single admin of stores made before roles (`admin`, earlier `lead`); see `access`.
+    pub fn legacy_admin(&self) -> u32 {
+        self.config_u64("admin", self.config_u64("lead", 0)) as u32
     }
 }

@@ -47,3 +47,14 @@ pub fn machine_key(rec: &Record) -> Result<VerifyingKey> {
     let arr: [u8; 32] = b.try_into().map_err(|_| anyhow!("bad key length"))?;
     Ok(VerifyingKey::from_bytes(&arr)?)
 }
+
+/// Sign bytes that are not a record (a backup manifest) with the machine key.
+pub fn sign_bytes(data: &[u8], key: &SigningKey) -> String {
+    base64::engine::general_purpose::STANDARD.encode(key.sign(data).to_bytes())
+}
+
+pub fn verify_bytes(data: &[u8], signature: &str, key: &VerifyingKey) -> Result<()> {
+    let sig = base64::engine::general_purpose::STANDARD.decode(signature)?;
+    let sig = Signature::from_slice(&sig).map_err(|e| anyhow!("bad signature: {e}"))?;
+    key.verify(data, &sig).map_err(|_| anyhow!("signature does not verify"))
+}

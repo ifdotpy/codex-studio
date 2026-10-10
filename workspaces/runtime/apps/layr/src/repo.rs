@@ -1,5 +1,6 @@
 //! Repository operations on one project: snapshots, lines, staging, status and in-place updates.
 
+use crate::access::{Policy, Role, Rule, Who};
 use crate::btrfs;
 use crate::changes::{self, Change};
 use crate::ctx::Ctx;
@@ -64,6 +65,22 @@ pub fn skip_path(p: &str) -> bool {
     p == ".git" || p.starts_with(".git/")
 }
 
+/// The kinds of change to a line, for `Repo::authorize_line`.
+#[derive(Clone, Copy, Debug)]
+pub enum LineOp {
+    /// Snapshots of the working content (save, layer repair): the owner.
+    Save,
+    /// Commit, reset, add, apply, stash and the other work commands: the owner, and only if the
+    /// line is not protected or its rule allows direct changes.
+    Direct,
+    /// A merge into the line: the owner; for a protected line the rule's update role.
+    Merge { expect: bool },
+    /// Delete, rename or adopt: the owner, or a maintainer.
+    Manage,
+    /// Moving the head back: the owner; for a protected line the rule's rewrite role.
+    Rewrite,
+}
+
 impl<'a> Repo<'a> {
     pub fn open(ctx: &'a Ctx, project: &str) -> Result<Repo<'a>> {
         let p = Project::open(&ctx.store, project)?;
@@ -72,51 +89,152 @@ impl<'a> Repo<'a> {
         Ok(r)
     }
 
-    // ----- permissions -----
+    // ----- permissions (docs/design.md, section 3; src/access.rs) -----
 
-    pub fn members_all(&self) -> bool {
-        match self.p.config_value("members").ok().flatten() {
-            None => true,
-            Some(v) => v.as_str() == Some("*"),
+    pub fn policy(&self) -> Policy {
+        Policy::load(&self.p)
+    }
+
+    pub fn who(ctx: &Ctx) -> Who {
+        Who::of(ctx.caller.uid, ctx.caller.gid)
+    }
+
+    /// The caller may take a project action (`access::ACTIONS`), or an error that says why not.
+    /// Owning a line includes reading the project: the reader actions (`read`, `try`, `export`)
+    /// are open to line owners too, unless a deny rule takes them away.
+    pub fn require(&self, ctx: &Ctx, action: &str) -> Result<()> {
+        if ctx.caller.is_root() {
+            return Ok(());
+        }
+        let pol = self.policy();
+        let who = Self::who(ctx);
+        match pol.check(&who, action) {
+            Ok(()) => Ok(()),
+            Err(reason) => {
+                let reader_action = crate::access::action_role(action) == Some(Role::Reader);
+                if reader_action
+                    && pol.denied_by(&who, action).is_none()
+                    && self.p.db.lines()?.iter().any(|l| l.owner == ctx.caller.uid)
+                {
+                    return Ok(());
+                }
+                Err(anyhow::anyhow!("permission denied: {reason}"))
+            }
         }
     }
 
+    /// The caller has the admin role (root has).
+    pub fn is_admin(&self, ctx: &Ctx) -> bool {
+        ctx.caller.is_root() || self.policy().role(&Self::who(ctx)) == Role::Admin
+    }
+
+    /// Reading needs the reader role, or owning a line of the project (unless a deny rule takes
+    /// `read` away).
     pub fn can_read(&self, ctx: &Ctx) -> Result<()> {
-        let uid = ctx.caller.uid;
-        if uid == 0 || uid == self.p.lead() || self.members_all() {
+        if ctx.caller.is_root() {
             return Ok(());
         }
-        let members: Vec<u64> = self
-            .p
-            .config_value("members")?
-            .and_then(|v| v.as_array().cloned())
-            .map(|a| a.into_iter().filter_map(|x| x.as_u64()).collect())
-            .unwrap_or_default();
-        if members.contains(&(uid as u64)) || self.p.db.lines()?.iter().any(|l| l.owner == uid) {
+        let pol = self.policy();
+        let who = Self::who(ctx);
+        if pol.check(&who, "read").is_ok() {
             return Ok(());
         }
-        bail!("permission denied: user {} is not a member of project {}", ctx.caller.user, self.p.name)
-    }
-
-    pub fn is_lead(&self, ctx: &Ctx) -> bool {
-        ctx.caller.uid == 0 || ctx.caller.uid == self.p.lead()
-    }
-
-    pub fn require_lead(&self, ctx: &Ctx, what: &str) -> Result<()> {
-        if !self.is_lead(ctx) {
-            bail!("permission denied: only the project lead can {what}");
-        }
-        Ok(())
-    }
-
-    pub fn can_write_line(&self, ctx: &Ctx, line: &Line) -> Result<()> {
-        if line.owner == 0 && !ctx.caller.is_root() {
-            bail!("permission denied: only root can change the root-owned line '{}'", line.name);
-        }
-        if ctx.caller.uid == 0 || ctx.caller.uid == line.owner || ctx.caller.uid == self.p.lead() {
+        if pol.denied_by(&who, "read").is_none() && self.p.db.lines()?.iter().any(|l| l.owner == ctx.caller.uid) {
             return Ok(());
         }
-        bail!("permission denied: line '{}' belongs to another user", line.name)
+        bail!("permission denied: user {} may not read project {}", ctx.caller.user, self.p.name)
+    }
+
+    /// Whether the caller may make this kind of change to a line. Returns the line's protection
+    /// rule. Only the owner changes a line; a protected line changes through merges by the role
+    /// its rule names; moving a protected line back needs the rule's rewrite role.
+    pub fn authorize_line(&self, ctx: &Ctx, line: &Line, op: LineOp) -> Result<Option<Rule>> {
+        let pol = self.policy();
+        let rule = pol.rule_for(&line.name);
+        if ctx.caller.is_root() {
+            return Ok(rule);
+        }
+        let name = &line.name;
+        if line.owner == 0 {
+            bail!("permission denied: only root changes the root-owned line '{name}'");
+        }
+        let who = Self::who(ctx);
+        let role = pol.role(&who);
+        let owner = ctx.caller.uid == line.owner;
+        let not_owner = || anyhow::anyhow!("permission denied: line '{name}' belongs to another user");
+        match op {
+            LineOp::Save => {
+                if !owner {
+                    return Err(not_owner());
+                }
+            }
+            LineOp::Direct => {
+                if rule.as_ref().map(|r| !r.direct).unwrap_or(false) {
+                    bail!("line '{name}' is protected: it changes only through 'layr merge <line> --expect <state>'");
+                }
+                if !owner {
+                    return Err(not_owner());
+                }
+            }
+            LineOp::Merge { expect } => match &rule {
+                None if !owner => return Err(not_owner()),
+                None => {}
+                Some(r) => {
+                    pol.check(&who, "merge").map_err(|e| anyhow::anyhow!("permission denied: {e}"))?;
+                    if role < r.update {
+                        bail!(
+                            "permission denied: merging into the protected line '{name}' needs the role {}; you are {}",
+                            r.update.name(),
+                            role.name()
+                        );
+                    }
+                    if r.expect && !expect {
+                        bail!("the protected line '{name}' takes only a reviewed state: add --expect <state>");
+                    }
+                }
+            },
+            LineOp::Manage => {
+                if !(owner && rule.is_none()) {
+                    self.require(ctx, "line.manage")?;
+                }
+                if let Some(r) = &rule {
+                    if role < r.rewrite {
+                        bail!(
+                            "permission denied: this change of the protected line '{name}' needs the role {}",
+                            r.rewrite.name()
+                        );
+                    }
+                }
+            }
+            LineOp::Rewrite => match &rule {
+                None if !owner => return Err(not_owner()),
+                None => {}
+                Some(r) if role < r.rewrite => {
+                    bail!(
+                        "permission denied: moving the protected line '{name}' back needs the role {}; you are {}",
+                        r.rewrite.name(),
+                        role.name()
+                    );
+                }
+                Some(_) => {}
+            },
+        }
+        Ok(rule)
+    }
+
+    /// A move of a line's head that is not forward (reset, amend, undo of a merge) rewrites the
+    /// line's history.
+    pub fn check_move(&self, ctx: &Ctx, line: &Line, new_head: &str) -> Result<()> {
+        if new_head == line.head || self.is_ancestor(&line.head, new_head)? {
+            return Ok(());
+        }
+        self.authorize_line(ctx, line, LineOp::Rewrite).map(|_| ())
+    }
+
+    /// The user that the service's own backups are written as: the one who set `backup.dir`.
+    pub fn backup_writer(&self) -> (u32, u32) {
+        let uid = self.p.config_u64("backup.writer", self.p.legacy_admin() as u64) as u32;
+        (uid, crate::ctx::Caller::from_uid(uid).gid)
     }
 
     // ----- lookups -----
@@ -177,24 +295,12 @@ impl<'a> Repo<'a> {
         (line.owner, c.gid)
     }
 
-    /// The lead of this machine (uid, gid): configured commands run as this user.
-    pub fn lead_ids(&self) -> (u32, u32) {
-        let uid = self.p.lead();
-        (uid, crate::ctx::Caller::from_uid(uid).gid)
-    }
-
     pub fn own(&self, line: &Line) -> Option<(u32, u32)> {
         Some(self.owner_ids(line))
     }
 
     pub fn line_state(&self, line: &Line, head: &str) -> LineState {
-        LineState {
-            name: line.name.clone(),
-            head: head.to_string(),
-            owner: line.owner,
-            machine: line.machine.clone(),
-            group: line.group.clone(),
-        }
+        LineState { name: line.name.clone(), head: head.to_string(), owner: line.owner, machine: line.machine.clone() }
     }
 
     // ----- snapshots -----
@@ -222,10 +328,11 @@ impl<'a> Repo<'a> {
             author: ctx.author(),
             message: message.to_string(),
             time: ids::now_ms(),
-            turn: ctx.turn(),
             running: false,
             conflicts: Vec::new(),
             layers: BTreeMap::new(),
+            layer_by: None,
+            layer_shared: false,
         })
     }
 
@@ -343,6 +450,22 @@ impl<'a> Repo<'a> {
         btrfs::snapshot(&self.state_root(&line.head)?, &p, false)?;
         crate::fsutil::atomic_write(&basef, line.head.as_bytes(), 0o600)?;
         Ok(p)
+    }
+
+    /// The staging line if it was made from the current head (a stale one is dropped).
+    pub fn current_stage(&self, line: &Line) -> Result<Option<PathBuf>> {
+        match self.stage(line) {
+            Some(s) => {
+                let base = std::fs::read_to_string(self.stage_base_file(line)).unwrap_or_default();
+                if base.trim() == line.head {
+                    Ok(Some(s))
+                } else {
+                    self.drop_stage(line)?;
+                    Ok(None)
+                }
+            }
+            None => Ok(None),
+        }
     }
 
     pub fn drop_stage(&self, line: &Line) -> Result<()> {
@@ -505,7 +628,7 @@ impl<'a> Repo<'a> {
     // ----- lines -----
 
     /// Create a line from a state: a writable snapshot at `lines/<name>`.
-    pub fn create_line(&self, ctx: &Ctx, name: &str, start: &str, owner: u32, group: Option<String>) -> Result<Line> {
+    pub fn create_line(&self, ctx: &Ctx, name: &str, start: &str, owner: u32) -> Result<Line> {
         check_name("line", name)?;
         if self.p.db.line_by_name(name)?.is_some() {
             bail!("a line named '{name}' already exists");
@@ -520,7 +643,6 @@ impl<'a> Repo<'a> {
             head: start.to_string(),
             owner,
             machine: self.p.store.machine.id.clone(),
-            group: group.clone(),
         };
         self.materialize(&line, start, &dst)?;
         let res = (|| -> Result<Record> {
@@ -591,20 +713,53 @@ impl<'a> Repo<'a> {
         }
         for path in paths {
             let lp = fsutil::safe_join(w, &path)?;
-            if let Some(snap) = st.layers.get(&path) {
-                let src = self.p.layer_path(state, snap);
-                if src.exists() {
-                    if lp.symlink_metadata().is_ok() {
-                        fsutil::remove_entry(w, &path)?;
-                    }
-                    fsutil::make_parents(w, &path, Some((uid, gid)))?;
-                    btrfs::snapshot(&src, &lp, false)?;
-                    continue;
+            if let Some(src) = self.warm_layer(state, &path, uid)? {
+                if lp.symlink_metadata().is_ok() {
+                    fsutil::remove_entry(w, &path)?;
                 }
+                fsutil::make_parents(w, &path, Some((uid, gid)))?;
+                btrfs::snapshot(&src, &lp, false)?;
+                // The copy shares its blocks; only its files change owner.
+                give_tree(&lp, uid, gid)?;
+                continue;
             }
             make_layer(w, &path, uid, gid)?;
         }
         Ok(())
+    }
+
+    /// The layer snapshot that a line of `uid` starting at `state` takes for `path`: the state's
+    /// own, or else the one of its nearest ancestor that has one on this machine (the build
+    /// output closest to the line's content). A layer made by another user is taken only if it
+    /// was made on a protected line (`layer_shared`): a layer holds code that review does not see.
+    pub fn warm_layer(&self, state: &str, path: &str, uid: u32) -> Result<Option<PathBuf>> {
+        const SEARCH: usize = 200;
+        let local = self.p.store.machine.id.clone();
+        let mut seen = BTreeSet::new();
+        let mut q = std::collections::VecDeque::from([state.to_string()]);
+        while let Some(id) = q.pop_front() {
+            if seen.len() >= SEARCH {
+                break;
+            }
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            let rec = match self.p.db.state(&id)? {
+                Some(r) => r,
+                None => continue,
+            };
+            if let Some(snap) = rec.layers.get(path) {
+                let src = self.p.layer_path(&id, snap);
+                let owner_of_line = rec.line.as_ref().and_then(|l| self.p.db.line_by_id(l).ok().flatten()).map(|l| l.owner);
+                let allowed = rec.layer_shared || rec.layer_by == Some(uid) || owner_of_line == Some(uid);
+                // Another state's layer only from this machine; the state's own also after a move.
+                if src.exists() && allowed && (id == state || self.p.db.state_machine(&id)?.as_deref() == Some(local.as_str())) {
+                    return Ok(Some(src));
+                }
+            }
+            q.extend(rec.parents);
+        }
+        Ok(None)
     }
 
     /// Record a new head for a line (and optionally a working state change).
@@ -722,12 +877,13 @@ impl<'a> Repo<'a> {
 }
 
 /// True if a conflict is still open in `root`. A content conflict is open while the file holds
-/// conflict markers. Other kinds (moves, deletes, types, binary files) stay open until the next
-/// commit of the line, which is the lead's decision.
+/// conflict markers (a merge writes markers only into files of at most `MAX_TEXT` bytes, so a
+/// larger file has none). Other kinds (moves, deletes, types, binary files) stay open until the
+/// next commit of the line, which is the admin's decision.
 pub fn conflict_open(root: &Path, c: &Conflict) -> Result<bool> {
     if c.kind == "content" || c.kind == "add/add" {
         return Ok(match fsutil::lmeta(root, &c.path) {
-            Some(m) if m.is_file() => has_markers(&fsutil::read_file(root, &c.path)?),
+            Some(m) if m.is_file() && m.size <= fsutil::MAX_TEXT => has_markers(&fsutil::read_file(root, &c.path)?),
             _ => false,
         });
     }
@@ -761,6 +917,22 @@ fn prune_empty_parents(target: &Path, to: &Path, rel: &str) -> Result<()> {
         comps.pop();
     }
     Ok(())
+}
+
+/// Give every entry of a tree (a new layer copy, still private) to `uid:gid`, without following
+/// links and without entering nested subvolumes.
+fn give_tree(root: &Path, uid: u32, gid: u32) -> Result<()> {
+    let mut paths = Vec::new();
+    fsutil::walk(root, "", &mut |rel, m| {
+        if m.uid != uid || m.gid != gid {
+            paths.push(rel.to_string());
+        }
+        Ok(true)
+    })?;
+    for p in paths {
+        fsutil::chown_nofollow(&root.join(p), uid, gid)?;
+    }
+    fsutil::chown_nofollow(root, uid, gid)
 }
 
 /// Create an empty nested subvolume for a regenerable layer at `path` in the working folder.

@@ -11,6 +11,15 @@ owned by this app's installer and service unit. Focused check:
 `python3 -B -m unittest discover -s workspaces/runtime/apps/vm-guest -p test_service.py -v`
 from the repository root.
 
+The layr parts (the root broker `layr_admin.py`, `layr_projects.py`, `layr_agents.py` and
+the host_exec slots) have their own focused checks:
+`python3 -B -m unittest discover -s workspaces/runtime/apps/vm-guest -p 'test_*layr*.py' -v`
+and `test_host_exec_slot_io.py`. `test_layr_e2e.py` is an opt-in end-to-end run with a
+real layr daemon: run it as root on Linux with btrfs, with `LAYR_E2E_ROOT` set to the
+daemon's store. Provisioning copies the vendored layr sources
+(`workspaces/runtime/apps/layr`) to `/opt/codex-studio/vm/layr`, and `install-layr.sh`
+builds them in the guest.
+
 The service runs as `studio`. It listens on vsock port 4050. The protocol is in
 [linux-vm-workspaces.md](../../../../docs/linux-vm-workspaces.md).
 

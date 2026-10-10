@@ -126,7 +126,13 @@ pub fn subvol_info(fd: BorrowedFd) -> io::Result<RawSubvolInfo> {
     // SAFETY: all-zero bytes are a valid value of this plain C structure.
     let mut a: Box<SubvolInfoArgs> = Box::new(unsafe { std::mem::zeroed() });
     ioctl_ptr(fd, GET_SUBVOL_INFO, &mut *a)?;
-    Ok(RawSubvolInfo { tree_id: a.treeid, generation: a.generation, uuid: a.uuid, parent_uuid: a.parent_uuid, received_uuid: a.received_uuid })
+    Ok(RawSubvolInfo {
+        tree_id: a.treeid,
+        generation: a.generation,
+        uuid: a.uuid,
+        parent_uuid: a.parent_uuid,
+        received_uuid: a.received_uuid,
+    })
 }
 
 /// Reflink a byte range from `src` into `dst`.

@@ -1,7 +1,7 @@
 # Local version control on btrfs: design contract
 
 Status: implemented in [layr](https://github.com/ifdotpy/layr) (private repository, commit
-`510d605`, 2026-10-10). This document keeps Studio's decisions about local version control and
+`942c1b6`, 2026-10-10). This document keeps Studio's decisions about local version control and
 their reasons. layr itself is a general tool: its own design is in layr `docs/design.md`;
 commands, formats, measurements and limits are in the layr README. Owner of the decisions: the user. Technical advice
 and prototypes: [agent workspace isolation research](research/2026-10-03-agent-workspace-isolation.md).
@@ -73,38 +73,45 @@ so models learn it quickly, and it has equal convenience. It does not take the n
 17. Boundary (user decision): layr knows Unix users and groups, projects, lines, states, rules
     and checks, and nothing about agents, leads, tasks or turns. A feature goes into layr when
     people on a shared Linux server would want it with the same meaning; otherwise it is Studio's.
-    Studio's part (the guest service in `vm/guest`, "layr-agent") uses only layr's public
-    commands, never its database or store folders. Every security rule is a layr rule (roles,
+    Studio's part (the guest service in `workspaces/runtime/apps/vm-guest`, "layr-agent") uses
+    only layr's public commands, never its database or store folders. Every security rule is a layr rule (roles,
     deny rules, protection rules); Studio only sets them, because an agent can call layr
     directly. Studio labels operations with `LAYR_SESSION` (the agent id); layr shows labels and
     never decides by them.
-18. Roles in a Studio project (layr's model, docs/design.md section 3): the user is the admin;
-    the lead agent is a maintainer; worker and reviewer agents are writers. All agent users are
-    in one Unix group with a deny rule for `sync`, `remote`, `access`, `config`, `records` and
-    `backup`, so no role given to an agent later reaches these. main is protected: it changes
-    only through `layr merge <line> --expect <reviewed state>` by a maintainer, after the
-    project's named checks pass on the merge result. Only the owner changes a line; the lead no
-    longer writes into a worker's line (it makes its own line from it, or deletes it).
+18. Roles in a Studio project (layr's model, docs/design.md section 3). The user changes the
+    rules through Studio, which runs layr as root in the guest. The project user
+    (`studio-p-<hash>`, the lead agent's user) owns main and is the project admin from
+    `layr init --owner`. A worker owns its line and has no role: a line owner may read, try and
+    export (layr `dd497ad`). Every agent user is in the `studio-agents` Unix group, with a deny
+    rule for `access`, `sync`, `remote`, `records` and `backup`. `access` covers roles, deny
+    rules, protection rules and the commands of named checks, so no agent changes the rules,
+    whatever role it gets later. The lead keeps `config` for layers and merge drivers. Only the
+    owner changes a line; the lead does not write into a worker's line (it makes its own line
+    from it, or deletes it).
 19. One commit per task (decision 5) is Studio's choice: `layr push --squash -m <task title>`.
     layr's default push keeps every state as a commit.
 20. Exploration groups (below) and the `host_exec` slots are Studio workflows built from lines,
     `merge --expect`, `layr export` and the line folders; layr no longer has `group` and `slot`.
 21. The end of an agent turn: `layr layer repair`, then `layr save -m "Studio turn <n>"`
     (replaces `layr save --turn-end`).
-22. The layr copy in `vm/layr` is vendored from a fixed revision (`scripts/update-vm-layr.py`).
-    Moving it to `510d605` also needs the guest changes of 18, 21 and 23; revisions before
-    `9254261` lack fixes for reading root files through merge drivers, for signed backups and
-    stream checks, and for files too large for memory.
-23. The rule of main in a Studio project (layr `docs/design.md`, sections 3 and 5):
-    - a merge needs one approval of the reviewed state from the user's group of people
-      (`--approvals 1 --approvers @<people group>`): an agent's approval never counts, because
-      agents are not in that group;
-    - changes of CI configuration need the user (`--path .github=admin`, and the like for other
-      CI folders);
-    - the project's checks run on every merge result; their command sets its own `PATH`
-      (checks get a clean environment). Their build output becomes the shared warm layer
-      (`target`, `node_modules`) of main, so a new agent line starts warm, without one copy of
-      the build per agent;
+22. The layr copy in `workspaces/runtime/apps/layr` is vendored from a fixed revision
+    (`workspaces/runtime/apps/server/src/update-vm-layr.py`). Moving it to `942c1b6` also needs
+    the guest changes of 18, 21 and 23; revisions before `9254261` lack fixes for reading root
+    files through merge drivers, for signed backups and stream checks, and for files too large
+    for memory, and revisions before `942c1b6` let a user with `config` change check commands.
+23. The rule of main in a Studio project (layr `docs/design.md`, sections 3 and 5), set by
+    `project.import` and `project.ensure` (`workspaces/runtime/apps/vm-guest/layr_projects.py`,
+    policy version 1):
+    - `layr protect main --direct`: the lead commits in main, and it takes a worker's line only
+      with `layr merge <line> --expect <reviewed state>`; a worker cannot merge into main;
+    - no required approvals by default: the user does not review code in Studio, so a required
+      person's approval would stop every task. A user who wants one sets
+      `--approvals 1 --approvers @<people group>` (an agent's approval never counts, because
+      agents are not in that group), and `--path .github=admin` for CI configuration;
+    - named checks (`layr config check.<name>`, then `layr protect main --check <name>`) run on
+      every merge result; their command sets its own `PATH` (checks get a clean environment).
+      Their build output becomes the shared warm layer (`target`, `node_modules`) of main, so
+      a new agent line starts warm, without one copy of the build per agent;
     - Studio merges as the lead agent's user, not as root: root passes every rule;
     - a task that needs more rights for a while gets a role for a time
       (`layr access grant <agent> maintainer --until 2h`).
@@ -295,7 +302,7 @@ One general tool. Studio does not know what the command does. The slot copies be
    available.
 4. After the command, the Mac side lists files that the command changed in the slot (FSEvents or a
    compare with the start marker, on the Mac itself; the VM's view of a shared folder can have
-   stale attributes). `layr slot collect` copies them back with three versions per path: the state
+   stale attributes). The guest copies them back (decision 20) with three versions per path: the state
    the slot held, the slot, and the line now. A path that the line changed too is a conflict: text
    files get markers, other files keep the line version and the slot version is saved next to it
    as `<path>.slot-conflict`. Build outputs stay outside the slot folder. Artifacts are returned as
@@ -637,7 +644,8 @@ Studio integration:
 - Use layr for Linux workspaces instead of the overlayfs engine
   ([image workspaces](workspace-images.md)) and the git status change detector
   ([Linux VM workspaces](linux-vm-workspaces.md)), behind the same public API.
-- Call `layr save --turn-end` at the end of each agent turn; run `layr daemon` in the VM.
+- Call `layr layer repair` and `layr save` at the end of each agent turn; run `layr daemon` in the
+  VM.
 - The read-only network share of the main line and `states/`.
 
 Measurements:

@@ -57,10 +57,27 @@ class Projects:
         expect(process.returncode == 0, "The layr operation failed", "operation_failed")
         return output.decode().strip()
 
+    # The layr rules of a Studio project (docs/btrfs-local-vcs.md, decisions 18 and 23). Version
+    # 1: the lead (the owner of main) may also commit in main, and the agents' group may not
+    # change roles, replicate, change remotes, import or export records, or make backups.
+    POLICY_VERSION = 1
+
+    async def apply_policy(self, project):
+        marker = self.state / ("policy-" + project_id(project) + ".json")
+        if marker.exists() and json.loads(marker.read_text()).get("version", 0) >= self.POLICY_VERSION:
+            return
+        from layr_agents import AGENTS_GROUP, ensure_agents_group
+        ensure_agents_group()
+        await self.layr(["--project", project, "protect", "main", "--direct"])
+        await self.layr(["--project", project, "access", "deny", "@" + AGENTS_GROUP,
+                         "access", "sync", "remote", "records", "backup"])
+        atomic_json(marker, {"version": self.POLICY_VERSION})
+
     async def ensure(self, project):
         folder = self.folder(project)
         cwd = folder / "lines/main"
         expect(cwd.is_dir(), "The layr project does not exist", "not_found")
+        await self.apply_policy(project)
         # Read identity from the owned main folder, not from caller input.
         user = pwd.getpwuid(cwd.stat().st_uid)
         state = await self.layr(["rev-parse", "HEAD"], cwd=cwd)
@@ -118,6 +135,7 @@ class Projects:
                 await self.layr(["init", project, "--from", str(private_source), "--owner", owner["owner"]])
             finally:
                 await command(["btrfs", "subvolume", "delete", private_source])
+            await self.apply_policy(project)
             await self.share.export(project)
             return {**await self.ensure(project), "imported": True}
 

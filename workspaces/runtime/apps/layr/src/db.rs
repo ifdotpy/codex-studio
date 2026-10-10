@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS states (id TEXT PRIMARY KEY, display TEXT UNIQUE, kin
 CREATE INDEX IF NOT EXISTS states_line ON states(line, kind, time);
 CREATE TABLE IF NOT EXISTS parents (state TEXT, parent TEXT, ord INTEGER, PRIMARY KEY(state, ord));
 CREATE INDEX IF NOT EXISTS parents_parent ON parents(parent);
-CREATE TABLE IF NOT EXISTS lines (id TEXT PRIMARY KEY, name TEXT, owner INTEGER, machine TEXT, head TEXT, grp TEXT, deleted INTEGER DEFAULT 0, time INTEGER, ord TEXT);
+CREATE TABLE IF NOT EXISTS lines (id TEXT PRIMARY KEY, name TEXT, owner INTEGER, machine TEXT, head TEXT, deleted INTEGER DEFAULT 0, time INTEGER, ord TEXT);
 CREATE TABLE IF NOT EXISTS line_heads (line TEXT, machine TEXT, head TEXT, time INTEGER, ord TEXT, PRIMARY KEY(line, machine));
 CREATE TABLE IF NOT EXISTS tags (name TEXT PRIMARY KEY, state TEXT, message TEXT, time INTEGER, deleted INTEGER DEFAULT 0, ord TEXT);
 CREATE TABLE IF NOT EXISTS remote_refs (name TEXT PRIMARY KEY, state TEXT, gcommit TEXT, time INTEGER, ord TEXT);
@@ -31,42 +31,63 @@ CREATE TABLE IF NOT EXISTS git_map (state TEXT, gcommit TEXT, PRIMARY KEY(state,
 CREATE INDEX IF NOT EXISTS git_map_commit ON git_map(gcommit);
 CREATE TABLE IF NOT EXISTS exports (id TEXT PRIMARY KEY, state TEXT, remote TEXT, branch TEXT, gcommit TEXT, status TEXT, time INTEGER, ord TEXT);
 CREATE TABLE IF NOT EXISTS checks (id TEXT PRIMARY KEY, state TEXT, command TEXT, exit INTEGER, time INTEGER, actor TEXT);
-CREATE TABLE IF NOT EXISTS groups (name TEXT PRIMARY KEY, epoch INTEGER, base TEXT, accepted TEXT, time INTEGER, ord TEXT);
-CREATE TABLE IF NOT EXISTS group_lines (grp TEXT, line TEXT, epoch INTEGER, ord TEXT, PRIMARY KEY(grp, line));
 CREATE TABLE IF NOT EXISTS machines (id TEXT PRIMARY KEY, name TEXT, public_key TEXT);
 CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT, ord TEXT);
 CREATE TABLE IF NOT EXISTS trusted (machine TEXT PRIMARY KEY, public_key TEXT, by TEXT);
-CREATE TABLE IF NOT EXISTS slots (path TEXT PRIMARY KEY, state TEXT, line TEXT, time INTEGER, ord TEXT);
+CREATE TABLE IF NOT EXISTS approvals (id TEXT PRIMARY KEY, state TEXT, uid INTEGER, time INTEGER, withdrawn INTEGER DEFAULT 0);
 "#;
 
 /// Version of the derived tables. Records never change shape; a database with an older version
 /// drops its derived tables, creates them new and rebuilds them from the records.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 6;
 
-const DERIVED: &[&str] =
-    &["states", "parents", "lines", "line_heads", "tags", "remote_refs", "git_map", "exports", "checks", "groups", "group_lines", "machines", "config", "slots", "trusted"];
+const DERIVED: &[&str] = &[
+    "states",
+    "parents",
+    "lines",
+    "line_heads",
+    "tags",
+    "remote_refs",
+    "git_map",
+    "exports",
+    "checks",
+    "machines",
+    "config",
+    "trusted",
+    "approvals",
+];
+
+/// Derived tables of older versions, dropped on migration.
+const RETIRED: &[&str] = &["slots", "mirrors", "groups", "group_lines"];
 
 impl Db {
     /// Open the database. Returns it and whether the derived tables must be rebuilt.
     pub fn open(path: &Path) -> Result<Db> {
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
-        // FULL: a committed record survives a power loss (NORMAL can lose the last commits).
+        // FULL: a committed record survives a power loss. The database has its own subvolume,
+        // so this fsync costs a few milliseconds even right after a snapshot.
         conn.pragma_update(None, "synchronous", "FULL")?;
         conn.busy_timeout(std::time::Duration::from_secs(30))?;
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         let has_records: bool =
-            conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='records'", [], |r| r.get::<_, i64>(0))? > 0;
+            conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='records'", [], |r| {
+                r.get::<_, i64>(0)
+            })? > 0;
         let mut db = Db { conn, stale: false };
         if version < SCHEMA_VERSION {
             if has_records {
-                for t in DERIVED {
+                // The project rebuilds the derived tables and only then writes the version
+                // (`mark_current`): a failed rebuild is tried again on the next open.
+                for t in DERIVED.iter().chain(RETIRED) {
                     db.conn.execute_batch(&format!("DROP TABLE IF EXISTS {t}"))?;
                 }
                 db.stale = true;
+                db.conn.execute_batch(SCHEMA)?;
+            } else {
+                db.conn.execute_batch(SCHEMA)?;
+                db.conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             }
-            db.conn.execute_batch(SCHEMA)?;
-            db.conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         } else if version > SCHEMA_VERSION {
             anyhow::bail!("{} was written by a newer layr (schema {version})", path.display());
         } else {
@@ -76,6 +97,13 @@ impl Db {
     }
 
     /// Run `f` in one write transaction (`BEGIN IMMEDIATE`): all or nothing.
+    /// Write the schema version after the derived tables were rebuilt.
+    pub fn mark_current(&mut self) -> Result<()> {
+        self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        self.stale = false;
+        Ok(())
+    }
+
     pub fn with_tx<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
         self.conn.execute_batch("BEGIN IMMEDIATE")?;
         match f() {
@@ -95,8 +123,8 @@ impl Db {
         self.conn.execute_batch(
             "DELETE FROM states; DELETE FROM parents; DELETE FROM lines; DELETE FROM line_heads;
              DELETE FROM tags; DELETE FROM remote_refs; DELETE FROM git_map; DELETE FROM exports; DELETE FROM checks;
-             DELETE FROM groups; DELETE FROM group_lines; DELETE FROM machines; DELETE FROM config; DELETE FROM slots;
-             DELETE FROM trusted;",
+             DELETE FROM machines; DELETE FROM config;
+             DELETE FROM trusted; DELETE FROM approvals;",
         )?;
         Ok(())
     }
@@ -148,7 +176,7 @@ impl Db {
     /// The result does not depend on the order in which records arrive: every row that a
     /// later record can replace keeps the order key of the record that wrote it (time,
     /// machine, sequence number), and only a record with a larger key replaces it. Deletes
-    /// leave a marked row for the same reason. Settings that act on this machine (lead,
+    /// leave a marked row for the same reason. Settings that act on this machine (admin,
     /// members, merge commands, remotes, the backup folder) and the lines that have their
     /// working folder here change only by this machine's records; the values written by other
     /// machines are kept under `<key>@<machine>`.
@@ -157,13 +185,29 @@ impl Db {
         let ord = format!("{:016}:{}:{:012}", rec.time.max(0), rec.machine, rec.seq);
         let foreign = rec.machine != local;
         for s in &rec.states {
+            // A state id names one state forever: a second record with the same id is refused
+            // (the import checks this before; here it is a guard).
+            let exists: bool =
+                tx.query_row("SELECT COUNT(*) FROM states WHERE id=?1", params![s.id], |r| r.get::<_, i64>(0))? > 0;
+            if exists {
+                anyhow::bail!("state {} is named by two records", s.id);
+            }
             let present = state_present(&s.id);
             tx.execute(
-                "INSERT OR IGNORE INTO states(id, display, kind, line, time, rec, present, machine) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
-                params![s.id, ids::display(&s.id), kind_str(s.kind), s.line, s.time, serde_json::to_string(s)?, present as i64, rec.machine],
+                "INSERT INTO states(id, display, kind, line, time, rec, present, machine) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![
+                    s.id,
+                    ids::display(&s.id),
+                    kind_str(s.kind),
+                    s.line,
+                    s.time,
+                    serde_json::to_string(s)?,
+                    present as i64,
+                    rec.machine
+                ],
             )?;
             for (i, p) in s.parents.iter().enumerate() {
-                tx.execute("INSERT OR REPLACE INTO parents(state, parent, ord) VALUES(?1,?2,?3)", params![s.id, p, i as i64])?;
+                tx.execute("INSERT OR IGNORE INTO parents(state, parent, ord) VALUES(?1,?2,?3)", params![s.id, p, i as i64])?;
             }
         }
         for (id, ch) in &rec.lines {
@@ -183,15 +227,15 @@ impl Db {
             match &ch.after {
                 Some(a) => {
                     tx.execute(
-                        "INSERT INTO lines(id, name, owner, machine, head, grp, deleted, time, ord) VALUES(?1,?2,?3,?4,?5,?6,0,?7,?8)
-                         ON CONFLICT(id) DO UPDATE SET name=?2, owner=?3, machine=?4, head=?5, grp=?6, deleted=0, time=?7, ord=?8
-                         WHERE excluded.ord > lines.ord OR (lines.machine <> ?4 AND ?4 = ?9)",
-                        params![id, a.name, a.owner as i64, a.machine, a.head, a.group, rec.time, ord, local],
+                        "INSERT INTO lines(id, name, owner, machine, head, deleted, time, ord) VALUES(?1,?2,?3,?4,?5,0,?6,?7)
+                         ON CONFLICT(id) DO UPDATE SET name=?2, owner=?3, machine=?4, head=?5, deleted=0, time=?6, ord=?7
+                         WHERE excluded.ord > lines.ord OR (lines.machine <> ?4 AND ?4 = ?8)",
+                        params![id, a.name, a.owner as i64, a.machine, a.head, rec.time, ord, local],
                     )?;
                 }
                 None => {
                     tx.execute(
-                        "INSERT INTO lines(id, name, owner, machine, head, grp, deleted, time, ord) VALUES(?1,'',0,?3,'',NULL,1,?2,?4)
+                        "INSERT INTO lines(id, name, owner, machine, head, deleted, time, ord) VALUES(?1,'',0,?3,'',1,?2,?4)
                          ON CONFLICT(id) DO UPDATE SET deleted=1, time=?2, ord=?4 WHERE excluded.ord > lines.ord",
                         params![id, rec.time, rec.machine, ord],
                     )?;
@@ -268,6 +312,14 @@ impl Db {
                 if let (Some(st), Some(c)) = (s("state"), s("commit")) {
                     tx.execute("INSERT OR IGNORE INTO git_map(state, gcommit) VALUES(?1,?2)", params![st, c])?;
                 }
+                // The commits made for the ancestors of the exported state.
+                if let Some(m) = d.get("commits").and_then(|v| v.as_object()) {
+                    for (st, c) in m {
+                        if let Some(c) = c.as_str() {
+                            tx.execute("INSERT OR IGNORE INTO git_map(state, gcommit) VALUES(?1,?2)", params![st, c])?;
+                        }
+                    }
+                }
                 if s("status").as_deref() == Some("pushed") {
                     if let (Some(r), Some(b), Some(st), Some(c)) = (s("remote"), s("branch"), s("state"), s("commit")) {
                         tx.execute(
@@ -284,28 +336,6 @@ impl Db {
                     params![rec.id, s("state"), s("command"), d.get("exit").and_then(|v| v.as_i64()), rec.time, rec.actor.name],
                 )?;
             }
-            "group.create" => {
-                tx.execute(
-                    "INSERT OR IGNORE INTO groups(name, epoch, base, accepted, time, ord) VALUES(?1, 0, ?2, NULL, ?3, ?4)",
-                    params![s("name"), s("base"), rec.time, ord],
-                )?;
-            }
-            "group.add" => {
-                // The epoch a line joined at: the number of acceptances recorded before it.
-                tx.execute(
-                    "INSERT INTO group_lines(grp, line, epoch, ord) VALUES(?1, ?2, (SELECT COUNT(*) FROM records WHERE op='group.accept'
-                       AND json_extract(raw, '$.r.data.name')=?1 AND (printf('%016d:%s:%012d', time, machine, seq)) < ?3), ?3)
-                     ON CONFLICT(grp, line) DO UPDATE SET epoch=excluded.epoch, ord=?3 WHERE excluded.ord > group_lines.ord",
-                    params![s("name"), s("line"), ord],
-                )?;
-            }
-            "group.accept" => {
-                tx.execute(
-                    "UPDATE groups SET epoch=epoch+1, accepted=CASE WHEN ?3 > COALESCE(ord, '') THEN ?2 ELSE accepted END,
-                     ord=CASE WHEN ?3 > COALESCE(ord, '') THEN ?3 ELSE ord END, time=?4 WHERE name=?1",
-                    params![s("name"), s("line"), ord, rec.time],
-                )?;
-            }
             "gc" => {
                 if let Some(arr) = d.get("deleted").and_then(|v| v.as_array()) {
                     for id in arr.iter().filter_map(|v| v.as_str()) {
@@ -316,31 +346,52 @@ impl Db {
                 }
             }
             "save.layers" => {
+                // Only the machine that made the state adds its layers (names and subvolume
+                // UUIDs, which a receiver checks).
                 if let Some(st) = s("state") {
-                    let raw: Option<String> =
-                        tx.query_row("SELECT rec FROM states WHERE id=?1", params![st], |r| r.get(0)).optional()?;
-                    if let Some(raw) = raw {
-                        let mut v: serde_json::Value = serde_json::from_str(&raw)?;
-                        v["layers"] = d.get("layers").cloned().unwrap_or_default();
-                        tx.execute("UPDATE states SET rec=?2 WHERE id=?1", params![st, v.to_string()])?;
+                    let row: Option<(String, String)> = tx
+                        .query_row("SELECT rec, machine FROM states WHERE id=?1", params![st], |r| Ok((r.get(0)?, r.get(1)?)))
+                        .optional()?;
+                    if let Some((raw, machine)) = row {
+                        if machine == rec.machine {
+                            let mut v: serde_json::Value = serde_json::from_str(&raw)?;
+                            v["layers"] = d.get("layers").cloned().unwrap_or_default();
+                            v["layer_uuids"] = d.get("uuids").cloned().unwrap_or_default();
+                            v["layer_by"] = serde_json::json!(rec.actor.uid);
+                            v["layer_shared"] = serde_json::json!(d.get("shared").and_then(|x| x.as_bool()).unwrap_or(false));
+                            tx.execute("UPDATE states SET rec=?2 WHERE id=?1", params![st, v.to_string()])?;
+                        }
                     }
                 }
+            }
+            // Approvals name users of this machine: only local records count.
+            "approve" if !foreign && s("state").map(|x| crate::model::is_uuid(&x)).unwrap_or(false) => {
+                tx.execute(
+                    "INSERT OR IGNORE INTO approvals(id, state, uid, time) VALUES(?1,?2,?3,?4)",
+                    params![rec.id, s("state"), rec.actor.uid as i64, rec.time],
+                )?;
+            }
+            "approve.withdraw" if !foreign => {
+                tx.execute(
+                    "UPDATE approvals SET withdrawn=1 WHERE state=?1 AND uid=?2",
+                    params![s("state"), rec.actor.uid as i64],
+                )?;
             }
             "stash.drop" => {
                 tx.execute("UPDATE states SET dropped=1 WHERE id=?1", params![s("state")])?;
             }
-            "slot" => {
-                if !foreign {
-                    tx.execute(
-                        "INSERT INTO slots(path, state, line, time, ord) VALUES(?1,?2,?3,?4,?5)
-                         ON CONFLICT(path) DO UPDATE SET state=?2, line=?3, time=?4, ord=?5 WHERE excluded.ord > slots.ord",
-                        params![s("path"), s("state"), s("line"), rec.time, ord],
-                    )?;
-                }
-            }
             _ => {}
         }
         Ok(())
+    }
+
+    /// The subvolume UUID of a layer snapshot, from the signed save.layers record.
+    pub fn layer_uuid(&self, state: &str, name: &str) -> Result<Option<String>> {
+        let raw: Option<String> =
+            self.conn.query_row("SELECT rec FROM states WHERE id=?1", params![state], |r| r.get(0)).optional()?;
+        Ok(raw
+            .and_then(|r| serde_json::from_str::<serde_json::Value>(&r).ok())
+            .and_then(|v| v["layer_uuids"][name].as_str().map(|s| s.to_string())))
     }
 
     pub fn trusted(&self, machine: &str) -> Result<Option<String>> {
@@ -376,6 +427,27 @@ impl Db {
         Ok(v)
     }
 
+    /// Users (uids of this machine) whose approval of `state` stands, with its time.
+    pub fn approvals(&self, state: &str) -> Result<Vec<(u32, i64)>> {
+        let mut st =
+            self.conn.prepare("SELECT uid, MAX(time) FROM approvals WHERE state=?1 AND withdrawn=0 GROUP BY uid ORDER BY uid")?;
+        let v = st.query_map(params![state], |r| Ok((r.get::<_, i64>(0)? as u32, r.get(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+        Ok(v)
+    }
+
+    /// The machine that made a state.
+    pub fn state_machine(&self, id: &str) -> Result<Option<String>> {
+        Ok(self.conn.query_row("SELECT machine FROM states WHERE id=?1", params![id], |r| r.get(0)).optional()?)
+    }
+
+    /// The state whose signed record names subvolume `uuid`.
+    pub fn state_by_subvol(&self, uuid: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT id FROM states WHERE json_extract(rec, '$.subvol')=?1 LIMIT 1", params![uuid], |r| r.get(0))
+            .optional()?)
+    }
+
     pub fn present_states(&self) -> Result<Vec<(String, bool)>> {
         let mut st = self.conn.prepare("SELECT id, deleted FROM states WHERE present=1")?;
         let v = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0)))?.collect::<Result<Vec<_>, _>>()?;
@@ -383,21 +455,14 @@ impl Db {
     }
 
     fn line_row(r: &rusqlite::Row) -> rusqlite::Result<Line> {
-        Ok(Line {
-            id: r.get(0)?,
-            name: r.get(1)?,
-            owner: r.get::<_, i64>(2)? as u32,
-            machine: r.get(3)?,
-            head: r.get(4)?,
-            group: r.get(5)?,
-        })
+        Ok(Line { id: r.get(0)?, name: r.get(1)?, owner: r.get::<_, i64>(2)? as u32, machine: r.get(3)?, head: r.get(4)? })
     }
 
     pub fn line_by_name(&self, name: &str) -> Result<Option<Line>> {
         Ok(self
             .conn
             .query_row(
-                "SELECT id, name, owner, machine, head, grp FROM lines WHERE name=?1 AND deleted=0 ORDER BY time DESC LIMIT 1",
+                "SELECT id, name, owner, machine, head FROM lines WHERE name=?1 AND deleted=0 ORDER BY time DESC LIMIT 1",
                 params![name],
                 Self::line_row,
             )
@@ -407,12 +472,12 @@ impl Db {
     pub fn line_by_id(&self, id: &str) -> Result<Option<Line>> {
         Ok(self
             .conn
-            .query_row("SELECT id, name, owner, machine, head, grp FROM lines WHERE id=?1", params![id], Self::line_row)
+            .query_row("SELECT id, name, owner, machine, head FROM lines WHERE id=?1", params![id], Self::line_row)
             .optional()?)
     }
 
     pub fn lines(&self) -> Result<Vec<Line>> {
-        let mut st = self.conn.prepare("SELECT id, name, owner, machine, head, grp FROM lines WHERE deleted=0 ORDER BY name")?;
+        let mut st = self.conn.prepare("SELECT id, name, owner, machine, head FROM lines WHERE deleted=0 ORDER BY name")?;
         let v = st.query_map([], Self::line_row)?.collect::<Result<Vec<_>, _>>()?;
         Ok(v)
     }
@@ -483,34 +548,6 @@ impl Db {
         Ok(v)
     }
 
-    pub fn group(&self, name: &str) -> Result<Option<(i64, String, Option<String>)>> {
-        Ok(self
-            .conn
-            .query_row("SELECT epoch, base, accepted FROM groups WHERE name=?1", params![name], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-            })
-            .optional()?)
-    }
-
-    pub fn group_line_epoch(&self, grp: &str, line: &str) -> Result<Option<i64>> {
-        Ok(self
-            .conn
-            .query_row("SELECT epoch FROM group_lines WHERE grp=?1 AND line=?2", params![grp, line], |r| r.get(0))
-            .optional()?)
-    }
-
-    pub fn groups(&self) -> Result<Vec<(String, i64, String, Option<String>)>> {
-        let mut st = self.conn.prepare("SELECT name, epoch, base, accepted FROM groups ORDER BY name")?;
-        let v = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<Result<Vec<_>, _>>()?;
-        Ok(v)
-    }
-
-    pub fn group_lines(&self, grp: &str) -> Result<Vec<(String, i64)>> {
-        let mut st = self.conn.prepare("SELECT line, epoch FROM group_lines WHERE grp=?1")?;
-        let v = st.query_map(params![grp], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<Vec<_>, _>>()?;
-        Ok(v)
-    }
-
     pub fn config(&self, key: &str) -> Result<Option<serde_json::Value>> {
         let v: Option<String> = self
             .conn
@@ -554,13 +591,6 @@ impl Db {
         Ok(v)
     }
 
-    pub fn slot(&self, path: &str) -> Result<Option<(String, Option<String>)>> {
-        Ok(self
-            .conn
-            .query_row("SELECT state, line FROM slots WHERE path=?1", params![path], |r| Ok((r.get(0)?, r.get(1)?)))
-            .optional()?)
-    }
-
     pub fn record(&self, id: &str) -> Result<Option<Record>> {
         let raw: Option<String> =
             self.conn.query_row("SELECT raw FROM records WHERE id=?1", params![id], |r| r.get(0)).optional()?;
@@ -599,7 +629,7 @@ impl Db {
     }
 }
 
-/// Every setting acts on one machine (lead, members, merge commands, remotes, retention,
+/// Every setting acts on one machine (admin, members, merge commands, remotes, retention,
 /// push policy, layers, backups): settings never come from another machine's records. Those
 /// values stay as `<key>@<machine>`; a restore takes over the values of the machine that wrote
 /// the backup.
@@ -618,4 +648,47 @@ pub fn kind_str(k: StateKind) -> &'static str {
 
 pub fn need<T>(v: Option<T>, what: &str) -> Result<T> {
     v.ok_or_else(|| anyhow!("{what} not found"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Author, StateKind, StateRec};
+
+    fn state_record(seq: u64, state: &str, parents: Vec<String>) -> Record {
+        let mut r = Record::new("commit");
+        r.id = format!("01a12290-0000-7000-8000-{:012}", seq);
+        r.machine = "01a12290-0000-7000-8000-00000000aaaa".into();
+        r.seq = seq;
+        r.time = seq as i64;
+        r.states.push(StateRec {
+            id: state.into(),
+            kind: StateKind::Commit,
+            parents,
+            line: None,
+            subvol: String::new(),
+            author: Author::default(),
+            message: String::new(),
+            time: 0,
+            running: false,
+            conflicts: vec![],
+            layers: Default::default(),
+            layer_by: None,
+            layer_shared: false,
+        });
+        r
+    }
+
+    #[test]
+    fn a_state_id_cannot_be_named_twice() {
+        let dir = std::env::temp_dir().join(format!("layr-db-test-{}", std::process::id()));
+        let db = Db::open(&dir).unwrap();
+        let st = "01a12290-0000-7000-8000-00000000bbbb";
+        let parent = "01a12290-0000-7000-8000-00000000cccc".to_string();
+        db.derive(&state_record(1, st, vec![parent.clone()]), &|_| true, "x").unwrap();
+        let other = "01a12290-0000-7000-8000-00000000dddd".to_string();
+        assert!(db.derive(&state_record(2, st, vec![other]), &|_| true, "x").is_err());
+        assert_eq!(db.state(st).unwrap().unwrap().parents, vec![parent]);
+        let _ = std::fs::remove_file(&dir);
+    }
 }

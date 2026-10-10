@@ -2,7 +2,7 @@
 name = "layr"
 version = "0.1.0"
 edition = "2021"
-description = "Local version control for agent workspaces on btrfs"
+description = "Local version control on btrfs"
 license = "MIT"
 publish = false
 

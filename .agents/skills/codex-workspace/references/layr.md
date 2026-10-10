@@ -11,12 +11,14 @@ Use `layr status`, `layr diff`, `layr log`, and `layr show` to inspect the work.
 Use `layr add` and `layr commit` to save the task result.
 Submit the full state ID from `layr rev-parse HEAD` as the task revision.
 Use Git only for the remote bridge and tools that call Git themselves.
-Use `layr push` to export one task commit to the remote when authorized.
+Use `layr push --squash -m <task title>` to export one task commit to the remote when authorized.
 
-The lead owns the main line.
+The lead owns the main line and may commit in it.
 Each worker has its own line and Linux user.
+Only the owner of a line changes it.
 Reviewers have read-only lines.
-Studio saves a state with `layr save --turn-end` after every agent turn.
+Studio saves a state after every agent turn.
+`layr access check <user> <action>` explains a refused command.
 Inspect the exact submitted state before accepting the result.
 Acceptance calls `layr merge <line> --expect <reviewed state>`.
 A changed line rejects acceptance.

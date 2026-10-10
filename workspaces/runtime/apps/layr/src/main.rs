@@ -1,10 +1,11 @@
-//! layr: local version control for agent workspaces on btrfs.
+//! layr: local version control on btrfs.
 
 // Unsafe code is allowed only in `sys` (system calls without safe wrappers).
 #![deny(unsafe_code)]
 
 #[macro_use]
 mod ctx;
+mod access;
 mod args;
 mod btrfs;
 mod changes;
@@ -19,6 +20,7 @@ mod merge;
 mod model;
 mod oplog;
 mod privs;
+mod recv;
 mod repo;
 mod revs;
 mod service;
@@ -26,6 +28,7 @@ mod store;
 mod stream;
 #[allow(unsafe_code)]
 mod sys;
+mod trace;
 mod tree;
 
 use std::collections::HashMap;

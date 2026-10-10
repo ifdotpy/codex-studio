@@ -1,7 +1,7 @@
 # macOS commands from VM agents
 
-`host_exec` runs one command in a Mac slot. It returns source changes through
-`layr slot collect`. The tool is available to agents whose chat uses VM mode.
+`host_exec` runs one command in a Mac slot and returns its source changes to the
+agent's layr line. The tool is available to agents whose chat uses VM mode.
 
 Use these environment variables for output outside the source folder:
 
@@ -55,12 +55,17 @@ in the order of their last use. Active slots retain their leases. A command that
 exceeds the budget stops. Each slot has a source folder, DerivedData, and package
 folders at stable paths.
 
-Each guest slot has a private folder for its line owner. `layr slot sync` captures
-current line content. Content hashes select the files to transfer. File data uses
-512 KiB chunks. The Mac checks the complete manifest before the command starts.
+Each guest slot has a private folder for its line owner. The guest saves the line
+(`layr save`) and writes that state into the folder with `layr export --all`,
+incrementally after the first time; the folder holds that state. Content hashes
+select the files to transfer. File data uses 512 KiB chunks. The Mac checks the
+complete manifest before the command starts.
 
 The Mac compares source content after the command. It sends changed files back
-to the guest slot. `layr slot collect` merges those files into the current line.
+to the guest slot. The guest merges each changed path into the current line
+against the held state (`host_exec_slot_io.py`): a path only the Mac changed is
+copied, text that both sides changed gets conflict markers, and other files keep
+the line version with the Mac version next to it as `<path>.slot-conflict`.
 Executable modes and symbolic links are preserved. Hard links become copies.
 Linux extended attributes are not copied.
 
@@ -80,7 +85,7 @@ Run checks one at a time:
 
 ```sh
 python3 -B tests/host-exec-contract.py
-python3 -B vm/guest/test_service.py
+python3 -B workspaces/runtime/apps/vm-guest/test_service.py
 npm run typecheck:runtime
 xcrun swiftc -typecheck -target arm64-apple-macos13.0 -framework Virtualization desktop/native/linux-vm/main.swift
 ```

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import grp
 import hashlib
 import json
 import os
@@ -22,13 +23,28 @@ METHODS = READ_METHODS | {"line.bind", "line.branch", "line.save", "line.merge",
                           "layr.provider.start", "layr.provider.stop", "layr.credentials.sync", "layr.exec"}
 
 
+# Every agent user is in this group: the project's layr deny rules for it keep agents away
+# from roles, replication, remotes, records and backups whatever role an agent gets.
+AGENTS_GROUP = "studio-agents"
+
+
+def ensure_agents_group():
+    try:
+        grp.getgrnam(AGENTS_GROUP)
+    except KeyError:
+        subprocess.run(["/usr/sbin/groupadd", "--system", AGENTS_GROUP], check=True, capture_output=True, timeout=30)
+
+
 def _user(name):
+    ensure_agents_group()
     try:
         user = pwd.getpwnam(name)
     except KeyError:
-        subprocess.run(["/usr/sbin/useradd", "--create-home", "--user-group", "--shell", "/bin/bash", name],
-                       check=True, capture_output=True, timeout=30)
+        subprocess.run(["/usr/sbin/useradd", "--create-home", "--user-group", "--groups", AGENTS_GROUP,
+                        "--shell", "/bin/bash", name], check=True, capture_output=True, timeout=30)
         user = pwd.getpwnam(name)
+    if name not in grp.getgrnam(AGENTS_GROUP).gr_mem:
+        subprocess.run(["/usr/sbin/usermod", "-aG", AGENTS_GROUP, name], check=True, capture_output=True, timeout=30)
     require(user.pw_uid != 0 and user.pw_dir == "/home/" + name,
             "The agent user identity differs from its fixed home")
     home = Path(user.pw_dir)
@@ -79,6 +95,9 @@ class AgentHandlers:
                        "LAYR_ROOT": str(self.layr_root), "HOME": "/root"}
         if user:
             environment.update(HOME=user["home"], USER=user["owner"], LOGNAME=user["owner"])
+            if user.get("agentId"):
+                # The agent's operations carry its ID (layr op log, and undo finds "my last").
+                environment["LAYR_SESSION"] = user["agentId"]
             command = ["/usr/sbin/runuser", "-u", user["owner"], "--", *command]
         environment.update(env or {})
         # The helper owns the deadline and output bound after a broker failure.
@@ -199,7 +218,10 @@ class AgentHandlers:
             return {"projectId": context["projectId"], "line": context["line"], "stateId": state}
         if method == "line.save":
             turn = identifier(params.get("turnId"))
-            await self.layr(context, "save", "--turn-end", "--force", "-m", "Studio turn " + turn, root=context["readOnly"])
+            # The end of a turn is a quiet point: layer folders that a build tool made again
+            # become layers, then the line's content is saved.
+            await self.layr(context, "layer", "repair", root=context["readOnly"])
+            await self.layr(context, "save", "--force", "-m", "Studio turn " + turn, root=context["readOnly"])
             state = await self.layr(context, "rev-parse", "HEAD@{0}", root=True)
             return {"stateId": state, "turnId": turn}
         if method == "line.merge":
@@ -269,7 +291,8 @@ class AgentHandlers:
             launch = {"argv": ["/usr/sbin/runuser", "-u", context["owner"], "--", *argv],
                       "cwd": context["cwd"], "env": {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8",
                       "HOME": str(home), "USER": context["owner"], "LOGNAME": context["owner"],
-                      "LAYR_ROOT": str(self.layr_root), **env}, "agentId": context["agentId"]}
+                      "LAYR_ROOT": str(self.layr_root), "LAYR_SESSION": context["agentId"], **env},
+                      "agentId": context["agentId"]}
             context["providerHandle"] = handle
             atomic_json(self.record_path(context["agentId"]), {k: v for k, v in context.items() if k not in {"cwd", "path"}})
             directory = self.state / "providers" / uuid.uuid5(uuid.NAMESPACE_URL, handle).hex
@@ -290,7 +313,8 @@ class AgentHandlers:
             config = {"argv": ["/usr/sbin/runuser", "-u", context["owner"], "--", *args],
                       "cwd": str(cwd), "env": {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": context["home"],
                       "USER": context["owner"], "LOGNAME": context["owner"], "LANG": "C.UTF-8",
-                      "LAYR_ROOT": str(self.layr_root)}, "agentId": context["agentId"],
+                      "LAYR_ROOT": str(self.layr_root), "LAYR_SESSION": context["agentId"]},
+                      "agentId": context["agentId"],
                       "stdin": params.get("stdin", ""), "timeoutSeconds": 300,
                       "outputLimitBytes": 512 * 1024}
             require(not (directory / "association.json").exists(), "The command already has an uncertain launch")

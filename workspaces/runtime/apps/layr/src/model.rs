@@ -9,9 +9,10 @@ pub struct Author {
     pub email: String,
     #[serde(default)]
     pub uid: u32,
-    /// Agent label, for example "codex worker 3".
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<String>,
+    /// The label of the session that made it (a terminal, a CI job, a tool), from
+    /// `LAYR_SESSION`. Free text: layr shows it and never decides anything from it.
+    #[serde(default, alias = "agent", skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -53,8 +54,6 @@ pub struct StateRec {
     #[serde(default)]
     pub message: String,
     pub time: i64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turn: Option<String>,
     /// Taken while processes ran in the line: crash-consistent only.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub running: bool,
@@ -63,6 +62,14 @@ pub struct StateRec {
     /// Snapshots of regenerable layers: layer path to snapshot name in `states/`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub layers: BTreeMap<String, String>,
+    /// The user who made the layer snapshots (a uid of the state's machine).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer_by: Option<u32>,
+    /// The layers may go to lines of other users: they were made on a protected line (by its
+    /// checks or a save there). Other layers go only to lines of the user who made them, because
+    /// a layer holds code that review does not see.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub layer_shared: bool,
 }
 
 /// The pointers of a line at one time.
@@ -72,8 +79,6 @@ pub struct LineState {
     pub head: String,
     pub owner: u32,
     pub machine: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub group: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -92,8 +97,9 @@ pub struct LineChange {
 pub struct Actor {
     pub uid: u32,
     pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<String>,
+    /// See `Author::session`.
+    #[serde(default, alias = "agent", skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,7 +129,7 @@ impl Record {
             time: 0,
             op: op.to_string(),
             project: String::new(),
-            actor: Actor { uid: 0, name: String::new(), agent: None },
+            actor: Actor { uid: 0, name: String::new(), session: None },
             states: Vec::new(),
             lines: BTreeMap::new(),
             data: serde_json::Value::Null,
@@ -138,7 +144,6 @@ pub struct Line {
     pub head: String,
     pub owner: u32,
     pub machine: String,
-    pub group: Option<String>,
 }
 
 // ----- checks of records that come from other machines -----
@@ -155,14 +160,20 @@ pub fn is_name(s: &str) -> bool {
 pub fn is_layer_name(s: &str, state: &str) -> bool {
     match s.split_once('@') {
         Some((id, p)) => {
-            id == state && !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || "._-%".contains(c)) && !p.starts_with('.')
+            id == state
+                && !p.is_empty()
+                && p.chars().all(|c| c.is_ascii_alphanumeric() || "._-%".contains(c))
+                && !p.starts_with('.')
         }
         None => false,
     }
 }
 
 fn is_ref(s: &str) -> bool {
-    !s.is_empty() && !s.contains("..") && !s.starts_with('/') && s.chars().all(|c| c.is_ascii_alphanumeric() || "._/-".contains(c))
+    !s.is_empty()
+        && !s.contains("..")
+        && !s.starts_with('/')
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || "._/-".contains(c))
 }
 
 /// Every id, name and path in a record is checked before the record is stored: ids are
@@ -210,11 +221,6 @@ pub fn validate(r: &Record) -> anyhow::Result<()> {
             }
             uuid("head", &st.head)?;
             uuid("line machine", &st.machine)?;
-            if let Some(g) = &st.group {
-                if !is_name(g) {
-                    bail!("record {}: bad group name {g:?}", r.seq);
-                }
-            }
         }
         for x in [&ch.working_before, &ch.working_after].into_iter().flatten() {
             uuid("working state", x)?;
@@ -256,6 +262,14 @@ pub fn validate(r: &Record) -> anyhow::Result<()> {
             }
         }
     }
+    if let (Some(st), Some(u)) = (d.get("state").and_then(|v| v.as_str()), d.get("uuids").and_then(|v| v.as_object())) {
+        for (snap, id) in u {
+            if !is_layer_name(snap, st) {
+                bail!("record {}: bad layer name", r.seq);
+            }
+            uuid("layer subvolume", id.as_str().unwrap_or(""))?;
+        }
+    }
     if let Some(c) = d.get("config").and_then(|v| v.as_object()) {
         for k in c.keys() {
             if !k.chars().all(|ch| ch.is_ascii_alphanumeric() || "._-@*".contains(ch)) {
@@ -288,11 +302,19 @@ mod tests {
             author: Author::default(),
             message: String::new(),
             time: 0,
-            turn: None,
             running: false,
             conflicts: vec![],
             layers: BTreeMap::new(),
+            layer_by: None,
+            layer_shared: false,
         }
+    }
+
+    #[test]
+    fn reads_the_session_label_of_older_records() {
+        let a: Actor = serde_json::from_str(r#"{"uid":1,"name":"u","agent":"old label"}"#).unwrap();
+        assert_eq!(a.session.as_deref(), Some("old label"));
+        assert!(serde_json::to_string(&a).unwrap().contains(r#""session":"old label""#));
     }
 
     #[test]
@@ -322,7 +344,6 @@ mod tests {
                     head: "01a12290-0000-7000-8000-000000000003".into(),
                     owner: 0,
                     machine: "01a12290-0000-7000-8000-000000000002".into(),
-                    group: None,
                 }),
                 working_before: None,
                 working_after: None,

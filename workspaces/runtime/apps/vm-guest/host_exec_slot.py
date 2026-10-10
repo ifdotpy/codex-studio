@@ -1,4 +1,10 @@
-"""Root broker slot adapter. layr owns state capture and source collection."""
+"""Root broker slot adapter.
+
+A slot is a folder of the agent that holds one layr state of its line: `layr save` captures the
+line, `layr export --all` writes the state into the folder (incrementally after the first time),
+and the collect step brings the paths that the Mac command changed back into the line with a
+three-way merge against that held state (host_exec_slot_io.py, as the agent).
+"""
 from __future__ import annotations
 
 import asyncio
@@ -7,11 +13,11 @@ import os
 from pathlib import Path
 import signal
 import sys
-import tempfile
 from typing import Any
 
 from host_exec_protocol import HostExecError, atomic, conflicts, inside, key, require
 
+EXPORT_MARKER = ".layr-export.json"
 METHODS = {"host.slot.prepare", "host.slot.manifest", "host.slot.read", "host.slot.apply", "host.slot.collect", "host.slot.forget", "host.slot.artifact"}
 READ_METHODS = {"host.slot.manifest", "host.slot.read"}
 
@@ -22,9 +28,13 @@ class HostSlotHandlers:
         self.root = layr_root.parent / "host-slots"
         self.root.mkdir(exist_ok=True, mode=0o711)
 
-    async def layr(self, context: dict[str, Any], args: list[str]) -> str:
-        environment = {**os.environ, "LAYR_ROOT": str(self.layr_root), "LAYR_PROJECT": context["projectId"],
-                       "LAYR_LINE": context["line"], "HOME": context["home"]}
+    def layr_env(self, context: dict[str, Any]) -> dict[str, str]:
+        return {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8", "LAYR_ROOT": str(self.layr_root),
+                "LAYR_PROJECT": context["projectId"], "LAYR_LINE": context["line"], "HOME": context["home"],
+                "LAYR_SESSION": context["agentId"]}
+
+    async def layr(self, context: dict[str, Any], args: list[str], ok: tuple[int, ...] = (0,)) -> str:
+        environment = self.layr_env(context)
         child = await asyncio.create_subprocess_exec("layr", *args, cwd=context["cwd"], env=environment,
             user=context["uid"], group=context["gid"], extra_groups=[], start_new_session=True,
             stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
@@ -35,8 +45,7 @@ class HostSlotHandlers:
             await child.wait()
             raise HostExecError("outcome_unknown", "The layr slot operation exceeded its deadline") from exc
         output = stdout.decode(errors="replace")
-        merge_conflict = args[1] == "collect" and child.returncode == 1 and "conflicts (the line also changed these paths):" in output
-        require(child.returncode == 0 or merge_conflict, "layr slot failed: " + (stderr.decode(errors="replace") + output)[-2000:], "layr_failed")
+        require(child.returncode in ok, "layr " + args[0] + " failed: " + (stderr.decode(errors="replace") + output)[-2000:], "layr_failed")
         return output
 
     async def io(self, context: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
@@ -72,28 +81,40 @@ class HostSlotHandlers:
         operation = params.get("operationId")
         require(isinstance(operation, str) and 0 < len(operation) <= 128, "Invalid slot operation ID")
         lease = parent / "lease.json"
+        # The layr state the slot folder holds (root-owned, next to the agent's folder).
+        held = parent / "held.json"
         if method == "host.slot.prepare":
             if lease.exists():
                 require(json.loads(lease.read_text())["operationId"] == operation,
                         "Another command retains the guest slot lease", "busy")
             atomic(lease, {"operationId": operation})
-            output = await self.layr(context, ["slot", "sync", str(source), "--force"])
+            await self.layr(context, ["save", "-q", "--force", "-m", "host_exec slot " + params["slotId"]])
+            state = (await self.layr(context, ["rev-parse", "HEAD@{0}"])).strip()
+            require(len(state) >= 7 and all(c in "0123456789abcdef" for c in state), "layr gave no state ID", "layr_failed")
+            if not held.exists():
+                # An unknown folder content: start from an empty folder, then a full copy.
+                await self.io(context, {"action": "clear", "root": str(source)})
+            # Exit code 1: names that differ only in case or Unicode form were not written.
+            output = await self.layr(context, ["export", state, str(source), "--all", "--force"], ok=(0, 1))
             bad: list[str] = []
-            marker = "not copied (names differ only in case or Unicode form):"
+            marker = "they cannot coexist on APFS):"
             if marker in output:
                 bad = [line.strip() for line in output.split(marker, 1)[1].splitlines() if line.strip()]
+            atomic(held, {"state": state})
             return {"path": str(source), "nameConflicts": bad, "syncOutput": output,
-                    "status": await self.layr(context, ["slot", "status", str(source)])}
+                    "status": "slot holds state " + state}
         require(lease.exists() and json.loads(lease.read_text())["operationId"] == operation,
                 "The command does not own its guest slot", "lease_lost")
         if method == "host.slot.forget":
-            output = await self.layr(context, ["slot", "forget", str(source)])
+            held.unlink(missing_ok=True)
+            await self.io(context, {"action": "delete", "root": str(source), "path": EXPORT_MARKER})
             lease.unlink()
-            return {"output": output}
+            return {"output": "slot forgotten"}
         if method == "host.slot.manifest":
             manifest_path = parent / (key(operation) + ".manifest.json")
             if not params.get("after"):
                 entries = (await self.io(context, {"action": "manifest", "root": str(source)}))["entries"]
+                entries.pop(EXPORT_MARKER, None)
                 atomic(manifest_path, entries)
             entries = json.loads(manifest_path.read_text())
             after = params.get("after", "")
@@ -127,19 +148,14 @@ class HostSlotHandlers:
                 return {"output": "", "paths": len(all_paths), "conflicts": []}
             entries = (await self.io(context, {"action": "manifest", "root": str(source)}))["entries"]
             require(not conflicts(list(entries)), "The guest slot names conflict", "name_conflict")
-            # One layr collect preserves the complete stale path set for the next sync.
-            fd, filename = tempfile.mkstemp(dir=parent, prefix="collect-")
-            try:
-                with os.fdopen(fd, "w") as stream:
-                    stream.write("".join(path + "\n" for path in all_paths))
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.chmod(filename, 0o444)
-                output = await self.layr(context, ["slot", "collect", str(source), "--paths-from", filename])
-            finally:
-                Path(filename).unlink(missing_ok=True)
-            marker = "conflicts (the line also changed these paths):"
-            merge_conflicts = [line.strip() for line in output.split(marker, 1)[1].splitlines() if line.strip()] if marker in output else []
+            require(held.exists(), "The slot holds no known state", "lease_lost")
+            report = await self.io(context, {"action": "collect", "root": str(source), "line": context["path"],
+                                             "held": json.loads(held.read_text())["state"], "paths": all_paths,
+                                             "env": self.layr_env(context)})
+            output = "collected %d path(s) into line %s\n" % (len(report["copied"]), context["line"])
+            if report["conflicts"]:
+                output += "conflicts (the line also changed these paths):\n" + "".join(
+                    "\t" + line + "\n" for line in report["conflicts"])
             lease.unlink()
-            return {"output": output, "conflicts": merge_conflicts}
+            return {"output": output, "conflicts": report["conflicts"]}
         raise HostExecError("invalid_params", "Unknown host slot method")

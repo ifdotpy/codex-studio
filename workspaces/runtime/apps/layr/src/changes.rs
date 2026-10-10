@@ -203,7 +203,10 @@ pub fn without_moves(v: Vec<Change>) -> Vec<Change> {
 /// Pair deleted and added files as moves when the content is equal, then (for small lists)
 /// when at least half of the lines are equal, as git's rename detection does.
 pub fn with_renames(parent: &Path, child: &Path, v: Vec<Change>) -> Vec<Change> {
-    let is_file = |m: &Option<Meta>| m.as_ref().map(|x| x.ftype == crate::fsutil::FType::File).unwrap_or(false);
+    // Files larger than MAX_TEXT are not compared by content.
+    let is_file = |m: &Option<Meta>| {
+        m.as_ref().map(|x| x.ftype == crate::fsutil::FType::File && x.size <= crate::fsutil::MAX_TEXT).unwrap_or(false)
+    };
     let dels: Vec<usize> = v
         .iter()
         .enumerate()
@@ -214,7 +217,7 @@ pub fn with_renames(parent: &Path, child: &Path, v: Vec<Change>) -> Vec<Change> 
     if dels.is_empty() || adds.is_empty() {
         return v;
     }
-    let read = |r: &Path, p: &str| crate::fsutil::read_file(r, p).unwrap_or_default();
+    let read = |r: &Path, p: &str| crate::fsutil::read_file(r, p).ok();
     let mut pairs: Vec<(usize, usize)> = Vec::new();
     let mut used_d: HashSet<usize> = HashSet::new();
     let mut used_a: HashSet<usize> = HashSet::new();
@@ -226,9 +229,12 @@ pub fn with_renames(parent: &Path, child: &Path, v: Vec<Change>) -> Vec<Change> 
     for &a in &adds {
         let size = v[a].new.as_ref().unwrap().size;
         if let Some(ds) = by_size.get(&size) {
-            let ad = read(child, &v[a].path);
+            let ad = match read(child, &v[a].path) {
+                Some(x) => x,
+                None => continue,
+            };
             for &d in ds {
-                if !used_d.contains(&d) && read(parent, &v[d].path) == ad {
+                if !used_d.contains(&d) && read(parent, &v[d].path).as_ref() == Some(&ad) {
                     pairs.push((d, a));
                     used_d.insert(d);
                     used_a.insert(a);
@@ -243,15 +249,15 @@ pub fn with_renames(parent: &Path, child: &Path, v: Vec<Change>) -> Vec<Change> 
     if !rd.is_empty() && !ra.is_empty() && rd.len() * ra.len() <= 400 {
         let mut scored: Vec<(f32, usize, usize)> = Vec::new();
         for &d in &rd {
-            let dd = read(parent, &v[d].path);
-            if crate::fsutil::is_binary(&dd) {
-                continue;
-            }
+            let dd = match read(parent, &v[d].path) {
+                Some(x) if !crate::fsutil::is_binary(&x) => x,
+                _ => continue,
+            };
             for &a in &ra {
-                let ad = read(child, &v[a].path);
-                if crate::fsutil::is_binary(&ad) {
-                    continue;
-                }
+                let ad = match read(child, &v[a].path) {
+                    Some(x) if !crate::fsutil::is_binary(&x) => x,
+                    _ => continue,
+                };
                 let (x, y) = (split(&dd), split(&ad));
                 let ops = similar::capture_diff_slices(similar::Algorithm::Myers, &x, &y);
                 let r = similar::get_diff_ratio(&ops, x.len(), y.len());

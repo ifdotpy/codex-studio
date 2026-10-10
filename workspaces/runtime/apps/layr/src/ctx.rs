@@ -25,6 +25,11 @@ impl Caller {
     pub fn is_root(&self) -> bool {
         self.uid == 0
     }
+    /// The identity that configured commands (merge drivers and checks) run as for this
+    /// caller: the caller itself, never another user. None for root.
+    pub fn driver_ids(&self) -> Option<(u32, u32)> {
+        (!self.is_root()).then_some((self.uid, self.gid))
+    }
 }
 
 pub struct Ctx {
@@ -50,7 +55,7 @@ impl Ctx {
     }
 
     pub fn actor(&self) -> Actor {
-        Actor { uid: self.caller.uid, name: self.caller.user.clone(), agent: self.env("LAYR_AGENT").map(|s| s.to_string()) }
+        Actor { uid: self.caller.uid, name: self.caller.user.clone(), session: self.session() }
     }
 
     fn git_config(&self, key: &str) -> Option<String> {
@@ -80,11 +85,12 @@ impl Ctx {
             .map(|s| s.to_string())
             .or_else(|| self.git_config("user.email"))
             .unwrap_or_else(|| format!("{}@{}", self.caller.user, self.store.machine.name));
-        Author { name, email, uid: self.caller.uid, agent: self.env("LAYR_AGENT").map(|s| s.to_string()) }
+        Author { name, email, uid: self.caller.uid, session: self.session() }
     }
 
-    pub fn turn(&self) -> Option<String> {
-        self.env("LAYR_TURN").map(|s| s.to_string())
+    /// The session label (`LAYR_SESSION`), see `Author::session`.
+    pub fn session(&self) -> Option<String> {
+        self.env("LAYR_SESSION").map(|s| s.to_string())
     }
 
     /// Find the project and line from `LAYR_PROJECT`/`LAYR_LINE` or from the working folder.

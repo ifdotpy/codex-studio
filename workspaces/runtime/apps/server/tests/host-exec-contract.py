@@ -38,24 +38,13 @@ class Agents:
 
 
 class Slots(HostSlotHandlers):
+    # Contract fixture for the external layr binary and the line merge. Live proof uses real
+    # layr; the three-way collect of host_exec_slot_io has its own test below.
     async def io(self, context, params):
-        from host_exec_slot_io import run
-        return run(params)
-
-    # Contract fixture for the external layr binary. Live proof uses real layr.
-    async def layr(self, context, args):
-        source = Path(args[2])
-        line = Path(context["path"])
-        if args[1] == "sync":
-            shutil.rmtree(source)
-            shutil.copytree(line, source, symlinks=True)
-            if self.bad_names:
-                return "not copied (names differ only in case or Unicode form):\n\tReadme\n\tREADME\n"
-            return "slot holds state fixture"
-        if args[1] == "collect":
-            paths = Path(args[4]).read_text().splitlines() if args[3:4] == ["--paths-from"] else args[3:]
-            self.collect_batches.append(paths)
-            for relative in paths:
+        if params["action"] == "collect":
+            self.collect_batches.append(params["paths"])
+            source, line = Path(params["root"]), Path(params["line"])
+            for relative in params["paths"]:
                 src, dst = source / relative, line / relative
                 if dst.is_symlink() or dst.is_file():
                     dst.unlink()
@@ -67,8 +56,23 @@ class Slots(HostSlotHandlers):
                 elif src.is_file():
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src, dst)
-            return "collected fixture paths"
-        return "slot fixture"
+            return {"copied": list(params["paths"]), "conflicts": list(self.collect_conflicts)}
+        from host_exec_slot_io import run
+        return run(params)
+
+    async def layr(self, context, args, ok=(0,)):
+        if args[0] == "rev-parse":
+            return "0123456789abcdef0123456789abcdef"
+        if args[0] == "export":
+            source, line = Path(args[2]), Path(context["path"])
+            shutil.rmtree(source)
+            shutil.copytree(line, source, symlinks=True)
+            (source / ".layr-export.json").write_text('{"state": "%s"}' % args[1])
+            if self.bad_names:
+                return ("exported state fixture\nnot written (names differ only in case or Unicode form; "
+                        "they cannot coexist on APFS):\n\tReadme\n\tREADME\n")
+            return "exported state fixture"
+        return ""
 
 
 class Contract(unittest.IsolatedAsyncioTestCase):
@@ -91,6 +95,7 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         self.slots = Slots(self.state, layr, Agents(context))
         self.slots.bad_names = False
         self.slots.collect_batches = []
+        self.slots.collect_conflicts = []
         async def host_context(agent):
             return await self.slots.agents.dispatch("context", "agent.context", {"agentId": agent})
         self.guest = HostExec(SimpleNamespace(state=self.state, host_context=host_context))
@@ -267,30 +272,30 @@ class Contract(unittest.IsolatedAsyncioTestCase):
                 await HostExec.broker(self.guest, "host.slot.forget", {"operationId": "lost"}, "forget")
         self.assertEqual(caught.exception.code, "lease_lost")
 
-    async def test_layr_merge_conflict_report_survives_code_one(self):
-        marker = "conflicts (the line also changed these paths):\n\tmain.swift (content: markers written)\n"
-        child = SimpleNamespace(returncode=1, communicate=AsyncMock(return_value=(marker.encode(), b"")))
+    async def test_layr_runs_as_the_line_owner_and_accepts_listed_codes(self):
+        names = "not written (names differ only in case or Unicode form; they cannot coexist on APFS):\n\tA\n\ta\n"
+        child = SimpleNamespace(returncode=1, communicate=AsyncMock(return_value=(names.encode(), b"")))
         with patch("host_exec_slot.asyncio.create_subprocess_exec", return_value=child) as launch:
             report = await HostSlotHandlers.layr(self.slots, self.slots.agents.context,
-                ["slot", "collect", str(self.line)])
-        self.assertEqual(report, marker)
+                ["export", "abc", str(self.line), "--all", "--force"], ok=(0, 1))
+        self.assertEqual(report, names)
         self.assertEqual(launch.call_args.kwargs["user"], os.getuid())
         self.assertEqual(launch.call_args.kwargs["group"], os.getgid())
+        self.assertEqual(launch.call_args.kwargs["env"]["LAYR_SESSION"], "agent")
         child.communicate = AsyncMock(return_value=(b"other failure", b"error"))
         with patch("host_exec_slot.asyncio.create_subprocess_exec", return_value=child):
             with self.assertRaises(HostExecError) as caught:
-                await HostSlotHandlers.layr(self.slots, self.slots.agents.context,
-                    ["slot", "collect", str(self.line)])
+                await HostSlotHandlers.layr(self.slots, self.slots.agents.context, ["save", "-q"])
         self.assertEqual(caught.exception.code, "layr_failed")
 
+    async def test_the_export_marker_does_not_reach_the_mac(self):
+        result = await self.execute("marker", 'print("ok")')
+        self.assertTrue(result["collected"])
+        slots = list((self.state / "host-slots").rglob(".layr-export.json"))
+        self.assertEqual(slots, [])
+
     async def test_guest_result_reports_collection_conflicts(self):
-        original = self.slots.layr
-        async def conflict(context, args):
-            output = await original(context, args)
-            if args[1] == "collect":
-                output += "\nconflicts (the line also changed these paths):\n\tmain.swift (content: markers written)\n"
-            return output
-        self.slots.layr = conflict
+        self.slots.collect_conflicts = ["main.swift (content: markers written)"]
         result = await self.execute("merge-conflict", 'import pathlib;pathlib.Path("main.swift").write_text("host edit")')
         self.assertEqual(result["state"], "conflicted")
         self.assertTrue(result["collected"])

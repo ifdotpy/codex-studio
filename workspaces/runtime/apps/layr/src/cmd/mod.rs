@@ -99,46 +99,66 @@ pub fn relative_to(sub: &str, p: &str) -> String {
 }
 
 /// A simple glob: `*` and `?` (both match `/` too, as in git pathspecs) and `[...]`.
+/// Iterative, with one backtrack point (the last `*`): time O(pattern * text), no recursion.
 pub fn glob(pat: &str, s: &str) -> bool {
-    fn m(p: &[u8], s: &[u8]) -> bool {
-        if p.is_empty() {
-            return s.is_empty();
-        }
-        match p[0] {
-            b'*' => (0..=s.len()).any(|i| m(&p[1..], &s[i..])),
-            b'?' => !s.is_empty() && m(&p[1..], &s[1..]),
-            b'[' => {
-                if s.is_empty() {
-                    return false;
-                }
-                if let Some(end) = p.iter().position(|c| *c == b']') {
-                    let set = &p[1..end];
+    let (p, s) = (pat.as_bytes(), s.as_bytes());
+    // One pattern item at p[i] against byte c: Some(length of the item) if it matches.
+    let item = |i: usize, c: u8| -> Option<usize> {
+        match p[i] {
+            b'?' => Some(1),
+            b'[' => match p[i + 1..].iter().position(|x| *x == b']') {
+                Some(off) => {
+                    let end = i + 1 + off;
+                    let set = &p[i + 1..end];
                     let (neg, set) =
                         if set.first() == Some(&b'!') || set.first() == Some(&b'^') { (true, &set[1..]) } else { (false, set) };
                     let mut hit = false;
-                    let mut i = 0;
-                    while i < set.len() {
-                        if i + 2 < set.len() && set[i + 1] == b'-' {
-                            if s[0] >= set[i] && s[0] <= set[i + 2] {
-                                hit = true;
-                            }
-                            i += 3;
+                    let mut k = 0;
+                    while k < set.len() {
+                        if k + 2 < set.len() && set[k + 1] == b'-' {
+                            hit |= c >= set[k] && c <= set[k + 2];
+                            k += 3;
                         } else {
-                            if s[0] == set[i] {
-                                hit = true;
-                            }
-                            i += 1;
+                            hit |= c == set[k];
+                            k += 1;
                         }
                     }
-                    hit != neg && m(&p[end + 1..], &s[1..])
-                } else {
-                    s[0] == b'[' && m(&p[1..], &s[1..])
+                    (hit != neg).then_some(end + 1 - i)
                 }
+                None => (c == b'[').then_some(1),
+            },
+            x => (x == c).then_some(1),
+        }
+    };
+    let (mut i, mut j) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while j < s.len() {
+        if i < p.len() && p[i] == b'*' {
+            star = Some((i, j));
+            i += 1;
+            continue;
+        }
+        if i < p.len() {
+            if let Some(n) = item(i, s[j]) {
+                i += n;
+                j += 1;
+                continue;
             }
-            c => !s.is_empty() && s[0] == c && m(&p[1..], &s[1..]),
+        }
+        match star {
+            // Let the last `*` take one more byte and try again from there.
+            Some((si, sj)) => {
+                i = si + 1;
+                j = sj + 1;
+                star = Some((si, sj + 1));
+            }
+            None => return false,
         }
     }
-    m(pat.as_bytes(), s.as_bytes())
+    while i < p.len() && p[i] == b'*' {
+        i += 1;
+    }
+    i == p.len()
 }
 
 /// True if `path` matches one of the pathspecs (empty list matches everything).
@@ -159,11 +179,11 @@ Read history:
    log, show, blame, grep, ls-files, rev-parse, merge-base
 Lines and states:
    branch, switch, checkout, tag, merge, cherry-pick, revert, rebase
-   save, undo, op, try, checks, group, adopt
+   save, undo, op, try, checks, adopt
 Remote (git bridge):
    remote, fetch, pull, push, clone
 Projects and machines:
-   init, projects, config, layer, export, slot, backup, sync, serve-peer, gc, fsck, reindex, daemon
+   init, projects, config, layer, export, backup, sync, serve-peer, gc, fsck, reindex, daemon
 
 Lines are folders: <root>/projects/<project>/lines/<line>. Run commands inside a line folder.
 ";
@@ -213,11 +233,14 @@ pub fn run(ctx: &Ctx, argv: &[String]) -> Result<i32> {
         "cherry-pick" => mergecmd::cherry_pick(ctx, &rest),
         "revert" => mergecmd::revert(ctx, &rest),
         "rebase" => mergecmd::rebase(ctx, &rest),
-        "group" => mergecmd::group(ctx, &rest),
         "save" => admin::save(ctx, &rest),
         "undo" => admin::undo(ctx, &rest),
         "op" => admin::op(ctx, &rest),
         "try" => admin::try_cmd(ctx, &rest),
+        "access" => admin::access(ctx, &rest),
+        "protect" => admin::protect(ctx, &rest),
+        "approve" => admin::approve(ctx, &rest),
+        "approvals" => admin::approvals(ctx, &rest),
         "checks" => admin::checks(ctx, &rest),
         "gc" => admin::gc(ctx, &rest),
         "fsck" => admin::fsck(ctx, &rest),
@@ -234,7 +257,6 @@ pub fn run(ctx: &Ctx, argv: &[String]) -> Result<i32> {
         "push" => remote::push(ctx, &rest),
         "clone" => remote::clone(ctx, &rest),
         "export" => transfer::export(ctx, &rest),
-        "slot" => transfer::slot(ctx, &rest),
         "backup" => transfer::backup(ctx, &rest),
         "sync" => replicate::sync(ctx, &rest),
         "serve-peer" => replicate::serve(ctx, &rest),
@@ -242,5 +264,31 @@ pub fn run(ctx: &Ctx, argv: &[String]) -> Result<i32> {
             Err(exit(1, "layr has no worktrees: each line is a folder. Create one with 'layr branch <name> [<start>]'."))
         }
         other => Err(exit(1, format!("layr: '{other}' is not a layr command. See 'layr help'."))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::glob;
+
+    #[test]
+    fn glob_matches() {
+        assert!(glob("*.rs", "src/main.rs"));
+        assert!(glob("src/*", "src/a/b"));
+        assert!(glob("a?c", "abc"));
+        assert!(!glob("a?c", "ac"));
+        assert!(glob("[a-c]x", "bx"));
+        assert!(!glob("[!a-c]x", "bx"));
+        assert!(glob("*a*b*c", "xxaxxbxxc"));
+        assert!(!glob("*a*b*c", "xxaxxbxx"));
+        assert!(glob("[", "["));
+        assert!(glob("", ""));
+        assert!(!glob("", "a"));
+        assert!(glob("**", ""));
+        // A pattern that takes exponential time with naive recursion.
+        let text = "a".repeat(60);
+        let start = std::time::Instant::now();
+        assert!(!glob(&("*a".repeat(30) + "b"), &text));
+        assert!(start.elapsed().as_secs() < 1);
     }
 }

@@ -1,6 +1,6 @@
 //! File system helpers: metadata, content compare, reflink copies, walks and safe paths.
 //!
-//! Lines are writable by agents. Every write into a line checks that the parent folders of the
+//! Lines are writable by their owners. Every write into a line checks that the parent folders of the
 //! target are real folders inside the root, so a symbolic link in the line cannot redirect a write
 //! of the service (which runs as root) outside the line.
 
@@ -108,14 +108,62 @@ pub fn read_link(root: &Path, rel: &str) -> Result<String> {
     Ok(fs::read_link(&p).with_context(|| format!("readlink {}", p.display()))?.to_string_lossy().into_owned())
 }
 
-/// Read a regular file (not following links).
+/// Files larger than this are binary for diff, grep, blame, rename detection and merge: their
+/// content is never read into memory as a whole.
+pub const MAX_TEXT: u64 = 64 << 20;
+
+fn open_regular(p: &Path) -> Result<File> {
+    let f = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(p)
+        .with_context(|| format!("open {}", p.display()))?;
+    if !f.metadata()?.is_file() {
+        bail!("{} is not a regular file", p.display());
+    }
+    Ok(f)
+}
+
+/// Read a regular file (not following links) of at most `MAX_TEXT` bytes.
 pub fn read_file(root: &Path, rel: &str) -> Result<Vec<u8>> {
     let p = safe_join(root, rel)?;
-    let mut f =
-        OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(&p).with_context(|| format!("open {}", p.display()))?;
-    let mut v = Vec::new();
-    f.read_to_end(&mut v)?;
+    let f = open_regular(&p)?;
+    let len = f.metadata()?.len();
+    let mut v = Vec::with_capacity(len.min(MAX_TEXT) as usize);
+    f.take(MAX_TEXT + 1).read_to_end(&mut v)?;
+    if len > MAX_TEXT || v.len() as u64 > MAX_TEXT {
+        bail!("{} is larger than {} MiB", p.display(), MAX_TEXT >> 20);
+    }
     Ok(v)
+}
+
+/// Binary by the git rule (a NUL byte in the first 8000 bytes), or larger than `MAX_TEXT`.
+/// Reads at most 8000 bytes. Not a regular file: false.
+pub fn is_binary_file(root: &Path, rel: &str) -> bool {
+    let f = match safe_join(root, rel).and_then(|p| open_regular(&p)) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    if f.metadata().map(|m| m.len() > MAX_TEXT).unwrap_or(false) {
+        return true;
+    }
+    let mut v = Vec::new();
+    f.take(8000).read_to_end(&mut v).is_ok() && v.contains(&0)
+}
+
+/// Copy a regular file (not following links) into a new private file `dst`, in pieces.
+pub fn copy_regular(src: &Path, dst: &Path) -> Result<()> {
+    let mut f = open_regular(src)?;
+    let mut out = OpenOptions::new().write(true).create_new(true).mode(0o600).open(dst)?;
+    std::io::copy(&mut f, &mut out)?;
+    Ok(())
+}
+
+/// Copy a regular file in pieces to `out`.
+pub fn copy_file_to(root: &Path, rel: &str, out: &mut dyn std::io::Write) -> Result<()> {
+    let mut f = open_regular(&safe_join(root, rel)?)?;
+    std::io::copy(&mut f, out)?;
+    Ok(())
 }
 
 /// The bytes of an entry for diffs: file content, or the link target for a symbolic link.
@@ -300,11 +348,15 @@ pub fn set_mtime(f: &File, sec: i64, nsec: i64) -> Result<()> {
 
 /// Write bytes as a new file at `root/rel` (replacing what is there), with a mode and owner.
 pub fn write_file(root: &Path, rel: &str, data: &[u8], mode: u32, own: Option<(u32, u32)>) -> Result<()> {
-    use std::io::Write;
+    write_file_from(root, rel, &mut &data[..], mode, own)
+}
+
+/// `write_file` with the content read from `src` in pieces.
+pub fn write_file_from(root: &Path, rel: &str, src: &mut dyn Read, mode: u32, own: Option<(u32, u32)>) -> Result<()> {
     let t = crate::tree::Tree::open(root)?;
     t.mkdirs_for(rel, own)?;
     let mut f = t.create(rel, mode)?;
-    f.write_all(data)?;
+    std::io::copy(src, &mut f)?;
     f.set_permissions(fs::Permissions::from_mode(mode))?;
     fchown(&f, own)?;
     Ok(())
@@ -384,17 +436,25 @@ pub fn git_blob_id(data: &[u8]) -> String {
     hex::encode(h.finalize())
 }
 
-pub fn sha256_file(p: &Path) -> Result<String> {
-    use sha2::{Digest, Sha256};
-    let mut f = File::open(p)?;
-    let mut h = Sha256::new();
+/// The git blob id of a regular file, read in pieces (any size).
+pub fn git_blob_id_file(root: &Path, rel: &str) -> Result<String> {
+    use sha1::{Digest, Sha1};
+    let mut f = open_regular(&safe_join(root, rel)?)?;
+    let len = f.metadata()?.len();
+    let mut h = Sha1::new();
+    h.update(format!("blob {len}\0").as_bytes());
     let mut buf = vec![0u8; 1 << 20];
+    let mut n_total = 0u64;
     loop {
         let n = f.read(&mut buf)?;
         if n == 0 {
             break;
         }
+        n_total += n as u64;
         h.update(&buf[..n]);
+    }
+    if n_total != len {
+        bail!("{rel} changed while it was read");
     }
     Ok(hex::encode(h.finalize()))
 }
@@ -404,7 +464,7 @@ pub fn is_binary(data: &[u8]) -> bool {
     data[..data.len().min(8000)].contains(&0)
 }
 
-// ----- writes into folders owned by agents, through file descriptors -----
+// ----- writes into folders owned by users, through file descriptors -----
 
 /// Open a folder without following a link at its last component.
 pub fn open_dir_nofollow(path: &Path) -> Result<File> {
@@ -415,10 +475,23 @@ pub fn open_dir_nofollow(path: &Path) -> Result<File> {
         .with_context(|| format!("open folder {}", path.display()))
 }
 
+/// Open a regular file `name` of an open folder for reading: never a link, a device or a pipe.
+pub fn open_file_at(dir: &File, name: &str) -> Result<File> {
+    use rustix::fs::{Mode, OFlags};
+    let fd = rustix::fs::openat(dir, name, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK, Mode::empty())
+        .with_context(|| format!("open {name}"))?;
+    let f = File::from(fd);
+    if !f.metadata()?.is_file() {
+        bail!("{name} is not a regular file");
+    }
+    Ok(f)
+}
+
 /// Read a regular file `name` of an open folder; `None` if absent, a link or not a file.
 pub fn read_at(dir: &File, name: &str) -> Option<Vec<u8>> {
     use rustix::fs::{Mode, OFlags};
-    let fd = rustix::fs::openat(dir, name, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK, Mode::empty()).ok()?;
+    let fd = rustix::fs::openat(dir, name, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK, Mode::empty())
+        .ok()?;
     let mut f = File::from(fd);
     if !f.metadata().ok()?.is_file() {
         return None;

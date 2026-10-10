@@ -1,4 +1,4 @@
-//! merge, cherry-pick, revert, rebase and exploration groups.
+//! merge, cherry-pick, revert and rebase.
 
 use super::{exit, here, work};
 use crate::args::{parse, Spec};
@@ -10,7 +10,7 @@ use crate::merge;
 use crate::model::{Line, Record, StateKind, StateRec};
 use crate::repo::{skip_path, Repo};
 use crate::revs;
-use anyhow::{bail, Result};
+use anyhow::Result;
 
 /// Merge `theirs` into `ours` with `base`. Returns the new state (snapshot written, no record)
 /// and the merge outcome.
@@ -42,7 +42,7 @@ pub fn merge_states(
         ours_label: "HEAD",
         theirs_label,
         config: &cfg,
-        run_as: Some(repo.lead_ids()),
+        run_as: ctx.caller.driver_ids(),
         allow_root: ctx.caller.is_root(),
     })?;
     let own = repo.own(line);
@@ -72,6 +72,10 @@ fn finish(
     local: &std::collections::BTreeSet<String>,
     data: serde_json::Value,
 ) -> Result<Vec<changes::Change>> {
+    if let Err(e) = repo.check_move(ctx, line, new_head) {
+        repo.discard_states(&states);
+        return Err(e);
+    }
     let old_root = repo.state_root(&line.head)?;
     let new_root = repo.state_root(new_head)?;
     let wdir = repo.working(line);
@@ -91,6 +95,134 @@ fn finish(
     Ok(applied)
 }
 
+/// Path rules of a protected line: every path that the merge changes needs the role of its
+/// rule (`layr protect <line> --path <path>=<role>`).
+fn check_paths(ctx: &Ctx, repo: &Repo, line: &Line, rule: Option<&crate::access::Rule>, head: &str, result: &str) -> Result<()> {
+    let rule = match rule {
+        Some(r) if !r.paths.is_empty() && !ctx.caller.is_root() => r,
+        _ => return Ok(()),
+    };
+    let role = repo.policy().role(&Repo::who(ctx));
+    for c in changes::file_changes(&repo.state_root(head)?, &repo.state_root(result)?)? {
+        for p in [Some(c.path.clone()), c.old_path.clone()].into_iter().flatten() {
+            let need = rule.role_for_path(&p);
+            if role < need {
+                return Err(exit(
+                    1,
+                    format!(
+                        "permission denied: the merge changes '{p}', which in line '{}' needs the role {}; you are {}",
+                        line.name,
+                        need.name(),
+                        role.name()
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Approvals of a protected line: the reviewed state (`theirs`) needs the rule's number of
+/// approvals of exactly that state, from users who may approve and who are not authors of the
+/// states the merge brings in.
+fn check_approvals(
+    ctx: &Ctx,
+    repo: &Repo,
+    line: &Line,
+    rule: Option<&crate::access::Rule>,
+    head: &str,
+    theirs: &str,
+) -> Result<()> {
+    let rule = match rule {
+        Some(r) if r.approvals > 0 && !ctx.caller.is_root() => r,
+        _ => return Ok(()),
+    };
+    let pol = repo.policy();
+    let have: std::collections::BTreeSet<String> = repo.ancestors(head)?.into_iter().collect();
+    let mut authors = std::collections::BTreeSet::new();
+    for s in repo.ancestors(theirs)? {
+        if !have.contains(&s) {
+            if let Some(r) = repo.p.db.state(&s)? {
+                authors.insert(r.author.uid);
+            }
+        }
+    }
+    let counted: Vec<u32> = repo
+        .p
+        .db
+        .approvals(theirs)?
+        .into_iter()
+        .map(|(u, _)| u)
+        .filter(|u| !authors.contains(u))
+        .filter(|u| pol.may_approve(rule, &crate::access::Who::of(*u, crate::ctx::Caller::from_uid(*u).gid)))
+        .collect();
+    if (counted.len() as u32) < rule.approvals {
+        let from: Vec<String> = rule.approvers.iter().map(|k| crate::access::show_principal(k)).collect();
+        return Err(exit(
+            1,
+            format!(
+                "error: line '{}' takes state {} after {} approval(s) of exactly that state by {} other than its authors; it has {}",
+                line.name,
+                ids::short(theirs),
+                rule.approvals,
+                if from.is_empty() { "maintainers".to_string() } else { from.join(" and ") },
+                counted.len()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// The checks of a protected line, on the state the line would take. They run as the caller
+/// without the project lock; a passing check of the same state and command is reused. Then the
+/// lock is taken again and the line must still be at `head`. Returns the lock (held until the
+/// merge finishes) and the paths with local changes in the line's folder now.
+fn run_line_checks(
+    ctx: &Ctx,
+    repo: &Repo,
+    line: &Line,
+    head: &str,
+    candidate: &str,
+    checks: &[String],
+    quiet: bool,
+) -> Result<(crate::store::Lock, std::collections::BTreeSet<String>)> {
+    for name in checks {
+        let cmd =
+            repo.p.config_value(&format!("check.{name}"))?.and_then(|v| v.as_str().map(|s| s.to_string())).ok_or_else(|| {
+                exit(
+                    1,
+                    format!(
+                        "error: check '{name}' of line '{}' is not defined (layr config check.{name} '<command>')",
+                        line.name
+                    ),
+                )
+            })?;
+        if repo.p.db.checks(candidate)?.iter().any(|c| c.0 == cmd && c.1 == 0) {
+            continue;
+        }
+        let argv = vec!["sh".to_string(), "-c".to_string(), cmd.clone()];
+        let code = super::admin::run_check(ctx, repo, candidate, &argv, &cmd, quiet)?;
+        if code != 0 {
+            return Err(exit(
+                1,
+                format!(
+                    "error: check '{name}' failed (exit {code}) on {}, the state '{}' would take; the line stays at {}",
+                    ids::short(candidate),
+                    line.name,
+                    ids::short(head)
+                ),
+            ));
+        }
+    }
+    let lock = repo.p.lock()?;
+    let now = repo.line(&line.id)?;
+    if now.head != head {
+        return Err(exit(1, format!("error: line '{}' moved while its checks ran; merge again", line.name)));
+    }
+    let (st, _scan, _it, _idx) = repo.status(&now)?;
+    Ok((lock, st.local_paths()))
+}
+
 fn print_stat(ctx: &Ctx, repo: &Repo, from: &str, to: &str) -> Result<()> {
     let a = repo.state_root(from)?;
     let b = repo.state_root(to)?;
@@ -105,32 +237,6 @@ fn print_stat(ctx: &Ctx, repo: &Repo, from: &str, to: &str) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// Group rule: a line of an exploration group whose epoch is older than the group epoch is stale.
-fn check_group(repo: &Repo, theirs_line: Option<&Line>) -> Result<Option<String>> {
-    let l = match theirs_line {
-        Some(l) => l,
-        None => return Ok(None),
-    };
-    let g = match &l.group {
-        Some(g) => g.clone(),
-        None => return Ok(None),
-    };
-    let (epoch, _, accepted) = match repo.p.db.group(&g)? {
-        Some(x) => x,
-        None => return Ok(None),
-    };
-    let le = repo.p.db.group_line_epoch(&g, &l.id)?.unwrap_or(0);
-    if le < epoch {
-        bail!(
-            "line '{}' is stale: group '{g}' already accepted {} (epoch {epoch}).\nArchive it with 'layr branch -D {}' or start a new attempt from the new main state.",
-            l.name,
-            accepted.and_then(|a| repo.p.db.line_by_id(&a).ok().flatten()).map(|x| x.name).unwrap_or_else(|| "another line".into()),
-            l.name
-        );
-    }
-    Ok(Some(g))
 }
 
 pub fn merge(ctx: &Ctx, args: &[String]) -> Result<i32> {
@@ -179,8 +285,9 @@ pub fn merge_rev(ctx: &Ctx, repo: &Repo, line: &Line, rev: &str, a: &crate::args
             ));
         }
     }
-    let group = check_group(repo, theirs_line.as_ref())?;
-    let (_lock, w) = work::begin_change(ctx, repo, line)?;
+    let expect = a.get("--expect").is_some();
+    let (lock, w) = work::begin(ctx, repo, line, crate::repo::LineOp::Merge { expect })?;
+    let rule = repo.policy().rule_for(&line.name);
     let line = repo.line(&line.id)?;
     let head = line.head.clone();
     if theirs == head || repo.is_ancestor(&theirs, &head)? {
@@ -191,18 +298,20 @@ pub fn merge_rev(ctx: &Ctx, repo: &Repo, line: &Line, rev: &str, a: &crate::args
     if !st.staged.is_empty() {
         return Err(exit(1, "error: you have staged changes; commit or stash them before merging."));
     }
-    let local = st.local_paths();
+    let mut local = st.local_paths();
     let ff = repo.is_ancestor(&head, &theirs)?;
     let quiet = a.has("-q");
-    let group_rec = |ctx: &Ctx| -> Result<()> {
-        if let (Some(g), Some(tl)) = (&group, &theirs_line) {
-            let mut rec = Record::new("group.accept");
-            rec.data = serde_json::json!({"name": g, "line": tl.id, "state": theirs});
-            repo.commit_record(ctx, rec)?;
-        }
-        Ok(())
-    };
+    let checks = rule.as_ref().map(|r| r.check.clone()).unwrap_or_default();
+    let mut _relock = None;
     if ff && !a.has("--no-ff") && !a.has("--squash") {
+        check_paths(ctx, repo, &line, rule.as_ref(), &head, &theirs)?;
+        check_approvals(ctx, repo, &line, rule.as_ref(), &head, &theirs)?;
+        if !checks.is_empty() {
+            drop(lock);
+            let (l, paths) = run_line_checks(ctx, repo, &line, &head, &theirs, &checks, quiet)?;
+            _relock = Some(l);
+            local = paths;
+        }
         finish(
             ctx,
             repo,
@@ -214,7 +323,6 @@ pub fn merge_rev(ctx: &Ctx, repo: &Repo, line: &Line, rev: &str, a: &crate::args
             &local,
             serde_json::json!({"theirs": theirs, "fast_forward": true}),
         )?;
-        group_rec(ctx)?;
         if !quiet {
             outln!(ctx, "Updating {}..{}\nFast-forward", ids::short(&head), ids::short(&theirs));
             print_stat(ctx, repo, &head, &theirs)?;
@@ -240,18 +348,43 @@ pub fn merge_rev(ctx: &Ctx, repo: &Repo, line: &Line, rev: &str, a: &crate::args
     let (state, out) = merge_states(ctx, repo, &line, &base, &head, &theirs, &label, parents, &message)?;
     let sid = state.id.clone();
     let nconf = out.conflicts.len();
+    let mut states = vec![state];
+    if let Err(e) = check_paths(ctx, repo, &line, rule.as_ref(), &head, &sid)
+        .and_then(|_| check_approvals(ctx, repo, &line, rule.as_ref(), &head, &theirs))
+    {
+        repo.discard_states(&states);
+        return Err(e);
+    }
+    if !checks.is_empty() {
+        if nconf > 0 {
+            repo.discard_states(&states);
+            return Err(exit(
+                1,
+                format!("error: the merge into the protected line '{}' has {nconf} conflict(s); resolve them in a line and merge that line", line.name),
+            ));
+        }
+        // The result becomes a state of its own record, so the check runs on exactly the content
+        // that the line will take, and a failed result stays for inspection.
+        let mut rec = Record::new("merge.candidate");
+        rec.states = std::mem::take(&mut states);
+        rec.data = serde_json::json!({"line": line.id, "theirs": theirs});
+        repo.commit_record(ctx, rec)?;
+        drop(lock);
+        let (l, paths) = run_line_checks(ctx, repo, &line, &head, &sid, &checks, quiet)?;
+        _relock = Some(l);
+        local = paths;
+    }
     finish(
         ctx,
         repo,
         &line,
         "merge",
         &sid,
-        vec![state],
+        states,
         w,
         &local,
         serde_json::json!({"theirs": theirs, "base": base, "squash": a.has("--squash"), "conflicts": nconf}),
     )?;
-    group_rec(ctx)?;
     for m in &out.messages {
         outln!(ctx, "{m}");
     }
@@ -457,72 +590,4 @@ pub fn rebase(ctx: &Ctx, args: &[String]) -> Result<i32> {
     }
     outln!(ctx, "Successfully rebased {} onto {}.", line.name, ids::short(&onto));
     Ok(0)
-}
-
-pub fn group(ctx: &Ctx, args: &[String]) -> Result<i32> {
-    let h = here(ctx)?;
-    let repo = &h.repo;
-    let sub = args.first().map(|s| s.as_str()).unwrap_or("list");
-    let rest = args.get(1..).unwrap_or(&[]);
-    match sub {
-        "create" => {
-            repo.require_lead(ctx, "create exploration groups")?;
-            let name = rest.first().ok_or_else(|| exit(128, "usage: layr group create <name> [<base>]"))?;
-            crate::store::check_name("group", name)?;
-            let base = revs::resolve(repo, h.line.as_ref(), rest.get(1).map(|s| s.as_str()).unwrap_or("HEAD"))?;
-            let _lock = repo.p.lock()?;
-            if repo.p.db.group(name)?.is_some() {
-                return Err(exit(128, format!("fatal: group '{name}' exists")));
-            }
-            let mut rec = Record::new("group.create");
-            rec.data = serde_json::json!({"name": name, "base": base});
-            repo.commit_record(ctx, rec)?;
-            outln!(ctx, "Created group {name} at {}. Add lines with 'layr branch <name> --group {name}'.", ids::short(&base));
-            Ok(0)
-        }
-        "add" => {
-            let (g, l) = match (rest.first(), rest.get(1)) {
-                (Some(g), Some(l)) => (g, l),
-                _ => return Err(exit(128, "usage: layr group add <group> <line>")),
-            };
-            let line = repo.line(l)?;
-            repo.can_write_line(ctx, &line)?;
-            if repo.p.db.group(g)?.is_none() {
-                return Err(exit(128, format!("fatal: no group '{g}'")));
-            }
-            let _lock = repo.p.lock()?;
-            let mut rec = Record::new("group.add");
-            rec.data = serde_json::json!({"name": g, "line": line.id});
-            let mut after = repo.line_state(&line, &line.head);
-            after.group = Some(g.clone());
-            rec.lines.insert(
-                line.id.clone(),
-                crate::model::LineChange {
-                    before: Some(repo.line_state(&line, &line.head)),
-                    after: Some(after),
-                    working_before: None,
-                    working_after: None,
-                },
-            );
-            repo.commit_record(ctx, rec)?;
-            Ok(0)
-        }
-        "show" | "list" => {
-            for (name, epoch, base, accepted) in repo.p.db.groups()? {
-                if sub == "show" && rest.first().map(|r| r != &name).unwrap_or(false) {
-                    continue;
-                }
-                let acc =
-                    accepted.and_then(|a| repo.p.db.line_by_id(&a).ok().flatten()).map(|l| l.name).unwrap_or_else(|| "-".into());
-                outln!(ctx, "{name}\tepoch {epoch}\tbase {}\taccepted {acc}", ids::short(&base));
-                for (lid, e) in repo.p.db.group_lines(&name)? {
-                    if let Some(l) = repo.p.db.line_by_id(&lid)? {
-                        outln!(ctx, "\t{}\t{}", l.name, if e < epoch { "stale" } else { "active" });
-                    }
-                }
-            }
-            Ok(0)
-        }
-        _ => Err(exit(128, "usage: layr group (create|add|list|show)")),
-    }
 }

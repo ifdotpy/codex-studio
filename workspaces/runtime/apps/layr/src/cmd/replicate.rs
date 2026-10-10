@@ -1,4 +1,4 @@
-//! Replication between machines over any byte channel (ssh, the paired Studio server channel).
+//! Replication between machines over any byte channel (ssh or any other pipe).
 //!
 //! `layr sync -- <command>` starts `<command>`, which must run `layr serve-peer <project>` on the
 //! other machine, and talks to it over the command's stdin and stdout:
@@ -16,7 +16,7 @@ use crate::ctx::Ctx;
 use crate::ids;
 use crate::model::StateKind;
 use crate::repo::Repo;
-use crate::store::Project;
+use crate::store::{Project, Trust};
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -89,33 +89,52 @@ impl<R: Read, W: Write> Wire<R, W> {
         self.w.flush()?;
         Ok(total)
     }
-    /// Receive a btrfs stream into a folder.
-    fn recv_stream(&mut self, dir: &std::path::Path) -> Result<()> {
-        // `-e`: stop at the end of the first stream; a sender cannot add more subvolumes.
-        let mut child =
-            Command::new("btrfs").args(["receive", "-q", "-e"]).arg(dir).stdin(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
-        let mut stdin = child.stdin.take().unwrap();
-        let mut ok = true;
-        loop {
-            let (k, d) = self.recv()?;
+}
+
+/// The data frames of one stream, read as a byte stream that ends at the end frame.
+struct Frames<'w, R: Read, W: Write> {
+    w: &'w mut Wire<R, W>,
+    buf: Vec<u8>,
+    pos: usize,
+    done: bool,
+}
+
+impl<R: Read, W: Write> Read for Frames<'_, R, W> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        while self.pos >= self.buf.len() {
+            if self.done {
+                return Ok(0);
+            }
+            let (k, d) = self.w.recv().map_err(std::io::Error::other)?;
             match k {
                 b'D' => {
-                    if ok && stdin.write_all(&d).is_err() {
-                        ok = false;
-                    }
+                    self.buf = d;
+                    self.pos = 0;
                 }
-                b'E' => break,
+                b'E' => self.done = true,
                 b'X' => {
-                    ok = false;
-                    break;
+                    self.done = true;
+                    return Err(std::io::Error::other("btrfs send failed on the peer"));
                 }
-                _ => bail!("protocol error in a stream"),
+                _ => return Err(std::io::Error::other("protocol error in a stream")),
             }
         }
-        drop(stdin);
-        let out = child.wait_with_output()?;
-        if !ok || !out.status.success() {
-            bail!("btrfs receive failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        let n = out.len().min(self.buf.len() - self.pos);
+        out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(n)
+    }
+}
+
+impl<R: Read, W: Write> Frames<'_, R, W> {
+    /// Read the rest of a stream that was refused, so the channel stays in step.
+    fn drain(&mut self) -> Result<()> {
+        while !self.done {
+            match self.w.recv()?.0 {
+                b'D' => {}
+                b'E' | b'X' => self.done = true,
+                _ => bail!("protocol error in a stream"),
+            }
         }
         Ok(())
     }
@@ -128,14 +147,22 @@ fn send_records<R: Read, W: Write>(w: &mut Wire<R, W>, lines: &[String]) -> Resu
     w.json(&json!({"op": "records", "lines": [], "more": false}))
 }
 
+/// Records of one sync, in total at most this many bytes.
+const MAX_RECORDS_BYTES: usize = 512 << 20;
+
 fn recv_records<R: Read, W: Write>(w: &mut Wire<R, W>) -> Result<Vec<String>> {
     let mut all = Vec::new();
+    let mut bytes = 0usize;
     loop {
         let v = w.recv_json()?;
         if v["op"] != "records" {
             bail!("protocol error: expected records");
         }
         let lines: Vec<String> = serde_json::from_value(v["lines"].clone())?;
+        bytes += lines.iter().map(|l| l.len()).sum::<usize>();
+        if bytes > MAX_RECORDS_BYTES {
+            bail!("the peer sends more than {} MiB of records in one sync", MAX_RECORDS_BYTES >> 20);
+        }
         all.extend(lines);
         if !v["more"].as_bool().unwrap_or(false) {
             return Ok(all);
@@ -170,8 +197,8 @@ fn missing_lines(p: &Project, peer: &BTreeMap<String, u64>) -> Result<Vec<String
 }
 
 /// Check and store records from the peer.
-fn take_lines(p: &Project, lines: &[String], bootstrap: bool) -> Result<usize> {
-    p.import_lines(lines, bootstrap)
+fn take_lines(p: &Project, lines: &[String], trust: Trust) -> Result<usize> {
+    p.import_lines(lines, trust)
 }
 
 /// Record that this project trusts a machine's records (its id and key).
@@ -232,8 +259,10 @@ fn plan(repo: &Repo, mine: &BTreeSet<String>, theirs: &BTreeSet<String>, auto: b
 
 fn send_layer<R: Read, W: Write>(w: &mut Wire<R, W>, repo: &Repo, snap: &str) -> Result<u64> {
     w.json(&json!({"op": "layer", "name": snap}))?;
-    let child =
-        btrfs::send_command(None, &repo.p.layer_path(snap.split('@').next().unwrap_or(""), snap)).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let child = btrfs::send_command(None, &repo.p.layer_path(snap.split('@').next().unwrap_or(""), snap))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
     let n = w.send_stream(child)?;
     if w.recv_json()?["op"] != "ok" {
         bail!("peer did not store layer {snap}");
@@ -295,36 +324,21 @@ fn send_states<R: Read, W: Write>(
     Ok((list.len(), bytes))
 }
 
-/// Receive one subvolume named `name` into `states/`: exactly one new entry with that name,
-/// read-only, with the received UUID that the signed record names (for a state).
-fn receive_one<R: Read, W: Write>(w: &mut Wire<R, W>, p: &Project, name: &str, expected_uuid: Option<&str>) -> Result<()> {
-    let dir = p.states_dir();
-    let before: BTreeSet<String> = std::fs::read_dir(&dir)?.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-    let received = w.recv_stream(&dir);
-    let after: BTreeSet<String> = std::fs::read_dir(&dir)?.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-    let new: Vec<String> = after.difference(&before).cloned().collect();
-    let check = (|| -> Result<()> {
-        received?;
-        if new.len() != 1 || new[0] != name {
-            bail!("the stream did not contain exactly {name} (got {:?})", new);
+/// Receive one subvolume named `name` into `states/`, checked on the way (`recv`): the
+/// subvolume its signed record names, with a parent only from this project.
+fn receive_one<R: Read, W: Write>(w: &mut Wire<R, W>, p: &Project, name: &str, uuid: &str, incremental: bool) -> Result<()> {
+    let parent = |u: &str| -> Option<std::path::PathBuf> {
+        if !incremental {
+            return None;
         }
-        let info = btrfs::subvol_info(&dir.join(name))?;
-        if !info.readonly || info.received_uuid.is_none() {
-            bail!("incomplete receive of {name}");
-        }
-        if let Some(u) = expected_uuid {
-            if info.received_uuid.as_deref() != Some(u) {
-                bail!("the stream of {name} is not the subvolume its record names");
-            }
-        }
-        Ok(())
-    })();
-    if check.is_err() {
-        for n in &new {
-            let _ = btrfs::delete_tree(&dir.join(n));
-        }
-    }
-    check
+        let id = p.db.state_by_subvol(u).ok().flatten()?;
+        let path = p.state_path(&id);
+        path.exists().then_some(path)
+    };
+    let mut frames = Frames { w, buf: Vec::new(), pos: 0, done: false };
+    let res = crate::recv::receive(&mut frames, &p.states_dir(), &crate::recv::Expect { name, uuid, parent: &parent });
+    let drained = frames.drain();
+    res.and(drained)
 }
 
 fn recv_states<R: Read, W: Write>(w: &mut Wire<R, W>, p: &Project) -> Result<usize> {
@@ -345,7 +359,9 @@ fn recv_states<R: Read, W: Write>(w: &mut Wire<R, W>, p: &Project) -> Result<usi
                 if p.layer_path(&id, &name).exists() {
                     bail!("layer {name} exists here already");
                 }
-                receive_one(w, p, &name, None)
+                // The layer must be the subvolume that the signed save.layers record names.
+                let uuid = p.db.layer_uuid(&id, &name)?.ok_or_else(|| anyhow!("no signed subvolume id for layer {name}"))?;
+                receive_one(w, p, &name, &uuid, false)
             }
             Some("state") => {
                 // Only a state that a signed record names, as the subvolume that record names.
@@ -357,9 +373,13 @@ fn recv_states<R: Read, W: Write>(w: &mut Wire<R, W>, p: &Project) -> Result<usi
                 if p.state_path(&id).exists() {
                     bail!("state {} exists here already", ids::short(&id));
                 }
-                receive_one(w, p, &id, Some(&rec.subvol)).map(|_| {
-                    let _ = p.db.set_present(&id, true);
+                receive_one(w, p, &id, &rec.subvol, true).and_then(|_| {
+                    if let Err(e) = p.db.set_present(&id, true) {
+                        let _ = btrfs::delete_tree(&p.state_path(&id));
+                        return Err(e);
+                    }
                     n += 1;
+                    Ok(())
                 })
             }
             _ => bail!("protocol error: {v}"),
@@ -386,7 +406,7 @@ pub fn sync(ctx: &Ctx, args: &[String]) -> Result<i32> {
         ));
     }
     let h = here(ctx)?;
-    h.repo.require_lead(ctx, "replicate the project")?;
+    h.repo.require(ctx, "sync")?;
     let repo = &h.repo;
     let mut c = Command::new(&a.paths[0]);
     c.args(&a.paths[1..]).stdin(Stdio::piped()).stdout(Stdio::piped());
@@ -403,13 +423,12 @@ pub fn sync(ctx: &Ctx, args: &[String]) -> Result<i32> {
         let mine = present(&repo.p)?;
         w.json(&json!({"op": "hello", "project": repo.p.name, "project_id": repo.p.id, "machine": repo.p.store.machine.id, "public_key": own_key(&repo.p), "seqs": seqs(&repo.p)?, "present": mine, "layers": present_layers(&repo.p)?}))?;
         let hello = w.recv_json()?;
-        // The lead chose this peer: its machine is trusted from now on.
-        {
-            let _lock = repo.p.lock()?;
-            if let (Some(m), Some(k)) = (hello["machine"].as_str(), hello["public_key"].as_str()) {
-                trust(ctx, &repo.p, m, k)?;
-            }
+        // The peer holds this project, or a new empty copy of it.
+        let peer_project = hello["project_id"].as_str().unwrap_or("");
+        if !peer_project.is_empty() && peer_project != repo.p.id {
+            bail!("the peer holds another project ({peer_project})");
         }
+        let peer = (hello["machine"].as_str().unwrap_or("").to_string(), hello["public_key"].as_str().unwrap_or("").to_string());
         let peer_layers: BTreeSet<String> = serde_json::from_value(hello["layers"].clone()).unwrap_or_default();
         let peer_seqs: BTreeMap<String, u64> = serde_json::from_value(hello["seqs"].clone())?;
         let peer_present: BTreeSet<String> = serde_json::from_value(hello["present"].clone())?;
@@ -418,9 +437,15 @@ pub fn sync(ctx: &Ctx, args: &[String]) -> Result<i32> {
         let sent_records = out_lines.len();
         send_records(&mut w, &out_lines)?;
         let lines = recv_records(&mut w)?;
+        // The admin chose this peer: its records are taken, and after they passed the checks its
+        // machine is trusted from now on.
         let got_records = {
             let _lock = repo.p.lock()?;
-            take_lines(&repo.p, &lines, false)?
+            let n = take_lines(&repo.p, &lines, Trust::Peer(&peer.0, &peer.1))?;
+            if !peer.0.is_empty() && !peer.1.is_empty() {
+                trust(ctx, &repo.p, &peer.0, &peer.1)?;
+            }
+            n
         };
         let _ = w.recv_json()?;
         // States to the peer.
@@ -473,7 +498,7 @@ pub fn serve(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let mut w = Wire { r: stdin.lock(), w: std::io::BufWriter::new(stdout.lock()) };
     let hello = w.recv_json()?;
     let pid = hello["project_id"].as_str().unwrap_or("").to_string();
-    let exists = ctx.store.projects_dir().join(&name).join("meta").join("layr.sqlite").is_file();
+    let exists = crate::store::db_file(&ctx.store.projects_dir().join(&name)).is_file();
     if !exists {
         Project::create_empty(&ctx.store, &name)?;
     }
@@ -487,7 +512,7 @@ pub fn serve(ctx: &Ctx, args: &[String]) -> Result<i32> {
     }
     let mut repo = Repo { p };
     let peer_seqs: BTreeMap<String, u64> = serde_json::from_value(hello["seqs"].clone())?;
-    w.json(&json!({"op": "hello", "machine": repo.p.store.machine.id, "public_key": own_key(&repo.p), "seqs": seqs(&repo.p)?, "present": present(&repo.p)?, "layers": present_layers(&repo.p)?}))?;
+    w.json(&json!({"op": "hello", "project_id": repo.p.id, "machine": repo.p.store.machine.id, "public_key": own_key(&repo.p), "seqs": seqs(&repo.p)?, "present": present(&repo.p)?, "layers": present_layers(&repo.p)?}))?;
     let lines = recv_records(&mut w)?;
     let mine = missing_lines(&repo.p, &peer_seqs)?;
     send_records(&mut w, &mine)?;
@@ -496,7 +521,7 @@ pub fn serve(ctx: &Ctx, args: &[String]) -> Result<i32> {
         // records of machines it trusts.
         let _lock = repo.p.lock()?;
         let bootstrap = !exists;
-        let taken = take_lines(&repo.p, &lines, bootstrap).and_then(|n| {
+        let taken = take_lines(&repo.p, &lines, if bootstrap { Trust::All } else { Trust::Known }).and_then(|n| {
             if repo.p.id.is_empty() {
                 repo.p.reload_id()?;
             }

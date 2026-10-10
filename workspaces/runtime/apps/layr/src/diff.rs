@@ -11,7 +11,21 @@ use std::path::Path;
 pub struct Side {
     pub path: String,
     pub mode: u32,
+    /// The content; empty for a file larger than `fsutil::MAX_TEXT` (`big`), which counts as
+    /// binary and is never read.
     pub data: Vec<u8>,
+    pub big: Option<u64>,
+}
+
+impl Side {
+    fn len(&self) -> usize {
+        self.big.map(|n| n as usize).unwrap_or(self.data.len())
+    }
+}
+
+/// Same content. Two big files are never compared (the change list says they changed).
+fn same(o: &Side, n: &Side) -> bool {
+    o.big.is_none() && n.big.is_none() && o.data == n.data
 }
 
 pub struct FileDiff {
@@ -24,8 +38,8 @@ impl FileDiff {
         self.new.as_ref().or(self.old.as_ref()).map(|s| s.path.as_str()).unwrap_or("")
     }
     pub fn is_binary(&self) -> bool {
-        self.old.as_ref().map(|s| fsutil::is_binary(&s.data)).unwrap_or(false)
-            || self.new.as_ref().map(|s| fsutil::is_binary(&s.data)).unwrap_or(false)
+        self.old.as_ref().map(|s| s.big.is_some() || fsutil::is_binary(&s.data)).unwrap_or(false)
+            || self.new.as_ref().map(|s| s.big.is_some() || fsutil::is_binary(&s.data)).unwrap_or(false)
     }
     pub fn status(&self) -> char {
         match (&self.old, &self.new) {
@@ -40,8 +54,11 @@ impl FileDiff {
     pub fn similarity(&self) -> u32 {
         match (&self.old, &self.new) {
             (Some(o), Some(n)) => {
-                if o.data == n.data {
+                if same(o, n) {
                     return 100;
+                }
+                if o.big.is_some() || n.big.is_some() {
+                    return 0;
                 }
                 let (a, b) = (split_lines(&o.data), split_lines(&n.data));
                 let ops = capture_diff_slices(Algorithm::Myers, &a, &b);
@@ -83,11 +100,13 @@ impl FileDiff {
 }
 
 pub fn side_of(root: &Path, path: &str, meta: &Meta) -> Result<Side> {
+    let big = (meta.ftype == FType::File && meta.size > fsutil::MAX_TEXT).then_some(meta.size);
     let data = match meta.ftype {
+        _ if big.is_some() => Vec::new(),
         FType::File | FType::Symlink => fsutil::entry_bytes(root, path)?,
         _ => Vec::new(),
     };
-    Ok(Side { path: path.to_string(), mode: meta.git_mode(), data })
+    Ok(Side { path: path.to_string(), mode: meta.git_mode(), data, big })
 }
 
 /// Build file diffs for a change list between two roots.
@@ -114,6 +133,18 @@ fn short_blob(data: Option<&Side>) -> String {
     match data {
         Some(s) => fsutil::git_blob_id(&s.data)[..7].to_string(),
         None => "0000000".to_string(),
+    }
+}
+
+/// The `index` line of a patch. A big file has no blob id here (it is not read), so the line
+/// is left out, as for any patch without a full index.
+fn index_line(o: Option<&Side>, n: Option<&Side>, mode: Option<u32>) -> String {
+    if o.map(|x| x.big.is_some()).unwrap_or(false) || n.map(|x| x.big.is_some()).unwrap_or(false) {
+        return String::new();
+    }
+    match mode {
+        Some(m) => format!("index {}..{} {:06o}\n", short_blob(o), short_blob(n), m),
+        None => format!("index {}..{}\n", short_blob(o), short_blob(n)),
     }
 }
 
@@ -150,11 +181,11 @@ pub fn patch(fd: &FileDiff, context: usize) -> String {
     match (&fd.old, &fd.new) {
         (None, Some(n)) => {
             s.push_str(&format!("new file mode {:06o}\n", n.mode));
-            s.push_str(&format!("index 0000000..{}\n", short_blob(Some(n))));
+            s.push_str(&index_line(None, Some(n), None));
         }
         (Some(o), None) => {
             s.push_str(&format!("deleted file mode {:06o}\n", o.mode));
-            s.push_str(&format!("index {}..0000000\n", short_blob(Some(o))));
+            s.push_str(&index_line(Some(o), None, None));
         }
         (Some(o), Some(n)) => {
             if o.mode != n.mode {
@@ -163,16 +194,12 @@ pub fn patch(fd: &FileDiff, context: usize) -> String {
             if o.path != n.path {
                 s.push_str(&format!("similarity index {}%\n", fd.similarity()));
                 s.push_str(&format!("rename from {}\nrename to {}\n", quote_path(&o.path), quote_path(&n.path)));
-                if o.data == n.data && o.mode == n.mode {
+                if same(o, n) && o.mode == n.mode {
                     return s;
                 }
             }
-            if o.data != n.data {
-                if o.mode == n.mode {
-                    s.push_str(&format!("index {}..{} {:06o}\n", short_blob(Some(o)), short_blob(Some(n)), n.mode));
-                } else {
-                    s.push_str(&format!("index {}..{}\n", short_blob(Some(o)), short_blob(Some(n))));
-                }
+            if !same(o, n) {
+                s.push_str(&index_line(Some(o), Some(n), (o.mode == n.mode).then_some(n.mode)));
             } else {
                 return s;
             }
@@ -324,7 +351,7 @@ pub fn stat(files: &[FileDiff], width: usize) -> String {
         .map(|f| {
             let (a, d) = f.counts();
             let bin = if f.is_binary() {
-                Some((f.old.as_ref().map(|s| s.data.len()).unwrap_or(0), f.new.as_ref().map(|s| s.data.len()).unwrap_or(0)))
+                Some((f.old.as_ref().map(|s| s.len()).unwrap_or(0), f.new.as_ref().map(|s| s.len()).unwrap_or(0)))
             } else {
                 None
             };

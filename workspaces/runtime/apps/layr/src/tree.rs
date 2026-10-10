@@ -146,7 +146,12 @@ impl Tree {
             Ok(x) => x,
             Err(_) => return Ok(None),
         };
-        let fd = match rustix::fs::openat(&d, n, OFlags::WRONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK, Mode::empty()) {
+        let fd = match rustix::fs::openat(
+            &d,
+            n,
+            OFlags::WRONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+            Mode::empty(),
+        ) {
             Ok(fd) => fd,
             Err(_) => return Ok(None),
         };
@@ -199,7 +204,8 @@ impl Tree {
             return Ok(());
         }
         let (d, n) = self.parent(rel)?;
-        rustix::fs::chownat(&d, n, Some(uid(u)), Some(gid(g)), AtFlags::SYMLINK_NOFOLLOW).with_context(|| format!("chown {rel}"))?;
+        rustix::fs::chownat(&d, n, Some(uid(u)), Some(gid(g)), AtFlags::SYMLINK_NOFOLLOW)
+            .with_context(|| format!("chown {rel}"))?;
         Ok(())
     }
 
@@ -270,11 +276,19 @@ fn remove_at(dir: &OwnedFd, name: &str) -> Result<()> {
         return Ok(());
     }
     let pst = rustix::fs::fstat(dir)?;
-    let sub = rustix::fs::openat(dir, name, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty())?;
+    let sub =
+        rustix::fs::openat(dir, name, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty())?;
     if is_subvol_root(&st, pst.st_dev) {
-        destroy_nested_in(&sub)?;
-        drop(sub);
-        return crate::sys::subvol_destroy(dir.as_fd(), name);
+        // O(1) unless it holds nested subvolumes itself.
+        match crate::sys::subvol_destroy(dir.as_fd(), name) {
+            Ok(()) => return Ok(()),
+            Err(e) if crate::btrfs::is_not_empty(&e) => {
+                destroy_nested_in(&sub)?;
+                drop(sub);
+                return crate::sys::subvol_destroy(dir.as_fd(), name);
+            }
+            Err(e) => return Err(e),
+        }
     }
     for child in list_fd(&sub)? {
         remove_at(&sub, &child)?;
@@ -296,9 +310,12 @@ fn destroy_nested_in(dir: &OwnedFd) -> Result<()> {
         }
         if is_subvol_root(&st, pst.st_dev) {
             remove_at(dir, &child)?;
-        } else if let Ok(sub) =
-            rustix::fs::openat(dir, child.as_str(), OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty())
-        {
+        } else if let Ok(sub) = rustix::fs::openat(
+            dir,
+            child.as_str(),
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
             destroy_nested_in(&sub)?;
         }
     }

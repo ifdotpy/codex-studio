@@ -29,7 +29,7 @@ pub struct Input<'a> {
     pub theirs_label: &'a str,
     /// Project configuration: `merge.driver.<name>` and `merge.verify.<name>` commands.
     pub config: &'a dyn Fn(&str) -> Option<String>,
-    /// Configured drivers run as this user: the lead of this machine.
+    /// Configured drivers run as this user: the caller of the merge (None when root calls).
     pub run_as: Option<(u32, u32)>,
     /// The caller is root: a driver may then run as root.
     pub allow_root: bool,
@@ -399,7 +399,8 @@ fn add_add(c: &mut Ctx, p: &str, q: &str) -> Result<()> {
     let (mr, mt) = (fsutil::lmeta(i.result, q).unwrap(), fsutil::lmeta(i.theirs, p).unwrap());
     if mr.ftype == FType::File && mt.ftype == FType::File {
         let driver = driver_for(c, q, i.result, q, i.theirs, p, None);
-        if driver == "text" || driver == "union" {
+        let small = !too_big(&fsutil::safe_join(i.result, q)?) && !too_big(&fsutil::safe_join(i.theirs, p)?);
+        if (driver == "text" || driver == "union") && small {
             let empty = tempfile_path("base")?;
             std::fs::write(&empty, b"")?;
             let r =
@@ -503,9 +504,8 @@ fn driver_for(c: &Ctx, attr_path: &str, ra: &Path, pa: &str, rb: &Path, pb: &str
             x => x.to_string(),
         };
     }
-    let bin = |r: &Path, p: &str| fsutil::read_file(r, p).map(|d| fsutil::is_binary(&d)).unwrap_or(false);
     let _ = base;
-    if bin(ra, pa) || bin(rb, pb) {
+    if fsutil::is_binary_file(ra, pa) || fsutil::is_binary_file(rb, pb) {
         "binary".into()
     } else {
         "text".into()
@@ -516,31 +516,30 @@ fn tempfile_path(tag: &str) -> Result<PathBuf> {
     Ok(std::env::temp_dir().join(format!("layr-{tag}-{}", crate::ids::new_id())))
 }
 
-/// The bytes of a regular file of a version, read without following links. Anything else (a
-/// link, a folder, nothing) reads as empty: a link in a merged tree must never make the
-/// service read the file it points to.
-fn version_bytes(path: &Path) -> Vec<u8> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let f = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path);
-    match f {
-        Ok(mut f) if f.metadata().map(|m| m.is_file()).unwrap_or(false) => {
-            let mut v = Vec::new();
-            use std::io::Read;
-            let _ = f.read_to_end(&mut v);
-            v
-        }
-        _ => Vec::new(),
+/// Copy a version into a private file, in pieces and without following links. Anything but a
+/// regular file (a link, a folder, nothing) is copied as an empty file: a link in a merged tree
+/// must never make the service read the file it points to.
+fn copy_version(src: &Path, dst: &Path) -> Result<()> {
+    if fsutil::copy_regular(src, dst).is_err() {
+        let _ = std::fs::remove_file(dst);
+        std::fs::OpenOptions::new().write(true).create_new(true).open(dst)?;
     }
+    Ok(())
+}
+
+/// A regular file too large for a text merge.
+fn too_big(p: &Path) -> bool {
+    std::fs::symlink_metadata(p).map(|m| m.is_file() && m.len() > fsutil::MAX_TEXT).unwrap_or(false)
 }
 
 /// `git merge-file` on private copies: writes the result into `ours`, returns the number of
 /// conflicts.
 fn run_merge_file(i: &Input, ours: &Path, base: &Path, theirs: &Path, union: bool) -> Result<i32> {
-    let dir = private_dir(None)?;
+    let dir = private_dir()?;
     let (o, b, t) = (dir.join("ours"), dir.join("base"), dir.join("theirs"));
-    std::fs::write(&o, version_bytes(ours))?;
-    std::fs::write(&b, version_bytes(base))?;
-    std::fs::write(&t, version_bytes(theirs))?;
+    copy_version(ours, &o)?;
+    copy_version(base, &b)?;
+    copy_version(theirs, &t)?;
     let mut cmd = Command::new("git");
     cmd.arg("merge-file");
     if union {
@@ -583,6 +582,9 @@ fn run_driver(
     let t_path = fsutil::safe_join(i.theirs, tp)?;
     c.out.changed.insert(rp.to_string());
     match driver {
+        "text" | "union" if [&r_path, &b_path, &t_path].iter().any(|p| too_big(p)) => {
+            c.conflict(rp, &format!("binary (larger than {} MiB)", fsutil::MAX_TEXT >> 20))
+        }
         "text" | "union" => {
             c.out.messages.push(format!("Auto-merging {rp}"));
             let n = run_merge_file(i, &r_path, &b_path, &t_path, driver == "union")?;
@@ -632,12 +634,13 @@ fn verify(c: &mut Ctx, rp: &str) -> Result<()> {
             return Ok(());
         }
     };
-    let dir = private_dir(i.run_as)?;
+    let dir = private_dir()?;
     let a = dir.join("result");
-    std::fs::write(&a, version_bytes(&fsutil::safe_join(i.result, rp)?))?;
-    chown_tree(&dir, i.run_as)?;
-    let ok = shell(&cmd.replace("%A", &sh_quote(&a)).replace("%P", &sh_quote_str(rp)), i.run_as, i.allow_root)?;
-    let _ = std::fs::remove_dir_all(&dir);
+    copy_version(&fsutil::safe_join(i.result, rp)?, &a)?;
+    hand_over(&dir, i.run_as)?;
+    let ok = shell(&cmd.replace("%A", &sh_quote(&a)).replace("%P", &sh_quote_str(rp)), i.run_as, i.allow_root);
+    remove_private(&dir, i.run_as);
+    let ok = ok?;
     if !ok {
         // Keep ours: copy back the ours version.
         fsutil::copy_entry(i.ours, rp, i.result, rp, None)?;
@@ -646,25 +649,60 @@ fn verify(c: &mut Ctx, rp: &str) -> Result<()> {
     Ok(())
 }
 
-fn private_dir(run_as: Option<(u32, u32)>) -> Result<PathBuf> {
+/// A new folder only root can use. The service writes the inputs of a command there, then
+/// hands it over to the command's user.
+fn private_dir() -> Result<PathBuf> {
     let d = tempfile_path("driver")?;
-    std::fs::create_dir(&d)?;
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700))?;
-    chown_tree(&d, run_as)?;
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new().mode(0o700).create(&d)?;
     Ok(d)
 }
 
-fn chown_tree(d: &Path, run_as: Option<(u32, u32)>) -> Result<()> {
+/// Give a private folder and the files in it to the command's user: the files first, the folder
+/// last, so the user cannot change the folder while the service still works in it.
+fn hand_over(d: &Path, run_as: Option<(u32, u32)>) -> Result<()> {
     if let Some((u, g)) = run_as {
         if rustix::process::geteuid().is_root() {
-            fsutil::chown_nofollow(d, u, g)?;
             for e in std::fs::read_dir(d)?.flatten() {
                 fsutil::chown_nofollow(&e.path(), u, g)?;
             }
+            fsutil::chown_nofollow(d, u, g)?;
         }
     }
     Ok(())
+}
+
+fn as_driver<T>(run_as: Option<(u32, u32)>, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    match run_as {
+        Some((u, g)) => crate::privs::as_user_fs(u, g, f),
+        None => f(),
+    }
+}
+
+/// Copy the file a command wrote into the result, read with the command user's file
+/// permissions and without following a link: whatever the user leaves at that name, the
+/// service reads only what the user can read.
+/// False when there is no regular file to take.
+fn take_command_output(path: &Path, run_as: Option<(u32, u32)>, result: &Path, rp: &str) -> Result<bool> {
+    let opened = as_driver(run_as, || {
+        use std::os::unix::fs::OpenOptionsExt;
+        let f = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path)?;
+        if !f.metadata()?.is_file() {
+            bail!("{} is not a regular file", path.display());
+        }
+        Ok(f)
+    });
+    let mut f = match opened {
+        Ok(f) => f,
+        Err(_) => return Ok(false),
+    };
+    let mode = fsutil::lmeta(result, rp).map(|m| m.mode).unwrap_or(0o644);
+    fsutil::write_file_from(result, rp, &mut f, mode, None)?;
+    Ok(true)
+}
+
+fn remove_private(d: &Path, run_as: Option<(u32, u32)>) {
+    let _ = as_driver(run_as, || Ok(std::fs::remove_dir_all(d)?));
 }
 
 fn sh_quote(p: &Path) -> String {
@@ -675,12 +713,12 @@ fn sh_quote_str(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// Run a configured command as the driver user (the lead of this machine), with a clean
-/// environment. Never as root unless the caller of the merge is root.
+/// Run a configured command as the caller of the merge, with a clean environment. Never as root
+/// unless the caller is root.
 fn shell(cmd: &str, run_as: Option<(u32, u32)>, allow_root: bool) -> Result<bool> {
     let uid = run_as.map(|r| r.0).unwrap_or(0);
     if uid == 0 && !allow_root && rustix::process::geteuid().is_root() {
-        bail!("refusing to run a merge command as root (the project has no lead on this machine)");
+        bail!("refusing to run a merge command as root for another user");
     }
     let mut c = Command::new("sh");
     c.arg("-c").arg(cmd);
@@ -691,26 +729,27 @@ fn shell(cmd: &str, run_as: Option<(u32, u32)>, allow_root: bool) -> Result<bool
 /// A configured driver command, as in git: `%O` base, `%A` ours (the result is written here),
 /// `%B` theirs, `%P` path, `%L` marker size.
 fn run_command_driver(i: &Input, cmd: &str, b: &Path, r: &Path, t: &Path, rp: &str) -> Result<bool> {
-    let dir = private_dir(i.run_as)?;
+    let dir = private_dir()?;
     let (o, a, bb) = (dir.join("base"), dir.join("ours"), dir.join("theirs"));
-    std::fs::write(&o, version_bytes(b))?;
-    std::fs::write(&a, version_bytes(r))?;
-    std::fs::write(&bb, version_bytes(t))?;
-    chown_tree(&dir, i.run_as)?;
+    copy_version(b, &o)?;
+    copy_version(r, &a)?;
+    copy_version(t, &bb)?;
+    hand_over(&dir, i.run_as)?;
     let full = cmd
         .replace("%O", &sh_quote(&o))
         .replace("%A", &sh_quote(&a))
         .replace("%B", &sh_quote(&bb))
         .replace("%P", &sh_quote_str(rp))
         .replace("%L", "7");
-    let ok = shell(&full, i.run_as, i.allow_root)?;
-    if ok {
-        let data = std::fs::read(&a)?;
-        let mode = fsutil::lmeta(i.result, rp).map(|m| m.mode).unwrap_or(0o644);
-        fsutil::write_file(i.result, rp, &data, mode, None)?;
-    }
-    let _ = std::fs::remove_dir_all(&dir);
-    Ok(ok)
+    let ran = shell(&full, i.run_as, i.allow_root);
+    // A result the service cannot read as the driver user (a link, a folder) is a failed driver.
+    let taken = match ran {
+        Ok(true) => take_command_output(&a, i.run_as, i.result, rp),
+        _ => Ok(false),
+    };
+    remove_private(&dir, i.run_as);
+    ran?;
+    taken
 }
 
 fn overlaps(a: &[(u64, u64)], b: &[(u64, u64)]) -> bool {

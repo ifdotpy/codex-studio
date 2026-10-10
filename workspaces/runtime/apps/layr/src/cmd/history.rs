@@ -611,6 +611,10 @@ pub fn show(ctx: &Ctx, args: &[String]) -> Result<i32> {
                         outln!(ctx, "{n}{}", if d { "/" } else { "" });
                     }
                 }
+                Some(m) if m.ftype == fsutil::FType::File => {
+                    // In pieces: a file of any size.
+                    fsutil::copy_file_to(&root_path, &p, &mut **ctx.out.borrow_mut())?;
+                }
                 Some(_) => {
                     let data = fsutil::entry_bytes(&root_path, &p)?;
                     use std::io::Write;
@@ -980,11 +984,19 @@ pub fn blame(ctx: &Ctx, args: &[String]) -> Result<i32> {
     // Versions of the file along first parents; the working content when no revision is given.
     let start = revs::resolve(repo, line.as_ref(), rev.as_deref().unwrap_or("HEAD"))?;
     let mut versions: Vec<(Option<StateRec>, Vec<u8>)> = Vec::new();
+    // Versions are held in memory: files of at most MAX_TEXT bytes, at most 4 * MAX_TEXT bytes in
+    // all. Older history is cut there, and its lines belong to the oldest version read.
+    let mut held = 0u64;
+    let too_large = || exit(128, format!("fatal: {path} is larger than {} MiB", fsutil::MAX_TEXT >> 20));
     let mut _scan = None;
     if rev.is_none() {
         if let Some(l) = &line {
             let scan = repo.scan(l)?;
+            if fsutil::lmeta(&scan.path, &path).map(|m| m.size > fsutil::MAX_TEXT).unwrap_or(false) {
+                return Err(too_large());
+            }
             if let Ok(d) = fsutil::read_file(&scan.path, &path) {
+                held += d.len() as u64;
                 versions.push((None, d));
             }
             _scan = Some(scan);
@@ -997,9 +1009,16 @@ pub fn blame(ctx: &Ctx, args: &[String]) -> Result<i32> {
             Ok(r) => r,
             Err(_) => break,
         };
+        if versions.is_empty() && fsutil::lmeta(&root, &path).map(|m| m.size > fsutil::MAX_TEXT).unwrap_or(false) {
+            return Err(too_large());
+        }
         match fsutil::read_file(&root, &path) {
             Ok(d) => {
                 if versions.last().map(|v| v.1 != d).unwrap_or(true) {
+                    held += d.len() as u64;
+                    if held > 4 * fsutil::MAX_TEXT && !versions.is_empty() {
+                        break;
+                    }
                     versions.push((Some(s.clone()), d));
                 } else if let Some(last) = versions.last_mut() {
                     if last.0.is_some() {
@@ -1331,8 +1350,11 @@ pub fn ls_files(ctx: &Ctx, args: &[String]) -> Result<i32> {
         })?;
         for (p, m) in v {
             if a.has("-s") {
-                let data = fsutil::entry_bytes(&idx, &p)?;
-                out!(ctx, "{:06o} {} 0\t{}{}", m.git_mode(), fsutil::git_blob_id(&data), show(&p), end);
+                let id = match m.ftype {
+                    fsutil::FType::File => fsutil::git_blob_id_file(&idx, &p)?,
+                    _ => fsutil::git_blob_id(&fsutil::entry_bytes(&idx, &p)?),
+                };
+                out!(ctx, "{:06o} {} 0\t{}{}", m.git_mode(), id, show(&p), end);
             } else {
                 out!(ctx, "{}{}", show(&p), end);
             }

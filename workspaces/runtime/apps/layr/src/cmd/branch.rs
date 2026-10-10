@@ -39,7 +39,6 @@ pub fn branch(ctx: &Ctx, args: &[String]) -> Result<i32> {
         .flag("--show-current")
         .flag("--path")
         .value("--owner")
-        .value("--group")
         .optional("--format")
         .value("--contains")
         .flag("-q|--quiet");
@@ -59,7 +58,7 @@ pub fn branch(ctx: &Ctx, args: &[String]) -> Result<i32> {
         }
         for name in &a.pos {
             let l = repo.line(name)?;
-            repo.can_write_line(ctx, &l)?;
+            repo.authorize_line(ctx, &l, crate::repo::LineOp::Manage)?;
             if current.as_ref().map(|c| c.id == l.id).unwrap_or(false) {
                 return Err(exit(1, format!("error: cannot delete line '{name}' used as the current folder")));
             }
@@ -91,6 +90,8 @@ pub fn branch(ctx: &Ctx, args: &[String]) -> Result<i32> {
             repo.commit_record(ctx, rec)?;
             crate::btrfs::delete_tree(&repo.working(&l))?;
             repo.drop_stage(&l)?;
+            // The owner of a deleted line no longer reads the git objects.
+            crate::gitbridge::sync_store_access(repo)?;
             outln!(ctx, "Deleted line {} (was {}).", l.name, ids::short(&l.head));
         }
         return Ok(0);
@@ -103,7 +104,7 @@ pub fn branch(ctx: &Ctx, args: &[String]) -> Result<i32> {
         };
         crate::store::check_name("line", &new)?;
         let l = repo.line(&old)?;
-        repo.can_write_line(ctx, &l)?;
+        repo.authorize_line(ctx, &l, crate::repo::LineOp::Manage)?;
         let _lock = repo.p.lock()?;
         if repo.p.db.line_by_name(&new)?.is_some() {
             return Err(exit(128, format!("fatal: a line named '{new}' already exists")));
@@ -139,25 +140,15 @@ pub fn branch(ctx: &Ctx, args: &[String]) -> Result<i32> {
             },
         };
         let owner = owner_arg(ctx, a.get("--owner"))?;
-        if owner != ctx.caller.uid && !repo.is_lead(ctx) {
-            return Err(exit(128, "fatal: only the project lead can create a line for another user"));
+        repo.require(ctx, "line.create").map_err(|e| exit(128, format!("fatal: {e}")))?;
+        if owner != ctx.caller.uid {
+            repo.require(ctx, "line.manage").map_err(|e| exit(128, format!("fatal: a line for another user: {e}")))?;
         }
         if owner == 0 && !ctx.caller.is_root() {
             return Err(exit(128, "fatal: only root can create a line owned by root"));
         }
-        let group = a.get("--group").map(|s| s.to_string());
-        if let Some(g) = &group {
-            if repo.p.db.group(g)?.is_none() {
-                return Err(exit(128, format!("fatal: group '{g}' does not exist (layr group create {g})")));
-            }
-        }
         let _lock = repo.p.lock()?;
-        let l = repo.create_line(ctx, name, &start, owner, group.clone())?;
-        if let Some(g) = group {
-            let mut rec = Record::new("group.add");
-            rec.data = serde_json::json!({"name": g, "line": l.id});
-            repo.commit_record(ctx, rec)?;
-        }
+        let l = repo.create_line(ctx, name, &start, owner)?;
         if a.has("--path") {
             outln!(ctx, "{}", repo.working(&l).display());
         } else if !a.has("-q") {
@@ -306,7 +297,7 @@ pub fn adopt(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let repo = &h.repo;
     let name = a.pos.first().ok_or_else(|| exit(128, "usage: layr adopt <line> [--state <rev>|--head]"))?;
     let l = repo.line(name)?;
-    repo.can_write_line(ctx, &l)?;
+    repo.authorize_line(ctx, &l, crate::repo::LineOp::Manage)?;
     let _lock = repo.p.lock()?;
     let w = repo.working(&l);
     if w.exists() {
@@ -327,6 +318,7 @@ pub fn adopt(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let mut moved = l.clone();
     moved.machine = repo.p.store.machine.id.clone();
     repo.materialize(&moved, &start, &w)?;
+    crate::gitbridge::sync_store_access(repo)?;
     let mut rec = Record::new("line.adopt");
     rec.lines.insert(
         l.id.clone(),
@@ -356,7 +348,7 @@ pub fn tag(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let repo = &h.repo;
     let line = h.line.clone();
     if a.has("-d") {
-        repo.require_lead(ctx, "delete tags")?;
+        repo.require(ctx, "tag")?;
         let _lock = repo.p.lock()?;
         for t in &a.pos {
             let id = repo.p.db.tag(t)?.ok_or_else(|| exit(1, format!("error: tag '{t}' not found.")))?;
@@ -384,13 +376,12 @@ pub fn tag(ctx: &Ctx, args: &[String]) -> Result<i32> {
     }
     let name = &a.pos[0];
     crate::store::check_name("tag", name)?;
+    // Tags are names of the whole project and keep their states from gc: the admin sets them.
+    repo.require(ctx, "tag")?;
     let id = revs::resolve(repo, line.as_ref(), a.pos.get(1).map(|s| s.as_str()).unwrap_or("HEAD"))?;
     let _lock = repo.p.lock()?;
-    if repo.p.db.tag(name)?.is_some() {
-        if !a.has("-f") {
-            return Err(exit(128, format!("fatal: tag '{name}' already exists")));
-        }
-        repo.require_lead(ctx, "move a tag")?;
+    if repo.p.db.tag(name)?.is_some() && !a.has("-f") {
+        return Err(exit(128, format!("fatal: tag '{name}' already exists")));
     }
     let mut rec = Record::new("tag");
     rec.data = serde_json::json!({"name": name, "state": id, "message": a.get("-m")});

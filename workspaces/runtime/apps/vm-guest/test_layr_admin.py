@@ -155,5 +155,19 @@ class ImportTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(command.await_args_list[-1].args[0][0], "systemctl")
 
 
+
+class PolicyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_project_rules_apply_once(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            projects = Projects(root, root / "store", AsyncMock(), None)
+            projects.layr = AsyncMock(return_value="")
+            with patch("layr_agents.ensure_agents_group"):
+                await projects.apply_policy("app")
+                await projects.apply_policy("app")
+            self.assertEqual([call.args[0] for call in projects.layr.await_args_list], [
+                ["--project", "app", "protect", "main", "--direct"],
+                ["--project", "app", "access", "deny", "@studio-agents", "access", "sync", "remote", "records", "backup"]])
+
 if __name__ == "__main__":
     unittest.main()

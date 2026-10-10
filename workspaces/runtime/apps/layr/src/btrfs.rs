@@ -15,6 +15,8 @@ const FIRST_FREE_OBJECTID: u64 = 256;
 pub struct SubvolInfo {
     pub uuid: String,
     pub received_uuid: Option<String>,
+    /// The subvolume this one is a snapshot of.
+    pub parent_uuid: Option<String>,
     pub readonly: bool,
 }
 
@@ -57,6 +59,7 @@ pub fn create_subvolume(path: &Path) -> Result<()> {
 
 /// Snapshot `src` (a subvolume) to `dst`. The destination must not exist.
 pub fn snapshot(src: &Path, dst: &Path, readonly: bool) -> Result<()> {
+    let _t = crate::trace::span(format!("snapshot {}", dst.display()));
     let s = File::open(src).with_context(|| format!("open {}", src.display()))?;
     let (dir, name) = split_parent(dst)?;
     sys::subvol_snapshot(s.as_fd(), dir.as_fd(), &name, readonly)
@@ -76,6 +79,7 @@ pub fn subvol_info(path: &Path) -> Result<SubvolInfo> {
     Ok(SubvolInfo {
         uuid: fmt_uuid(&raw.uuid).unwrap_or_default(),
         received_uuid: fmt_uuid(&raw.received_uuid),
+        parent_uuid: fmt_uuid(&raw.parent_uuid),
         readonly: flags & sys::SUBVOL_RDONLY != 0,
     })
 }
@@ -83,18 +87,39 @@ pub fn subvol_info(path: &Path) -> Result<SubvolInfo> {
 /// Delete a subvolume and every subvolume nested inside it, or a plain folder tree. The tree is
 /// walked through descriptors (no link is followed), because a line belongs to its owner.
 pub fn delete_tree(path: &Path) -> Result<()> {
+    let _t = crate::trace::span(format!("delete {}", path.display()));
     if std::fs::symlink_metadata(path).is_err() {
         return Ok(());
     }
     if is_subvolume(path) {
-        if !subvol_info(path)?.readonly {
-            crate::tree::Tree::open(path)?.destroy_nested()?;
+        // O(1) in the usual case. Only a subvolume with nested subvolumes (a working folder with
+        // its .git or build layers) answers ENOTEMPTY; then the nested ones are found and
+        // destroyed first, through descriptors.
+        let (dir, name) = split_parent(path)?;
+        match sys::subvol_destroy(dir.as_fd(), &name) {
+            Ok(()) => return Ok(()),
+            Err(e) if is_not_empty(&e) => {
+                let t = crate::tree::Tree::open(path)?;
+                // The usual nested subvolume first (the .git layer), then a full search.
+                if t.stat(".git").map(|m| m.is_dir() && m.ino == FIRST_FREE_OBJECTID).unwrap_or(false) {
+                    t.remove(".git")?;
+                    if sys::subvol_destroy(dir.as_fd(), &name).is_ok() {
+                        return Ok(());
+                    }
+                }
+                t.destroy_nested()?;
+                return delete_subvolume(path);
+            }
+            Err(e) => return Err(e.context(format!("delete subvolume {}", path.display()))),
         }
-        return delete_subvolume(path);
     }
     let parent = path.parent().ok_or_else(|| anyhow!("no parent: {}", path.display()))?;
     let name = path.file_name().ok_or_else(|| anyhow!("no name: {}", path.display()))?.to_string_lossy().into_owned();
     crate::tree::Tree::open(parent)?.remove(&name)
+}
+
+pub fn is_not_empty(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.downcast_ref::<std::io::Error>().map(|x| x.raw_os_error() == Some(39)).unwrap_or(false))
 }
 
 /// Reflink the whole content of `src` into `dst`.
@@ -110,6 +135,7 @@ pub fn clone_range(src: &File, src_off: u64, len: u64, dst: &File, dst_off: u64)
 
 /// Run `btrfs send` with no file data and return the raw stream.
 pub fn send_no_data(parent: &Path, child: &Path) -> Result<Vec<u8>> {
+    let _t = crate::trace::span("send --no-data");
     let out = Command::new("btrfs")
         .arg("send")
         .arg("-q")

@@ -4,7 +4,7 @@
 //! standard input, output and error and an open handle of its working folder as `SCM_RIGHTS`.
 //! The service forks one process per request (the parent stays single threaded), takes the
 //! caller's uid from `SO_PEERCRED`, runs the command with the caller's streams and returns the
-//! exit code. Commands check the caller against line owners and the project lead.
+//! exit code. Commands check the caller against line owners and the project admin.
 
 use crate::ctx::{Caller, Ctx};
 use crate::store::Store;
@@ -28,7 +28,7 @@ fn send_with_fds(sock: &UnixStream, data: &[u8], fds: &[BorrowedFd]) -> Result<(
     if !control.push(SendAncillaryMessage::ScmRights(fds)) {
         bail!("too many descriptors");
     }
-    let n = rustix::net::sendmsg(sock, &[std::io::IoSlice::new(data)], &mut control, SendFlags::empty())?;
+    let n = rustix::net::sendmsg(sock, &[std::io::IoSlice::new(data)], &mut control, SendFlags::NOSIGNAL)?;
     if n < data.len() {
         (&*sock).write_all(&data[n..])?;
     }
@@ -64,12 +64,25 @@ pub fn forward(argv: &[String]) -> Result<i32> {
     let dir = std::fs::File::open(&cwd)?;
     let mut data = (req.len() as u32).to_be_bytes().to_vec();
     data.extend_from_slice(&req);
-    // The service answers "B" at once when it is busy, or "R" and the exit code at the end.
-    let _ = send_with_fds(&sock, &data, &[std::io::stdin().as_fd(), std::io::stdout().as_fd(), std::io::stderr().as_fd(), dir.as_fd()]);
+    // The service answers "B" at once when it is busy, or "R" and the exit code at the end. A
+    // busy service may close the connection before it reads the request, so the answer is read
+    // even when sending failed; without an answer, the send error is the reason.
+    let sent = send_with_fds(
+        &sock,
+        &data,
+        &[std::io::stdin().as_fd(), std::io::stdout().as_fd(), std::io::stderr().as_fd(), dir.as_fd()],
+    );
     let mut kind = [0u8; 1];
-    (&sock).read_exact(&mut kind).context("the layr service closed the connection")?;
+    if let Err(e) = (&sock).read_exact(&mut kind) {
+        sent.context("cannot send the request to the layr service")?;
+        return Err(anyhow!("the layr service closed the connection ({e})"));
+    }
     if kind[0] == b'B' {
         bail!("the layr service is busy (too many running requests); try again");
+    }
+    sent.context("cannot send the request to the layr service")?;
+    if kind[0] != b'R' {
+        bail!("unexpected answer from the layr service");
     }
     let mut code = [0u8; 4];
     (&sock).read_exact(&mut code).context("the layr service closed the connection")?;
@@ -209,8 +222,8 @@ fn periodic(root: &Path, hourly: bool) {
             let _ = crate::cmd::admin::run_gc(&ctx, &repo, false);
             if let Ok(Some(dir)) = repo.p.config_value("backup.dir") {
                 if let Some(d) = dir.as_str() {
-                    // Written as the lead of this machine, who configured the folder.
-                    let _ = crate::cmd::transfer::run_backup(&ctx, &repo, Path::new(d), false, repo.lead_ids());
+                    // Written as the admin of this machine, who configured the folder.
+                    let _ = crate::cmd::transfer::run_backup(&ctx, &repo, Path::new(d), false, repo.backup_writer());
                 }
             }
         }
