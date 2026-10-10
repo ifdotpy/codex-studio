@@ -16,6 +16,42 @@ and execution belong to the configurations in `workspaces/client/apps/web/`; the
 to [the server runner](../workspaces/runtime/apps/server/tests/server/run.py). Do not add a second handwritten list
 of the same tests to this document.
 
+## Choose an evidence scope
+
+Use the root [`justfile`](../justfile) for the three independent scopes:
+
+1. **One hypothesis:** `just test <package> [case]`; use `just test-plan` first
+   to print the exact native command and setup without executing it.
+2. **One change:** `just check <package>` runs that package's local checks;
+   `just check <package> --dry-run` prints the planned commands.
+3. **Pre-PR gate:** run the server and client suites described below and report
+   their results separately. A focused hypothesis does not replace this gate.
+
+Package names and directories come from pnpm and Cargo manifests, with `server`
+representing the current Python app. Native manifests and runners remain the
+owners of test discovery and selection. All facade commands work from a
+repository subdirectory and save complete test logs outside the checkout in
+`$XDG_CACHE_HOME/codex-studio/checks` (or `~/.cache/codex-studio/checks`). Set
+`CODEX_STUDIO_CHECKS_CACHE` to choose another location. The facade removes run
+directories older than 14 days at the start of each run; recent logs are kept
+for reproductions.
+
+For Vitest packages, the positional case is always a substring of the test
+file path, so `just test codex-agents-web errorPresentation` loads the matching
+file. Add `--name <pattern>` to pass a test-name filter (`-t`) as well, which
+lets a named case stay within one file. Cargo uses the positional case as its
+test-name filter and forwards runner options after `--` (for example,
+`just test studio-diagnostics tests::formatter_matches_python_json_dump_golden -- --exact`).
+Cargo target selectors such as `--test compatibility` are routed to Cargo, for
+example `just test studio-diagnostics '' -- --test compatibility`. The server
+uses its runner's `--filter` suite selector. `just test-plan` prints the
+selector and the exact native command without execution.
+
+Each pnpm package declares its focused recipe mapping in its manifest under
+`codexStudioChecks`: `test` names the focused test script, and `check` lists
+the package-local check scripts. These mappings must invoke only that package;
+they must not install dependencies or build unrelated packages.
+
 ## Choose a suite
 
 Run commands from the repository root after one `pnpm install --frozen-lockfile`.
@@ -94,7 +130,7 @@ linked, so there are no adjacent shared-library paths to allow. The runner
 fails if any blocked access was logged and prints the allowed executable
 separately.
 
-For a focused client check, forward a file filter to Vitest or Playwright:
+For manual native client checks outside the facade, forward a file filter to Vitest or Playwright:
 
 ```sh
 pnpm --filter codex-agents-web run test:unit -- tokenRate
@@ -175,6 +211,46 @@ Reports remain local. The initial mutation command is diagnostic and has no
 arbitrary score gate. A failing baseline test or runner error is a failed run,
 not a successful mutation score. Choose any future merge threshold using a
 measured baseline and an explicit scope.
+
+## Continuous integration
+
+The public GitHub Actions workflow runs on pull requests and pushes to `main`
+on `ubuntu-latest`. It uses read-only repository permissions, no secrets,
+locked dependency installation, and the same package commands listed in each
+check step. The Rust job reads the pinned toolchain in `rust-toolchain.toml`.
+The Node.js jobs use the Node 22 release line; the documented minimum is
+22.15. The Python steps use Python 3.14 (the runtime requires Python 3.11 or
+later) and prepare the digest-keyed managed environments through
+`install-cli.py --dev`; that command creates virtual environments and installs
+the pinned PyPI requirements, without installing provider binaries. Cache and
+command-bin directories stay under the runner temporary directory. The facade
+job downloads the Just 1.58.0 Linux release, checks its pinned SHA-256, and
+checks the reported version before invoking it.
+
+The generated OpenAPI TypeScript files are tied to Python 3.14's standard
+library HTTP status phrases. With the same pinned requirements, Python 3.12
+reports `Request Entity Too Large` for HTTP 413 while Python 3.14 reports
+`Content Too Large`; the generated descriptions and API schema hash therefore
+differ. CI pins 3.14 for API generation and the mypy ratchet until that
+interpreter-dependent output is made reproducible across supported Python
+versions.
+
+The CI gate deliberately excludes these checks until their stated issue work
+provides a green, bounded path:
+
+- `pnpm run lint:all` and `pnpm run format:check:all` currently exit 1 on
+  `main` because of existing findings. M-03.5 will add conservative affected
+  checks; changed-file lint and formatting can then be introduced without
+  making unrelated baseline findings block a pull request.
+- The full Python server suite has 15 failing suites on `main` and requires
+  provider binaries. M-03.1 will add independent package-level test selection
+  before this full suite is reconsidered for the gate.
+- The browser suite exceeds its 15-minute limit on `main`. M-03.6 will add
+  measured timing for representative checks before its CI runtime is selected.
+- Desktop tests that require Electron and a display remain outside this
+  headless Linux gate; M-02.5 tracks the remaining desktop verification.
+- macOS and Windows are not CI targets in this workflow. M-09.1 owns the
+  platform install, update, and rollback matrix that will define those jobs.
 
 ## Interpret evidence
 

@@ -12,5 +12,8 @@ There are no provider packages yet. Runtime and desktop apps call the bridge;
 the bridge does not import either app. Keep provider credentials and native
 session behavior with the provider integration that owns them.
 
-Focused check: `pnpm --filter studio-claude-bridge run test` from the repository
-root. The bridge manifest owns package commands.
+For one hypothesis, use `just test studio-claude-bridge [case]`; for a bridge
+change, use `just check studio-claude-bridge`. The root
+[`justfile`](../../justfile) discovers packages from manifests; the bridge
+manifest owns test execution and discovery. The pre-PR server/client gate is
+documented in [docs/testing.md](../../docs/testing.md).

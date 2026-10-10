@@ -90,7 +90,7 @@ For full-repository audits, run `pnpm run lint:all` and
 `pnpm run format:check:all`. Append paths after `--` to check selected files.
 
 `python3 workspaces/runtime/apps/server/src/install-cli.py` prepares the pinned Python API environment in
-the user cache and installs command links. Pass `--dev` to prepare a separate
+the user cache and installs command links. It also installs the Rust `codex-diagnostics` binary: if no packaged binary is available, the installer needs Cargo and the pinned Rust 1.99.0 toolchain to build it. Without Cargo or a prebuilt binary, installation fails with an explicit error. Pass `--dev` to prepare a separate
 development environment with mypy. Set `CODEX_AGENTS_PYTHON` to choose a
 Python 3.11+ interpreter with the API dependencies installed; the launcher
 validates it before use. Otherwise Studio uses its prepared environment, then
@@ -230,7 +230,7 @@ For browser access, run `codex-canvas` and open <http://127.0.0.1:4620>.
 Use `codex-control list` to inspect the same runtime from a terminal.
 The desktop package command is owned by its [manifest](../workspaces/client/apps/desktop/package.json).
 
-For a shareable process snapshot, run `python3 workspaces/runtime/apps/server/src/codex-diagnostics` while
+For a shareable process snapshot, run `codex-diagnostics` (or `scripts/codex-diagnostics` from the checkout) while
 Studio runs. The command calls the read-only `/api/diagnostics` endpoint. It
 reports the Studio process tree, resident memory and CPU by process kind,
 loaded Codex threads per connected account, live Claude queries, queue sizes,

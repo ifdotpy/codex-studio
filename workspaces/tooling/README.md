@@ -13,5 +13,8 @@ pre-commit hook.
 There are no tooling packages yet. Repository checks may inspect all workspaces
 but application code must not depend on this tooling app at runtime.
 
-Focused check: `pnpm --workspace-root run test:pre-commit`; the root manifest
-owns this command and the hook's fixture test.
+Use `just test codex-studio-tooling <case>` for one tooling hypothesis and
+`just check codex-studio-tooling` for its local check. The root manifest owns
+the tooling unit tests. The pre-commit hook fixture check remains
+`pnpm run test:pre-commit`; the pre-PR server/client gate is in
+[docs/testing.md](../../docs/testing.md).

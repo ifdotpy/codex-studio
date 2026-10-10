@@ -19,6 +19,11 @@ pnpm --filter codex-agents-desktop run start
 The root [`package.json`](package.json) owns root commands. Each app manifest
 owns its package commands; see the workspace guides below.
 
+For independent checks, `just` is the discoverable entry point: use one named
+test for a hypothesis, `just check <package>` for a package change, and the
+server/client suites in [docs/testing.md](docs/testing.md) as the pre-PR gate.
+`just packages` discovers current package names from workspace manifests.
+
 ## Where things live
 
 - [Runtime](workspaces/runtime/README.md): Python server, VM guest, and prompts.
