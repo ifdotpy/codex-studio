@@ -17,6 +17,9 @@ sys.path.insert(0, str(skill / 'scripts'))
 from codex_canvas import Canvas, make_server
 from codex_runtime import Runtime
 from studio_api.testing import read_runtime_state
+if os.environ.get('CODEX_PLAYWRIGHT_WEB_DIST'):
+    import codex_canvas
+    codex_canvas.WEB = Path(os.environ['CODEX_PLAYWRIGHT_WEB_DIST']).resolve()
 
 if os.environ.get('CAPACITY_UI_FIXTURE'):
     import codex_capacity_retry

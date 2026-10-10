@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -408,7 +408,10 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
 }) => {
   test.setTimeout(120_000);
   const root = fileURLToPath(new URL("../../../", import.meta.url));
-  const indexPath = join(root, "web/dist/index.html");
+  const state = await mkdtemp(join(tmpdir(), "studio-schema-gate-"));
+  const webDist = join(state, "web-dist");
+  await cp(join(root, "web/dist"), webDist, { recursive: true });
+  const indexPath = join(webDist, "index.html");
   const originalIndex = await readFile(indexPath, "utf8");
   let indexChanged = false;
   const browserFailures = [];
@@ -424,11 +427,13 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
       browserFailures.push(`${response.status()} ${response.url()} ${body}`);
     }
   });
-  const state = await mkdtemp(join(tmpdir(), "studio-schema-gate-"));
   const fixture = spawnFixture(
     process.env.PYTHON_BIN || "python3",
     ["-B", join(root, "tests/simple-ui-fixture.py"), state],
-    { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env } },
+    {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, CODEX_PLAYWRIGHT_WEB_DIST: webDist },
+    },
   );
   let fixtureLog = "";
   fixture.stderr.on("data", (chunk) => {
