@@ -14,7 +14,14 @@ test("sidebar status, alias validation, and compact choices", async ({
   await mkdir(evidence, { recursive: true });
   const proc = spawnFixture(
     "python3",
-    ["-B", join(root, "tests/sidebar-drag-fixture.py"), stateDir],
+    [
+      "-B",
+      join(
+        root,
+        "workspaces/runtime/apps/server/tests/sidebar-drag-fixture.py",
+      ),
+      stateDir,
+    ],
     {
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, SIDEBAR_ALIAS_FIXTURE: "1" },

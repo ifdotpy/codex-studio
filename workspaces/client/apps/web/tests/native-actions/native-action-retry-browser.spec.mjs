@@ -20,7 +20,14 @@ test("Native action retry browser", async () => {
   const evidence = await mkdtemp(join(tmpdir(), "studio-action-retry-"));
   const fixture = spawn(
     process.env.PYTHON || "python3",
-    ["-B", join(repo, "tests/native-action-ui-fixture.py"), evidence],
+    [
+      "-B",
+      join(
+        repo,
+        "workspaces/runtime/apps/server/tests/native-action-ui-fixture.py",
+      ),
+      evidence,
+    ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   let browser,

@@ -15,7 +15,14 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
   console.log("Sidebar fixture state retained after worker cleanup:", stateDir);
   const proc = spawn(
     "python3",
-    ["-B", join(root, "tests/sidebar-drag-fixture.py"), stateDir],
+    [
+      "-B",
+      join(
+        root,
+        "workspaces/runtime/apps/server/tests/sidebar-drag-fixture.py",
+      ),
+      stateDir,
+    ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   let log = "";

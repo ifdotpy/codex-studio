@@ -112,7 +112,7 @@ test("Message receipt pagination browser", async ({
   finally:
       db.close()
   `.replace(/^ {2}/gm, ""),
-        join(repo, "scripts"),
+        join(repo, "workspaces/runtime/apps/server/src"),
         temporary,
         agent,
         phase,

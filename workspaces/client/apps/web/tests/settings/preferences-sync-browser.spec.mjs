@@ -12,7 +12,14 @@ test("visual preferences update across contexts and seed a fresh first render", 
   console.log("Preference evidence:", evidence);
   const proc = spawnFixture(
     "python3",
-    ["-B", join(root, "tests/sidebar-drag-fixture.py"), evidence],
+    [
+      "-B",
+      join(
+        root,
+        "workspaces/runtime/apps/server/tests/sidebar-drag-fixture.py",
+      ),
+      evidence,
+    ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   let log = "";

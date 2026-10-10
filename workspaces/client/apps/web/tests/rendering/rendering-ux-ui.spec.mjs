@@ -15,8 +15,8 @@ test("rendering ux ui", async ({ page: runnerPage }) => {
   );
   const { createServer } = await import(require.resolve("vite"));
   const name = `.rendering-check-${process.pid}`;
-  const entry = join(root, "web", `${name}.tsx`);
-  const html = join(root, "web", `${name}.html`);
+  const entry = join(root, "workspaces/client/apps/web", `${name}.tsx`);
+  const html = join(root, "workspaces/client/apps/web", `${name}.html`);
   const artifacts = await mkdtemp(join(tmpdir(), "studio-rendering-theme-"));
   let server;
   try {

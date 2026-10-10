@@ -38,7 +38,7 @@ test("Ux Chat Ui", async ({
   const entry = join(temporary, "index.html");
   await writeFile(
     entry,
-    `<html><div id="conversation-header-tools"></div><div id="root"></div><script type="module" src="${join(repo, "tests/fixtures/ux-chat.tsx")}"></script></html>`,
+    `<html><div id="conversation-header-tools"></div><div id="root"></div><script type="module" src="${join(repo, "workspaces/runtime/apps/server/tests/fixtures/ux-chat.tsx")}"></script></html>`,
   );
   let server;
   try {
