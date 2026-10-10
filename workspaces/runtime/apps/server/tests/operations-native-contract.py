@@ -1,14 +1,25 @@
 """Installed Rust lifecycle binding contract; no backend/provider involved."""
 
+# Support direct execution without runner-provided PYTHONPATH.
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
+
 import hashlib
 import json
-from pathlib import Path
 import socket
 import subprocess
 import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
+
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 
 import studio_operations_native as native
 

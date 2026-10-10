@@ -17,10 +17,6 @@ from codex_cache_paths import cache_dir
 from codex_layout import REPOSITORY_ROOT, SERVER_APP_ROOT, SERVER_SOURCE_ROOT
 
 API_IMPORT_CHECK = "import fastapi, httpx, pydantic, uvicorn, watchdog"
-OPERATIONS_IMPORT_CHECK = (
-    "import studio_operations_native as m; assert m.PROTOCOL_VERSION == 1"
-)
-OPERATIONS_BUILD_COMMAND = "cargo build --release -p studio-operations-python"
 MINIMUM_PYTHON = (3, 11)
 
 
@@ -94,20 +90,6 @@ def interpreter_has_api(python: Path) -> bool:
     return True
 
 
-def interpreter_has_operations(python: Path) -> bool:
-    try:
-        subprocess.run(
-            [str(python), "-c", OPERATIONS_IMPORT_CHECK],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return True
-
-
 def _publish_environment(
     staging: Path, environment_dir: Path, python: Path
 ) -> Path:
@@ -141,27 +123,22 @@ def _candidate_python(value: str) -> Path | None:
 
 
 def resolve_python(
-    scripts: Path, environment: Mapping[str, str] | None = None,
-    *, require_operations: bool = True,
+    scripts: Path, environment: Mapping[str, str] | None = None
 ) -> Path:
     """Pick explicit, managed, then pre-equipped system Python in that order."""
     values = os.environ if environment is None else environment
     explicit = values.get("CODEX_AGENTS_PYTHON")
     if explicit:
         candidate = _candidate_python(explicit)
-        if (candidate is None or not interpreter_has_api(candidate)
-                or require_operations and not interpreter_has_operations(candidate)):
+        if candidate is None or not interpreter_has_api(candidate):
             raise RuntimeError(
                 "CODEX_AGENTS_PYTHON must name Python 3.11+ with the API "
-                "dependencies and studio_operations_native installed. Build the "
-                f"module with `{OPERATIONS_BUILD_COMMAND}` and rerun install-cli.py."
+                "dependencies installed from requirements.txt."
             )
         return candidate
 
     prepared = managed_python(scripts, values)
-    if prepared.is_file() and interpreter_has_api(prepared) and (
-        not require_operations or interpreter_has_operations(prepared)
-    ):
+    if prepared.is_file() and interpreter_has_api(prepared):
         return prepared
 
     candidates: list[Path] = []
@@ -170,14 +147,10 @@ def resolve_python(
         if found is not None and found not in candidates:
             candidates.append(found)
     for candidate in candidates:
-        if interpreter_has_api(candidate) and (
-            not require_operations or interpreter_has_operations(candidate)
-        ):
+        if interpreter_has_api(candidate):
             return candidate
     raise RuntimeError(
-        "No Python 3.11+ interpreter has the required API dependencies and "
-        "studio_operations_native. "
-        f"Build the module with `{OPERATIONS_BUILD_COMMAND}` and run install-cli.py, or "
+        "No Python 3.11+ interpreter has FastAPI, Pydantic, Uvicorn, and HTTPX. "
         "Run `python3 workspaces/runtime/apps/server/src/install-cli.py` to prepare the managed "
         "environment, or set CODEX_AGENTS_PYTHON to an equipped interpreter."
     )
