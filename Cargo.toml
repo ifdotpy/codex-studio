@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "workspaces/runtime/apps/diagnostics",
+    "workspaces/runtime/packages/operations",
 ]
 
 [workspace.package]
