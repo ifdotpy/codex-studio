@@ -13,8 +13,7 @@ isolate_supervisor_environment()
 
 import http.client
 import json
-from pathlib import Path
-from contextlib import nullcontext
+import os
 import queue
 import sqlite3
 import subprocess
@@ -24,10 +23,26 @@ import threading
 import time
 import typing
 import types
+from contextlib import nullcontext
 from enum import Enum
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+
+
+def diagnostics_binary():
+    configured = os.environ.get("CODEX_DIAGNOSTICS_BIN")
+    candidates = [Path(configured)] if configured else []
+    target = Path(os.environ.get("CARGO_TARGET_DIR", REPOSITORY_ROOT / "target"))
+    if not target.is_absolute():
+        target = REPOSITORY_ROOT / target
+    candidates.extend(
+        (target / "release/codex-diagnostics", target / "debug/codex-diagnostics")
+    )
+    return next(
+        (path for path in candidates if path.is_file() and os.access(path, os.X_OK)),
+        None,
+    )
 
 from pydantic import BaseModel
 
@@ -192,7 +207,14 @@ class DiagnosticsContract(unittest.TestCase):
                     self.assertEqual(body, {key: value for key, value in fixture.items() if key != "supervisor"})
                     self.assertIs(type(supervisor["mode"]), bool)
                     connection.close()
-                    cli = subprocess.run([sys.executable, str(SERVER_SOURCE_ROOT / "codex-diagnostics"), "--port",
+                    binary = diagnostics_binary()
+                    if binary is None:
+                        self.skipTest(
+                            "SKIP: codex-diagnostics binary unavailable; build with "
+                            "`cargo build --locked --release -p studio-diagnostics` "
+                            "or set CODEX_DIAGNOSTICS_BIN"
+                        )
+                    cli = subprocess.run([str(binary), "--port",
                                           str(server.server_port)], capture_output=True,
                                          text=True, timeout=5, check=True)
                     printed = json.loads(cli.stdout)

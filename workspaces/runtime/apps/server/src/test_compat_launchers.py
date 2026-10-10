@@ -209,6 +209,7 @@ class InstallerCompatibilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "bin"
             environment = {**os.environ, "CODEX_AGENTS_PYTHON": sys.executable}
+            diagnostic = REPOSITORY_ROOT / "target/release/codex-diagnostics"
             with (
                 patch.dict(os.environ, environment, clear=True),
                 patch.object(self.installer, "resolve_python", return_value=Path(sys.executable)),
@@ -219,6 +220,32 @@ class InstallerCompatibilityTests(unittest.TestCase):
                 link = target / name
                 self.assertTrue(link.is_symlink(), name)
                 self.assertEqual(link.resolve(), SERVER_SOURCE_ROOT / name)
+            self.assertTrue((target / "codex-diagnostics").is_symlink())
+            self.assertEqual((target / "codex-diagnostics").resolve(), diagnostic)
+
+    def test_install_keeps_existing_commands_without_rust_or_binary(
+        self: InstallerCompatibilityTests,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory) / "project"
+            source_root = project / "workspaces/runtime/apps/server/src"
+            source_root.mkdir(parents=True)
+            for name in self.installer.COMMANDS:
+                if name == "codex-diagnostics":
+                    continue
+                source = source_root / name
+                source.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+                source.chmod(0o755)
+            target = Path(directory) / "bin"
+            from contextlib import redirect_stderr
+            from io import StringIO
+            warning = StringIO()
+            with redirect_stderr(warning):
+                links = self.installer.install(project, target)
+            self.assertEqual(len(links), len(self.installer.COMMANDS))
+            self.assertEqual(len(list(target.iterdir())), len(self.installer.COMMANDS))
+            self.assertFalse((target / "codex-diagnostics").exists())
+            self.assertIn("cargo build --locked --release -p studio-diagnostics", warning.getvalue())
 
     def test_replaces_only_links_into_old_scripts_tree(
         self: InstallerCompatibilityTests,
@@ -228,6 +255,10 @@ class InstallerCompatibilityTests(unittest.TestCase):
             project = root / "new"
             source_root = project / "workspaces/runtime/apps/server/src"
             source_root.mkdir(parents=True)
+            diagnostic = project / "target/release/codex-diagnostics"
+            diagnostic.parent.mkdir(parents=True)
+            diagnostic.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            diagnostic.chmod(0o755)
             old = root / "old"
             target = root / "bin"
             target.mkdir()
@@ -238,9 +269,10 @@ class InstallerCompatibilityTests(unittest.TestCase):
                 (target / name).symlink_to(old / "scripts" / name)
 
             links = self.installer.install(project, target, old)
-            self.assertEqual(len(links), len(self.installer.COMMANDS))
+            self.assertEqual(len(links), len(self.installer.COMMANDS) + 1)
             for name in self.installer.COMMANDS:
                 self.assertEqual((target / name).resolve(), source_root / name)
+            self.assertEqual((target / "codex-diagnostics").resolve(), diagnostic)
 
 
 if __name__ == "__main__":

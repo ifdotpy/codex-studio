@@ -1,7 +1,15 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+} from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -12,6 +20,7 @@ const COST = {
   server: "focused; isolated Python suite runner",
 };
 const NOT_STARTED = "backend, browser, Electron, provider";
+const LOG_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 
 function fail(message) {
   throw new Error(message);
@@ -180,13 +189,13 @@ function manifestFor(item) {
 
 function pnpmTestCommand(item, caseName) {
   const manifest = manifestFor(item);
-  const script = manifest.scripts?.["test:unit"]
-    ? "test:unit"
-    : manifest.scripts?.test
-      ? "test"
-      : null;
+  const script = manifest.codexStudioChecks?.test;
   if (!script)
-    fail(`Package ${item.name} has no focused test script in ${item.manifest}`);
+    fail(
+      `Package ${item.name} must declare codexStudioChecks.test in ${item.manifest}`,
+    );
+  if (!manifest.scripts?.[script])
+    fail(`Package ${item.name} declares missing test script ${script}`);
   const scriptText = manifest.scripts[script];
   const nodeTest = scriptText.match(/node --test(?:\s+(.*))?/);
   if (nodeTest && caseName) {
@@ -206,20 +215,14 @@ function pnpmTestCommand(item, caseName) {
     args.push(...(isFile ? [caseName] : (nodeTest[1]?.split(/\s+/) ?? [])));
     return [["pnpm", args]];
   }
-  if (caseName && /\bvitest\b/.test(scriptText)) {
+  if (/\bvitest\b/.test(scriptText)) {
     const config = scriptText.match(/--config(?:=|\s+)([^\s]+)/)?.[1];
     const args = ["--filter", item.name, "exec", "vitest", "run"];
     if (config) args.push("--config", config);
-    if (
-      /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(caseName) ||
-      caseName.includes("/") ||
-      caseName.includes("\\")
-    )
-      args.push(caseName);
-    else args.push("-t", caseName);
+    if (caseName) args.push(caseName);
     return [["pnpm", args]];
   }
-  if (caseName && !/\bvitest\b/.test(scriptText))
+  if (caseName && !/\bvitest\b/.test(scriptText) && !nodeTest)
     fail(
       `Package ${item.name} does not expose a native Vitest filter through its test script`,
     );
@@ -227,37 +230,46 @@ function pnpmTestCommand(item, caseName) {
   return [["pnpm", args]];
 }
 
-export function commandFor(root, item, action, caseName = "") {
+export function commandFor(root, item, action, caseName = "", options = {}) {
   if (item.ecosystem === "pnpm") {
-    if (action === "test") return pnpmTestCommand(item, caseName);
-    const manifest = manifestFor(item);
-    if (manifest.scripts?.check)
-      return [["pnpm", ["--filter", item.name, "run", "check"]]];
-    const commands = [];
-    if (
-      manifest.dependencies?.typescript ||
-      manifest.devDependencies?.typescript
-    )
-      commands.push([
-        "pnpm",
-        ["--filter", item.name, "exec", "tsc", "--noEmit"],
-      ]);
-    for (const script of ["lint", "typecheck", "test:unit"]) {
-      if (manifest.scripts?.[script])
-        commands.push(["pnpm", ["--filter", item.name, "run", script]]);
+    if (action === "test") {
+      const commands = pnpmTestCommand(item, caseName);
+      if (options.name) {
+        const args = commands[0][1];
+        if (!args.includes("vitest"))
+          fail("--name is supported only for Vitest packages");
+        args.push("-t", options.name);
+      }
+      return commands;
     }
-    if (!commands.length && manifest.scripts?.test)
-      commands.push(["pnpm", ["--filter", item.name, "run", "test"]]);
-    if (!commands.length)
+    const manifest = manifestFor(item);
+    const scripts = manifest.codexStudioChecks?.check;
+    if (!Array.isArray(scripts) || scripts.length === 0)
       fail(
-        `Package ${item.name} does not define local check scripts or a TypeScript compiler`,
+        `Package ${item.name} must declare a non-empty codexStudioChecks.check array in ${item.manifest}`,
       );
-    return commands;
+    return scripts.map((script) => {
+      if (!manifest.scripts?.[script])
+        fail(`Package ${item.name} declares missing check script ${script}`);
+      return ["pnpm", ["--filter", item.name, "run", script]];
+    });
   }
   if (item.ecosystem === "cargo") {
     if (action === "test")
       return [
-        ["cargo", ["test", "-p", item.name, ...(caseName ? [caseName] : [])]],
+        [
+          "cargo",
+          [
+            "test",
+            "-p",
+            item.name,
+            ...(options.cargoTargets ?? []),
+            ...(caseName ? [caseName] : []),
+            ...(options.passthrough?.length
+              ? ["--", ...options.passthrough]
+              : []),
+          ],
+        ],
       ];
     return [
       ["cargo", ["fmt", "--check", "-p", item.name]],
@@ -278,7 +290,8 @@ export function commandFor(root, item, action, caseName = "") {
         [
           "python3",
           [
-            "-B",
+            python,
+            "--exec",
             path.join(
               root,
               "workspaces/runtime/apps/server/src/test-server.py",
@@ -301,21 +314,55 @@ function reproduction(root, commands) {
     .map(([bin, args]) => {
       const targetEnv =
         bin === "cargo"
-          ? `CARGO_TARGET_DIR=${shellQuote(path.join(root, "target"))} `
+          ? `CARGO_TARGET_DIR=${shellQuote(cargoTarget(root))} `
           : "";
       return `cd ${shellQuote(root)} && ${targetEnv}${[bin, ...args].map(shellQuote).join(" ")}`;
     })
     .join(" && ");
 }
 
-function plan(root, item, action, caseName, commands) {
-  const workingDirectory =
-    item.ecosystem === "pnpm" ? path.resolve(root, item.dir) : root;
+function cargoTarget(root) {
+  return process.env.CARGO_TARGET_DIR || path.join(root, "target");
+}
+
+function cacheDirectory() {
+  return path.resolve(
+    process.env.CODEX_STUDIO_CHECKS_CACHE ||
+      path.join(
+        process.env.XDG_CACHE_HOME || path.join(homedir(), ".cache"),
+        "codex-studio",
+        "checks",
+      ),
+  );
+}
+
+export function pruneLogs(logRoot, now = Date.now()) {
+  mkdirSync(logRoot, { recursive: true });
+  for (const entry of readdirSync(logRoot)) {
+    if (!entry.startsWith("run-")) continue;
+    const fullPath = path.join(logRoot, entry);
+    try {
+      if (now - statSync(fullPath).mtimeMs > LOG_RETENTION_MS)
+        rmSync(fullPath, { recursive: true, force: true });
+    } catch {
+      // A concurrent cleanup or non-directory entry does not block this run.
+    }
+  }
+}
+
+function makeLogDirectory() {
+  const root = cacheDirectory();
+  pruneLogs(root);
+  return mkdtempSync(path.join(root, `run-${Date.now()}-`));
+}
+
+function plan(root, item, action, caseName, commands, options = {}) {
+  const workingDirectory = root;
   const setup =
     item.ecosystem === "pnpm"
       ? "Pinned pnpm and workspace dependencies installed"
       : item.ecosystem === "cargo"
-        ? `Pinned Rust toolchain and required crates available; target output uses ${path.join(root, "target")}`
+        ? `Pinned Rust toolchain and required crates available; target output uses ${cargoTarget(root)}`
         : "Managed Python runtime and server development dependencies prepared";
   return {
     package: item.name,
@@ -331,6 +378,10 @@ function plan(root, item, action, caseName, commands) {
     workingDirectory,
     invocationDirectory: root,
     command: reproduction(root, commands),
+    selector:
+      action === "check"
+        ? "mapped package checks (no test filter)"
+        : selectorDescription(item, caseName, options),
     requiredSetup: setup,
     reason:
       item.ecosystem === "pnpm"
@@ -339,9 +390,30 @@ function plan(root, item, action, caseName, commands) {
           ? "Compile and run only the selected Cargo package and its declared dependencies."
           : "Pass the selected suite filter to the server runner, which owns discovery and isolation.",
     notStarted: NOT_STARTED,
-    costCategory: COST[item.ecosystem],
+    costCategory:
+      action === "check"
+        ? item.ecosystem === "pnpm"
+          ? "package-local type and unit checks"
+          : item.ecosystem === "cargo"
+            ? "package-local fmt, clippy, and unit checks"
+            : "server runtime type check"
+        : COST[item.ecosystem],
     executesNothing: true,
   };
+}
+
+function selectorDescription(item, caseName, options) {
+  if (item.ecosystem === "cargo")
+    return `Cargo test-name substring${options.cargoTargets?.length ? `; Cargo target selection: ${options.cargoTargets.join(" ")}` : ""}${options.passthrough?.length ? `; test harness args after --: ${options.passthrough.join(" ")}` : ""}`;
+  if (item.ecosystem === "server")
+    return "server runner --filter suite substring";
+  const manifest = manifestFor(item);
+  const script = manifest.scripts?.[manifest.codexStudioChecks?.test] ?? "";
+  if (/\bvitest\b/.test(script))
+    return `${caseName ? `Vitest positional file-path substring: ${caseName}` : "none (package default)"}${options.name ? `; Vitest -t name substring: ${options.name}` : ""}`;
+  return caseName
+    ? `Node native name filter: ${caseName}`
+    : "none (package default)";
 }
 
 function reportPlan(value, json) {
@@ -353,6 +425,7 @@ function reportPlan(value, json) {
         `Working directory: ${value.workingDirectory}`,
         `Invocation directory: ${value.invocationDirectory}`,
         `Command: ${value.command}`,
+        `Selector: ${value.selector}`,
         `Required setup: ${value.requiredSetup}`,
         `Not started: ${value.notStarted}`,
         `Cost: ${value.costCategory}`,
@@ -506,10 +579,16 @@ function runLogged(command, args, cwd, log, environment = process.env) {
   });
 }
 
-export async function execute(root, item, caseName, asJson = false) {
-  const commands = commandFor(root, item, "test", caseName);
-  const run = plan(root, item, "test", caseName, commands);
-  const logDir = mkdtempSync(path.join(tmpdir(), "codex-studio-check-"));
+export async function execute(
+  root,
+  item,
+  caseName,
+  asJson = false,
+  options = {},
+) {
+  const commands = commandFor(root, item, "test", caseName, options);
+  const run = plan(root, item, "test", caseName, commands, options);
+  const logDir = makeLogDirectory();
   const logPath = path.join(logDir, "full.log");
   mkdirSync(logDir, { recursive: true });
   appendFileSync(logPath, "");
@@ -521,7 +600,7 @@ export async function execute(root, item, caseName, asJson = false) {
   for (const [bin, args] of commands) {
     const env =
       bin === "cargo"
-        ? { ...process.env, CARGO_TARGET_DIR: path.join(root, "target") }
+        ? { ...process.env, CARGO_TARGET_DIR: cargoTarget(root) }
         : process.env;
     const child = await runLogged(bin, args, root, logPath, env);
     output += child.output;
@@ -577,8 +656,58 @@ export async function execute(root, item, caseName, asJson = false) {
 
 function usage() {
   process.stdout.write(
-    "Usage: facade.mjs packages | test <package> [case] [--json] | test-plan <package> [case] [--json] | check <package> [--dry-run] [--json]\n",
+    "Usage: facade.mjs packages | test <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-plan <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | check <package> [--dry-run] [--json]\n",
   );
+}
+
+export function parseSelection(requestedCase, rest) {
+  let name = "";
+  let passthrough = [];
+  let cargoTargets = [];
+  const flags = [];
+  for (let index = 0; index < rest.length; index += 1) {
+    const arg = rest[index];
+    if (arg === "--") {
+      const forwarded = rest
+        .slice(index + 1)
+        .filter((value) => value !== "--json");
+      for (let cursor = 0; cursor < forwarded.length; cursor += 1) {
+        const option = forwarded[cursor];
+        if (["--test", "--bin", "--example", "--bench"].includes(option)) {
+          if (!forwarded[cursor + 1]) fail(`${option} requires a target name`);
+          cargoTargets.push(option, forwarded[cursor + 1]);
+          cursor += 1;
+        } else if (
+          [
+            "--lib",
+            "--bins",
+            "--examples",
+            "--benches",
+            "--all-targets",
+          ].includes(option)
+        ) {
+          cargoTargets.push(option);
+        } else passthrough.push(option);
+      }
+      break;
+    }
+    if (arg === "--name") {
+      const values = [];
+      while (
+        rest[index + 1] &&
+        !["--", "--json", "--dry-run", "--name"].includes(rest[index + 1])
+      ) {
+        values.push(rest[index + 1]);
+        index += 1;
+      }
+      name = values.join(" ");
+      if (!name) fail("--name requires a pattern");
+    } else if (arg !== "--json" && arg !== "--dry-run") flags.push(arg);
+  }
+  return {
+    caseName: [requestedCase, ...flags].filter(Boolean).join(" "),
+    options: { name, passthrough, cargoTargets },
+  };
 }
 
 export async function main(argv = process.argv.slice(2)) {
@@ -605,23 +734,24 @@ export async function main(argv = process.argv.slice(2)) {
   }
   const root = rootFrom();
   const item = target(root, packageName);
-  const caseName =
-    action === "check" || requestedCase === "--json"
+  const selection = parseSelection(
+    action === "check" ||
+      requestedCase === "--json" ||
+      requestedCase === "--dry-run" ||
+      requestedCase === "--name"
       ? ""
-      : [
-          requestedCase,
-          ...rest.filter((arg) => arg !== "--json" && arg !== "--dry-run"),
-        ]
-          .filter(Boolean)
-          .join(" ");
+      : requestedCase,
+    requestedCase === "--name" ? [requestedCase, ...rest] : rest,
+  );
+  const { caseName, options } = selection;
   const effective = action === "test-plan" ? "test" : action;
-  const commands = commandFor(root, item, effective, caseName);
+  const commands = commandFor(root, item, effective, caseName, options);
   if (action === "test-plan" || (action === "check" && dryRun)) {
-    reportPlan(plan(root, item, effective, caseName, commands), json);
+    reportPlan(plan(root, item, effective, caseName, commands, options), json);
     return 0;
   }
   if (action === "check") {
-    const dir = mkdtempSync(path.join(tmpdir(), "codex-studio-check-plan-"));
+    const dir = makeLogDirectory();
     const log = path.join(dir, "check.log");
     appendFileSync(log, "");
     const started = performance.now();
@@ -630,7 +760,7 @@ export async function main(argv = process.argv.slice(2)) {
     for (const [bin, args] of commands) {
       const env =
         bin === "cargo"
-          ? { ...process.env, CARGO_TARGET_DIR: path.join(root, "target") }
+          ? { ...process.env, CARGO_TARGET_DIR: cargoTarget(root) }
           : process.env;
       const result = await runLogged(bin, args, root, log, env);
       output += result.output;
@@ -678,7 +808,7 @@ export async function main(argv = process.argv.slice(2)) {
       );
     return exitCode;
   }
-  const result = await execute(root, item, caseName, json);
+  const result = await execute(root, item, caseName, json, options);
   if (result.signal) process.kill(process.pid, result.signal);
   return result.exitCode;
 }

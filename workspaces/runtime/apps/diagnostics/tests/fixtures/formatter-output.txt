@@ -1,0 +1,25 @@
+{
+  "array": [
+    null,
+    true,
+    false,
+    {},
+    []
+  ],
+  "big": 1234567890123456789012345678901234567890,
+  "controls": "\b\f\r\u007f",
+  "exp1": 1000000.0,
+  "exp2": 1e+16,
+  "exp3": 1e-05,
+  "exp4": 0.0001,
+  "float": 1.0,
+  "float-overflow": Infinity,
+  "float-underflow": 0.0,
+  "negative-zero": 0,
+  "nested": {
+    "dup": 2,
+    "empty-array": [],
+    "empty-object": {}
+  },
+  "z": "caf\u00e9 \ud83d\ude00 \"\\\n\t\u0001"
+}
