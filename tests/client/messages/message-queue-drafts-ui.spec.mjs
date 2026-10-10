@@ -4,6 +4,7 @@
 import {
   createFixtureViteServer,
   FIXTURE_OPTIMIZE_DEPS,
+  playwrightScratchRoot,
 } from "../playwright.mjs";
 import { createServer } from "node:http";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -14,7 +15,7 @@ test("Message Queue Drafts Ui", async ({
   browser: testBrowser,
   context: _testContext,
   page: _testPage,
-}) => {
+}, testInfo) => {
   const assert = {
     equal: (actual, expected, message) =>
       expect(actual, message).toBe(expected),
@@ -35,8 +36,11 @@ test("Message Queue Drafts Ui", async ({
   const repo = join(import.meta.dirname, "../../..");
 
   const createViteServer = createFixtureViteServer;
-  const root = await mkdtemp(join(repo, "web/.message-queue-drafts-"));
+  const root = await mkdtemp(
+    join(playwrightScratchRoot, "message-queue-drafts-"),
+  );
   const entry = join(root, "entry.tsx");
+  const entryUrl = `/@fs${entry}`;
   let vite;
   let browser;
   let server;
@@ -70,25 +74,25 @@ createRoot(document.getElementById("root")!).render(<App />);
     );
     await writeFile(
       join(root, "index.html"),
-      `<div id="root"></div><script type="module" src="/${root
-        .split("/")
-        .at(-1)}/entry.tsx"></script>`,
+      `<div id="root"></div><script type="module" src="${entryUrl}"></script>`,
     );
     vite = await createViteServer({
       optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
       configFile: false,
       root: join(repo, "web"),
       logLevel: "error",
-      server: { middlewareMode: true, hmr: false },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        fs: { allow: [repo, playwrightScratchRoot] },
+      },
       define: { "process.env.NODE_ENV": JSON.stringify("test") },
     });
     server = createServer((request, response) => {
       if (request.url === "/") {
         response.setHeader("Content-Type", "text/html");
         response.end(
-          `<div id="root"></div><script type="module" src="/${root
-            .split("/")
-            .at(-1)}/entry.tsx"></script>`,
+          `<div id="root"></div><script type="module" src="${entryUrl}"></script>`,
         );
         return;
       }
@@ -217,7 +221,7 @@ createRoot(document.getElementById("root")!).render(<App />);
       browser?.contexts().flatMap((context) => context.pages()) || []
     ).entries()) {
       await page
-        .screenshot({ path: join(root, `failure-${index}.png`) })
+        .screenshot({ path: testInfo.outputPath(`failure-${index}.png`) })
         .catch(() => {});
     }
     console.error(`Failure evidence: ${root}`);
