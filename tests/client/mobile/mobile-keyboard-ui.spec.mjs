@@ -107,6 +107,17 @@ for (const [platform, userAgent] of mobileBrowsers) {
       page.on("pageerror", (error) => errors.push(error.message));
       await page.goto(`http://127.0.0.1:${port}`);
       await page.locator("#composer").waitFor();
+      // The selected transcript arrives after the shell. Wait for the live
+      // connection and either its first row or the stable empty-chat state
+      // before capturing scroll state; initial bottom-follow can move it.
+      await page.waitForFunction(() => {
+        if (document.querySelector("#error, .sync-status[role=alert]"))
+          return false;
+        return (
+          document.querySelector("#messages [data-message]") !== null ||
+          document.querySelector("#messages h2")?.textContent === "New chat"
+        );
+      });
       const geometry = () =>
         page.evaluate(() => {
           const root = document.querySelector("#root").getBoundingClientRect();

@@ -460,6 +460,7 @@ async function startSidebarOverlapSetup(page) {
     });
     const url = `http://127.0.0.1:${port}`;
     const initial = await readTestState(url);
+    const sidebarPendingKey = `codex-sidebar-order:${initial.stateDir}:pending`;
     const projectPath = initial.runtime.projects.find(
       (project) => project.name === "Project A",
     ).path;
@@ -533,6 +534,49 @@ async function startSidebarOverlapSetup(page) {
         message: "The initial sidebar order save should finish before dragging",
       })
       .toBe("settled");
+    let migrationReady;
+    try {
+      migrationReady = await page.waitForFunction(
+        (pendingKey) => {
+          const gate = document.querySelector(
+            '[role="alertdialog"][aria-label="Studio update required"]',
+          );
+          if (gate?.querySelector(".mantine-Modal-content")) {
+            let visible = gate.getClientRects().length > 0;
+            for (
+              let element = gate;
+              visible && element instanceof HTMLElement;
+              element = element.parentElement
+            ) {
+              const style = getComputedStyle(element);
+              visible =
+                style.display !== "none" &&
+                style.visibility !== "hidden" &&
+                Number(style.opacity) > 0 &&
+                element.getAttribute("aria-hidden") !== "true";
+            }
+            if (visible) return "schema-gate";
+          }
+          return localStorage.getItem(pendingKey) === null
+            ? "migration-consumed"
+            : false;
+        },
+        sidebarPendingKey,
+        { timeout: 5_000 },
+      );
+    } catch (error) {
+      throw new Error(
+        `Sidebar overlap setup did not observe the initial order migration complete within 5 seconds: ${error instanceof Error ? error.message : error}`,
+      );
+    }
+    if ((await migrationReady.jsonValue()) === "schema-gate") {
+      throw new Error(
+        "Sidebar overlap setup blocked: Studio update required appeared before the initial order migration completed.",
+      );
+    }
+    await expect(
+      page.getByRole("alertdialog", { name: "Studio update required" }),
+    ).toBeHidden();
     const topItems = () =>
       project
         .locator(".project-chats > [data-sidebar-item]")
@@ -550,9 +594,52 @@ async function startSidebarOverlapSetup(page) {
     assert.notEqual(teamIndex, -1, "The fixture contains Team A");
     const direction = teamIndex <= before.length - 3 ? "ArrowDown" : "ArrowUp";
     await team.press(`Alt+${direction}`);
-    // Await the exact fixture signal. The normal test timeout bounds this
-    // transition without a separate short polling budget.
-    await firstRequestHeld;
+    const schemaGateVisible = page
+      .waitForFunction(
+        () => {
+          const gate = document.querySelector(
+            '[role="alertdialog"][aria-label="Studio update required"]',
+          );
+          if (!gate?.querySelector(".mantine-Modal-content")) return false;
+          if (!gate.getClientRects().length) return false;
+          for (
+            let element = gate;
+            element instanceof HTMLElement;
+            element = element.parentElement
+          ) {
+            const style = getComputedStyle(element);
+            if (
+              style.display === "none" ||
+              style.visibility === "hidden" ||
+              Number(style.opacity) === 0 ||
+              element.getAttribute("aria-hidden") === "true"
+            )
+              return false;
+          }
+          return true;
+        },
+        { timeout: 5_000 },
+      )
+      .then(
+        () => true,
+        () => false,
+      );
+    const heldOrGate = await Promise.race([
+      firstRequestHeld.then(() => "held"),
+      schemaGateVisible.then((visible) =>
+        visible ? "schema-gate" : "setup-timeout",
+      ),
+    ]);
+    if (heldOrGate === "schema-gate") {
+      throw new Error(
+        "Sidebar overlap setup blocked: Studio update required appeared before the reorder request reached the fixture.",
+      );
+    }
+    if (heldOrGate === "setup-timeout") {
+      throw new Error(
+        "Sidebar overlap setup did not observe the first reorder request held by the fixture within 5 seconds.",
+      );
+    }
     const firstOrder = await topItems();
     return {
       stop,
