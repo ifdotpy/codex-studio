@@ -9040,6 +9040,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 }):
                     from codex_sync_entities import put as sync_entity_put
                     sync_entity_put(db, "workspace", "current", self.workspace_entity_view(db))
+            else:
+                from codex_sync_entities import refresh_workspace_limit_timestamps
+                refresh_workspace_limit_timestamps(db, account_key, value)
+                if not db.execute(
+                    "SELECT 1 FROM sync_entities WHERE collection='workspace' AND id='current' AND deleted=0"
+                ).fetchone():
+                    from codex_sync_entities import put as sync_entity_put
+                    sync_entity_put(db, "workspace", "current", self.workspace_entity_view(db))
+            if changed:
                 from studio_api.sync.resources.models import LimitsResource, ResourceRef
 
                 self._stage_resource_change(
