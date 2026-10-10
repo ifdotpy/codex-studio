@@ -1,0 +1,15 @@
+{
+  "z": "café 😀 \"\\\n\t\u0001",
+  "nested": { "empty-array": [], "empty-object": {}, "dup": 1, "dup": 2 },
+  "big": 1234567890123456789012345678901234567890,
+  "float": 1.0,
+  "exp1": 1e6,
+  "exp2": 1e16,
+  "exp3": 1e-5,
+  "exp4": 1e-4,
+  "negative-zero": -0,
+  "controls": "\b\f\r\u007f",
+  "array": [null, true, false, {}, []],
+  "float-overflow": 1e400,
+  "float-underflow": 1e-4000
+}
