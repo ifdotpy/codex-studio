@@ -34,11 +34,12 @@ npm run test:mutation
 production build. Browser checks build the renderer before exercising it. The
 browser config uses the measured per-worker CPU allowance and memory ceiling in
 [`playwright-workers.mjs`](../web/playwright-workers.mjs), subtracting competing
-runnable tasks before planning workers. Its CPU budget is deliberately capped
-at 30% of available CPUs: on a 32-CPU host, 14 workers produced a runnable peak
-of 21 and a 6.5 s median fixture startup; eight workers reduced those to 11 and
-3.9 s while full-suite wall time remained effectively the same (ordinary runs 5
-and 6). Explicit `--workers` values continue to override the automatic plan.
+runnable tasks before planning workers. Its CPU budget is capped at 30% of
+available CPUs and each worker is budgeted at 2.5 times the measured mean to
+leave room for fixture-start bursts. On the 32-CPU host this plans six workers
+when idle; eight workers had a similar seven-minute wall time but produced a
+watcher mismatch and a separate preview timeout across three ordinary runs.
+Explicit `--workers` values continue to override the automatic plan.
 `test:server:list` displays the available server suites without executing them;
 use the server runner's `--help` for filtering and optional categories.
 `test:server` also runs the colocated JavaScript bridge tests. To filter Python
