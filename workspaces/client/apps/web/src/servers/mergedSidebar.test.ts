@@ -427,7 +427,7 @@ describe("original saved sidebar state", () => {
     expect(remote.sidebar.collapsed).toEqual({});
   });
 
-  it("reads fresh source preferences before stale shell cache values", () => {
+  it("uses the owner's saved compact preference despite its stale snapshot", () => {
     const local = source("local");
     const remote = source("remote");
     const a = backend(local);
@@ -459,9 +459,25 @@ describe("original saved sidebar state", () => {
         `codex-project-compact:${model.data.stateDir}`,
         {},
       )[model.projectKey("remote", path)],
-    ).toBe(false);
+    ).toBe(true);
     expect(a.writes).toEqual([]);
     expect(b.writes).toEqual([]);
+    const compactKey = `codex-project-compact:${model.data.stateDir}`;
+    const field = model.projectKey("remote", path);
+    cache.editPreference(compactKey, { [field]: true }, { [field]: false });
+    expect(b.values.get(`codex-project-compact:${scope}`)).toBe(
+      JSON.stringify({ [path]: false }),
+    );
+    const reopened = mergedSidebarPreferences(
+      model,
+      new Map([
+        ["local", a.backend],
+        ["remote", b.backend],
+      ]),
+    );
+    expect(reopened.saved<Record<string, boolean>>(compactKey, {})[field]).toBe(
+      false,
+    );
   });
 
   it("reads original namespaces without writing and ignores project collapse with shared compact visibility", () => {

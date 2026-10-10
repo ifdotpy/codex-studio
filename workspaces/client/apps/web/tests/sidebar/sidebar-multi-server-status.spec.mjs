@@ -68,29 +68,28 @@ test("paired sidebar shows the chat provider and server alias", async ({
       .click();
     await expect(page.locator('[data-settings-server="remote"]')).toBeVisible();
     await dialog.getByRole("button", { name: "Close", exact: true }).click();
-    const group = page
-      .locator(".server-sidebar .sidebar-project")
-      .filter({ has: page.locator('[data-chat="recent"]') });
+    const group = page.locator(".sidebar-project").filter({
+      has: page.getByRole("button", { name: /Claude on remote/ }),
+    });
     const projectName = group.locator(".project-tree-toggle");
     expect(await projectName.evaluate((element) => element.tagName)).toBe(
-      "DIV",
+      "BUTTON",
     );
-    const chat = group.locator('[data-chat="recent"]');
-    await expect(chat.locator(".chat-server-line")).toHaveText("REM");
-    await expect(chat.locator(".chat-server-line")).toHaveAttribute(
-      "aria-label",
-      "Claude, REM",
-    );
-    await expect(group.locator('[data-chat="old"]')).toHaveCount(0);
+    const chat = group.getByRole("button", { name: /^Claude on remote/ });
+    await expect(chat.getByLabel("Claude, REM", { exact: true })).toBeVisible();
+    const oldChat = () =>
+      group.getByRole("button", { name: /^Old remote chat Claude, / });
+    await expect(oldChat()).toHaveCount(0);
     await group
       .getByRole("button", { name: "Show old (2)", exact: true })
       .click();
-    await expect(group.locator('[data-chat="old"]')).toBeVisible();
+    await expect(oldChat()).toBeVisible();
     await expect(
       group.getByRole("button", { name: "Hide old", exact: true }),
     ).toBeVisible();
     await page.reload();
-    await expect(group.locator('[data-chat="old"]')).toBeVisible();
+    await expect(projectName).toBeVisible();
+    await expect(oldChat()).toBeVisible();
     await page
       .getByRole("button", { name: "Studio settings", exact: true })
       .click();
@@ -106,12 +105,16 @@ test("paired sidebar shows the chat provider and server alias", async ({
       card.getByRole("button", { name: "Save alias", exact: true }),
     ).toBeDisabled();
     await dialog.getByRole("button", { name: "Close", exact: true }).click();
-    await expect(chat.locator(".chat-server-line")).toHaveText("SRV");
+    await expect(chat.getByLabel("Claude, SRV", { exact: true })).toBeVisible();
     await group.getByRole("button", { name: "Hide old", exact: true }).click();
-    await expect(group.locator('[data-chat="old"]')).toHaveCount(0);
+    await expect(oldChat()).toHaveCount(0);
     await page.reload();
-    await expect(chat.locator(".chat-server-line")).toHaveText("SRV");
-    await expect(group.locator('[data-chat="old"]')).toHaveCount(0);
+    await expect(
+      group
+        .getByRole("button", { name: /^Claude on remote/ })
+        .getByLabel("Claude, SRV", { exact: true }),
+    ).toBeVisible();
+    await expect(oldChat()).toHaveCount(0);
   } finally {
     await Promise.all([local.close(), remote.close()]);
   }
