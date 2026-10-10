@@ -58,6 +58,14 @@ import ProjectLayrReadiness, {
   describeWithLayrReadiness,
   layrReadinessSummary,
 } from "./sidebar/LayrReadiness";
+import ProjectLayrSync, {
+  describeWithLayrSync,
+  layrSyncSummary,
+  macSyncOpen,
+  MacSyncConflicts,
+  projectChip,
+  type LayrSyncEntry,
+} from "./sidebar/MacSync";
 import { readServerAliases } from "../servers/registry";
 import {
   DEFAULT_LOCAL_SERVER_ALIAS,
@@ -241,6 +249,11 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
     path: string;
     id?: string;
     action: "save" | "delete";
+  } | null>(null);
+  // The project and server whose Mac sync conflicts are open.
+  const [syncDialog, setSyncDialog] = useState<{
+    path: string;
+    ownerId?: string;
   } | null>(null);
   const peerTeams = useMemo(
     () => (runtime?.peerTeamsVersion === 1 ? runtime.peerTeams || [] : []),
@@ -1286,6 +1299,35 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
             services.layrReadiness?.(group.path) ??
               (group.layrReadiness ? [{ readiness: group.layrReadiness }] : []),
           );
+          const syncEntries: LayrSyncEntry[] =
+            services.layrSync?.(group.path) ??
+            (group.layrSync ? [{ sync: group.layrSync }] : []);
+          const sync = layrSyncSummary(syncEntries);
+          const chip = projectChip(layr, sync);
+          const syncBackend = (entry: LayrSyncEntry) =>
+            entry.ownerId
+              ? services.byOwner(entry.ownerId)
+              : services.owner(projectTarget(group.path));
+          const configureSync = async (
+            entry: LayrSyncEntry,
+            change: { enabled?: boolean; allowDeletes?: boolean },
+          ) => {
+            try {
+              await syncBackend(entry).post(
+                "/api/mac-sync/config",
+                { projectId: entry.sync.projectId, ...change },
+                { timeoutMs: 30000 },
+              );
+            } catch (error) {
+              p.notify?.(errorText(error));
+            }
+          };
+          const syncDialogEntry =
+            syncDialog?.path === group.path
+              ? syncEntries.find(
+                  (entry) => entry.ownerId === syncDialog.ownerId,
+                ) || null
+              : null;
           return (
             <section
               className="sidebar-project"
@@ -1302,14 +1344,22 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                   )}
                   aria-description={describeWithLayrReadiness(
                     layr,
-                    "Drag to reorder. Alt + Up or Down also works.",
+                    describeWithLayrSync(
+                      sync,
+                      "Drag to reorder. Alt + Up or Down also works.",
+                    ),
                   )}
                   className="project-tree-toggle"
                   title={services.displayPath?.(group.path) || group.path}
                 >
                   <FolderOpen size={18} />
                   <span title={group.name}>{group.name}</span>
-                  <ProjectLayrReadiness summary={layr} />
+                  {chip?.kind === "layr" && (
+                    <ProjectLayrReadiness summary={chip.summary} />
+                  )}
+                  {chip?.kind === "sync" && (
+                    <ProjectLayrSync summary={chip.summary} />
+                  )}
                 </UnstyledButton>
                 {!archive && (!compact || !!group.path) && (
                   <ActionIcon
@@ -1419,10 +1469,68 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                           Remove from sidebar
                         </Menu.Item>
                       )}
+                      {syncEntries.length > 0 && <Menu.Divider />}
+                      {syncEntries.length > 0 && (
+                        <Menu.Label>Mac folder sync</Menu.Label>
+                      )}
+                      {syncEntries.flatMap((entry) => {
+                        const suffix = entry.server ? ` (${entry.server})` : "";
+                        const key = entry.ownerId || "local";
+                        const waiting =
+                          macSyncOpen(entry.sync).length +
+                          entry.sync.withAgent.length;
+                        return [
+                          waiting > 0 && (
+                            <Menu.Item
+                              key={`${key}:choose`}
+                              onClick={() =>
+                                setSyncDialog({
+                                  path: group.path,
+                                  ...(entry.ownerId
+                                    ? { ownerId: entry.ownerId }
+                                    : {}),
+                                })
+                              }
+                            >
+                              {`Choose versions (${waiting})${suffix}`}
+                            </Menu.Item>
+                          ),
+                          entry.sync.deletes > 0 && (
+                            <Menu.Item
+                              key={`${key}:deletes`}
+                              onClick={() =>
+                                void configureSync(entry, {
+                                  allowDeletes: true,
+                                })
+                              }
+                            >
+                              {`Sync ${entry.sync.deletes} Mac deletions${suffix}`}
+                            </Menu.Item>
+                          ),
+                          <Menu.Item
+                            key={`${key}:pause`}
+                            onClick={() =>
+                              void configureSync(entry, {
+                                enabled: !entry.sync.enabled,
+                              })
+                            }
+                          >
+                            {`${entry.sync.enabled ? "Pause" : "Resume"} sync${suffix}`}
+                          </Menu.Item>,
+                        ];
+                      })}
                     </Menu.Dropdown>
                   </Menu>
                 )}
               </div>
+              {syncDialogEntry && (
+                <MacSyncConflicts
+                  entry={syncDialogEntry}
+                  backend={syncBackend(syncDialogEntry)}
+                  projectName={group.name}
+                  onClose={() => setSyncDialog(null)}
+                />
+              )}
               {teamDialog?.path === group.path &&
                 (teamDialog.id &&
                 !peerTeams.some((t) => t.id === teamDialog.id) ? (

@@ -204,7 +204,8 @@ class Rounds(unittest.TestCase):
         client, project = self.project([reply(applied=[f'f{index}.txt' for index in range(5)], merge='merged')],
                                        manifest)
         self.assertEqual(project.round()['deletes'], 5)
-        status = project.allow_deletes()
+        self.assertEqual(project.allow_deletes()['state'], 'syncing')
+        status = project.round()
         self.assertEqual((status['state'], status['deletes']), ('synced', 0))
         entries = next(params['entries'] for method, params, _ in client.calls if method == 'sync.mac.apply')
         self.assertEqual(sorted(item['path'] for item in entries if item['kind'] == 'absent'),
@@ -251,6 +252,9 @@ class Choices(unittest.TestCase):
     def test_keep_mac_sends_the_mac_version_on_top_of_main(self) -> None:
         self.client.replies.append(reply(main='m10', applied=['app.txt'], merge='merged'))
         self.project.resolve('app.txt', 'mac')
+        self.assertEqual(self.saved('status.json')['rescan'], ['app.txt'])
+        # The scheduler's next round reads the path again without a full scan.
+        self.project.round(set())
         entries = next(params['entries'] for method, params, _ in self.client.calls if method == 'sync.mac.apply')
         self.assertEqual(entries, [{'path': 'app.txt', 'kind': 'file', 'base': 'm9'}])
         self.assertEqual((self.root / 'app.txt').read_text(), 'mac\n')
@@ -320,8 +324,10 @@ class Choices(unittest.TestCase):
         (record / 'project.json').write_text(json.dumps({'projectId': 'p1', 'source': str(self.root),
                                                           'importStateId': 's1'}))
         with patch('codex_linux_workspaces.client', return_value=self.client), \
-                patch.object(sync.ProjectSync, 'send_archive', lambda *args: None):
+                patch.object(sync.ProjectSync, 'send_archive', lambda *args: None), \
+                patch.object(sync, '_refresh') as refresh:
             result = sync.resolve(Runtime(), 'p1', 'app.txt', 'agent')
+        refresh.assert_called_once()
         self.assertEqual(result['leadId'], 'lead')
         self.assertEqual(result['status']['withAgent'], ['app.txt'])
         self.assertEqual(len(sent), 1)
@@ -530,6 +536,7 @@ class Schedule(unittest.TestCase):
             setattr(runtime, '_mac_sync_watcher', events)
             with patch('platform.system', return_value='Darwin'), \
                     patch('codex_linux_workspaces.client', return_value=Client()), \
+                    patch.object(sync, '_refresh') as refresh, \
                     patch.object(sync.ProjectSync, 'round', fake_round), \
                     patch('codex_vm_mac_sync.time.monotonic', side_effect=[1000.0 + n * 20 for n in range(20)]):
                 sync.tick(runtime)                  # first: a full scan
@@ -538,7 +545,11 @@ class Schedule(unittest.TestCase):
                 sync.tick(runtime)                  # main unchanged and synced: nothing
                 heads[0] = 's2'
                 sync.tick(runtime)                  # main moved: a round without a Mac scan
-            self.assertEqual(rounds, [None, {'a.txt'}, set()])
+                (record / 'sync/allow-deletes.json').write_text('{"count": 9}')
+                sync.tick(runtime)                  # confirmed Mac deletions: a full scan at once
+            self.assertEqual(rounds, [None, {'a.txt'}, set(), None])
+            # Only the first report changes what the sidebar shows; later rounds stay synced.
+            self.assertEqual(refresh.call_count, 1)
 
 
 if __name__ == '__main__':

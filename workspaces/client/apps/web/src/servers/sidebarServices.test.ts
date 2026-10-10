@@ -14,6 +14,7 @@ import { mergeSidebar, type SidebarSource } from "./mergedSidebar";
 import {
   createMergedSidebarServices,
   sidebarLayrReadiness,
+  sidebarLayrSync,
   sidebarOwner,
   sidebarProject,
   sidebarWireRequest,
@@ -489,5 +490,33 @@ describe("owner sidebar services", () => {
       sidebarLayrReadiness(mergeSidebar([sources[0]], 13, true), {}, path),
     ).toEqual([{ readiness: { state: "importing" } }]);
     expect(services.layrReadiness("unknown-project")).toEqual([]);
+  });
+
+  it("reports Mac folder sync with the server that takes its actions", () => {
+    const { sources } = fixture();
+    const sync = {
+      projectId: "p1",
+      state: "conflict" as const,
+      enabled: true,
+      conflicts: ["app.txt"],
+      choices: [],
+      withAgent: [],
+      deletes: 0,
+      reason: null,
+    };
+    sources[1].sidebar.projects[0].layrSync = sync;
+    const model = mergeSidebar(sources, 10, true);
+    const path = model.projectKey("local", "/local");
+    expect(sidebarLayrSync(model, { remote: "REM" }, path)).toEqual([
+      { server: "REM", ownerId: "remote", sync },
+    ]);
+    expect(
+      sidebarLayrSync(mergeSidebar([sources[1]], 11, true), {}, path),
+    ).toEqual([]);
+    expect(sidebarLayrSync(model, {}, "unknown-project")).toEqual([]);
+    const body = { projectId: "p1", path: "app.txt", choice: "vm" };
+    expect(
+      sidebarWireRequest(model, "remote", "/api/mac-sync/resolve", body),
+    ).toEqual(body);
   });
 });

@@ -8702,6 +8702,7 @@ export interface components {
       /** Id */
       id: string;
       layrReadiness?: components["schemas"]["ProjectLayrReadinessDto"] | null;
+      layrSync?: components["schemas"]["ProjectLayrSyncDto"] | null;
       /** Locations */
       locations?: components["schemas"]["ProjectLocationDto"][] | null;
       /** Locationsrevision */
@@ -8750,6 +8751,32 @@ export interface components {
        * @enum {string}
        */
       state: "ready" | "importing" | "not_imported" | "failed";
+    };
+    /**
+     * ProjectLayrSyncDto
+     * @description The Mac folder sync of the project's layr project (docs/vm-mac-sync.md). conflicts and
+     *     choices wait for the user, withAgent for the lead, deletes for a confirmation.
+     */
+    ProjectLayrSyncDto: {
+      /** Choices */
+      choices: string[];
+      /** Conflicts */
+      conflicts: string[];
+      /** Deletes */
+      deletes: number;
+      /** Enabled */
+      enabled: boolean;
+      /** Projectid */
+      projectId: string;
+      /** Reason */
+      reason?: string | null;
+      /**
+       * State
+       * @enum {string}
+       */
+      state: "syncing" | "synced" | "waiting" | "conflict" | "paused" | "error";
+      /** Withagent */
+      withAgent: string[];
     };
     /** ProjectLocation */
     ProjectLocation: {

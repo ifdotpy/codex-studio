@@ -100,6 +100,7 @@ export function sidebarSnapshot(
         "created",
         "updated",
         "layrReadiness",
+        "layrSync",
       ]),
     ),
     rooms: (runtime?.rooms || []).map((room) =>

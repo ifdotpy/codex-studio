@@ -12,6 +12,7 @@ import {
 } from "../components/sidebar/services";
 import type { Project } from "../types";
 import type { LayrReadinessEntry } from "../components/sidebar/LayrReadiness";
+import type { LayrSyncEntry } from "../components/sidebar/MacSync";
 import { mergeSidebar, type MergedSidebar } from "./mergedSidebar";
 import {
   mergedSidebarPreferences,
@@ -141,6 +142,12 @@ export function sidebarWireRequest(
       ),
     };
   }
+  // Mac folder sync names its layr project, which the owning server keeps as is.
+  if (
+    endpoint === "/api/mac-sync/resolve" ||
+    endpoint === "/api/mac-sync/config"
+  )
+    return value;
   if (endpoint !== "/api/projects" && endpoint !== "/api/peer-teams")
     throw new Error("The sidebar API path is unavailable.");
   if (typeof value.path !== "string")
@@ -349,6 +356,7 @@ export function createMergedSidebarServices(
     chatPath: (id: string) => model.chatReferences.get(id)?.path || "",
     alias: (target: SidebarTarget) => aliases[sidebarOwner(model, target)],
     layrReadiness: (path: string) => sidebarLayrReadiness(model, aliases, path),
+    layrSync: (path: string) => sidebarLayrSync(model, aliases, path),
   };
 }
 
@@ -369,6 +377,29 @@ export function sidebarLayrReadiness(
         ? { server: aliases[member.source.id] || member.source.id }
         : {}),
       readiness,
+    });
+  }
+  return entries;
+}
+
+/** Each macOS server syncs its own Mac folder of the project; actions go to that server. */
+export function sidebarLayrSync(
+  model: MergedSidebar,
+  aliases: Record<string, string>,
+  path: string,
+): LayrSyncEntry[] {
+  const seen = new Set<string>();
+  const entries: LayrSyncEntry[] = [];
+  for (const member of model.groups.get(path)?.members || []) {
+    const sync = member.project.layrSync;
+    if (!sync || seen.has(member.source.id)) continue;
+    seen.add(member.source.id);
+    entries.push({
+      ...(model.sources.length > 1
+        ? { server: aliases[member.source.id] || member.source.id }
+        : {}),
+      ownerId: member.source.id,
+      sync,
     });
   }
   return entries;

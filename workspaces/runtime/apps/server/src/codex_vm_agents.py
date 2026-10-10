@@ -74,9 +74,39 @@ def project_readiness(runtime: Any, project: Mapping[str, Any]) -> dict[str, str
     return import_readiness(Path(state_dir), project_layr_id(project)) if state_dir else None
 
 
+def project_sync(runtime: Any, project: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The sidebar's Mac folder sync report of an imported project; host records only."""
+    from codex_linux_workspaces import client
+    from codex_vm_mac_sync import sync_status
+    try:
+        state_dir = getattr(client(runtime), "state_dir", None)
+    except (RuntimeError, OSError, ValueError):
+        return None
+    if not state_dir:
+        return None
+    layr_id = project_layr_id(project)
+    try:
+        status = sync_status(Path(state_dir), layr_id)
+    except (OSError, ValueError, TypeError) as error:
+        return {"projectId": layr_id, "state": "error", "enabled": True, "conflicts": [], "choices": [],
+                "withAgent": [], "deletes": 0, "reason": "The sync records are unreadable: " + str(error)[:300]}
+    if status is None:
+        return None
+    # The time of the last round stays out: an unchanged view keeps its sync version.
+    return {"projectId": layr_id, **{key: status[key] for key in (
+        "state", "enabled", "conflicts", "choices", "withAgent", "deletes", "reason")}}
+
+
 def project_entity_view(runtime: Any, project: Mapping[str, Any]) -> dict[str, Any]:
     readiness = project_readiness(runtime, project)
-    return {**project, "layrReadiness": readiness} if readiness else dict(project)
+    if not readiness:
+        return dict(project)
+    view = {**project, "layrReadiness": readiness}
+    if readiness["state"] == "ready":
+        sync = project_sync(runtime, project)
+        if sync is not None:
+            view["layrSync"] = sync
+    return view
 
 
 def refresh_readiness(runtime: Any) -> None:

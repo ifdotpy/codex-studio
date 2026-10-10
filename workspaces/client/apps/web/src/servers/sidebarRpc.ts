@@ -12,6 +12,8 @@ const sidebarPaths = [
   "/api/organization",
   "/api/peer-teams",
   "/api/rename",
+  "/api/mac-sync/resolve",
+  "/api/mac-sync/config",
 ] as const;
 export type SidebarPostPath = (typeof sidebarPaths)[number];
 type PostRequest = {

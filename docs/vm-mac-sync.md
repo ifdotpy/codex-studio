@@ -1,6 +1,6 @@
 # Mac folder sync for layr projects
 
-Status: phases 1 to 3 implemented (2026-10-10), decision 24 in
+Status: implemented (2026-10-10), decision 24 in
 [btrfs-local-vcs.md](btrfs-local-vcs.md).
 Owner of the decisions: the user.
 
@@ -113,9 +113,19 @@ changed, and `{"ready"}` once. It exits when the backend closes its input.
 
 ## User interface
 
-- The sidebar shows the project's layr readiness and its sync state: synced, syncing,
-  paused, conflict (count), or error with its reason.
-- The project menu offers pause and resume, and the conflict choices.
+- The project entity carries `layrSync` (`codex_vm_agents.project_sync`, host records
+  only) next to `layrReadiness`; the backend updates the entity when a round or a
+  choice changes what the sidebar shows.
+- One chip follows the project name, so the name keeps its room. A sync problem
+  (error, conflict, paused) comes first, then an import that is not ready, then the
+  sync state. `SYNC n` counts the files that wait for a choice. The tooltip and the
+  project button's description carry both reports.
+- The project menu, section **Mac folder sync**: **Choose versions (n)** opens the
+  dialog with Keep Mac, Keep VM and Ask agent per path; **Sync n Mac deletions**
+  confirms a deletion pause; **Pause sync** and **Resume sync**. In the combined
+  sidebar each action goes to the server that syncs the folder.
+- The API answers at once: a Keep Mac choice and a deletion confirmation leave the
+  round to the scheduler, which runs it within 10 s.
 
 ## Implementation
 
@@ -155,4 +165,4 @@ changed, and `{"ready"}` once. It exits when the backend closes its input.
 2. The FSEvents helper. (Done.)
 3. Conflict choices, the lead handoff, the push rule, pause and the deletion
    confirmation in the API. (Done.)
-4. Sync state, conflict choices, pause and resume in the sidebar.
+4. Sync state, conflict choices, pause and resume in the sidebar. (Done.)

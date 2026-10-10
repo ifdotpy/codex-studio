@@ -519,19 +519,19 @@ class ProjectSync:
             rescan = set(status.get('rescan', [])) | ({rel} if choice == 'mac' else set())
             self.status(choices=sorted(choices), conflicts=remaining, withAgent=with_agent, rescan=sorted(rescan),
                         state='conflict' if remaining or choices else 'waiting' if with_agent else 'synced')
-            if choice == 'mac':
-                # The Mac file now differs from its agreed content: this round sends it.
-                result['round'] = self._round({rel})
+            # A 'mac' choice: the Mac file now differs from its agreed content, and the
+            # next round (within HEAD_INTERVAL seconds) reads it again and sends it.
             return result
 
     def allow_deletes(self) -> dict[str, Any]:
-        """The user confirmed the Mac deletions that paused the project: the next round sends them."""
+        """The user confirmed the Mac deletions that paused the project: the next round, a
+        full scan, sends them."""
         with self.lock(wait=60):
             count = int(_load(self.directory / 'status.json', {}).get('deletes') or 0)
             if count <= 0:
                 raise ValueError('No Mac deletions wait for a confirmation')
             _save(self.directory / 'allow-deletes.json', {'count': count})
-            return self._round(None)
+            return self.status(state='syncing', reason=None)
 
 
 def project_sync(client: Any, project_id: str) -> ProjectSync:
@@ -572,7 +572,6 @@ def resolve(runtime: Any, project_id: str, rel: str, choice: str) -> dict[str, A
     client = vm_client(runtime)
     project = project_sync(client, project_id)
     result = project.resolve(rel, choice)
-    result.pop('round', None)
     if choice == 'agent':
         lead = lead_for(runtime, project_id)
         result['leadId'] = lead
@@ -581,7 +580,14 @@ def resolve(runtime: Any, project_id: str, rel: str, choice: str) -> dict[str, A
                          'mac-conflict:' + result['stateId'] + ':' + hashlib.sha256(rel.encode()).hexdigest()[:16],
                          manual=False, delivery='after_turn')
     result['status'] = sync_status(client.state_dir, project_id)
+    _refresh(runtime)
     return result
+
+
+def _refresh(runtime: Any) -> None:
+    """Show a changed sync report in the sidebar's project entities."""
+    from codex_vm_agents import refresh_readiness
+    refresh_readiness(runtime)
 
 
 def configure(runtime: Any, project_id: str, *, enabled: bool | None = None,
@@ -590,8 +596,11 @@ def configure(runtime: Any, project_id: str, *, enabled: bool | None = None,
     client = vm_client(runtime)
     if enabled is not None:
         set_enabled(client.state_dir, project_id, enabled)
-    if allow_deletes:
-        project_sync(client, project_id).allow_deletes()
+    try:
+        if allow_deletes:
+            project_sync(client, project_id).allow_deletes()
+    finally:
+        _refresh(runtime)
     return sync_status(client.state_dir, project_id)
 
 
@@ -732,6 +741,11 @@ def watcher_helper() -> Path:
     return packaged if packaged.is_file() else DESKTOP_ROOT / 'native' / 'studio-fs-events'
 
 
+def _visible(state_dir: Path, project_id: str) -> Any:
+    status = sync_status(state_dir, project_id)
+    return status and {key: value for key, value in status.items() if key != 'at'}
+
+
 def _scope(client: Any, project: ProjectSync, watcher: Watcher, times: dict[str, float],
            now: float) -> tuple[bool, set[str] | None]:
     """(a round is due, what it reads on the Mac): None for all, or a set of paths that
@@ -739,9 +753,11 @@ def _scope(client: Any, project: ProjectSync, watcher: Watcher, times: dict[str,
     full_every = FULL_INTERVAL if watcher.available() else HEAD_INTERVAL
     changed, paths = watcher.take(project.root)
     status = _load(project.directory / 'status.json', {})
-    # Mac deletions that wait for the user: only a full scan looks again.
+    # Mac deletions that wait for the user: only a full scan looks again, and a
+    # confirmation starts one at once.
     guarded = status.get('state') == 'paused' and bool(status.get('deletes'))
-    if now - times['full'] >= full_every or (changed and guarded):
+    if now - times['full'] >= full_every or (changed and guarded) \
+            or (project.directory / 'allow-deletes.json').exists():
         return True, None
     if guarded:
         return False, None
@@ -783,6 +799,7 @@ def tick(runtime: Any) -> None:
             if client.status().get('state') != 'running':
                 return
             now = time.monotonic()
+            before = {data['projectId']: _visible(client.state_dir, data['projectId']) for data in projects}
             for data in projects:
                 project = ProjectSync(client, data['projectId'], Path(data['source']),
                                       import_state=data.get('importStateId'))
@@ -799,6 +816,8 @@ def tick(runtime: Any) -> None:
                 except Exception as error:  # noqa: BLE001 - every failure stays visible in the status
                     project.status(state='error', reason=str(error)[:500])
                     times['full'] = 0.0
+            if any(_visible(client.state_dir, key) != value for key, value in before.items()):
+                _refresh(runtime)
         finally:
             runtime._mac_sync_busy = False
     runtime.pool.submit(run)

@@ -391,6 +391,30 @@ class LayrReadinessTests(unittest.TestCase):
         self.home.projects({'action': 'rename', 'path': self.project['id'], 'name': 'Renamed', 'expected_revision': 0})
         self.assertEqual(self.entity(self.home, self.project['id'])[1]['layrReadiness'], {'state': 'ready'})
 
+    def test_project_entity_carries_the_mac_sync_report(self) -> None:
+        from codex_vm_agents import project_layr_id, refresh_readiness
+        key = project_layr_id(self.record(self.home, self.project['id']))
+        directory = self.vm / 'layr-projects' / key
+        (directory / 'sync').mkdir(parents=True)
+        (directory / 'project.json').write_text(json.dumps({'projectId': key, 'source': self.project['path']}))
+        refresh_readiness(self.home)
+        first, value = self.entity(self.home, self.project['id'])
+        self.assertEqual(value['layrSync'], {'projectId': key, 'state': 'syncing', 'enabled': True, 'conflicts': [],
+                                             'choices': [], 'withAgent': [], 'deletes': 0, 'reason': None})
+        status = {'state': 'conflict', 'conflicts': ['app.txt'], 'mainStateId': 'm1', 'at': 1.0}
+        (directory / 'sync/status.json').write_text(json.dumps(status))
+        refresh_readiness(self.home)
+        conflict, value = self.entity(self.home, self.project['id'])
+        self.assertGreater(conflict, first)
+        self.assertEqual((value['layrSync']['state'], value['layrSync']['conflicts']), ('conflict', ['app.txt']))
+        # A later round with the same report keeps the entity version.
+        (directory / 'sync/status.json').write_text(json.dumps({**status, 'mainStateId': 'm2', 'at': 2.0}))
+        refresh_readiness(self.home)
+        self.assertEqual(self.entity(self.home, self.project['id'])[0], conflict)
+        (directory / 'sync/config.json').write_text(json.dumps({'enabled': False}))
+        refresh_readiness(self.home)
+        self.assertEqual(self.entity(self.home, self.project['id'])[1]['layrSync']['state'], 'paused')
+
     def test_no_readiness_without_layr_support_or_a_folder_here(self) -> None:
         from codex_vm_agents import refresh_readiness
         remote_only = self.home.projects({'server': 'remote', 'path': str(self.case.root / 'remote'),

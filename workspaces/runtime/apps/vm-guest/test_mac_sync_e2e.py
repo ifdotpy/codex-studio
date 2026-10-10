@@ -152,6 +152,7 @@ class MacSyncRounds(base.LayrEndToEnd):
         both = await round_()
         self.assertEqual(both["conflicts"], ["agent.txt", "notes.md"])
         await asyncio.to_thread(project.resolve, "agent.txt", "mac")
+        await asyncio.to_thread(project.round, set())
         self.assertEqual((main / "agent.txt").read_text(), "mac v3\n")
         await asyncio.to_thread(project.resolve, "notes.md", "vm")
         self.assertEqual((mac / "notes.md").read_text(), "vm notes\n")
