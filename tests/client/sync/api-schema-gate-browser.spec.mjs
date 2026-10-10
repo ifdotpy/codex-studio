@@ -560,6 +560,11 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
       settledMutations,
       "No mutations follow the mismatch alert",
     );
+    await expect
+      .poll(() => activeApiRoutes.size, {
+        message: "API routes from the mismatch response have settled",
+      })
+      .toBe(0);
 
     await page.evaluate(() => {
       const serviceWorker = navigator.serviceWorker;
