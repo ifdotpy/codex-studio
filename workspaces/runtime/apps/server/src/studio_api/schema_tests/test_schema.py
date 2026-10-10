@@ -343,6 +343,72 @@ class SchemaContractTests(unittest.TestCase):
                     f"#/components/schemas/{dto_model.__name__}",
                 )
 
+    def test_openapi_413_descriptions_are_explicit(self) -> None:
+        document = openapi_document()
+        paths = document["paths"]
+        assert isinstance(paths, dict)
+        affected: list[str] = []
+        for path, path_item in paths.items():
+            if not isinstance(path_item, dict):
+                continue
+            for method, operation in path_item.items():
+                if not isinstance(operation, dict):
+                    continue
+                responses = operation.get("responses")
+                if not isinstance(responses, dict) or "413" not in responses:
+                    continue
+                response = responses["413"]
+                assert isinstance(response, dict)
+                affected.append(f"{method.upper()} {path}")
+                self.assertIn(
+                    response.get("description"),
+                    {"Content Too Large", "Invalid request size"},
+                    f"{method.upper()} {path} must use an explicit HTTP 413 description",
+                )
+        self.assertTrue(affected, "OpenAPI must include at least one HTTP 413 response")
+
+    def test_openapi_numeric_union_order_is_stable(self) -> None:
+        document = openapi_document()
+        paths = document["paths"]
+        components = document["components"]
+        assert isinstance(paths, dict)
+        assert isinstance(components, dict)
+        schemas = components["schemas"]
+        assert isinstance(schemas, dict)
+
+        def assert_numeric_unions(value: JsonValue, location: str) -> None:
+            if isinstance(value, dict):
+                variants = value.get("anyOf")
+                if (
+                    isinstance(variants, list)
+                    and {
+                        variant.get("type")
+                        for variant in variants
+                        if isinstance(variant, dict)
+                        and variant.get("type") in {"integer", "number"}
+                    }
+                    == {"integer", "number"}
+                ):
+                    numeric_types = [
+                        variant["type"]
+                        for variant in variants
+                        if isinstance(variant, dict)
+                        and variant.get("type") in {"integer", "number"}
+                    ]
+                    self.assertEqual(
+                        numeric_types,
+                        ["integer", "number"],
+                        location,
+                    )
+                for key, child in value.items():
+                    assert_numeric_unions(child, f"{location}.{key}")
+            elif isinstance(value, list):
+                for index, child in enumerate(value):
+                    assert_numeric_unions(child, f"{location}[{index}]")
+
+        assert_numeric_unions(paths, "paths")
+        assert_numeric_unions(schemas, "components.schemas")
+
     def test_generator_exports_the_named_sync_entity_payload_union(self) -> None:
         document = sample_document({"type": "string"})
         components = document["components"]

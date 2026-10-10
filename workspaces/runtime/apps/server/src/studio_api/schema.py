@@ -55,7 +55,47 @@ def openapi_document() -> dict[str, JsonValue]:
     from studio_api.context import ApiContext
 
     app = create_app(ApiContext.for_schema())
-    return cast(dict[str, JsonValue], json.loads(json.dumps(app.openapi())))
+    document = cast(dict[str, JsonValue], json.loads(json.dumps(app.openapi())))
+    _normalize_numeric_union_order(document)
+    return document
+
+
+def _normalize_numeric_union_order(value: JsonValue) -> None:
+    """Keep Python union argument order from changing integer/number schemas."""
+    if isinstance(value, dict):
+        variants = value.get("anyOf")
+        if (
+            isinstance(variants, list)
+            and {
+                variant.get("type")
+                for variant in variants
+                if isinstance(variant, dict)
+                and variant.get("type") in {"integer", "number"}
+            }
+            == {"integer", "number"}
+        ):
+            positions = [
+                index
+                for index, variant in enumerate(variants)
+                if isinstance(variant, dict)
+                and variant.get("type") in {"integer", "number"}
+            ]
+            numeric_variants = [
+                variant
+                for variant in variants
+                if isinstance(variant, dict)
+                and variant.get("type") in {"integer", "number"}
+            ]
+            numeric_variants.sort(
+                key=lambda variant: 0 if variant.get("type") == "integer" else 1
+            )
+            for index, variant in zip(positions, numeric_variants):
+                variants[index] = variant
+        for child in value.values():
+            _normalize_numeric_union_order(child)
+    elif isinstance(value, list):
+        for child in value:
+            _normalize_numeric_union_order(child)
 
 
 _NAME_KEYED_MAPS = frozenset({
