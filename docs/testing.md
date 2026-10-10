@@ -71,7 +71,9 @@ runnable tasks)`. The plan then applies the hard memory limit and suite-count
 limit. Memory jobs divide the smaller of half `MemAvailable` and
 `MemAvailable - 4 GiB` by peak suite RSS. Linux `MemAvailable` already reflects
 memory currently occupied by tmpfs/shmem, so scratch is not counted a second
-time. The runner selects tmpfs only when free space is at least 256 MiB per planned
+time. macOS has neither `/proc/stat` nor `MemAvailable`: there the competing
+runnable count is the one-minute load average less one, and available memory is
+the free, inactive and speculative pages from `vm_stat`. The runner selects tmpfs only when free space is at least 256 MiB per planned
 worker, then runs a 64 MiB write+fsync quota probe. The bound rounds up the
 measured peak of about 4.5 GiB across 25 workers (184 MiB per worker) to leave
 headroom for concurrent suite scratch. The probe has caught roots that report free
