@@ -29,7 +29,10 @@ async function startColdGateFixture() {
       join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
       state,
     ],
-    { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env } },
+    {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, CODEX_PLAYWRIGHT_SIGNED_OUT: "1" },
+    },
   );
   let fixtureLog = "";
   fixture.stderr.on("data", (chunk) => {
@@ -105,28 +108,38 @@ test("cold stream handshake mismatch gates when startup responses omit schema ha
   page,
 }) => {
   test.setTimeout(60_000);
-  const { url } = await startColdGateFixture();
+  const { fixture, url } = await startColdGateFixture();
   await page.addInitScript(
     (mismatchHandshake) => {
       const nativeFetch = window.fetch.bind(window);
+      window.studioSchemaGatePendingApiFetches = 0;
       window.fetch = async (input, init) => {
-        const response = await nativeFetch(input, init);
         const url = new URL(
           input instanceof Request ? input.url : String(input),
           location.href,
         );
-        if (
-          !url.pathname.startsWith("/api/") ||
-          url.pathname === "/api/sync/identity"
-        )
-          return response;
-        const headers = new Headers(response.headers);
-        headers.delete("x-studio-api-schema");
-        return new Response(response.body, {
-          status: response.status,
-          statusText: response.statusText,
-          headers,
-        });
+        // The preference client retries these endpoints on missing response
+        // hashes independently of the stream handshake exercised here.
+        const omitSchemaHash =
+          url.pathname.startsWith("/api/") &&
+          url.pathname !== "/api/sync/identity" &&
+          url.pathname !== "/api/sync/pull" &&
+          url.pathname !== "/api/session" &&
+          url.pathname !== "/api/sync/preferences";
+        if (omitSchemaHash) window.studioSchemaGatePendingApiFetches++;
+        try {
+          const response = await nativeFetch(input, init);
+          if (!omitSchemaHash) return response;
+          const headers = new Headers(response.headers);
+          headers.delete("x-studio-api-schema");
+          return new Response(response.body, {
+            status: response.status,
+            statusText: response.statusText,
+            headers,
+          });
+        } finally {
+          if (omitSchemaHash) window.studioSchemaGatePendingApiFetches--;
+        }
       };
       window.studioSchemaGateHandshakeCount = 0;
       class MismatchingEventSource extends EventTarget {
@@ -169,44 +182,62 @@ test("cold stream handshake mismatch gates when startup responses omit schema ha
     apiSchemaHandshakeEvent({ hash: "foreign-schema", mismatch: true }),
   );
   let apiRequests = 0;
+  const apiRequestUrls = [];
   page.on("request", (request) => {
-    if (new URL(request.url()).pathname.startsWith("/api/")) apiRequests++;
+    const pathname = new URL(request.url()).pathname;
+    if (pathname.startsWith("/api/")) {
+      apiRequests++;
+      apiRequestUrls.push(request.url());
+    }
   });
-  await page.clock.install();
-  await page.goto(url);
-  await expect
-    .poll(() => page.evaluate(() => window.studioSchemaGateHandshakeCount), {
-      timeout: 30_000,
-    })
-    .toBeGreaterThan(0);
-  await expect(
-    page.locator('[data-modal-content="true"]').filter({
-      hasText:
-        "Studio has been updated. Update this tab to continue syncing and sending.",
-    }),
-  ).toBeVisible({ timeout: 30_000 });
-  await expect(page.locator("#message")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Update" })).toBeVisible();
-  const quietCount = apiRequests;
-  await page.clock.fastForward(8_000);
-  assert.equal(
-    apiRequests,
-    quietCount,
-    "API requests stop after handshake mismatch",
-  );
+  try {
+    await page.clock.install();
+    await page.goto(url);
+    await expect
+      .poll(() => page.evaluate(() => window.studioSchemaGateHandshakeCount), {
+        timeout: 30_000,
+      })
+      .toBeGreaterThan(0);
+    await expect(
+      page.locator('[data-modal-content="true"]').filter({
+        hasText:
+          "Studio has been updated. Update this tab to continue syncing and sending.",
+      }),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator("#message")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Update" })).toBeVisible();
+    // The gate can appear while startup fetches are still in flight. Wait for
+    // those fetches to settle before measuring traffic after the gate.
+    await expect
+      .poll(() => page.evaluate(() => window.studioSchemaGatePendingApiFetches))
+      .toBe(0);
+    const quietCount = apiRequests;
+    await page.clock.fastForward(8_000);
+    assert.equal(
+      apiRequests,
+      quietCount,
+      `API requests stop after handshake mismatch: ${JSON.stringify(apiRequestUrls)}`,
+    );
+  } finally {
+    fixture.kill();
+  }
 });
 
 test("matching cold renderer loads normally", async ({ page }) => {
-  const { url } = await startColdGateFixture();
-  await page.goto(url);
-  await expect(page.locator("#message")).toBeVisible({ timeout: 10_000 });
-  await expect(page.locator(".startup")).toHaveCount(0);
-  await expect(
-    page.getByText(
-      "Studio has been updated. Update this tab to continue syncing and sending.",
-    ),
-  ).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Update" })).toHaveCount(0);
+  const { fixture, url } = await startColdGateFixture();
+  try {
+    await page.goto(url);
+    await expect(page.locator("#message")).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator(".startup")).toHaveCount(0);
+    await expect(
+      page.getByText(
+        "Studio has been updated. Update this tab to continue syncing and sending.",
+      ),
+    ).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Update" })).toHaveCount(0);
+  } finally {
+    fixture.kill();
+  }
 });
 
 test("a rollback without a schema header shows Update instead of stale chat data", async ({
@@ -249,7 +280,7 @@ test("a rollback without a schema header shows Update instead of stale chat data
 test("cold schema identity failure shows a reloadable error", async ({
   page,
 }) => {
-  const { url } = await startColdGateFixture();
+  const { fixture, url } = await startColdGateFixture();
   await page.route("**/api/**", async (route) => {
     if (route.request().headers()[API_SCHEMA_HASH_HEADER.toLowerCase()])
       return route.fulfill({
@@ -260,13 +291,20 @@ test("cold schema identity failure shows a reloadable error", async ({
       });
     return route.continue();
   });
-  await page.goto(url);
-  await expect(
-    page.getByText(
-      "Studio API schema identity is unavailable; restart Studio.",
-    ),
-  ).toBeVisible({ timeout: 5_000 });
-  await expect(page.getByRole("link", { name: "Reload Studio" })).toBeVisible();
+  try {
+    await page.goto(url);
+    await expect(
+      page.getByText(
+        "Studio API schema identity is unavailable; restart Studio.",
+      ),
+    ).toBeVisible({ timeout: 5_000 });
+    await expect(
+      page.getByRole("link", { name: "Reload Studio" }),
+    ).toBeVisible();
+  } finally {
+    await page.unrouteAll({ behavior: "wait" });
+    fixture.kill();
+  }
 });
 
 test("a warm server rollback preserves the draft and stops the stale stream", async ({
@@ -354,7 +392,7 @@ test("cold silent stream handshakes escalate to the mismatch gate", async ({
     };
   });
   const streamAttempts = new Map();
-  const { url } = await startColdGateFixture();
+  const { fixture, url } = await startColdGateFixture();
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname === "/api/sync/stream") {
@@ -374,37 +412,42 @@ test("cold silent stream handshakes escalate to the mismatch gate", async ({
     delete headers[API_SCHEMA_HASH_HEADER.toLowerCase()];
     return route.fulfill({ response, headers });
   });
-  await page.clock.install();
-  await page.goto(url);
-  await expect(page.locator("#message")).toBeVisible({ timeout: 30_000 });
-  await expect
-    .poll(() => page.evaluate(() => window.studioSchemaGateOpenStreams), {
-      timeout: 30_000,
-    })
-    .toBeGreaterThan(0);
-  for (let attempt = 2; attempt <= 3; attempt++) {
-    await page.clock.runFor(SILENT_HANDSHAKE_RETRY_ADVANCE_MS);
+  try {
+    await page.clock.install();
+    await page.goto(url);
+    await expect(page.locator("#message")).toBeVisible({ timeout: 30_000 });
     await expect
       .poll(() => page.evaluate(() => window.studioSchemaGateOpenStreams), {
         timeout: 30_000,
       })
-      .toBeGreaterThanOrEqual(attempt);
+      .toBeGreaterThan(0);
+    for (let attempt = 2; attempt <= 3; attempt++) {
+      await page.clock.runFor(SILENT_HANDSHAKE_RETRY_ADVANCE_MS);
+      await expect
+        .poll(() => page.evaluate(() => window.studioSchemaGateOpenStreams), {
+          timeout: 30_000,
+        })
+        .toBeGreaterThanOrEqual(attempt);
+    }
+    await page.clock.runFor(SILENT_HANDSHAKE_RETRY_ADVANCE_MS);
+    await expect(
+      page.locator('[data-modal-content="true"]').filter({
+        hasText:
+          "Studio has been updated. Update this tab to continue syncing and sending.",
+      }),
+    ).toBeVisible({ timeout: 5_000 });
+    assert.ok(
+      [...streamAttempts.values()].reduce((total, count) => total + count, 0) >=
+        3,
+      `the silent handshake reached at least three stream requests: ${JSON.stringify(
+        Object.fromEntries(streamAttempts),
+      )}`,
+    );
+    await expect(page.getByRole("button", { name: "Update" })).toBeVisible();
+  } finally {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+    fixture.kill();
   }
-  await page.clock.runFor(SILENT_HANDSHAKE_RETRY_ADVANCE_MS);
-  await expect(
-    page.locator('[data-modal-content="true"]').filter({
-      hasText:
-        "Studio has been updated. Update this tab to continue syncing and sending.",
-    }),
-  ).toBeVisible({ timeout: 5_000 });
-  assert.ok(
-    [...streamAttempts.values()].reduce((total, count) => total + count, 0) >=
-      3,
-    `the silent handshake reached at least three stream requests: ${JSON.stringify(
-      Object.fromEntries(streamAttempts),
-    )}`,
-  );
-  await expect(page.getByRole("button", { name: "Update" })).toBeVisible();
 });
 
 test("a response mismatch keeps the loaded transcript and local draft while stopping sync", async ({

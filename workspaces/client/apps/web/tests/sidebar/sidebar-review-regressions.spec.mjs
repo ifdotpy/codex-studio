@@ -90,6 +90,19 @@ test("selecting a remote chat expands only the session view and explicit heading
         .locator("[data-chat]")
         .first(),
     ).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          ({ scope, path }) =>
+            JSON.parse(
+              localStorage.getItem(
+                ":server:remote:codex-project-tree:" + scope,
+              ) || "{}",
+            )[path],
+          { scope, path: sourcePath("remote") },
+        ),
+      )
+      .toBe(true);
     await page.evaluate(() => {
       window.__reviewWrites = [];
     });
