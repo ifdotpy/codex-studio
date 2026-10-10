@@ -41,9 +41,11 @@ file path, so `just test codex-agents-web errorPresentation` loads the matching
 file. Add `--name <pattern>` to pass a test-name filter (`-t`) as well, which
 lets a named case stay within one file. Cargo uses the positional case as its
 test-name filter and forwards runner options after `--` (for example,
-`just test studio-diagnostics parse_args -- --exact`). The server uses its
-runner's `--filter` suite selector. `just test-plan` prints the selector and
-the exact native command without execution.
+`just test studio-diagnostics tests::formatter_matches_python_json_dump_golden -- --exact`).
+Cargo target selectors such as `--test compatibility` are routed to Cargo, for
+example `just test studio-diagnostics '' -- --test compatibility`. The server
+uses its runner's `--filter` suite selector. `just test-plan` prints the
+selector and the exact native command without execution.
 
 Each pnpm package declares its focused recipe mapping in its manifest under
 `codexStudioChecks`: `test` names the focused test script, and `check` lists
