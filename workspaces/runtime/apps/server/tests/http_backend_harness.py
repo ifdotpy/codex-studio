@@ -25,7 +25,8 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[5]
 SERVER_SCRIPT = REPOSITORY_ROOT / "workspaces/runtime/apps/server/src/codex-canvas"
 PROVIDER_REPLAY = Path(__file__).with_name("provider-replay-server.py")
 PROVIDER_FIXTURES = Path(__file__).parent / "fixtures/provider-replay"
-STARTUP_TIMEOUT_SECONDS = 8.0
+# Guards against a backend that never becomes ready; it is not a startup time budget.
+STARTUP_TIMEOUT_SECONDS = 60.0
 STOP_TIMEOUT_SECONDS = 4.0
 
 
