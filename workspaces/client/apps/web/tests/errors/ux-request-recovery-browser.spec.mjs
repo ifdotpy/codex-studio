@@ -278,7 +278,9 @@ test("Ux request recovery browser", async ({
             false,
             "A typed path must not select the old directory",
           );
-          await page.getByRole("button", { name: "Go", exact: true }).click();
+          await page
+            .getByRole("button", { name: "Open path", exact: true })
+            .click();
           await page.waitForFunction(
             () => !document.querySelector(".directory-footer button")?.disabled,
           );
@@ -287,7 +289,9 @@ test("Ux request recovery browser", async ({
             "/other",
           ]);
           await page.getByLabel("Folder path").fill("~/work");
-          await page.getByRole("button", { name: "Go", exact: true }).click();
+          await page
+            .getByRole("button", { name: "Open path", exact: true })
+            .click();
           await page.waitForFunction(
             () =>
               document.querySelector(".directory-location")?.textContent ===
@@ -343,6 +347,9 @@ test("Ux request recovery browser", async ({
             .getByRole("button", { name: "Refresh accounts", exact: true })
             .waitFor();
           await page.waitForFunction(() => !!document.querySelector("output"));
+          await page
+            .getByRole("button", { name: "Refresh accounts", exact: true })
+            .click();
           for (let attempt = 0; attempt < 100 && !releaseOld; attempt++)
             await new Promise((resolve) => setTimeout(resolve, 10));
           assert.equal(typeof releaseOld, "function");
@@ -380,8 +387,9 @@ test("Ux request recovery browser", async ({
           assert.equal(
             await page
               .getByRole("button", { name: "Save accounts", exact: true })
-              .isEnabled(),
-            false,
+              .count(),
+            0,
+            "An unchanged unready default has no save action",
           );
           await accountTileButton(
             page,
@@ -395,11 +403,25 @@ test("Ux request recovery browser", async ({
             true,
           );
         } else if (mode === "project-account") {
-          await accountTileButton(
+          const expired = accountTileButton(
             page,
             "Default account for new chats",
             "Expired account",
-          ).click();
+          );
+          assert.equal(
+            await expired.isDisabled(),
+            true,
+            "An account that cannot start work cannot become the default",
+          );
+          assert.equal(
+            await page
+              .getByRole("group", {
+                name: "Default account for new chats",
+                exact: true,
+              })
+              .getAttribute("data-value"),
+            "ready",
+          );
         } else {
           const name = [
             "name",
