@@ -6,6 +6,7 @@ Style: match the accepted Settings > Servers style (existing ActionButton, Setti
 
 - Header row: "Accounts" and a primary "Add account" button.
 - One row per account identity (provider + email): kind label (Codex / Claude), name, "Default" badge where relevant, ••• menu (Rename, Make default, Sign out, Remove).
+- Claude account rows also offer "Configure" in the ••• menu; it opens the existing Claude profile editor for that account (maintainer approval: 2026-10-11).
 - Second line: email · plan.
 - Third line: server chips, one per paired server (and this Mac):
   - green "✓ <server>": signed in on that server;

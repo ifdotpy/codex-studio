@@ -84,7 +84,12 @@ export type ServerCommand =
     }
   | {
       action: "account-action";
-      operation: "rename" | "default" | "disconnect" | "remove";
+      operation:
+        | "rename"
+        | "default"
+        | "disconnect"
+        | "remove"
+        | "configure-profile";
       provider: "codex" | "claude";
       email: string | null;
       label: string;
@@ -229,10 +234,16 @@ export function isServerCommand(value: unknown): value is ServerCommand {
     );
   if (command.action === "account-action")
     return (
-      ["rename", "default", "disconnect", "remove"].includes(
-        String(command.operation),
-      ) &&
+      [
+        "rename",
+        "default",
+        "disconnect",
+        "remove",
+        "configure-profile",
+      ].includes(String(command.operation)) &&
       (command.provider === "codex" || command.provider === "claude") &&
+      (command.operation !== "configure-profile" ||
+        command.provider === "claude") &&
       (command.email === null || typeof command.email === "string") &&
       typeof command.label === "string" &&
       (command.nextLabel === undefined || typeof command.nextLabel === "string")

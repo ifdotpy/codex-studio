@@ -97,6 +97,7 @@ export default function MultiServerApp() {
   managerRef.current = manager;
   const [managerTab, setManagerTab] = useState("servers");
   const restoreManagerAfterFrameDialog = useRef(false);
+  const restoreAccountActionFocus = useRef<string | null>(null);
   const discovery = useServerDiscovery(
     !uiOnly && ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname),
     (server) => add(server, false),
@@ -813,6 +814,19 @@ export default function MultiServerApp() {
       accountsByServer={accountsByServer}
     />
   );
+  const restoreAccountFocus = () => {
+    const identity = restoreAccountActionFocus.current;
+    if (!identity || managerTab !== "accounts") return;
+    restoreAccountActionFocus.current = null;
+    requestAnimationFrame(() => {
+      const row = [
+        ...document.querySelectorAll<HTMLElement>("[data-account-identity]"),
+      ].find((candidate) => candidate.dataset.accountIdentity === identity);
+      row
+        ?.querySelector<HTMLButtonElement>('[aria-label^="Actions for "]')
+        ?.focus({ preventScroll: true });
+    });
+  };
   const settings = (
     <Modal
       opened={manager}
@@ -820,6 +834,7 @@ export default function MultiServerApp() {
       size={modalSizes.settings}
       title="Studio settings"
       classNames={{ body: "studio-settings-body" }}
+      onEnterTransitionEnd={restoreAccountFocus}
     >
       <div className="studio-settings-panel" data-testid="studio-settings">
         <Tabs
@@ -853,6 +868,7 @@ export default function MultiServerApp() {
               }}
               startAccount={(id, command) => {
                 restoreManagerAfterFrameDialog.current = manager;
+                restoreAccountActionFocus.current = `${command.provider}:${(command.email || command.label).toLocaleLowerCase()}`;
                 if (servers.some((server) => server.id === id))
                   setManager(false);
                 else discovery.addAgain(id);
@@ -860,6 +876,7 @@ export default function MultiServerApp() {
               }}
               accountAction={(id, command) => {
                 restoreManagerAfterFrameDialog.current = manager;
+                restoreAccountActionFocus.current = `${command.provider}:${(command.email || command.label).toLocaleLowerCase()}`;
                 setManager(false);
                 send(id, command);
               }}
