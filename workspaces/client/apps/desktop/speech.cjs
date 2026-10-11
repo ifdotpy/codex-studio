@@ -97,7 +97,7 @@ async function transcribe({ audio, locale }, helper, options = {}) {
     throw Error("Invalid speech language.");
   await fs.access(helper).catch(() => {
     throw Error(
-      "The native speech helper is missing. Install the updated Codex Studio app. Your recording is saved.",
+      "The native speech helper is missing. Install the updated LAYR Studio app. Your recording is saved.",
     );
   });
   const directory = await fs.mkdtemp(

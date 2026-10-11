@@ -1,4 +1,4 @@
-# Codex Studio desktop
+# LAYR Studio desktop
 
 ## Change Contract
 
@@ -32,6 +32,14 @@ The app attaches to a compatible backend at `http://127.0.0.1:4620`. Otherwise, 
 The default state remains `~/.local/state/codex-agents`. Existing chats remain there. Browser local storage, including canvas positions, belongs to each browser profile. Electron uses its own profile; it does not copy Chrome local storage.
 The profile remains at `~/Library/Application Support/Codex Agents` after the
 rename to Codex Studio. The bundle identifier and state paths stay unchanged.
+
+People see the name LAYR Studio. The runtime identities keep the name Codex
+Studio: the bundle file `Codex Studio.app`, its executable, the bundle
+identifier, and the Electron app name in `main.cjs`. Electron names the macOS
+Keychain item `<app name> Safe Storage` from the app name. That item encrypts
+the saved server credentials, so a new app name would lose them. The package
+step (`bundle-name.mjs`) sets `CFBundleName` and a localized display name, so
+the menu bar, the About panel, the Dock and Finder show LAYR Studio.
 
 The launcher checks `PATH`, `/opt/homebrew/bin`, `/usr/local/bin`, and `/usr/bin`. It skips Python versions below 3.11. Set `CODEX_AGENTS_PYTHON` or `CODEX_BIN` to an absolute executable path when needed. It does not run a login shell. `CODEX_AGENTS_STATE_DIR`, `XDG_STATE_HOME`, and `CODEX_HOME` retain the backend meanings. `CODEX_DESKTOP_PORT` and `CODEX_DESKTOP_PROFILE` support isolated tests.
 
@@ -80,7 +88,7 @@ active work running:
      "/tmp/codex-studio-supervisor/Codex Studio-darwin-arm64/Codex Studio.app"
    ```
 
-2. Quit the Studio window with **Quit Codex Studio**. This records a closed
+2. Quit the Studio window with **Quit LAYR Studio**. This records a closed
    desktop intent; it does not stop the detached backend or its agents.
 3. Stage the verified bundle beside Applications, then swap the app bundle:
 
