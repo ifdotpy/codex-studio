@@ -51,13 +51,19 @@ class BackendProcess:
         self.codex_home = self._directory("codex-home")
         self.claude_home = self._directory("claude-home")
         self.xdg_state = self._directory("xdg-state")
-        self.xdg_cache = self._directory("xdg-cache")
+        # Runtime schema identity is content-addressed and safe to reuse between
+        # sequential backends in this one runner-owned scratch root.
+        self.xdg_cache = self.scratch_root / "http-boundary-xdg-cache"
+        self.xdg_cache.mkdir(exist_ok=True)
         self.xdg_config = self._directory("xdg-config")
         self.cwd = self._directory("workspace")
         subprocess.run(["git", "init", "--quiet", "--initial-branch=main"],
                        cwd=self.cwd, check=True, timeout=2)
         self.origin: str | None = None
         self.ready_seconds: float | None = None
+        self.process_start_times: list[float] = []
+        self.class_setup_seconds: float | None = None
+        self.class_setup_phases: dict[str, float] = {}
         self._process: subprocess.Popen[str] | None = None
         self._output: queue.Queue[str] = queue.Queue()
         self._reader: threading.Thread | None = None
@@ -67,6 +73,10 @@ class BackendProcess:
         self.session: dict[str, str] = {}
         self.schema_hash = ""
         self.ready_samples: list[float] = []
+        self.start_phases: list[dict[str, float]] = []
+        self.stop_phases: list[dict[str, float]] = []
+        self.cleanup_seconds: float | None = None
+        self._provider_start_log: Path | None = None
         self.lead_id = ""
         self.room_id = ""
         self.workspace_id = ""
@@ -148,6 +158,7 @@ class BackendProcess:
         if self._codex_log is not None:
             environment["CODEX_FAKE_RECEIVED"] = str(self._codex_log)
         started = time.monotonic()
+        self.process_start_times.append(started)
         self._process = subprocess.Popen(
             command,
             cwd=self.cwd,
@@ -167,7 +178,9 @@ class BackendProcess:
             target=self._read_stderr, args=(self._process.stderr,), daemon=True
         ).start()
         deadline = started + STARTUP_TIMEOUT_SECONDS
+        ready_line_at: float
         line = self._output.get(timeout=max(0.01, deadline - time.monotonic()))
+        ready_line_at = time.monotonic()
         prefix = "Codex Canvas: "
         if not line.startswith(prefix):
             self.stop()
@@ -181,6 +194,7 @@ class BackendProcess:
             self.stop()
             raise RuntimeError(f"Backend origin is not loopback: {self.origin!r}")
         last_health_error: Exception | None = None
+        health_started = time.monotonic()
         while time.monotonic() < deadline:
             try:
                 health = self.request("GET", "/api/session", timeout=max(0.1, deadline-time.monotonic()))
@@ -193,6 +207,11 @@ class BackendProcess:
             self.stop()
             raise RuntimeError(f"Backend health request exceeded its bound: {last_health_error}; {self.stderr}")
         self.ready_seconds = time.monotonic() - started
+        self.start_phases.append({
+            "spawnToReadyAnnouncementSeconds": round(ready_line_at - started, 4),
+            "healthRequestSeconds": round(self.ready_seconds - (health_started - started), 4),
+            "totalReadySeconds": round(self.ready_seconds, 4),
+        })
         return self.ready_seconds
 
     @property
@@ -251,12 +270,14 @@ class BackendProcess:
             raise ValueError("Provider replay fixture escaped its fixture directory")
         replies = (PROVIDER_FIXTURES / "codex-rpc-replies.json").resolve(strict=True)
         self._codex_log = self.root / "codex-frames.jsonl"
+        self._provider_start_log = self.root / "codex-starts.txt"
+        provider_start_log = str(self._provider_start_log)
         (self.root / "provider-release").touch()
         executable = self.root / "bin" / "codex"
         executable.parent.mkdir(parents=True, exist_ok=True)
         executable.write_text(
             "#!/usr/bin/env python3\n"
-            "import json, os, struct, sys\n"
+            "import json, os, struct, sys, time\n"
             f"fixture = {str(fixture)!r}\n"
             f"replies = {str(replies)!r}\n"
             f"replay = {str(PROVIDER_REPLAY)!r}\n"
@@ -277,6 +298,8 @@ class BackendProcess:
             "        with open(os.path.join(output, name), 'w', encoding='utf-8') as stream:\n"
             "            json.dump(value, stream)\n"
             "elif sys.argv[1:2] == ['app-server']:\n"
+            f"    with open({provider_start_log!r}, 'a', encoding='utf-8') as stream:\n"
+            "        stream.write(str(time.monotonic()) + '\\n')\n"
             "    os.execv(sys.executable, [sys.executable, replay, fixture, replies])\n"
             "else:\n"
             "    raise SystemExit('unsupported fake Codex command')\n",
@@ -310,11 +333,19 @@ class BackendProcess:
             return []
         return [json.loads(line) for line in self._codex_log.read_text(encoding="utf-8").splitlines()]
 
+    def provider_start_times(self) -> list[float]:
+        if self._provider_start_log is None or not self._provider_start_log.exists():
+            return []
+        return [float(line) for line in self._provider_start_log.read_text(encoding="utf-8").splitlines()]
+
     def stop(self) -> None:
         process = self._process
         if process is None:
             return
         self._process = None
+        stop_started = time.monotonic()
+        exit_wait_seconds = 0.0
+        forced = False
         try:
             if os.name == "nt":
                 if process.poll() is None:
@@ -325,8 +356,11 @@ class BackendProcess:
                 except ProcessLookupError:
                     pass
             if process.poll() is None:
+                wait_started = time.monotonic()
                 process.wait(timeout=STOP_TIMEOUT_SECONDS)
+                exit_wait_seconds = time.monotonic() - wait_started
         except subprocess.TimeoutExpired:
+            forced = True
             if os.name == "nt":
                 process.kill()
             else:
@@ -336,6 +370,7 @@ class BackendProcess:
                     pass
             process.wait(timeout=2)
         finally:
+            group_cleanup_started = time.monotonic()
             self.origin = None
             if os.name != "nt":
                 try:
@@ -345,10 +380,18 @@ class BackendProcess:
             for stream in (process.stdout, process.stderr):
                 if stream is not None:
                     stream.close()
+            self.stop_phases.append({
+                "exitWaitSeconds": round(exit_wait_seconds, 4),
+                "forcedKill": float(forced),
+                "groupAndPipeCleanupSeconds": round(time.monotonic() - group_cleanup_started, 4),
+                "totalStopSeconds": round(time.monotonic() - stop_started, 4),
+            })
 
     def close(self) -> None:
         self.stop()
+        cleanup_started = time.monotonic()
         resolved = self.root.resolve()
         if self.scratch_root not in resolved.parents:
             raise RuntimeError("Refusing to remove state outside the runner scratch root")
         shutil.rmtree(resolved)
+        self.cleanup_seconds = time.monotonic() - cleanup_started

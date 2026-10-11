@@ -176,7 +176,8 @@ read SQLite or import server modules.
 Write each contract as a separately named `unittest` method so the runner can
 report, select, and reproduce it by test ID. Share a backend only within a
 class whose methods create independent data; put restart durability in its own
-class, and record readiness timings without asserting on speed.
+class, keep process-owning suites unsliced, and record readiness timings without
+asserting on speed.
 
 The backend requires the native lifecycle module. Build the module, then install
 it before server tests or backend startup. For test runs, keep both the managed

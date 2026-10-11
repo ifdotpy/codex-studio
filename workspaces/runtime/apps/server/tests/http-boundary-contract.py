@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+_clock = __import__("time")
+_module_import_started = _clock.monotonic()
+
 import json
 import os
 from pathlib import Path
@@ -17,6 +20,8 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 from http_backend_harness import BackendProcess, HttpResult
+
+_module_import_finished = time.monotonic()
 
 
 def assert_status(response: HttpResult, expected: int) -> None:
@@ -33,36 +38,59 @@ def create_backend(test_case: type[unittest.TestCase]) -> BackendProcess:
     scratch_value = os.environ.get("TMPDIR")
     if not scratch_value:
         raise RuntimeError("The server runner must provide a memory-backed TMPDIR")
+    phase_started = time.monotonic()
     backend = BackendProcess(Path(scratch_value))
+    backend.class_setup_phases["harnessConstructionSeconds"] = round(
+        time.monotonic() - phase_started, 4)
+    test_case.addClassCleanup(record_ready_times, backend)
     test_case.addClassCleanup(backend.close)
+    phase_started = time.monotonic()
     backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
+    backend.class_setup_phases["fakeProviderSetupSeconds"] = round(
+        time.monotonic() - phase_started, 4)
+    phase_started = time.monotonic()
     backend.ready_samples.append(backend.start())
+    backend.class_setup_phases["backendStartAndReadinessSeconds"] = round(
+        time.monotonic() - phase_started, 4)
+    phase_started = time.monotonic()
     session = backend.request("GET", "/api/session")
     assert_status(session, 200)
     backend.session = session.json()
+    backend.class_setup_phases["sessionRequestSeconds"] = round(
+        time.monotonic() - phase_started, 4)
+    phase_started = time.monotonic()
     schema = backend.request("GET", "/api/sync/identity",
                              headers={"X-Studio-API-Schema": "probe"})
     assert_status(schema, 200)
     backend.schema_hash = schema.headers["x-studio-api-schema"]
+    backend.class_setup_phases["schemaRequestSeconds"] = round(
+        time.monotonic() - phase_started, 4)
     return backend
 
 
 def record_ready_times(backend: BackendProcess) -> None:
     samples = backend.ready_samples
     print(json.dumps({
-        "backendReadyMedianSeconds": round(statistics.median(samples), 4),
-        "backendReadyWorstSeconds": round(max(samples), 4),
+        "classSetupSeconds": round(backend.class_setup_seconds or 0, 4),
+        "classSetupPhases": backend.class_setup_phases,
+        "backendReadyMedianSeconds": round(statistics.median(samples), 4) if samples else None,
+        "backendReadyWorstSeconds": round(max(samples), 4) if samples else None,
         "backendStarts": len(samples),
+        "backendStartPhases": backend.start_phases,
+        "backendStopPhases": backend.stop_phases,
+        "stateCleanupSeconds": round(backend.cleanup_seconds or 0, 4),
     }, sort_keys=True), flush=True)
+
+
+def record_process_import_time() -> None:
+    parent_started = os.environ.get("CODEX_HTTP_BOUNDARY_PROCESS_STARTED_AT")
+    process_started = float(parent_started) if parent_started else _module_import_started
+    print(json.dumps({"pythonProcessAndImportsSeconds": round(
+        _module_import_finished - process_started, 4)}, sort_keys=True), flush=True)
 
 
 class TimedBoundaryTest(unittest.TestCase):
     backend: BackendProcess
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        record_ready_times(cls.backend)
-        super().tearDownClass()
 
     def setUp(self) -> None:
         self.test_started = time.monotonic()
@@ -76,7 +104,9 @@ class TimedBoundaryTest(unittest.TestCase):
 class BoundaryContractTests(TimedBoundaryTest):
     @classmethod
     def setUpClass(cls) -> None:
+        started = time.monotonic()
         cls.backend = create_backend(cls)
+        cls.backend.class_setup_seconds = time.monotonic() - started
 
     def test_session_schema_identity_and_mismatching_write(self) -> None:
         backend = self.backend
@@ -205,6 +235,7 @@ class BoundaryContractTests(TimedBoundaryTest):
         lead_id = lead.json()["id"]
         body = {"id": "http-contract-provider-message", "room": lead_id,
                 "text": "Reply with the fixture result.", "delivery": "queue", "assets": []}
+        provider_request_started = time.monotonic()
         sent = backend.request("POST", "/api/messages", body=body, headers=headers)
         assert_status(sent, 200)
         self.assertEqual(sent.json()["id"], body["id"])
@@ -225,17 +256,31 @@ class BoundaryContractTests(TimedBoundaryTest):
         self.assertTrue(any(item["id"] == body["id"] and item["text"] == body["text"]
                             for item in history.json()))
         methods = [frame.get("method") for frame in frames]
+        diagnostic = backend.request("GET", "/api/desktop") if "turn/start" not in methods else None
         self.assertTrue({"initialize", "thread/start", "turn/start"}.issubset(methods),
-                        (methods, backend.stderr))
+                        (methods, backend.stderr,
+                         None if diagnostic is None else diagnostic.json().get("nativeRuntime")))
         self.assertTrue(any(frame.get("method") == "turn/start" and
                             frame.get("params", {}).get("input") for frame in frames), frames)
         self.assertIn("Recovered output.", json.dumps(transcript), transcript)
+        provider_starts = backend.provider_start_times()
+        provider_start = next((value for value in provider_starts if value >= provider_request_started), None)
+        self.assertIsNotNone(provider_start, "the fake Codex executable did not launch for this turn")
+        print(json.dumps({
+            "fakeCodexNativeSmokeLaunchAfterBackendStartSeconds": round(
+                provider_starts[0] - backend.process_start_times[0], 4),
+            "fakeCodexLaunchAfterMessageSeconds": round(
+                (provider_start or provider_request_started) - provider_request_started, 4),
+            "fakeCodexFramesAfterRequestSeconds": round(time.monotonic() - provider_request_started, 4),
+        }, sort_keys=True), flush=True)
 
 
 class RestartContractTests(TimedBoundaryTest):
     @classmethod
     def setUpClass(cls) -> None:
+        started = time.monotonic()
         cls.backend = create_backend(cls)
+        cls.backend.class_setup_seconds = time.monotonic() - started
 
     def test_restart_serves_sync_receipt_and_provider_facts(self) -> None:
         backend = self.backend
@@ -294,7 +339,10 @@ class RestartContractTests(TimedBoundaryTest):
             assert_status(transcript, 200)
             if "Recovered output." in json.dumps(transcript.json()):
                 break
-        self.assertIn("Recovered output.", json.dumps(transcript.json()))
+        transcript_text = json.dumps(transcript.json())
+        if "Recovered output." not in transcript_text:
+            native_status = backend.request("GET", "/api/desktop").json().get("nativeRuntime")
+            self.fail(f"Provider turn did not reach the transcript: {native_status}")
         self.assertIn("turn/start", [frame.get("method")
                                     for frame in backend.received_provider_frames()])
 
@@ -337,4 +385,5 @@ class RestartContractTests(TimedBoundaryTest):
 
 
 if __name__ == "__main__":
+    record_process_import_time()
     unittest.main(verbosity=2)
