@@ -34,6 +34,7 @@ if [ "$(cat /var/lib/codex-studio/layr-build 2>/dev/null || true)" != "$identity
     timeout --kill-after=10 1200 cargo build --manifest-path "$source_dir/Cargo.toml" --release --locked --jobs 2
     install -m 0755 "$CARGO_TARGET_DIR/release/layr" /usr/local/bin/layr
     printf '%s\n' "$identity" > /var/lib/codex-studio/layr-build
+    rebuilt=1
 fi
 install -d -m 0711 /var/lib/codex-studio/layr
 install -d -m 0700 /var/lib/codex-studio/layr-admin
@@ -44,4 +45,7 @@ done
 systemctl disable --now smbd.service nmbd.service 2>/dev/null || true
 systemctl daemon-reload
 systemctl enable --now codex-studio-layr.service codex-studio-layr-admin.service codex-studio-share-bridge.service
+# The daemon starts at boot, before provisioning rebuilds layr: a new binary needs a restart
+# (on 2026-10-11 the old daemon kept reading .regenerable after the .layrattributes release).
+if [ "${rebuilt:-0}" = 1 ]; then systemctl restart codex-studio-layr.service; fi
 
