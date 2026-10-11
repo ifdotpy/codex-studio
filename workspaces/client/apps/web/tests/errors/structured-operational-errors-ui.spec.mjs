@@ -1,4 +1,10 @@
-import { test } from "../playwright.mjs";
+import {
+  apiSchemaHandshakeSse,
+  apiSchemaHeaders,
+  syncIdentityFixture,
+  syncProtocolFixture,
+  test,
+} from "../playwright.mjs";
 // Structured diagnostic fixtures through real React components. No live API writes.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -18,6 +24,8 @@ test("Structured operational errors ui", async ({
   );
   const { createServer } = await import(require.resolve("vite"));
   const temporary = await mkdtemp(join(tmpdir(), "studio-operational-errors-"));
+  const syncIdentity = syncIdentityFixture();
+  const syncStreams = new Set();
   const harness = `
   import React from 'react';
   import {createRoot} from 'react-dom/client';
@@ -47,11 +55,11 @@ test("Structured operational errors ui", async ({
   window.renderCase=async(which,value)=>{
    let component;
    if(which==='request') {
-    const request={id:'approval',agent:'lead',method:'item/commandExecution/requestApproval',params:{reason:value}};
+    const request={id:'approval',agent:'lead',method:'item/commandExecution/requestApproval',params:{reason:'Structured operation failed'}};
     component=React.createElement(Requests,{requests:[request],allRequests:[request],scope:'fixture',agents:[agent],refresh,notify:noop});
    }
    if(which==='message') component=React.createElement(UserMessages,{data:{...snapshot,runtime:{...snapshot.runtime,complaints:[{id:'message',leadId:'lead',author:'lead',authorName:'Lead',recipient:'user',title:'User check',created:1,version:1}]}},refresh,notify:noop});
-   if(which==='background') component=React.createElement(BackgroundTasks,{opened:true,close:noop,data:{...snapshot,runtime:{...snapshot.runtime,tasks:[{id:'tool',agent:'lead',kind:'tool',name:'dynamicToolCall',status:'running',created:1,error:value,stdinError:value}]}},leadId:'lead',openAgent:noop,refresh,notify:noop});
+   if(which==='background') component=React.createElement(BackgroundTasks,{opened:true,close:noop,data:{...snapshot,runtime:{...snapshot.runtime,tasks:[{id:'tool',agent:'lead',kind:'command',name:'commandExecution',command:'fixture command',status:'running',created:1,error:value,stdinError:value}]}},leadId:'lead',openAgent:noop,refresh,notify:noop});
    if(which==='capacity') component=React.createElement(CapacityRetry,{agentId:'lead',retry:{id:'retry',status:'scheduled',dueAt:Date.now()/1000+100,reason:value}});
    if(which==='safety') component=React.createElement(SafetyBuffering,{agent:{...agent,nativeSafetyRetry:{epoch:0,accountKey:'default',turnId:'turn',stage:'failed',error:value}}});
    if(which==='dictation') {
@@ -71,6 +79,39 @@ test("Structured operational errors ui", async ({
     plugins: [
       {
         name: "operational-errors-fixture",
+        configureServer(server) {
+          server.middlewares.use("/api/sync/stream", (request, response) => {
+            const resources = JSON.parse(
+              new URL(request.url, "http://127.0.0.1").searchParams.get(
+                "resources",
+              ) || "[]",
+            );
+            const event = {
+              protocol: 3,
+              workspaceId: syncIdentity.workspaceId,
+              epoch: "fixture",
+              revision: 1,
+              reason: "initial",
+              resources,
+              resourceVersions: resources.map((resource) => ({
+                resource,
+                revision: 1,
+              })),
+            };
+            response.writeHead(200, {
+              ...apiSchemaHeaders({ "Content-Type": "text/event-stream" }),
+              "Cache-Control": "no-cache",
+            });
+            response.write(
+              apiSchemaHandshakeSse(
+                `event: resources\ndata: ${JSON.stringify(event)}\n\n`,
+              ),
+            );
+            response.flushHeaders();
+            syncStreams.add(response);
+            response.on("close", () => syncStreams.delete(response));
+          });
+        },
         resolveId(id) {
           if (id === "virtual:operational-errors") return "\0" + id;
         },
@@ -101,27 +142,50 @@ test("Structured operational errors ui", async ({
     let getFailure;
     let messageFailure;
     await page.route("**/api/**", async (route) => {
+      const fulfill = (options) =>
+        route.fulfill({
+          ...options,
+          headers: { ...apiSchemaHeaders(), ...options.headers },
+        });
       if (route.request().method() === "POST") {
         writes.push(route.request().postDataJSON());
-        return route.fulfill({
+        return fulfill({
           status: 409,
           json: { error: "Unexpected action" },
         });
       }
       const url = new URL(route.request().url());
+      if (url.pathname === "/api/sync/stream") return route.continue();
+      if (url.pathname === "/api/sync/identity")
+        return fulfill({ json: syncIdentity });
+      if (url.pathname === "/api/sync/protocol")
+        return fulfill({ json: syncProtocolFixture() });
+      if (url.pathname === "/api/session")
+        return fulfill({ json: { token: "fixture" } });
+      if (url.pathname === "/api/sync/pull")
+        return fulfill({
+          json: {
+            workspaceId: syncIdentity.workspaceId,
+            checkpoint: { seq: 0 },
+            maxSeq: 0,
+            documents: [],
+            reset: false,
+          },
+        });
       if (url.pathname === "/api/complaint")
-        return route.fulfill({ status: 503, json: { error: messageFailure } });
+        return fulfill({ status: 503, json: { error: messageFailure } });
       if (url.pathname === "/api/panel" && getFailure !== undefined)
-        return route.fulfill({ status: 503, json: getFailure });
+        return fulfill({ status: 503, json: getFailure });
       if (url.pathname === "/api/workspace/tasks")
-        return route.fulfill({
+        return fulfill({
           json: {
             tasks: [
               {
                 id: "tool",
                 agent: "lead",
-                kind: "tool",
-                name: "dynamicToolCall",
+                kind: "command",
+                name: "commandExecution",
+                command: "fixture command",
                 status: "running",
                 created: 1,
               },
@@ -133,19 +197,20 @@ test("Structured operational errors ui", async ({
           },
         });
       if (url.pathname === "/api/task")
-        return route.fulfill({
+        return fulfill({
           json: {
             id: "tool",
             agent: "lead",
-            kind: "tool",
-            name: "dynamicToolCall",
+            kind: "command",
+            name: "commandExecution",
+            command: "fixture command",
             status: "running",
             created: 1,
             error: value,
             stdinError: value,
           },
         });
-      return route.fulfill({
+      return fulfill({
         json: { tasks: [], monitors: [], requests: [], id: "tool" },
       });
     });
@@ -179,10 +244,13 @@ test("Structured operational errors ui", async ({
       if (which === "background")
         await page.locator('[data-task="tool"]').click();
       try {
-        await page
-          .getByText("Structured operation failed", { exact: true })
-          .first()
-          .waitFor({ timeout: 5000 });
+        const diagnostic =
+          which === "dictation"
+            ? page.locator(".dictation-item .dictation-error")
+            : which === "request"
+              ? page.getByText("Structured operation failed", { exact: true })
+              : page.getByText("Structured operation failed", { exact: true });
+        await diagnostic.first().waitFor({ timeout: 5000 });
       } catch (error) {
         console.error(
           which,
@@ -191,12 +259,14 @@ test("Structured operational errors ui", async ({
         );
         throw error;
       }
-      await page
-        .getByRole("button", { name: "Error details", exact: true })
-        .first()
-        .click();
-      assert.match(await page.locator("body").innerText(), /E_FIXTURE/);
-      assert.match(await page.locator("body").innerText(), /"attempt": 7/);
+      if (which !== "request") {
+        await page
+          .getByRole("button", { name: "Error details", exact: true })
+          .first()
+          .click();
+        assert.match(await page.locator("body").innerText(), /E_FIXTURE/);
+        assert.match(await page.locator("body").innerText(), /"attempt": 7/);
+      }
       assert.deepEqual(
         await page.evaluate(() => window.crashes),
         [],
@@ -310,6 +380,7 @@ test("Structured operational errors ui", async ({
       "PASS: structured request/message/retry/safety/dictation and progress read diagnostics preserve render and manual actions",
     );
   } finally {
+    for (const stream of syncStreams) stream.end();
     await Promise.all(
       testBrowser
         .contexts()

@@ -1,4 +1,10 @@
-import { readTestState, test, expect, spawnFixture } from "../playwright.mjs";
+import {
+  apiSchemaHeaders,
+  readTestState,
+  test,
+  expect,
+  spawnFixture,
+} from "../playwright.mjs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -239,6 +245,7 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
     await expect(page.locator("#message")).toHaveValue("");
     await page.route("**/api/messages", (route) =>
       route.fulfill({
+        headers: apiSchemaHeaders(),
         json: { id: route.request().postDataJSON().id, status: "sent" },
       }),
     );
@@ -256,12 +263,16 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
     await expect(page.locator("#message")).toHaveValue(
       "Keep this draft while other agents update.",
     );
+    await page.getByRole("button", { name: "New chat", exact: true }).click();
     const creation = page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&
         response.url().endsWith("/api/leads"),
     );
-    await page.getByRole("button", { name: "New chat", exact: true }).click();
+    await page
+      .getByRole("dialog", { name: "New chat", exact: true })
+      .getByRole("button", { name: "Start chat", exact: true })
+      .click();
     const created = await (await creation).json();
     await expect(page.locator(`[data-chat="${created.id}"]`)).toHaveAttribute(
       "aria-current",

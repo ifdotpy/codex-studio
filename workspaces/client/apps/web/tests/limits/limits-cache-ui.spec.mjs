@@ -1,4 +1,10 @@
-import { test, expect, spawnFixture, readTestState } from "../playwright.mjs";
+import {
+  apiSchemaHeaders,
+  test,
+  expect,
+  spawnFixture,
+  readTestState,
+} from "../playwright.mjs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -70,13 +76,20 @@ test("cached limits appear before a slow read on open and restart", async ({
     );
     await page.route("**/api/accounts", (route) =>
       route.fulfill({
+        headers: apiSchemaHeaders(),
         json: {
           defaultAccountKey: "default",
+          archivedAccounts: [],
+          logins: [],
+          supportsDisconnect: true,
+          supportsDelete: true,
           accounts: [
             {
               id: "default",
               accountId: "default",
               label: "Personal",
+              home: "/home/fixture/.codex",
+              source: "Codex CLI",
               provider: "codex",
               status: "ready",
             },
@@ -84,6 +97,8 @@ test("cached limits appear before a slow read on open and restart", async ({
               id: "work",
               accountId: "work",
               label: "Work",
+              home: "/home/fixture/work/.codex",
+              source: "Codex CLI",
               provider: "codex",
               status: "ready",
             },
@@ -91,6 +106,8 @@ test("cached limits appear before a slow read on open and restart", async ({
               id: "unknown",
               accountId: "unknown",
               label: "Unknown",
+              home: "/home/fixture/unknown/.codex",
+              source: "Codex CLI",
               provider: "codex",
               status: "ready",
             },
@@ -131,6 +148,7 @@ test("cached limits appear before a slow read on open and restart", async ({
         "default";
       replies++;
       await route.fulfill({
+        headers: apiSchemaHeaders(),
         json: snapshot(key, key === "default" ? 10 : 70, now + replies),
       });
     });
@@ -223,14 +241,15 @@ test("cached limits appear before a slow read on open and restart", async ({
       name: "Studio settings",
       exact: true,
     });
+    const personalRow = studioSettings.locator(
+      '[data-account-identity="codex:personal"]',
+    );
+    await expect(personalRow).toContainText("Personal");
     await expect(
-      studioSettings.locator('[data-account="default"]').getByRole("meter"),
-    ).toHaveAttribute("aria-valuenow", "90", { timeout: 1000 });
-    await expect(
-      studioSettings.locator('[data-account="work"]').getByRole("meter"),
-    ).toHaveAttribute("aria-valuenow", "20", { timeout: 1000 });
+      personalRow.locator('.server-account-chip[data-state="ready"]'),
+    ).toContainText("Studio server");
     await page.screenshot({
-      path: info.outputPath("cached-account-cards.png"),
+      path: info.outputPath("studio-account-identity.png"),
     });
     await studioSettings
       .getByRole("button", { name: "Close", exact: true })

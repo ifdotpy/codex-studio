@@ -1,4 +1,12 @@
-import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
+import {
+  apiSchemaHeaders,
+  entityPullFixtureForRequest,
+  readFixtureSyncContract,
+  readTestState,
+  stubEntityState,
+  test,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Production HTTP policy and renderer. External image responses are isolated fixtures.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
@@ -44,24 +52,33 @@ test("markdown image http ui", async ({ page: runnerPage }) => {
         ),
       }),
     );
-    await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ status: 404, json: {} }),
-    );
-    await page.route("**/api/transcript**", (route) =>
-      route.fulfill({
-        json: {
-          items: [
-            {
-              id: "image-message",
-              role: "assistant",
-              streaming: false,
-              text: '![Remote](https://external.invalid/pixel.png)\n\nText <svg><image href="https://external.invalid/unapproved-svg.png" /></svg>\n\n<table background="https://external.invalid/unapproved-background.png"><tr><td>Isolated HTML</td></tr></table>',
-            },
-          ],
-          agent: lead,
+    const syncContract = await readFixtureSyncContract(origin);
+    await stubEntityState(page, state, syncContract);
+    const transcript = {
+      items: [
+        {
+          id: "image-message",
+          role: "assistant",
+          streaming: false,
+          text: '![Remote](https://external.invalid/pixel.png)\n\nText <svg><image href="https://external.invalid/unapproved-svg.png" /></svg>\n\n<table background="https://external.invalid/unapproved-background.png"><tr><td>Isolated HTML</td></tr></table>',
         },
-      }),
-    );
+      ],
+      order: ["image-message"],
+      replace: true,
+      agent: { ...lead, status: "completed", inFlight: false, turnId: null },
+    };
+    await page.route("**/api/sync/pull**", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.get("scope") !== `transcript:${lead.id}`)
+        return route.fallback();
+      return route.fulfill({
+        headers: apiSchemaHeaders(),
+        json: {
+          workspaceId: syncContract.identity.workspaceId,
+          ...entityPullFixtureForRequest(state, url, { transcript }),
+        },
+      });
+    });
     await page.goto(origin);
     await page.locator(`[data-chat="${lead.id}"]`).click();
     const load = page.getByRole("button", { name: "Load image", exact: true });
@@ -69,6 +86,7 @@ test("markdown image http ui", async ({ page: runnerPage }) => {
     await page.waitForTimeout(300);
     assert.deepEqual(requests, [], "No external image request before consent");
     await load.click();
+    await page.locator('img[alt="Remote"]').scrollIntoViewIfNeeded();
     await page.waitForFunction(() => {
       const image = document.querySelector('img[alt="Remote"]');
       return image?.complete && image.naturalWidth === 1;

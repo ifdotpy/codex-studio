@@ -53,7 +53,19 @@ test("new chat chips open each role, save settings and disappear after send", as
       .locator(".sidebar-nav")
       .getByRole("button", { name: "New chat", exact: true })
       .click();
-    const row = page.locator(".empty-chat-settings");
+    const startChat = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url().endsWith("/api/leads"),
+    );
+    await page
+      .getByRole("dialog", { name: "New chat", exact: true })
+      .getByRole("button", { name: "Start chat", exact: true })
+      .click();
+    await startChat;
+    const row = page.locator(
+      "#conversation > #composer + .empty-chat-settings",
+    );
     await expect(row).toBeVisible();
     await expect(row.locator(".execution-menu")).toHaveCount(2);
     await expect(page.locator("#composer .execution-menu")).toHaveCount(0);

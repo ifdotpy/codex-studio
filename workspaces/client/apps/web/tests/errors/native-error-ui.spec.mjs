@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import {
+  apiSchemaHeaders,
   test,
   expect,
   spawnFixture as spawn,
@@ -57,11 +58,16 @@ test("native error ui", async ({ page: runnerPage }) => {
     });
     if (process.env.NATIVE_ERROR_LEGACY) {
       await page.route("**/api/sync/identity", (r) =>
-        r.fulfill({ status: 404, json: { error: "Unsupported sync" } }),
+        r.fulfill({
+          status: 404,
+          json: { error: "Unsupported sync" },
+          headers: apiSchemaHeaders(),
+        }),
       );
     }
     await page.route("**/api/limits", (route) =>
       route.fulfill({
+        headers: apiSchemaHeaders(),
         json: {
           accountKey: "default",
           at: Date.now() / 1000,
@@ -122,6 +128,7 @@ test("native error ui", async ({ page: runnerPage }) => {
       name: "Warnings",
       exact: true,
     });
+    await accountNotice.locator("details > summary").first().click();
     assert.deepEqual(
       JSON.parse(await accountNotice.locator("pre").innerText()),
       accountDetails,
@@ -145,6 +152,7 @@ test("native error ui", async ({ page: runnerPage }) => {
     });
     await page.getByRole("button", { name: "Warnings", exact: true }).click();
     await accountNotice.getByText(featureWarning, { exact: true }).waitFor();
+    await accountNotice.locator("details > summary").last().click();
     assert.equal(
       await page
         .locator("#messages")
@@ -223,6 +231,7 @@ test("native error ui", async ({ page: runnerPage }) => {
       },
     });
     await page.locator('[data-phase="retrying"]').waitFor();
+    await page.locator('[data-phase="retrying"] details > summary').click();
     assert.equal(await page.locator(".native-error").count(), 0);
     await page
       .locator('[data-phase="retrying"]')
@@ -256,10 +265,7 @@ test("native error ui", async ({ page: runnerPage }) => {
         httpStatusCode: 503,
       },
     );
-    assert.equal(
-      await page.locator("#conversation-status").innerText(),
-      "Reconnecting 2/5",
-    );
+    await expect(page.locator("#conversation-status")).toHaveText("Working");
     event("item/agentMessage/delta", {
       itemId: "native-text",
       delta: "Connection restored",
@@ -406,10 +412,26 @@ test("native error ui", async ({ page: runnerPage }) => {
       .filter({ hasText: error.message })
       .getByText("Sign in again to this chat's account.", { exact: true })
       .waitFor();
-    fail({
-      message: "Model is at capacity",
-      codexErrorInfo: "serverOverloaded",
-    });
+    proc.stdin.write(
+      JSON.stringify({
+        method: "turn/completed",
+        params: {
+          threadId: agent.threadId,
+          turn: {
+            id: agent.turnId,
+            status: "failed",
+            error: {
+              message: "Model is at capacity",
+              codexErrorInfo: "serverOverloaded",
+            },
+          },
+        },
+      }) + "\n",
+    );
+    await poll(async () => {
+      agent = (await state()).runtime.agents.find((a) => a.id === agent.id);
+      return agent.capacityRetry?.status === "scheduled";
+    }, "capacity failure schedules retry");
     await page
       .locator(".native-error.warning")
       .getByText("Model is at capacity", { exact: true })

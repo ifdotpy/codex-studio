@@ -1,4 +1,12 @@
-import { test } from "../playwright.mjs";
+import {
+  apiSchemaHandshakeSse,
+  apiSchemaHeaders,
+  accountTileButton,
+  entityPullFixtureForRequest,
+  syncIdentityFixture,
+  syncProtocolFixture,
+  test,
+} from "../playwright.mjs";
 // Real UI components with isolated HTTP responses. No model or user state.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -31,10 +39,11 @@ test("Ux request recovery browser", async ({
   const mode=new URLSearchParams(location.search).get('case');
   const project={id:'/project',path:'/project',name:'Project',accountKey:'ready',accountKeys:['ready','expired'],folders:[{id:'review',name:'Review'}]};
   const agent={id:'lead',rootId:'lead',name:'Lead',provider:'claude',accountKey:'ready',status:'idle',model:'claude-opus-4-6',projectFolder:null,projectFolderRevision:0};
-  const accounts={accounts:[{id:'ready',label:'Ready account',status:'ready'},{id:'expired',label:'Expired account',status:'signedOut'}],defaultAccountKey:'ready'};
+  const account = (id,label,status) => ({id,label,status,home:'/home/fixture/'+id,source:'Codex CLI'});
+  const accounts={accounts:[account('ready','Ready account','ready'),account('expired','Expired account','signedOut')],archivedAccounts:[],logins:[],supportsDisconnect:true,supportsDelete:true,defaultAccountKey:'ready'};
   window.selected=[];window.saves=0;window.failRefresh=mode==='confirmed';
   const saved=async()=>{window.saves++;if(window.failRefresh){window.failRefresh=false;throw Error('Snapshot unavailable');}};
-  function AccountsFixture(){const state=useAccounts('/fixture');return <><button onClick={()=>state.refresh()}>Refresh accounts</button><button onClick={()=>state.setData({accounts:[{id:'ready',label:'New account',status:'ready'}],defaultAccountKey:'ready'})}>Use saved accounts</button><output>{state.data.accounts.map(a=>a.label).join(',')}</output></>;}
+  function AccountsFixture(){const state=useAccounts('/fixture');return <><button onClick={()=>state.refresh()}>Refresh accounts</button><button onClick={()=>state.setData({accounts:[account('ready','New account','ready')],archivedAccounts:[],logins:[],supportsDisconnect:true,supportsDelete:true,defaultAccountKey:'ready'})}>Use saved accounts</button><output>{state.data.accounts.map(a=>a.label).join(',')}</output></>;}
   let body=mode==='picker'?<Picker initialPath='/project' onSelect={async path=>window.selected.push(path)}/>:
   mode==='claude'||mode==='deadline'?<ClaudeSettings agent={agent}/>:
   mode.startsWith('accounts')?<AccountsFixture/>:
@@ -73,6 +82,13 @@ test("Ux request recovery browser", async ({
   });
   const results = [];
   const selectedCases = [];
+  const syncIdentity = syncIdentityFixture();
+  const syncSnapshot = {
+    stateDir: "fixture",
+    runtime: {},
+    chats: [],
+    edges: [],
+  };
   try {
     await server.listen();
     for (const mode of selectedCases.length
@@ -110,8 +126,53 @@ test("Ux request recovery browser", async ({
         const request = route.request(),
           url = new URL(request.url()),
           path = url.pathname;
+        if (path === "/api/sync/identity")
+          return route.fulfill({
+            json: syncIdentity,
+            headers: apiSchemaHeaders(),
+          });
+        if (path === "/api/sync/protocol")
+          return route.fulfill({
+            json: syncProtocolFixture(),
+            headers: apiSchemaHeaders(),
+          });
+        if (path === "/api/sync/stream") {
+          const resources = JSON.parse(
+            url.searchParams.get("resources") || "[]",
+          );
+          const baseline = {
+            protocol: 3,
+            workspaceId: syncIdentity.workspaceId,
+            epoch: "fixture",
+            revision: 1,
+            reason: "initial",
+            resources,
+            resourceVersions: resources.map((resource) => ({
+              resource,
+              revision: 1,
+            })),
+          };
+          return route.fulfill({
+            contentType: "text/event-stream",
+            body: apiSchemaHandshakeSse(
+              `event: resources\ndata: ${JSON.stringify(baseline)}\n\n`,
+            ),
+            headers: apiSchemaHeaders(),
+          });
+        }
+        if (path === "/api/sync/pull")
+          return route.fulfill({
+            json: {
+              workspaceId: syncIdentity.workspaceId,
+              ...entityPullFixtureForRequest(syncSnapshot, request.url()),
+            },
+            headers: apiSchemaHeaders(),
+          });
         if (path === "/api/models")
-          return route.fulfill({ json: { data: [] } });
+          return route.fulfill({
+            json: { data: [] },
+            headers: apiSchemaHeaders(),
+          });
         if (path === "/api/directories") {
           const typed = url.searchParams.get("path") || "/project";
           return route.fulfill({
@@ -119,6 +180,7 @@ test("Ux request recovery browser", async ({
               path: typed === "~/work" ? "/home/user/work" : typed,
               directories: [],
             },
+            headers: apiSchemaHeaders(),
           });
         }
         if (path === "/api/claude/session") {
@@ -128,6 +190,7 @@ test("Ux request recovery browser", async ({
             return route.fulfill({
               status: 503,
               json: { error: "Settings unavailable" },
+              headers: apiSchemaHeaders(),
             });
           return route.fulfill({
             json: {
@@ -135,6 +198,7 @@ test("Ux request recovery browser", async ({
               settings: { permissionMode: "default", thinking: true },
               turns: [],
             },
+            headers: apiSchemaHeaders(),
           });
         }
         if (path === "/api/accounts") {
@@ -145,36 +209,64 @@ test("Ux request recovery browser", async ({
             });
           return route.fulfill({
             json: {
+              archivedAccounts: [],
+              logins: [],
+              supportsDisconnect: true,
+              supportsDelete: true,
               accounts: [
                 {
                   id: "ready",
                   label: sequence === 1 ? "Old account" : "New account",
+                  home: "/home/fixture/ready",
+                  source: "Codex CLI",
                   status: "ready",
                 },
               ],
               defaultAccountKey: "ready",
             },
+            headers: apiSchemaHeaders(),
           });
         }
+        if (path === "/api/limits")
+          return route.fulfill({
+            json: {
+              accountKey: url.searchParams.get("account_key") || "default",
+              at: Date.now() / 1000,
+              data: null,
+              error: null,
+            },
+            headers: apiSchemaHeaders(),
+          });
+        if (request.method() === "GET")
+          return route.fulfill({
+            status: 500,
+            json: { error: `Unhandled fixture GET ${path}` },
+            headers: apiSchemaHeaders(),
+          });
         writes.push(request.postDataJSON());
         if (mode === "project-deadline" && writes.length === 1) return;
         if (mode === "rejected" && writes.length === 1)
           return route.fulfill({
             status: 400,
             json: { error: "Name already exists" },
+            headers: apiSchemaHeaders(),
           });
         if (mode !== "confirmed" && writes.length === 1)
           return route.fulfill({
             status: 503,
             json: { error: "Response lost after commit" },
+            headers: apiSchemaHeaders(),
           });
-        return route.fulfill({ json: { projectFolder: "review" } });
+        return route.fulfill({
+          json: { projectFolder: "review" },
+          headers: apiSchemaHeaders(),
+        });
       });
       try {
         await page.goto(`${server.resolvedUrls.local[0]}?case=${mode}`);
         if (mode === "picker") {
           const use = page.getByRole("button", {
-            name: "Use this folder",
+            name: "Add project",
             exact: true,
           });
           await page.waitForFunction(
@@ -291,15 +383,23 @@ test("Ux request recovery browser", async ({
               .isEnabled(),
             false,
           );
-          await page
-            .getByLabel("Default account for new chats")
-            .selectOption("ready");
+          await accountTileButton(
+            page,
+            "Default account for new chats",
+            "Ready account",
+          ).click();
           assert.equal(
             await page
               .getByRole("button", { name: "Save accounts", exact: true })
               .isEnabled(),
             true,
           );
+        } else if (mode === "project-account") {
+          await accountTileButton(
+            page,
+            "Default account for new chats",
+            "Expired account",
+          ).click();
         } else {
           const name = [
             "name",

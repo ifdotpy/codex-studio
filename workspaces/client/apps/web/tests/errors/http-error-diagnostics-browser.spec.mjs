@@ -1,4 +1,4 @@
-import { test } from "../playwright.mjs";
+import { apiSchemaHeaders, test } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -57,15 +57,19 @@ test("Http error diagnostics browser", async ({
       { status: 500, body: null, message: "Request failed (500)" },
     ];
     for (const fixture of cases) {
-      await page.route("**/api/error-fixture", (route) => {
+      await page.route("**/api/session", (route) => {
         calls++;
         assert.equal(route.request().method(), "GET");
-        return route.fulfill({ status: fixture.status, json: fixture.body });
+        return route.fulfill({
+          status: fixture.status,
+          json: fixture.body,
+          headers: apiSchemaHeaders(),
+        });
       });
       const result = await page.evaluate(async () => {
-        const { api, ApiError, errorText } = await import("/src/api.ts");
+        const { get, ApiError, errorText } = await import("/src/api.ts");
         try {
-          await api("/api/error-fixture");
+          await get("/api/session");
           return null;
         } catch (error) {
           return {
@@ -82,7 +86,7 @@ test("Http error diagnostics browser", async ({
         message: fixture.message,
         details: fixture.body,
       });
-      await page.unroute("**/api/error-fixture");
+      await page.unroute("**/api/session");
     }
     assert.equal(calls, cases.length, "Formatting does not retry requests");
     console.log(

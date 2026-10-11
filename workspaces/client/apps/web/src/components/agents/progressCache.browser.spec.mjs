@@ -18,7 +18,13 @@ test("progress cache retains good content through a panel read error", async ({
     root: webRoot,
     cacheDir,
     server: { host: "127.0.0.1", port: 0 },
-    optimizeDeps: { noDiscovery: true },
+    // progressCache reaches React-backed storage helpers through its imports.
+    // Pre-bundle the same browser dependencies used by the sibling cache spec
+    // so Vite serves their named ESM exports consistently in this fixture.
+    optimizeDeps: {
+      noDiscovery: true,
+      include: ["react", "react/jsx-runtime", "react/jsx-dev-runtime", "dexie"],
+    },
     plugins: [
       {
         name: "progress-cache-error-fixture",

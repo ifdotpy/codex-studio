@@ -1,5 +1,9 @@
 import {
+  apiSchemaHeaders,
+  entityPullFixtureForRequest,
+  readFixtureSyncContract,
   readTestState,
+  stubEntityState,
   test,
   browserExecutablePath,
   spawnFixture as spawn,
@@ -161,6 +165,7 @@ test("File change", async () => {
     page.setDefaultTimeout(10000);
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
+    const syncContract = await readFixtureSyncContract(origin);
     await page.addInitScript(
       ({ id, stateDir }) => {
         localStorage.setItem("codex-mobile-opened", JSON.stringify(id));
@@ -168,20 +173,22 @@ test("File change", async () => {
           `codex-desktop-opened:${stateDir}`,
           JSON.stringify(id),
         );
-        window.EventSource = class extends EventTarget {
-          close() {}
-        };
       },
       { id: lead.id, stateDir: state.stateDir },
     );
-    await page.route("**/api/sync/**", (route) =>
-      route.fulfill({ status: 404, json: { error: "HTTP fixture" } }),
-    );
-    await page.route("**/api/transcript?*", (route) =>
-      new URL(route.request().url()).searchParams.get("id") === lead.id
-        ? route.fulfill({ json: transcript })
-        : route.fallback(),
-    );
+    await stubEntityState(page, state, syncContract);
+    await page.route("**/api/sync/pull**", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.get("scope") !== `transcript:${lead.id}`)
+        return route.fallback();
+      return route.fulfill({
+        headers: apiSchemaHeaders(),
+        json: {
+          workspaceId: syncContract.identity.workspaceId,
+          ...entityPullFixtureForRequest(state, url, { transcript }),
+        },
+      });
+    });
     await page.goto(origin);
     const card = (id) =>
       page.locator(`details.file-change-card[data-message="${id}"]`);

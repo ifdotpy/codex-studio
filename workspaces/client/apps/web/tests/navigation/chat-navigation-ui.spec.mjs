@@ -1,4 +1,5 @@
 import {
+  apiSchemaHeaders,
   readTestState,
   test,
   expect,
@@ -13,6 +14,7 @@ import { fileURLToPath } from "node:url";
 
 test("chat-navigation-ui", async ({ page: fixturePage }) => {
   test.setTimeout(120_000);
+  fixturePage.setDefaultTimeout(15_000);
   const skill = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "codex-chat-navigation-"));
   const proc = spawn(
@@ -121,7 +123,20 @@ test("chat-navigation-ui", async ({ page: fixturePage }) => {
     .getByRole("button", { name: /^New chat in / })
     .first()
     .click();
-  await page.getByRole("heading", { name: "New chat", exact: true }).waitFor();
+  await page
+    .getByRole("dialog")
+    .getByRole("heading", { name: "New chat", exact: true })
+    .waitFor();
+  const startChat = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      response.url().endsWith("/api/leads"),
+  );
+  await page
+    .getByRole("dialog", { name: "New chat", exact: true })
+    .getByRole("button", { name: "Start chat", exact: true })
+    .click();
+  await startChat;
   const state = await readTestState(url);
   assert.ok(
     state.runtime.agents.some(
@@ -150,11 +165,13 @@ test("chat-navigation-ui", async ({ page: fixturePage }) => {
       failed = false;
       return route.fulfill({
         status: 403,
+        headers: apiSchemaHeaders(),
         json: { error: "Cannot read this folder" },
       });
     }
     const current = path?.startsWith("/projects") ? path : "/projects";
     await route.fulfill({
+      headers: apiSchemaHeaders(),
       json: {
         path: current,
         parent: current === "/projects" ? null : "/projects",
@@ -177,18 +194,21 @@ test("chat-navigation-ui", async ({ page: fixturePage }) => {
     const body = route.request().postDataJSON();
     if (!body.cwd) return route.continue();
     selections.push(body);
-    await route.fulfill({ json: { ok: true } });
+    await route.fulfill({ headers: apiSchemaHeaders(), json: { ok: true } });
   });
   await page
     .getByRole("button", { name: "Chat settings", exact: true })
     .click();
-  await page.locator("#project").click();
+  await page.locator(".chat-settings-more > summary").click();
+  await page
+    .getByRole("button", { name: "Choose project folder", exact: true })
+    .click();
   const picker = page.getByRole("dialog", {
     name: "Choose project folder",
     exact: true,
   });
   await picker.getByLabel("Folder path", { exact: true }).fill("/projects");
-  await picker.getByRole("button", { name: "Go", exact: true }).click();
+  await picker.getByRole("button", { name: "Open path", exact: true }).click();
   await picker.getByRole("button", { name: "Alpha", exact: true }).waitFor();
   await picker.getByLabel("Filter folders").fill("alpha");
   assert.equal(await picker.locator(".directory-row").count(), 1);
@@ -198,9 +218,11 @@ test("chat-navigation-ui", async ({ page: fixturePage }) => {
     .getByRole("alert")
     .getByText("Cannot read this folder")
     .waitFor();
-  assert.ok(
-    await picker.getByRole("button", { name: "Use this folder" }).isDisabled(),
-  );
+  const selectFolder = picker.getByRole("button", {
+    name: "Add project",
+    exact: true,
+  });
+  assert.ok(await selectFolder.isDisabled());
   await picker.getByRole("button", { name: "Retry", exact: true }).click();
   await picker.getByText("No folders inside").waitFor();
   await picker.getByLabel("Parent folder", { exact: true }).click();
@@ -214,7 +236,7 @@ test("chat-navigation-ui", async ({ page: fixturePage }) => {
   }
   await picker.getByRole("button", { name: "Alpha", exact: true }).click();
   await picker.getByText("No folders inside").waitFor();
-  await picker.getByRole("button", { name: "Use this folder" }).click();
+  await selectFolder.click();
   await picker.waitFor({ state: "hidden" });
   assert.deepEqual(selections, [{ id: emptyId, cwd: "/projects/Alpha" }]);
   await page.setViewportSize({ width: 1440, height: 960 });
@@ -231,8 +253,30 @@ test("chat-navigation-ui", async ({ page: fixturePage }) => {
       await openChatActions();
       await page.locator(`[data-workspace-section="${section}"]`).click();
     }
+    if (section === "search") {
+      const search = page.getByRole("dialog", {
+        name: "Search messages",
+        exact: true,
+      });
+      await search
+        .getByRole("textbox", { name: "Search all conversations" })
+        .waitFor();
+      await page.keyboard.press("Escape");
+      await search.waitFor({ state: "hidden" });
+      continue;
+    }
     const drawer = page.locator(".workspace-drawer");
-    await drawer.getByRole("heading", { name: title, exact: true }).waitFor();
+    if (section === "messages") {
+      await drawer.getByRole("heading", { name: title, exact: true }).waitFor();
+    } else {
+      await drawer
+        .locator(".workspace-content")
+        .getByRole("heading", {
+          name: title,
+          exact: true,
+        })
+        .waitFor();
+    }
     await page.keyboard.press("Escape");
     await drawer.waitFor({ state: "hidden" });
   }
@@ -257,8 +301,8 @@ test("chat-navigation-ui", async ({ page: fixturePage }) => {
     0,
   );
   await page.getByRole("menu").waitFor({ state: "hidden" });
-  await page.keyboard.press("Escape");
-  await page.locator(".tasks-drawer").waitFor({ state: "hidden" });
+  await background.locator(".tasks-drawer-header button").click();
+  await background.waitFor({ state: "hidden" });
   for (const width of [1440, 768, 390, 320]) {
     await page.setViewportSize({ width, height: 960 });
     await openChatActions();
@@ -297,7 +341,7 @@ test("chat-navigation-ui", async ({ page: fixturePage }) => {
   const stops = [];
   await page.route("**/api/stop", async (route) => {
     stops.push(route.request().postDataJSON());
-    await route.fulfill({ json: { ok: true } });
+    await route.fulfill({ headers: apiSchemaHeaders(), json: { ok: true } });
   });
   for (const command of ["/stop", "/stop-team"]) {
     await page.locator("#message").fill(command);

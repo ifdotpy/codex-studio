@@ -76,13 +76,14 @@ test("messages-unified-browser", async ({ page: fixturePage }) => {
     0,
   );
   await page.keyboard.press("Escape");
+  await page.locator(".message .message-date").first().waitFor();
   assert.ok(
-    await page.locator(".message > .message-date").count(),
+    await page.locator(".message .message-date").count(),
     "Main chat messages have dates",
   );
-  await page.locator(".message > .message-date[datetime]").first().waitFor();
+  await page.locator(".message .message-date[datetime]").first().waitFor();
   assert.equal(
-    await page.locator(".message > .message-date:not([datetime])").count(),
+    await page.locator(".message .message-date:not([datetime])").count(),
     0,
     "Stored main chat dates use message.at",
   );

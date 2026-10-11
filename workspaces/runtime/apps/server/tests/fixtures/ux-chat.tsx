@@ -29,6 +29,18 @@ function Fixture() {
     canSend: true,
     activity: { phase: "idle" },
   };
+  const accountsState: any = {
+    data: {
+      accounts: [],
+      archivedAccounts: [],
+      defaultAccountKey: "default",
+      logins: [],
+    },
+    setData: () => {},
+    error: "",
+    refresh: async () => null,
+    scope: "ux-chat-fixture",
+  };
   const data: any = {
     stateDir: "ux-chat-fixture",
     token: "fixture",
@@ -91,9 +103,10 @@ function Fixture() {
         )}
         <Conversation
           id={id}
-          syncWorkspaceId={"a".repeat(32)}
+          syncWorkspaceId={(window as any).__uxChatSyncIdentity?.workspaceId}
           agent={agent}
           data={data}
+          accountsState={accountsState}
           getDraft={getDraft}
           subscribeDraft={subscribeDraft}
           setDraft={setDraft}
