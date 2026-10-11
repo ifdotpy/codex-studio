@@ -863,7 +863,7 @@ export default function Accounts({
       {!managerOnly &&
         renderPicker &&
         renderPicker(selectAccount, !!pending || (pinned && !owner))}
-      {!managerOnly && renderPicker && teamTransfer?.status === "pending" && (
+      {!managerOnly && !renderPicker && teamTransfer?.status === "pending" && (
         <AccountTransferStatus
           transfer={teamTransfer}
           targetLabel={transferTarget?.email || transferTarget?.label}

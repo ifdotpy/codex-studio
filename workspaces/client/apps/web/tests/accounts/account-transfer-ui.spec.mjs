@@ -400,15 +400,13 @@ test("Account Transfer Ui", async ({
       .toBe(1);
     assert.ok(notifySync, "the real fixture resource stream is connected");
     notifySync([{ kind: "state" }]);
-    const agentSettings = page.getByRole("dialog", {
-      name: "Main agent settings",
-      exact: true,
-    });
+    await page
+      .getByRole("dialog", { name: "Chat settings", exact: true })
+      .getByRole("button", { name: "Main agent settings", exact: true })
+      .click();
+    const agentSettings = page.locator(".execution-dropdown");
     const transferStatus = agentSettings.locator(
       ".account-menu-note[role=status]",
-    );
-    test.fail(
-      "Known transfer progress/status is absent in unified settings; see workspaces/client/apps/web/tests/KNOWN-FAILURES.md.",
     );
     await transferStatus.waitFor();
     assert.equal(
@@ -475,6 +473,17 @@ test("Account Transfer Ui", async ({
       path: join(evidence, "transfer-pending.png"),
       animations: "disabled",
     });
+    const chatSettings = page.getByRole("dialog", {
+      name: "Chat settings",
+      exact: true,
+    });
+    if (!(await chatSettings.isVisible()))
+      await page
+        .getByRole("button", { name: "Chat settings", exact: true })
+        .click();
+    await chatSettings
+      .getByRole("button", { name: "Main agent settings", exact: true })
+      .click();
     const cancelResponse = page.waitForResponse(
       (response) =>
         response.url().endsWith("/api/agents/account-transfer") &&
@@ -491,6 +500,60 @@ test("Account Transfer Ui", async ({
       .waitFor({ state: "hidden" });
     assert.equal(agents[0].accountTransfer.status, "cancelled");
     assert.equal(agents[0].accountKey, "default");
+    agents[0].accountTransfer = {
+      id: "failed-team-transfer",
+      scope: "team",
+      status: "cancelled",
+      targetAccountKey: "work",
+      canRetry: true,
+      waiting: "The destination rejected the transfer",
+      blocked: [
+        {
+          id: "worker-blocked",
+          name: "Blocked worker",
+          reason: "Native receipt unavailable",
+        },
+      ],
+    };
+    await page.reload();
+    await page.locator('[data-chat="started"]').click();
+    await page
+      .getByRole("button", { name: "Chat settings", exact: true })
+      .click();
+    await page
+      .getByRole("dialog", { name: "Chat settings", exact: true })
+      .getByRole("button", { name: "Main agent settings", exact: true })
+      .click();
+    const failedTransferStatus = page
+      .locator(".execution-dropdown")
+      .locator(".account-menu-note[role=status]")
+      .filter({ hasText: "Native receipt unavailable" })
+      .first();
+    await failedTransferStatus.waitFor();
+    await failedTransferStatus
+      .getByText("Blocked worker blocked: Native receipt unavailable", {
+        exact: true,
+      })
+      .waitFor();
+    await failedTransferStatus
+      .getByRole("button", { name: "Retry", exact: true })
+      .waitFor();
+    assert.equal(
+      await failedTransferStatus
+        .getByRole("button", { name: "Cancel remaining", exact: true })
+        .count(),
+      0,
+      "a terminal failed transfer is not left in the pending state",
+    );
+    assert.equal(
+      await failedTransferStatus
+        .getByText("5 waiting", { exact: true })
+        .count(),
+      0,
+      "a terminal failed transfer does not retain stale progress",
+    );
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape");
     agents[0].accountTransfer = {
       id: "blocked-lead-transfer",
       scope: "team",
@@ -515,7 +578,7 @@ test("Account Transfer Ui", async ({
       .getByRole("button", { name: "Main agent settings", exact: true })
       .click();
     await page
-      .getByRole("dialog", { name: "Main agent settings", exact: true })
+      .locator(".execution-dropdown")
       .locator(".account-menu-note[role=status]")
       .filter({ hasText: "Source rollout is missing" })
       .first()
@@ -529,7 +592,7 @@ test("Account Transfer Ui", async ({
           "blocked-lead-transfer",
     );
     await page
-      .getByRole("dialog", { name: "Chat settings", exact: true })
+      .locator(".execution-dropdown")
       .locator(".account-menu-note[role=status]")
       .filter({ hasText: "Source rollout is missing" })
       .getByRole("button", { name: "Retry", exact: true })
@@ -563,6 +626,10 @@ test("Account Transfer Ui", async ({
       .click();
     await page
       .getByRole("dialog", { name: "Chat settings", exact: true })
+      .getByRole("button", { name: "Main agent settings", exact: true })
+      .click();
+    await page
+      .locator(".execution-dropdown")
       .locator(".account-menu-note[role=status]")
       .filter({ hasText: "The source account is offline" })
       .getByRole("button", { name: "Retry", exact: true })
@@ -590,8 +657,12 @@ test("Account Transfer Ui", async ({
     await page
       .getByRole("button", { name: "Chat settings", exact: true })
       .click();
-    const historyProgress = page
+    await page
       .getByRole("dialog", { name: "Chat settings", exact: true })
+      .getByRole("button", { name: "Main agent settings", exact: true })
+      .click();
+    const historyProgress = page
+      .locator(".execution-dropdown")
       .locator(".account-menu-note[role=status]")
       .getByText("History transfer in progress: 1 remaining.", { exact: true })
       .first();
@@ -637,8 +708,12 @@ test("Account Transfer Ui", async ({
     await page
       .getByRole("button", { name: "Chat settings", exact: true })
       .click();
-    const completedTransferStatus = page
+    await page
       .getByRole("dialog", { name: "Chat settings", exact: true })
+      .getByRole("button", { name: "Main agent settings", exact: true })
+      .click();
+    const completedTransferStatus = page
+      .locator(".execution-dropdown")
       .locator(".account-menu-note[role=status]")
       .filter({ hasText: "Claude worker left on source" })
       .first();
