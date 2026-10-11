@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import time
 import unittest
 from urllib.parse import urlencode
 
@@ -64,9 +63,9 @@ class YoloHTTPContract(unittest.TestCase):
         return response.json()["documents"]
 
     def wait_for_idle_entities(self, *identifiers: str) -> None:
-        deadline = time.monotonic() + 3.0
         last_state: object = None
-        while time.monotonic() < deadline:
+        def idle_state() -> dict[str, object] | None:
+            nonlocal last_state
             documents = self.state_documents()
             agents = {
                 document["id"].removeprefix("entity:agent:"): json.loads(document["payload"])["value"]
@@ -94,8 +93,12 @@ class YoloHTTPContract(unittest.TestCase):
             last_state = {"states": states, "busyAgents": busy_agents, "busyEvents": busy_events}
             if (all(state is not None for state in states.values())
                     and not busy_agents and not busy_events):
-                return
-        self.fail(f"Team records did not settle through HTTP: {last_state!r}")
+                return last_state
+            return None
+        try:
+            self.backend.wait_until(idle_state, "team records to become idle")
+        except TimeoutError:
+            self.fail(f"Team records did not settle through HTTP: {last_state!r}")
 
     def send_message(self, agent_id: str, message_id: str, text: str) -> list[dict[str, object]]:
         frames_before = self.backend.received_provider_frames()
@@ -106,22 +109,26 @@ class YoloHTTPContract(unittest.TestCase):
             headers=self.headers(),
         )
         self.assertEqual(response.status, 200, response.body[:1000])
-        deadline = time.monotonic() + 3.0
-        transcript_path = "/api/transcript?" + urlencode({"id": agent_id})
-        transcript: object = None
-        while time.monotonic() < deadline:
+        def provider_received_message() -> list[dict[str, object]] | None:
             frames = self.backend.received_provider_frames()
-            transcript_response = self.backend.request("GET", transcript_path, timeout=1.0)
-            self.assertEqual(transcript_response.status, 200, transcript_response.body[:1000])
-            transcript = transcript_response.json()
-            current = self.entity(agent_id)
             starts = [frame for frame in frames[len(frames_before):]
                       if frame.get("method") == "turn/start"
-                      and frame.get("params", {}).get("clientUserMessageId") == message_id]
-            if (starts and current is not None and not current.get("inFlight")
-                    and "Recovered output." in json.dumps(transcript)):
+                      and (frame.get("params", {}).get("clientUserMessageId") == message_id
+                           or text in json.dumps(frame.get("params", {}).get("input", [])))]
+            if starts:
                 return starts
-        self.fail(f"The provider turn did not settle through HTTP: {transcript!r}")
+            return None
+        try:
+            return self.backend.wait_until(
+                provider_received_message, "provider turn to receive the message through HTTP",
+            )
+        except TimeoutError:
+            self.fail(
+                f"The provider did not receive message {message_id}; "
+                f"provider_starts={self.backend.provider_start_times()!r}; "
+                f"frames={self.backend.received_provider_frames()!r}; "
+                f"stderr={self.backend.stderr[-4000:]!r}"
+            )
 
     def test_lead_creation_replay_and_invalid_mode_are_http_contracts(self) -> None:
         identifier = "10000000-0000-4000-8000-000000000201"
@@ -161,6 +168,7 @@ class YoloHTTPContract(unittest.TestCase):
         worker = self.create_worker(lead_id, worker_id)
         self.assertIs(worker["yoloMode"], True)
         self.assertIs(self.entity(worker_id)["yoloMode"], True)
+        self.wait_for_idle_entities(lead_id, worker_id)
         starts = self.send_message(
             worker_id, "10000000-0000-4000-8000-000000000211",
             "Use the inherited team permissions.",
@@ -184,6 +192,7 @@ class YoloHTTPContract(unittest.TestCase):
         worker_id = "10000000-0000-4000-8000-000000000206"
         self.create_lead(lead_id)
         self.create_worker(lead_id, worker_id)
+        self.wait_for_idle_entities(lead_id, worker_id)
         self.send_message(worker_id, "10000000-0000-4000-8000-000000000207",
                           "Finish the worker's initial turn.")
         self.wait_for_idle_entities(lead_id, worker_id)
@@ -237,6 +246,22 @@ class YoloRestartHTTPContract(unittest.TestCase):
                       if document["id"] == f"entity:agent:{identifier}")
         self.assertIs(entity["yoloMode"], False)
 
+        def lead_idle() -> bool:
+            current = self.backend.request(
+                "GET", "/api/sync/pull?" + urlencode({
+                    "scope": "state:entities:v1", "after": 0, "limit": 500,
+                }),
+            )
+            self.assertEqual(current.status, 200, current.body[:1000])
+            for document in current.json()["documents"]:
+                if document["id"] == f"entity:agent:{identifier}":
+                    agent = json.loads(document["payload"])["value"]
+                    return (not agent.get("inFlight") and agent.get("status")
+                            not in {"starting", "running"})
+            return False
+
+        self.backend.wait_until(lead_idle, "post-restart lead turn to settle")
+
         before = self.backend.received_provider_frames()
         message_id = "10000000-0000-4000-8000-000000000210"
         sent = self.backend.request(
@@ -247,24 +272,161 @@ class YoloRestartHTTPContract(unittest.TestCase):
             headers=self.headers(),
         )
         self.assertEqual(sent.status, 200, sent.body[:1000])
-        deadline = time.monotonic() + 3.0
         starts: list[dict[str, object]] = []
-        while time.monotonic() < deadline:
+        def provider_received_message() -> list[dict[str, object]] | None:
+            nonlocal starts
             frames = self.backend.received_provider_frames()
             starts = [frame for frame in frames[len(before):]
                       if frame.get("method") == "turn/start"
                       and frame.get("params", {}).get("clientUserMessageId") == message_id]
-            transcript = self.backend.request(
-                "GET", "/api/transcript?" + urlencode({"id": identifier}), timeout=1.0,
+            if starts:
+                return starts
+            return None
+        try:
+            self.backend.wait_until(provider_received_message, "post-restart provider turn input")
+        except TimeoutError:
+            self.fail(
+                f"The post-restart provider did not receive {message_id}; "
+                f"provider_starts={self.backend.provider_start_times()!r}; "
+                f"frames={self.backend.received_provider_frames()!r}; "
+                f"stderr={self.backend.stderr[-4000:]!r}"
             )
-            self.assertEqual(transcript.status, 200, transcript.body[:1000])
-            if starts and "Recovered output." in json.dumps(transcript.json()):
-                break
-        else:
-            self.fail("The post-restart provider turn did not complete")
         turn = next(frame for frame in starts if frame.get("params", {}).get("input"))
         self.assertEqual(turn["params"]["approvalPolicy"], "on-request", turn)
         self.assertEqual(turn["params"]["sandboxPolicy"]["type"], "workspaceWrite", turn)
+
+
+class YoloWorkerMessageOrderingCase(unittest.TestCase):
+    hold_worker_thread_start = False
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.backend = start_contract_backend(
+            cls,
+            hold_provider_method="thread/start" if cls.hold_worker_thread_start else None,
+            hold_provider_occurrence=2,
+        )
+
+    def headers(self) -> dict[str, str]:
+        return {
+            "Origin": self.backend.origin or "",
+            "X-Canvas-Token": self.backend.session["token"],
+            "X-Canvas-Workspace": self.backend.identity["workspaceId"],
+            "X-Studio-API-Schema": self.backend.schema_hash,
+        }
+
+    def create_lead(self, identifier: str) -> None:
+        response = self.backend.request(
+            "POST", "/api/leads",
+            body={"id": identifier, "cwd": str(self.backend.cwd),
+                  "workspaceMode": "worktree", "yolo_mode": True},
+            headers=self.headers(),
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+
+    def create_worker(self, lead_id: str, identifier: str) -> None:
+        response = self.backend.request(
+            "POST", "/api/agents",
+            body={"id": identifier, "parent": lead_id, "prompt": "Complete the fixture task.",
+                  "name": "HTTP ordering worker", "role": "reviewer"},
+            headers=self.headers(),
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+
+    def entity(self, identifier: str) -> dict[str, object] | None:
+        response = self.backend.request("GET", "/api/sync/pull?" + urlencode({
+            "scope": "state:entities:v1", "after": 0, "limit": 500,
+        }))
+        self.assertEqual(response.status, 200, response.body[:1000])
+        return next((json.loads(row["payload"])["value"]
+                     for row in response.json()["documents"]
+                     if row["id"] == f"entity:agent:{identifier}"), None)
+
+    def post_message(self, agent_id: str, message_id: str, message: str) -> None:
+        response = self.backend.request(
+            "POST", "/api/messages",
+            body={"id": message_id, "room": agent_id, "text": message,
+                  "delivery": "queue", "assets": []},
+            headers=self.headers(),
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+
+    def wait_for_message_turn(self, agent_id: str, message_id: str,
+                              message: str) -> dict[str, object]:
+        observed: dict[str, object] | None = None
+
+        def provider_received_message() -> dict[str, object] | None:
+            nonlocal observed
+            frames = self.backend.received_provider_frames()
+            observed = next((frame for frame in frames
+                if frame.get("method") == "turn/start"
+                and (frame.get("params", {}).get("clientUserMessageId") == message_id
+                     or message in json.dumps(frame.get("params", {}).get("input", [])))), None)
+            return observed
+
+        try:
+            return self.backend.wait_until(
+                provider_received_message, "provider turn carrying the queued message",
+            )
+        except TimeoutError:
+            self.fail(
+                f"No provider turn carried {message_id}; last turn={observed!r}; "
+                f"provider_starts={self.backend.provider_start_times()!r}; "
+                f"frames={self.backend.received_provider_frames()!r}; "
+                f"stderr={self.backend.stderr[-4000:]!r}"
+            )
+
+    def assert_inherited_yolo_permissions(self, turn: dict[str, object]) -> None:
+        self.assertEqual(turn["params"]["approvalPolicy"], "never", turn)
+        self.assertEqual(turn["params"]["sandboxPolicy"], {"type": "dangerFullAccess"}, turn)
+
+    def prepare_team(self, lead_id: str, worker_id: str,
+                     lead_message_id: str) -> tuple[str, str]:
+        self.create_lead(lead_id)
+        lead_prompt = "Use the default lead permissions."
+        self.post_message(lead_id, lead_message_id, lead_prompt)
+        self.wait_for_message_turn(lead_id, lead_message_id, lead_prompt)
+        self.create_worker(lead_id, worker_id)
+        return lead_id, worker_id
+
+
+class YoloWorkerMessageOrderingHTTPContract(YoloWorkerMessageOrderingCase):
+    hold_worker_thread_start = True
+
+    def test_message_ordering_before_and_after_worker_first_turn_is_deterministic(self) -> None:
+        with self.subTest(order="message queued before worker first turn starts"):
+            _lead_id, worker_id = self.prepare_team(
+                "10000000-0000-4000-8000-000000000301",
+                "10000000-0000-4000-8000-000000000302",
+                "10000000-0000-4000-8000-000000000303",
+            )
+            self.backend.wait_until(self.backend.provider_gate_started,
+                                    "worker thread/start provider gate")
+            message_id = "10000000-0000-4000-8000-000000000311"
+            message = "Use the inherited team permissions before the first turn starts."
+            self.post_message(worker_id, message_id, message)
+            self.backend.release_provider_gate()
+            turn = self.wait_for_message_turn(worker_id, message_id, message)
+            self.assert_inherited_yolo_permissions(turn)
+
+        with self.subTest(order="message queued after worker first turn settles"):
+            _lead_id, settled_worker_id = self.prepare_team(
+                "10000000-0000-4000-8000-000000000321",
+                "10000000-0000-4000-8000-000000000322",
+                "10000000-0000-4000-8000-000000000323",
+            )
+
+            def worker_idle() -> bool:
+                worker = self.entity(settled_worker_id)
+                return bool(worker and not worker.get("inFlight")
+                            and worker.get("status") not in {"starting", "running"})
+
+            self.backend.wait_until(worker_idle, "worker first turn to settle")
+            message_id = "10000000-0000-4000-8000-000000000324"
+            message = "Use the inherited team permissions after the first turn settles."
+            self.post_message(settled_worker_id, message_id, message)
+            turn = self.wait_for_message_turn(settled_worker_id, message_id, message)
+            self.assert_inherited_yolo_permissions(turn)
 
 
 if __name__ == "__main__":
