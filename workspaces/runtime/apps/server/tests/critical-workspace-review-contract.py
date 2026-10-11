@@ -129,6 +129,27 @@ class WorkspaceReviewContract(unittest.TestCase):
             self.assertEqual(second.result()['status'], 'restored')
         self.assertEqual(len(calls), 1)
 
+    def test_restore_change_during_native_call_reports_changed_paths(self):
+        worker, path = self.isolated_worker()
+        self.agent_update(worker, threadId='original-thread')
+        checkpoint = self.runtime.checkpoint_capture(worker['id'], turn_id='original-turn')
+        (path / 'tracked.txt').write_text('edit\n')
+        preview = self.runtime.checkpoint_preview(worker['id'], checkpoint['id'])
+        request = {'checkpoint_id': checkpoint['id'], 'expectedTree': preview['expectedTree']}
+        server = self.runtime.connect()
+        original = server.call
+
+        def change_during_native_call(method, params, timeout=60):
+            result = original(method, params, timeout)
+            if method == 'thread/fork':
+                (path / 'tracked.txt').write_text('changed during restore\n')
+            return result
+
+        with patch.object(server, 'call', change_during_native_call):
+            with self.assertRaisesRegex(ValueError, 'Files changed while preparing restore') as error:
+                self.runtime.restore_checkpoint(worker['id'], request)
+        self.assertIn('tracked.txt', str(error.exception))
+
     def test_same_checkpoint_can_restore_a_later_edit(self):
         worker, path = self.isolated_worker()
         self.agent_update(worker, threadId='original-thread')

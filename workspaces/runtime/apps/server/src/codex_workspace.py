@@ -1377,7 +1377,22 @@ class WorkspaceMixin:
                     self._assert_workspace_source(operation, self.agent(key, db))
                 current_tree = self.snapshot_tree(a)
                 if current_tree != preview["expectedTree"] and not files_already_restored:
-                    raise ValueError("Files changed while preparing restore. Preview again")
+                    changed_paths = self.git(
+                        a,
+                        [
+                            "diff", "--no-ext-diff", "--name-only", "-z",
+                            preview["expectedTree"], current_tree,
+                        ],
+                    ).decode(errors="replace").split("\0")
+                    changed_paths = [path for path in changed_paths if path]
+                    shown_paths = ", ".join(repr(path) for path in changed_paths[:10])
+                    if len(changed_paths) > 10:
+                        shown_paths += f", … ({len(changed_paths) - 10} more)"
+                    raise ValueError(
+                        "Files changed while preparing restore. Preview again "
+                        f"(expected tree {preview['expectedTree']}, current tree {current_tree}; "
+                        f"changed paths: {shown_paths or 'unknown'})"
+                    )
                 # Mark the local phase before any Git mutation. A restart now must hold the workspace.
                 if not files_already_restored:
                     self._update_workspace_operation(operation_id, phase="local_mutation")
