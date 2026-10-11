@@ -310,7 +310,11 @@ def matches(runtime: Any, origin: str, cwd: str | None = None) -> dict[str, Any]
 
 def project_key(runtime: Any, value: object, *, require_existing: bool = False) -> str:
     """Accept stable abstract IDs and legacy directory IDs at metadata APIs."""
-    text = text_field(value, 'a project ID or path', 4096)
+    validated = text_field(value, 'a project ID or path', 4096)
+    # Abstract IDs are canonical text, while a filesystem path is literal: its
+    # leading and trailing spaces are part of the directory name.
+    text = validated if validated.startswith('project:') else value
+    assert isinstance(text, str)
     if text.startswith('project:'):
         try:
             uuid.UUID(text.removeprefix('project:'))
