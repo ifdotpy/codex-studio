@@ -74,8 +74,8 @@ test("Question history", async ({ context }) => {
     assert.equal(transcriptLayout.left, 0);
     assert.equal(
       transcriptLayout.border,
-      "0px",
-      "assistant answers have no card border",
+      "1px",
+      "assistant answers retain their card border",
     );
     const copy = assistant.getByRole("button", {
       name: "Copy message",
@@ -127,9 +127,15 @@ test("Question history", async ({ context }) => {
     await page.reload();
     await selectLead();
     await deferred.locator("summary").click();
-    await card
-      .getByText("Deferred · Agent can continue", { exact: true })
-      .waitFor();
+    const deferredStatus = card.getByText("Deferred · Agent can continue", {
+      exact: true,
+    });
+    await deferredStatus.waitFor({ state: "attached" });
+    assert.equal(
+      await deferredStatus.isVisible(),
+      false,
+      "Question status stays hidden in deferred history",
+    );
     await card.getByRole("button", { name: "Restore", exact: true }).click();
     await deferred.waitFor({ state: "hidden" });
     await card.getByRole("button", { name: "Answer", exact: true }).click();

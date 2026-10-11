@@ -9,7 +9,9 @@ import {
   createFixtureViteServer,
   FIXTURE_OPTIMIZE_DEPS,
   apiSchemaHandshakeSse,
+  apiSchemaHeaders,
   readApiSchemaHash,
+  syncIdentityFixture,
   syncProtocolFixture,
   test,
   expect,
@@ -43,10 +45,15 @@ test("Ux Chat Ui", async ({
   );
   const createViteServer = createFixtureViteServer;
   const webRoot = join(repo, "workspaces/client/apps/web");
-  const temporary = await mkdtemp(join(webRoot, ".studio-chat-ux-"));
+  const temporary = await mkdtemp(join(webRoot, "studio-chat-ux-"));
   const temporaryName = temporary.slice(webRoot.length + 1);
+  const syncIdentity = syncIdentityFixture();
+  const workspaceId = syncIdentity.workspaceId;
   const entry = join(temporary, "entry.tsx");
-  await writeFile(entry, `import "../../tests/fixtures/ux-chat.tsx";`);
+  await writeFile(
+    entry,
+    `import "../../../../../workspaces/runtime/apps/server/tests/fixtures/ux-chat.tsx";`,
+  );
   let server;
   let vite;
   const syncStreams = new Set();
@@ -64,7 +71,7 @@ test("Ux Chat Ui", async ({
           resources: [resource],
           resourceVersions: [],
           revision,
-          workspaceId: "a".repeat(32),
+          workspaceId,
         })}\n\n`,
       );
   };
@@ -113,7 +120,7 @@ test("Ux Chat Ui", async ({
               resources,
               resourceVersions: [],
               revision: ++syncRevision,
-              workspaceId: "a".repeat(32),
+              workspaceId,
             })}\n\n`,
           );
           return;
@@ -142,9 +149,7 @@ test("Ux Chat Ui", async ({
         if (path === "/api/sync/identity") {
           response.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
           response.setHeader("Content-Type", "application/json");
-          response.end(
-            JSON.stringify({ workspaceId: "a".repeat(32), syncProtocol: 2 }),
-          );
+          response.end(JSON.stringify(syncIdentity));
           return;
         }
         if (path === "/api/sync/protocol") {
@@ -168,7 +173,7 @@ test("Ux Chat Ui", async ({
           response.setHeader("Content-Type", "application/json");
           response.end(
             JSON.stringify({
-              workspaceId: "a".repeat(32),
+              workspaceId,
               generation: 1,
               documents:
                 scope?.startsWith("transcript:") && after < document.seq
@@ -184,7 +189,7 @@ test("Ux Chat Ui", async ({
         if (path === "/") {
           response.setHeader("Content-Type", "text/html");
           response.end(
-            `<html><div id="conversation-header-tools"></div><div id="root"></div><script type="module" src="/${temporaryName}/entry.tsx"></script></html>`,
+            `<html><script>window.__uxChatSyncIdentity=${JSON.stringify(syncIdentity)}</script><div id="conversation-header-tools"></div><div id="root"></div><script type="module" src="/${temporaryName}/entry.tsx"></script></html>`,
           );
           return;
         }
@@ -236,6 +241,11 @@ test("Ux Chat Ui", async ({
       truncated: id === "lead",
       agent: { id, status: "idle" },
     });
+    const fulfillApi = (route, response) =>
+      route.fulfill({
+        ...response,
+        headers: { ...apiSchemaHeaders(), ...response.headers },
+      });
     await page.route("**/api/**", async (route) => {
       const request = route.request();
       const url = new URL(request.url());
@@ -247,14 +257,14 @@ test("Ux Chat Ui", async ({
       if (request.method() === "POST")
         writes.push({ path, body: request.postDataJSON() });
       if (path === "/api/transcript/stream")
-        return route.fulfill({
+        return fulfillApi(route, {
           status: 503,
           json: { error: "Use fixture polling" },
         });
       if (path === "/api/transcript")
-        return route.fulfill({ json: snapshot(id) });
+        return fulfillApi(route, { json: snapshot(id) });
       if (path === "/api/transcript/item")
-        return route.fulfill({
+        return fulfillApi(route, {
           json: {
             ...records[10],
             sourceId: "native-user-batch",
@@ -264,7 +274,7 @@ test("Ux Chat Ui", async ({
         });
       if (path === "/api/transcript/search") {
         const query = url.searchParams.get("q").toLowerCase();
-        return route.fulfill({
+        return fulfillApi(route, {
           json: {
             results: records.filter((record) =>
               record.text.toLowerCase().includes(query),
@@ -298,20 +308,20 @@ test("Ux Chat Ui", async ({
           items = records.slice(0, 6);
           nextCursor = null;
         }
-        return route.fulfill({
+        return fulfillApi(route, {
           json: { items, nextCursor, nextAfterCursor, historyVersion },
         });
       }
       if (path === "/api/branch") {
         if (failBranch) {
           failBranch = false;
-          return route.fulfill({
+          return fulfillApi(route, {
             status: 503,
             json: { error: "Lost branch response" },
           });
         }
         const body = request.postDataJSON();
-        return route.fulfill({
+        return fulfillApi(route, {
           json: {
             id: body.before ? "edited-branch" : "answer-branch",
             draft: {
@@ -322,10 +332,11 @@ test("Ux Chat Ui", async ({
           },
         });
       }
-      if (path === "/api/queue") return route.fulfill({ json: { items: [] } });
+      if (path === "/api/queue")
+        return fulfillApi(route, { json: { items: [] } });
       if (path === "/api/panel")
-        return route.fulfill({ json: { html: "", version: 0 } });
-      return route.fulfill({ json: { ok: true } });
+        return fulfillApi(route, { json: { html: "", version: 0 } });
+      return fulfillApi(route, { json: { ok: true } });
     });
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     await page.locator('[data-message="item-10"]').waitFor();

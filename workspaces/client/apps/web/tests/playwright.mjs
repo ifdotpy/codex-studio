@@ -1558,10 +1558,10 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
   const identity = syncIdentityFixture(fixture.workspaceId);
   const json = (value) => {
     response.setHeader("Content-Type", "application/json");
+    response.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
     response.end(JSON.stringify(value));
   };
   if (url.pathname === "/api/sync/identity") {
-    response.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
     json(identity);
     return true;
   }
@@ -1937,7 +1937,10 @@ export async function stubEntityState(page, snapshot, contract) {
     }),
   );
   await page.route("**/api/sync/protocol", (route) =>
-    route.fulfill({ json: protocolResponse }),
+    route.fulfill({
+      json: protocolResponse,
+      headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+    }),
   );
   // Keep a real backend stream open: route.fulfill closes SSE immediately and
   // EventSource then reconnects continuously. The pull route below remains the
@@ -1950,6 +1953,7 @@ export async function stubEntityState(page, snapshot, contract) {
       return route.fulfill({
         status: validation.status,
         json: validation.body,
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
       });
     reconcileMutableEntityPullState(pullState, currentSnapshot);
     const pageData = entityPullFixture(currentSnapshot, {

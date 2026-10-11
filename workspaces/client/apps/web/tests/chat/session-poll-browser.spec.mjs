@@ -1,4 +1,5 @@
 import {
+  apiSchemaHeaders,
   apiSchemaHandshakeSse,
   legacySnapshotRoute,
   syncIdentityFixture,
@@ -32,10 +33,31 @@ test("Session Poll Browser", async ({
   const { createServer } = await import(
     new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
   );
+  let streamResponse;
   const server = await createServer({
     configFile: false,
     root: fileURLToPath(new URL("../../", import.meta.url)),
     server: { host: "127.0.0.1", port: 0 },
+    plugins: [
+      {
+        name: "session-poll-stream-fixture",
+        configureServer(vite) {
+          vite.middlewares.use((request, response, next) => {
+            if (request.url?.split("?", 1)[0] !== "/api/sync/stream") {
+              next();
+              return;
+            }
+            streamResponse = response;
+            response.writeHead(200, {
+              ...apiSchemaHeaders(),
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache",
+            });
+            response.write(`${apiSchemaHandshakeSse()}retry: 60000\n\n`);
+          });
+        },
+      },
+    ],
   });
   await server.listen();
   try {
@@ -63,17 +85,12 @@ test("Session Poll Browser", async ({
       sessions++;
       return route.fulfill({
         status,
+        headers: apiSchemaHeaders(),
         json: status === 200 ? { token } : { error: "Session unavailable" },
       });
     });
     await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: identity }),
-    );
-    await page.route("**/api/sync/stream**", (route) =>
-      route.fulfill({
-        contentType: "text/event-stream",
-        body: apiSchemaHandshakeSse(),
-      }),
+      route.fulfill({ json: identity, headers: apiSchemaHeaders() }),
     );
     await page.route("**/api/sync/pull?*", (route) => {
       pulls++;
@@ -101,6 +118,7 @@ test("Session Poll Browser", async ({
           maxSeq: 1,
           initialHigh: 1,
         },
+        headers: apiSchemaHeaders(),
       });
     });
     await page.goto(
@@ -174,6 +192,7 @@ test("Session Poll Browser", async ({
       "session polling PASS: entity pull, rotated token, visible error, missing endpoint rejection",
     );
   } finally {
+    streamResponse?.end();
     await server.close();
   }
 });

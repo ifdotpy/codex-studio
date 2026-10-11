@@ -1,4 +1,12 @@
-import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
+import {
+  apiSchemaHeaders,
+  entityPullFixtureForRequest,
+  readFixtureSyncContract,
+  readTestState,
+  spawnFixture as spawn,
+  stubEntityState,
+  test,
+} from "../playwright.mjs";
 // Render recorded worker and native failures in the production UI. No inference.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
@@ -152,20 +160,29 @@ test("tool limit history ui", async ({ browser: _browser }) => {
         turnStatus: "failed",
       },
     ];
+    const fixtureAgent = {
+      ...lead,
+      ...initial.agent,
+      name: lead.name,
+      status: "failed",
+      inFlight: false,
+      turnId: null,
+      threadId: "history-thread",
+      lastCompletedTurn: "latest-limit",
+      error,
+    };
+    state.runtime.agents = state.runtime.agents.map((agent) =>
+      agent.id === lead.id ? fixtureAgent : agent,
+    );
+    state.threads = state.threads.map((agent) =>
+      agent.id === lead.id ? fixtureAgent : agent,
+    );
     const transcript = {
       ...initial,
       items,
       order: items.map((i) => i.id),
       replace: true,
-      agent: {
-        ...initial.agent,
-        status: "failed",
-        inFlight: false,
-        turnId: null,
-        threadId: "history-thread",
-        lastCompletedTurn: "latest-limit",
-        error,
-      },
+      agent: fixtureAgent,
     };
     browser = _browser;
     const page = await browser.newPage({
@@ -189,14 +206,16 @@ test("tool limit history ui", async ({ browser: _browser }) => {
       );
       errorRequests++;
       await errorsReady;
-      if (failNextRead) {
+      if (failNextRead && params.get("turns").includes("retry-limit")) {
         failNextRead = false;
         return route.fulfill({
           status: 503,
           json: { error: "Temporary read failure" },
+          headers: apiSchemaHeaders(),
         });
       }
       return route.fulfill({
+        headers: apiSchemaHeaders(),
         json: {
           turns: [
             {
@@ -232,19 +251,24 @@ test("tool limit history ui", async ({ browser: _browser }) => {
       });
     });
     page.on("pageerror", (e) => errors.push(e.message));
-    await page.route("**/api/sync/identity", (r) =>
-      r.fulfill({ status: 404, json: { error: "Unsupported sync" } }),
-    );
-    await page.route("**/api/transcript**", (r) =>
-      new URL(r.request().url()).searchParams.get("id") !== lead.id
-        ? r.continue()
-        : r.request().url().includes("/stream?")
-          ? r.fulfill({
-              contentType: "text/event-stream",
-              body: "data: " + JSON.stringify(transcript) + "\n\n",
-            })
-          : r.fulfill({ json: transcript }),
-    );
+    const syncContract = await readFixtureSyncContract(origin);
+    const entityFixture = await stubEntityState(page, state, syncContract);
+    let transcriptSeq = 1;
+    await page.route("**/api/sync/pull**", (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.get("scope") !== `transcript:${lead.id}`)
+        return route.fallback();
+      return route.fulfill({
+        headers: apiSchemaHeaders(),
+        json: {
+          workspaceId: syncContract.identity.workspaceId,
+          ...entityPullFixtureForRequest(state, url, {
+            transcript,
+            transcriptSeq,
+          }),
+        },
+      });
+    });
     await page.goto(origin);
     await page
       .locator("[data-chat]")
@@ -388,8 +412,21 @@ test("tool limit history ui", async ({ browser: _browser }) => {
       },
     ];
     transcript.order = ["retry-limit"];
-    transcript.agent.error = null;
-    transcript.agent.lastCompletedTurn = null;
+    transcript.agent = {
+      ...transcript.agent,
+      status: "idle",
+      inFlight: false,
+      error: null,
+      lastCompletedTurn: null,
+    };
+    state.runtime.agents = state.runtime.agents.map((agent) =>
+      agent.id === lead.id ? transcript.agent : agent,
+    );
+    state.threads = state.threads.map((agent) =>
+      agent.id === lead.id ? transcript.agent : agent,
+    );
+    transcriptSeq++;
+    await entityFixture.update(state);
     await page.reload();
     const retryTurn = page.locator('[data-turn="retry-limit"]');
     await retryTurn
