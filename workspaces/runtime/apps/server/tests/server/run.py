@@ -265,6 +265,26 @@ def is_unittest_suite(path):
     return False
 
 
+def has_module_level_mutable_state(path):
+    """Avoid splitting suites with obvious module-owned mutable test state."""
+    try:
+        body = ast.parse(path.read_text(encoding="utf-8"), filename=str(path)).body
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return True
+    mutable_calls = {"list", "dict", "set", "defaultdict", "deque", "Counter", "Lock",
+                     "RLock", "Event", "Condition", "Queue", "Mock", "MagicMock"}
+    nodes = [*body, *(child for item in body if isinstance(item, ast.ClassDef) for child in item.body)]
+    for node in nodes:
+        value = getattr(node, "value", None)
+        if isinstance(value, (ast.List, ast.Dict, ast.Set, ast.ListComp, ast.DictComp, ast.SetComp)):
+            return True
+        if isinstance(value, ast.Call):
+            name = getattr(value.func, "id", getattr(value.func, "attr", ""))
+            if name in mutable_calls and isinstance(node, (ast.Assign, ast.AnnAssign)):
+                return True
+    return False
+
+
 def inventory():
     entries = {}
     for path in TESTS.rglob("*.py"):
@@ -806,6 +826,33 @@ def _suite_command(relative, root):
         return [sys.executable, "-B", str(entry), "path", str(path), "-v"]
     command = [sys.executable, "-B", str(path)]
     return command
+
+
+def _suite_test_ids(relative, root, temporary, deadline):
+    """Return unittest IDs for an isolated suite, or None when discovery fails."""
+    path = root / relative
+    if not relative.endswith(".py") or not is_unittest_suite(path):
+        return None
+    environment = _suite_environment(root, temporary, relative=relative)
+    if relative.startswith(f"{SOURCE_REL}/studio_api/"):
+        kind = "module"
+        target = relative[len(f"{SOURCE_REL}/"):-3].replace("/", ".")
+    else:
+        kind, target = "path", str(path)
+    command = [sys.executable, "-B", str(root / f"{TESTS_REL}/server/suite_entry.py"), "list", kind, target]
+    try:
+        result = subprocess.run(command, cwd=root, env=environment, capture_output=True,
+                                text=True, timeout=deadline, check=False)
+        ids = json.loads(next(line[9:] for line in result.stdout.splitlines()
+                              if line.startswith("TEST_IDS:")))
+    except (OSError, subprocess.SubprocessError, StopIteration, json.JSONDecodeError):
+        return None
+    return ids if result.returncode == 0 and ids and len(ids) == len(set(ids)) else None
+
+
+def _slice_test_ids(test_ids, count):
+    """Split IDs round-robin so every slice gets a similar number of cases."""
+    return [test_ids[index::count] for index in range(count) if test_ids[index::count]]
 
 
 def _suite_environment(root, temp_root, audit_home=False, relative=None):
@@ -1393,7 +1440,11 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
     focus_profile = _load_profile() if len(runnable) == FOCUSED_SUITE_LIMIT else None
     focused_slots = _focused_slot_count(focus_profile) if focus_profile is not None else 0
     focused = focused_slots > 0
-    lock = _focused_run_slot(focus_profile, focused_slots) if focused else _runner_live_lock()
+    # A focused unittest can consume its bounded slots as test slices; admit
+    # only one such group at a time. Plain focused scripts retain slot sharing.
+    focus_capacity = (1 if runnable and is_unittest_suite(root / runnable[0][0])
+                      else focused_slots)
+    lock = _focused_run_slot(focus_profile, focus_capacity) if focused else _runner_live_lock()
     with lock:
         return _run_suites_locked(entries, opted_in, timeout, expensive_timeout,
                                   root, execute, workers, load_sample_seconds, audit_home,
@@ -1438,12 +1489,12 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
     plan = None
     explicit_jobs = workers
 
-    def run_one(index, relative, kind):
+    def run_one(index, relative, kind, selectors=None, shard_index=0, expected_ids=None):
         deadline = expensive_timeout if kind == "expensive" else timeout
-        print(f"[{index}/{len(runnable)}] {relative} (deadline {deadline:g}s)", flush=True)
         suite_started = time.monotonic()
         try:
-            with tempfile.TemporaryDirectory(dir=suite_tmp_root, prefix=f"{index:03d}-") as temporary:
+            with tempfile.TemporaryDirectory(
+                    dir=suite_tmp_root, prefix=f"{index:03d}-{shard_index:02d}-") as temporary:
                 temp_root = Path(temporary)
                 socket_path_error = _unix_socket_path_error(temp_root)
                 if socket_path_error:
@@ -1458,8 +1509,11 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
                         or is_unittest_suite(root / relative)):
                     environment["CODEX_SERVER_TEST_RESULT_FILE"] = str(
                         _runner_artifact_root(temp_root) / "unittest-outcomes.jsonl")
+                command = _suite_command(relative, root)
+                if selectors:
+                    command.extend(selectors)
                 result = execute(
-                    _suite_command(relative, root), root, deadline, environment,
+                    command, root, deadline, environment,
                 )
                 if audit_home:
                     audit_log = Path(environment["CODEX_SERVER_TEST_AUDIT_LOG"])
@@ -1476,6 +1530,31 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
                         if blocked:
                             return relative, "real-home audit blocked: " + "; ".join(blocked), time.monotonic() - suite_started, 0
                 returncode, error, expected, unexpected = result
+                if expected_ids is not None:
+                    outcome_file = Path(environment["CODEX_SERVER_TEST_RESULT_FILE"])
+                    records = ([json.loads(line) for line in outcome_file.read_text().splitlines()]
+                               if outcome_file.exists() else [])
+                    observed_ids = {record["id"] for record in records}
+                    if observed_ids != set(expected_ids):
+                        missing = sorted(set(expected_ids) - observed_ids)
+                        extra = sorted(observed_ids - set(expected_ids))
+                        error = (f"test ID mismatch in slice: missing={missing}; extra={extra}")
+                if returncode and "CODEX_SERVER_TEST_RESULT_FILE" in environment:
+                    outcome_file = Path(environment["CODEX_SERVER_TEST_RESULT_FILE"])
+                    if outcome_file.exists():
+                        records = [json.loads(line) for line in outcome_file.read_text().splitlines()]
+                        failed_ids = [record["id"] for record in records
+                                      if record.get("outcome") in {"failed", "error", "unexpected_success"}]
+                        if failed_ids:
+                            base_command = _suite_command(relative, root)
+                            id_prefix = (relative[len(f"{SOURCE_REL}/"):-3].replace("/", ".") + "."
+                                         if relative.startswith(f"{SOURCE_REL}/studio_api/")
+                                         else "__main__.")
+                            reproduction = [" ".join((*base_command[:-1], "-v",
+                                                      test_id.removeprefix(id_prefix)))
+                                            for test_id in failed_ids]
+                            error = (f"{error or 'test failure'}; failing IDs: {failed_ids}; "
+                                     f"reproduce: {'; '.join(reproduction)}")
                 with SUITE_OUTCOME_LOCK:
                     EXPECTED_FAILURES.extend(f"{relative}::{name}" for name in expected)
                     UNEXPECTED_SUCCESSES.extend(f"{relative}::{name}" for name in unexpected)
@@ -1491,15 +1570,17 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
     indexed = [(index, relative, kind)
                for index, (relative, kind) in enumerate(runnable, start=1)]
 
-    plan = worker_plan(runnable, profile, override=1 if focused else workers,
+    plan = worker_plan(runnable, profile, override=focused_slots if focused else workers,
                        sample_seconds=0 if focused or explicit_jobs is not None else load_sample_seconds)
+    if focused and focused_slots:
+        plan["workers"] = min(focused_slots, plan["memoryWorkerSlots"])
     workers = plan["workers"]
 
     TEST_TMP_ROOT.mkdir(parents=True, exist_ok=True)
     if TMP_ROOT_OVERRIDE:
         print(f"Scratch root: configured {TEST_TMP_ROOT}", flush=True)
     elif save_measurements:
-        simultaneous_runs = focused_slots if focused else 1
+        simultaneous_runs = 1
         owned_tmp_root = _memory_scratch_root(
             workers, simultaneous_runs=simultaneous_runs,
         )
@@ -1526,22 +1607,61 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
     indexed = [(index, relative, kind)
                for index, (_old_index, relative, kind)
                in enumerate(indexed, start=first_pending_index)]
+    # Focused runs use their full bounded slot allocation as slices. Serialize
+    # focused invocations so concurrent calls cannot multiply that allocation.
     pool = ThreadPoolExecutor(max_workers=workers)
     futures = []
+    shard_totals = {}
     try:
-        for item in indexed:
-            futures.append(pool.submit(run_one, *item))
+        for index, relative, kind in indexed:
+            deadline = expensive_timeout if kind == "expensive" else timeout
+            slices = None
+            if (is_unittest_suite(root / relative) and not has_module_level_mutable_state(root / relative)
+                    and (focused or suite_seconds.get(relative, 0)
+                         > FAST_SUITE_BUDGET_SECONDS)):
+                with tempfile.TemporaryDirectory(dir=suite_tmp_root, prefix=f"{index:03d}-list-") as temporary:
+                    ids = _suite_test_ids(relative, root, Path(temporary), deadline)
+                if ids:
+                    prefix = (relative[len(f"{SOURCE_REL}/"):-3].replace("/", ".") + "."
+                              if relative.startswith(f"{SOURCE_REL}/studio_api/") else "__main__.")
+                    if not all(test_id.startswith(prefix) for test_id in ids):
+                        ids = None
+                if ids:
+                    selectors = [test_id.removeprefix(prefix) for test_id in ids]
+                    slices = _slice_test_ids(selectors, min(workers, len(selectors)))
+                    expected_prefix = prefix
+            if not slices:
+                slices = [None]
+                expected_prefix = None
+            shard_totals[relative] = {"remaining": len(slices), "elapsed": 0.0,
+                                      "error": None, "peak": 0}
+            print(f"[{index}/{len(runnable)}] {relative} ({len(slices)} slice(s); deadline {deadline:g}s)",
+                  flush=True)
+            for shard_index, selectors in enumerate(slices):
+                expected_ids = ([expected_prefix + selector for selector in selectors]
+                                if expected_prefix else None)
+                futures.append(pool.submit(run_one, index, relative, kind,
+                                           selectors, shard_index, expected_ids))
         completed = as_completed(futures)
         for future in completed:
             relative, error, suite_elapsed, peak_rss = future.result()
-            suite_seconds[relative] = suite_elapsed
-            max_suite_rss = max(max_suite_rss, peak_rss)
-            with SUITE_OUTCOME_LOCK:
-                SUITE_DURATIONS[relative] = suite_elapsed
-            status = f"failed ({error})" if error else "passed"
-            print(f"Finished {relative}: {status}, {suite_elapsed:.2f}s", flush=True)
+            aggregate = shard_totals[relative]
+            aggregate["remaining"] -= 1
+            aggregate["elapsed"] = max(aggregate["elapsed"], suite_elapsed)
+            aggregate["peak"] = max(aggregate["peak"], peak_rss)
             if error:
-                failures.append((relative, error))
+                aggregate["error"] = error
+            if aggregate["remaining"] == 0:
+                suite_elapsed = aggregate["elapsed"]
+                suite_seconds[relative] = suite_elapsed
+                max_suite_rss = max(max_suite_rss, aggregate["peak"])
+                with SUITE_OUTCOME_LOCK:
+                    SUITE_DURATIONS[relative] = suite_elapsed
+                error = aggregate["error"]
+                status = f"failed ({error})" if error else "passed"
+                print(f"Finished {relative}: {status}, {suite_elapsed:.2f}s", flush=True)
+                if error:
+                    failures.append((relative, error))
     except BaseException:
         for future in futures:
             future.cancel()

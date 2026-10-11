@@ -332,6 +332,7 @@ class ServerSuiteRunner(unittest.TestCase):
             return 0, None, [], []
 
         with (contextlib.redirect_stdout(io.StringIO()),
+              mock.patch.object(RUNNER, "_suite_test_ids", return_value=None),
               mock.patch.object(RUNNER, "_unix_socket_path_error", return_value=None)):
             RUNNER.run_suites(
                 [(f"{RUNNER.SOURCE_REL}/studio_api/agents/test_router.py", "component")],
@@ -341,6 +342,82 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertEqual(len(commands), 1)
         self.assertTrue(commands[0][-4].endswith("suite_entry.py"))
         self.assertEqual(commands[0][-3:], ["module", "studio_api.agents.test_router", "-v"])
+
+    def test_test_id_slices_are_disjoint_and_failure_names_single_test(self):
+        path = "synthetic.py"
+        ids = ["__main__.Sample.test_first", "__main__.Sample.test_second",
+               "__main__.Sample.test_third", "__main__.Sample.test_fourth"]
+        commands = []
+
+        def execute(command, _cwd, _timeout, environment):
+            selectors = command[command.index("-v") + 1:]
+            commands.extend(selectors)
+            outcome = Path(environment["CODEX_SERVER_TEST_RESULT_FILE"])
+            outcome.write_text("".join(json.dumps({"id": f"__main__.{selector}",
+                                                   "outcome": "failed" if selector.endswith("second") else "passed"})
+                                        + "\n" for selector in selectors))
+            return (1 if "Sample.test_second" in selectors else 0), None, [], []
+
+        output = io.StringIO()
+        with (contextlib.redirect_stdout(output),
+              mock.patch.object(RUNNER, "_focused_slot_count", return_value=2),
+              mock.patch.object(RUNNER, "_focused_run_slot", return_value=contextlib.nullcontext()),
+              mock.patch.object(RUNNER, "is_unittest_suite", return_value=True),
+              mock.patch.object(RUNNER, "has_module_level_mutable_state", return_value=False),
+              mock.patch.object(RUNNER, "_suite_test_ids", return_value=ids),
+              mock.patch.object(RUNNER, "_unix_socket_path_error", return_value=None),
+              mock.patch.object(RUNNER, "_load_profile", return_value={"suiteSeconds": {}})):
+            _runnable, _skipped, failures, _elapsed = RUNNER.run_suites(
+                [(path, "safe")], set(), 1, 1, root=ROOT, execute=execute,
+            )
+
+        self.assertEqual(sorted(commands), sorted(test_id.removeprefix("__main__.") for test_id in ids))
+        self.assertEqual(len(commands), len(set(commands)))
+        self.assertEqual(len(failures), 1)
+        self.assertIn("Sample.test_second", failures[0][1])
+        self.assertIn("reproduce:", failures[0][1])
+
+    def test_plain_assertion_script_is_not_test_sliced(self):
+        commands = []
+
+        def execute(command, _cwd, _timeout, _environment):
+            commands.append(command)
+            return 0, None, [], []
+
+        with (contextlib.redirect_stdout(io.StringIO()),
+              mock.patch.object(RUNNER, "_focused_slot_count", return_value=2),
+              mock.patch.object(RUNNER, "_focused_run_slot", return_value=contextlib.nullcontext()),
+              mock.patch.object(RUNNER, "_suite_test_ids") as list_ids,
+              mock.patch.object(RUNNER, "_unix_socket_path_error", return_value=None),
+              mock.patch.object(RUNNER, "_load_profile", return_value={"suiteSeconds": {}})):
+            _runnable, _skipped, failures, _elapsed = RUNNER.run_suites(
+                [("plain-assertions.py", "safe")], set(), 1, 1,
+                root=ROOT, execute=execute,
+            )
+
+        self.assertEqual(failures, [])
+        self.assertEqual(len(commands), 1)
+        list_ids.assert_not_called()
+
+    def test_unittest_with_module_mutable_state_is_not_test_sliced(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stateful.py"
+            path.write_text("STATE = []\nclass Tests(unittest.TestCase): pass\n")
+            self.assertTrue(RUNNER.has_module_level_mutable_state(path))
+        with (contextlib.redirect_stdout(io.StringIO()),
+              mock.patch.object(RUNNER, "_focused_slot_count", return_value=2),
+              mock.patch.object(RUNNER, "_focused_run_slot", return_value=contextlib.nullcontext()),
+              mock.patch.object(RUNNER, "is_unittest_suite", return_value=True),
+              mock.patch.object(RUNNER, "has_module_level_mutable_state", return_value=True),
+              mock.patch.object(RUNNER, "_suite_test_ids") as list_ids,
+              mock.patch.object(RUNNER, "_unix_socket_path_error", return_value=None),
+              mock.patch.object(RUNNER, "_load_profile", return_value={"suiteSeconds": {}})):
+            _runnable, _skipped, failures, _elapsed = RUNNER.run_suites(
+                [("stateful.py", "safe")], set(), 1, 1, root=ROOT,
+                execute=lambda *_args: (0, None, [], []),
+            )
+        self.assertEqual(failures, [])
+        list_ids.assert_not_called()
 
     def test_aggregates_failed_child_and_reports_opt_in_skip(self):
         calls = []
@@ -501,7 +578,7 @@ class ServerSuiteRunner(unittest.TestCase):
             self.assertEqual(runnable, [("one.py", "safe")])
             self.assertEqual(skipped, [])
             self.assertEqual(failures, [])
-            self.assertEqual(calls, [(1, 3)])
+            self.assertEqual(calls, [(3, 1)])
             self.assertIn(f"Scratch root: tmpfs {owned_root}", output.getvalue())
             self.assertFalse(owned_root.exists())
 
