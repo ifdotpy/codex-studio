@@ -26,7 +26,12 @@ The Mac and the VM are working copies; the vault is the copy that stays.
   `slots/paper.age` for the paper key, `slots/passkey-<credential id>.age` for each passkey.
   The PRF output of a passkey (32 bytes, salt `layr-vault/v1`) is the X25519 secret of its
   recipient. Any number of slots can exist; removing a slot object revokes that opener.
-- The paper key and the `age` tool decrypt every object without this software:
+- The paper key is 24 words of the English BIP39 list: the 32 bytes of an X25519 secret with an
+  8-bit checksum, as crypto wallets write their keys. The site and the Mac tools also take the
+  same key in its `age` form (`AGE-SECRET-KEY-1…`), the bech32 encoding of those 32 bytes with
+  the prefix `age-secret-key-`.
+- Without this software: any BIP39 tool turns the words into the 32 bytes (the entropy, not a
+  BIP39 seed), bech32 turns them into the `age` form, and the `age` tool decrypts every object:
   `age -d -i paper.txt slots/paper.age > vault.txt`, then `age -d -i vault.txt <object>`.
 - The VM has the recipient only, so agents and a stolen VM disk cannot read the vault.
 - The Lambda proves that a caller holds the vault identity: it returns a token encrypted to

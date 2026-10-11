@@ -6,7 +6,12 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { generateIdentity, recipientOf, sealSlot } from "../src/keys.mjs";
+import {
+  generateIdentity,
+  recipientOf,
+  sealSlot,
+  wordsOfIdentity,
+} from "../src/keys.mjs";
 
 const prefix = process.argv[2];
 if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(prefix ?? "")) {
@@ -26,15 +31,20 @@ const slot = await sealSlot(vault, await recipientOf(paper));
 mkdirSync(folder, { recursive: true, mode: 0o700 });
 writeFileSync(join(folder, "recipient.txt"), (await recipientOf(vault)) + "\n");
 writeFileSync(join(folder, "paper.age"), slot);
-const groups = paper.match(/.{1,6}/g).join(" ");
+const words = wordsOfIdentity(paper).split(" ");
+const rows = Array.from({ length: 6 }, (_, r) =>
+  [0, 6, 12, 18]
+    .map((c) => `${String(r + c + 1).padStart(2)}. ${words[r + c].padEnd(10)}`)
+    .join("  "),
+);
 process.stdout.write(`
-Paper key of the vault "${prefix}". Write it on paper twice and keep the copies apart.
-It is shown once and stored nowhere. Without it and without a passkey the vault cannot be read.
+Paper key of the vault "${prefix}": 24 words. Write them on paper twice, in this order, and keep
+the copies apart. They are shown once and stored nowhere. Without them and without a passkey the
+vault cannot be read.
 
-    ${paper}
+${rows.map((r) => "    " + r).join("\n")}
 
-Grouped for writing:
-    ${groups}
+The same key in age form (accepted too): ${paper}
 
 Next: vault-deploy reads ${folder}.
 `);

@@ -14,7 +14,9 @@ import { makeHandler } from "../../../../runtime/apps/vault/lambda/handler.mjs";
 import {
   generateIdentity,
   recipientOf,
+  identityFromPaper,
   sealSlot,
+  wordsOfIdentity,
 } from "../../../../runtime/apps/vault/src/keys.mjs";
 
 const dist = new URL("../dist/", import.meta.url).pathname;
@@ -152,13 +154,33 @@ try {
     "no passkey slot yet",
   );
 
-  // The paper key, written with spaces and lower case, unlocks the latest state.
+  // The paper key is 24 words. Two words in the wrong order fail the checksum, and the page
+  // says so; numbered words, some cut to their first four letters, unlock the latest state.
+  const words = wordsOfIdentity(paper).split(" ");
+  const swapped = words
+    .map((_, i) => {
+      const copy = [...words];
+      [copy[i], copy[i + 1]] = [copy[i + 1], copy[i]];
+      return copy.join(" ");
+    })
+    .find((text) => {
+      try {
+        identityFromPaper(text);
+        return false;
+      } catch {
+        return true;
+      }
+    });
+  await page.fill("#paper", swapped);
+  await page.click("#paper-form button");
+  await page.waitForFunction(() =>
+    document.querySelector("#status").textContent.includes("checksum"),
+  );
   await page.fill(
     "#paper",
-    paper
-      .toLowerCase()
-      .match(/.{1,6}/g)
-      .join(" "),
+    words
+      .map((w, i) => `${i + 1}. ${i % 2 ? w.slice(0, 4).toUpperCase() : w}`)
+      .join("\n"),
   );
   await page.click("#paper-form button");
   await page.waitForSelector("#browse:not([hidden])");

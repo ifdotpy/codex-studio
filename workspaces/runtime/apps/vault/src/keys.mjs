@@ -1,6 +1,12 @@
 // Vault keys and slots (docs/vault.md, "Keys"). A slot is the vault identity encrypted with age to
 // the recipient of one opener: the paper key, or a passkey whose PRF output is an X25519 secret.
 import * as age from "age-encryption";
+import {
+  entropyToMnemonic,
+  mnemonicToEntropy,
+  validateMnemonic,
+} from "@scure/bip39";
+import { wordlist } from "@scure/bip39/wordlists/english.js";
 
 const CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 const GENERATOR = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
@@ -106,4 +112,39 @@ export async function decryptWith(identity, data) {
   const decrypter = new age.Decrypter();
   decrypter.addIdentity(identity);
   return decrypter.decrypt(data);
+}
+
+/** The paper key as 24 BIP39 words: the 32-byte X25519 secret of the paper identity. */
+export function wordsOfIdentity(identity) {
+  return entropyToMnemonic(bech32Decode(identity).bytes, wordlist);
+}
+
+/**
+ * The age identity on paper: 24 BIP39 words (numbers between them and the first four letters
+ * of a word are fine, as BIP39 allows) or the AGE-SECRET-KEY-1… form.
+ */
+export function identityFromPaper(text) {
+  const compact = text.replace(/\s+/g, "");
+  if (/^AGE-SECRET-KEY-1/i.test(compact)) return compact.toUpperCase();
+  const words = text
+    .toLowerCase()
+    .split(/[\s,;]+/)
+    .filter((w) => w && !/^\d+[.)]?$/.test(w))
+    .map((w) => {
+      if (wordlist.includes(w)) return w;
+      const found =
+        w.length >= 4
+          ? wordlist.filter((x) => x.startsWith(w.slice(0, 4)))
+          : [];
+      if (found.length !== 1)
+        throw new Error(`"${w}" is not a word of the paper key list`);
+      return found[0];
+    });
+  const mnemonic = words.join(" ");
+  if (words.length !== 24 || !validateMnemonic(mnemonic, wordlist)) {
+    throw new Error(
+      "The paper key is 24 words; these words or their order do not match (checksum).",
+    );
+  }
+  return identityFromSecret(mnemonicToEntropy(mnemonic, wordlist));
 }

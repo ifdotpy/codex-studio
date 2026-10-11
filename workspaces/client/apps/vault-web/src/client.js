@@ -3,6 +3,7 @@ import { VaultReader, zstdReady } from "studio-vault/reader";
 import {
   PRF_SALT,
   decryptWith,
+  identityFromPaper,
   identityFromSecret,
   openSlot,
   recipientOf,
@@ -82,7 +83,7 @@ export class Vault {
     const paper = slots.find((s) => s.name === "paper");
     if (!paper) throw new Error("This vault has no paper slot.");
     await this.unlocked(
-      await openSlot(paper.data, paperKey.replace(/\s+/g, "").toUpperCase()),
+      await openSlot(paper.data, identityFromPaper(paperKey)),
     );
   }
 

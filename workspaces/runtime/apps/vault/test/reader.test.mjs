@@ -74,3 +74,29 @@ test("a passkey secret becomes an age identity that opens its slot", async () =>
 test("the fixture recipient belongs to the fixture identity", async () => {
   assert.equal(await recipientOf(identity), expected.recipient);
 });
+
+test("the paper key is 24 BIP39 words that give back the same identity", async () => {
+  const { identityFromPaper, wordsOfIdentity } =
+    await import("../src/keys.mjs");
+  const paper = await generateIdentity();
+  const words = wordsOfIdentity(paper).split(" ");
+  assert.equal(words.length, 24);
+  assert.equal(identityFromPaper(words.join(" ")), paper);
+  assert.equal(
+    identityFromPaper(
+      words
+        .map((w, i) => `${i + 1}) ${w.slice(0, 4).toUpperCase()}`)
+        .join("\n"),
+    ),
+    paper,
+  );
+  assert.equal(identityFromPaper(paper.toLowerCase()), paper);
+  assert.throws(
+    () => identityFromPaper(words.slice(0, 23).join(" ")),
+    /24 words/,
+  );
+  assert.throws(
+    () => identityFromPaper(["zzzz", ...words.slice(1)].join(" ")),
+    /not a word/,
+  );
+});

@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { openSlot } from "./keys.mjs";
+import { identityFromPaper, openSlot } from "./keys.mjs";
 import { VaultReader } from "./reader.mjs";
 
 const SERVICE = "studio-vault";
@@ -100,9 +100,9 @@ export async function identity(prefix, data, { keep = false } = {}) {
   } catch {
     // Not kept yet.
   }
-  const paper = (await ask(`Paper key of the vault "${prefix}": `))
-    .replace(/\s+/g, "")
-    .toUpperCase();
+  const paper = identityFromPaper(
+    await ask(`Paper key of the vault "${prefix}" (24 words): `),
+  );
   const vault = await openSlot(
     await data.get(`${prefix}/slots/paper.age`),
     paper,
