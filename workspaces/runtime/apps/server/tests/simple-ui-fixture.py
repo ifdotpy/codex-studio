@@ -75,8 +75,15 @@ class SettingsRuntime(Runtime):
             self.changed.clear()
             self._publish_committed_resource_changes()
 
-runtime_type = SettingsRuntime if os.environ.get('EXECUTION_SETTINGS_CATALOG') or os.environ.get('TOKEN_RATE_WORKER_COUNT') else Runtime
+runtime_type = SettingsRuntime if (
+    os.environ.get('EXECUTION_SETTINGS_CATALOG')
+    or os.environ.get('TOKEN_RATE_WORKER_COUNT')
+) else Runtime
 c.runtime = runtime_type(c.root, BackgroundServer if os.environ.get('BACKGROUND_UI_FIXTURE') else LimitsServer)
+if os.environ.get('NATIVE_ERROR_HOLD_CAPACITY_RETRY'):
+    # Keep normal dispatch active while preventing scheduled capacity retries
+    # from racing the browser assertion in the native error fixture.
+    c.runtime.capacity_tick = lambda: None
 if os.environ.get('RENAME_UI_FIXTURE'):
     import codex_rename
     codex_rename._generate = lambda *_: 'Release review and blockers'

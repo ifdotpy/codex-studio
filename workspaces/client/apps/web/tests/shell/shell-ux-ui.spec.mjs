@@ -811,6 +811,7 @@ test("Shell ux ui", async ({
       JSON.stringify(limitsBounds),
     );
     await compactPage.close();
+    await compactContext.close();
     const firstUse = await testBrowser.newPage({
       viewport: { width: 320, height: 844 },
       isMobile: true,

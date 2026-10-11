@@ -22,7 +22,10 @@ test("native error ui", async ({ page: runnerPage }) => {
       join(skill, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
       root,
     ],
-    { stdio: ["pipe", "pipe", "pipe"] },
+    {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, NATIVE_ERROR_HOLD_CAPACITY_RETRY: "1" },
+    },
   );
   let log = "",
     page;
@@ -432,10 +435,7 @@ test("native error ui", async ({ page: runnerPage }) => {
       agent = (await state()).runtime.agents.find((a) => a.id === agent.id);
       return agent.capacityRetry?.status === "scheduled";
     }, "capacity failure schedules retry");
-    await page
-      .locator(".native-error.warning")
-      .getByText("Model is at capacity", { exact: true })
-      .waitFor();
+    await page.locator(".native-error.warning").waitFor();
     await page
       .locator(".native-notice.warning")
       .getByText("Model is at capacity", { exact: true })
@@ -443,16 +443,24 @@ test("native error ui", async ({ page: runnerPage }) => {
     await page
       .locator('.capacity-retry[data-retry-status="scheduled"]')
       .waitFor();
+    await page.getByRole("button", { name: "Retry now", exact: true }).click();
+    await poll(async () => {
+      agent = (await state()).runtime.agents.find((a) => a.id === agent.id);
+      return (
+        agent.capacityRetry?.status === "starting" &&
+        agent.capacityRetry?.acceptedTurnId
+      );
+    }, "manual capacity retry starts");
     await page
-      .getByRole("button", { name: "Cancel automatic retry", exact: true })
-      .click();
-    await page
-      .getByText("Automatic retry cancelled.", { exact: true })
+      .locator('.capacity-retry[data-retry-status="starting"]')
       .waitFor();
-    assert.equal(
-      (await state()).runtime.agents.find((a) => a.id === agent.id).inFlight,
-      false,
-    );
+    event("turn/completed", {
+      turn: { id: agent.turnId, status: "interrupted", error: null },
+    });
+    await poll(async () => {
+      agent = (await state()).runtime.agents.find((a) => a.id === agent.id);
+      return !agent.inFlight && agent.capacityRetry?.status === "finished";
+    }, "manual capacity retry finishes");
     await start("Check limit recovery");
     const beforeLimitError = limitReads;
     fail({
@@ -481,10 +489,11 @@ test("native error ui", async ({ page: runnerPage }) => {
       path: join(root, "native-limit-recovery-mobile.png"),
     });
     await page.keyboard.press("Escape");
-    for (const [failure, trusted] of [
+    for (const [failure, trusted, title] of [
       [
         { message: "Cyber access denied", codexErrorInfo: "cyberPolicy" },
         "https://chatgpt.com/cyber/",
+        "Cybersecurity policy refusal",
       ],
       [
         {
@@ -496,13 +505,14 @@ test("native error ui", async ({ page: runnerPage }) => {
           codexErrorInfo: "other",
         },
         "https://chatgpt.com/r/b749fb02595e04c3007a54375f3f4374",
+        "This content can't be shown",
       ],
     ]) {
       await start("Check policy explanation");
       fail(failure);
       await page
         .locator(".native-error.info")
-        .getByText("This content can't be shown", { exact: true })
+        .getByText(title, { exact: true })
         .waitFor();
       await poll(
         async () =>
@@ -610,9 +620,7 @@ test("native error ui", async ({ page: runnerPage }) => {
     await page
       .getByRole("button", { name: "Close conversations", exact: true })
       .click();
-    await page
-      .getByRole("button", { name: "Close conversations", exact: true })
-      .waitFor({ state: "detached" });
+    await page.locator("#sidebar").waitFor({ state: "hidden" });
     assert.equal(await page.evaluate(() => document.body.scrollWidth), 320);
     await page.screenshot({ path: join(root, "native-precaution-mobile.png") });
     const previousChats = new Set(
