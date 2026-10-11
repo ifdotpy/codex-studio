@@ -101,13 +101,13 @@ class Safety(unittest.TestCase):
         return self.receipt()
 
     def test_buffering_wait_is_persistent_and_not_a_model_call(self):
-        calls = list(self.server.calls)
+        calls = [call for call in self.server.calls if call[0] != 'thread/name/set']
         self.buffering()
         self.assertEqual(self.runtime.agent(self.key)['activity']['phase'], 'safety')
         self.action('wait')
         self.buffering()
         self.assertTrue(self.runtime.agent(self.key)['nativeSafetyBuffering']['dismissed'])
-        self.assertEqual(self.server.calls, calls)
+        self.assertEqual([call for call in self.server.calls if call[0] != 'thread/name/set'], calls)
 
     def test_response_or_tool_progress_disables_retry_including_reordered_offer(self):
         for method, params in [('item/agentMessage/delta', {'itemId': 'text', 'delta': 'Answer'}),

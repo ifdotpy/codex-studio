@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "server"))
 from rpc_replay_contract import EMPTY_RESULT_METHODS
 
 fixture = json.load(open(sys.argv[1], encoding="utf-8"))
-reply_frames = json.load(open(sys.argv[2], encoding="utf-8"))
+reply_frames = {**json.load(open(sys.argv[2], encoding="utf-8")), **fixture.get("rpcReplies", {})}
 thread = None
 thread_count = 0
 turn_number = 0

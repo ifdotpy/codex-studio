@@ -7243,7 +7243,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     # starts a new turn anyway, record it even when slots are full.
                     a.update(turnId=turn, inFlight=True)
                     if not stopped:
-                        a.update(status="running", error=None)
+                        pending_request = db.execute(
+                            "SELECT 1 FROM runtime_requests WHERE json_extract(record,'$.agent')=? "
+                            "AND json_extract(record,'$.status')='pending' LIMIT 1",
+                            (agent_id,)).fetchone()
+                        a.update(status="approval" if pending_request else "running", error=None)
                 self.put(db, "agents", a)
         if deleted_server:
             try:
@@ -7896,7 +7900,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if a["autoWake"] and a.get("turnEpoch", a["epoch"]) == a["epoch"]:
                     # A turn that native started itself (Claude after a result,
                     # background work, compaction) is busy too; new input steers it.
-                    a.update(status="running", inFlight=True)
+                    pending_request = db.execute(
+                        "SELECT 1 FROM runtime_requests WHERE json_extract(record,'$.agent')=? "
+                        "AND json_extract(record,'$.status')='pending' LIMIT 1",
+                        (a["id"],)).fetchone()
+                    a.update(status="approval" if pending_request else "running", inFlight=True)
                     if attempt and a.get("error") == attempt.get("responseError"):
                         a["error"] = None
                 else:

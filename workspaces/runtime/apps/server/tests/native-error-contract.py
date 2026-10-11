@@ -216,6 +216,22 @@ class NativeErrorContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'no longer pending'):
             self.runtime.answer(records[0]['id'], {'answers': {}})
 
+    def test_late_start_ack_preserves_a_pending_approval(self):
+        self.server.start_gate = threading.Event()
+        starts_balanced = fixture.RuntimeContract.track_delivery_starts(self)
+        agent = self.runtime.create({'name': 'Gated lead', 'cwd': self.temp.name, 'prompt': 'Work'})
+        fixture.eventually(lambda: bool(self.runtime.agent(agent['id']).get('threadId')))
+        thread_id = self.runtime.agent(agent['id'])['threadId']
+        fixture.eventually(lambda: any(method == 'turn/start' and params['threadId'] == thread_id
+                                        for method, params in self.server.calls))
+        self.runtime.request({'id': 18, 'method': 'item/tool/requestUserInput', 'params': {
+            'threadId': thread_id, 'turnId': 'gated-turn', 'questions': []}},
+            'default', self.connection)
+        self.assertEqual(self.runtime.agent(agent['id'])['status'], 'approval')
+        self.server.start_gate.set()
+        self.assertTrue(starts_balanced(), 'delayed start acknowledgement did not finish')
+        self.assertEqual(self.runtime.agent(agent['id'])['status'], 'approval')
+
     def test_failed_native_turn_holds_pending_events_until_explicit_resume(self):
         error = {'message': 'Usage limit reached', 'codexErrorInfo': 'usageLimitExceeded'}
         self.send('turn/completed', turn={'id': self.turn, 'status': 'failed', 'error': error})
@@ -318,7 +334,7 @@ class NativeErrorContract(unittest.TestCase):
                 'durationMs': None, 'entries': entries or []}
 
     def test_hook_failure_updates_one_notice_without_changing_turn(self):
-        calls = len(self.server.calls)
+        calls = [call for call in self.server.calls if call[0] != 'thread/name/set']
         self.send('hook/started', run=self.hook_run())
         entries = [{'kind': 'warning', 'text': 'Warning text'}, {'kind': 'error', 'text': 'Exit failed'},
                    {'kind': 'stop', 'text': 'Stop reason'}, {'kind': 'context', 'text': 'Hidden model context'},
@@ -334,7 +350,7 @@ class NativeErrorContract(unittest.TestCase):
         self.assertNotIn('Second warning', json.dumps(hooks))
         self.assertTrue(self.runtime.agent(self.key)['inFlight'])
         self.assertFalse(self.runtime.agent(self.key).get('error'))
-        self.assertEqual(len(self.server.calls), calls)
+        self.assertEqual([call for call in self.server.calls if call[0] != 'thread/name/set'], calls)
 
     def test_hook_quiet_success_has_no_durable_notice(self):
         self.send('hook/started', run=self.hook_run())

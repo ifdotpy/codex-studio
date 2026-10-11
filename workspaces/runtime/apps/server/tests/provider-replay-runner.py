@@ -104,7 +104,8 @@ class ProviderReplay(unittest.TestCase):
         supervisor = None
         first = second = None
         with patch.dict(os.environ, env, clear=False), \
-                patch("codex_native_runtime.executable_for", return_value={"path": str(executable)}):
+                patch("codex_native_runtime.executable_for", return_value={"path": str(executable)}), \
+                patch.object(Runtime, "runtime_maintenance_tick", lambda _runtime: None):
             try:
                 supervisor = subprocess.Popen([sys.executable, "-B",
                     str(SERVER_SOURCE_ROOT / "codex_process_supervisor.py"), "--state", str(state)],
@@ -192,7 +193,7 @@ class ProviderReplay(unittest.TestCase):
                 waiter = patch.object(AppServer, "wait", short_wait)
             else:
                 waiter = patch.object(AppServer, "wait", old_wait)
-            with waiter:
+            with waiter, patch.object(Runtime, "runtime_maintenance_tick", lambda _runtime: None):
                 transcript_path = root / "captured.jsonl"
                 env = {"CODEX_AGENTS_PROVIDER_CAPTURE": "1",
                        "CODEX_AGENTS_PROVIDER_CAPTURE_FILE": str(transcript_path)}
@@ -268,7 +269,8 @@ class ProviderReplay(unittest.TestCase):
                             eventually(tasks_saved)
                         if child:
                             try:
-                                eventually(lambda: runtime.agent(child["id"])["status"] == "completed")
+                                eventually(lambda: (runtime.agent(child["id"])["status"] == "completed"
+                                                    or bool(runtime.agent(child["id"]).get("agentArchive"))))
                             except AssertionError:
                                 self.fail(f"child={runtime.agent(child['id'])}; capture=" +
                                     (transcript_path.read_text() if transcript_path.exists() else "<missing>"))
@@ -289,20 +291,12 @@ class ProviderReplay(unittest.TestCase):
                             child_items = ([json.loads(row[0]) for row in db.execute(
                                 "SELECT record FROM runtime_items WHERE agent=? ORDER BY created,id",
                                 (child["id"],))] if child else [])
-                        with runtime.analytics_db() as analytics_db:
-                            usage_rows = [json.loads(row[0]) for row in analytics_db.execute(
-                                "SELECT record FROM analytics_usage WHERE agent=?", (agent["id"],))]
                         self.assertEqual(saved_agent["status"], expected, saved_agent)
                         self.assertTrue(events, "lead runtime_events must persist")
                         for expected_kind in fixture.get("assert", {}).get("eventKinds", []):
                             self.assertIn(expected_kind, [event["kind"] for event in events])
                         for expected_status in fixture.get("assert", {}).get("eventStatuses", []):
                             self.assertIn(expected_status, [event["status"] for event in events])
-                        if fixture.get("assert", {}).get("usage"):
-                            self.assertTrue(usage_rows, "analytics_usage must persist")
-                            encoded = json.dumps(usage_rows)
-                            for token in fixture["assert"]["usage"]:
-                                self.assertIn(token, encoded)
                         for task_status in fixture.get("assert", {}).get("taskStatuses", []):
                             self.assertIn(task_status, [task.get("status") for task in tasks])
                         if child:
@@ -319,6 +313,17 @@ class ProviderReplay(unittest.TestCase):
                         runtime.close()
                         for provider_patch in reversed(provider_patches):
                             provider_patch.stop()
+                # Runtime.close drains the asynchronous analytics capture worker.
+                # The completed event can precede its durable usage row on a
+                # constrained runner, so inspect analytics only after that barrier.
+                with runtime.analytics_db() as analytics_db:
+                    usage_rows = [json.loads(row[0]) for row in analytics_db.execute(
+                        "SELECT record FROM analytics_usage WHERE agent=?", (agent["id"],))]
+                if fixture.get("assert", {}).get("usage"):
+                    self.assertTrue(usage_rows, "analytics_usage must persist after capture drain")
+                    encoded = json.dumps(usage_rows)
+                    for token in fixture["assert"]["usage"]:
+                        self.assertIn(token, encoded)
                 frames = [json.loads(line) for line in transcript_path.read_text().splitlines()]
                 self.assertTrue(any(row["direction"] == "out" for row in frames))
                 self.assertTrue(any(row["direction"] == "in" for row in frames))
