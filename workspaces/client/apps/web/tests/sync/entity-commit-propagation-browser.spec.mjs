@@ -278,6 +278,13 @@ test("committed entities propagate between renderer tabs @sync", async ({
           .getByRole("button", { name: /^New chat in / })
           .first()
           .click();
+        const newChatDialog = pages[0].getByRole("dialog", {
+          name: "New chat",
+          exact: true,
+        });
+        await newChatDialog
+          .getByRole("button", { name: "Start chat", exact: true })
+          .click();
         const created = await creationResponse;
         const responseReceivedAt = timestamp();
         const createdBody = await created.json();

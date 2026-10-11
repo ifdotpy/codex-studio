@@ -20,7 +20,13 @@ isolate_api_schema_cache()
 sys.dont_write_bytecode = True
 skill = REPOSITORY_ROOT
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
-from codex_canvas import Canvas, make_server
+import codex_canvas
+
+if os.environ.get("CODEX_PLAYWRIGHT_WEB_DIST"):
+    codex_canvas.WEB = Path(os.environ["CODEX_PLAYWRIGHT_WEB_DIST"])
+
+Canvas = codex_canvas.Canvas
+make_server = codex_canvas.make_server
 from codex_runtime import Runtime
 from studio_api.testing import read_runtime_state
 

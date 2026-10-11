@@ -618,7 +618,6 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
         message: "API routes from the mismatch response have settled",
       })
       .toBe(0);
-
     await page.evaluate(() => {
       const serviceWorker = navigator.serviceWorker;
       window.__originalGetRegistration =
@@ -990,7 +989,8 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
     if (
       url.pathname === "/api/sync/pull" &&
       url.searchParams.get("scope") === "state:entities:v1" &&
-      url.searchParams.get("after") === "0"
+      url.searchParams.get("after") === "0" &&
+      url.searchParams.get("fresh") === "1"
     )
       entityFullPulls.push(url.search);
   });
