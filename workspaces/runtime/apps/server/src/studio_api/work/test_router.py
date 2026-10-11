@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+import json
 import sqlite3
 import threading
 from contextlib import nullcontext
@@ -120,6 +121,73 @@ class WorkRouterTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json(), payload)
+
+    def test_plan_write_preserves_unknown_fields_from_stored_record(self) -> None:
+        stored = {
+            "id": "agent-placeholder", "rootId": "lead-placeholder", "text": "Old plan",
+            "version": 3, "updated": 1.0, "steps": [],
+            "legacyPlanMetadata": {"source": "prior-version"},
+        }
+
+        def save_plan(_agent: str, data: dict[str, object]) -> dict[str, object]:
+            stored.update(text=data["text"], version=4, updated=2.0)
+            return stored
+
+        context = FakeContext()
+        context.runtime.plan_action = Mock(side_effect=save_plan)
+
+        response = make_client(context).post("/api/plan", json={
+            "agent": "agent-placeholder", "version": 3, "text": "Updated plan",
+        })
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["version"], 4)
+        self.assertEqual(response.json()["legacyPlanMetadata"], {"source": "prior-version"})
+
+    def test_work_write_returns_legacy_stored_extensions_after_commit(self) -> None:
+        stored = {
+            "id": "task-legacy", "rootId": "lead-1", "title": "Task",
+            "description": "", "status": "ready", "created": 1.0,
+            "updated": 1.0, "version": 1, "createdBy": "lead-1",
+            "dependencies": [], "decisions": [],
+            "results": [{
+                "id": "result-legacy", "agent": "worker-1", "text": "done",
+                "checks": "passed", "revision": "revision-1", "files": [],
+                "created": 1.0, "resultFile": "result.md",
+                "legacyResultMetadata": {"source": "prior-version"},
+            }],
+            "legacyWorkMetadata": "preserved",
+        }
+        with sqlite3.connect(":memory:", check_same_thread=False) as db:
+            db.execute("CREATE TABLE runtime_work (id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            db.execute("INSERT INTO runtime_work VALUES (?, ?)", (stored["id"], json.dumps(stored)))
+
+            def commit_work(_agent: str, _data: object, _key: str | None = None) -> dict[str, object]:
+                record = json.loads(db.execute(
+                    "SELECT record FROM runtime_work WHERE id=?", (stored["id"],)
+                ).fetchone()[0])
+                record["version"] += 1
+                record["updated"] = 2.0
+                db.execute("UPDATE runtime_work SET record=? WHERE id=?", (json.dumps(record), stored["id"]))
+                return record
+
+            context = FakeContext()
+            context.runtime.work_action = Mock(side_effect=commit_work)
+            response = make_client(context).post("/api/work", json={
+                "agent": "lead-1", "action": "claim", "task_id": stored["id"],
+            })
+
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["version"], 2)
+            self.assertEqual(response.json()["legacyWorkMetadata"], "preserved")
+            self.assertEqual(
+                response.json()["results"][0]["legacyResultMetadata"],
+                {"source": "prior-version"},
+            )
+            persisted = json.loads(db.execute(
+                "SELECT record FROM runtime_work WHERE id=?", (stored["id"],)
+            ).fetchone()[0])
+            self.assertEqual(persisted["version"], 2)
 
     def test_work_list_accepts_a_stored_result_without_optional_run_metadata(self) -> None:
         # These persisted rows predate run metadata; all canonical result fields remain present.

@@ -2555,7 +2555,10 @@ export interface components {
       servers: components["schemas"]["AccessClient"][];
       settings: components["schemas"]["AccessSettings"];
     };
-    /** Account */
+    /**
+     * Account
+     * @description Known profile fields; AccountStore._public passes public stored fields through.
+     */
     Account: {
       /** Accountid */
       accountId?: string | null;
@@ -2587,6 +2590,8 @@ export interface components {
       /** Source */
       source: string;
       status: components["schemas"]["AccountStatus"];
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** AccountCostData */
     AccountCostData: {
@@ -2751,15 +2756,15 @@ export interface components {
       /** Accounts */
       accounts: components["schemas"]["Account"][];
       /** Archivedaccounts */
-      archivedAccounts?: components["schemas"]["Account"][];
+      archivedAccounts: components["schemas"]["Account"][];
       /** Defaultaccountkey */
       defaultAccountKey: string;
       /** Logins */
-      logins?: components["schemas"]["CodexLoginReceipt"][];
+      logins: components["schemas"]["CodexLoginReceipt"][];
       /** Supportsdelete */
-      supportsDelete?: boolean | null;
+      supportsDelete: boolean;
       /** Supportsdisconnect */
-      supportsDisconnect?: boolean | null;
+      supportsDisconnect: boolean;
     };
     /**
      * AccountStatus
@@ -4607,7 +4612,10 @@ export interface components {
        */
       share_status?: boolean;
     };
-    /** AssetRecord */
+    /**
+     * AssetRecord
+     * @description Known fields; asset_view removes path and passes every other stored field.
+     */
     AssetRecord: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -4629,6 +4637,8 @@ export interface components {
       name: string;
       /** Size */
       size: number;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** AssetUpload */
     AssetUpload: {
@@ -5361,12 +5371,17 @@ export interface components {
       /** Turnid */
       turnId?: string | null;
     };
-    /** ClaudeCustomModel */
+    /**
+     * ClaudeCustomModel
+     * @description Custom model records are nested in the stored account passthrough.
+     */
     ClaudeCustomModel: {
       /** Id */
       id: string;
       /** Label */
       label: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** ClaudeDeliveryResponse */
     ClaudeDeliveryResponse: {
@@ -5393,7 +5408,10 @@ export interface components {
         | "cancelled"
         | "failed";
     };
-    /** ClaudeLoginResponse */
+    /**
+     * ClaudeLoginResponse
+     * @description Known receipt fields; LoginManager returns its saved receipt directly.
+     */
     ClaudeLoginResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -5420,8 +5438,13 @@ export interface components {
       status: "starting" | "pending" | "ready" | "cancelled" | "error";
       /** Verificationurl */
       verificationUrl?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
-    /** ClaudeOptions */
+    /**
+     * ClaudeOptions
+     * @description Stored account options are returned through AccountStore._public.
+     */
     ClaudeOptions: {
       /** Autocompactwindow */
       autoCompactWindow?: number | null;
@@ -5433,6 +5456,8 @@ export interface components {
       customModels?: components["schemas"]["ClaudeCustomModel"][] | null;
       /** Launchargs */
       launchArgs?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** ClaudeProfileRequest */
     ClaudeProfileRequest: {
@@ -5603,7 +5628,10 @@ export interface components {
       /** Text */
       text: string;
     };
-    /** CodexLoginReceipt */
+    /**
+     * CodexLoginReceipt
+     * @description Known fields; AccountStore.login_receipts() passes persisted receipts through.
+     */
     CodexLoginReceipt: {
       /** Accountkey */
       accountKey: string;
@@ -5611,14 +5639,22 @@ export interface components {
       createdAt?: number | null;
       /** Email */
       email?: string | null;
+      /** Emailhint */
+      emailHint?: string | null;
       /** Error */
       error?: string | null;
+      /** Expectedaccountid */
+      expectedAccountId?: string | null;
       /** Expiresat */
       expiresAt?: number | null;
       /** Loginid */
       loginId?: string | null;
+      /** Nativecompleted */
+      nativeCompleted?: boolean | null;
       /** Reauthaccountkey */
       reauthAccountKey?: string | null;
+      /** Requestedlabel */
+      requestedLabel?: string | null;
       /** Requestid */
       requestId: string;
       /** Resolvedaccountkey */
@@ -5639,6 +5675,8 @@ export interface components {
       userCode?: string | null;
       /** Verificationurl */
       verificationUrl?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** ComplaintBody */
     ComplaintBody: {
@@ -7386,7 +7424,7 @@ export interface components {
       error?: string | null;
       /** Id */
       id: string;
-      status?: components["schemas"]["MonitorState"] | null;
+      status: components["schemas"]["MonitorState"];
     };
     /** MonitorEntityDto */
     MonitorEntityDto: {
@@ -7529,7 +7567,10 @@ export interface components {
      * @enum {string}
      */
     NativeAction: "compact" | "review";
-    /** NativeActionOutcome */
+    /**
+     * NativeActionOutcome
+     * @description Persisted execution outcome returned directly on native-action replay.
+     */
     NativeActionOutcome: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -7538,6 +7579,8 @@ export interface components {
       /** Error */
       error?: string | null;
       status: components["schemas"]["NativeActionOutcomeStatus"];
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /**
      * NativeActionOutcomeStatus
@@ -7548,7 +7591,10 @@ export interface components {
       | "acknowledged"
       | "unknown"
       | "failed";
-    /** NativeActionReceipt */
+    /**
+     * NativeActionReceipt
+     * @description Persisted admission receipt returned directly on native-action replay.
+     */
     NativeActionReceipt: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -7570,6 +7616,8 @@ export interface components {
       status: components["schemas"]["NativeActionReceiptStatus"];
       /** Threadid */
       threadId: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /**
      * NativeActionReceiptStatus
@@ -8226,6 +8274,7 @@ export interface components {
       peerTeamsRevision?: number | null;
       /** Projectaliases */
       projectAliases?: components["schemas"]["ProjectAlias"][] | null;
+      registration?: components["schemas"]["ProjectRegistration"] | null;
       /** Updated */
       updated?: number | null;
       /** Workerbaseref */
@@ -8236,6 +8285,8 @@ export interface components {
       workerEnvironment?: ("host" | "linux") | null;
       /** Workerenvironmentrevision */
       workerEnvironmentRevision?: number | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** PeerRadioActive */
     PeerRadioActive: {
@@ -8324,7 +8375,10 @@ export interface components {
      * @enum {string}
      */
     PeerStatus: "pending" | "approved" | "revoked";
-    /** PeerTeam */
+    /**
+     * PeerTeam
+     * @description Peer-team records are nested in the stored project passthrough.
+     */
     PeerTeam: {
       /** Id */
       id: string;
@@ -8332,6 +8386,8 @@ export interface components {
       members: string[];
       /** Name */
       name: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** PeerTeamConvertRequest */
     PeerTeamConvertRequest: {
@@ -8555,7 +8611,10 @@ export interface components {
       /** Version */
       version: number;
     };
-    /** PlanView */
+    /**
+     * PlanView
+     * @description Known fields; runtime_plans records are returned without projection.
+     */
     PlanView: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -8574,6 +8633,8 @@ export interface components {
       updated: number | null;
       /** Version */
       version: number;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** PreferenceField */
     PreferenceField: {
@@ -8763,7 +8824,10 @@ export interface components {
       /** Updated */
       updated: number | null;
     };
-    /** Project */
+    /**
+     * Project
+     * @description Known project fields; records(db, "projects") passes stored records through.
+     */
     Project: {
       /** Accountkey */
       accountKey?: string | null;
@@ -8795,6 +8859,7 @@ export interface components {
       peerTeamsRevision?: number | null;
       /** Projectaliases */
       projectAliases?: components["schemas"]["ProjectAlias"][] | null;
+      registration?: components["schemas"]["ProjectRegistration"] | null;
       /** Updated */
       updated?: number | null;
       /** Workerbaseref */
@@ -8805,8 +8870,13 @@ export interface components {
       workerEnvironment?: ("host" | "linux") | null;
       /** Workerenvironmentrevision */
       workerEnvironmentRevision?: number | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
-    /** ProjectAlias */
+    /**
+     * ProjectAlias
+     * @description Alias records are nested in the stored project passthrough.
+     */
     ProjectAlias: {
       /** Name */
       name: string;
@@ -8814,6 +8884,8 @@ export interface components {
       projectId: string;
       /** Serverid */
       serverId: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** ProjectAliasDto */
     ProjectAliasDto: {
@@ -8870,7 +8942,10 @@ export interface components {
       /** Workerenvironmentrevision */
       workerEnvironmentRevision?: number | null;
     };
-    /** ProjectFolder */
+    /**
+     * ProjectFolder
+     * @description Folder records are nested in the stored project passthrough.
+     */
     ProjectFolder: {
       /** Id */
       id: string;
@@ -8878,6 +8953,8 @@ export interface components {
       name: string;
       /** Parentid */
       parentId?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /**
      * ProjectLayrReadinessDto
@@ -8921,7 +8998,10 @@ export interface components {
       /** Withagent */
       withAgent: string[];
     };
-    /** ProjectLocation */
+    /**
+     * ProjectLocation
+     * @description Location records are nested in the stored project passthrough.
+     */
     ProjectLocation: {
       /** Gitorigin */
       gitOrigin?: string | null;
@@ -8933,6 +9013,8 @@ export interface components {
       requestedPath?: string | null;
       /** Serverid */
       serverId: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** ProjectLocationDto */
     ProjectLocationDto: {
@@ -9024,6 +9106,7 @@ export interface components {
       peerTeamsRevision?: number | null;
       /** Projectaliases */
       projectAliases?: components["schemas"]["ProjectAlias"][] | null;
+      registration?: components["schemas"]["ProjectRegistration"] | null;
       /** Updated */
       updated?: number | null;
       /** Workerbaseref */
@@ -9034,6 +9117,8 @@ export interface components {
       workerEnvironment?: ("host" | "linux") | null;
       /** Workerenvironmentrevision */
       workerEnvironmentRevision?: number | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** ProjectPeerTeamDto */
     ProjectPeerTeamDto: {
@@ -9052,6 +9137,25 @@ export interface components {
       _syncEntitiesAfter?: number | null;
       /** Items */
       items: components["schemas"]["Project"][];
+    };
+    /**
+     * ProjectRegistration
+     * @description Registration records are nested in the stored project passthrough.
+     */
+    ProjectRegistration: {
+      /**
+       * Action
+       * @constant
+       */
+      action: "register";
+      /** Path */
+      path: string;
+      /** Project */
+      project: string;
+      /** Server */
+      server: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** ProjectRemovalResponse */
     ProjectRemovalResponse: {
@@ -9484,7 +9588,10 @@ export interface components {
      * @enum {string}
      */
     RadioStatus: "idle" | "waiting" | "speaking" | "stopping" | "blocked";
-    /** RateLimitBucket */
+    /**
+     * RateLimitBucket
+     * @description Known rate-limit fields plus provider-owned fields passed through unchanged.
+     */
     RateLimitBucket: {
       individualLimit?:
         | components["schemas"]["RateLimitIndividualLimit"]
@@ -9525,7 +9632,10 @@ export interface components {
       /** Remainingpercent */
       remainingPercent?: number | null;
     };
-    /** RateLimitResetCredit */
+    /**
+     * RateLimitResetCredit
+     * @description A provider reset-credit record; native service fields remain extensible.
+     */
     RateLimitResetCredit: {
       /** Expiresat */
       expiresAt?: number | null;
@@ -9540,7 +9650,10 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
-    /** RateLimitResetCredits */
+    /**
+     * RateLimitResetCredits
+     * @description Provider-owned reset-credit summary with the known count and credit fields.
+     */
     RateLimitResetCredits: {
       /** Availablecount */
       availableCount?: number | null;
@@ -12406,7 +12519,10 @@ export interface components {
       /** Truncated */
       truncated: boolean;
     };
-    /** TerminalRecord */
+    /**
+     * TerminalRecord
+     * @description Known fields; terminal actions return the persisted user_terminal record.
+     */
     TerminalRecord: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -12429,6 +12545,8 @@ export interface components {
       title: string;
       /** Updated */
       updated?: number | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** TerminalRename */
     TerminalRename: {
@@ -13148,7 +13266,10 @@ export interface components {
       /** Requestid */
       requestId: string;
     };
-    /** UsageLimitsData */
+    /**
+     * UsageLimitsData
+     * @description Known usage projection plus account-service fields passed through unchanged.
+     */
     UsageLimitsData: {
       /** Accountid */
       accountId?: string | null;
@@ -13718,6 +13839,16 @@ export interface components {
       status: "pending" | "complete" | "terminal";
       /** Updated */
       updated?: number;
+    } & {
+      [key: string]:
+        | string
+        | number
+        | boolean
+        | components["schemas"]["JsonValue"][]
+        | {
+            [key: string]: components["schemas"]["JsonValue"];
+          }
+        | null;
     };
     /** WorkArchiveRecord */
     WorkArchiveRecord: {
@@ -13754,6 +13885,16 @@ export interface components {
             }
           | null;
       };
+    } & {
+      [key: string]:
+        | string
+        | number
+        | boolean
+        | components["schemas"]["JsonValue"][]
+        | {
+            [key: string]: components["schemas"]["JsonValue"];
+          }
+        | null;
     };
     /** WorkBody */
     WorkBody: {
@@ -13834,6 +13975,16 @@ export interface components {
       reason: string;
       /** Resultid */
       resultId?: string;
+    } & {
+      [key: string]:
+        | string
+        | number
+        | boolean
+        | components["schemas"]["JsonValue"][]
+        | {
+            [key: string]: components["schemas"]["JsonValue"];
+          }
+        | null;
     };
     /** WorkEntityDto */
     WorkEntityDto: {
@@ -13891,7 +14042,7 @@ export interface components {
     };
     /**
      * WorkItem
-     * @description Work response projection; nested persisted records use codex_records as authority.
+     * @description work_view spreads stored records; retain their unknown top-level and nested fields.
      */
     WorkItem: {
       /** Syncentities */
@@ -13946,6 +14097,8 @@ export interface components {
       updated: number;
       /** Version */
       version: number;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** WorkList */
     WorkList: {
@@ -14009,6 +14162,16 @@ export interface components {
       runId?: string;
       /** Text */
       text: string;
+    } & {
+      [key: string]:
+        | string
+        | number
+        | boolean
+        | components["schemas"]["JsonValue"][]
+        | {
+            [key: string]: components["schemas"]["JsonValue"];
+          }
+        | null;
     };
     /** WorkspaceEntityDto */
     WorkspaceEntityDto: {
@@ -14497,37 +14660,39 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
           "application/json": components["schemas"]["AccountsResponse"];
         };
       };
-      /** @description Invalid request or operation failed */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Local origin and session token required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Input validation errors are returned as HTTP 400 */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   claude_add_start_api_accounts_claude_add_post: {
@@ -14546,42 +14711,53 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
           "application/json": components["schemas"]["ClaudeLoginResponse"];
         };
       };
-      /** @description Invalid request or operation failed */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Local origin and session token required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
+      /** @description Conflict */
       409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Input validation errors are returned as HTTP 400 */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   claude_login_status_api_accounts_claude_login_get: {
@@ -14598,37 +14774,39 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
           "application/json": components["schemas"]["ClaudeLoginResponse"];
         };
       };
-      /** @description Invalid request or operation failed */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Local origin and session token required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Input validation errors are returned as HTTP 400 */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   claude_login_start_api_accounts_claude_login_post: {
@@ -14647,42 +14825,53 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
           "application/json": components["schemas"]["ClaudeLoginResponse"];
         };
       };
-      /** @description Invalid request or operation failed */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Local origin and session token required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
+      /** @description Conflict */
       409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Input validation errors are returned as HTTP 400 */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   claude_login_cancel_api_accounts_claude_login_cancel_post: {
@@ -14701,42 +14890,53 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
           "application/json": components["schemas"]["ClaudeLoginResponse"];
         };
       };
-      /** @description Invalid request or operation failed */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Local origin and session token required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
+      /** @description Conflict */
       409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Input validation errors are returned as HTTP 400 */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   claude_login_code_api_accounts_claude_login_code_post: {
@@ -14755,42 +14955,53 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
           "application/json": components["schemas"]["ClaudeLoginResponse"];
         };
       };
-      /** @description Invalid request or operation failed */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Local origin and session token required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
+      /** @description Conflict */
       409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Input validation errors are returned as HTTP 400 */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   account_default_api_accounts_default_post: {
@@ -14809,42 +15020,53 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
           "application/json": components["schemas"]["AccountsResponse"];
         };
       };
-      /** @description Invalid request or operation failed */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Local origin and session token required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
+      /** @description Conflict */
       409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Input validation errors are returned as HTTP 400 */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   account_delete_api_accounts_delete_post: {
@@ -14863,42 +15085,53 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
           "application/json": components["schemas"]["AccountsResponse"];
         };
       };
-      /** @description Invalid request or operation failed */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Local origin and session token required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
+      /** @description Conflict */
       409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Input validation errors are returned as HTTP 400 */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   account_disconnect_api_accounts_disconnect_post: {
@@ -14917,42 +15150,53 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
           "application/json": components["schemas"]["AccountsResponse"];
         };
       };
-      /** @description Invalid request or operation failed */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Local origin and session token required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
+      /** @description Conflict */
       409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Input validation errors are returned as HTTP 400 */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   account_discover_api_accounts_discover_post: {
@@ -14971,42 +15215,53 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
           "application/json": components["schemas"]["AccountsResponse"];
         };
       };
-      /** @description Invalid request or operation failed */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Local origin and session token required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
+      /** @description Conflict */
       409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Input validation errors are returned as HTTP 400 */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   account_login_api_accounts_login_post: {
@@ -15025,42 +15280,53 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
           "application/json": components["schemas"]["AccountLoginResponse"];
         };
       };
-      /** @description Invalid request or operation failed */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Local origin and session token required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
+      /** @description Conflict */
       409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Input validation errors are returned as HTTP 400 */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   account_login_cancel_api_accounts_login_cancel_post: {
@@ -15079,42 +15345,53 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
           "application/json": components["schemas"]["AccountLoginResponse"];
         };
       };
-      /** @description Invalid request or operation failed */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Local origin and session token required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
+      /** @description Conflict */
       409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Input validation errors are returned as HTTP 400 */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   account_name_api_accounts_name_post: {
@@ -15133,42 +15410,53 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
           "application/json": components["schemas"]["AccountsResponse"];
         };
       };
-      /** @description Invalid request or operation failed */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Local origin and session token required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
+      /** @description Conflict */
       409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Input validation errors are returned as HTTP 400 */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   account_reconnect_api_accounts_reconnect_post: {
@@ -15187,42 +15475,53 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
           "application/json": components["schemas"]["AccountsResponse"];
         };
       };
-      /** @description Invalid request or operation failed */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Local origin and session token required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
+      /** @description Conflict */
       409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Input validation errors are returned as HTTP 400 */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   account_register_api_accounts_register_post: {
@@ -15241,42 +15540,53 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
           "application/json": components["schemas"]["AccountsResponse"];
         };
       };
-      /** @description Invalid request or operation failed */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Local origin and session token required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
+      /** @description Conflict */
       409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Input validation errors are returned as HTTP 400 */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   native_action_api_action_post: {
@@ -15844,6 +16154,19 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
@@ -15851,20 +16174,31 @@ export interface operations {
         };
       };
       /** @description Bad Request */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
+      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
+      /** @description Conflict */
       409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   branch_api_branch_post: {
@@ -16385,42 +16719,53 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
           "application/json": components["schemas"]["AccountsResponse"];
         };
       };
-      /** @description Invalid request or operation failed */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Local origin and session token required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
+      /** @description Conflict */
       409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Input validation errors are returned as HTTP 400 */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   claude_session_api_claude_session_post: {
@@ -16444,6 +16789,19 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
@@ -16456,36 +16814,34 @@ export interface operations {
             | components["schemas"]["ClaudeStopTaskResponse"];
         };
       };
-      /** @description Invalid request or operation failed */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Local origin and session token required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
+      /** @description Conflict */
       409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Input validation errors are returned as HTTP 400 */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   complaint_detail_api_complaint_get: {
@@ -17478,6 +17834,19 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
@@ -17485,24 +17854,19 @@ export interface operations {
         };
       };
       /** @description Bad Request */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
       /** @description Not Found */
-      404: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      404: components["responses"]["ApiError404"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   file_info_api_file_info_get: {
@@ -17521,6 +17885,19 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
@@ -17528,24 +17905,19 @@ export interface operations {
         };
       };
       /** @description Bad Request */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
       /** @description Not Found */
-      404: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      404: components["responses"]["ApiError404"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   import_list_api_import_get: {
@@ -17743,37 +18115,39 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
           "application/json": components["schemas"]["UsageLimitsResponse"];
         };
       };
-      /** @description Invalid request or operation failed */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Local origin and session token required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Input validation errors are returned as HTTP 400 */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   reset_limits_api_limits_reset_post: {
@@ -17792,42 +18166,53 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
           "application/json": components["schemas"]["LimitResetResponse"];
         };
       };
-      /** @description Invalid request or operation failed */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Local origin and session token required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
+      /** @description Conflict */
       409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Input validation errors are returned as HTTP 400 */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   linux_vm_settings_api_linux_vm_settings_get: {
@@ -18221,37 +18606,39 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
           "application/json": components["schemas"]["ModelCatalogResponse"];
         };
       };
-      /** @description Catalog pending or unavailable */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Local origin and session token required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Input validation errors are returned as HTTP 400 */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   cancel_monitor_api_monitor_cancel_post: {
@@ -18270,6 +18657,19 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
@@ -18277,20 +18677,31 @@ export interface operations {
         };
       };
       /** @description Bad Request */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
+      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
+      /** @description Conflict */
       409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   monitor_input_api_monitor_input_post: {
@@ -18309,6 +18720,19 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
@@ -18316,20 +18740,31 @@ export interface operations {
         };
       };
       /** @description Bad Request */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
+      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
+      /** @description Conflict */
       409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   monitor_log_api_monitor_log_get: {
@@ -18351,7 +18786,13 @@ export interface operations {
           "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
           "Cache-Control": components["headers"]["CacheControl"];
           "Content-Disposition": components["headers"]["ContentDisposition"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
           "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
           "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
           "X-Log-Truncated": components["headers"]["LogTruncated"];
           "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
@@ -18370,8 +18811,14 @@ export interface operations {
           "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
           "Cache-Control": components["headers"]["CacheControl"];
           "Content-Disposition": components["headers"]["ContentDisposition"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
           "Content-Length": components["headers"]["ContentLength"];
           "Content-Range": components["headers"]["ContentRange"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
           "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
           "X-Log-Truncated": components["headers"]["LogTruncated"];
           "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
@@ -18384,6 +18831,8 @@ export interface operations {
       };
       /** @description Bad Request */
       400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
       /** @description Forbidden */
       403: components["responses"]["ApiError403"];
       /** @description Not Found */
@@ -18393,14 +18842,24 @@ export interface operations {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
           "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
           "Content-Length": components["headers"]["ContentLength"];
           "Content-Range": components["headers"]["ContentRange"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
           "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
           "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content?: never;
       };
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
       /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
       /** @description Service Unavailable */
@@ -19661,6 +20120,19 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
@@ -19670,36 +20142,34 @@ export interface operations {
             | components["schemas"]["PeerRadioResponse"];
         };
       };
-      /** @description Invalid request or operation failed */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Local origin and session token required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
+      /** @description Conflict */
       409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Input validation errors are returned as HTTP 400 */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   plan_api_plan_get: {
@@ -19960,37 +20430,39 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
           "application/json": components["schemas"]["ProjectLocationQueryResponse"];
         };
       };
-      /** @description Invalid request or operation failed */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Local origin and session token required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Input validation errors are returned as HTTP 400 */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   project_secrets_list_api_project_secrets_list_post: {
@@ -20200,37 +20672,39 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
           "application/json": components["schemas"]["ProjectReadResponse"];
         };
       };
-      /** @description Invalid request or operation failed */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Local origin and session token required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Input validation errors are returned as HTTP 400 */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   project_write_api_projects_post: {
@@ -20252,6 +20726,19 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
@@ -20263,36 +20750,34 @@ export interface operations {
             | components["schemas"]["ServerOperationResponse"];
         };
       };
-      /** @description Invalid request or operation failed */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Local origin and session token required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
+      /** @description Conflict */
       409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Input validation errors are returned as HTTP 400 */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   questions_api_questions_get: {
@@ -21614,6 +22099,19 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
@@ -21621,15 +22119,17 @@ export interface operations {
         };
       };
       /** @description Bad Request */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   close_terminal_api_terminals_close_post: {
@@ -21648,6 +22148,19 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
@@ -21655,20 +22168,31 @@ export interface operations {
         };
       };
       /** @description Bad Request */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
+      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
+      /** @description Conflict */
       409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   create_terminal_api_terminals_create_post: {
@@ -21687,6 +22211,19 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
@@ -21694,20 +22231,31 @@ export interface operations {
         };
       };
       /** @description Bad Request */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
+      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
+      /** @description Conflict */
       409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   terminal_input_api_terminals_input_post: {
@@ -21726,6 +22274,19 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
@@ -21733,20 +22294,31 @@ export interface operations {
         };
       };
       /** @description Bad Request */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
+      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
+      /** @description Conflict */
       409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   terminal_output_api_terminals_output_get: {
@@ -21766,6 +22338,19 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
@@ -21773,15 +22358,17 @@ export interface operations {
         };
       };
       /** @description Bad Request */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   rename_terminal_api_terminals_rename_post: {
@@ -21800,6 +22387,19 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
@@ -21807,20 +22407,31 @@ export interface operations {
         };
       };
       /** @description Bad Request */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
+      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
+      /** @description Conflict */
       409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   resize_terminal_api_terminals_resize_post: {
@@ -21839,6 +22450,19 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
         content: {
@@ -21846,20 +22470,31 @@ export interface operations {
         };
       };
       /** @description Bad Request */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
+      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
+      /** @description Conflict */
       409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   tool_requests_api_tool_requests_get: {

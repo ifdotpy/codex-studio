@@ -406,6 +406,7 @@ class RateLimitSnapshotRecord(TypedDict):
 
 
 class AccountDataRecord(TypedDict):
+    """Persisted profile row; other provider metadata is represented by projections."""
     home: str
     provider: NotRequired[str]
 
@@ -1457,13 +1458,13 @@ class AgentRecord(TypedDict):
     draft: NotRequired[AgentDraftRecord]
 
 
-class WorkArchiveRecord(TypedDict):
+class WorkArchiveRecord(TypedDict, extra_items=JsonValue):  # type: ignore[call-arg]  # typing_extensions exposes PEP 728 at runtime; mypy's TypedDict stub has no extra_items yet
     reason: NotRequired[str]
     status: NotRequired[str]
     worktree: NotRequired[JsonObject]
 
 
-class WorkArchiveIntentRecord(TypedDict):
+class WorkArchiveIntentRecord(TypedDict, extra_items=JsonValue):  # type: ignore[call-arg]  # typing_extensions exposes PEP 728 at runtime; mypy's TypedDict stub has no extra_items yet
     id: str
     status: Literal["pending", "complete", "terminal"]
     owner: NotRequired[str | None]
@@ -1477,7 +1478,7 @@ class WorkArchiveIntentRecord(TypedDict):
     outcome: NotRequired[WorkArchiveRecord]
 
 
-class WorkResultRecord(TypedDict):
+class WorkResultRecord(TypedDict, extra_items=JsonValue):  # type: ignore[call-arg]  # typing_extensions exposes PEP 728 at runtime; mypy's TypedDict stub has no extra_items yet
     # Read-only runtime_work audit: these eight keys occurred in all 862 results;
     # runId and attemptId were both absent from 30 of those results.
     layrProjectId: NotRequired[str]
@@ -1495,7 +1496,7 @@ class WorkResultRecord(TypedDict):
     attemptId: NotRequired[str | None]
 
 
-class WorkDecisionRecord(TypedDict):
+class WorkDecisionRecord(TypedDict, extra_items=JsonValue):  # type: ignore[call-arg]  # typing_extensions exposes PEP 728 at runtime; mypy's TypedDict stub has no extra_items yet
     decision: Literal["cancel", "accept", "reject"]
     reason: str
     by: str
@@ -1621,28 +1622,59 @@ class ProjectLocationRecord(TypedDict):
     serverId: str
     path: str
     projectId: str
+    requestedPath: NotRequired[str]
     gitOrigin: NotRequired[str | None]
 
 
+class ProjectAliasRecord(TypedDict):
+    serverId: str
+    projectId: str
+    name: str
+
+
+class ProjectFolderRecord(TypedDict):
+    id: str
+    name: str
+    parentId: NotRequired[str | None]
+
+
+class ProjectPeerTeamRecord(TypedDict):
+    id: str
+    name: str
+    members: list[str]
+
+
+class ProjectRegistrationRecord(TypedDict):
+    action: Literal["register"]
+    project: str
+    server: str
+    path: str
+
+
 class ProjectRecord(TypedDict):
+    """Persisted project fields; account metadata is absent on environment-only projects."""
+
     id: str
     path: str
     name: str
-    accountKey: str
-    accountRevision: int
     created: float
+    accountKey: NotRequired[str]
+    accountRevision: NotRequired[int]
     homeServerId: NotRequired[str]
     locations: NotRequired[list[ProjectLocationRecord]]
     locationsRevision: NotRequired[int]
-    projectAliases: NotRequired[list[JsonObject]]
+    projectAliases: NotRequired[list[ProjectAliasRecord]]
     updated: NotRequired[float]
     accountKeys: NotRequired[list[str]]
-    folders: NotRequired[list[JsonValue]]
+    folders: NotRequired[list[ProjectFolderRecord]]
     organizationRevision: NotRequired[int]
-    peerTeams: NotRequired[list["PeerTeamRecord"]]
+    peerTeams: NotRequired[list[ProjectPeerTeamRecord]]
     peerTeamsRevision: NotRequired[int]
     workerBaseRef: NotRequired[str]
     workerBaseRevision: NotRequired[int]
+    workerEnvironment: NotRequired[Literal["host", "linux"]]
+    workerEnvironmentRevision: NotRequired[int]
+    registration: NotRequired[ProjectRegistrationRecord]
 
 
 class PeerTeamRecord(TypedDict):

@@ -326,7 +326,10 @@ class PanelLayoutBody(ContractModel):
 
 
 class WorkItem(ResponseModel):
-    """Work response projection; nested persisted records use codex_records as authority."""
+    """work_view spreads stored records; retain their unknown top-level and nested fields."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue]
 
     id: StrictStr
     rootId: StrictStr
@@ -390,6 +393,11 @@ class NativePlanPayload(ContractModel):
 
 
 class PlanView(ResponseModel):
+    """Known fields; runtime_plans records are returned without projection."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue]
+
     id: StrictStr
     rootId: StrictStr
     text: StrictStr

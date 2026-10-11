@@ -33,7 +33,11 @@ def set_project_accounts(runtime: "Runtime", data: dict[str, object]) -> "Projec
         current = project.get("accountRevision", 0) if project else 0
         if project and project.get("accountKey") == default and project.get("accountKeys") == keys and revision in (current, current - 1):
             return project
-        existing_keys = (project.get("accountKeys") or [project.get("accountKey")]) if project else []
+        existing_keys = project.get("accountKeys") or [] if project else []
+        if project and not existing_keys:
+            default_key = project.get("accountKey")
+            if default_key is not None:
+                existing_keys = [default_key]
         for key in keys:
             if accounts[key].get("deleted"):
                 raise ValueError("Deleted accounts cannot be added to a project")

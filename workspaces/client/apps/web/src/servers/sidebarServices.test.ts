@@ -335,9 +335,14 @@ describe("owner sidebar services", () => {
       });
     expect(a.requests[0].body).toMatchObject({ expected_revision: 2 });
     expect(result).toMatchObject({ revision: 11 });
-    expect("groups" in result && result.groups?.projects).toContain(
-      model.projectKey("remote", "/remote"),
-    );
+    expect(
+      "groups" in result &&
+        result.groups !== null &&
+        typeof result.groups === "object" &&
+        !Array.isArray(result.groups) &&
+        Array.isArray(result.groups.projects) &&
+        result.groups.projects.includes(model.projectKey("remote", "/remote")),
+    ).toBe(true);
     expect(b.requests).toEqual([]);
   });
 

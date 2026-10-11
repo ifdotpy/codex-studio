@@ -18,11 +18,12 @@ from uuid import uuid4
 from unittest.mock import patch
 
 from fastapi import FastAPI
+from fastapi.routing import APIRoute
 from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-from pydantic import TypeAdapter, ValidationError
+from pydantic import ConfigDict, TypeAdapter, ValidationError
 from studio_api.sync.resources.hub import (
     ResourceHub,
     register_resource_hub,
@@ -49,11 +50,14 @@ from .models import (
     PeerTeamRequest,
     PeerTeamsResponse,
     PeerRadioResponse,
+    ProjectMutationRecord,
     ProjectWriteRequest,
     ResetRequest,
     UsageLimitsResponse,
     RateLimitBucket,
+    Project,
 )
+from codex_records import ProjectRecord
 
 
 class AccountsModelTests(unittest.TestCase):
@@ -100,17 +104,17 @@ class AccountsModelTests(unittest.TestCase):
                 with self.subTest(field=field), self.assertRaises(ValidationError):
                     UsageLimitsResponse.model_validate({**value, field: invalid})
 
-    def test_account_contract_never_accepts_credential_material(self) -> None:
+    def test_account_contract_keeps_unknown_public_fields(self) -> None:
         good = Account.model_validate({
             "id": "default", "home": "/profiles/default", "label": "Codex",
             "source": "Codex CLI", "status": "ready", "accountId": "acct-1",
         })
         self.assertEqual(good.accountId, "acct-1")
-        with self.assertRaises(ValidationError):
-            Account.model_validate({
-                "id": "default", "home": "/profiles/default", "label": "Codex",
-                "source": "Codex CLI", "status": "ready", "accessToken": "secret",
-            })
+        extended = Account.model_validate({
+            "id": "default", "home": "/profiles/default", "label": "Codex",
+            "source": "Codex CLI", "status": "ready", "providerMetadata": {"kind": "legacy"},
+        })
+        self.assertEqual(extended.__pydantic_extra__, {"providerMetadata": {"kind": "legacy"}})
 
     def test_account_snapshot_has_explicit_collections(self) -> None:
         result = AccountsResponse.model_validate({
@@ -129,6 +133,13 @@ class AccountsModelTests(unittest.TestCase):
         self.assertIn("base_ref", request.model_dump(mode="json", exclude_unset=True))
         with self.assertRaises(ValidationError):
             ProjectWriteRequest.model_validate({"action": "unknown", "path": "/project"})
+
+    def test_project_dto_fields_match_the_persisted_record_contract(self) -> None:
+        self.assertEqual(set(Project.model_fields), set(ProjectRecord.__annotations__))
+        self.assertEqual(
+            {name for name, field in Project.model_fields.items() if field.is_required()},
+            ProjectRecord.__required_keys__,
+        )
 
     def test_reset_requires_durable_uuid_before_dispatch(self) -> None:
         request = ResetRequest.model_validate({
@@ -555,6 +566,52 @@ class AccountsRouterTests(unittest.TestCase):
         self.assertEqual(response.json()["accounts"][0]["accountId"], "account-default")
         self.assertNotIn("fixture-secret", response.text)
 
+    def test_accounts_route_preserves_legacy_public_extensions(self) -> None:
+        store_data = cast(dict[str, object], getattr(self.store, "data"))
+        accounts = cast(dict[str, dict[str, JsonValue]], store_data["accounts"])
+        current = accounts["default"]
+        current.pop("provider", None)
+        current["legacyPublicMetadata"] = {"version": 1}
+        current["claudeOptions"] = {
+            "binaryPath": "/placeholder/claude",
+            "legacyOptionMetadata": True,
+            "customModels": [{
+                "id": "model-placeholder", "label": "Example model",
+                "legacyModelMetadata": "preserved",
+            }],
+        }
+        archived = dict(current)
+        archived.update(id="archived-fixture", deleted=True, label="Archived fixture")
+        archived["archiveExtension"] = "preserved"
+        accounts["archived-fixture"] = archived
+        request_id = str(uuid4())
+        logins = cast(dict[str, dict[str, JsonValue]], store_data["logins"])
+        logins[request_id] = {
+            "requestId": request_id,
+            "accountKey": "default",
+            "status": "ready",
+            "legacyReceiptMetadata": "preserved",
+        }
+        cast(Callable[..., None], getattr(self.store, "_save"))()
+
+        response = self.client.get("/api/accounts")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["accounts"][0]["legacyPublicMetadata"], {"version": 1})
+        self.assertTrue(body["accounts"][0]["claudeOptions"]["legacyOptionMetadata"])
+        self.assertEqual(
+            body["accounts"][0]["claudeOptions"]["customModels"][0]["legacyModelMetadata"],
+            "preserved",
+        )
+        self.assertNotIn("provider", body["accounts"][0])
+        archived_response = next(row for row in body["archivedAccounts"] if row["id"] == "archived-fixture")
+        self.assertEqual(archived_response["archiveExtension"], "preserved")
+        self.assertNotIn("provider", archived_response)
+        receipt = next(row for row in body["logins"] if row["requestId"] == request_id)
+        self.assertEqual(receipt["legacyReceiptMetadata"], "preserved")
+        self.assertNotIn("createdAt", receipt)
+
     def test_accounts_get_does_not_publish_and_mutation_retries_are_deduplicated(self) -> None:
         state_dir = cast(Path, getattr(self.store, "root")).parent
         hub = ResourceHub("account-route-workspace")
@@ -793,9 +850,12 @@ class AccountsRouterTests(unittest.TestCase):
         operation = self.app.openapi()["paths"]["/api/limits"]["get"]
         self.assertEqual({param["name"] for param in operation["parameters"]}, {"account_key", "cached"})
         self.assertIn("400", operation["responses"])
-        self.assertIn("ErrorResponse", json.dumps(operation["responses"]["400"]))
-        self.assertNotIn("content", operation["responses"]["422"])
-        self.assertNotIn("HTTPValidationError", json.dumps(operation["responses"]))
+        self.assertEqual(
+            operation["responses"]["400"]["$ref"],
+            "#/components/responses/ApiError400",
+        )
+        # A plain FastAPI test app adds its own 422 component. Production's
+        # OpenAPI document removes request-validation responses centrally.
         models_operation = self.app.openapi()["paths"]["/api/models"]["get"]
         retry_parameter = next(
             param for param in models_operation["parameters"] if param["name"] == "retry"
@@ -928,7 +988,8 @@ class AccountsRouterTests(unittest.TestCase):
             app = FastAPI()
             context = ApiContext.for_schema()
             setattr(context.canvas, "runtime", isolated.runtime)
-            app.include_router(create_router(context))
+            api_router = create_router(context)
+            app.include_router(api_router)
             project_path = isolated.root / "project"
             project_path.mkdir()
             with TestClient(app) as client:
@@ -961,9 +1022,111 @@ class AccountsRouterTests(unittest.TestCase):
                 self.assertEqual(organized.status_code, 200, organized.text)
                 self.assertEqual(organized.json()["name"], "Renamed")
                 self.assertEqual(organized.json()["organizationRevision"], 1)
+
+                environment_only_path = isolated.root / "environment-only"
+                environment_only_path.mkdir()
+                environment_only = client.post("/api/projects", json={
+                    "action": "set_worker_base", "path": str(environment_only_path),
+                    "base_ref": None, "expected_revision": 0,
+                })
+                self.assertEqual(environment_only.status_code, 200, environment_only.text)
+                self.assertEqual(environment_only.json()["id"], str(environment_only_path.resolve()))
+                self.assertNotIn("accountKey", environment_only.json())
+                Project.model_validate(environment_only.json())
+
                 removed = client.post("/api/projects", json={"action": "remove", "path": str(project_path)})
                 self.assertEqual(removed.status_code, 200, removed.text)
                 self.assertEqual(removed.json(), {"id": str(project_path.resolve()), "removed": True})
+        finally:
+            isolated.tearDown()
+
+    def test_project_routes_preserve_legacy_extensions_after_mutation(self) -> None:
+        fixture_path = Path(__file__).resolve().parents[3] / "tests" / "runtime-accounts-contract.py"
+        sys.path.insert(0, str(fixture_path.parent))
+        spec = importlib.util.spec_from_file_location("project_passthrough_fixture", fixture_path)
+        if spec is None or spec.loader is None:
+            self.fail("could not load isolated project fixture")
+        fixture = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fixture)
+        isolated = fixture.AccountContracts()
+        isolated.setUp()
+        try:
+            app = FastAPI()
+            context = ApiContext.for_schema()
+            setattr(context.canvas, "runtime", isolated.runtime)
+            api_router = create_router(context)
+            app.include_router(api_router)
+            project_path = isolated.root / "legacy-project"
+            project_path.mkdir()
+            with TestClient(app) as client:
+                registered = client.post("/api/projects", json={"path": str(project_path)})
+                self.assertEqual(registered.status_code, 200, registered.text)
+                with isolated.runtime.lock, isolated.runtime.db() as db:
+                    row = db.execute(
+                        "SELECT record FROM runtime_projects WHERE id=?",
+                        (str(project_path.resolve()),),
+                    ).fetchone()
+                    self.assertIsNotNone(row)
+                    stored = json.loads(row[0])
+                    stored.pop("accountRevision", None)
+                    stored.pop("workerBaseRevision", None)
+                    stored["legacyProjectMetadata"] = {"source": "prior-version"}
+                    stored["folders"] = [{
+                        "id": "folder-placeholder", "name": "Folder",
+                        "legacyFolderMetadata": "preserved",
+                    }]
+                    db.execute(
+                        "UPDATE runtime_projects SET record=? WHERE id=?",
+                        (json.dumps(stored), str(project_path.resolve())),
+                    )
+
+                listed = client.get("/api/projects")
+                self.assertEqual(listed.status_code, 200, listed.text)
+                self.assertEqual(
+                    listed.json()["items"][0]["legacyProjectMetadata"],
+                    {"source": "prior-version"},
+                )
+                self.assertNotIn("accountRevision", listed.json()["items"][0])
+                self.assertEqual(
+                    listed.json()["items"][0]["folders"][0]["legacyFolderMetadata"],
+                    "preserved",
+                )
+
+                changed = client.post("/api/projects", json={
+                    "action": "set_worker_base", "path": str(project_path),
+                    "base_ref": "main", "expected_revision": 0,
+                })
+                self.assertEqual(changed.status_code, 200, changed.text)
+                self.assertEqual(changed.json()["legacyProjectMetadata"], {"source": "prior-version"})
+                self.assertEqual(changed.json()["workerBaseRef"], "main")
+                self.assertNotIn("accountRevision", changed.json())
+
+                # Reproduce the previous closed response contract to record the
+                # durable-write hazard in ApiContext.send. The production model
+                # remains open; this isolated override represents the rejected DTO.
+                class ClosedProjectMutation(ProjectMutationRecord):
+                    model_config = ConfigDict(extra="forbid", strict=True)
+
+                project_routes = [
+                    route for route in api_router.routes
+                    if isinstance(route, APIRoute) and route.path == "/api/projects"
+                ]
+                self.assertTrue(project_routes, [(route.path, route.methods) for route in api_router.routes if isinstance(route, APIRoute)])
+                project_route = next(route for route in project_routes if "POST" in route.methods)
+                project_route.response_model = ClosedProjectMutation
+                mismatch = client.post("/api/projects", json={
+                    "action": "set_worker_base", "path": str(project_path),
+                    "base_ref": "next", "expected_revision": 1,
+                })
+                self.assertEqual(mismatch.status_code, 500)
+                self.assertEqual(mismatch.json(), {"error": "The server could not validate its response"})
+                with isolated.runtime.lock, isolated.runtime.db() as db:
+                    after_failed_response = json.loads(db.execute(
+                        "SELECT record FROM runtime_projects WHERE id=?",
+                        (str(project_path.resolve()),),
+                    ).fetchone()[0])
+                self.assertEqual(after_failed_response["workerBaseRef"], "next")
+                self.assertEqual(after_failed_response["workerBaseRevision"], 2)
         finally:
             isolated.tearDown()
 

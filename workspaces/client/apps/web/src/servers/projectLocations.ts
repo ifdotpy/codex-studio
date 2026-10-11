@@ -117,7 +117,8 @@ export async function saveProjectLocation(body: {
   if ("outcome" in result && result.outcome === "not_applied") {
     request.finish();
     throw new ProjectReceiptRefused(
-      result.error || "The location change was refused.",
+      (typeof result.error === "string" && result.error) ||
+        "The location change was refused.",
     );
   }
   if (!("outcome" in result) || result.outcome !== "applied")
@@ -149,7 +150,8 @@ export async function registerProject(
   if ("outcome" in result && result.outcome === "not_applied") {
     request.finish();
     throw new ProjectReceiptRefused(
-      result.error || "The project request was refused.",
+      (typeof result.error === "string" && result.error) ||
+        "The project request was refused.",
     );
   }
   if ("outcome" in result && result.outcome !== "applied")
