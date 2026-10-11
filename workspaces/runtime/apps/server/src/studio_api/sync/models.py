@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, TypedDict
+from typing import Annotated, Literal
+from typing_extensions import TypedDict
 from pydantic import ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
 from codex_records import NativeNoticeRecord, NativeSafetyBufferingRecord
