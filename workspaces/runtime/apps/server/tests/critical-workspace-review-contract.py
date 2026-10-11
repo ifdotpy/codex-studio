@@ -100,24 +100,33 @@ class WorkspaceReviewContract(unittest.TestCase):
         request = {'checkpoint_id': checkpoint['id'], 'expectedTree': preview['expectedTree']}
         server = self.runtime.connect()
         original = server.call
-        entered, release = threading.Event(), threading.Event()
+        entered, first_checkpoint, release = threading.Event(), threading.Event(), threading.Event()
         calls = []
         def gated(method, params, timeout=60):
             if method == 'thread/fork':
                 calls.append(params)
                 entered.set()
+                first_checkpoint.set()
                 release.wait()
             return original(method, params, timeout)
         with patch.object(server, 'call', gated), concurrent.futures.ThreadPoolExecutor(2) as pool:
             first = pool.submit(self.runtime.restore_checkpoint, worker['id'], request)
-            first.add_done_callback(lambda _future: entered.set())
-            entered.wait()
+            first.add_done_callback(lambda _future: first_checkpoint.set())
+            first_checkpoint.wait()
             if first.done():
                 first.result()
-            second = pool.submit(self.runtime.restore_checkpoint, worker['id'], request)
+            self.assertTrue(entered.is_set(), 'first restore did not reach the native call')
+            second_started = threading.Event()
+
+            def restore_second():
+                second_started.set()
+                return self.runtime.restore_checkpoint(worker['id'], request)
+
+            second = pool.submit(restore_second)
+            second_started.wait()
             release.set()
-            self.assertEqual(first.result(5)['status'], 'restored')
-            self.assertEqual(second.result(5)['status'], 'restored')
+            self.assertEqual(first.result()['status'], 'restored')
+            self.assertEqual(second.result()['status'], 'restored')
         self.assertEqual(len(calls), 1)
 
     def test_same_checkpoint_can_restore_a_later_edit(self):
