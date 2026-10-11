@@ -22,6 +22,8 @@ ResultKind = Literal[
     "ReturnExisting",
     "NoEffect",
     "ReceiptMissingUnknown",
+    "Persisted",
+    "NoChange",
     "Rejected",
 ]
 ReservationKind = Literal["Admitted", "ReturnExisting"]
@@ -74,3 +76,7 @@ def transition_record(
 ) -> TransitionResult: ...
 
 def reserve_tool_request(snapshot_json: str, alias_prefix: str) -> ReservationResult: ...
+
+def settle_tool_request(snapshot_json: str) -> TransitionResult: ...
+
+def missing_tool_request_outcome() -> Literal["unknown"]: ...

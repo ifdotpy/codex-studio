@@ -7,9 +7,13 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import sys
 import unittest
 from unittest.mock import patch
 import uuid
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from settlement_contract_support import settlement_outcome
 
 spec = importlib.util.spec_from_file_location('resource_fixture', Path(__file__).with_name('workspace-contract.py'))
 f = importlib.util.module_from_spec(spec)
@@ -60,13 +64,12 @@ class ResourceReceiptContract(unittest.TestCase):
                 self.assertEqual(board.read_text(), original)
 
     def test_removed_resource_result_preserves_uncertainty(self):
-        from codex_tool_requests import request_result_outcome
         record = {'tool': 'orchestration_resource'}
         for message in ('Unknown orchestration tool', 'write failed'):
             result = {'success': False, 'contentItems': [{'type': 'inputText', 'text': message}]}
-            self.assertEqual(request_result_outcome(record, result), 'unknown')
-        self.assertEqual(request_result_outcome(record, {'success': True}), 'applied')
-        self.assertEqual(request_result_outcome(record, {}), 'unknown')
+            self.assertEqual(settlement_outcome(record['tool'], result), 'unknown')
+        self.assertEqual(settlement_outcome(record['tool'], {'success': True}), 'applied')
+        self.assertEqual(settlement_outcome(record['tool'], {}), 'unknown')
 
     def test_status_exposes_actual_limits_and_block_reasons(self):
         lead = self.lead()

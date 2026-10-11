@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -18,7 +19,7 @@ spec = importlib.util.spec_from_file_location('task_review_fixture',
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
 from codex_runtime import TOOLS
-from codex_tool_requests import request_result_outcome
+from settlement_contract_support import settlement_outcome
 
 
 class ReviewResult(unittest.TestCase):
@@ -57,9 +58,9 @@ class ReviewResult(unittest.TestCase):
         for error in ('Supply a review decision with 1 to 32000 characters',
                       'Supply result with 1 to 32000 characters for accept or reject'):
             result = {'success': False, 'contentItems': [{'type': 'inputText', 'text': error}]}
-            self.assertEqual(request_result_outcome({'tool': 'orchestration_task'}, result), 'not_applied')
+            self.assertEqual(settlement_outcome('orchestration_task', result), 'not_applied')
             result['contentItems'][0]['text'] += ' after write'
-            self.assertEqual(request_result_outcome({'tool': 'orchestration_task'}, result), 'unknown')
+            self.assertEqual(settlement_outcome('orchestration_task', result), 'unknown')
 
     def test_tool_schema_explains_result_for_both_review_actions(self):
         tool = next(item for item in TOOLS if item['name'] == 'orchestration_task')

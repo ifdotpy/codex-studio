@@ -2,7 +2,7 @@
 
 use crate::{
     AttemptIdentity, ContentFingerprint, DecisionKind, Event, EventId, EventKind,
-    OperationIdentity, State, StateRevision, TransitionError, transition,
+    OperationIdentity, RequestId, State, StateRevision, TransitionError, transition,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -58,27 +58,31 @@ impl ReservationInput {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct ReservationSnapshot {
+pub struct RequestSnapshot {
     pub existing: Option<State>,
 }
 
+pub type ReservationSnapshot = RequestSnapshot;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum ReservationWriteIntent {
-    ReserveRequest { state: Box<State> },
+pub enum RequestWriteIntent {
+    SaveRequest { state: Box<State> },
     InsertAlias(RequestAlias),
 }
+
+pub type ReservationWriteIntent = RequestWriteIntent;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ReservationDecision {
     Admitted {
         state: State,
-        intents: Vec<ReservationWriteIntent>,
+        intents: Vec<RequestWriteIntent>,
     },
     ReturnExisting {
         state: State,
-        intents: Vec<ReservationWriteIntent>,
+        intents: Vec<RequestWriteIntent>,
     },
     Rejected {
         state: State,
@@ -88,21 +92,20 @@ pub enum ReservationDecision {
 
 /// The storage owner loads one command snapshot and atomically applies its
 /// typed intents. Python currently implements this boundary over Runtime.db().
-pub trait ReservationStore {
+pub trait RequestStore {
     type Error;
 
-    fn load_snapshot(
-        &mut self,
-        input: &ReservationInput,
-    ) -> Result<ReservationSnapshot, Self::Error>;
+    fn load_snapshot(&mut self, request_id: &RequestId) -> Result<RequestSnapshot, Self::Error>;
 
-    fn apply_intents(&mut self, intents: &[ReservationWriteIntent]) -> Result<(), Self::Error>;
+    fn apply_intents(&mut self, intents: &[RequestWriteIntent]) -> Result<(), Self::Error>;
 }
+
+pub use RequestStore as ReservationStore;
 
 /// Decide admission without reading storage, observing time, or performing I/O.
 #[must_use]
 pub fn decide_reservation(
-    snapshot: &ReservationSnapshot,
+    snapshot: &RequestSnapshot,
     input: &ReservationInput,
 ) -> ReservationDecision {
     let Some(state) = snapshot.existing.as_ref() else {
@@ -129,7 +132,7 @@ pub fn decide_reservation(
             intents: input
                 .aliases()
                 .into_iter()
-                .map(ReservationWriteIntent::InsertAlias)
+                .map(RequestWriteIntent::InsertAlias)
                 .collect(),
         },
         DecisionKind::Rejected(error) => ReservationDecision::Rejected {
@@ -158,14 +161,14 @@ fn decide_new_reservation(state: &State, input: &ReservationInput) -> Reservatio
     let decision = transition(state, &event);
     match decision.kind {
         DecisionKind::Transitioned => {
-            let mut intents = vec![ReservationWriteIntent::ReserveRequest {
+            let mut intents = vec![RequestWriteIntent::SaveRequest {
                 state: Box::new(decision.next_state.clone()),
             }];
             intents.extend(
                 input
                     .aliases()
                     .into_iter()
-                    .map(ReservationWriteIntent::InsertAlias),
+                    .map(RequestWriteIntent::InsertAlias),
             );
             ReservationDecision::Admitted {
                 state: decision.next_state,
@@ -186,11 +189,11 @@ fn decide_new_reservation(state: &State, input: &ReservationInput) -> Reservatio
 }
 
 /// Exercise the same load/decide/apply boundary with any store implementation.
-pub fn reserve_in_store<S: ReservationStore>(
+pub fn reserve_in_store<S: RequestStore>(
     store: &mut S,
     input: &ReservationInput,
 ) -> Result<ReservationDecision, S::Error> {
-    let snapshot = store.load_snapshot(input)?;
+    let snapshot = store.load_snapshot(&input.identity.request_id)?;
     let decision = decide_reservation(&snapshot, input);
     let intents = match &decision {
         ReservationDecision::Admitted { intents, .. }

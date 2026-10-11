@@ -30,9 +30,8 @@ impl ReservationStore for MemoryStore {
 
     fn load_snapshot(
         &mut self,
-        input: &ReservationInput,
+        request_id: &RequestId,
     ) -> Result<ReservationSnapshot, Self::Error> {
-        let request_id = &input.identity.request_id;
         Ok(ReservationSnapshot {
             existing: self.requests.get(request_id).cloned(),
         })
@@ -45,7 +44,7 @@ impl ReservationStore for MemoryStore {
         }
         for intent in intents {
             match intent {
-                ReservationWriteIntent::ReserveRequest { state } => {
+                ReservationWriteIntent::SaveRequest { state } => {
                     let Some(operation) = state.operation.as_ref() else {
                         return Err(StoreFailure);
                     };
@@ -134,7 +133,7 @@ fn new_request_emits_one_row_and_all_alias_intents() {
     );
     assert!(matches!(
         intents.first(),
-        Some(ReservationWriteIntent::ReserveRequest { .. })
+        Some(ReservationWriteIntent::SaveRequest { .. })
     ));
     assert_eq!(intents.len(), 4);
 }

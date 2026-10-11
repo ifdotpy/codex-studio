@@ -5,10 +5,16 @@
 //! [`Decision::next_state`] and its [`EffectIntent`] values.
 
 mod reservation;
+mod settlement;
 
 pub use reservation::{
-    RequestAlias, ReservationDecision, ReservationInput, ReservationSnapshot, ReservationStore,
-    ReservationWriteIntent, decide_reservation, reserve_in_store,
+    RequestAlias, RequestSnapshot, RequestStore, RequestWriteIntent, ReservationDecision,
+    ReservationInput, ReservationSnapshot, ReservationStore, ReservationWriteIntent,
+    decide_reservation, reserve_in_store,
+};
+pub use settlement::{
+    RequestTool, ResultEvidence, SettlementDecision, SettlementInput, SettlementKind,
+    decide_settlement, missing_receipt_outcome, settle_in_store,
 };
 
 use std::fmt;

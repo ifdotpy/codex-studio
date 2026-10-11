@@ -14,6 +14,17 @@ where
     catch_unwind(AssertUnwindSafe(operation)).map_err(|_| ())
 }
 
+fn invoke<T, F>(panic_message: &'static str, operation: F) -> PyResult<T>
+where
+    F: FnOnce() -> Result<T, String>,
+{
+    match catch_panic(operation) {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(message)) => Err(PyValueError::new_err(message)),
+        Err(()) => Err(PyRuntimeError::new_err(panic_message)),
+    }
+}
+
 #[pyclass(module = "studio_operations_native")]
 pub struct TransitionResult {
     #[pyo3(get)]
@@ -79,28 +90,31 @@ fn transition_record(
     empty: bool,
     generation: Option<u64>,
 ) -> PyResult<TransitionResult> {
-    let result = catch_panic(|| {
+    invoke("Rust operation transition panicked", || {
         record_adapter::transition_record(record_json, event, fingerprint, proof, empty, generation)
-    });
-    match result {
-        Ok(Ok(result)) => Ok(result.into()),
-        Ok(Err(message)) => Err(PyValueError::new_err(message)),
-        Err(()) => Err(PyRuntimeError::new_err(
-            "Rust operation transition panicked",
-        )),
-    }
+    })
+    .map(Into::into)
 }
 
 #[pyfunction]
 fn reserve_tool_request(snapshot_json: &str, alias_prefix: &str) -> PyResult<ReservationResult> {
-    let result = catch_panic(|| record_adapter::reserve_tool_request(snapshot_json, alias_prefix));
-    match result {
-        Ok(Ok(result)) => Ok(result.into()),
-        Ok(Err(message)) => Err(PyValueError::new_err(message)),
-        Err(()) => Err(PyRuntimeError::new_err(
-            "Rust tool request reservation panicked",
-        )),
-    }
+    invoke("Rust tool request reservation panicked", || {
+        record_adapter::reserve_tool_request(snapshot_json, alias_prefix)
+    })
+    .map(Into::into)
+}
+
+#[pyfunction]
+fn settle_tool_request(snapshot_json: &str) -> PyResult<TransitionResult> {
+    invoke("Rust tool request settlement panicked", || {
+        record_adapter::settle_tool_request(snapshot_json)
+    })
+    .map(Into::into)
+}
+
+#[pyfunction]
+fn missing_tool_request_outcome() -> &'static str {
+    record_adapter::missing_tool_request_outcome()
 }
 
 #[pymodule]
@@ -116,6 +130,8 @@ fn studio_operations_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<ReservationResult>()?;
     module.add_function(wrap_pyfunction!(transition_record, module)?)?;
     module.add_function(wrap_pyfunction!(reserve_tool_request, module)?)?;
+    module.add_function(wrap_pyfunction!(settle_tool_request, module)?)?;
+    module.add_function(wrap_pyfunction!(missing_tool_request_outcome, module)?)?;
     Ok(())
 }
 

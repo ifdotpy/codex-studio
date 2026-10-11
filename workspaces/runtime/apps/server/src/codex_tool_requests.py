@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import math
+import sqlite3
 import time
 import uuid
 from typing import Any, TYPE_CHECKING, Protocol
@@ -17,6 +18,7 @@ _LIFECYCLE_FIELDS = (
     "threadId", "agent", "epoch", "supervisor", "readOnly",
 )
 _RESERVATION_FIELDS = (*_LIFECYCLE_FIELDS, "signature", "request_id")
+_SETTLEMENT_FIELDS = (*_LIFECYCLE_FIELDS, "tool")
 
 if TYPE_CHECKING:
     import sqlite3
@@ -110,38 +112,7 @@ def _apply_decision(record: "ToolRequestRecord", decision: "TransitionResult") -
     return True
 
 
-def _missing_receipt_outcome(request_id: str) -> str:
-    decision = _lifecycle({"id": request_id, "callId": request_id}, "ReceiptMissing", empty=True)
-    if decision.kind == "ReceiptMissingUnknown":
-        return "unknown"
-    _require_decision(decision)
-    raise RuntimeError("Rust returned an invalid missing-receipt decision")
-
-
 _READ_TOOLS = {"orchestration_read", "orchestration_peers", "orchestration_search", "orchestration_chat_read"}
-# These exact failures originate before mutation in model_page/model_work,
-# work_action, model_read, and chat_message. Transport errors are excluded.
-_WORK_REJECTIONS = {
-    "limit must be 1 to 50", "List changed or cursor is invalid. Read the first page again.",
-    "Unknown task in this team", "Unknown work item", "This work item changed. Reload before editing",
-    "Only the lead can create work", "Only the lead can change work assignments",
-    "Only the assigned worker can submit its result", "Only the lead can accept or reject a result",
-    "This result is already accepted", "Submit a result before review", "This work item is not ready",
-    "Supply up to 50 file paths",
-    "Another agent owns this work item", "Dependencies have not been accepted", "Unknown managed agent",
-    "The file is outside this agent workspace", "Supply a source revision with 1 to 200 characters",
-    "Supply a result with 1 to 32000 characters", "Supply test evidence with 1 to 32000 characters",
-    "Work under review cannot be reassigned; reject its result before editing",
-    "Review or accepted work cannot be reassigned; reject a result before editing",
-}
-_MESSAGE_REJECTIONS = {
-    "A no-issue result requires the exact active review event and target",
-    "Versioned progress requires a progress_key and nonnegative integer progress_version",
-    "Unknown message importance", "Message must have 1 to 12000 characters", "Select another agent",
-    "Unknown managed agent",
-    "Recipient conversation was deleted",
-    "Only the lead can contact the user. Send your message to your lead.",
-}
 
 
 def request_read_only(tool: str, args: "JsonObject") -> bool:
@@ -150,50 +121,6 @@ def request_read_only(tool: str, args: "JsonObject") -> bool:
     return (tool in _READ_TOOLS
             or tool == "orchestration_task" and args.get("action", "list") in {"list", "get", "read", "history"}
             or tool == "orchestration_request" and args.get("action", "list") in {"list", "get"})
-
-
-def request_result_outcome(record: "ToolRequestRecord", result: "JsonObject") -> str:
-    if result.get("success") is True:
-        if record.get('tool') == 'orchestration_servers':
-            try:
-                paired = json.loads(result['contentItems'][0]['text'])
-            except (KeyError, IndexError, TypeError, ValueError):
-                paired = None
-            if isinstance(paired, dict) and paired.get('outcome') in {'applied', 'not_applied', 'unknown'}:
-                return str(paired['outcome'])
-        return "applied"
-    if result.get("success") is not False:
-        return "unknown"
-    tool = record.get("tool")
-    if record.get("readOnly") is True or tool in _READ_TOOLS:
-        return "not_applied"
-    texts = [item.get("text") for item in result.get("contentItems", [])
-             if isinstance(item, dict) and item.get("type") == "inputText"]
-    error = texts[0] if texts and isinstance(texts[0], str) else None
-    if tool == "orchestration_user_task" and error == "User tasks were removed. Send a message with orchestration_message target=user.":
-        return "not_applied"
-    if tool == "orchestration_task" and error in _WORK_REJECTIONS:
-        return "not_applied"
-    if tool == "orchestration_message" and error in _MESSAGE_REJECTIONS:
-        return "not_applied"
-    # Exact pre-write guards. A matching committed operation receipt later
-    # makes an inferred rejection unknown rather than not-applied.
-    rejections = {
-        "orchestration_task": {"Supply a review decision with 1 to 32000 characters",
-                               "Supply result with 1 to 32000 characters for accept or reject"},
-        "orchestration_message": {"This record belongs to another team"},
-        "orchestration_agent_manage": {"You can manage only your own descendant workers", "Unknown managed agent"},
-        "orchestration_monitor": {"Command timeout must be 1 second to 24 hours", "Supply a command with 1 to 12000 characters",
-                                  "success_exit_codes must list 1 to 16 exit codes from 0 to 255"},
-        "orchestration_monitor_input": {"This interactive monitor is not active"},
-        "orchestration_watch": {"The file is outside this agent workspace", "Choose a date within the next year", "Interval must be 10 seconds to one year"},
-        "orchestration_context": {"Unknown monitor in this team", "Unknown context topic"},
-    }
-    if error in rejections.get(tool, set()):
-        return "not_applied"
-    if tool == "orchestration_title" and error == "Only a lead can set a title of 1 to 80 characters":
-        return "not_applied"
-    return "unknown"
 
 
 def _cancel_result(record: "ToolRequestRecord", message: str) -> "JsonObject":
@@ -227,13 +154,21 @@ def _spawned_ids(result: "JsonObject") -> list[str]:
 
 def operation_receipt_evidence(db: "sqlite3.Connection", key: str) -> "JsonObject | None":
     """Read committed operation evidence without asserting tool completion."""
-    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_operation_receipts'").fetchone():
-        return None
-    row = db.execute("SELECT result FROM runtime_operation_receipts WHERE id=?", (key,)).fetchone()
-    if row is None:
+    result = _operation_receipt_result(db, key)
+    if result is None:
         return None
     return {"evidenceSource": "operation_receipt", "operationApplied": True,
-            "operationResult": json.loads(row[0])}
+            "operationResult": json.loads(result)}
+
+
+def _operation_receipt_result(db: "sqlite3.Connection", key: str) -> str | None:
+    try:
+        row = db.execute("SELECT result FROM runtime_operation_receipts WHERE id=?", (key,)).fetchone()
+    except sqlite3.OperationalError as error:
+        if "no such table: runtime_operation_receipts" not in str(error):
+            raise
+        return None
+    return row[0] if row else None
 
 
 class RequestLock(Protocol):
@@ -517,33 +452,22 @@ class RequestMixin:
                 raise ValueError("This request receipt changed while reading its result")
         if record is None:
             raise ValueError("Unknown tool request")
-        inferred_outcome = outcome is None
-        if inferred_outcome:
-            outcome = request_result_outcome(record, result)
-        event_kind: "EventName"
-        proof_kind: "ProofName | None" = None
-        # Preserve the old uncertainty rule for inferred rejections; explicitly
-        # supplied outcomes retain their existing caller semantics.
-        committed = (operation_receipt_evidence(db, key)
-                     if inferred_outcome and outcome == "not_applied" else None)
-        if outcome == "applied":
-            event_kind = "AppliedResponse"
-        elif committed:
-            event_kind = "CommittedOperationReceipt"
-        elif proof == "ReviewChildAbsent":
-            event_kind, proof_kind = "DefinitiveRejection", "ReviewChildAbsent"
-        elif outcome == "not_applied":
-            proof_kind = "ReadOnlyRejection" if record.get("readOnly") is True else "ExactPreWriteRejection"
-            event_kind = "DefinitiveRejection"
-        else:
-            event_kind = "Failure"
-        decision = _lifecycle(record, event_kind, proof=proof_kind)
-        _require_decision(decision)
-        changed = _apply_decision(record, decision)
-        if not changed and not (
-            record.get("outcome") == "unknown" and record.get("result") != result
-        ):
+        decision = native.settle_tool_request(json.dumps({
+            "record": _record_projection(record, _SETTLEMENT_FIELDS),
+            "fingerprint": list(_content_fingerprint(
+                record.get("signature") or "", record.get("agent") or "")),
+            "result": result,
+            "result_changed": record.get("result") != result,
+            "outcome": outcome,
+            "proof": proof,
+            "operation_receipt_result": _operation_receipt_result(db, key),
+        }, ensure_ascii=False))
+        if decision.kind == "NoChange":
             return record
+        if decision.stage is None or decision.outcome is None or decision.cancel_requested is None:
+            raise RuntimeError("Rust settlement decision omitted persisted request fields")
+        record.update(stage=decision.stage, outcome=decision.outcome,
+                      cancelRequested=decision.cancel_requested)
         now = time.time()
         record.update(result=result, updated=now, finished=record.get("finished", now))
         record.setdefault("timing", {})["handlerEndedAt"] = time.monotonic_ns()
@@ -688,7 +612,7 @@ class RequestMixin:
                         from codex_session_tools import session_tool_name
                         return {'id': request_id, 'stage': 'complete', 'outcome': 'applied',
                                 'tool': session_tool_name(actor), 'operationResult': move['acceptance'], 'move': move}
-                outcome = _missing_receipt_outcome(request_id)
+                outcome = native.missing_tool_request_outcome()
                 return {"id": request_id, "stage": "not_found", "outcome": outcome,
                         "message": "No receipt found. This does not prove that the operation did not execute."}
             record = self._refresh_tool_request(db, record)
