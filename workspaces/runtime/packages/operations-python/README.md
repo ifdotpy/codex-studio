@@ -4,7 +4,7 @@
 
 - **Responsibility:** Minimal in-process Python binding for `studio-operations`.
 - **Public interface:** `studio_operations_native.transition_record(record_json,
-event, ...) -> TransitionResult` and integer `PROTOCOL_VERSION`.
+event, ...) -> TransitionResult` and `PROTOCOL_VERSION` (currently 2).
 - **Boundaries:** The binding deserializes a typed persisted-record view, adapts
   it to the pure Rust lifecycle core, and returns typed persistence fields. It
   performs no I/O, subprocess work, or fallback.
@@ -13,8 +13,9 @@ event, ...) -> TransitionResult` and integer `PROTOCOL_VERSION`.
 - **Configuration owner:** The root Cargo workspace owns PyO3 and native build
   configuration. `install-cli.py` copies an already built platform library to
   the managed Python environment; it never builds implicitly.
-- **Focused check:** `cargo nextest run -p studio-operations-python --locked` and `cargo build --release -p studio-operations-python`; Python
-  contract replay runs in the `server` suite after `install-cli.py` installs it.
+- **Focused check:** `cargo nextest run -p studio-operations-python --locked` and
+  `cargo build --release -p studio-operations-python`; Python contract replay
+  runs in the `server` suite after `install-cli.py` installs the built module.
 
 Python passes the stored request record as JSON while event and proof names use
 closed type-stub literals. Rust owns the persisted-record conversion, lifecycle

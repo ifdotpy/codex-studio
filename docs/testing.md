@@ -103,13 +103,27 @@ suite list is owned by the server runner, not the workflow. Load-class suites
 remain opt-in for manual runs and are never included in automation. Do not use
 `--include expensive` in automation because that class also contains load,
 scale, latency, and contention suites.
-The backend requires the native lifecycle module. Build and install it into the
-managed Python environment with this one setup command before server tests or
-backend startup; installation copies the built library and never builds it:
+The backend requires the native lifecycle module. Build the module, then install
+it before server tests or backend startup. For test runs, keep both the managed
+Python cache and command-bin directory in a dedicated temporary root; never
+install into a cache or bin directory used by a live backend:
 
 ```sh
-cargo build --release -p studio-operations-python && python3 workspaces/runtime/apps/server/src/install-cli.py
+test_install_root="$(mktemp -d /var/tmp/codex-studio-test-install.XXXXXX)"
+export XDG_CACHE_HOME="$test_install_root/cache"
+test_bin_dir="$test_install_root/bin"
+mkdir -p "$XDG_CACHE_HOME" "$test_bin_dir"
+cargo build --release -p studio-operations-python
+python3 workspaces/runtime/apps/server/src/install-cli.py --dev --bin-dir "$test_bin_dir"
+test_python="$(python3 workspaces/runtime/apps/server/src/codex_python.py)"
+"$test_python" -c "import sys; print(sys.prefix)"
 ```
+
+Use `--dev` when the checks need the isolated development and mypy environment;
+omit it when only the runtime environment is needed. The installer copies the
+built library and never builds it implicitly. Check that the printed interpreter
+prefix is under the isolated temporary root. Both the cache and command-bin
+directory must be isolated from any live backend.
 
 The Python server runner samples runnable processes for five seconds and uses
 their median. CPU jobs are `max(ceil(allowed CPUs / 4), allowed CPUs - competing
@@ -287,18 +301,20 @@ stay under the runner temporary directory. The facade job downloads the Just
 1.58.0 Linux release, checks its pinned SHA-256, and checks the reported
 version before invoking it.
 
-The CI gate deliberately excludes these checks until their stated issue work
-provides a green, bounded path:
+Current hosted checks run on pull requests and pushes to `main`. The server
+runner owns one `AUTOMATED_SUITES` list: 26 audited offline suites run either in
+the default server run or in the hosted CI step. Load-class suites are never
+part of automation. The hosted step was restored after its timing-sensitive
+suites were made deterministic in PR #80.
 
 - `pnpm run lint:all` and `pnpm run format:check:all` currently exit 1 on
   `main` because of existing findings. M-03.5 will add conservative affected
   checks; changed-file lint and formatting can then be introduced without
   making unrelated baseline findings block a pull request.
-- The full Python server suite has 15 failing suites on `main` and requires
-  provider binaries. M-03.1 will add independent package-level test selection
-  before this full suite is reconsidered for the gate.
-- The browser suite exceeds its 15-minute limit on `main`. M-03.6 will add
-  measured timing for representative checks before its CI runtime is selected.
+- The full server run currently includes the audited default suites; provider-
+  dependent and load-class suites remain outside automation.
+- M-03.6 is complete: representative cold and warm timings are recorded in
+  [the 2026-10-11 timing report](verification/2026-10-11-check-timings.md).
 - Desktop tests that require Electron and a display remain outside this
   headless Linux gate; M-02.5 tracks the remaining desktop verification.
 - macOS and Windows are not CI targets in this workflow. M-09.1 owns the
