@@ -790,14 +790,19 @@ class RuntimeContract(unittest.TestCase):
                 with self.runtime.db() as db:
                     db.execute('INSERT INTO runtime_completed_turns VALUES (?)', ('fixture-rollback',))
                     db.execute('INSERT INTO runtime_completed_turns VALUES (?)', ('fixture-rollback',))
+            with self.assertRaises(sqlite3.ProgrammingError):
+                cached.execute('SELECT 1')
             with self.runtime.db() as db:
-                self.assertIs(db, cached)
+                self.assertIsNot(db, cached)
                 self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_completed_turns WHERE id=?',
                                             ('fixture-rollback',)).fetchone()[0], 0)
         finally:
-            self.runtime._callback_db.reuse = False
-            del self.runtime._callback_db.connection
-            cached.close()
+            local = self.runtime._callback_db
+            local.reuse = False
+            connection = getattr(local, 'connection', None)
+            if connection is not None:
+                del local.connection
+                connection.close()
 
     def test_runtime_db_attaches_analytics_only_when_requested(self):
         from unittest.mock import patch

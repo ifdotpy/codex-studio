@@ -125,6 +125,7 @@ def connect_agent(runtime, agent):
                      lambda: runtime.disconnected(account_key, connection))
         server = AppServer(root, *callbacks, provider=provider,
             provider_options=account if provider == 'claude' else None,
+            notification_dispatcher_closed=getattr(runtime, 'close_notification_database', None),
             supervisor_handle=handle, process_factory=process_factory,
             supervisor_commit=lambda message, sequence: runtime.commit_supervisor_event(
                 handle, message, sequence, account_key, connection),

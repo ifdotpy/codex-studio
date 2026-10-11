@@ -443,7 +443,7 @@ class AppServer:
     CLOCK_QUEUE_LIMIT = 128
     TOOL_REQUEST_QUEUE_LIMIT = 1024
 
-    def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None, executable=None, supervisor_handle=None, supervisor_root=None, supervisor_expected=None, supervisor_commit=None, supervisor_event_applied=None, supervisor_reattached=None, supervisor_monitor_bindings=None, supervisor_monitor_result=None, process_factory=None):
+    def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None, executable=None, supervisor_handle=None, supervisor_root=None, supervisor_expected=None, supervisor_commit=None, supervisor_event_applied=None, supervisor_reattached=None, supervisor_monitor_bindings=None, supervisor_monitor_result=None, notification_dispatcher_closed=None, process_factory=None):
         import queue
         self.supervisor_mode = process_factory is not None or os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") == "1"
         recovery_config = next(
@@ -464,6 +464,7 @@ class AppServer:
                 "AppServers were not started; restart through the supervisor recovery service."
             )
         self.notification, self.request, self.died = notification, request, died
+        self.notification_dispatcher_closed = notification_dispatcher_closed
         from codex_provider_transcript import TranscriptCapture
         self.transcript_capture = TranscriptCapture(provider)
         self.supervisor_commit = supervisor_commit
@@ -1369,8 +1370,13 @@ class AppServer:
             if not self.closed:
                 self.died()
         finally:
-            self.dispatcher_done.set()
-            self.close_log_if_idle()
+            try:
+                close_dispatcher = getattr(self, "notification_dispatcher_closed", None)
+                if close_dispatcher is not None:
+                    close_dispatcher()
+            finally:
+                self.dispatcher_done.set()
+                self.close_log_if_idle()
 
     def read(self):
         try:
@@ -2165,6 +2171,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         db.rollback = rollback_analytics
         previous_timeout = None
         previous_resource_db = getattr(local, "resource_db", None)
+        failed = False
+        body_failed = False
+        cleanup_error = None
         try:
             local.resource_db = db
             if busy_timeout is not None:
@@ -2188,6 +2197,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 except Exception:
                     self.changed.set()
         except BaseException:
+            failed = True
+            body_failed = True
             pending.pop(db, None)
             analytics.pop(db, None)
             resource_changes.pop(db, None)
@@ -2205,12 +2216,21 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             from codex_payloads import release_db_writer_lock
             release_db_writer_lock(db)
             if previous_timeout is not None:
-                db.execute("PRAGMA busy_timeout=" + str(previous_timeout))
+                try:
+                    db.execute("PRAGMA busy_timeout=" + str(previous_timeout))
+                except BaseException as error:
+                    cleanup_error = error
+                    failed = True
             if reusable:
+                if failed:
+                    local.connection = None
+                    db.close()
                 local.depth = 0
             else:
                 db.close()
             local.resource_db = previous_resource_db
+            if cleanup_error is not None and not body_failed:
+                raise cleanup_error
 
     def _stage_resource_change(self, db, resource: ResourceRef) -> None:
         """Associate a typed invalidation with the transaction that made it visible."""
@@ -2600,6 +2620,23 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     raise
             time.sleep(min(delay, max(0, deadline - time.monotonic())))
             delay = min(.5, delay * 2)
+
+    def close_notification_database(self):
+        """Close the dispatcher-owned reused connection on its owner thread."""
+        local = self.__dict__.get("_callback_db")
+        if local is None:
+            return
+        connection = getattr(local, "connection", None)
+        try:
+            if connection is not None:
+                try:
+                    sqlite_assert_clean(connection, "Runtime.notification dispatcher close")
+                finally:
+                    connection.close()
+        finally:
+            local.connection = None
+            local.depth = 0
+            local.reuse = False
 
     @contextmanager
     def read_db(self):
@@ -3671,7 +3708,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                                   supervisor_monitor_bindings=lambda proxy: self.supervisor_monitor_bindings(
                                                       account_key, connection_id, proxy),
                                                   supervisor_monitor_result=lambda binding, future: self.supervisor_monitor_result(
-                                                      account_key, connection_id, binding, future))
+                                                      account_key, connection_id, binding, future),
+                                                  notification_dispatcher_closed=getattr(
+                                                      self, "close_notification_database", None))
                             if selected:
                                 server.native_binary = selected
                         else:
