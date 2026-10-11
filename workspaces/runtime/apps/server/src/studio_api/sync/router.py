@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import anyio
 import json
+import logging
 import sqlite3
 from collections.abc import AsyncIterator, Sequence
 from typing import TYPE_CHECKING, Any, ContextManager, NotRequired, Protocol, TypedDict, cast
@@ -77,6 +78,7 @@ SYNC_WRITE_RESPONSES = {
     ),
 }
 SYNC_STREAM_ERRORS = error_responses((400, 403, 426, 500, 503))
+_LOGGER = logging.getLogger(__name__)
 
 
 class SyncPullProjection(TypedDict):
@@ -364,6 +366,9 @@ def create_router(context: ApiContext) -> APIRouter:
                     if isinstance(resource.root, PanelResource)
                 )
                 if panel_agent_ids and runtime is None:
+                    _LOGGER.error(
+                        "Sync resource stream unavailable: panel resources requested without a runtime"
+                    )
                     return cast(StreamingResponse, context.send(
                         request, {"error": "Resource stream is unavailable; reconnect to retry."}, status=503
                     ))
@@ -380,6 +385,10 @@ def create_router(context: ApiContext) -> APIRouter:
                         progress_agent_ids=active_panel_agents,
                     )
             except (OSError, RuntimeError, ValueError):
+                _LOGGER.exception(
+                    "Sync resource stream unavailable while resolving panel activity "
+                    "or subscribing to the resource hub"
+                )
                 return cast(StreamingResponse, context.send(
                     request, {"error": "Resource stream is unavailable; reconnect to retry."}, status=503
                 ))
