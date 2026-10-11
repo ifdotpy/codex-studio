@@ -236,6 +236,41 @@ class ServerSuiteRunner(unittest.TestCase):
                         and f"{RUNNER.TESTS_REL}/fixtures/" not in relative):
                     self.assertIn(relative, paths, f"AST unittest suite omitted: {relative}")
 
+    def test_exact_path_selection_does_not_walk_or_inventory_the_suite_tree(self):
+        relative = f"{RUNNER.TESTS_REL}/turn-item-links-contract.py"
+        with (
+            mock.patch.object(RUNNER, "inventory", side_effect=AssertionError("full inventory")),
+            mock.patch.object(RUNNER.os, "walk", side_effect=AssertionError("suite tree walk")),
+        ):
+            self.assertEqual(RUNNER.select_entries(relative), [(relative, "safe")])
+            runner_test = f"{RUNNER.TESTS_REL}/server/test_run.py"
+            self.assertEqual(RUNNER.select_entries(runner_test), [(runner_test, "component")])
+
+    def test_basename_selection_classifies_only_matching_suite_files(self):
+        relative = f"{RUNNER.SOURCE_REL}/test_codex_python.py"
+        with mock.patch.object(RUNNER, "inventory", side_effect=AssertionError("full inventory")):
+            self.assertEqual(RUNNER.select_entries("test_codex_python"), [(relative, "component")])
+
+    def test_exact_path_normalization_preserves_opt_in_categories(self):
+        relative = f"{RUNNER.TESTS_REL}/peer-conversion-scale-contract.py"
+        traversal = f"{RUNNER.TESTS_REL}/../tests/peer-conversion-scale-contract.py"
+        entries = RUNNER.select_entries(traversal)
+        self.assertEqual(entries, [(relative, "expensive")])
+        runnable, skipped = RUNNER._runnable_entries(entries, set())
+        self.assertFalse(runnable)
+        self.assertEqual(skipped, entries)
+
+    def test_explicit_and_legacy_suites_keep_registered_categories(self):
+        for name in RUNNER.EXPLICIT_SUITES:
+            with self.subTest(name=name):
+                relative = f"{RUNNER.TESTS_REL}/{name}"
+                self.assertEqual(RUNNER.select_entries(relative), [(relative, RUNNER.category(ROOT / relative))])
+
+        relative = f"{RUNNER.SOURCE_REL}/studio_api/benchmarks/runtime_load/test_http_outcomes.mjs"
+        self.assertEqual(RUNNER.select_entries(relative), [(relative, "expensive")])
+        self.assertEqual(RUNNER.only_category(RUNNER.select_entries("test_http_outcomes"), "expensive"),
+                         [(relative, "expensive")])
+
     def test_discovers_colocated_fastapi_component_tests_recursively(self):
         component_root = RUNNER.STUDIO_API_COMPONENT_ROOT
         paths = dict(RUNNER.inventory())

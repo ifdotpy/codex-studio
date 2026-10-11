@@ -203,13 +203,7 @@ export function discover(root = rootFrom()) {
       });
     }
   }
-  const serverDir = "workspaces/runtime/apps/server";
-  packages.set("server", {
-    name: "server",
-    ecosystem: "server",
-    dir: serverDir,
-    manifest: null,
-  });
+  packages.set("server", serverPackage());
   return [...packages.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -248,7 +242,17 @@ function assertPinnedCargoToolchain(root) {
     );
 }
 
+function serverPackage() {
+  return {
+    name: "server",
+    ecosystem: "server",
+    dir: "workspaces/runtime/apps/server",
+    manifest: null,
+  };
+}
+
 function target(root, pkg) {
+  if (pkg === "server") return packageTarget([serverPackage()], pkg);
   return packageTarget(discover(root), pkg);
 }
 
