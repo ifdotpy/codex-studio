@@ -16,6 +16,7 @@ _LIFECYCLE_FIELDS = (
     "stage", "outcome", "cancelRequested", "id", "callId", "accountKey",
     "threadId", "agent", "epoch", "supervisor", "readOnly",
 )
+_RESERVATION_FIELDS = (*_LIFECYCLE_FIELDS, "signature", "request_id")
 
 if TYPE_CHECKING:
     import sqlite3
@@ -60,6 +61,13 @@ def _content_fingerprint(signature: str, agent: str) -> bytes:
     ).encode()).digest()
 
 
+def _record_projection(
+    record: "ToolRequestRecord",
+    fields: tuple[str, ...],
+) -> dict[str, Any]:
+    return {field: record[field] for field in fields if field in record}
+
+
 def _lifecycle(
     record: "ToolRequestRecord",
     event: "EventName",
@@ -67,30 +75,19 @@ def _lifecycle(
     proof: "ProofName | None" = None,
     empty: bool = False,
     generation: int | None = None,
-    admission_signature: str | None = None,
-    admission_agent: str | None = None,
 ) -> "TransitionResult":
     signature = record.get("signature", "")
     agent = record.get("agent", "")
     signature = "" if signature is None else signature
     agent = "" if agent is None else agent
     fingerprint = _content_fingerprint(signature, agent)
-    admission_fingerprint = (
-        _content_fingerprint(
-            admission_signature if admission_signature is not None else signature,
-            admission_agent if admission_agent is not None else agent,
-        )
-        if admission_signature is not None or admission_agent is not None
-        else None
-    )
     return native.transition_record(
-        json.dumps({field: record[field] for field in _LIFECYCLE_FIELDS if field in record}, ensure_ascii=False),
+        json.dumps(_record_projection(record, _LIFECYCLE_FIELDS), ensure_ascii=False),
         event,
         fingerprint,
         proof=proof,
         empty=empty,
         generation=generation,
-        admission_fingerprint=admission_fingerprint,
     )
 
 
@@ -421,15 +418,7 @@ class RequestMixin:
             if actor is None or actor.get("deletedAt"):
                 raise ValueError("Unknown managed agent")
             record = self.tool_request(key, db)
-            if record:
-                decision = _lifecycle(
-                    record,
-                    "Admit",
-                    admission_signature=signature,
-                    admission_agent=actor["id"],
-                )
-                _require_decision(decision)
-                record = self._refresh_tool_request(db, record)
+            has_existing = record is not None
             call_id = str(params.get("callId", message.get("id")))
             if not record:
                 now = time.time()
@@ -437,8 +426,8 @@ class RequestMixin:
                           "callId": call_id, "tool": params.get("tool"), "signature": signature,
                           "rpcId": message.get("id"), "turnId": params.get("turnId"), "epoch": actor.get("epoch"),
                           "accountKey": account_key, "connectionId": connection_id,
-                          "created": now, "updated": now, "stage": "queued", "outcome": "pending",
-                          "cancelRequested": False, "readOnly": request_read_only(params.get("tool"), args),
+                          "created": now, "updated": now,
+                          "readOnly": request_read_only(params.get("tool"), args),
                           "timing": {"reservationBeganAt": reservation_started,
                                      "reservationLockedAt": reservation_locked}}
                 from codex_connection_recovery import supervisor_identity
@@ -457,21 +446,30 @@ class RequestMixin:
                         record["callbackQueueDelayMs"] = max(0, dispatched - received) * 1000
                 if identity_tool in {"orchestration_spawn", "orchestration_send", "orchestration_review", "orchestration_servers", "orchestration_move", "orchestration_teleport"} and "request_id" in identity_args:
                     record["request_id"] = identity_args["request_id"]
-                decision = _lifecycle(record, "Admit", empty=True)
-                _require_decision(decision)
-                _apply_decision(record, decision)
+            current_fingerprint = _content_fingerprint(signature, actor["id"])
+            projection = _record_projection(record, _RESERVATION_FIELDS)
+            existing = {
+                "record": projection,
+                "fingerprint": list(_content_fingerprint(
+                    record.get("signature") or "", record.get("agent") or "")),
+            } if has_existing else None
+            snapshot = json.dumps({
+                "candidate": {"record": projection, "fingerprint": list(current_fingerprint)},
+                "existing": existing,
+                "call_id": call_id,
+            }, ensure_ascii=False)
+            decision = native.reserve_tool_request(snapshot, _prefix(account_key, params["threadId"]))
+            if decision.kind == "Admitted":
+                record.update(stage=decision.stage, outcome=decision.outcome,
+                              cancelRequested=decision.cancel_requested)
                 self.put(db, "tool_requests", record)
                 cached = self.tool_result(db, key)
                 if cached:
                     record = self.finish_tool_request(key, cached, db=db)
-            aliases = [call_id, _prefix(account_key, params["threadId"]) + call_id]
-            if record.get("request_id"):
-                aliases.append(record["request_id"])
-            for alias in aliases:
-                # Preserve aliases across retries. An ambiguous short identifier
-                # requires the canonical key instead of selecting another operation.
-                db.execute("INSERT OR IGNORE INTO runtime_tool_request_aliases VALUES (?,?,?)",
-                           (actor["id"], alias, key))
+            else:
+                record = self._refresh_tool_request(db, record)
+            db.executemany("INSERT OR IGNORE INTO runtime_tool_request_aliases VALUES (?,?,?)",
+                           decision.aliases)
             if record.setdefault("timing", {}).get("reservationEndedAt") is None:
                 record["timing"]["reservationEndedAt"] = time.monotonic_ns()
                 self.put(db, "tool_requests", record)

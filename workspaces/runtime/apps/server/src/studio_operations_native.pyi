@@ -24,6 +24,7 @@ ResultKind = Literal[
     "ReceiptMissingUnknown",
     "Rejected",
 ]
+ReservationKind = Literal["Admitted", "ReturnExisting"]
 PersistedStage = Literal[
     "queued", "running", "cancelled", "interrupted", "failed", "unknown", "completed"
 ]
@@ -50,6 +51,18 @@ class TransitionResult:
     @property
     def cancel_requested(self) -> bool | None: ...
 
+class ReservationResult:
+    @property
+    def kind(self) -> ReservationKind: ...
+    @property
+    def stage(self) -> PersistedStage: ...
+    @property
+    def outcome(self) -> PersistedOutcome: ...
+    @property
+    def cancel_requested(self) -> bool: ...
+    @property
+    def aliases(self) -> list[tuple[str, str, str]]: ...
+
 def transition_record(
     record_json: str,
     event: EventName,
@@ -58,5 +71,6 @@ def transition_record(
     proof: ProofName | None = ...,
     empty: bool = ...,
     generation: int | None = ...,
-    admission_fingerprint: bytes | None = ...,
 ) -> TransitionResult: ...
+
+def reserve_tool_request(snapshot_json: str, alias_prefix: str) -> ReservationResult: ...

@@ -22,7 +22,10 @@ sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 import studio_operations_native as native
 
 from codex_operations_adapter import PROTOCOL_VERSION, check_protocol
-from codex_tool_requests import RequestMixin, _apply_decision, _lifecycle, _missing_receipt_outcome
+from codex_tool_requests import (
+    RequestMixin, _apply_decision, _content_fingerprint, _lifecycle, _prefix,
+    _missing_receipt_outcome,
+)
 
 FIXTURE = (
     Path(__file__).resolve().parents[3]
@@ -47,6 +50,38 @@ def _record(stage="queued", outcome="pending", cancelled=False):
 
 
 class OperationsNativeContract(unittest.TestCase):
+    def test_reservation_bridge_returns_typed_decision_fields_and_aliases(self):
+        record = _record()
+        record["request_id"] = "request-a"
+        fingerprint = list(_content_fingerprint(record['signature'], record['agent']))
+        snapshot = {
+            'candidate': {'record': record, 'fingerprint': fingerprint},
+            'existing': None,
+            'call_id': 'call-a',
+        }
+        decision = native.reserve_tool_request(json.dumps(snapshot), "thread-a:")
+        self.assertEqual(decision.kind, "Admitted")
+        self.assertEqual((decision.stage, decision.outcome, decision.cancel_requested),
+                         ("queued", "pending", False))
+        self.assertEqual(decision.aliases, [
+            ("agent-a", "call-a", record["id"]),
+            ("agent-a", "thread-a:call-a", record["id"]),
+            ("agent-a", "request-a", record["id"]),
+        ])
+
+        snapshot['candidate']['record']['epoch'] = 9
+        snapshot['existing'] = {
+            'record': {**record, 'stage': 'queued', 'outcome': 'pending'},
+            'fingerprint': fingerprint,
+        }
+        decision = native.reserve_tool_request(json.dumps(snapshot), "thread-a:")
+        self.assertEqual(decision.kind, "ReturnExisting")
+        self.assertEqual(len(decision.aliases), 3)
+
+        snapshot['candidate']['fingerprint'] = list(b'\x02' * 32)
+        with self.assertRaisesRegex(ValueError, 'This request id has different content'):
+            native.reserve_tool_request(json.dumps(snapshot), "thread-a:")
+
     def test_python_fixture_replays_through_typed_record_boundary(self):
         for case in json.loads(FIXTURE.read_text(encoding="utf-8")):
             with self.subTest(case=case["name"]):
@@ -73,15 +108,42 @@ class OperationsNativeContract(unittest.TestCase):
                         "receipt_missing": "ReceiptMissing",
                     }[kind]
                     empty = "stage" not in record
-                    if empty and event == "Admit" and step.get("content") is not None:
-                        record["signature"] = step["content"]
+                    if event == "Admit":
+                        candidate = {**record}
+                        if step.get("content") is not None:
+                            candidate["signature"] = step["content"]
+                        snapshot = {
+                            "candidate": {
+                                "record": candidate,
+                                "fingerprint": list(_content_fingerprint(
+                                    candidate["signature"], candidate["agent"])),
+                            },
+                            "existing": None if empty else {
+                                "record": record,
+                                "fingerprint": list(_content_fingerprint(
+                                    record["signature"], record["agent"])),
+                            },
+                            "call_id": candidate["callId"],
+                        }
+                        try:
+                            decision = native.reserve_tool_request(
+                                json.dumps(snapshot), _prefix("default", record["threadId"]))
+                        except ValueError as error:
+                            self.assertEqual(str(error), "This request id has different content")
+                            rejected = True
+                            last_kind = "Rejected"
+                            continue
+                        last_kind = decision.kind
+                        if decision.kind == "Admitted":
+                            record.update(stage=decision.stage, outcome=decision.outcome,
+                                          cancelRequested=decision.cancel_requested,
+                                          signature=candidate["signature"])
+                        continue
                     decision = _lifecycle(
                         record,
                         event,
                         empty=empty,
                         generation=step.get("generation"),
-                        admission_signature=step.get("content"),
-                        admission_agent=record["agent"],
                     )
                     last_kind = decision.kind
                     rejected = last_kind == "Rejected"
@@ -162,14 +224,25 @@ class OperationsNativeContract(unittest.TestCase):
 
     def test_changed_content_and_missing_receipt_keep_existing_messages(self):
         record = _record()
-        decision = _lifecycle(record, "Admit", admission_signature="different-signature")
-        self.assertEqual(decision.kind, "Rejected")
-        self.assertEqual(decision.rejection_code, "DifferentContent")
-        self.assertEqual(decision.rejection_message, "This request id has different content")
+        fingerprint = list(_content_fingerprint(record['signature'], record['agent']))
+        snapshot = {
+            'candidate': {'record': {**record, 'signature': 'different-signature'},
+                          'fingerprint': list(_content_fingerprint('different-signature', record['agent']))},
+            'existing': {'record': record, 'fingerprint': fingerprint},
+            'call_id': record['callId'],
+        }
+        with self.assertRaisesRegex(ValueError, "This request id has different content"):
+            native.reserve_tool_request(json.dumps(snapshot), "thread-a:")
         self.assertEqual(_missing_receipt_outcome("missing-request"), "unknown")
 
     def test_stub_literal_members_match_rust_exports(self):
         tree = ast.parse((Path(SERVER_SOURCE_ROOT) / "studio_operations_native.pyi").read_text())
+        functions = {
+            node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)
+        }
+        reservation = functions["reserve_tool_request"]
+        self.assertEqual([arg.arg for arg in reservation.args.args], ["snapshot_json", "alias_prefix"])
+        self.assertEqual(ast.unparse(reservation.returns), "ReservationResult")
         aliases = {
             target.id: node.value
             for node in tree.body if isinstance(node, ast.Assign)
@@ -179,6 +252,7 @@ class OperationsNativeContract(unittest.TestCase):
             "EventName": ("EVENT_NAMES", native.EVENT_NAMES),
             "ProofName": ("PROOF_NAMES", native.PROOF_NAMES),
             "ResultKind": ("RESULT_NAMES", native.RESULT_NAMES),
+            "ReservationKind": (None, ("Admitted", "ReturnExisting")),
             "PersistedStage": ("PERSISTED_STAGES", native.PERSISTED_STAGES),
             "PersistedOutcome": ("PERSISTED_OUTCOMES", native.PERSISTED_OUTCOMES),
         }

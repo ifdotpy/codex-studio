@@ -4,7 +4,8 @@ use serde::Deserialize;
 use studio_operations::{
     AccountId, AccountThreadEpoch, AgentId, AttemptIdentity, ContentFingerprint, Event, EventId,
     EventKind, IdentityScope, Operation, OperationIdentity, OperationState, ProcessGeneration,
-    RequestId, State, StateRevision, ThreadId, TransitionError, transition,
+    RequestId, ReservationDecision, ReservationInput, ReservationSnapshot, ReservationWriteIntent,
+    State, StateRevision, ThreadId, TransitionError, transition,
 };
 
 const DIFFERENT_CONTENT: &str = "This request id has different content";
@@ -28,7 +29,7 @@ macro_rules! wire_enum {
                 match self { $(Self::$variant => $label),+ }
             }
         }
-    };
+    }
 }
 
 macro_rules! wire_enum_without_label {
@@ -98,6 +99,9 @@ struct ToolRequestRecord {
     #[serde(default)]
     call_id: Option<String>,
     #[serde(default)]
+    #[serde(rename = "request_id")]
+    request_id: Option<String>,
+    #[serde(default)]
     account_key: Option<String>,
     #[serde(default)]
     thread_id: Option<String>,
@@ -157,7 +161,6 @@ pub(crate) fn transition_record(
     proof_name: Option<&str>,
     empty: bool,
     generation: Option<u64>,
-    admission_fingerprint: Option<Vec<u8>>,
 ) -> Result<AdapterResult, String> {
     let stored: ToolRequestRecord = serde_json::from_str(record_json)
         .map_err(|error| format!("Invalid stored tool request record: {error}"))?;
@@ -198,13 +201,7 @@ pub(crate) fn transition_record(
     let state = legacy_state;
     let kind = match event_kind {
         RequestEvent::Admit => EventKind::Admit {
-            content: ContentFingerprint(
-                admission_fingerprint
-                    .map(TryInto::try_into)
-                    .transpose()
-                    .map_err(|_| "Admission fingerprint must contain 32 bytes".to_owned())?
-                    .unwrap_or(fingerprint),
-            ),
+            content: ContentFingerprint(fingerprint),
         },
         RequestEvent::ClaimDispatch => EventKind::ClaimDispatch,
         RequestEvent::Cancel => EventKind::Cancel,
@@ -240,6 +237,124 @@ pub(crate) fn transition_record(
         &decision.kind,
         &decision.next_state,
     ))
+}
+
+#[derive(Debug, Deserialize)]
+struct ReservationCommand {
+    candidate: ReservationRecord,
+    existing: Option<ReservationRecord>,
+    call_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReservationRecord {
+    record: ToolRequestRecord,
+    fingerprint: Vec<u8>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ReservationKind {
+    Admitted,
+    ReturnExisting,
+}
+
+impl ReservationKind {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Admitted => "Admitted",
+            Self::ReturnExisting => "ReturnExisting",
+        }
+    }
+}
+
+pub(crate) struct ReservationAdapterResult {
+    pub(crate) kind: ReservationKind,
+    pub(crate) stage: PersistedStage,
+    pub(crate) outcome: PersistedOutcome,
+    pub(crate) cancel_requested: bool,
+    pub(crate) aliases: Vec<(String, String, String)>,
+}
+
+pub(crate) fn reserve_tool_request(
+    command_json: &str,
+    alias_prefix: &str,
+) -> Result<ReservationAdapterResult, String> {
+    let command: ReservationCommand = serde_json::from_str(command_json)
+        .map_err(|error| format!("Invalid tool request reservation snapshot: {error}"))?;
+    let candidate_fingerprint = fingerprint(command.candidate.fingerprint)?;
+    let identity = identity_for_record(&command.candidate.record);
+    let attempt = attempt_for_record(&command.candidate.record, None);
+    let existing = command
+        .existing
+        .map(|stored| {
+            let content = fingerprint(stored.fingerprint)?;
+            let state = state_for_record(&stored.record, ContentFingerprint(content))?;
+            Ok::<State, String>(state)
+        })
+        .transpose()?;
+    let candidate_record = &command.candidate.record;
+    let input = ReservationInput {
+        identity,
+        alias_target: RequestId::from(candidate_record.id.as_deref().unwrap_or_default()),
+        content: ContentFingerprint(candidate_fingerprint),
+        attempt,
+        call_id: command.call_id,
+        alias_prefix: alias_prefix.to_owned(),
+        request_alias: candidate_record.request_id.clone(),
+    };
+    let decision = studio_operations::decide_reservation(&ReservationSnapshot { existing }, &input);
+    match decision {
+        ReservationDecision::Rejected { error, .. } => Err(rejection_message(error)),
+        ReservationDecision::Admitted { state, intents } => reservation_result(
+            ReservationKind::Admitted,
+            &state,
+            candidate_record.cancel_requested,
+            intents,
+        ),
+        ReservationDecision::ReturnExisting { state, intents } => reservation_result(
+            ReservationKind::ReturnExisting,
+            &state,
+            candidate_record.cancel_requested,
+            intents,
+        ),
+    }
+}
+
+fn reservation_result(
+    kind: ReservationKind,
+    state: &State,
+    cancel_requested: bool,
+    intents: Vec<ReservationWriteIntent>,
+) -> Result<ReservationAdapterResult, String> {
+    let operation = state
+        .operation
+        .as_ref()
+        .ok_or_else(|| "Reservation decision omitted operation state".to_owned())?;
+    let (stage, outcome, cancel_requested) = persisted_fields(operation.state, cancel_requested);
+    let aliases = intents
+        .into_iter()
+        .filter_map(|intent| match intent {
+            ReservationWriteIntent::InsertAlias(alias) => Some((
+                alias.agent.as_str().to_owned(),
+                alias.alias,
+                alias.request.as_str().to_owned(),
+            )),
+            ReservationWriteIntent::ReserveRequest { .. } => None,
+        })
+        .collect();
+    Ok(ReservationAdapterResult {
+        kind,
+        stage,
+        outcome,
+        cancel_requested,
+        aliases,
+    })
+}
+
+fn fingerprint(value: Vec<u8>) -> Result<[u8; 32], String> {
+    value
+        .try_into()
+        .map_err(|_| "Tool request content fingerprint must contain 32 bytes".to_owned())
 }
 
 fn state_for_record(
@@ -367,37 +482,7 @@ fn result_for_decision(
             let persisted = next_state
                 .operation
                 .as_ref()
-                .map(|operation| match operation.state {
-                    OperationState::Reserved => {
-                        (PersistedStage::Queued, PersistedOutcome::Pending, false)
-                    }
-                    OperationState::Dispatched => {
-                        (PersistedStage::Running, PersistedOutcome::Pending, false)
-                    }
-                    OperationState::CancelRequested => {
-                        (PersistedStage::Running, PersistedOutcome::Pending, true)
-                    }
-                    OperationState::CancelledBeforeDispatch => (
-                        PersistedStage::Cancelled,
-                        PersistedOutcome::NotApplied,
-                        record.cancel_requested,
-                    ),
-                    OperationState::NotApplied => (
-                        PersistedStage::Failed,
-                        PersistedOutcome::NotApplied,
-                        record.cancel_requested,
-                    ),
-                    OperationState::Applied => (
-                        PersistedStage::Completed,
-                        PersistedOutcome::Applied,
-                        record.cancel_requested,
-                    ),
-                    OperationState::Unknown => (
-                        PersistedStage::Failed,
-                        PersistedOutcome::Unknown,
-                        record.cancel_requested,
-                    ),
-                });
+                .map(|operation| persisted_fields(operation.state, record.cancel_requested));
             AdapterResult {
                 kind: result_kind.as_str(),
                 rejection_code: None,
@@ -407,6 +492,39 @@ fn result_for_decision(
                 cancel_requested: persisted.map(|value| value.2),
             }
         }
+    }
+}
+
+fn persisted_fields(
+    state: OperationState,
+    cancel_requested: bool,
+) -> (PersistedStage, PersistedOutcome, bool) {
+    match state {
+        OperationState::Reserved => (PersistedStage::Queued, PersistedOutcome::Pending, false),
+        OperationState::Dispatched => (PersistedStage::Running, PersistedOutcome::Pending, false),
+        OperationState::CancelRequested => {
+            (PersistedStage::Running, PersistedOutcome::Pending, true)
+        }
+        OperationState::CancelledBeforeDispatch => (
+            PersistedStage::Cancelled,
+            PersistedOutcome::NotApplied,
+            cancel_requested,
+        ),
+        OperationState::NotApplied => (
+            PersistedStage::Failed,
+            PersistedOutcome::NotApplied,
+            cancel_requested,
+        ),
+        OperationState::Applied => (
+            PersistedStage::Completed,
+            PersistedOutcome::Applied,
+            cancel_requested,
+        ),
+        OperationState::Unknown => (
+            PersistedStage::Failed,
+            PersistedOutcome::Unknown,
+            cancel_requested,
+        ),
     }
 }
 
