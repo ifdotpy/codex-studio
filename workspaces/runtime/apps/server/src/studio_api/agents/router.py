@@ -35,6 +35,8 @@ from .models import (
     MacSyncResolveRequest,
     MacSyncResolveResponse,
     MacSyncStatusResponse,
+    VaultPullRequest,
+    VaultPullResponse,
     IdRequest,
     ImportListResponse,
     ImportRequest,
@@ -350,6 +352,19 @@ def create_router(context: ApiContext) -> APIRouter:
         if status is None:
             return context.send(request, {"error": "The project has no Mac folder to sync"}, status=400)
         return context.send(request, status)
+
+    @router.post("/api/vault/pull", response_model=VaultPullResponse,
+                 responses={400: {"model": ErrorResponse}})
+    def vault_pull(request: Request, body: VaultPullRequest) -> Response:
+        """Start a pull of the project's latest vault state into a new Mac folder, or report
+        the pull that this requestId started."""
+        from codex_vm_vault import start_pull
+
+        try:
+            job = start_pull(current_runtime(), body.projectId, body.requestId, body.to)
+        except (ValueError, OSError, RuntimeError) as error:
+            return context.send(request, {"error": str(error)[:500]}, status=400)
+        return context.send(request, job)
 
     @router.get("/api/skills", response_model=SkillsResponse)
     def skills(request: Request, query: SkillsQuery = Depends()) -> Response:

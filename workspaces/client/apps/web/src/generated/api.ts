@@ -2063,6 +2063,27 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/vault/pull": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Vault Pull
+     * @description Start a pull of the project's latest vault state into a new Mac folder, or report
+     *     the pull that this requestId started.
+     */
+    post: operations["vault_pull_api_vault_pull_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/voice/approval_speech": {
     parameters: {
       query?: never;
@@ -8721,6 +8742,7 @@ export interface components {
       projectAliases?: components["schemas"]["ProjectAliasDto"][] | null;
       /** Updated */
       updated?: number | null;
+      vault?: components["schemas"]["ProjectVaultDto"] | null;
       /** Workerbaseref */
       workerBaseRef?: string | null;
       /** Workerbaserevision */
@@ -8920,6 +8942,29 @@ export interface components {
       id: string;
       /** Removed */
       removed: boolean;
+    };
+    /**
+     * ProjectVaultDto
+     * @description The project vault of the project's layr project (docs/vault.md): the VM writer's last
+     *     report. state none: no vault; error: the last push failed (reason). site and prefix make
+     *     the Desk link of the vault.
+     */
+    ProjectVaultDto: {
+      /** Lastpush */
+      lastPush?: number | null;
+      /** Prefix */
+      prefix?: string | null;
+      /** Projectid */
+      projectId: string;
+      /** Reason */
+      reason?: string | null;
+      /** Site */
+      site?: string | null;
+      /**
+       * State
+       * @enum {string}
+       */
+      state: "ok" | "error" | "none";
     };
     /** ProjectWriteRequest */
     ProjectWriteRequest: {
@@ -12989,6 +13034,47 @@ export interface components {
      * @enum {string}
      */
     UsageResumeStatus: "scheduled" | "started" | "cancelled" | "unknown";
+    /**
+     * VaultPullRequest
+     * @description Pull the latest vault state into a new folder below `to` (Downloads when left out).
+     *     A repeated requestId returns the same pull.
+     */
+    VaultPullRequest: {
+      /** Projectid */
+      projectId: string;
+      /** Requestid */
+      requestId: string;
+      /** To */
+      to?: string | null;
+    };
+    /**
+     * VaultPullResponse
+     * @description One pull of a vault state into a Mac folder: running, done (seq, files, bytes) or
+     *     failed (error).
+     */
+    VaultPullResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Bytes */
+      bytes?: number | null;
+      /** Error */
+      error?: string | null;
+      /** Files */
+      files?: number | null;
+      /** Folder */
+      folder: string;
+      /** Requestid */
+      requestId: string;
+      /** Seq */
+      seq?: number | null;
+      /**
+       * State
+       * @enum {string}
+       */
+      state: "running" | "done" | "failed";
+    };
     /**
      * VersionedRuntimeRecord
      * @description Typed runtime record; its versioned domain fields remain JSON-valued extras.
@@ -23193,6 +23279,84 @@ export interface operations {
         };
       };
       /** @description Invalid request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Local origin and session token required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Request body timed out */
+      408: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description The server workspace changed. Reload before sending. */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Invalid request size */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description JSON required */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  vault_pull_api_vault_pull_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["VaultPullRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["VaultPullResponse"];
+        };
+      };
+      /** @description Bad Request */
       400: {
         headers: {
           [name: string]: unknown;

@@ -537,6 +537,7 @@ function entityValuesFromSnapshot(snapshot) {
       "workerEnvironmentRevision",
       "layrReadiness",
       "layrSync",
+      "vault",
     ]),
   );
   append("request", runtime.requests);

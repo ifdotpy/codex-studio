@@ -436,6 +436,14 @@ class MacSyncConfigRequest(MacSyncProjectRequest):
     allowDeletes: bool = False
 
 
+class VaultPullRequest(MacSyncProjectRequest):
+    """Pull the latest vault state into a new folder below `to` (Downloads when left out).
+    A repeated requestId returns the same pull."""
+
+    requestId: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$")
+    to: str | None = Field(default=None, max_length=4096)
+
+
 class MacSyncResolveRequest(MacSyncProjectRequest):
     """Keep the Mac version, keep the VM version, or ask the lead to combine them."""
 
@@ -657,6 +665,19 @@ class MacSyncStatusResponse(ResponseModel):
     deletes: int
     reason: str | None
     at: float | None
+
+
+class VaultPullResponse(ResponseModel):
+    """One pull of a vault state into a Mac folder: running, done (seq, files, bytes) or
+    failed (error)."""
+
+    requestId: str
+    state: Literal["running", "done", "failed"]
+    folder: str
+    seq: int | None = None
+    files: int | None = None
+    bytes: int | None = None
+    error: str | None = None
 
 
 class MacSyncResolveResponse(ResponseModel):
