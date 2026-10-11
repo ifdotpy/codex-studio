@@ -393,7 +393,7 @@ def create_router(context: ApiContext) -> APIRouter:
         return context.send(request, job)
 
     @router.post("/api/vault/setup/facts", response_model=VaultSetupFactsResponse,
-                 responses=api_write_responses(errors=(400,)))
+                 responses={400: {"model": ErrorResponse}})
     def vault_setup_facts(request: Request, body: VaultSetupFactsRequest) -> Response:
         """What the vault setup dialog needs: the vault name, the keys on this Mac, the Desk
         site and the AWS profiles."""
@@ -406,7 +406,7 @@ def create_router(context: ApiContext) -> APIRouter:
         return context.send(request, facts)
 
     @router.post("/api/vault/setup", response_model=VaultSetupResponse,
-                 responses=api_write_responses(errors=(400,)))
+                 responses={400: {"model": ErrorResponse}})
     def vault_setup(request: Request, body: VaultSetupRequest) -> Response:
         """Start the setup of the project's vault, or report the setup that this requestId
         started."""
@@ -420,7 +420,7 @@ def create_router(context: ApiContext) -> APIRouter:
         return context.send(request, job)
 
     @router.post("/api/vault/aws-login", response_model=VaultLoginResponse,
-                 responses=api_write_responses(errors=(400,)))
+                 responses={400: {"model": ErrorResponse}})
     def vault_aws_login(request: Request, body: VaultLoginRequest) -> Response:
         """Start a sign-in to an AWS profile, or report the sign-in that this requestId
         started."""
