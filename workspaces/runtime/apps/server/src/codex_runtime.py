@@ -2002,10 +2002,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     @contextmanager
     def db(self, *, busy_timeout=None):
         local = self.__dict__.setdefault("_callback_db", threading.local())
-        # Keep one connection per calling thread. SQLite connections never
-        # cross thread boundaries; nested contexts still get an independent
-        # connection and retain their existing transaction behavior.
-        reusable = getattr(local, "reuse", True) and not getattr(local, "depth", 0)
+        reusable = getattr(local, "reuse", False) and not getattr(local, "depth", 0)
         db = getattr(local, "connection", None) if reusable else None
         if db is None:
             db = sqlite_connect(self.db_path, timeout=15, site="Runtime.db")
@@ -11372,13 +11369,5 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.close_analytics_captures()
         self._shutdown_writers_drained = True
         self._close_wal_keeper()
-        local_db = self.__dict__.get("_callback_db")
-        connection = getattr(local_db, "connection", None) if local_db else None
-        if connection is not None:
-            sqlite_assert_clean(connection, "Runtime.close")
-            connection.close()
-            local_db.connection = None
-            local_db.depth = 0
-            local_db.reuse = False
         flock(self.lease, LOCK_UN)
         self.lease.close()

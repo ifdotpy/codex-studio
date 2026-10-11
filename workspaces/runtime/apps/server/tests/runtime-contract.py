@@ -1041,6 +1041,11 @@ class RuntimeContract(unittest.TestCase):
         self.assertEqual(self.snapshot()['requests'], [])
         self.assertIn('One file', self.runtime.transcript(a['id'])['items'][-1]['text'])
 
+    def test_transcript_uses_read_only_snapshot_connection(self):
+        a = self.lead()
+        with patch.object(self.runtime, "db", side_effect=AssertionError("writer connection used")):
+            self.assertEqual(self.runtime.transcript(a["id"])["agent"]["id"], a["id"])
+
     def test_role_identity_survives_restart(self):
         a = self.lead()
         self.complete(a)
