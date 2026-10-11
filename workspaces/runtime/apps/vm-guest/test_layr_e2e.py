@@ -52,7 +52,10 @@ class LayrEndToEnd(unittest.IsolatedAsyncioTestCase):
         upload = Path("/var/lib/codex-studio/projects") / self.project
         upload.mkdir(parents=True)
         (upload / "app.txt").write_text("one\ntwo\nthree\n")
-        (upload / ".gitignore").write_text("target/\n")
+        (upload / ".gitignore").write_text("target/\n.env\n/nested/\n")
+        (upload / ".env").write_text("TOKEN=1\n")
+        (upload / "nested").mkdir()
+        (upload / "nested/code.txt").write_text("nested\n")
         self.upload = upload
 
     async def asyncTearDown(self):
@@ -65,6 +68,10 @@ class LayrEndToEnd(unittest.IsolatedAsyncioTestCase):
         imported = await self.projects.dispatch(uuid.uuid4().hex, "project.import",
                                                 {"projectId": self.project, "source": str(self.upload)})
         self.assertTrue(imported["imported"])
+        main = self.root / "projects" / self.project / "lines/main"
+        # Ignored files that Studio sent stay: layr init must not drop them a second time.
+        self.assertEqual((main / ".env").read_text(), "TOKEN=1\n")
+        self.assertEqual((main / "nested/code.txt").read_text(), "nested\n")
         rules = await self.projects.layr(["--project", self.project, "protect"])
         self.assertIn("direct true", rules)
         denied = await self.projects.layr(["--project", self.project, "access"])
@@ -72,7 +79,6 @@ class LayrEndToEnd(unittest.IsolatedAsyncioTestCase):
 
         # The operator's command runs as the owner of main, in main, never as root; the owner
         # may change the project's layers.
-        main = self.root / "projects" / self.project / "lines/main"
         owner = pwd.getpwuid(main.stat().st_uid).pw_name
         ran = await self.projects.exec(uuid.uuid4().hex, {"projectId": self.project, "argv": ["sh", "-c",
             "id -un; pwd; touch made; stat -c %U made; rm made; layr layer add node_modules && layr layer remove node_modules"]})
