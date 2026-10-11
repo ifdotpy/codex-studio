@@ -20,6 +20,7 @@ from starlette.responses import JSONResponse, Response
 
 from studio_api.context import ApiContext, RemoteAccessContract
 from studio_api.models import JsonValue
+from studio_api.responses import install_error_response_docs
 from studio_api.work.router import create_router
 
 if TYPE_CHECKING:
@@ -52,6 +53,7 @@ class FakeContext:
 def make_client(context: FakeContext) -> TestClient:
     app = FastAPI()
     app.include_router(create_router(cast(ApiContext, context)))
+    install_error_response_docs(app)
 
     @app.exception_handler(RequestValidationError)
     def invalid_request(_: Request, __: RequestValidationError) -> JSONResponse:
@@ -73,10 +75,74 @@ def make_real_sender_client(runtime: SimpleNamespace, canvas: SimpleNamespace | 
     )
     app = FastAPI()
     app.include_router(create_router(context))
+    install_error_response_docs(app)
     return TestClient(app)
 
 
 class WorkRouterTests(unittest.TestCase):
+    def test_work_routes_reference_shared_boundary_responses(self) -> None:
+        schema = make_client(FakeContext()).get("/openapi.json").json()
+        responses = schema["paths"]["/api/work"]["get"]["responses"]
+        self.assertEqual(responses["400"]["$ref"], "#/components/responses/ApiError400")
+        writes = schema["paths"]["/api/work"]["post"]["responses"]
+        self.assertEqual(writes["426"]["$ref"], "#/components/responses/ApiError426")
+        components = schema["components"]["responses"]
+        self.assertIn("X-Studio-API-Schema-Mismatch", components["ApiError426"]["headers"])
+        conditional = schema["paths"]["/api/workspace/tasks"]["get"]["responses"]
+        self.assertIn("ETag", conditional["304"]["headers"])
+        self.assertIn("Server-Timing", conditional["200"]["headers"])
+        item = schema["components"]["schemas"]["WorkItem"]
+        self.assertEqual(
+            item["properties"]["results"]["items"]["$ref"],
+            "#/components/schemas/WorkResultRecord",
+        )
+        self.assertEqual(
+            item["properties"]["decisions"]["items"]["$ref"],
+            "#/components/schemas/WorkDecisionRecord",
+        )
+
+    def test_work_item_preserves_the_producer_json_with_canonical_nested_records(self) -> None:
+        payload = {
+            "id": "task-1", "rootId": "lead-1", "title": "Task", "description": "",
+            "status": "review", "created": 1.0, "updated": 2.0, "version": 1,
+            "createdBy": "lead-1", "dependencies": [], "blockedBy": [],
+            "displayStatus": "review", "results": [{
+                "id": "result-1", "agent": "worker-1", "text": "done", "checks": "passed",
+                "revision": "abc123", "files": [], "created": 2.0, "resultFile": "result-1.md",
+            }], "decisions": [{
+                "decision": "reject", "reason": "Add a test", "by": "lead-1", "created": 2.5,
+            }],
+        }
+        context = FakeContext()
+        context.runtime.work_action = Mock(return_value=payload)
+
+        response = make_client(context).post("/api/work", json={"action": "create", "title": "Task"})
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), payload)
+
+    def test_work_list_accepts_a_stored_result_without_optional_run_metadata(self) -> None:
+        # These persisted rows predate run metadata; all canonical result fields remain present.
+        legacy_result = {
+            "id": "result-legacy", "agent": "worker-1", "text": "done",
+            "checks": "passed", "revision": "abc123", "files": [],
+            "created": 2.0, "resultFile": "result-legacy.md",
+        }
+        legacy_work = {
+            "id": "task-1", "rootId": "lead-1", "title": "Task",
+            "description": "", "status": "review", "created": 1.0,
+            "updated": 2.0, "version": 1, "dependencies": [],
+            "blockedBy": [], "displayStatus": "review", "results": [legacy_result],
+            "decisions": [],
+        }
+        context = FakeContext()
+        context.runtime.work_action = Mock(return_value={"items": [legacy_work], "tasks": [legacy_work]})
+
+        response = make_client(context).get("/api/work?agent=lead-1")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["items"][0]["results"][0], legacy_result)
+
     def test_panel_layout_route_validates_current_and_legacy_feedback_and_preserves_http_errors(self) -> None:
         from codex_progress_layout import LayoutConflict
 

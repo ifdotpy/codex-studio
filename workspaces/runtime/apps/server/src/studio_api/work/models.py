@@ -6,6 +6,12 @@ from typing import Annotated, Literal
 
 from pydantic import ConfigDict, Field, RootModel, StrictBool, StrictFloat, StrictInt, StrictStr, model_validator
 
+from codex_records import (
+    WorkArchiveIntentRecord,
+    WorkArchiveRecord,
+    WorkDecisionRecord,
+    WorkResultRecord,
+)
 from studio_api.models import ContractModel, JsonValue, ResponseModel
 from studio_api.history.models import CheckpointSummary, TranscriptAsset
 from studio_api.sync.models import (
@@ -220,6 +226,8 @@ class QuestionDeferBody(QuestionBody):
 
 
 class AnswerBody(ContractModel):
+    """Provider question answers may carry provider-specific answer fields."""
+
     id: StrictStr
     decision: Literal["answer", "accept", "decline", "cancel"] | None = None
     answers: dict[StrictStr, JsonValue] | None = None
@@ -318,6 +326,8 @@ class PanelLayoutBody(ContractModel):
 
 
 class WorkItem(ResponseModel):
+    """Work response projection; nested persisted records use codex_records as authority."""
+
     id: StrictStr
     rootId: StrictStr
     title: StrictStr
@@ -328,14 +338,14 @@ class WorkItem(ResponseModel):
     created: StrictInt | StrictFloat
     updated: StrictInt | StrictFloat
     version: StrictInt
-    results: list[JsonValue] = Field(default_factory=list)
-    decisions: list[JsonValue] = Field(default_factory=list)
+    results: list[WorkResultRecord] = Field(default_factory=list)
+    decisions: list[WorkDecisionRecord] = Field(default_factory=list)
     createdBy: StrictStr | None = None
     blockedBy: list[StrictStr] = Field(default_factory=list)
     displayStatus: StrictStr | None = None
-    archive: JsonValue | None = None
+    archive: WorkArchiveRecord | None = None
     archivePending: StrictBool | None = None
-    archiveIntent: JsonValue | None = None
+    archiveIntent: WorkArchiveIntentRecord | None = None
     releases: list[JsonValue] | None = None
 
 
@@ -369,7 +379,7 @@ class QueueView(ResponseModel):
 
 
 class NativePlanPayload(ContractModel):
-    """Known fields from native turn/plan/updated provider notifications."""
+    """Known fields plus provider-specific fields from native plan notifications."""
 
     model_config = ConfigDict(extra="allow")
     __pydantic_extra__: dict[str, JsonValue]
@@ -503,7 +513,14 @@ class MessageHistory(RootModel[list[MessageRecord]]):
 
 
 class VersionedRuntimeRecord(ResponseModel):
-    """Typed runtime record; its versioned domain fields remain JSON-valued extras."""
+    """Shared projection of several versioned record kinds.
+
+    Tool requests, organization records, complaint replies, and workspace inbox
+    entries use distinct persisted record types. This envelope declares their
+    common fields and retains JSON-valued domain fields; OpenAPI cannot yet
+    reuse those TypedDicts here without a discriminated union for the route
+    variants, and ResponseModel supplies the sync envelope for those outputs.
+    """
 
     model_config = ConfigDict(extra="allow")
     __pydantic_extra__: dict[str, JsonValue]
@@ -671,6 +688,11 @@ class RuleList(ResponseModel):
 
 
 class RuleMutation(ResponseModel):
+    """Rule summary with extensions.
+
+    ResponseModel's sync envelope prevents direct TypedDict inheritance.
+    """
+
     deleted: StrictStr | None = None
     id: StrictStr | None = None
     agent: StrictStr | None = None

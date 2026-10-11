@@ -90,7 +90,9 @@ def with_history(canvas, *args, **kwargs):
                 "status": "review", "dependencies": [], "created": number,
                 "updated": number, "version": 1, "decisions": [],
                 "results": [{"id": f"result-{number}", "agent": lead["id"],
-                             "text": evidence, "created": number}],
+                             "text": evidence, "checks": "Fixture checks",
+                             "revision": "fixture-revision", "files": [], "created": number,
+                             "resultFile": f"result-{number}.md"}],
             })
     full = read_runtime_state(runtime)
     work_bytes = len(json.dumps(full["work"]).encode())

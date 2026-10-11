@@ -1478,6 +1478,8 @@ class WorkArchiveIntentRecord(TypedDict):
 
 
 class WorkResultRecord(TypedDict):
+    # Read-only runtime_work audit: these eight keys occurred in all 862 results;
+    # runId and attemptId were both absent from 30 of those results.
     layrProjectId: NotRequired[str]
     layrLine: NotRequired[str]
     layrStateId: NotRequired[str]
@@ -1488,7 +1490,7 @@ class WorkResultRecord(TypedDict):
     revision: str
     files: list[str]
     created: float
-    resultFile: NotRequired[str]
+    resultFile: str
     runId: NotRequired[str]
     attemptId: NotRequired[str | None]
 

@@ -200,7 +200,9 @@ class CanvasChatSeedContract(unittest.TestCase):
                     runtime.put(db, "agents", record)
                     runtime.put(db, "work", {"id": "seed-result", "owner": worker["id"],
                         "rootId": lead["id"], "status": "review", "results": [
-                            {"agent": worker["id"], "created": 1, "resultFile": "seed.md"}]})
+                            {"id": "seed-result-1", "agent": worker["id"], "text": "Seed result",
+                             "checks": "Seed checks", "revision": "seed-revision", "files": [],
+                             "created": 1, "resultFile": "seed.md"}]})
 
                     from codex_sync_entities import project, seed, upgrade_agent_organization
                     seed(db, runtime_owner=runtime, canvas_owner=canvas)
@@ -620,20 +622,27 @@ class CanvasChatSeedContract(unittest.TestCase):
                     runtime.put(db, "work", {
                         "id": "review-result", "owner": worker_id, "rootId": lead["id"],
                         "status": "review", "results": [
-                            {"agent": worker_id, "created": 7, "resultFile": "review.md",
+                            {"id": "review-result-1", "agent": worker_id, "created": 7,
+                             "resultFile": "review.md", "revision": "review-revision", "files": [],
                              "text": "x" * 32000, "checks": "y" * 32000},
                         ],
                     })
                     runtime.put(db, "work", {
                         "id": "accepted-result", "owner": worker_id, "rootId": lead["id"],
                         "status": "accepted", "results": [
-                            {"agent": worker_id, "created": 7, "resultFile": "accepted.md"},
+                            {"id": "accepted-result-1", "agent": worker_id, "created": 7,
+                             "text": "Accepted result", "checks": "Passed",
+                             "revision": "accepted-revision", "files": [],
+                             "resultFile": "accepted.md"},
                         ],
                     })
                     runtime.put(db, "work", {
                         "id": "inactive-result", "owner": inactive_owner, "rootId": lead["id"],
                         "status": "review", "results": [
-                            {"agent": inactive_owner, "created": 99, "resultFile": "inactive.md"},
+                            {"id": "inactive-result-1", "agent": inactive_owner, "created": 99,
+                             "text": "Inactive result", "checks": "Passed",
+                             "revision": "inactive-revision", "files": [],
+                             "resultFile": "inactive.md"},
                         ],
                     })
                     expected = runtime.latest_work_result_file(db, worker_id)

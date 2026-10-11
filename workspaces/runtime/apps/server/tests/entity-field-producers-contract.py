@@ -232,7 +232,9 @@ class EntityFieldProducers(unittest.TestCase):
             self.runtime.put(db, "agents", worker_record)
             self.runtime.put(db, "work", {"id": "migration-result", "owner": worker["id"],
                 "rootId": self.lead["id"], "status": "review", "results": [
-                    {"agent": worker["id"], "created": 1, "resultFile": "migration-result.md"}]})
+                    {"id": "migration-result-1", "agent": worker["id"], "text": "Migration result",
+                     "checks": "Migration checks", "revision": "migration-revision", "files": [],
+                     "created": 1, "resultFile": "migration-result.md"}]})
             agent_ids = [row[0] for row in db.execute("SELECT id FROM runtime_agents")]
             for agent_id in agent_ids:
                 db.execute("UPDATE sync_entities SET payload=? WHERE collection='agent' AND id=?",
@@ -554,7 +556,9 @@ class EntityFieldProducers(unittest.TestCase):
             self.runtime.put(db, "agents", worker_record)
             self.runtime.put(db, "work", {"id": "upgrade-work", "owner": worker["id"],
                 "rootId": self.lead["id"], "status": "review", "results": [
-                    {"agent": worker["id"], "created": 1, "resultFile": "upgrade-result.md"}]})
+                    {"id": "upgrade-result-1", "agent": worker["id"], "text": "Upgrade result",
+                     "checks": "Upgrade checks", "revision": "upgrade-revision", "files": [],
+                     "created": 1, "resultFile": "upgrade-result.md"}]})
             worker_row = db.execute(
                 "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?", (worker["id"],)
             ).fetchone()
@@ -659,12 +663,16 @@ class EntityFieldProducers(unittest.TestCase):
                     "lastCompletedTurn": "turn", "autoWake": False})
             self.runtime.put(db, "work", {"id": "work-result", "rootId": self.lead["id"],
                 "owner": worker_id, "status": "review", "title": "Work", "results": [
-                    {"agent": worker_id, "created": 1, "resultFile": "result.md"}]})
+                    {"id": "result-1", "agent": worker_id, "text": "Result", "checks": "Passed",
+                     "revision": "revision-1", "files": [], "created": 1,
+                     "resultFile": "result.md"}]})
         self.assertEqual(self.entity("agent", worker_id)["overview"]["resultFile"], "result.md")
         with self.runtime.lock, self.runtime.db() as db:
             work = self.runtime.records(db, "work")[0]
             work["owner"] = next_worker_id
-            work["results"] = [{"agent": next_worker_id, "created": 2, "resultFile": "next-result.md"}]
+            work["results"] = [{"id": "result-2", "agent": next_worker_id, "text": "Result",
+                                 "checks": "Passed", "revision": "revision-2", "files": [],
+                                 "created": 2, "resultFile": "next-result.md"}]
             self.runtime.put(db, "work", work)
         self.assertIsNone(self.entity("agent", worker_id)["overview"]["resultFile"])
         self.assertEqual(self.entity("agent", next_worker_id)["overview"]["resultFile"], "next-result.md")

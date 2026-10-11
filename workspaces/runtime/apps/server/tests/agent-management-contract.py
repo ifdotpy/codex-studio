@@ -391,7 +391,9 @@ class ArchiveBacklogContract(Contract):
     def task(self, key, status='running', **values):
         record = {'id': key, 'rootId': 'lead', 'owner': 'worker', 'status': status,
                   'version': 7, 'title': key, 'description': 'Keep this task',
-                  'dependencies': ['dependency'], 'results': [{'id': 'evidence'}],
+                  'dependencies': ['dependency'], 'results': [{
+                      'id': 'evidence', 'agent': 'worker', 'text': 'Evidence', 'checks': 'Passed',
+                      'revision': 'revision-1', 'files': [], 'created': 1, 'resultFile': 'evidence.md'}],
                   'decisions': [{'resultId': 'evidence', 'decision': 'reject'}],
                   'labels': ['keep'], **values}
         self.update('work', record)
@@ -800,7 +802,9 @@ finally:
 
     def test_bulk_opt_in_returns_tasks_to_backlog_before_worktree_cleanup(self):
         task = {'id': 'open', 'rootId': 'lead', 'owner': 'worker', 'status': 'review',
-                'version': 1, 'results': [{'id': 'result'}]}
+                'version': 1, 'results': [{
+                    'id': 'result', 'agent': 'worker', 'text': 'Evidence', 'checks': 'Passed',
+                    'revision': 'revision-1', 'files': [], 'created': 1, 'resultFile': 'result.md'}]}
         self.update('work', task)
         self.assertEqual(self.call('archive_finished')['archived'], 0)
         result = self.call('archive_finished', unassign_work=True)
