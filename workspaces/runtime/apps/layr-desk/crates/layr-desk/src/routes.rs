@@ -280,6 +280,9 @@ impl<B: Bucket> Gateway<B> {
             (&Method::GET, Some("challenge"), None) => {
                 return Ok(send(200, json!({ "challenge": vault.challenge()? })));
             }
+            (&Method::GET, Some("vault"), None) => {
+                return Ok(send(200, serde_json::to_value(vault.info().await?)?));
+            }
             _ => {}
         }
 

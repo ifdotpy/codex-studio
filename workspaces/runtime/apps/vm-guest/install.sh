@@ -19,9 +19,11 @@ for script in codex_process_supervisor.py codex_open_file_limit.py codex_records
     [ -f "$repo_dir/scripts/$script" ] || { echo "The runtime script is missing: $script" >&2; exit 1; }
 done
 [ "$repo_dir" = /opt/codex-studio ] || { echo 'Copy the runtime into /opt/codex-studio before installation.' >&2; exit 1; }
-# Remove only the old Studio overlay payload and its VM-specific policy.
+# Remove only the old Studio overlay payload and its VM-specific policy, and the Python vault
+# writer that layr-desk push replaced (docs/vault.md).
 rm -f "$script_dir/workspace.py" "$script_dir/namespace_exec.py" \
-    "$repo_dir/scripts/codex_workspace_linux.py" "$repo_dir/scripts/codex_workspace_images.py"
+    "$repo_dir/scripts/codex_workspace_linux.py" "$repo_dir/scripts/codex_workspace_images.py" \
+    "$script_dir/vault_writer.py" "$script_dir/vault_s3.py" "$script_dir/vault_reader.py"
 if [ -f /etc/sysctl.d/90-codex-studio-userns.conf ]; then
     rm /etc/sysctl.d/90-codex-studio-userns.conf
     if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then

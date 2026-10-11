@@ -2,6 +2,7 @@
 import base64
 import fcntl
 import gzip
+import hashlib
 import io
 import json
 import os
@@ -351,6 +352,13 @@ class ClientTests(unittest.TestCase):
         layr = guest.parent / 'layr'
         layr.mkdir()
         (layr / 'manifest.json').write_text(json.dumps({'files': {}}))
+        # The vault writer's source ships with exactly the files of its manifest.
+        desk = guest.parent / 'layr-desk'
+        (desk / 'crates/layr-desk/src').mkdir(parents=True)
+        (desk / 'crates/layr-desk/src/main.rs').write_bytes(b'fn main() {}\n')
+        (desk / 'crates/layr-desk/src/unlisted.rs').write_bytes(b'// not in the manifest\n')
+        (desk / 'manifest.json').write_text(json.dumps({'files': {
+            'crates/layr-desk/src/main.rs': hashlib.sha256(b'fn main() {}\n').hexdigest()}}))
         config = vm._cloud_config(guest, '1.2.3', '4.5.6', runtime_source=scripts,
                                   bridge_source=bridge)
         paths = [entry['path'] for entry in config['write_files']]
@@ -362,9 +370,12 @@ class ClientTests(unittest.TestCase):
         self.assertIn('/opt/codex-studio/pnpm-lock.yaml', paths)
         self.assertIn('/opt/codex-studio/patches/rxdb@17.5.0.patch', paths)
         self.assertIn('/opt/codex-studio/vm/layr/manifest.json', paths)
+        self.assertIn('/opt/codex-studio/vm/layr-desk/manifest.json', paths)
+        self.assertIn('/opt/codex-studio/vm/layr-desk/crates/layr-desk/src/main.rs', paths)
+        self.assertFalse(any(path.endswith('/unlisted.rs') for path in paths))
         self.assertFalse(any('/claude-bridge/node_modules/' in path for path in paths))
         skills = [path for path in paths if '/.agents/skills/' in path]
-        self.assertEqual(len(paths) - len(skills), 16)
+        self.assertEqual(len(paths) - len(skills), 18)
         self.assertNotIn('credentials', json.dumps(config))
         unit = next(row['content'] for row in config['write_files'] if row['path'].endswith('/codex-studio-provision.service'))
         ready = next(line.split('=!',1)[1] for line in unit.splitlines() if line.startswith('ConditionPathExists='))

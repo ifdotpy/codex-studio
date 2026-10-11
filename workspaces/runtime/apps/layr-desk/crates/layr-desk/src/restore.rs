@@ -10,6 +10,8 @@ use std::path::Path;
 pub struct Summary {
     pub seq: u64,
     pub state: String,
+    /// Whether the state carries a checked writer signature.
+    pub signed: bool,
     pub files: usize,
     pub bytes: u64,
 }
@@ -79,6 +81,7 @@ async fn write<S: Store>(
     Ok(Summary {
         seq,
         state: header.state,
+        signed: reader.signed(seq),
         files: files.len(),
         bytes,
     })

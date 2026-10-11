@@ -191,6 +191,8 @@ python3 workspaces/runtime/apps/server/src/update-vm-layr.py --source ~/Projects
 
 The command reads the Git commit through `git archive`.
 It does not read or change that repository's work files.
+With `--name layr-desk`, the same command vendors the vault writer into
+`workspaces/runtime/apps/layr-desk` ([vault.md](vault.md)).
 
 ## Checks
 

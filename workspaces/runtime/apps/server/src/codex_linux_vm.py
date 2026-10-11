@@ -340,12 +340,12 @@ timeout --kill-after=5 600 dpkg --configure -a || true
 mkdir -p /etc/needrestart/conf.d
 printf '%s\n' '$nrconf{override_rc}{qr(^codex-studio-)} = 0;' > /etc/needrestart/conf.d/50-codex-studio.conf
 missing_tools=0
-for tool in git rsync btrfs python3 curl xz blkid mountpoint lsof smbd smbpasswd testparm cc zstd age; do
+for tool in git rsync btrfs python3 curl xz blkid mountpoint lsof smbd smbpasswd testparm cc zstd; do
   if ! command -v "$tool" >/dev/null; then missing_tools=1; fi
 done
-if [ "$missing_tools" = 1 ] || ! python3 -c 'import ensurepip, zstandard' >/dev/null 2>&1; then
+if [ "$missing_tools" = 1 ] || ! python3 -c 'import ensurepip' >/dev/null 2>&1; then
   timeout --kill-after=5 300 apt-get update
-  timeout --kill-after=5 600 apt-get install -y --no-install-recommends git rsync btrfs-progs python3 python3-venv curl xz-utils ca-certificates util-linux lsof samba build-essential zstd age python3-zstandard
+  timeout --kill-after=5 600 apt-get install -y --no-install-recommends git rsync btrfs-progs python3 python3-venv curl xz-utils ca-certificates util-linux lsof samba build-essential zstd
 fi
 stage data-disk
 if ! blkid /dev/vdb; then mkfs.btrfs -f -L studio-data /dev/vdb; fi
@@ -452,19 +452,22 @@ def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str, *,
                           'content': base64.b64encode(gzip.compress(path.read_bytes(), mtime=0)).decode()})
     if not (guest_dir / 'install.sh').is_file():
         raise LinuxVMError('The Linux VM guest install.sh payload is unavailable.')
-    layr_source = guest_dir.parent / 'layr'
-    manifest = json.loads((layr_source / 'manifest.json').read_text())
-    for name, expected in manifest['files'].items():
-        source = layr_source / name
-        if not source.is_relative_to(layr_source) or '..' in Path(name).parts or source.is_symlink():
-            raise LinuxVMError('The layr source manifest contains an invalid path.')
-        data = source.read_bytes()
-        if hashlib.sha256(data).hexdigest() != expected:
-            raise LinuxVMError('The vendored layr source checksum differs: ' + name)
-        files.append({'path': '/opt/codex-studio/vm/layr/' + name, 'permissions': '0644',
-                      'encoding': 'gz+b64', 'content': base64.b64encode(gzip.compress(data, mtime=0)).decode()})
-    files.append({'path': '/opt/codex-studio/vm/layr/manifest.json', 'permissions': '0644',
-                  'content': json.dumps(manifest)})
+    # The vendored sources that install-layr.sh builds in the guest: layr and the vault writer
+    # layr-desk (update-vm-layr.py).
+    for vendored in ('layr', 'layr-desk'):
+        vendored_source = guest_dir.parent / vendored
+        manifest = json.loads((vendored_source / 'manifest.json').read_text())
+        for name, expected in manifest['files'].items():
+            source = vendored_source / name
+            if not source.is_relative_to(vendored_source) or '..' in Path(name).parts or source.is_symlink():
+                raise LinuxVMError(f'The {vendored} source manifest contains an invalid path.')
+            data = source.read_bytes()
+            if hashlib.sha256(data).hexdigest() != expected:
+                raise LinuxVMError(f'The vendored {vendored} source checksum differs: ' + name)
+            files.append({'path': f'/opt/codex-studio/vm/{vendored}/' + name, 'permissions': '0644',
+                          'encoding': 'gz+b64', 'content': base64.b64encode(gzip.compress(data, mtime=0)).decode()})
+        files.append({'path': f'/opt/codex-studio/vm/{vendored}/manifest.json', 'permissions': '0644',
+                      'content': json.dumps(manifest)})
     skills = REPOSITORY_ROOT / '.agents/skills'
     for name in ('codex-orchestrator/SKILL.md', 'codex-subagent/SKILL.md',
                  'codex-workspace/SKILL.md', 'codex-workspace/references/layr.md'):

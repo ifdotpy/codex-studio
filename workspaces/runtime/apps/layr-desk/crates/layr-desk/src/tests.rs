@@ -1,6 +1,8 @@
 //! The network disk end to end: a fake gateway serves the fixture vault that the Python writer
 //! made, the disk serves it over WebDAV, and every file of the latest state reads back as the
-//! writer wrote it. A vault without a key on this machine shows how to unlock it.
+//! writer wrote it. A vault without a key on this machine shows how to unlock it, and a vault
+//! whose vault.json asks for signatures that its states lack shows why it is refused. A paper
+//! slot that holds another identity than the vault's is refused.
 
 use crate::{
     disk::Disk,
@@ -17,7 +19,41 @@ use std::sync::Arc;
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../js/vault/test/fixture");
 const TOKEN: &str = "token-of-the-test";
 
+fn fixture_identity() -> String {
+    std::fs::read_to_string(PathBuf::from(FIXTURE).join("identity.txt"))
+        .unwrap()
+        .trim()
+        .to_string()
+}
+
+fn fixture_recipient() -> String {
+    desk_core::keys::recipient_of(&fixture_identity()).unwrap()
+}
+
+/// What the fake gateway serves besides the fixture states: the vault.json reply and the slots.
+#[derive(Clone)]
+struct Fake {
+    vault: serde_json::Value,
+    slots: serde_json::Value,
+}
+
+impl Default for Fake {
+    fn default() -> Self {
+        Fake {
+            vault: serde_json::json!({"recipient": fixture_recipient(), "writer": null, "signedFrom": null}),
+            slots: serde_json::json!([]),
+        }
+    }
+}
+
+/// A fake gateway on a free port.
+async fn fake_gateway(fake: Fake) -> String {
+    let fake = Arc::new(fake);
+    listen(move |request| gateway(fake.clone(), request)).await
+}
+
 async fn gateway(
+    fake: Arc<Fake>,
     request: Request<hyper::body::Incoming>,
 ) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
     let states = PathBuf::from(FIXTURE).join("objects/proj/states");
@@ -35,12 +71,10 @@ async fn gateway(
     };
     Ok(match path.as_str() {
         "/api/projects" => json(serde_json::json!({"projects": ["locked", "proj"]})),
+        "/api/p/proj/vault" => json(fake.vault.clone()),
+        "/api/p/proj/slots" => json(serde_json::json!({ "slots": fake.slots })),
         "/api/p/proj/challenge" => {
-            let recipient = desk_core::keys::recipient_of(
-                &std::fs::read_to_string(PathBuf::from(FIXTURE).join("identity.txt")).unwrap(),
-            )
-            .unwrap();
-            let sealed = desk_core::keys::encrypt(&recipient, TOKEN.as_bytes()).unwrap();
+            let sealed = desk_core::keys::encrypt(&fixture_recipient(), TOKEN.as_bytes()).unwrap();
             json(
                 serde_json::json!({"challenge": base64::engine::general_purpose::STANDARD.encode(sealed)}),
             )
@@ -90,17 +124,16 @@ where
     url
 }
 
-#[tokio::test]
-async fn the_disk_shows_the_latest_state_of_each_vault() {
-    let site = listen(gateway).await;
+/// The disk of a fake gateway with the fixture key kept: its WebDAV base and its cache folder.
+async fn disk(fake: Fake, name: &str) -> (String, PathBuf) {
+    let site = fake_gateway(fake).await;
     let keys = Memory::default();
-    let identity = std::fs::read_to_string(PathBuf::from(FIXTURE).join("identity.txt")).unwrap();
     keys.set(
         &crate::keystore::account(&site, "proj").unwrap(),
-        identity.trim(),
+        &fixture_identity(),
     )
     .unwrap();
-    let cache = std::env::temp_dir().join(format!("layr-desk-test-{}", std::process::id()));
+    let cache = std::env::temp_dir().join(format!("layr-desk-{name}-{}", std::process::id()));
     let disk = Arc::new(
         Disk::new(
             &site,
@@ -116,6 +149,12 @@ async fn the_disk_shows_the_latest_state_of_each_vault() {
         listener.local_addr().unwrap().port()
     );
     tokio::spawn(crate::run(listener, disk));
+    (base, cache)
+}
+
+#[tokio::test]
+async fn the_disk_shows_the_latest_state_of_each_vault() {
+    let (base, cache) = disk(Fake::default(), "test").await;
     let http = reqwest::Client::new();
     let propfind = reqwest::Method::from_bytes(b"PROPFIND").unwrap();
 
@@ -206,8 +245,16 @@ async fn pull_writes_each_state_into_a_new_folder() {
         .unwrap()
         .map(|e| e.unwrap().file_name().into_string().unwrap())
         .collect();
-    let identity = std::fs::read_to_string(PathBuf::from(FIXTURE).join("identity.txt")).unwrap();
-    let reader = desk_core::Reader::new(Folder(states), &identity, &names).unwrap();
+    let policy = desk_core::Policy::new(
+        "proj",
+        &desk_core::VaultInfo {
+            recipient: fixture_recipient(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let reader =
+        desk_core::Reader::new(Folder(states), &fixture_identity(), &names, policy).unwrap();
     let expected: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(PathBuf::from(FIXTURE).join("expected.json")).unwrap(),
     )
@@ -255,4 +302,57 @@ async fn pull_writes_each_state_into_a_new_folder() {
         .collect();
     assert!(leftovers.is_empty());
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn the_disk_shows_why_an_unsigned_state_is_refused() {
+    let writer = desk_core::sign::Signer::from_base64(
+        &base64::engine::general_purpose::STANDARD.encode([4u8; 32]),
+    )
+    .unwrap()
+    .public();
+    let fake = Fake {
+        vault: serde_json::json!({"recipient": fixture_recipient(), "writer": writer, "signedFrom": 4}),
+        ..Fake::default()
+    };
+    let (base, cache) = disk(fake, "unsigned").await;
+    let error = reqwest::get(format!("{base}proj/ERROR.txt"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(error.contains("state 4 has no writer signature"), "{error}");
+    let _ = std::fs::remove_dir_all(cache);
+}
+
+#[tokio::test]
+async fn a_paper_slot_with_another_identity_is_refused() {
+    use desk_core::keys;
+    let paper = keys::generate_identity();
+    let words = keys::words_of_identity(&paper).unwrap();
+    let slot = |identity: &str| {
+        let sealed = keys::seal_slot(identity, &keys::recipient_of(&paper).unwrap()).unwrap();
+        serde_json::json!([{"name": "paper", "data": base64::engine::general_purpose::STANDARD.encode(sealed)}])
+    };
+    let forged = Fake {
+        slots: slot(&keys::generate_identity()),
+        ..Fake::default()
+    };
+    let site = fake_gateway(forged).await;
+    let mut vault = crate::gateway::Site::new(&site).unwrap().vault("proj");
+    let err = vault.unlock_with_paper(&words).await.unwrap_err();
+    assert!(format!("{err:#}").contains("may be forged"), "{err:#}");
+    assert!(vault.identity().is_err());
+
+    let genuine = Fake {
+        slots: slot(&fixture_identity()),
+        ..Fake::default()
+    };
+    let site = fake_gateway(genuine).await;
+    let mut vault = crate::gateway::Site::new(&site).unwrap().vault("proj");
+    assert_eq!(
+        vault.unlock_with_paper(&words).await.unwrap(),
+        fixture_identity()
+    );
 }

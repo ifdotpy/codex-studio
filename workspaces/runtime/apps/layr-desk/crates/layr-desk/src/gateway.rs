@@ -1,10 +1,10 @@
-//! A client of the gateway API (docs/design.md, "Gateway"): the slots of a vault, and its state
-//! objects with a token that only a holder of the vault identity can get.
+//! A client of the gateway API (docs/design.md, "Gateway"): the slots and the vault.json of a
+//! vault, and its state objects with a token that only a holder of the vault identity can get.
 
 use anyhow::{anyhow, bail, Context, Result};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
-use desk_core::{keys, Store};
+use desk_core::{keys, Policy, Store, VaultInfo};
 use reqwest::StatusCode;
 use serde::Deserialize;
 use tokio::sync::Mutex;
@@ -84,6 +84,7 @@ impl Site {
             project: project.to_string(),
             token: Mutex::new(None),
             identity: None,
+            policy: None,
         }
     }
 }
@@ -94,6 +95,7 @@ pub struct Vault {
     project: String,
     token: Mutex<Option<String>>,
     identity: Option<String>,
+    policy: Option<Policy>,
 }
 
 impl Vault {
@@ -105,7 +107,21 @@ impl Vault {
         Ok(self.site.json::<Slots>(&self.path("slots")).await?.slots)
     }
 
-    /// Open the paper slot with the paper key and keep the vault identity.
+    /// What a reader of this vault checks, from its vault.json; read once.
+    pub async fn policy(&mut self) -> Result<Policy> {
+        if self.policy.is_none() {
+            let info: VaultInfo = self
+                .site
+                .json(&self.path("vault"))
+                .await
+                .context("reading vault.json through the gateway")?;
+            self.policy = Some(Policy::new(&self.project, &info)?);
+        }
+        Ok(self.policy.clone().expect("set above"))
+    }
+
+    /// Open the paper slot with the paper key and keep the vault identity. A slot whose identity
+    /// is not the vault's (a forged slot) is refused.
     pub async fn unlock_with_paper(&mut self, paper: &str) -> Result<String> {
         let opener = keys::identity_from_paper(paper)?;
         let slots = self.slots().await?;
@@ -115,6 +131,7 @@ impl Vault {
             .ok_or_else(|| anyhow!("this vault has no paper slot"))?;
         let identity = keys::open_slot(&slot.bytes()?, &opener)
             .context("this paper key does not open the vault")?;
+        self.policy().await?.check_identity(&identity)?;
         self.identity = Some(identity.clone());
         Ok(identity)
     }

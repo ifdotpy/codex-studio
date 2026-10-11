@@ -1,12 +1,14 @@
 //! `layr-desk push`: put the main head of a layr project into its vault (docs/design.md,
 //! "Writer"). The host of the project runs it as the owner of the layr store. The configuration
-//! holds the vault recipient and a key that may only put new objects and list them.
+//! holds the vault recipient, a key that may only put new objects and list them, and the
+//! writer's signing key (docs/design.md, "Signatures").
 
 use crate::s3::S3;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Args;
 use desk_core::aws::Credentials;
 use desk_core::keys;
+use desk_core::sign::Signer;
 use desk_core::writer::{Layr, Writer};
 use serde::Deserialize;
 use std::io::Read;
@@ -16,8 +18,8 @@ use std::process::Stdio;
 #[derive(Args)]
 pub struct Push {
     /// The vault configuration, JSON with bucket, region, prefix, recipient, accessKeyId,
-    /// secretAccessKey and, for a test store, endpoint; without it, or with "-", it is read
-    /// from standard input
+    /// secretAccessKey, signingKey (optional) and, for a test store, endpoint; without it, or
+    /// with "-", it is read from standard input
     #[arg(long)]
     config: Option<PathBuf>,
     /// The layr project
@@ -43,6 +45,9 @@ struct Config {
     secret_access_key: String,
     #[serde(default)]
     endpoint: Option<String>,
+    /// Standard base64 of the writer's 32-byte Ed25519 seed; without it the trees are unsigned.
+    #[serde(default)]
+    signing_key: Option<String>,
 }
 
 /// layr for one project.
@@ -120,7 +125,15 @@ impl Config {
             }
         }
         keys::encrypt(&self.recipient, b"").context("the vault recipient")?;
+        self.signer()?;
         Ok(())
+    }
+
+    fn signer(&self) -> Result<Option<Signer>> {
+        self.signing_key
+            .as_deref()
+            .map(Signer::from_base64)
+            .transpose()
     }
 }
 
@@ -138,6 +151,7 @@ pub async fn run(args: Push) -> Result<()> {
     let config: Config =
         serde_json::from_str(&text).context("the configuration is not a vault configuration")?;
     config.check()?;
+    let signer = config.signer()?;
     let s3 = S3::new(
         &config.bucket,
         &config.region,
@@ -157,13 +171,16 @@ pub async fn run(args: Push) -> Result<()> {
         bail!("layr names no main head");
     }
     let recipient = config.recipient;
-    let writer = Writer::new(
+    let mut writer = Writer::new(
         &args.state_dir,
         &config.prefix,
         layr,
         s3,
         move |data: &[u8]| keys::encrypt(&recipient, data),
     )?;
+    if let Some(signer) = signer {
+        writer = writer.signed_by(signer);
+    }
     let summary = writer.push(&head).await?;
     println!("{}", serde_json::to_string(&summary)?);
     Ok(())
@@ -193,6 +210,7 @@ mod tests {
             ("region", "us-gov-west-1"),
             ("prefix", "Proj_1.x-y"),
             ("endpoint", "http://127.0.0.1:9000"),
+            ("signingKey", "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA="),
         ] {
             assert!(config(field, value).check().is_ok(), "{field} {value}");
         }
@@ -212,6 +230,8 @@ mod tests {
             ("endpoint", "127.0.0.1:9000"),
             ("recipient", "age1nothing"),
             ("secretAccessKey", ""),
+            ("signingKey", "AQID"),
+            ("signingKey", "not base64"),
         ] {
             assert!(config(field, value).check().is_err(), "{field} {value}");
         }

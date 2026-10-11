@@ -220,12 +220,15 @@ try {
           !source.includes("__pycache__") && !source.endsWith(".pyc"),
       },
     );
-    // The vendored layr sources, built inside the guest (docs/vm-layr.md).
-    await cp(
-      path.join(repositoryRoot, "workspaces/runtime/apps/layr"),
-      path.join(resources, "vm/layr"),
-      { recursive: true },
-    );
+    // The vendored layr and layr-desk sources, built inside the guest (docs/vm-layr.md,
+    // docs/vault.md).
+    for (const name of ["layr", "layr-desk"]) {
+      await cp(
+        path.join(repositoryRoot, "workspaces/runtime/apps", name),
+        path.join(resources, "vm", name),
+        { recursive: true },
+      );
+    }
   }
   await cp(rendererDist, path.join(resources, "web/dist"), {
     recursive: true,
