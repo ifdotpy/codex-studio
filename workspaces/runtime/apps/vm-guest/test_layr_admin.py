@@ -9,6 +9,7 @@ import socket
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -240,6 +241,21 @@ class ShareBridgeTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PolicyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_health_does_not_walk_the_store(self):
+        """du over hundreds of lines passed the health deadline (2026-10-11)."""
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            share = AsyncMock()
+            share.status = AsyncMock(return_value={"state": "test"})
+            projects = Projects(root, root, share, None)
+            projects.layr = AsyncMock(return_value="layr version 0.1.0")
+            usage = SimpleNamespace(total=100, used=70, free=30)
+            with patch("layr_projects.command", AsyncMock()) as walk, \
+                    patch("layr_projects.shutil.disk_usage", return_value=usage):
+                health = await projects.health()
+            walk.assert_not_awaited()
+            self.assertEqual((health["state"], health["storeBytes"], health["freeBytes"]), ("ready", 70, 30))
+
     async def test_project_rules_apply_once(self):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
