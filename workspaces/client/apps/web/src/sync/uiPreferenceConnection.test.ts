@@ -171,6 +171,12 @@ async function waitForBaseline(
   await vi.waitFor(() => expect(streams.has(origin)).toBe(true));
   const marker = server.seedBaseline();
   emitStateFrame(origin, initialFrame(origin, server.sequence));
+  await waitForAppliedBaselineMarker(marker);
+}
+async function waitForAppliedBaselineMarker(marker: {
+  key: string;
+  value: string;
+}) {
   await vi.waitFor(() => {
     const cache = JSON.parse(
       localStorage.getItem("studio-ui-preference-fields-v1:user") || "{}",
@@ -353,6 +359,7 @@ describe("paired server preference replication", () => {
     try {
       await waitForBaseline("https://frame.invalid", server);
       const theme = '["codex-studio-preferences-v1","theme"]';
+      expect(server.fields[theme]).toBeUndefined();
       emitStateFrame("https://frame.invalid", {
         protocol: 3,
         workspaceId: "https://frame.invalid",
@@ -391,9 +398,6 @@ describe("paired server preference replication", () => {
           },
         ],
       });
-      expect(server.pullReads).toBe(1);
-      expect(server.sessionReads).toBe(0);
-      expect(server.writes).toHaveLength(0);
       await vi.waitFor(() => {
         expect(
           JSON.parse(
@@ -401,6 +405,9 @@ describe("paired server preference replication", () => {
           )[theme]?.value,
         ).toBe("dark");
       });
+      expect(server.pullReads).toBe(1);
+      expect(server.sessionReads).toBe(0);
+      expect(server.writes).toHaveLength(0);
     } finally {
       stop();
     }
@@ -444,11 +451,13 @@ describe("paired server preference replication", () => {
         expect(streams.has("https://initial.invalid")).toBe(true),
       );
       expect(server.pullReads).toBe(0);
+      const marker = server.seedBaseline();
       server.sequence = 2;
       emitStateFrame("https://initial.invalid", {
         ...initialFrame("https://initial.invalid", 2),
       });
-      await vi.waitFor(() => expect(server.pullReads).toBe(1));
+      await waitForAppliedBaselineMarker(marker);
+      expect(server.pullReads).toBe(1);
       expect(server.sessionReads).toBe(0);
       expect(server.writes).toHaveLength(0);
     } finally {
