@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 
 from common import GuestError, atomic_json, require
@@ -78,6 +79,11 @@ class VaultHandlers:
         if method == "vault.configure":
             config = check_config(params)
             self.folder(project).mkdir(mode=0o700, exist_ok=True)
+            path = self.folder(project) / "config.json"
+            old = json.loads(path.read_text()) if path.exists() else {}
+            if any(old.get(k) != config[k] for k in ("bucket", "prefix", "recipient", "endpoint")):
+                # Another vault: its first push is full; deltas never cross vaults or keys.
+                shutil.rmtree(self.folder(project) / "writer", ignore_errors=True)
             atomic_json(self.folder(project) / "config.json", config)
             os.chmod(self.folder(project) / "config.json", 0o600)
             return {"configured": True, "bucket": config["bucket"], "prefix": config["prefix"]}
