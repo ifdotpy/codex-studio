@@ -10,7 +10,8 @@ from typing import TYPE_CHECKING, Callable, Literal, cast
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from fastapi.responses import Response
 
-from studio_api.models import ErrorResponse, JsonValue
+from studio_api.models import JsonValue
+from studio_api.responses import api_read_responses, api_write_responses
 from .ui_summary import SummaryAccount, UiSummaryResponse, read_summary
 from .models import (
     DesktopQuery,
@@ -46,7 +47,11 @@ def linux_vm_status() -> dict[str, JsonValue] | None:
 def create_router(context: ApiContext) -> APIRouter:
     router = APIRouter()
 
-    @router.get("/api/ui-summary", response_model=UiSummaryResponse)
+    @router.get(
+        "/api/ui-summary",
+        response_model=UiSummaryResponse,
+        responses=api_read_responses(),
+    )
     def ui_summary(request: Request) -> Response:
         from contextlib import contextmanager
         from collections.abc import Iterator
@@ -107,20 +112,26 @@ def create_router(context: ApiContext) -> APIRouter:
         except (RuntimeError, OSError, ValueError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
-    @router.get("/api/linux-vm/settings", response_model=LinuxVMSettingsResponse,
-                responses={400: {"model": ErrorResponse}, 503: {"model": ErrorResponse}})
+    @router.get(
+        "/api/linux-vm/settings",
+        response_model=LinuxVMSettingsResponse,
+        responses=api_read_responses(errors=(400, 503)),
+    )
     def linux_vm_settings(request: Request) -> Response:
         return context.send(request, linux_vm_configuration())
 
-    @router.post("/api/linux-vm/settings", response_model=LinuxVMSettingsResponse,
-                 responses={400: {"model": ErrorResponse}, 503: {"model": ErrorResponse}})
+    @router.post(
+        "/api/linux-vm/settings",
+        response_model=LinuxVMSettingsResponse,
+        responses=api_write_responses(errors=(503,)),
+    )
     def linux_vm_settings_write(request: Request, body: LinuxVMSettings = Body()) -> Response:
         return context.send(request, linux_vm_configuration(body))
 
     @router.get(
         "/api/desktop",
         response_model=DesktopResponse,
-        responses={400: {"model": ErrorResponse}},
+        responses=api_read_responses(errors=(400,)),
     )
     def desktop(request: Request, query: DesktopQuery = Depends()) -> Response:
         from codex_backend_identity import BACKEND_BUILD
@@ -202,7 +213,7 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.get(
         "/api/diagnostics",
         response_model=DiagnosticsResponse,
-        responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+        responses=api_read_responses(errors=(404,)),
     )
     def diagnostics(request: Request) -> Response:
         runtime = context.runtime
@@ -236,7 +247,7 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.get(
         "/api/directories",
         response_model=DirectoriesResponse,
-        responses={400: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+        responses=api_read_responses(errors=(403, 503)),
     )
     def directories(request: Request, query: DirectoriesQuery = Depends()) -> Response:
         if query.server and query.server != "local":

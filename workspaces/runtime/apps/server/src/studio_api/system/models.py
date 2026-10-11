@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel
 from studio_api.models import SupervisorIdentity as SupervisorIdentity
@@ -240,6 +240,50 @@ class RestartEnvironmentKey(ContractStrEnum):
     CODEX_AGENTS_SUPERVISOR_MODE = "CODEX_AGENTS_SUPERVISOR_MODE"
 
 
+class LinuxVMDownload(ContractModel):
+    stage: str
+    attempt: int
+    bytes: int
+    seconds: float
+
+
+class LinuxVMProvision(ContractModel):
+    # The console may not exist yet, so an older or early status can be empty.
+    stage: str | None = None
+    state: str | None = None
+    downloads: list[LinuxVMDownload] | None = None
+    cause: str | None = None
+
+
+class LinuxVMShareProject(ContractModel):
+    projectId: str
+    state: str
+    path: str | None = None
+    readOnly: bool | None = None
+    error: str | None = None
+
+
+class LinuxVMShareStatus(ContractModel):
+    state: str
+    projects: list[LinuxVMShareProject]
+
+
+class LinuxVMStatus(ContractModel):
+    """Known local status fields plus unprojected host and guest status data."""
+
+    model_config = ConfigDict(extra="allow")
+    __pydantic_extra__: dict[str, JsonValue]
+
+    state: str | None = None
+    allocatedDiskBytes: int | None = None
+    freeHostBytes: int | None = None
+    provision: LinuxVMProvision | None = None
+    # layr.health is a separately-versioned guest payload; preserve it as JSON.
+    layr: JsonValue = None
+    share: LinuxVMShareStatus | None = None
+    error: str | None = None
+
+
 class DesktopResponse(ResponseModel):
     application: str
     protocol: int
@@ -259,7 +303,7 @@ class DesktopResponse(ResponseModel):
     supervisorFallback: bool
     supervisorNotice: str | None
     stateDir: str
-    linuxVm: dict[str, JsonValue] | None = None
+    linuxVm: LinuxVMStatus | None = None
 
 
 class HostResources(ContractModel):

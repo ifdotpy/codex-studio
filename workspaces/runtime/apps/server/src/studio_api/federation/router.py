@@ -26,7 +26,7 @@ from studio_api.federation.models import (
     SignedStatusResponse,
     StatusRequest,
 )
-from studio_api.responses import register_route_components
+from studio_api.responses import api_write_responses, error_responses, register_route_components
 
 if TYPE_CHECKING:
     from studio_api.context import ApiContext
@@ -83,9 +83,7 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post(
         "/api/federation",
         response_model=FederationSnapshot | CreateInviteResponse,
-        responses={400: {"model": ErrorResponse}, 403: {"model": ErrorResponse},
-                   413: {"model": ErrorResponse}, 415: {"model": ErrorResponse},
-                   503: {"model": ErrorResponse}},
+        responses=api_write_responses(errors=(404,)),
     )
     async def manage_federation(request: Request, body: ManagementRequest) -> Response:
         runtime = context.runtime
@@ -161,8 +159,7 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post(
         FEDERATION_PATHS[0],
         response_model=SignedPairResponse,
-        responses={400: {"model": ErrorResponse}, 403: {"model": ErrorResponse},
-                   413: {"model": ErrorResponse}, 415: {"model": ErrorResponse}},
+        responses=api_write_responses(errors=(404,)),
         openapi_extra=_openapi_body("PairRequest"),
     )
     async def pair(request: Request) -> Response:
@@ -172,8 +169,7 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post(
         FEDERATION_PATHS[1],
         response_model=SignedStatusResponse,
-        responses={400: {"model": ErrorResponse}, 403: {"model": ErrorResponse},
-                   413: {"model": ErrorResponse}, 415: {"model": ErrorResponse}},
+        responses=api_write_responses(errors=(404,)),
         openapi_extra=_openapi_body("StatusRequest"),
     )
     async def status(request: Request) -> Response:
@@ -183,8 +179,7 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post(
         FEDERATION_PATHS[2],
         response_model=SignedMessageResponse,
-        responses={400: {"model": ErrorResponse}, 403: {"model": ErrorResponse},
-                   413: {"model": ErrorResponse}, 415: {"model": ErrorResponse}},
+        responses=api_write_responses(errors=(404,)),
         openapi_extra=_openapi_body("MessageRequest"),
     )
     async def message(request: Request) -> Response:
@@ -194,8 +189,7 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post(
         FEDERATION_PATHS[3],
         response_model=SignedPullResponse,
-        responses={400: {"model": ErrorResponse}, 403: {"model": ErrorResponse},
-                   413: {"model": ErrorResponse}, 415: {"model": ErrorResponse}},
+        responses=api_write_responses(errors=(404,)),
         openapi_extra=_openapi_body("PullRequest"),
     )
     async def pull(request: Request) -> Response:
@@ -207,6 +201,7 @@ def create_router(context: ApiContext) -> APIRouter:
 
     for path in NO_GET_PATHS:
         router.add_api_route(path, no_get_counterpart, methods=["GET"],
-                             response_model=ErrorResponse, include_in_schema=False)
+                             response_model=ErrorResponse, status_code=404,
+                             responses=error_responses((401, 403, 404, 429, 500, 503)))
 
     return router
