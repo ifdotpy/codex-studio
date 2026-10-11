@@ -85,6 +85,14 @@ class LazyProgressWatchdog:
             watchdog = self._watchdog
         return watchdog.subscribe(agent_id, on_change)
 
+    def close(self) -> None:
+        with self._lock:
+            watchdog = self._watchdog
+        if watchdog is not None:
+            close_watchdog = getattr(watchdog, "close", None)
+            if callable(close_watchdog):
+                close_watchdog()
+
 
 def _key(resource: ResourceRef) -> ResourceKey:
     value: ResourceRefValue = resource.root
@@ -499,6 +507,9 @@ class ResourceHub:
             self._orphaned_subscriptions.clear()
         for subscription in subscriptions:
             subscription.close()
+        close_watchdog = getattr(self._progress_watchdog, "close", None)
+        if callable(close_watchdog):
+            close_watchdog()
 
     def _close_orphaned_subscriptions(self) -> None:
         with self._lock:

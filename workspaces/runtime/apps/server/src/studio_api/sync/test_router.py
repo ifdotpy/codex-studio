@@ -810,6 +810,49 @@ class SyncRouterTests(unittest.TestCase):
         self.assertEqual(events[:3], ["api-schema", "resources", "token-rates"])
         self.assertEqual(subscribe.call_count, 1)
 
+    def test_panel_stream_without_runtime_logs_unavailable_reason(self) -> None:
+        context = ContextStub()
+        context.runtime = None
+        resources = json.dumps([{"kind": "panel", "agentId": "agent-a"}])
+
+        with self.assertLogs("studio_api.sync.router", level="ERROR") as captured:
+            response = make_client(context).get(
+                "/api/sync/stream",
+                params={"protocol": "3", "resources": resources},
+            )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.json(),
+            {"error": "Resource stream is unavailable; reconnect to retry."},
+        )
+        self.assertIn("panel resources requested without a runtime", captured.output[0])
+
+    def test_panel_stream_subscribe_failure_logs_exception_and_traceback(self) -> None:
+        context = ContextStub()
+        resources = json.dumps([{"kind": "panel", "agentId": "agent-a"}])
+        with patch.object(
+            context.hub,
+            "subscribe",
+            side_effect=RuntimeError("fixture hub failure"),
+        ):
+            with self.assertLogs("studio_api.sync.router", level="ERROR") as captured:
+                response = make_client(context).get(
+                    "/api/sync/stream",
+                    params={"protocol": "3", "resources": resources},
+                )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.json(),
+            {"error": "Resource stream is unavailable; reconnect to retry."},
+        )
+        record = captured.records[0]
+        self.assertIn("resolving panel activity", record.getMessage())
+        self.assertIsNotNone(record.exc_info)
+        self.assertIs(record.exc_info[0], RuntimeError)
+        self.assertEqual(str(record.exc_info[1]), "fixture hub failure")
+
     def test_protocol_three_reconnect_baselines_every_subscribed_resource(self) -> None:
         context = ContextStub()
         resources = json.dumps([{"kind": "panel", "agentId": "agent-a"}], separators=(",", ":"))
