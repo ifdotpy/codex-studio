@@ -12,6 +12,7 @@ import { useMemo, useState } from "react";
 import { ActionButton, SettingsSection } from "../components/ui/primitives";
 import type { ServerAccount, ServerCommand } from "./navigation";
 import type { StudioServer } from "./registry";
+import { rowServers, serverAccountRows } from "./serverAccountRows";
 
 type AccountAction = Extract<ServerCommand, { action: "account-action" }>;
 type StartAccount = (
@@ -39,38 +40,10 @@ export default function ServerAccountsPanel({
   const [serverId, setServerId] = useState(servers[0]?.id || "local");
   const [label, setLabel] = useState("");
   const [email, setEmail] = useState("");
-  const rows = useMemo(() => {
-    const grouped = new Map<
-      string,
-      {
-        provider: "codex" | "claude";
-        email: string | null;
-        label: string;
-        plan: string | null;
-        byServer: Record<string, ServerAccount>;
-      }
-    >();
-    for (const server of servers) {
-      for (const account of accountsByServer[server.id] || []) {
-        const key = `${account.provider}:${(account.email || account.label).toLocaleLowerCase()}`;
-        const row = grouped.get(key) || {
-          provider: account.provider,
-          email: account.email,
-          label: account.label,
-          plan: account.plan,
-          byServer: {},
-        };
-        row.byServer[server.id] = account;
-        if (!row.email) row.email = account.email;
-        if (!row.plan) row.plan = account.plan;
-        grouped.set(key, row);
-      }
-    }
-    return [...grouped.entries()].map(([key, account]) => ({
-      key,
-      ...account,
-    }));
-  }, [accountsByServer, servers]);
+  const rows = useMemo(
+    () => serverAccountRows(servers, accountsByServer),
+    [accountsByServer, servers],
+  );
   const selected =
     servers.find((server) => server.id === serverId) || servers[0];
   return (
@@ -198,7 +171,7 @@ export default function ServerAccountsPanel({
                   className="server-account-chips"
                   aria-label={`Servers for ${row.email || row.label}`}
                 >
-                  {servers.map((server) => {
+                  {rowServers(row, servers).map((server) => {
                     const account = row.byServer[server.id];
                     const offline = [
                       "offline",
