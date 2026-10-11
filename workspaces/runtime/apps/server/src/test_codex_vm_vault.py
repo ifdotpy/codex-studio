@@ -85,6 +85,35 @@ class Reports(unittest.TestCase):
                 vault.store_site(self.state, 'p', bad)
 
 
+class Ticks(unittest.TestCase):
+    def test_a_new_report_or_a_new_site_refreshes_the_sidebar_once(self) -> None:
+        with tempfile.TemporaryDirectory() as name:
+            state = Path(name)
+            project(state, 'p')
+            client = FakeClient(state, {'p': {'prefix': 'p', 'lastPush': 100, 'lastError': None}})
+            client.status = lambda: {'state': 'running'}  # type: ignore[attr-defined]
+            runtime = type('Runtime', (), {})()
+            runtime.pool = type('Pool', (), {'submit': staticmethod(lambda run: run())})()
+            refreshes: list[int] = []
+            with patch('codex_linux_workspaces.client', lambda r: client), \
+                    patch('codex_vm_agents.refresh_readiness', lambda r: refreshes.append(1)), \
+                    patch('platform.system', lambda: 'Darwin'):
+                def tick() -> None:
+                    runtime._vault_checked = -vault.INTERVAL * 2
+                    vault.tick(runtime)
+                tick()
+                self.assertEqual(len(refreshes), 1)
+                tick()
+                self.assertEqual(len(refreshes), 1)
+                # The site comes from the Mac, not from the report of the VM.
+                vault.store_site(state, 'p', 'https://desk.example.com/')
+                tick()
+                self.assertEqual(len(refreshes), 2)
+                view = vault.vault_view(state, 'p')
+                assert view is not None
+                self.assertEqual(view['site'], 'https://desk.example.com/')
+
+
 class Runtime:
     def __init__(self) -> None:
         self.pool = ThreadPoolExecutor(max_workers=2)
