@@ -70,7 +70,15 @@ impl ReservationStore for MemoryStore {
     }
 }
 
-fn input(id: &str, agent: &str, epoch: u64, fingerprint: u8, aliases: &[&str]) -> ReservationInput {
+fn input(
+    id: &str,
+    agent: &str,
+    epoch: u64,
+    fingerprint: u8,
+    call_id: &str,
+    alias_prefix: &str,
+    request_alias: Option<&str>,
+) -> ReservationInput {
     let account = AccountId::from("account-a");
     let thread = studio_operations::ThreadId::from("thread-a");
     let request_id = RequestId::from(id);
@@ -82,6 +90,7 @@ fn input(id: &str, agent: &str, epoch: u64, fingerprint: u8, aliases: &[&str]) -
             },
             request_id: request_id.clone(),
         },
+        alias_target: RequestId::from(id),
         content: ContentFingerprint([fingerprint; 32]),
         attempt: AttemptIdentity {
             agent: AgentId::from(agent),
@@ -90,14 +99,9 @@ fn input(id: &str, agent: &str, epoch: u64, fingerprint: u8, aliases: &[&str]) -
             epoch: AccountThreadEpoch(epoch),
             generation: None,
         },
-        aliases: aliases
-            .iter()
-            .map(|alias| RequestAlias {
-                agent: AgentId::from(agent),
-                alias: (*alias).to_owned(),
-                request: request_id.clone(),
-            })
-            .collect(),
+        call_id: call_id.to_owned(),
+        alias_prefix: alias_prefix.to_owned(),
+        request_alias: request_alias.map(str::to_owned),
     }
 }
 
@@ -111,7 +115,15 @@ fn admitted_state(request: &ReservationInput) -> State {
 
 #[test]
 fn new_request_emits_one_row_and_all_alias_intents() {
-    let request = input("request-a", "agent-a", 4, 7, &["call-a", "thread:call-a"]);
+    let request = input(
+        "request-a",
+        "agent-a",
+        4,
+        7,
+        "call-a",
+        "thread:",
+        Some("request-a"),
+    );
     let decision = decide_reservation(&ReservationSnapshot { existing: None }, &request);
     let ReservationDecision::Admitted { state, intents } = decision else {
         panic!("new request should be admitted");
@@ -124,18 +136,18 @@ fn new_request_emits_one_row_and_all_alias_intents() {
         intents.first(),
         Some(ReservationWriteIntent::ReserveRequest { .. })
     ));
-    assert_eq!(intents.len(), 3);
+    assert_eq!(intents.len(), 4);
 }
 
 #[test]
 fn same_id_and_content_returns_saved_request_without_a_second_row_write() {
     let mut store = MemoryStore::default();
-    let first = input("request-a", "agent-a", 4, 7, &["call-a"]);
+    let first = input("request-a", "agent-a", 4, 7, "call-a", "thread:", None);
     assert!(matches!(
         reserve_in_store(&mut store, &first),
         Ok(ReservationDecision::Admitted { .. })
     ));
-    let retry = input("request-a", "agent-a", 9, 7, &["call-b"]);
+    let retry = input("request-a", "agent-a", 9, 7, "call-b", "thread:", None);
     let decision =
         reserve_in_store(&mut store, &retry).expect("retry should read existing request");
     let ReservationDecision::ReturnExisting { intents, state } = decision else {
@@ -145,20 +157,23 @@ fn same_id_and_content_returns_saved_request_without_a_second_row_write() {
         state.operation.as_ref().map(|op| op.attempt.epoch),
         Some(AccountThreadEpoch(4))
     );
-    assert_eq!(
-        intents,
-        vec![ReservationWriteIntent::InsertAlias(
-            retry.aliases[0].clone()
-        )]
-    );
+    assert_eq!(intents.len(), 2);
+    assert!(matches!(
+        &intents[0],
+        ReservationWriteIntent::InsertAlias(alias) if alias.alias == "call-b"
+    ));
+    assert!(matches!(
+        &intents[1],
+        ReservationWriteIntent::InsertAlias(alias) if alias.alias == "thread:call-b"
+    ));
     assert_eq!(store.request_writes, 1);
     assert_eq!(store.dispatches, 0);
 }
 
 #[test]
 fn same_id_with_different_content_is_rejected_without_intents() {
-    let original = input("request-a", "agent-a", 4, 7, &["call-a"]);
-    let changed = input("request-a", "agent-a", 4, 8, &["call-a"]);
+    let original = input("request-a", "agent-a", 4, 7, "call-a", "thread:", None);
+    let changed = input("request-a", "agent-a", 4, 8, "call-a", "thread:", None);
     let snapshot = ReservationSnapshot {
         existing: Some(admitted_state(&original)),
     };
@@ -173,8 +188,8 @@ fn same_id_with_different_content_is_rejected_without_intents() {
 
 #[test]
 fn changed_actor_fingerprint_is_rejected_for_the_same_request_id() {
-    let original = input("request-a", "agent-a", 4, 7, &["call-a"]);
-    let changed_actor = input("request-a", "agent-b", 4, 8, &["call-a"]);
+    let original = input("request-a", "agent-a", 4, 7, "call-a", "thread:", None);
+    let changed_actor = input("request-a", "agent-b", 4, 8, "call-a", "thread:", None);
     let snapshot = ReservationSnapshot {
         existing: Some(admitted_state(&original)),
     };
@@ -189,8 +204,8 @@ fn changed_actor_fingerprint_is_rejected_for_the_same_request_id() {
 
 #[test]
 fn same_reservation_survives_stale_agent_epoch() {
-    let original = input("request-a", "agent-a", 4, 7, &["call-a"]);
-    let advanced_epoch = input("request-a", "agent-a", 5, 7, &["call-a"]);
+    let original = input("request-a", "agent-a", 4, 7, "call-a", "thread:", None);
+    let advanced_epoch = input("request-a", "agent-a", 5, 7, "call-a", "thread:", None);
     let snapshot = ReservationSnapshot {
         existing: Some(admitted_state(&original)),
     };
@@ -203,8 +218,8 @@ fn same_reservation_survives_stale_agent_epoch() {
 #[test]
 fn conflicting_short_aliases_remain_distinct_and_ambiguous() {
     let mut store = MemoryStore::default();
-    let first = input("request-a", "agent-a", 4, 7, &["collision"]);
-    let second = input("request-b", "agent-a", 4, 8, &["collision"]);
+    let first = input("request-a", "agent-a", 4, 7, "collision", "thread:", None);
+    let second = input("request-b", "agent-a", 4, 8, "collision", "thread:", None);
     reserve_in_store(&mut store, &first).expect("first request admitted");
     reserve_in_store(&mut store, &second).expect("second canonical request admitted");
     let matches = store
@@ -218,7 +233,7 @@ fn conflicting_short_aliases_remain_distinct_and_ambiguous() {
 
 #[test]
 fn failure_before_row_write_leaves_no_row_alias_or_effect_and_retry_admits() {
-    let request = input("request-a", "agent-a", 4, 7, &["call-a"]);
+    let request = input("request-a", "agent-a", 4, 7, "call-a", "thread:", None);
     let mut store = MemoryStore {
         next_failure: Some(InjectedFailure::BeforeApply),
         ..MemoryStore::default()
@@ -232,20 +247,20 @@ fn failure_before_row_write_leaves_no_row_alias_or_effect_and_retry_admits() {
         Ok(ReservationDecision::Admitted { .. })
     ));
     assert_eq!(store.requests.len(), 1);
-    assert_eq!(store.aliases.len(), 1);
+    assert_eq!(store.aliases.len(), 2);
     assert_eq!(store.dispatches, 0);
 }
 
 #[test]
 fn failure_after_commit_before_response_retries_existing_without_second_dispatch() {
-    let request = input("request-a", "agent-a", 4, 7, &["call-a"]);
+    let request = input("request-a", "agent-a", 4, 7, "call-a", "thread:", None);
     let mut store = MemoryStore {
         next_failure: Some(InjectedFailure::AfterCommit),
         ..MemoryStore::default()
     };
     assert_eq!(reserve_in_store(&mut store, &request), Err(StoreFailure));
     assert_eq!(store.requests.len(), 1);
-    assert_eq!(store.aliases.len(), 1);
+    assert_eq!(store.aliases.len(), 2);
     let retry =
         reserve_in_store(&mut store, &request).expect("retry returns committed reservation");
     assert!(matches!(retry, ReservationDecision::ReturnExisting { .. }));

@@ -4,12 +4,12 @@
 
 - **Responsibility:** Minimal in-process Python binding for `studio-operations`.
 - **Public interface:** `studio_operations_native.transition_record(record_json,
-event, ...) -> TransitionResult`, `studio_operations_native.reserve_tool_request(snapshot_json)
--> JSON decision and write intents`, and the protocol version owned by
+event, ...) -> TransitionResult`, `studio_operations_native.reserve_tool_request(snapshot_json,
+alias_prefix) -> ReservationResult`, and the protocol version owned by
   `src/lib.rs` and checked independently by the server adapter.
 - **Boundaries:** The binding deserializes a typed persisted-record view, adapts
   it to the pure Rust lifecycle core, and returns typed persistence fields and
-  intents. It performs no I/O, subprocess work, or fallback.
+  aliases. It performs no I/O, subprocess work, or fallback.
 - **Invariants:** Malformed inputs and Rust panics become Python exceptions;
   backend import fails clearly if the module or protocol version is unavailable.
 - **Configuration owner:** The root Cargo workspace owns PyO3 and native build

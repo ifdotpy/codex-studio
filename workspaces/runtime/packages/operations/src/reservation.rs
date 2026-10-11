@@ -17,9 +17,43 @@ pub struct RequestAlias {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ReservationInput {
     pub identity: OperationIdentity,
+    pub alias_target: crate::RequestId,
     pub content: ContentFingerprint,
     pub attempt: AttemptIdentity,
-    pub aliases: Vec<RequestAlias>,
+    pub call_id: String,
+    pub alias_prefix: String,
+    pub request_alias: Option<String>,
+}
+
+impl ReservationInput {
+    fn aliases(&self) -> Vec<RequestAlias> {
+        let request = self.alias_target.clone();
+        let agent = self.attempt.agent.clone();
+        let mut aliases = vec![
+            RequestAlias {
+                agent: agent.clone(),
+                alias: self.call_id.clone(),
+                request: request.clone(),
+            },
+            RequestAlias {
+                agent: agent.clone(),
+                alias: format!("{}{}", self.alias_prefix, self.call_id),
+                request: request.clone(),
+            },
+        ];
+        if let Some(alias) = self
+            .request_alias
+            .as_ref()
+            .filter(|alias| !alias.is_empty())
+        {
+            aliases.push(RequestAlias {
+                agent,
+                alias: alias.clone(),
+                request,
+            });
+        }
+        aliases
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -93,9 +127,8 @@ pub fn decide_reservation(
         DecisionKind::ReturnExisting => ReservationDecision::ReturnExisting {
             state: state.clone(),
             intents: input
-                .aliases
-                .iter()
-                .cloned()
+                .aliases()
+                .into_iter()
                 .map(ReservationWriteIntent::InsertAlias)
                 .collect(),
         },
@@ -130,9 +163,8 @@ fn decide_new_reservation(state: &State, input: &ReservationInput) -> Reservatio
             }];
             intents.extend(
                 input
-                    .aliases
-                    .iter()
-                    .cloned()
+                    .aliases()
+                    .into_iter()
                     .map(ReservationWriteIntent::InsertAlias),
             );
             ReservationDecision::Admitted {

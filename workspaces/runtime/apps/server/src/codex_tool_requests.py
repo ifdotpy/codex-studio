@@ -67,22 +67,12 @@ def _lifecycle(
     proof: "ProofName | None" = None,
     empty: bool = False,
     generation: int | None = None,
-    admission_signature: str | None = None,
-    admission_agent: str | None = None,
 ) -> "TransitionResult":
     signature = record.get("signature", "")
     agent = record.get("agent", "")
     signature = "" if signature is None else signature
     agent = "" if agent is None else agent
     fingerprint = _content_fingerprint(signature, agent)
-    admission_fingerprint = (
-        _content_fingerprint(
-            admission_signature if admission_signature is not None else signature,
-            admission_agent if admission_agent is not None else agent,
-        )
-        if admission_signature is not None or admission_agent is not None
-        else None
-    )
     return native.transition_record(
         json.dumps({field: record[field] for field in _LIFECYCLE_FIELDS if field in record}, ensure_ascii=False),
         event,
@@ -90,7 +80,6 @@ def _lifecycle(
         proof=proof,
         empty=empty,
         generation=generation,
-        admission_fingerprint=admission_fingerprint,
     )
 
 
@@ -421,7 +410,7 @@ class RequestMixin:
             if actor is None or actor.get("deletedAt"):
                 raise ValueError("Unknown managed agent")
             record = self.tool_request(key, db)
-            existing_record = record
+            has_existing = record is not None
             call_id = str(params.get("callId", message.get("id")))
             if not record:
                 now = time.time()
@@ -449,28 +438,29 @@ class RequestMixin:
                         record["callbackQueueDelayMs"] = max(0, dispatched - received) * 1000
                 if identity_tool in {"orchestration_spawn", "orchestration_send", "orchestration_review", "orchestration_servers", "orchestration_move", "orchestration_teleport"} and "request_id" in identity_args:
                     record["request_id"] = identity_args["request_id"]
-            aliases = [call_id, _prefix(account_key, params["threadId"]) + call_id,
-                       *([record["request_id"]] if record.get("request_id") else [])]
-            decision_kind, intents = reserve_native_tool_request(
-                record, signature, actor["id"], existing_record, _LIFECYCLE_FIELDS,
-                [(actor["id"], alias, key) for alias in aliases], _content_fingerprint)
-            if decision_kind == "ReturnExisting":
+            current_fingerprint = _content_fingerprint(signature, actor["id"])
+            existing_fingerprint = _content_fingerprint(
+                record.get("signature") or "", record.get("agent") or "") if has_existing else None
+            snapshot = json.dumps({
+                "candidate": {"record": {field: record[field] for field in (*_LIFECYCLE_FIELDS, "signature", "request_id")
+                                           if field in record}, "fingerprint": list(current_fingerprint)},
+                "existing": {"record": {field: record[field] for field in (*_LIFECYCLE_FIELDS, "signature", "request_id")
+                                          if field in record}, "fingerprint": list(existing_fingerprint)}
+                if has_existing and existing_fingerprint is not None else None,
+                "call_id": call_id,
+            }, ensure_ascii=False)
+            decision = reserve_native_tool_request(snapshot, _prefix(account_key, params["threadId"]))
+            if decision.kind == "Admitted":
+                record.update(stage=decision.stage, outcome=decision.outcome,
+                              cancelRequested=decision.cancel_requested)
+                self.put(db, "tool_requests", record)
+                cached = self.tool_result(db, key)
+                if cached:
+                    record = self.finish_tool_request(key, cached, db=db)
+            else:
                 record = self._refresh_tool_request(db, record)
-            for intent in intents:
-                intent_kind, intent_value = next(iter(intent.items()))
-                if intent_kind == "ReserveRequest":
-                    if decision_kind != "Admitted":
-                        raise RuntimeError("Rust requested a second reservation row write")
-                    record.update(stage="queued", outcome="pending", cancelRequested=False)
-                    self.put(db, "tool_requests", record)
-                    cached = self.tool_result(db, key)
-                    if cached:
-                        record = self.finish_tool_request(key, cached, db=db)
-                elif intent_kind == "InsertAlias":
-                    db.execute("INSERT OR IGNORE INTO runtime_tool_request_aliases VALUES (?,?,?)",
-                               (intent_value["agent"], intent_value["alias"], intent_value["request"]))
-                else:
-                    raise RuntimeError("Rust returned an unknown tool request reservation intent")
+            db.executemany("INSERT OR IGNORE INTO runtime_tool_request_aliases VALUES (?,?,?)",
+                           decision.aliases)
             if record.setdefault("timing", {}).get("reservationEndedAt") is None:
                 record["timing"]["reservationEndedAt"] = time.monotonic_ns()
                 self.put(db, "tool_requests", record)

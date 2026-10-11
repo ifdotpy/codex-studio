@@ -30,6 +30,32 @@ pub struct TransitionResult {
     cancel_requested: Option<bool>,
 }
 
+#[pyclass(module = "studio_operations_native")]
+pub struct ReservationResult {
+    #[pyo3(get)]
+    kind: String,
+    #[pyo3(get)]
+    stage: String,
+    #[pyo3(get)]
+    outcome: String,
+    #[pyo3(get)]
+    cancel_requested: bool,
+    #[pyo3(get)]
+    aliases: Vec<(String, String, String)>,
+}
+
+impl From<record_adapter::ReservationAdapterResult> for ReservationResult {
+    fn from(result: record_adapter::ReservationAdapterResult) -> Self {
+        Self {
+            kind: result.kind.as_str().to_owned(),
+            stage: result.stage.label().to_owned(),
+            outcome: result.outcome.label().to_owned(),
+            cancel_requested: result.cancel_requested,
+            aliases: result.aliases,
+        }
+    }
+}
+
 impl From<record_adapter::AdapterResult> for TransitionResult {
     fn from(result: record_adapter::AdapterResult) -> Self {
         Self {
@@ -44,7 +70,7 @@ impl From<record_adapter::AdapterResult> for TransitionResult {
 }
 
 #[pyfunction]
-#[pyo3(signature = (record_json, event, fingerprint, *, proof=None, empty=false, generation=None, admission_fingerprint=None))]
+#[pyo3(signature = (record_json, event, fingerprint, *, proof=None, empty=false, generation=None))]
 fn transition_record(
     record_json: &str,
     event: &str,
@@ -52,18 +78,9 @@ fn transition_record(
     proof: Option<&str>,
     empty: bool,
     generation: Option<u64>,
-    admission_fingerprint: Option<Vec<u8>>,
 ) -> PyResult<TransitionResult> {
     let result = catch_panic(|| {
-        record_adapter::transition_record(
-            record_json,
-            event,
-            fingerprint,
-            proof,
-            empty,
-            generation,
-            admission_fingerprint,
-        )
+        record_adapter::transition_record(record_json, event, fingerprint, proof, empty, generation)
     });
     match result {
         Ok(Ok(result)) => Ok(result.into()),
@@ -75,10 +92,10 @@ fn transition_record(
 }
 
 #[pyfunction]
-fn reserve_tool_request(snapshot_json: &str) -> PyResult<String> {
-    let result = catch_panic(|| record_adapter::reserve_tool_request(snapshot_json));
+fn reserve_tool_request(snapshot_json: &str, alias_prefix: &str) -> PyResult<ReservationResult> {
+    let result = catch_panic(|| record_adapter::reserve_tool_request(snapshot_json, alias_prefix));
     match result {
-        Ok(Ok(result)) => Ok(result),
+        Ok(Ok(result)) => Ok(result.into()),
         Ok(Err(message)) => Err(PyValueError::new_err(message)),
         Err(()) => Err(PyRuntimeError::new_err(
             "Rust tool request reservation panicked",
@@ -96,6 +113,7 @@ fn studio_operations_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("PERSISTED_STAGES", record_adapter::STAGE_NAMES.to_vec())?;
     module.add("PERSISTED_OUTCOMES", record_adapter::OUTCOME_NAMES.to_vec())?;
     module.add_class::<TransitionResult>()?;
+    module.add_class::<ReservationResult>()?;
     module.add_function(wrap_pyfunction!(transition_record, module)?)?;
     module.add_function(wrap_pyfunction!(reserve_tool_request, module)?)?;
     Ok(())
