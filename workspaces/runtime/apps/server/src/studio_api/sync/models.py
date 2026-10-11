@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, TypedDict
 from pydantic import ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
+from codex_records import NativeNoticeRecord, NativeSafetyBufferingRecord
 from studio_api.sync.preferences import UiPreferencesDto
 from studio_api.models import (
     ContractModel,
@@ -67,7 +68,11 @@ class AgentActivity(ContractModel):
 
 
 class NativeProviderError(ContractModel):
-    """Known app-server error fields plus JSON-safe provider extensions."""
+    """Known app-server fields plus pass-through provider error extensions.
+
+    The native provider owns the remaining JSON object fields; the stored
+    ``codex_records`` shapes likewise type these errors as ``JsonObject``.
+    """
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
     code: int | str | None = None
@@ -125,18 +130,10 @@ class NativeSafetyRetryDto(ContractModel):
     rpcMethod: str | None = None
 
 
-class NativeSafetyBufferingDto(ContractModel):
-    model_config = ConfigDict(extra="allow", strict=True)
-    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
-    turnId: str | None = None
-    threadId: str | None = None
-    accountKey: str | None = None
-    connectionId: str | None = None
-    at: float | None = None
-    dismissed: bool | None = None
-    responseStarted: bool | None = None
-    showBufferingUi: bool | None = None
-    fasterModel: str | None = None
+NativeSafetyBufferingDto = Annotated[
+    NativeSafetyBufferingRecord,
+    Field(json_schema_extra={"additionalProperties": False}),
+]
 
 
 class ContextUsageDto(ContractModel):
@@ -273,6 +270,7 @@ class AgentEntityContextRepairWaitDto(ContractModel):
 
 
 class RequestQuestionOptionDto(ContractModel):
+    """Known labels plus provider-owned option metadata passed through verbatim."""
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
     label: str | None = None
@@ -281,6 +279,7 @@ class RequestQuestionOptionDto(ContractModel):
 
 
 class RequestQuestionDto(ContractModel):
+    """Known question UI fields plus future native question protocol fields."""
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
     id: str
@@ -291,6 +290,7 @@ class RequestQuestionDto(ContractModel):
 
 
 class RequestSchemaPropertyDto(ContractModel):
+    """A JSON Schema property; arbitrary standard and future schema keywords pass through."""
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
     title: str | None = None
@@ -303,6 +303,7 @@ class RequestSchemaPropertyDto(ContractModel):
 
 
 class RequestSchemaDto(ContractModel):
+    """A JSON Schema request; provider-defined top-level keywords pass through."""
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
     properties: dict[str, RequestSchemaPropertyDto]
@@ -327,6 +328,7 @@ class RequestParamsDto(ContractModel):
 
 
 class RequestPreviewDto(ContractModel):
+    """Known preview fields plus the native tool's provider-specific preview metadata."""
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
     command: str | list[str] | None = None
@@ -1052,6 +1054,7 @@ class WorkDecisionDto(ContractModel):
 
 
 class RateLimitWindowDto(ContractModel):
+    """Known usage window fields plus provider-specific window metadata."""
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
     usedPercent: float | None = None
@@ -1060,6 +1063,7 @@ class RateLimitWindowDto(ContractModel):
 
 
 class RateLimitBucketDto(ContractModel):
+    """Known rate-limit fields plus fields owned by the active provider."""
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
     limitId: str | None = None
@@ -1071,7 +1075,12 @@ class RateLimitBucketDto(ContractModel):
 
 
 class RateLimitsDataDto(ContractModel):
-    """Known renderer-facing rate-limit fields with provider JSON extensions."""
+    """Known renderer-facing fields with provider JSON extension payloads.
+
+    ``codex_records.RateLimitDataRecord`` describes the storage projection, but
+    rate-limit snapshots also pass through provider reset-credit data whose
+    complete provider-owned shape is not fixed by this repository.
+    """
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
     rateLimits: RateLimitBucketDto | None = None
@@ -1094,19 +1103,22 @@ class AccountRateLimitsDto(ContractModel):
     error: str | None = None
 
 
-class NativeNoticeDto(ContractModel):
-    """Account notices and provider-version advisories shown in the UI."""
-    model_config = ConfigDict(extra="allow", strict=True)
-    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
-    id: str | None = None
-    accountKey: str | None = None
-    connectionId: str | None = None
-    provider: str | None = None
-    version: str | None = None
-    baseline: str | None = None
-    message: str | None = None
-    details: JsonValue | None = None
-    at: float | None = None
+class ProviderVersionWarningDto(TypedDict):
+    """Closed warning projection emitted by ``codex_provider_versions.status()``."""
+
+    id: str
+    accountKey: str
+    provider: str
+    version: str
+    baseline: str
+    message: str
+    at: float
+
+
+NativeNoticeDto = (
+    Annotated[NativeNoticeRecord, Field(json_schema_extra={"additionalProperties": False})]
+    | Annotated[ProviderVersionWarningDto, Field(json_schema_extra={"additionalProperties": False})]
+)
 
 
 class SidebarOrderDto(ContractModel):

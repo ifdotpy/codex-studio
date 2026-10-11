@@ -23,6 +23,12 @@ from studio_api.insights.models import (
     SessionCostQuery,
 )
 from studio_api.models import JsonValue
+from studio_api.responses import (
+    API_BOUNDARY_RESPONSE_HEADERS,
+    API_CONTEXT_RESPONSE_HEADERS,
+    error_responses,
+    response_headers,
+)
 
 if TYPE_CHECKING:
     from studio_api.context import ApiContext
@@ -143,12 +149,17 @@ def create_router(context: ApiContext) -> APIRouter:
         responses={
             200: {
                 "headers": {
-                    "Content-Disposition": {"schema": {"type": "string"}},
-                    "Cache-Control": {"schema": {"type": "string"}},
-                    "X-Content-Type-Options": {"schema": {"type": "string"}},
-                    "Server-Timing": {"schema": {"type": "string"}},
+                    **API_CONTEXT_RESPONSE_HEADERS,
+                    **API_BOUNDARY_RESPONSE_HEADERS,
+                    **response_headers(
+                        "Content-Disposition",
+                        "Cache-Control",
+                        "X-Content-Type-Options",
+                        "Server-Timing",
+                    ),
                 },
             },
+            **error_responses((400, 403, 404, 500, 503)),
         },
     )
     def analytics(

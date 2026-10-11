@@ -174,7 +174,7 @@ class SyncEntityContractTests(unittest.TestCase):
         self.assertEqual(workspace["rateLimits"], source["rateLimits"])
         self.assertEqual(workspace["nativeNotices"], source["nativeNotices"])
         validated = WorkspaceEntityDto.model_validate(workspace)
-        self.assertEqual(validated.nativeNotices[0].id, "notice")
+        self.assertEqual(validated.nativeNotices[0]["id"], "notice")
         self.assertEqual(validated.rateLimits.data.rateLimits.primary.usedPercent, 42)
         self.assertEqual(validated.rateLimits.processedAt, 2.0)
         self.assertEqual(validated.rateLimits.checkedAt, 3.0)
