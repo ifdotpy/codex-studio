@@ -225,17 +225,23 @@ def discover_candidates(*, env=None):
     """Return newest-first candidates plus errors; CODEX_BIN is not a version pin."""
     env = os.environ if env is None else env
     paths = []
-    if env.get('CODEX_BIN'):
-        explicit = env['CODEX_BIN']
-        paths.append(find_executable(explicit, environment=env) or explicit)
-    candidate = find_executable('codex', environment=env)
-    if candidate:
-        paths.append(candidate)
-    if os.name != 'nt':
-        paths.extend(str(Path(entry or '.') / 'codex') for entry in env.get('PATH', '').split(os.pathsep)
-                     if (Path(entry or '.') / 'codex').exists())
-    if CHATGPT_CODEX.exists():
-        paths.append(str(CHATGPT_CODEX))
+    pinned = env.get('CODEX_AGENTS_NATIVE_RUNTIME_PIN')
+    if pinned:
+        # Isolated harnesses can make discovery deterministic without depending
+        # on PATH ordering or the platform-specific ChatGPT installation path.
+        paths.append(pinned)
+    else:
+        if env.get('CODEX_BIN'):
+            explicit = env['CODEX_BIN']
+            paths.append(find_executable(explicit, environment=env) or explicit)
+        candidate = find_executable('codex', environment=env)
+        if candidate:
+            paths.append(candidate)
+        if os.name != 'nt':
+            paths.extend(str(Path(entry or '.') / 'codex') for entry in env.get('PATH', '').split(os.pathsep)
+                         if (Path(entry or '.') / 'codex').exists())
+        if CHATGPT_CODEX.exists():
+            paths.append(str(CHATGPT_CODEX))
     rows, seen = [], set()
     with tempfile.TemporaryDirectory(prefix='studio-native-discovery-') as home:
         for path in paths:

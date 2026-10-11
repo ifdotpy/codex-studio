@@ -27,6 +27,7 @@ PROVIDER_REPLAY = Path(__file__).with_name("provider-replay-server.py")
 PROVIDER_FIXTURES = Path(__file__).parent / "fixtures/provider-replay"
 # Guards against a backend that never becomes ready; it is not a startup time budget.
 STARTUP_TIMEOUT_SECONDS = 60.0
+HTTP_WAIT_POLL_SECONDS = 0.05
 STOP_TIMEOUT_SECONDS = 4.0
 
 
@@ -38,6 +39,10 @@ class HttpResult:
 
     def json(self) -> Any:
         return json.loads(self.body)
+
+
+class ProviderSelectionError(RuntimeError):
+    """The backend selected a native provider other than the replay fixture."""
 
 
 class BackendProcess:
@@ -117,7 +122,7 @@ class BackendProcess:
     def _environment(self) -> dict[str, str]:
         environment = os.environ.copy()
         for key in tuple(environment):
-            if key.startswith(("CODEX_", "CLAUDE_", "ANTHROPIC_")):
+            if key.startswith(("CODEX_", "CLAUDE_", "ANTHROPIC_", "OPENAI_", "STUDIO_CLAUDE_")):
                 environment.pop(key, None)
         values = {
             "HOME": str(self.home),
@@ -144,11 +149,17 @@ class BackendProcess:
             values["CODEX_AGENTS_PYTHON"] = os.environ.get(
                 "STUDIO_HTTP_BACKEND_PYTHON", sys.executable
             )
-        environment.update(values)
         executable = getattr(self, "_provider_executable", None)
+        # Never expose caller-installed provider candidates to the test backend.
+        # Native discovery honors this explicit test pin before PATH or its
+        # platform-specific ChatGPT location.
+        path_entries = [str(executable.parent)] if executable is not None else []
+        path_entries.extend(os.defpath.split(os.pathsep))
+        values["PATH"] = os.pathsep.join(path_entries)
+        environment.update(values)
         if executable is not None:
             environment["CODEX_BIN"] = str(executable)
-            environment["PATH"] = str(executable.parent) + os.pathsep + environment.get("PATH", "")
+            environment["CODEX_AGENTS_NATIVE_RUNTIME_PIN"] = str(executable)
             environment["PROVIDER_REPLAY_PHASE"] = str(self.root / "provider-phase")
             environment["PROVIDER_REPLAY_RELEASE"] = str(self.root / "provider-release")
         return environment
@@ -156,6 +167,8 @@ class BackendProcess:
     def start(self) -> float:
         if self._process is not None:
             raise RuntimeError("Backend is already running")
+        if getattr(self, "_provider_executable", None) is None:
+            raise RuntimeError("HTTP backend harness requires an explicit replay provider")
         command = self._command()
         environment = self._environment()
         if self._codex_log is not None:
@@ -235,6 +248,46 @@ class BackendProcess:
                 f"{last_identity_error}; {self.stderr}"
             )
         identity_ready_at = time.monotonic()
+        if self._provider_executable is None:
+            self.stop()
+            raise RuntimeError("HTTP backend harness requires an explicit replay provider")
+        expected_provider = self._provider_executable.resolve()
+        last_provider_status: object = None
+        while time.monotonic() < deadline:
+            try:
+                desktop = self.request(
+                    "GET", "/api/desktop",
+                    timeout=max(0.1, deadline - time.monotonic()),
+                ).json()
+                native = desktop.get("nativeRuntime")
+                selected = native.get("selected") if isinstance(native, dict) else None
+                if isinstance(selected, dict):
+                    source_path = selected.get("sourcePath")
+                    if not source_path:
+                        raise ProviderSelectionError(
+                            "HTTP backend reported native runtime selection without sourcePath"
+                        )
+                    selected_path = Path(source_path).resolve()
+                    if selected_path != expected_provider:
+                        raise ProviderSelectionError(
+                            "HTTP backend selected a non-replay native provider: "
+                            f"{selected_path}; expected {expected_provider}"
+                        )
+                    break
+                last_provider_status = native
+                time.sleep(min(HTTP_WAIT_POLL_SECONDS, max(0.0, deadline - time.monotonic())))
+            except ProviderSelectionError:
+                self.stop()
+                raise
+            except (RuntimeError, URLError, OSError, ValueError) as error:
+                last_provider_status = error
+                time.sleep(min(HTTP_WAIT_POLL_SECONDS, max(0.0, deadline - time.monotonic())))
+        else:
+            self.stop()
+            raise RuntimeError(
+                "HTTP backend did not report its pinned replay provider before readiness: "
+                f"{last_provider_status}; {self.stderr}"
+            )
         self.ready_seconds = identity_ready_at - started
         self.start_phases.append({
             "spawnToReadyAnnouncementSeconds": round(ready_line_at - started, 4),
