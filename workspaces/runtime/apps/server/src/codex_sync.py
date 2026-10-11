@@ -417,7 +417,13 @@ class SyncStore:
             sequence = db.execute("SELECT COALESCE(MAX(seq),0) FROM sync_entities WHERE collection='event'").fetchone()[0]
             if 'event_window_seq' not in markers or int(markers['event_window_seq']) != sequence:
                 return True
-        if 'runtime_monitors' in tables:
+        # Runtime.put projects every monitor write in the same SQLite
+        # transaction. A full comparison is therefore needed after process
+        # start (to catch state left by older versions), but not on every pull.
+        # The flag is set only after the startup snapshot has been checked and,
+        # when needed, repaired and committed.
+        if ('runtime_monitors' in tables
+                and not getattr(self, '_entity_monitor_window_checked', False)):
             recent = monitor_records(db)
             stored = dict(db.execute("SELECT id,hash FROM sync_entities WHERE collection='monitor' "
                                      "AND deleted=0 LIMIT ?", (len(recent) + 1,)))
@@ -456,6 +462,7 @@ class SyncStore:
         with self.connection("SyncStore.pull") as db:
             db.execute('BEGIN')
             startup_memory_mark("first-renderer-sync-pull")
+            monitor_window_checked = getattr(self, '_entity_monitor_window_checked', False)
             if self.entity_maintenance_needed(db):
                 # Do not upgrade a read snapshot after another writer commits.
                 # The existing maintenance functions read again under the writer.
@@ -467,9 +474,13 @@ class SyncStore:
                 # consume the resulting tombstones through ordinary deltas.
                 sync_task_window(db)
                 sync_event_window(db)
-                sync_monitor_window(db)
+                if not monitor_window_checked:
+                    sync_monitor_window(db)
                 db.commit()
+                self._entity_monitor_window_checked = True
                 db.execute('BEGIN')
+            elif not monitor_window_checked:
+                self._entity_monitor_window_checked = True
             count = db.execute("SELECT value FROM sync_entity_meta WHERE key=?",
                                (ENTITY_TOMBSTONE_COUNT_KEY,)).fetchone()
             if count is None or int(count[0]) > ENTITY_TOMBSTONE_LIMIT:

@@ -74,8 +74,9 @@ class EntityReadLockContract(unittest.TestCase):
                 return []
 
         self.runtime_view = RuntimeView()
+        self.canvas_view = CanvasView()
         self.store = SyncStore(self.connect, lambda _key: {},
-                               runtime=self.runtime_view, canvas=CanvasView())
+                               runtime=self.runtime_view, canvas=self.canvas_view)
         with self.connect() as db:
             install_bypass_triggers(db)
         self.initial = self.store.pull('state:entities:v1')
@@ -125,6 +126,10 @@ class EntityReadLockContract(unittest.TestCase):
         changed = {**self.monitor, 'status': 'completed', 'tail': 'The final output'}
         with self.connect() as db:
             db.execute('UPDATE runtime_monitors SET record=? WHERE id=?', (json.dumps(changed), 'monitor'))
+        # A newly constructed store represents a restart. Its first pull must
+        # reconcile state that could have been left by an older server build.
+        self.store = SyncStore(self.connect, lambda _key: {},
+                               runtime=self.runtime_view, canvas=self.canvas_view)
         self.statements.clear()
         with self.writer(), self.assertRaisesRegex(sqlite3.OperationalError, 'database is locked'):
             self.store.pull('state:entities:v1', self.initial['checkpoint']['seq'])
@@ -138,10 +143,34 @@ class EntityReadLockContract(unittest.TestCase):
         self.assertEqual(stable['documents'], [])
         self.assertEqual(self.writes(), [])
 
+    def test_ordinary_pull_does_not_scan_the_monitor_window(self):
+        import codex_entity_contracts
+        import codex_sync_entities
+        with patch.object(codex_entity_contracts, 'monitor_records', wraps=codex_entity_contracts.monitor_records) as scan_records, \
+             patch.object(codex_sync_entities, '_recent_monitor_records', wraps=codex_sync_entities._recent_monitor_records) as project_window:
+            unchanged = self.store.pull('state:entities:v1', self.initial['checkpoint']['seq'])
+        self.assertEqual(unchanged['documents'], [])
+        scan_records.assert_not_called()
+        project_window.assert_not_called()
+
+    def test_restart_repairs_stale_monitor_state_before_first_pull_returns(self):
+        changed = {**self.monitor, 'tail': 'Stale across restart'}
+        with self.connect() as db:
+            db.execute('UPDATE runtime_monitors SET record=? WHERE id=?',
+                       (json.dumps(changed), 'monitor'))
+        restarted = SyncStore(self.connect, lambda _key: {},
+                              runtime=self.runtime_view, canvas=self.canvas_view)
+        response = restarted.pull('state:entities:v1', self.initial['checkpoint']['seq'])
+        monitor = self.values(response)['entity:monitor:monitor']
+        self.assertEqual(monitor['tail'], 'Stale across restart')
+        self.assertGreater(response['checkpoint']['seq'], self.initial['checkpoint']['seq'])
+
     def test_changed_agent_deletion_retires_its_monitor_through_normal_maintenance(self):
         with self.connect() as db:
             db.execute('UPDATE runtime_agents SET record=? WHERE id=?',
                        (json.dumps({**self.agent, 'deletedAt': 2}), 'owner'))
+        self.store = SyncStore(self.connect, lambda _key: {},
+                               runtime=self.runtime_view, canvas=self.canvas_view)
         response = self.store.pull('state:entities:v1', self.initial['checkpoint']['seq'])
         removed = next(row for row in response['documents'] if row['id'] == 'entity:monitor:monitor')
         self.assertTrue(removed['_deleted'])
@@ -224,6 +253,8 @@ class EntityReadLockContract(unittest.TestCase):
         with self.connect() as db:
             db.execute('UPDATE runtime_monitors SET record=? WHERE id=?',
                        (json.dumps({**self.monitor, 'tail': 'Earlier output'}), 'monitor'))
+        self.store = SyncStore(self.connect, lambda _key: {},
+                               runtime=self.runtime_view, canvas=self.canvas_view)
         original = self.store.entity_maintenance_needed
         def check(db):
             needed = original(db)
