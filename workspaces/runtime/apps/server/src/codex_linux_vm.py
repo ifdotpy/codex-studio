@@ -321,7 +321,12 @@ timeout --kill-after=5 15 timedatectl set-ntp true
 timeout --kill-after=5 120 bash -c 'until [ "$(timedatectl show --property=NTPSynchronized --value)" = yes ]; do sleep 1; done'
 stage system-packages
 printf 'Acquire::Retries "2"; Acquire::http::Timeout "30"; Acquire::https::Timeout "30";\n' > /etc/apt/apt.conf.d/99studio-timeouts
-apt-mark hold linux-generic linux-image-generic || true
+# The host boots the VM kernel, so kernel packages in the guest only fail to install.
+apt-mark hold linux-generic linux-image-generic linux-virtual linux-image-virtual linux-headers-virtual || true
+# Unattended upgrades stay on, but needrestart must not restart Studio units: on 2026-10-11 it
+# restarted the guest during an upload commit. They take new libraries at the next Studio update.
+mkdir -p /etc/needrestart/conf.d
+printf '%s\n' '$nrconf{override_rc}{qr(^codex-studio-)} = 0;' > /etc/needrestart/conf.d/50-codex-studio.conf
 missing_tools=0
 for tool in git rsync btrfs python3 curl xz blkid mountpoint lsof smbd smbpasswd testparm cc zstd; do
   if ! command -v "$tool" >/dev/null; then missing_tools=1; fi
