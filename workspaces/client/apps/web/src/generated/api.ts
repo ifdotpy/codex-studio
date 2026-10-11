@@ -4670,6 +4670,66 @@ export interface components {
        */
       mismatch?: true;
     };
+    /**
+     * AppearancePreferences
+     * @description Known appearance fields and their strict acceptance domains.
+     */
+    AppearancePreferences: {
+      /**
+       * Contentlayout
+       * @default original
+       * @enum {string}
+       */
+      contentLayout?: "original" | "custom";
+      /**
+       * Contentwidth
+       * @default 100
+       */
+      contentWidth?: number;
+      /**
+       * Fontfamily
+       * @default system
+       * @enum {string}
+       */
+      fontFamily?: "system" | "arial" | "inter" | "georgia" | "verdana";
+      /**
+       * Hideoldchatsthreshold
+       * @default 3
+       */
+      hideOldChatsThreshold?: number;
+      /**
+       * Mainfontsize
+       * @default 14
+       */
+      mainFontSize?: number;
+      /**
+       * Showmessageavatars
+       * @default false
+       */
+      showMessageAvatars?: boolean;
+      /**
+       * Sidebarfontsize
+       * @default 14
+       */
+      sidebarFontSize?: number;
+      /**
+       * Sidebarshortcut
+       * @default
+       */
+      sidebarShortcut?: string;
+      /**
+       * Theme
+       * @default auto
+       * @enum {string}
+       */
+      theme?: "auto" | "light" | "dark";
+      /**
+       * Typography
+       * @default original
+       * @enum {string}
+       */
+      typography?: "original" | "custom";
+    };
     /** ApprovePeerRequest */
     ApprovePeerRequest: {
       /**

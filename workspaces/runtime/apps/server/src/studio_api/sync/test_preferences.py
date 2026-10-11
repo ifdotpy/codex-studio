@@ -16,6 +16,50 @@ class PreferencesTests(unittest.TestCase):
     def field(self, attr: str, value: JsonValue, timestamp: int = 1, writer: str = "a") -> dict[str, PreferenceField]:
         return {json.dumps(["codex-studio-preferences-v1", attr], separators=(",", ":")): PreferenceField(value=value, timestamp=timestamp, writer=writer)}
 
+    def test_all_appearance_fields_sync_and_unknown_batch_is_atomic(self) -> None:
+        values: dict[str, JsonValue] = {
+            "theme": "dark",
+            "typography": "custom",
+            "contentLayout": "custom",
+            "sidebarFontSize": 18,
+            "mainFontSize": 18,
+            "fontFamily": "inter",
+            "contentWidth": 90,
+            "sidebarShortcut": "Control+b",
+            "showMessageAvatars": True,
+            "hideOldChatsThreshold": 4,
+        }
+        fields = {
+            json.dumps(["codex-studio-preferences-v1", name], separators=(",", ":")):
+                PreferenceField(value=value, timestamp=10, writer="fixture")
+            for name, value in values.items()
+        }
+        request = PreferencePushRequest(scope="user", fields=fields)
+        with sqlite3.connect(":memory:") as db:
+            ensure_tables(db)
+            accepted = merge_preferences(db, request)
+            self.assertEqual(set(accepted.fields), set(fields))
+            before = read_preferences(db, "user").fields
+
+            invalid_batch = dict(fields)
+            invalid_batch['["codex-studio-preferences-v1","unknownAppearance"]'] = (
+                PreferenceField(value=True, timestamp=11, writer="fixture")
+            )
+            with self.assertRaises(ValidationError):
+                PreferencePushRequest(scope="user", fields=invalid_batch)
+            self.assertEqual(read_preferences(db, "user").fields, before)
+
+    def test_hide_old_chats_threshold_domain_boundaries(self) -> None:
+        for value in (1, 50):
+            with self.subTest(value=value):
+                PreferencePushRequest(scope="user", fields=self.field("hideOldChatsThreshold", value))
+        for invalid_value in (0, 51, 1.0, True):
+            with self.subTest(value=invalid_value), self.assertRaises(ValidationError):
+                PreferencePushRequest(
+                    scope="user",
+                    fields=self.field("hideOldChatsThreshold", invalid_value),
+                )
+
     def test_validation(self) -> None:
         cases: list[tuple[str, JsonValue]] = [("theme", "blue"), ("mainFontSize", True), ("mainFontSize", 25), ("contentWidth", 59), ("unknown", True)]
         for attr, value in cases:

@@ -6,7 +6,7 @@ import sqlite3
 import time
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, StrictBool, StrictInt, StrictStr, ValidationError, field_validator, model_validator
 from studio_api.models import ContractModel, JsonValue, ResponseModel
 
 
@@ -14,6 +14,22 @@ class PreferenceField(ContractModel):
     value: JsonValue
     timestamp: int = Field(ge=0, le=9_007_199_254_740_991)
     writer: str = Field(min_length=1, max_length=128)
+
+
+class AppearancePreferences(ContractModel):
+    """Known appearance fields and their strict acceptance domains."""
+
+    theme: Literal["auto", "light", "dark"] = "auto"
+    typography: Literal["original", "custom"] = "original"
+    contentLayout: Literal["original", "custom"] = "original"
+    sidebarFontSize: StrictInt = Field(default=14, ge=12, le=24)
+    mainFontSize: StrictInt = Field(default=14, ge=12, le=24)
+    fontFamily: Literal["system", "arial", "inter", "georgia", "verdana"] = "system"
+    contentWidth: StrictInt = Field(default=100, ge=60, le=100)
+    # Match the previous server limit; shortcut parsing remains a client behavior.
+    sidebarShortcut: StrictStr = Field(default="", max_length=32)
+    showMessageAvatars: StrictBool = False
+    hideOldChatsThreshold: StrictInt = Field(default=3, ge=1, le=50)
 
 
 class UiPreferencesDto(ContractModel):
@@ -47,22 +63,9 @@ class UiPreferencesDto(ContractModel):
             if appearance:
                 if len(parts) != 2:
                     raise ValueError("Appearance requires a field")
-                attr = parts[1]
-                choices = {"theme": {"auto", "light", "dark"},
-                    "typography": {"original", "custom"}, "contentLayout": {"original", "custom"},
-                    "fontFamily": {"system", "arial", "inter", "georgia", "verdana"}}
-                if attr in choices:
-                    valid = isinstance(value, str) and value in choices[attr]
-                elif attr in {"sidebarFontSize", "mainFontSize", "contentWidth"}:
-                    low, high = (60, 100) if attr == "contentWidth" else (12, 24)
-                    valid = type(value) is int and low <= value <= high
-                elif attr == "showMessageAvatars":
-                    valid = type(value) is bool
-                elif attr == "sidebarShortcut":
-                    valid = isinstance(value, str) and len(value) <= 32
-                else:
-                    valid = False
-                if not valid:
+                try:
+                    AppearancePreferences.model_validate({parts[1]: value})
+                except ValidationError:
                     raise ValueError("Invalid Appearance value")
             elif visual and value is not None and type(value) is not bool:
                 raise ValueError("Visual state must be a boolean")

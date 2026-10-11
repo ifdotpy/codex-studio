@@ -1,3 +1,5 @@
+import type { components } from "./generated/api";
+
 export const studioPreferencesStorageKey = "codex-studio-preferences-v1";
 export const DEFAULT_HIDE_OLD_CHATS_THRESHOLD = 3;
 export const MIN_HIDE_OLD_CHATS_THRESHOLD = 1;
@@ -14,19 +16,10 @@ export const fontFamilies = {
   verdana: { label: "Verdana", css: "Verdana, Geneva, sans-serif" },
 } as const;
 
-export type StudioFontFamily = keyof typeof fontFamilies;
-export interface StudioPreferences {
-  theme: "auto" | "light" | "dark";
-  typography: "original" | "custom";
-  contentLayout: "original" | "custom";
-  sidebarFontSize: number;
-  mainFontSize: number;
-  fontFamily: StudioFontFamily;
-  contentWidth: number;
-  sidebarShortcut: string;
-  showMessageAvatars: boolean;
-  hideOldChatsThreshold: number;
-}
+export type StudioPreferences = Required<
+  components["schemas"]["AppearancePreferences"]
+>;
+export type StudioFontFamily = StudioPreferences["fontFamily"];
 
 export const defaultStudioPreferences: StudioPreferences = {
   theme: "auto",
