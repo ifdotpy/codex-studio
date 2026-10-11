@@ -3595,6 +3595,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         and server is not None and not getattr(server, "closed", False)):
                     return server
         selected = None
+        reattach_checked = False
         while True:
             desktop_changed = False
             with self.start_lock:
@@ -3676,6 +3677,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                 raise RuntimeError("Late native callbacks did not drain; runtime lease retained")
                             raise RuntimeError("Runtime is stopped")
                         startup_memory_mark("account-server-start:" + account_key)
+                        if (provider == "claude" and self.factory is AppServer and not reattach_checked
+                                and getattr(server, "initialize_result", None)):
+                            # A new backend reattaches to a running bridge, which keeps the
+                            # sources it started with. Retire it now when an update replaced
+                            # them and it is idle; later connects find it busy in a turn.
+                            reattach_checked = True
+                            from codex_claude_controls import retire_idle_bridge
+                            if retire_idle_bridge(self, account_key, account, server):
+                                self.refresh_workspace_volatile()
+                                continue
             if not needs_executable:
                 if native_auth_pending and self.claude_native_auth_proof(account_key, account, passive=False) is None:
                     raise ValueError('Cannot verify the original Claude account before task input')
