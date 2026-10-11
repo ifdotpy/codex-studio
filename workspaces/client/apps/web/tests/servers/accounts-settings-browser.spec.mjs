@@ -76,6 +76,8 @@ test("accounts settings show per-server state and provider choices", async ({
       },
     },
   );
+  const pageClockStart = new Date();
+  await page.clock.install({ time: pageClockStart });
   await page.goto(local.origin + "/?studio-navigation=combined");
   await page.locator("#message").waitFor();
   let pairedOneServer = false;
@@ -301,6 +303,11 @@ test("accounts settings show per-server state and provider choices", async ({
   });
   const addStarts = [];
   const addStartCounts = new Map();
+  let secondClaudeLoginId;
+  let resolveSecondClaudeStartAbort;
+  const secondClaudeStartAborted = new Promise((resolve) => {
+    resolveSecondClaudeStartAbort = resolve;
+  });
   await page.route("**/api/accounts/claude/add", async (route) => {
     const request = route.request();
     if (request.method() !== "POST") return route.continue();
@@ -309,7 +316,13 @@ test("accounts settings show per-server state and provider choices", async ({
     addStarts.push({ loginId: body.login_id, requestId });
     const prior = addStartCounts.get(body.login_id) || 0;
     addStartCounts.set(body.login_id, prior + 1);
-    if (prior === 0 && addStartCounts.size <= 2) return route.abort();
+    if (prior === 0 && addStartCounts.size <= 2) {
+      if (body.label === "Second Claude") {
+        secondClaudeLoginId = body.login_id;
+        resolveSecondClaudeStartAbort();
+      }
+      return route.abort();
+    }
     return route.continue();
   });
   await claudeSignIn.getByRole("button", { name: "Start sign-in" }).click();
@@ -391,24 +404,66 @@ test("accounts settings show per-server state and provider choices", async ({
       exact: true,
     }),
   ).toBeVisible();
+  const unknownSignInResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      url.pathname === "/api/accounts/claude/login" &&
+      response.request().method() === "GET" &&
+      response.status() === 404
+    );
+  });
+  let releaseUnknownStatus;
+  let resolveUnknownStatusArrived;
+  const unknownStatusRelease = new Promise((resolve) => {
+    releaseUnknownStatus = resolve;
+  });
+  const unknownStatusArrived = new Promise((resolve) => {
+    resolveUnknownStatusArrived = resolve;
+  });
+  await page.route("**/api/accounts/claude/login*", async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (
+      route.request().method() !== "GET" ||
+      requestUrl.searchParams.get("request_id") !== secondClaudeLoginId
+    )
+      return route.continue();
+    const response = await route.fetch();
+    if (response.status() === 404) {
+      resolveUnknownStatusArrived();
+      await unknownStatusRelease;
+    }
+    await route.fulfill({ response });
+  });
   await secondClaudeSignIn
     .getByRole("button", { name: "Start sign-in", exact: true })
     .click();
+  await secondClaudeStartAborted;
+  await unknownStatusArrived;
   await expect(
     secondClaudeSignIn.getByRole("button", {
       name: "Retry sign-in",
       exact: true,
     }),
   ).toBeVisible();
-  await expect(
-    secondClaudeSignIn.getByRole("button", {
-      name: "Start again",
-      exact: true,
-    }),
-  ).toBeVisible({ timeout: 10000 });
-  await secondClaudeSignIn
-    .getByRole("button", { name: "Start again", exact: true })
-    .click();
+  const pageTime = await page.evaluate(() => Date.now());
+  try {
+    await page.clock.pauseAt(pageTime);
+  } catch {
+    const currentPageTime = await page.evaluate(() => Date.now());
+    await page.clock.pauseAt(currentPageTime + 1);
+  }
+  releaseUnknownStatus();
+  await unknownSignInResponse;
+  const startAgain = secondClaudeSignIn.getByRole("button", {
+    name: "Start again",
+    exact: true,
+  });
+  await page.clock.fastForward(4_999);
+  await expect(startAgain).not.toBeVisible();
+  await page.clock.fastForward(1);
+  await expect(startAgain).toBeVisible();
+  await startAgain.click();
+  await page.clock.resume();
   await expect(
     secondClaudeSignIn.getByRole("link", { name: "Open sign-in page" }),
   ).toBeVisible();
