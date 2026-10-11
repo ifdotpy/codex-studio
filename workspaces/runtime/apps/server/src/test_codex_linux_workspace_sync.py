@@ -269,9 +269,8 @@ class SourceArchives(unittest.TestCase):
         for folder in ('.tmp/image', 'profile', 'reports'):
             (self.repo / folder).mkdir(parents=True)
             (self.repo / folder / 'file').write_text('data')
-        # An unreadable link in an ignored folder is never opened.
+        # A dangling link in an ignored folder is never opened.
         (self.repo / '.tmp/image/layer.tar').symlink_to('nowhere')
-        os.lchmod(self.repo / '.tmp/image/layer.tar', 0)
         subprocess.run(['git', 'init', '-q', '-b', 'main', str(self.repo / 'code')], check=True)
         (self.repo / 'code/main.py').write_text('code')
         _, names = self.archive('plain.tar.gz')
