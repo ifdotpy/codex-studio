@@ -21,11 +21,12 @@ import tempfile
 import threading
 import time
 import unittest
+import weakref
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
-from codex_runtime import AppServer, ResponseTimeout
+from codex_runtime import AppServer, ResponseTimeout, Runtime
 from codex_native_errors import NativeRpcError
 
 
@@ -93,7 +94,7 @@ class ReaderContract(unittest.TestCase):
             self.assertTrue(self.server.join_callbacks(2))
         self.temp.cleanup()
 
-    def start(self, limit=4096, clock_limit=128):
+    def start(self, limit=4096, clock_limit=128, notification_dispatcher_closed=None):
         def notification(message):
             if message["method"] == "blocked":
                 self.entered.set()
@@ -107,7 +108,8 @@ class ReaderContract(unittest.TestCase):
         ), patch.object(AppServer, "CALLBACK_QUEUE_LIMIT", limit), patch.object(AppServer, "CLOCK_QUEUE_LIMIT", clock_limit):
             self.server = AppServer(self.root, notification,
                 lambda message: self.records.append(message["method"]),
-                lambda: self.records.append("died"))
+                lambda: self.records.append("died"),
+                notification_dispatcher_closed=notification_dispatcher_closed)
         return self.server, self.server.proc
 
     def block(self, proc):
@@ -228,6 +230,45 @@ class ReaderContract(unittest.TestCase):
             server.close()
             self.assertLess(time.monotonic() - started, 0.5)
         self.assertTrue(server.join_callbacks(1))
+
+    def test_notification_dispatcher_closes_its_reused_runtime_connection(self):
+        import gc
+
+        runtime_root = self.root / "runtime"
+        runtime_root.mkdir()
+        runtime = Runtime(runtime_root, server_factory=object)
+        self.addCleanup(runtime.close)
+        connection_refs = []
+        callback_done = threading.Event()
+        failures = []
+
+        def notification(message):
+            try:
+                runtime.notification(message)
+                with runtime.db() as first:
+                    connection_refs.append(weakref.ref(first))
+                with runtime.db() as second:
+                    self.assertIs(second, first)
+            except BaseException as error:
+                failures.append(error)
+            finally:
+                callback_done.set()
+
+        server, proc = self.start(notification_dispatcher_closed=runtime.close_notification_database)
+        server.notification = notification
+        runtime.servers["default"] = server
+        runtime.server = server
+        proc.emit({"method": "account/rateLimits/updated", "params": {"rateLimits": {}}})
+        self.assertTrue(callback_done.wait(3))
+        self.assertEqual(failures, [])
+        wal_path = Path(str(runtime.db_path) + "-wal")
+        runtime.close()
+        self.assertTrue(server.join_callbacks(3))
+        self.assertFalse(server.dispatcher.is_alive())
+        gc.collect()
+        self.assertEqual(len(connection_refs), 1)
+        self.assertIsNone(connection_refs[0]())
+        self.assertFalse(wal_path.exists())
 
     def test_disconnect_settles_waiters_before_callback_drain_then_dies_once(self):
         server, proc = self.start()

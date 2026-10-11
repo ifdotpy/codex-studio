@@ -91,6 +91,15 @@ class RuntimeResourceTriggerReuseContract(unittest.TestCase):
             self.assertIs(second, first)
         self.assertEqual(self.trigger_ddl(), [])
 
+    def test_nested_scope_uses_a_fresh_connection(self):
+        with self.runtime.db() as outer:
+            with self.runtime.db() as inner:
+                self.assertIsNot(inner, outer)
+            with self.runtime.db() as following:
+                self.assertIsNot(following, outer)
+        with self.runtime.db() as following_scope:
+            self.assertIs(following_scope, outer)
+
     def test_short_lived_thread_closes_fresh_connection_without_retaining_callback_cycle(self):
         connection_ref = []
         finished = threading.Event()
@@ -136,6 +145,36 @@ class RuntimeResourceTriggerReuseContract(unittest.TestCase):
             db.execute("DELETE FROM runtime_items WHERE id='item'")
         self.assertEqual(self.changes(), {"queue", "receipts", "transcript"})
 
+    def test_reused_scope_resets_connection_local_state(self):
+        with self.runtime.db() as db:
+            baseline_timeout = db.execute("PRAGMA busy_timeout").fetchone()[0]
+            db.execute("CREATE TEMP TABLE scope_private(value TEXT)")
+            db.execute("SAVEPOINT scope_private")
+            db.execute("PRAGMA busy_timeout=321")
+            db.execute("PRAGMA query_only=ON")
+            db.row_factory = lambda _cursor, row: row
+
+        with self.runtime.db() as db:
+            self.assertFalse(db.in_transaction)
+            self.assertEqual(db.execute("PRAGMA busy_timeout").fetchone()[0], baseline_timeout)
+            self.assertEqual(db.execute("PRAGMA query_only").fetchone()[0], 0)
+            self.assertIs(db.row_factory, sqlite3.Row)
+            self.assertIsNone(db.execute(
+                "SELECT 1 FROM temp.sqlite_master WHERE name='scope_private'").fetchone())
+            with self.assertRaises(sqlite3.OperationalError):
+                db.execute("RELEASE scope_private")
+
+        with self.assertRaisesRegex(RuntimeError, "scope rollback"):
+            with self.runtime.db() as db:
+                db.execute("INSERT INTO runtime_events VALUES ('rollback','agent','user','x','pending',1,1,NULL,NULL)")
+                db.execute("SAVEPOINT scope_failed")
+                raise RuntimeError("scope rollback")
+        with self.runtime.db() as db:
+            self.assertFalse(db.in_transaction)
+            self.assertIsNone(db.execute(
+                "SELECT 1 FROM runtime_events WHERE id='rollback'").fetchone())
+            with self.assertRaises(sqlite3.OperationalError):
+                db.execute("RELEASE scope_failed")
     def test_old_connection_trigger_version_is_replaced_once(self):
         with self.runtime.db() as db:
             db._studio_resource_event_trigger_version = 0

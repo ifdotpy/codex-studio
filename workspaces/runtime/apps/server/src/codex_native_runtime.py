@@ -258,6 +258,7 @@ class NativeRuntimeUpdates:
         handle = 'account:' + account
         return AppServer(root, *callbacks, home=self.rt.accounts.home(account), isolated=account != 'default',
                          executable=selected['path'], supervisor_handle=handle, supervisor_root=self.rt.root,
+            notification_dispatcher_closed=getattr(self.rt, 'close_notification_database', None),
                          supervisor_commit=lambda message, sequence: self.rt.commit_supervisor_event(
                              handle, message, sequence, account, None),
                          supervisor_event_applied=lambda sequence: self.rt.supervisor_event_applied(
