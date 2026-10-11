@@ -3353,17 +3353,18 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def put(self, db: sqlite3.Connection, table: Literal["monitors"], record: "dict[str, JsonValue]", *, sync_rooms: bool = True, monitor_output: bool = False) -> None: ...
 
     @overload
-    def put(self, db: sqlite3.Connection, table: str, record: "AgentRecord | WorkRecord | PlanRecord | AnnotationRecord | CheckpointRecord | ComplaintRecord | ProjectRecord | AccountTransferRecord | WorkspaceOperationRecord | RoomRecord | RequestRecord | NativeSafetyRetryRecord | NativeNoticeRecord | RuleRecord | ToolRequestRecord | dict[str, JsonValue]", *, sync_rooms: bool = True, monitor_output: bool = False) -> None: ...
+    def put(self, db: sqlite3.Connection, table: str, record: "AgentRecord | WorkRecord | PlanRecord | AnnotationRecord | CheckpointRecord | ComplaintRecord | ProjectRecord | AccountTransferRecord | WorkspaceOperationRecord | RoomRecord | RequestRecord | NativeSafetyRetryRecord | NativeNoticeRecord | RuleRecord | ToolRequestRecord | dict[str, JsonValue]", *, sync_rooms: bool = True, monitor_output: bool = False, previous_record: Any = None) -> None: ...
 
-    def put(self, db: sqlite3.Connection, table: str, record: Any, *, sync_rooms: bool = True, monitor_output: bool = False) -> None:
+    def put(self, db: sqlite3.Connection, table: str, record: Any, *, sync_rooms: bool = True, monitor_output: bool = False, previous_record: Any = None) -> None:
         if table == "projects" and "_project_server_id" in self.__dict__:
             from codex_project_locations import normalize as normalize_project_locations
             normalize_project_locations(self, record)
         if table in {"checkpoints", "tool_requests"}:
             from codex_payloads import externalize_record
             record = externalize_record(self.root, db, table, record)
-        previous_row = db.execute(f"SELECT record FROM runtime_{table} WHERE id=?", (record["id"],)).fetchone()
-        previous = json.loads(previous_row[0]) if previous_row else None
+        previous_row = (None if previous_record is not None else
+                        db.execute(f"SELECT record FROM runtime_{table} WHERE id=?", (record["id"],)).fetchone())
+        previous = previous_record if previous_record is not None else json.loads(previous_row[0]) if previous_row else None
         changed = previous != record
         if changed and record_needs_dispatch(table, previous, record):
             local = self.__dict__.get("_callback_db")
@@ -7502,6 +7503,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         key = a["id"] + ":" + item_id
         row = db.execute("SELECT record FROM runtime_tasks WHERE id=?", (key,)).fetchone()
         task = json.loads(row[0]) if row else None
+        previous_task = copy.deepcopy(task) if task else None
         # An exact result can settle an existing historical tool. A stale start
         # or an unknown item cannot establish work in the current agent state.
         historical_tool = (stale and method == "item/completed" and task
@@ -7518,7 +7520,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if kind not in {"commandExecution", "dynamicToolCall", "mcpToolCall", "webSearch", "fileChange", "contextCompaction"}:
                 return
             if task and task["status"] != "running":
-                return
+                return task
             task = task or {"id": key, "agent": a["id"], "itemId": item_id,
                             "turnId": p.get("turnId") or a.get("turnId"), "created": time.time(),
                             "kind": "command" if kind == "commandExecution" else "tool"}
@@ -7554,7 +7556,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             task.update(tail=output[-12000:], outputTruncated=task.get("outputTruncated", False) or len(output) > 12000)
         else:
             return
-        self.put(db, "tasks", task)
+        self.put(db, "tasks", task, previous_record=previous_task)
         if stale:
             row = db.execute("SELECT record FROM runtime_items WHERE id=?", (key,)).fetchone()
             if row:
@@ -7586,6 +7588,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.item(db, a["id"], item_id, "output", json.dumps(recorded), task["type"] if historical_tool else "commandExecution",
                           toolStatus=task["status"], turnId=task.get("turnId"))
         self.touch_ui(a["id"])
+        return task
 
     def notification(self, message, account_key="default", connection_id=None):
         token_rate_received_at = time.time()
@@ -7809,7 +7812,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             else:
                 for sample in samples or [p]:
                     captured_tokens = self.analytics_safe(db, self.analytics_event, a, method, sample)
-            self.record_task(db, a, method, p, stale)
+            recorded_task = self.record_task(db, a, method, p, stale)
             if method.startswith("item/") and stale:
                 return
             if method.startswith("item/"):
@@ -7950,10 +7953,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                    and isinstance(completed_at, (int, float))
                                    else item.get("durationMs"))
                     if duration_ms is None and not started:
-                        task_row = db.execute("SELECT record FROM runtime_tasks WHERE id=?",
-                                              (a["id"] + ":" + str(item.get("id", "")),)).fetchone()
-                        if task_row:
-                            duration_ms = json.loads(task_row[0]).get("durationMs")
+                        task_id = a["id"] + ":" + str(item.get("id", ""))
+                        if recorded_task and recorded_task.get("id") == task_id:
+                            duration_ms = recorded_task.get("durationMs")
+                        else:
+                            task_row = db.execute("SELECT record FROM runtime_tasks WHERE id=?", (task_id,)).fetchone()
+                            if task_row:
+                                duration_ms = json.loads(task_row[0]).get("durationMs")
                     if started_at is not None:
                         item["startedAtMs"] = started_at
                     if completed_at is not None:

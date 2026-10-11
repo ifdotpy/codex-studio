@@ -78,6 +78,10 @@ class ProviderReplay(unittest.TestCase):
         '''))
         zod_target = bridge_root / "node_modules" / "zod"
         zod_target.symlink_to(source / "node_modules" / "zod", target_is_directory=True)
+        mcp_sdk_target = bridge_root / "node_modules" / "@modelcontextprotocol" / "sdk"
+        mcp_sdk_target.parent.mkdir(parents=True)
+        mcp_sdk_target.symlink_to(source / "node_modules" / "@modelcontextprotocol" / "sdk",
+                                  target_is_directory=True)
         node = shutil.which("node")
         self.assertIsNotNone(node, "Node.js is required to replay the real Claude bridge")
         env = dict(os.environ)

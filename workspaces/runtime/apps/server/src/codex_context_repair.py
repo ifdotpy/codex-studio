@@ -53,6 +53,15 @@ def _waiting(message, scope='local'):
     return error
 
 
+def _callback_barrier(server):
+    drained = concurrent.futures.Future()
+    server.after_events(lambda: drained.set_result(None))
+    try:
+        drained.result(WAIT_SECONDS)
+    except concurrent.futures.TimeoutError as cause:
+        raise _waiting('Context repair waits for native notification delivery', 'native') from cause
+
+
 def _attempt(agent):
     attempt = agent.get('startAttempt') or {}
     return attempt.get('id') if not attempt.get('submitted') else None
@@ -1940,6 +1949,8 @@ def repair_before_start(rt, agent):
             if _identity(current) == _identity(agent) and not current.get('contextRepairWait'):
                 if _optional_monitor_repair(rt, db, current):
                     return current
+        if (agent.get('contextRepair') or {}).get('phase') in {'unchanged', 'completed'}:
+            _callback_barrier(rt.connect(agent.get('accountKey', 'default')))
         return _repair(rt, agent['id'], _attempt(agent))
     except ValueError as error:
         if isinstance(getattr(error, 'contextRepairWait', None), dict):
@@ -2015,6 +2026,7 @@ def _repair(rt, key, attempt_id):
             op['startAttemptSnapshot'] = copy.deepcopy(current.get('startAttempt'))
             op['nativeIdentity'] = _source_native_identity(server)
             _save(rt, db, current, op)
+        _callback_barrier(server)
         native = _native_idle(server, a['threadId'], _unresolved_tool_receipts(rt, a), inherited_empty=True)
         _reconcile_thread_receipts(rt, op, native, attempt_id)
         # Native regular items flush before the terminal marker. Require that
