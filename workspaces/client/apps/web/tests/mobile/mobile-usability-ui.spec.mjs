@@ -457,16 +457,18 @@ test("Mobile usability", async () => {
       await page
         .getByRole("button", { name: "Chat settings", exact: true })
         .click();
-      await page.getByTestId("account-picker").waitFor();
+      await page
+        .locator(".chat-settings-panel .setup-account")
+        .first()
+        .waitFor();
       await capture("settings");
       if (verify && !desktop)
         assert.equal(
           await page.locator(".chat-settings-panel .agent-mode-switch").count(),
           1,
         );
-      await page.getByTestId("account-picker").click();
-      await capture("account-picker");
-      await page.keyboard.press("Escape");
+      // Account selection in unified settings uses reachable account tiles.
+      await capture("account-tiles");
       await page.getByLabel("Main agent settings", { exact: true }).click();
       await capture("model-settings");
       const model = page.locator("#model");

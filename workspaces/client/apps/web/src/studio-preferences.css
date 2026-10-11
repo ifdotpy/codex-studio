@@ -125,10 +125,6 @@
   gap: 12px;
 }
 
-.studio-settings-panel .account-picker {
-  width: 100%;
-}
-
 .studio-settings-panel .settings-field > .mantine-NativeSelect-root {
   width: 100%;
 }

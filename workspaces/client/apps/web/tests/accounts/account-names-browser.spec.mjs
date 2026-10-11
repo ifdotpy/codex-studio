@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "../playwright.mjs";
 
-async function fixture(page, mode) {
+async function fixture(page) {
   page.on("pageerror", (error) =>
     console.error("Account fixture:", error.message),
   );
@@ -96,11 +96,11 @@ async function fixture(page, mode) {
         },
         load(id) {
           if (id !== entry) return;
-          return `import React,{useState}from'react';import{createRoot}from'react-dom/client';import{MantineProvider,Button}from'@mantine/core';import Accounts from'/src/components/Accounts.tsx';import{theme}from'/src/theme.ts';import'@mantine/core/styles.css';import'/src/style.css';import'/src/appearance.css';
-const initial=${JSON.stringify(data())};const mode=${JSON.stringify(mode)};
-function Fixture(){const[data,setData]=useState(initial);const[custom,setCustom]=useState(false);const[color,setColor]=useState('dark');window.setTheme=setColor;window.setCustom=setCustom;
-const state={data,setData,error:'',refresh:async()=>data};const ready={...state,data:{...data,accounts:data.accounts.map(a=>({...a,status:'ready'}))}};
-return <MantineProvider theme={theme} forceColorScheme={color}><main style={{padding:16,width:'100%',maxWidth:760,overflow:'auto'}}>{mode.startsWith('names')?<Accounts state={state} managerOnly={mode==='names'} onError={()=>{}}/>:<Accounts state={ready} agent={{id:'lead',isLead:true,empty:false,threadId:'thread',provider:'codex'}} accountKey="default" onError={()=>{}} renderPicker={custom?((selectAccount,disabled)=><><Button disabled={disabled} onClick={()=>selectAccount('work')}>Pick Work</Button><Button onClick={()=>selectAccount('unknown')}>Pick unknown</Button></>):undefined}/>}</main></MantineProvider>};createRoot(document.getElementById('root')).render(<Fixture/>);`;
+          return `import React,{useState}from'react';import{createRoot}from'react-dom/client';import{MantineProvider}from'@mantine/core';import Accounts from'/src/components/Accounts.tsx';import{theme}from'/src/theme.ts';import'@mantine/core/styles.css';import'/src/style.css';import'/src/appearance.css';
+const initial=${JSON.stringify(data())};
+function Fixture(){const[data,setData]=useState(initial);const[color,setColor]=useState('dark');window.setTheme=setColor;
+const state={data,setData,error:'',refresh:async()=>data};
+return <MantineProvider theme={theme} forceColorScheme={color}><main style={{padding:16,width:'100%',maxWidth:760,overflow:'auto'}}><Accounts state={state} managerOnly onError={()=>{}}/></main></MantineProvider>};createRoot(document.getElementById('root')).render(<Fixture/>);`;
         },
       },
     ],
@@ -121,7 +121,7 @@ test("accounts names save, clear, keys, exact retry, and themes", async ({
   page,
 }) => {
   test.setTimeout(90_000);
-  const f = await fixture(page, "names");
+  const f = await fixture(page);
   try {
     const row = page.locator('[data-account="default"]');
     await row
@@ -229,45 +229,13 @@ test("accounts names save, clear, keys, exact retry, and themes", async ({
   }
 });
 
-test("accounts renderPicker uses the menu transfer confirmation", async ({
+test("accounts Name Escape keeps the inline manager visible", async ({
   page,
 }) => {
   test.setTimeout(90_000);
-  const f = await fixture(page, "picker");
+  const f = await fixture(page);
   try {
-    await page.getByTestId("account-picker").click();
-    await page
-      .getByRole("menuitem")
-      .filter({ hasText: "work@example.com" })
-      .click();
-    const dialog = page.getByRole("dialog", {
-      name: "Transfer this chat",
-      exact: true,
-    });
-    await expect(dialog).toBeVisible();
-    const menuText = await dialog.innerText();
-    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-    await page.evaluate(() => window.setCustom(true));
-    await page
-      .getByRole("button", { name: "Pick unknown", exact: true })
-      .click();
-    await expect(dialog).not.toBeVisible();
-    await page.getByRole("button", { name: "Pick Work", exact: true }).click();
-    await expect(dialog).toBeVisible();
-    expect(await dialog.innerText()).toBe(menuText);
-    expect(f.bodies).toHaveLength(0);
-  } finally {
-    await f.close();
-  }
-});
-
-test("accounts Name Escape keeps the manager open", async ({ page }) => {
-  test.setTimeout(90_000);
-  const f = await fixture(page, "names-modal");
-  try {
-    await page.getByTestId("account-picker").click();
-    await page.getByRole("menuitem", { name: /Manage accounts/ }).click();
-    const manager = page.getByRole("dialog", { name: "Accounts", exact: true });
+    const manager = page.locator(".accounts-manager-inline");
     await manager
       .getByRole("button", { name: "Edit name for personal@example.com" })
       .click();

@@ -14,11 +14,9 @@ import { accountLimits } from "../usage/accountUsage";
 import { Button, Group, Menu, Modal, Stack, TextInput } from "@mantine/core";
 import {
   Check,
-  ChevronDown,
   ArrowRightLeft,
   Plus,
   RefreshCw,
-  UserRound,
   Pencil,
   Ellipsis,
 } from "lucide-react";
@@ -250,12 +248,10 @@ function AccountNameEditor({
 function AccountCapacity({
   account,
   opened,
-  compact = false,
   card = false,
 }: {
   account: Account;
   opened: boolean;
-  compact?: boolean;
   card?: boolean;
 }) {
   const limits = useAccountLimits(
@@ -269,28 +265,6 @@ function AccountCapacity({
     accountLimits(limits, account.id, account.accountId),
     Date.now() / 1000,
   );
-  if (compact) {
-    const bucket = buckets.find(
-      (bucket) =>
-        bucket.id === (account.provider === "claude" ? "claude" : "codex") ||
-        bucket.data.limitId ===
-          (account.provider === "claude" ? "claude" : "codex"),
-    );
-    const weekly = bucket?.windows.find((window) => window.label === "7d");
-    const label =
-      !limits && !limitsError
-        ? "Weekly: loading…"
-        : limitsError ||
-            (!limits?.data && limits?.error) ||
-            !weekly ||
-            weekly.remaining === null
-          ? "Weekly: unavailable"
-          : weekly.expired
-            ? "Weekly: awaiting update"
-            : `Weekly: ${formatPercent(weekly.remaining)} left`;
-    return <small className="account-weekly-limit">{label}</small>;
-  }
-
   const remaining =
     account.status !== "ready" ||
     limitsError ||
@@ -580,7 +554,6 @@ export default function Accounts({
   accountKey,
   changeAccount,
   onError,
-  projectAccountKeys,
   onModalOpenChange,
   managerOnly = false,
   renderPicker,
@@ -591,7 +564,6 @@ export default function Accounts({
   state: ReturnType<typeof useAccounts>;
   agent?: Agent;
   accountKey?: string;
-  projectAccountKeys?: string[];
   onModalOpenChange?: (opened: boolean) => void;
   managerOnly?: boolean;
   renderPicker?: (
@@ -608,7 +580,6 @@ export default function Accounts({
   dialogsOnly?: boolean;
 }) {
   const [opened, setOpened] = useState(false);
-  const [menuOpened, setMenuOpened] = useState(false);
   const [pending, setPending] = useState("");
   const [error, setError] = useState("");
   const [home, setHome] = useState("");
@@ -682,10 +653,6 @@ export default function Accounts({
   const transfer = owner?.accountTransfer;
   const teamTransfer = transfer?.scope === "subagents" ? undefined : transfer;
   const transferring = teamTransfer?.status === "pending";
-  const transferTarget = accounts.find(
-    (a) => a.id === teamTransfer?.targetAccountKey,
-  );
-  const title = selected?.email || selected?.label || "Codex account";
   const replacement = accounts.find(
     (account) =>
       account.id !== disconnectChoice?.id &&
@@ -865,151 +832,6 @@ export default function Accounts({
       {!managerOnly &&
         renderPicker &&
         renderPicker(selectAccount, !!pending || (pinned && !owner))}
-      {!managerOnly && !renderPicker && teamTransfer?.status === "pending" && (
-        <AccountTransferStatus
-          transfer={teamTransfer}
-          targetLabel={transferTarget?.email || transferTarget?.label}
-          pending={!!pending}
-          onAction={(kind) => {
-            const requestId = teamTransfer.id;
-            if (typeof requestId !== "string") return;
-            void action(`${kind}-transfer`, () =>
-              post("/api/agents/account-transfer", {
-                action: kind,
-                request_id: requestId,
-              }),
-            );
-          }}
-        />
-      )}
-      {!managerOnly && !renderPicker && (
-        <Menu
-          position="bottom-end"
-          width={300}
-          withinPortal
-          onChange={setMenuOpened}
-        >
-          <Menu.Target>
-            <Button
-              className="account-picker"
-              data-testid="account-picker"
-              variant="subtle"
-              aria-label={`Account: ${title}`}
-              title={title}
-              leftSection={<UserRound size={15} />}
-              rightSection={<ChevronDown size={13} />}
-            >
-              <span className="account-picker-label">{title}</span>
-              {transferring && (
-                <span aria-label="Account transfer in progress">
-                  {teamTransfer?.moved ?? teamTransfer?.completed}/
-                  {teamTransfer?.total}
-                </span>
-              )}
-            </Button>
-          </Menu.Target>
-          <Menu.Dropdown>
-            <Menu.Label>
-              {pinned
-                ? "Transfer chat to account"
-                : "Account for this conversation"}
-            </Menu.Label>
-            {accounts
-              .filter(
-                (account) => !account.disconnected || account.id === accountKey,
-              )
-              .sort(
-                (a, b) =>
-                  Number(projectAccountKeys?.includes(b.id) || false) -
-                  Number(projectAccountKeys?.includes(a.id) || false),
-              )
-              .map((account) => (
-                <Menu.Item
-                  key={account.id}
-                  disabled={
-                    !!pending ||
-                    !accountCanStart(account) ||
-                    (pinned && !owner) ||
-                    (transferring &&
-                      account.id !== teamTransfer?.targetAccountKey)
-                  }
-                  leftSection={
-                    account.id === accountKey ? (
-                      <Check size={14} />
-                    ) : (
-                      <span style={{ width: 14 }} />
-                    )
-                  }
-                  onClick={() => selectAccount(account.id)}
-                >
-                  <span className="account-menu-identity">
-                    {account.email || account.label}
-                    <small>
-                      {[
-                        projectAccountKeys?.includes(account.id)
-                          ? "Project"
-                          : null,
-                        account.provider === "claude" ? "Claude Code" : null,
-                        account.plan,
-                        account.status !== "ready" ? account.status : null,
-                      ]
-                        .filter(Boolean)
-                        .join(" · ") || "Ready"}
-                      {account.id === state.data.defaultAccountKey
-                        ? " · Application default"
-                        : ""}
-                    </small>
-                    <AccountCapacity
-                      account={account}
-                      opened={menuOpened}
-                      compact
-                    />
-                  </span>
-                </Menu.Item>
-              ))}
-            <AccountTransferStatus
-              transfer={teamTransfer ?? undefined}
-              targetLabel={transferTarget?.email || transferTarget?.label}
-              pending={!!pending}
-              onAction={(kind) => {
-                const requestId = teamTransfer?.id;
-                if (typeof requestId !== "string") return;
-                void action(`${kind}-transfer`, () =>
-                  post("/api/agents/account-transfer", {
-                    action: kind,
-                    request_id: requestId,
-                  }),
-                );
-              }}
-            />
-            <Menu.Divider />
-            <Menu.Item
-              leftSection={<Plus size={14} />}
-              onClick={() => {
-                setAddIntent(null);
-                setAddOpen(true);
-              }}
-            >
-              Add account
-            </Menu.Item>
-            <Menu.Item
-              leftSection={<UserRound size={14} />}
-              onClick={() => {
-                setAdding(false);
-                setOpened(true);
-              }}
-            >
-              Manage accounts{accounts.length ? ` · ${accounts.length}` : ""}
-            </Menu.Item>
-            {Boolean(error || selected?.error) && (
-              <ErrorDescription
-                className="account-action-error"
-                value={error || selected?.error}
-              />
-            )}
-          </Menu.Dropdown>
-        </Menu>
-      )}
       {!dialogsOnly && (
         <AccountManagerHost
           inline={managerOnly}
