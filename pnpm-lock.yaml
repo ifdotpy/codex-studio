@@ -207,6 +207,9 @@ importers:
         specifier: workspace:*
         version: link:../../../runtime/apps/vault
     devDependencies:
+      '@bokuweb/zstd-wasm':
+        specifier: 0.0.27
+        version: 0.0.27
       playwright:
         specifier: 1.63.0
         version: 1.63.0
