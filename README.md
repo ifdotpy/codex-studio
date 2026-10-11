@@ -1,6 +1,6 @@
-# Codex Studio
+# LAYR Studio
 
-Codex Studio is a desktop workspace for a lead agent and many workers. It uses
+LAYR Studio is a desktop workspace for a lead agent and many workers. It uses
 Codex app-server for model sessions, tools, and permissions, and adds durable
 orchestration, agent messages, command monitors, and user replies.
 
