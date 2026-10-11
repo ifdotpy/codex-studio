@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 
-import { test, expect, apiSchemaHandshakeSse } from "../playwright.mjs";
+import {
+  apiSchemaHandshakeSse,
+  apiSchemaHeaders,
+  syncIdentityFixture,
+  test,
+  expect,
+} from "../playwright.mjs";
 
 test("draft pull waits for a real trigger without blocking push recovery", async ({
   page: fixturePage,
@@ -45,11 +51,15 @@ test("draft pull waits for a real trigger without blocking push recovery", async
     handle(req, res, next) {
       const url = new URL(req.url || "/", "http://localhost");
       const json = (value, status = 200) => {
-        res.writeHead(status, { "Content-Type": "application/json" });
+        res.writeHead(
+          status,
+          apiSchemaHeaders({ "Content-Type": "application/json" }),
+        );
         res.end(JSON.stringify(value));
       };
       if (url.pathname === "/check") res.end("<!doctype html>");
-      else if (url.pathname === "/api/sync/identity") json({ workspaceId });
+      else if (url.pathname === "/api/sync/identity")
+        json(syncIdentityFixture(workspaceId));
       else if (url.pathname === "/api/sync/stream") {
         const resources = JSON.parse(url.searchParams.get("resources") || "[]");
         res.writeHead(200, { "Content-Type": "text/event-stream" });

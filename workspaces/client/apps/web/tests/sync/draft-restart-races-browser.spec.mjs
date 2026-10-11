@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { test } from "../playwright.mjs";
+import { apiSchemaHeaders, syncIdentityFixture, test } from "../playwright.mjs";
 
 const workspaceId = "d".repeat(32);
 
@@ -27,11 +27,15 @@ async function createFixture(page) {
     handle(req, res, next) {
       const url = new URL(req.url || "/", "http://localhost");
       const json = (value, status = 200) => {
-        res.writeHead(status, { "Content-Type": "application/json" });
+        res.writeHead(
+          status,
+          apiSchemaHeaders({ "Content-Type": "application/json" }),
+        );
         res.end(JSON.stringify(value));
       };
       if (url.pathname === "/check") res.end("<!doctype html>");
-      else if (url.pathname === "/api/sync/identity") json({ workspaceId });
+      else if (url.pathname === "/api/sync/identity")
+        json(syncIdentityFixture(workspaceId));
       else if (url.pathname === "/api/sync/pull") {
         const after = Number(url.searchParams.get("after") || 0);
         const limit = Number(url.searchParams.get("limit") || 100);

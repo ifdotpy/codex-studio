@@ -1,5 +1,12 @@
 import { fileURLToPath } from "node:url";
-import { apiSchemaHandshakeSse, test, expect } from "../playwright.mjs";
+import {
+  apiSchemaHandshakeSse,
+  apiSchemaHeaders,
+  syncIdentityFixture,
+  syncProtocolFixture,
+  test,
+  expect,
+} from "../playwright.mjs";
 
 test("Sync Push Lifecycle Browser", async ({
   browser: _testBrowser,
@@ -41,15 +48,19 @@ test("Sync Push Lifecycle Browser", async ({
     handle(req, res, next) {
       const url = new URL(req.url, "http://localhost");
       const json = (value) => {
-        res.setHeader("Content-Type", "application/json");
+        for (const [name, value] of Object.entries(
+          apiSchemaHeaders({ "Content-Type": "application/json" }),
+        ))
+          res.setHeader(name, value);
         res.end(JSON.stringify(value));
       };
       if (url.pathname === "/check") res.end("<!doctype html>");
       else if (url.pathname === "/api/sync/protocol")
-        json({ protocolVersion: 1, capabilities: ["streamChanges"] });
+        json(syncProtocolFixture());
       else if (url.pathname === "/api/sync/identity") {
-        if (delayIdentity) identityResponse = () => json({ workspaceId });
-        else json({ workspaceId });
+        if (delayIdentity)
+          identityResponse = () => json(syncIdentityFixture(workspaceId));
+        else json(syncIdentityFixture(workspaceId));
       } else if (url.pathname === "/api/sync/stream") {
         opened++;
         res.writeHead(200, { "Content-Type": "text/event-stream" });
