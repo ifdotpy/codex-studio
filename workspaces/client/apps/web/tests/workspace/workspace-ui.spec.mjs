@@ -1,27 +1,19 @@
-import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
+import {
+  apiSchemaHeaders,
+  readTestState,
+  spawnFixture as spawn,
+  test,
+} from "../playwright.mjs";
 // Exercise workspace actions through the real runtime and HTTP server.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const browserContextsByTest = new WeakMap();
-test.beforeEach(async ({ browser }, testInfo) => {
-  browserContextsByTest.set(testInfo, new Set(browser.contexts()));
-});
-test.afterEach(async ({ browser }, testInfo) => {
-  const initialContexts = browserContextsByTest.get(testInfo) ?? new Set();
-  await Promise.all(
-    browser
-      .contexts()
-      .filter((context) => !initialContexts.has(context))
-      .map((context) => context.close()),
-  );
-});
-
-test("workspace ui", async ({ browser: _browser }) => {
+test("workspace ui", async ({ page: testPage }) => {
   test.setTimeout(120_000);
   const skill = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "codex-workspace-ui-"));
@@ -61,7 +53,6 @@ test("workspace ui", async ({ browser: _browser }) => {
     },
   );
   let log = "",
-    browser,
     page;
   proc.stderr.on("data", (d) => (log += d));
   const poll = async (fn, label) => {
@@ -93,12 +84,27 @@ test("workspace ui", async ({ browser: _browser }) => {
       assert.equal(r.status, 200, await r.clone().text());
       return r.json();
     };
-    browser = _browser;
-    page = await browser.newPage({ viewport: { width: 1440, height: 980 } });
+    const notifyWorkspace = async () => {
+      const response = await fetch(new URL("/api/sync/notify", origin), {
+        method: "POST",
+        headers: {
+          Origin: origin,
+          "Content-Type": "application/json",
+          "X-Canvas-Token": initial.token,
+          ...apiSchemaHeaders(),
+        },
+        body: JSON.stringify({
+          requestId: randomUUID(),
+          resources: [{ kind: "workspace", agentId: lead.id }],
+        }),
+      });
+      assert.equal(response.status, 200, await response.text());
+    };
+    page = testPage;
+    await page.setViewportSize({ width: 1440, height: 980 });
     const errors = [];
     const resourceRequests = [];
     const annotationRequests = [];
-    const taskFeedResponses = [];
     const planNotModified = [];
     page.on("request", (request) => {
       const url = new URL(request.url());
@@ -109,13 +115,6 @@ test("workspace ui", async ({ browser: _browser }) => {
         url.searchParams.get("view") === "annotations"
       )
         annotationRequests.push(request.url());
-    });
-    page.on("response", (response) => {
-      if (
-        new URL(response.url()).pathname === "/api/workspace/tasks" &&
-        response.status() === 200
-      )
-        taskFeedResponses.push(response);
     });
     page.on("response", (response) => {
       if (
@@ -153,8 +152,19 @@ test("workspace ui", async ({ browser: _browser }) => {
         .click();
     };
     let modal;
+    const initialPlanRead = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return url.pathname === "/api/plan" && response.status() === 200;
+    });
     await section("Plan");
+    await initialPlanRead;
     await drawer.getByText("This agent has not reported a plan.").waitFor();
+    const unchangedPlanRefresh = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return url.pathname === "/api/plan" && response.status() === 304;
+    });
+    await notifyWorkspace();
+    await unchangedPlanRefresh;
     await poll(
       async () => planNotModified.length > 0,
       "unchanged workspace plan uses a conditional 304 refresh",
@@ -402,6 +412,10 @@ test("workspace ui", async ({ browser: _browser }) => {
       async () => (await get("/api/profiles")).profiles.length === 1,
       "profile persisted",
     );
+    const savedProfile = (await get("/api/profiles")).profiles.find(
+      (profile) => profile.name === "Evidence reviewer",
+    );
+    assert.ok(savedProfile?.id, "saved profile has an identity");
     await drawer
       .getByRole("button", { name: "Start subagent", exact: true })
       .click();
@@ -409,18 +423,38 @@ test("workspace ui", async ({ browser: _browser }) => {
     await modal
       .getByLabel("Task for this subagent")
       .fill("Review the release evidence using the saved profile.");
+    const createRequest = page.waitForRequest((request) => {
+      const url = new URL(request.url());
+      return url.pathname === "/api/agents" && request.method() === "POST";
+    });
+    const createResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === "/api/agents" &&
+        response.request().method() === "POST" &&
+        response.status() === 200
+      );
+    });
     await modal
       .getByRole("button", { name: "Start subagent", exact: true })
       .click();
+    const request = await createRequest;
+    assert.equal(
+      request.postDataJSON().profile_id,
+      savedProfile.id,
+      "subagent creation carries the selected saved profile ID",
+    );
+    const created = await createResponse.then((response) => response.json());
     await poll(
       async () =>
         (await readTestState(origin)).runtime.agents.some(
           (a) =>
+            a.id === created.id &&
             a.name === "Evidence reviewer" &&
             a.parentId === lead.id &&
-            a.profileId,
+            a.role === "reviewer",
         ),
-      "profile worker created in selected team",
+      "profile worker created in selected team with its saved role",
     );
     assert.equal(
       await drawer
@@ -587,10 +621,11 @@ test("workspace ui", async ({ browser: _browser }) => {
       .getByRole("button", { name: "Chat actions", exact: true })
       .click();
     await page.locator("#tasks-toggle").click();
-    await poll(
-      () => taskFeedResponses.length > 0,
-      "task drawer uses incremental feed",
-    );
+    const activity = page
+      .getByRole("dialog")
+      .filter({ hasText: "Current activity" });
+    await activity.getByRole("region", { name: "Task list" }).waitFor();
+    await activity.getByText("No active tasks", { exact: true }).waitFor();
     await page.keyboard.press("Escape");
     assert.deepEqual(
       resourceRequests,
@@ -603,13 +638,11 @@ test("workspace ui", async ({ browser: _browser }) => {
         root,
     );
   } catch (error) {
-    if (browser) {
-      const pages = browser.contexts().flatMap((c) => c.pages());
-      if (pages[0])
-        await pages[0].screenshot({
-          path: join(root, "failure.png"),
-          fullPage: true,
-        });
+    if (page && !page.isClosed()) {
+      await page.screenshot({
+        path: join(root, "failure.png"),
+        fullPage: true,
+      });
     }
     console.error("Evidence:", root);
     throw error;
