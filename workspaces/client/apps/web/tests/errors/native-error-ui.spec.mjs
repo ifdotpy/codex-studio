@@ -54,21 +54,37 @@ test("native error ui", async ({ page: runnerPage }) => {
     {
       stdio: ["pipe", "pipe", "pipe"],
       env: {
-        ...process.env,
         CODEX_HOME: codexHome,
         NATIVE_ERROR_HOLD_CAPACITY_RETRY: "1",
       },
     },
   );
   let log = "",
-    page;
-  proc.stderr.on("data", (d) => (log += d));
+    page,
+    backendExit = null;
+  proc.stderr.on("data", (d) => (log += String(d)));
+  proc.once("exit", (code, signal) => {
+    backendExit = { at: new Date().toISOString(), code, signal };
+  });
   const poll = async (fn, label) => {
     for (let i = 0; i < 100; i++) {
       if (await fn()) return;
       await new Promise((r) => setTimeout(r, 50));
     }
-    throw Error(label + " " + log);
+    throw Error(
+      label +
+        " " +
+        JSON.stringify({
+          at: new Date().toISOString(),
+          backend: {
+            alive: proc.exitCode === null && proc.signalCode === null,
+            exitCode: proc.exitCode,
+            signalCode: proc.signalCode,
+            exit: backendExit,
+            stderr: log.slice(-20000),
+          },
+        }),
+    );
   };
   try {
     const port = await new Promise((resolve, reject) => {
@@ -76,7 +92,28 @@ test("native error ui", async ({ page: runnerPage }) => {
       proc.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const state = async () => await readTestState(origin);
+    const state = async () => {
+      try {
+        return await readTestState(origin);
+      } catch (error) {
+        console.error(
+          "[NATIVE-ERROR-STATE-READ-FAILURE] " +
+            JSON.stringify({
+              at: new Date().toISOString(),
+              origin,
+              error: String(error),
+              backend: {
+                alive: proc.exitCode === null && proc.signalCode === null,
+                exitCode: proc.exitCode,
+                signalCode: proc.signalCode,
+                exit: backendExit,
+                stderr: log.slice(-20000),
+              },
+            }),
+        );
+        throw error;
+      }
+    };
     page = runnerPage;
     await page.setViewportSize({ width: 1200, height: 900 });
     const errors = [];
@@ -91,6 +128,46 @@ test("native error ui", async ({ page: runnerPage }) => {
     });
     page.on("request", (r) => {
       if (new URL(r.url()).pathname === "/api/limits") limitReads++;
+    });
+    page.on("requestfailed", (request) => {
+      if (new URL(request.url()).pathname === "/api/sync/stream")
+        console.error(
+          "[NATIVE-ERROR-STREAM-REQUEST-FAILED] " +
+            JSON.stringify({
+              at: new Date().toISOString(),
+              url: request.url(),
+              failure: request.failure(),
+            }),
+        );
+    });
+    page.on("response", (response) => {
+      if (
+        new URL(response.url()).pathname === "/api/sync/stream" &&
+        response.status() >= 400
+      ) {
+        void response.text().then(
+          (body) =>
+            console.error(
+              "[NATIVE-ERROR-STREAM-RESPONSE] " +
+                JSON.stringify({
+                  at: new Date().toISOString(),
+                  url: response.url(),
+                  status: response.status(),
+                  body,
+                }),
+            ),
+          (error) =>
+            console.error(
+              "[NATIVE-ERROR-STREAM-RESPONSE-BODY-FAILED] " +
+                JSON.stringify({
+                  at: new Date().toISOString(),
+                  url: response.url(),
+                  status: response.status(),
+                  error: String(error),
+                }),
+            ),
+        );
+      }
     });
     if (process.env.NATIVE_ERROR_LEGACY) {
       await page.route("**/api/sync/identity", (r) =>
