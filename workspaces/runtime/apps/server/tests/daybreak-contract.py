@@ -254,7 +254,7 @@ class DaybreakRuntime(unittest.TestCase):
         a = {**self.agent(), 'threadId': 'analytics-thread', 'turnId': 'original-turn',
              'daybreakEnabled': True, 'cyberAccessProgram': 'daybreakBlue'}
         params = {'threadId': a['threadId'], 'turnId': a['turnId']}
-        with self.runtime.lock, self.runtime.db() as db:
+        with self.runtime.analytics_db() as db:
             self.runtime.analytics_event(db, a, 'turn/started', params, at=100)
             changed = {**a, 'model': 'gpt-5.6-sol', 'daybreakEnabled': False,
                        'cyberAccessProgram': 'standard', 'turnId': 'new-turn'}
@@ -270,7 +270,7 @@ class DaybreakRuntime(unittest.TestCase):
     def test_unknown_rollout_turn_does_not_inherit_current_daybreak_mode(self):
         a = {**self.agent(), 'threadId': 'analytics-thread', 'turnId': 'live-turn',
              'daybreakEnabled': True, 'cyberAccessProgram': 'daybreakBlue'}
-        with self.runtime.lock, self.runtime.db() as db:
+        with self.runtime.analytics_db() as db:
             self.runtime.analytics_event(db, a, 'turn/started', {'turnId': a['turnId']}, at=100)
             self.runtime.analytics_event(db, a, 'thread/tokenUsage/updated', {
                 'threadId': a['threadId'], 'turnId': 'unknown-old-turn', 'responseId': 'old-response',

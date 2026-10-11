@@ -94,7 +94,7 @@ class MessageInfoContract(unittest.TestCase):
         self.seed()
         self.event('item/completed', {'item': {'id': 'tool', 'type': 'commandExecution', 'command': 'check'}}, at=104)
         self.assertNotIn('tokens', self.info())
-        with self.runtime.lock, self.runtime.db() as db:
+        with self.runtime.analytics_db() as db:
             db.execute("DELETE FROM analytics_items WHERE json_extract(record,'$.itemId')='tool'")
         self.event('thread/tokenUsage/updated', {'tokenUsage': {'last': {'outputTokens': 900}, 'total': {'totalTokens': 1000}}}, at=105)
         self.assertNotIn('tokens', self.info())

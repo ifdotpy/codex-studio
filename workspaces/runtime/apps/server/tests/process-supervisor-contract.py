@@ -1477,7 +1477,7 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertTrue(runtime.supervisor_event_applied(server.proc.handle,
                                                           self.delivered[-1]['_studioSupervisorSequence']))
         def counts():
-            with runtime.db() as db:
+            with runtime.analytics_db() as db:
                 return db.execute('SELECT coalesce(sum(count),0) FROM analytics_notifications WHERE agent=? AND method=?',
                                   (agent['id'], 'item/agentMessage/delta')).fetchone()[0]
         wait_for(lambda: counts() == 6)
@@ -1577,7 +1577,7 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertEqual(json.loads(item['text'])['aggregatedOutput'],
                          ''.join(f'{index},' for index in range(count)))
         self.assertTrue(runtime._analytics_capture_idle.wait(5))
-        with runtime.db() as db:
+        with runtime.analytics_db() as db:
             total = db.execute('SELECT coalesce(sum(count),0) FROM analytics_notifications '
                                'WHERE agent=? AND method=?',
                                (agent['id'], 'item/commandExecution/outputDelta')).fetchone()[0]

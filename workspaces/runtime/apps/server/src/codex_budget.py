@@ -162,7 +162,8 @@ def _coverage(runtime: "Runtime", db: sqlite3.Connection, a: "AgentRecord",
     if not state['spent'] and not a.get('turnId') and not a.get('lastCompletedTurn'):
         return None
     if not getattr(db, "_studio_analytics_attached", False):
-        # Keep history coverage in the caller's canvas transaction/snapshot.
+        # Keep the lookup in the caller's canvas transaction. WAL does not
+        # synchronize snapshots across attached database files.
         # Plain SQLite fixtures may already have attached analytics themselves.
         attached = any(row[1] == "analytics" for row in db.execute("PRAGMA database_list"))
         if not attached:
