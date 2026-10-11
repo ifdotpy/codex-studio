@@ -182,6 +182,9 @@ async def serve():
     broker = Broker()
     # Mounts disappear at reboot. Recreate only exports already registered.
     await broker.share.restore()
+    # The project vault keeps the latest state in S3 without a caller (docs/vault.md).
+    vault = broker.handlers.get("vault.push")
+    vault_task = asyncio.create_task(vault.periodic()) if vault else None
     socket_directory(SOCKET.parent)
     SOCKET.unlink(missing_ok=True)
     server = await asyncio.start_unix_server(broker.client, path=str(SOCKET), limit=MAX_LINE + 1)
@@ -191,6 +194,8 @@ async def serve():
         async with server:
             await server.serve_forever()
     finally:
+        if vault_task:
+            vault_task.cancel()
         broker.close()
 
 

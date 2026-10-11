@@ -116,6 +116,26 @@ the previous version with tree deltas, one object per state, 25.7 MB (zstd -3) a
 (Go > Connect to Server). Files download and decrypt when they are opened and stay in a local
 cache. It uses the same reader as the site; the Mac only reads the vault.
 
+## Set up a vault for a project
+
+1. The user, in a terminal of their own (never through an agent, so the paper key stays out of
+   transcripts): `node workspaces/runtime/apps/vault/bin/vault-keys.mjs <prefix>`. It shows the
+   paper key once; write it down twice. `~/.config/studio-vault/<prefix>/` keeps only the
+   recipient and the encrypted paper slot.
+2. `aws sso login --profile <profile>`, `pnpm --filter studio-vault-web run build`, then, with the
+   Studio Python first on `PATH`: `node workspaces/runtime/apps/vault/bin/vault-deploy.mjs
+--project <prefix> --profile <profile> --region eu-central-1 --folder <project folder>`. It
+   makes the stack, uploads the site, the paper slot and `vault.json`, and pipes a write-only key
+   to the VM (`codex_vault.py configure`). It prints the site address.
+3. The root broker pushes every configured project every 10 minutes; `codex_vault.py push` pushes
+   at once, and `codex_vault.py status` shows the last push and the last error.
+4. On the site, unlock with the paper key and add a passkey for each device.
+5. Mac: `vault-view.mjs --project <prefix> --mount` mounts the latest state in Finder;
+   `vault-restore.mjs --project <prefix> --out <folder> [--seq <n>]` rebuilds a state.
+
+`tests/live.e2e.mjs` in `studio-vault-web` checks a deployed test vault end to end in headless
+Chromium (paper key, download, passkey enrollment and unlock with a virtual PRF authenticator).
+
 ## Not in the first slice
 
 A company key slot, Object Lock defaults, a custom domain, garbage collection.

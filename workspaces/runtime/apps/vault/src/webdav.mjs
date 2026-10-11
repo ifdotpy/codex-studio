@@ -43,7 +43,26 @@ export function view({ load, read, cache, refreshMs = 5 * 60 * 1000 }) {
   let loading;
   const refresh = async () => {
     const { files, time } = await load();
-    snapshot = { files, time: new Date(time * 1000), folders: index(files) };
+    const next = {
+      files,
+      time: new Date(time * 1000),
+      folders: index(files),
+      links: new Map(),
+    };
+    // A link shows the file it points to inside the state; resolve links now (they are few), so
+    // a listing gives the size of what a read returns.
+    for (const [path, entry] of Object.entries(files)) {
+      let target = path;
+      let hop = entry;
+      for (let i = 0; i < 8 && hop?.[0] === "120000"; i++) {
+        const text = (await raw(target, hop)).toString();
+        target = posix.normalize(posix.join(posix.dirname(target), text));
+        hop = files[target];
+      }
+      if (entry[0] === "120000")
+        next.links.set(path, hop && hop[0] !== "120000" ? hop : entry);
+    }
+    snapshot = next;
   };
   const current = async () => {
     if (!snapshot || Date.now() - snapshot.loaded > refreshMs) {
@@ -68,20 +87,14 @@ export function view({ load, read, cache, refreshMs = 5 * 60 * 1000 }) {
     return data;
   }
 
-  /** A file's content; a link shows the file it points to inside the state, else its target text. */
-  async function content(path, entry, state, hops = 0) {
-    const data = await raw(path, entry);
-    if (entry[0] !== "120000" || hops >= 8) return data;
-    const target = posix.normalize(
-      posix.join(posix.dirname(path), data.toString()),
-    );
-    const linked = state.files[target];
-    return linked ? content(target, linked, state, hops + 1) : data;
+  /** A file's content; a link gives the content of the file it points to. */
+  async function content(path, entry, state) {
+    return raw(path, state.links.get(path) ?? entry);
   }
 
   function properties(path, state) {
     const folder = state.folders.has(path);
-    const entry = state.files[path];
+    const entry = state.links.get(path) ?? state.files[path];
     const name = path.split("/").pop() || "/";
     return (
       `<D:response><D:href>${xml(href(path, folder))}</D:href><D:propstat><D:prop>` +

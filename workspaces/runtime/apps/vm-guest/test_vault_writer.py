@@ -186,6 +186,34 @@ class ConfigureTests(unittest.IsolatedAsyncioTestCase):
                 await handlers.dispatch("5", "vault.configure", {**params, "endpoint": "https://evil.example/"}, None)
 
 
+    async def test_the_periodic_round_pushes_every_project_and_records_the_outcome(self):
+        from common import GuestError
+        from vault_admin import VaultHandlers
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            handlers = VaultHandlers(root / "state", root / "store")
+            for project in ("one", "two"):
+                (root / "store/projects" / project / "lines/main").mkdir(parents=True)
+                await handlers.dispatch("c-" + project, "vault.configure", {
+                    "projectId": project, "recipient": "age1" + "q" * 58, "bucket": "bucket-one", "region": "eu-central-1",
+                    "prefix": project, "accessKeyId": "AKIAIOSFODNN7EXAMPLE", "secretAccessKey": "s" * 40}, None)
+
+            def push(project):
+                if project == "one":
+                    raise OSError("S3 put: HTTP 403")
+                return {"pushed": True, "seq": 3}
+            handlers.push = push
+            await handlers.tick()
+            one = await handlers.dispatch("s1", "vault.status", {"projectId": "one"}, None)
+            two = await handlers.dispatch("s2", "vault.status", {"projectId": "two"}, None)
+            self.assertEqual(one["lastError"], "OSError: S3 put: HTTP 403")
+            self.assertNotIn("lastPush", one)
+            self.assertIsNone(two["lastError"])
+            self.assertEqual(two["lastPush"], two["lastAttempt"])
+            with self.assertRaises(GuestError):
+                await handlers.dispatch("p1", "vault.push", {"projectId": "one"}, None)
+
+
 if __name__ == "__main__":
     unittest.main()
 
