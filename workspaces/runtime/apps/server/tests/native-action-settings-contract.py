@@ -30,6 +30,7 @@ class NativeActionSettingsContract(fixture.PrepareSteerContract):
         result = self.runtime.native_action(a["id"], "review")
         self.assertTrue(result["pending"])
         fixture.eventually(lambda: self.count("thread/settings/update") == 1)
+        fixture.eventually(lambda: self.count("review/start") == 1)
         calls = self.server.calls
         settings = [params for method, params in calls if method == "thread/settings/update"][-1]
         self.assertEqual(settings["threadId"], a["threadId"])

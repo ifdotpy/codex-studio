@@ -28,6 +28,7 @@ class SessionNamesContract(f.AccountContracts):
         def submit(method, params):
             if method != 'thread/name/set':
                 return original(method, params)
+            server.record_call(method, params)
             future = concurrent.futures.Future()
             pending.append((params, future))
             return future

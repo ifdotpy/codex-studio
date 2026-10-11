@@ -3343,6 +3343,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
         return view
 
+    @staticmethod
+    def _active_turn_status(db: sqlite3.Connection, agent_id: str) -> Literal["approval", "running"]:
+        """Status of an agent whose turn is active: a pending request keeps it in approval."""
+        pending = db.execute(
+            "SELECT 1 FROM runtime_requests WHERE json_extract(record,'$.agent')=? "
+            "AND json_extract(record,'$.status')='pending' LIMIT 1", (agent_id,)).fetchone()
+        return "approval" if pending else "running"
+
     @overload
     def put(self, db: sqlite3.Connection, table: Literal["agents"], record: "AgentRecord", *, sync_rooms: bool = True) -> None: ...
 
@@ -7243,7 +7251,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     # starts a new turn anyway, record it even when slots are full.
                     a.update(turnId=turn, inFlight=True)
                     if not stopped:
-                        a.update(status="running", error=None)
+                        a.update(status=Runtime._active_turn_status(db, agent_id), error=None)
                 self.put(db, "agents", a)
         if deleted_server:
             try:
@@ -7896,7 +7904,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if a["autoWake"] and a.get("turnEpoch", a["epoch"]) == a["epoch"]:
                     # A turn that native started itself (Claude after a result,
                     # background work, compaction) is busy too; new input steers it.
-                    a.update(status="running", inFlight=True)
+                    a.update(status=Runtime._active_turn_status(db, a["id"]), inFlight=True)
                     if attempt and a.get("error") == attempt.get("responseError"):
                         a["error"] = None
                 else:

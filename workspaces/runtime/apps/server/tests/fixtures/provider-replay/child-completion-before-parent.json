@@ -60,5 +60,19 @@
         "text": "Child completed first."
       }
     ]
+  },
+  "rpcReplies": {
+    "thread/read": {
+      "direction": "in",
+      "responseFor": "thread/read",
+      "message": {
+        "result": {
+          "thread": {
+            "id": "$threadId",
+            "status": { "type": "idle" }
+          }
+        }
+      }
+    }
   }
 }

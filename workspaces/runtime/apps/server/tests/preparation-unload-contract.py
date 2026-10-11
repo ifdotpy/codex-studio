@@ -77,6 +77,8 @@ class PreparationUnload(f.ContextWait):
             self.assertIs(self.runtime.preparations.get(self.a['id']), original_prepare)
             accepted = self.runtime.agent(self.a['id'])['startAttempt']
             release.set()
+            self.assertTrue(drained.wait(3))
+            self.runtime.dispatch()
             f.eventually(lambda: any(m == 'thread/resume' for m,p in self.server.calls))
             self.assertTrue(drained.is_set())
             operation = self.runtime.preparations[self.a['id']]
