@@ -1,6 +1,6 @@
 import { writePreferenceEdit } from "./sync/uiPreferenceStore";
-import { connectUiPreferences } from "./sync/uiPreferenceConnection";
-import { apiOrigin, serverFetch } from "./servers/transport";
+import { createUiPreferenceBridge } from "./sync/uiPreferenceBridge";
+import type { UiPreferenceProjection } from "./sync/entityProjection";
 import { Tooltip } from "@mantine/core";
 import StudioSettingsTabs, {
   isStudioSettingsTab,
@@ -399,10 +399,18 @@ export default function App() {
       };
     }
   }, []);
+  const preferenceBridge = useMemo(
+    () => (isServerView ? createUiPreferenceBridge(localStorage) : undefined),
+    [],
+  );
+  const receiveUiPreferences = useCallback(
+    (preferences: UiPreferenceProjection) =>
+      preferenceBridge?.receiveProjection(preferences),
+    [preferenceBridge],
+  );
   useEffect(() => {
-    if (!isServerView) return;
-    return connectUiPreferences(apiOrigin(), serverFetch, localStorage);
-  }, []);
+    return preferenceBridge?.start();
+  }, [preferenceBridge]);
   const [studioPreferences, setStudioPreferences] = useState<StudioPreferences>(
     preferenceLoad.value,
   );
@@ -541,7 +549,7 @@ export default function App() {
       rememberCreated,
       forgetCreated,
       creationScope,
-    } = useSnapshot(),
+    } = useSnapshot(preferenceBridge ? receiveUiPreferences : undefined),
     [opened, setOpened] = useState<string | null>(() =>
       window.matchMedia("(max-width: 760px)").matches
         ? saved("codex-mobile-opened", null)

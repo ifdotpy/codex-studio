@@ -2,10 +2,15 @@ import {
   capturePreferenceWrite,
   readPreferenceFields,
 } from "../sync/uiPreferenceStore";
+import { preferenceEvent } from "../sync/uiPreferenceMerge";
 import { ServerManagementRequests } from "./managementRequests";
 import { useEffect, useRef, useState } from "react";
 import { errorText, refreshSession, serverAccess } from "../api";
-import { discoverySnapshot, type DiscoverySnapshot } from "./discoveryModel";
+import {
+  discoverySnapshot,
+  effectiveDiscoveryAliases,
+  type DiscoverySnapshot,
+} from "./discoveryModel";
 import type { ServerAccessRequest, ServerAccessState } from "./accessContract";
 import { AutomaticUiAccess } from "./automaticUiAccess";
 import {
@@ -30,11 +35,24 @@ export function useServerDiscovery(
   localAvailable = true,
 ) {
   const [snapshot, setSnapshot] = useState<DiscoverySnapshot | null>(null);
+  const [, setPreferenceRevision] = useState(0);
   const [error, setError] = useState("");
   const [accessError, setAccessError] = useState("");
   const [busy, setBusy] = useState(false);
   const [checkedAt, setCheckedAt] = useState<number | null>(null);
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    const changed = (event: Event) => {
+      if (
+        event instanceof CustomEvent &&
+        typeof event.detail === "string" &&
+        event.detail.startsWith("server-alias:")
+      )
+        setPreferenceRevision((revision) => revision + 1);
+    };
+    window.addEventListener(preferenceEvent, changed);
+    return () => window.removeEventListener(preferenceEvent, changed);
+  }, []);
   const addRef = useRef(add);
   addRef.current = add;
   const active = useRef(false);
@@ -168,18 +186,17 @@ export function useServerDiscovery(
         writeServers(paired);
     }
     if (next?.aliases) {
-      const aliases = { ...next.aliases };
-      const fields = readPreferenceFields("user");
-      for (const id of ["local", ...readServers().map((server) => server.id)]) {
-        const identity = localStorage.getItem(
-          `studio-server-workspace-id:${id}`,
-        );
-        const value =
-          identity &&
-          fields[JSON.stringify([`server-alias:${identity}`])]?.value;
-        if (typeof value === "string") aliases[id] = value;
-      }
-      next.aliases = aliases;
+      const aliases =
+        effectiveDiscoveryAliases(
+          next.aliases,
+          Object.fromEntries(
+            ["local", ...readServers().map((server) => server.id)].map((id) => [
+              id,
+              localStorage.getItem(`studio-server-workspace-id:${id}`),
+            ]),
+          ),
+          readPreferenceFields("user"),
+        ) ?? next.aliases;
       if (aliases.local) localStorage.setItem(LOCAL_ALIAS_KEY, aliases.local);
       const paired = readServers().map((server) =>
         aliases[server.id] ? { ...server, alias: aliases[server.id] } : server,
@@ -199,6 +216,21 @@ export function useServerDiscovery(
         },
       );
   };
+  const effectiveSnapshot = snapshot
+    ? {
+        ...snapshot,
+        aliases: effectiveDiscoveryAliases(
+          snapshot.aliases,
+          Object.fromEntries(
+            ["local", ...readServers().map((server) => server.id)].map((id) => [
+              id,
+              localStorage.getItem(`studio-server-workspace-id:${id}`),
+            ]),
+          ),
+          readPreferenceFields("user"),
+        ),
+      }
+    : null;
   const load = () => {
     if (loading.current) return loading.current;
     loading.current = (async () => {
@@ -337,7 +369,7 @@ export function useServerDiscovery(
     };
   }, [enabled, localAvailable]);
   return {
-    snapshot,
+    snapshot: effectiveSnapshot,
     checkedAt,
     error: [error, accessError].filter(Boolean).join("\n"),
     busy,

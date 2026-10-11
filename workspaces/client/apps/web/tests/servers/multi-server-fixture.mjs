@@ -10,7 +10,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
 const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
-const defaultWorkspaceId = "b".repeat(32);
+export function fixtureWorkspaceId(label) {
+  return crypto.createHash("sha256").update(label).digest("hex").slice(0, 32);
+}
 export async function fixture(
   label,
   signed = false,
@@ -19,7 +21,7 @@ export async function fixture(
   const options = Array.isArray(accountRowsOrOptions)
     ? {}
     : accountRowsOrOptions || {};
-  const workspaceId = options.workspaceId || defaultWorkspaceId;
+  const workspaceId = options.workspaceId || fixtureWorkspaceId(label);
   const accountRows = Array.isArray(accountRowsOrOptions)
     ? accountRowsOrOptions
     : options.accounts || null;

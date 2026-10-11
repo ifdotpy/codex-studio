@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { fixture } from "../servers/multi-server-fixture.mjs";
+import {
+  fixture,
+  fixtureWorkspaceId,
+} from "../servers/multi-server-fixture.mjs";
 import {
   entityPullFixture,
   syncIdentityFixture,
@@ -7,6 +10,10 @@ import {
 } from "../playwright.mjs";
 
 export const scope = "/same/state";
+const workspaceIds = {
+  local: fixtureWorkspaceId("Local"),
+  remote: "c".repeat(32),
+};
 export const sourcePath = (owner) =>
   owner === "local" ? "/same/project" : "/remote/project";
 const treeId = (path, kind, id) => JSON.stringify([path, kind, id]);
@@ -196,7 +203,7 @@ export async function sidebarParityFixture(
         json(value);
         return true;
       };
-      const workspaceId = (owner === "local" ? "b" : "c").repeat(32);
+      const workspaceId = workspaceIds[owner];
       if (path === "/api/sync/identity")
         return reply(syncIdentityFixture(workspaceId));
       if (path === "/api/sync/preferences") {
@@ -478,12 +485,13 @@ export async function sidebarParityFixture(
   const local = await fixture("Local", false, {
     handle: handler("local"),
     resourceBaseline: true,
+    workspaceId: workspaceIds.local,
     accounts: structuredClone(accounts),
   });
   const remote = await fixture("Remote", true, {
     handle: handler("remote"),
     resourceBaseline: true,
-    workspaceId: "c".repeat(32),
+    workspaceId: workspaceIds.remote,
     accounts: structuredClone(accounts),
   });
   Object.assign(servers, { local, remote });

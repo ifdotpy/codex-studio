@@ -5,6 +5,14 @@ import {
   API_SCHEMA_HASH_PARAM,
 } from "../generated/apiSchema";
 import {
+  ApiSchemaMismatchError,
+  isApiSchemaMismatchHandshake,
+  isApiSchemaMismatchResponse,
+  markApiSchemaMismatch,
+  onApiSchemaMismatch,
+} from "../api";
+import { apiOrigin } from "../servers/transport";
+import {
   initializePreferenceMigration,
   acknowledgePreferenceFields,
   readPreferenceFields,
@@ -16,9 +24,17 @@ import {
   type PreferenceFields,
   type PreferenceScope,
 } from "./uiPreferenceMerge";
+import { EntitySequenceCheckpoint } from "./entitySequence";
 import type { components } from "../generated/api";
 type Pull = components["schemas"]["SyncPullResponse"];
 type Fetch = (request: Request) => Promise<Response>;
+type PreferenceChangeEvent = components["schemas"]["ResourceChangeEvent"];
+
+function preferenceScopeFromEntityId(id: string): PreferenceScope | undefined {
+  if (id === "entity:uiPreferences:user") return "user";
+  if (id === "entity:uiPreferences:server") return "server";
+  return undefined;
+}
 
 /** Uses the existing entity pull and state resource stream for each paired server. */
 export function connectUiPreferences(
@@ -26,10 +42,14 @@ export function connectUiPreferences(
   fetchRequest: Fetch,
   storage: Storage,
   onIdentity?: (workspaceId: string) => void,
+  onSchemaMismatch?: () => void,
 ) {
   let stopped = false;
   let ready = false;
-  let cursor = 0;
+  // Share the main sync client's epoch/reset/coverage rules. This connector
+  // advances it only after a pull or a complete state change batch is applied.
+  const cursor = new EntitySequenceCheckpoint();
+  let workspaceId: string | undefined;
   let pulling = false;
   let pullAgain = false;
   let sending = false;
@@ -37,6 +57,42 @@ export function connectUiPreferences(
   let stream: SignedEventSource | undefined;
   let retry: ReturnType<typeof setTimeout> | undefined;
   const controller = new AbortController();
+  let stopWrites = () => {};
+  let stopGateListener = () => {};
+  let resume = () => {};
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    controller.abort();
+    stream?.close();
+    stream = undefined;
+    if (retry) clearTimeout(retry);
+    retry = undefined;
+    stopWrites();
+    stopGateListener();
+    window.removeEventListener("online", resume);
+    window.removeEventListener("focus", resume);
+  };
+  const stopForSchemaMismatch = () => {
+    if (stopped) return;
+    stop();
+    onSchemaMismatch?.();
+  };
+  const fetchWithSchemaGate = async (request: Request) => {
+    if (stopped) throw new ApiSchemaMismatchError();
+    let response: Response;
+    try {
+      response = await fetchRequest(request);
+    } catch (error) {
+      if (error instanceof ApiSchemaMismatchError) stopForSchemaMismatch();
+      throw error;
+    }
+    if (isApiSchemaMismatchResponse(response, request)) {
+      stopForSchemaMismatch();
+      throw new ApiSchemaMismatchError(true);
+    }
+    return response;
+  };
   const confirmed: Partial<Record<PreferenceScope, string>> = {};
   initializePreferenceMigration("user", storage);
   initializePreferenceMigration("server", storage);
@@ -54,37 +110,34 @@ export function connectUiPreferences(
           byte.toString(16).padStart(2, "0"),
         ).join("");
     }
-    const response = await fetchRequest(
-      new Request(origin + path, {
-        headers: {
-          [API_SCHEMA_HASH_HEADER]: API_SCHEMA_HASH,
-          ...(body
-            ? {
-                "Content-Type": "application/json",
-                "X-Canvas-Token": token,
-                "X-Studio-Request-Id": requestId,
-              }
-            : {}),
-        },
-        method: body ? "POST" : "GET",
-        ...(body ? { body: JSON.stringify(body) } : {}),
-        signal: controller.signal,
-        redirect: "error",
-        cache: "no-store",
-      }),
-    );
-    if (
-      !response.ok ||
-      response.headers.get(API_SCHEMA_HASH_HEADER) !== API_SCHEMA_HASH
-    )
-      throw new Error("Preferences are unavailable.");
+    const outgoing = new Request(origin + path, {
+      headers: {
+        [API_SCHEMA_HASH_HEADER]: API_SCHEMA_HASH,
+        ...(body
+          ? {
+              "Content-Type": "application/json",
+              "X-Canvas-Token": token,
+              "X-Studio-Request-Id": requestId,
+            }
+          : {}),
+      },
+      method: body ? "POST" : "GET",
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      signal: controller.signal,
+      redirect: "error",
+      cache: "no-store",
+    });
+    if (stopped) throw new ApiSchemaMismatchError();
+    const response = await fetchWithSchemaGate(outgoing);
+    if (!response.ok) throw new Error("Preferences are unavailable.");
     return response.json();
   };
   const scheduleRetry = () => {
     if (stopped || retry) return;
     retry = setTimeout(() => {
       retry = undefined;
-      void pull().then(openStream).catch(scheduleRetry);
+      if (stream) void pull().catch(scheduleRetry);
+      else openStream();
     }, 3000);
   };
   const send = async () => {
@@ -93,16 +146,27 @@ export function connectUiPreferences(
       sendAgain = true;
       return;
     }
+    const pendingFields = () =>
+      (["user", "server"] as const)
+        .map((scope) => {
+          const fields = readPreferenceFields(scope, storage);
+          return {
+            scope,
+            fields,
+            serialized: JSON.stringify(fields),
+          };
+        })
+        .filter(
+          ({ scope, fields, serialized }) =>
+            Object.keys(fields).length > 0 && confirmed[scope] !== serialized,
+        );
+    if (!pendingFields().length) return;
     sending = true;
     try {
       token = (await request("/api/session")).token;
       do {
         sendAgain = false;
-        for (const scope of ["user", "server"] as const) {
-          const fields = readPreferenceFields(scope, storage);
-          const serialized = JSON.stringify(fields);
-          if (!Object.keys(fields).length || confirmed[scope] === serialized)
-            continue;
+        for (const { scope, fields, serialized } of pendingFields()) {
           const result = await request("/api/sync/preferences", {
             scope,
             fields,
@@ -136,12 +200,13 @@ export function connectUiPreferences(
         let more: boolean;
         do {
           const response = (await request(
-            `/api/sync/pull?scope=state:entities:v1&after=${cursor}&limit=500`,
+            `/api/sync/pull?scope=state:entities:v1&after=${Math.max(0, cursor.value)}&limit=500`,
           )) as Pull & { reset?: boolean };
           if (stopped) return;
+          workspaceId = response.workspaceId;
           onIdentity?.(response.workspaceId);
           if (response.reset) {
-            cursor = 0;
+            cursor.reset();
             more = true;
             continue;
           }
@@ -152,14 +217,14 @@ export function connectUiPreferences(
               entity.collection === "uiPreferences" &&
               ["user", "server"].includes(entity.id)
             ) {
-              receivePreferenceFields(entity.id, entity.value.fields, storage);
               confirmed[entity.id as PreferenceScope] = JSON.stringify(
                 entity.value.fields,
               );
+              receivePreferenceFields(entity.id, entity.value.fields, storage);
             }
           }
-          cursor = response.checkpoint.seq;
-          more = cursor < (response.maxSeq ?? cursor);
+          cursor.assign(response.checkpoint.seq);
+          more = cursor.value < (response.maxSeq ?? cursor.value);
         } while (more && !stopped);
       } while (pullAgain && !stopped);
       ready = true;
@@ -175,35 +240,177 @@ export function connectUiPreferences(
       resources: JSON.stringify([{ kind: "state" }]),
       [API_SCHEMA_HASH_PARAM]: API_SCHEMA_HASH,
     });
-    stream = new SignedEventSource(
-      origin + `/api/sync/stream?${query}`,
-      fetchRequest,
-    );
-    stream.addEventListener("resources", () => {
+    try {
+      stream = new SignedEventSource(
+        origin + `/api/sync/stream?${query}`,
+        fetchWithSchemaGate,
+      );
+    } catch {
       void pull().catch(scheduleRetry);
+      scheduleRetry();
+      return;
+    }
+    stream.addEventListener("api-schema", (event) => {
+      let payload: unknown;
+      try {
+        payload = JSON.parse((event as MessageEvent<string>).data);
+      } catch {
+        payload = null;
+      }
+      if (!isApiSchemaMismatchHandshake(payload)) return;
+      if (new URL(origin).origin === apiOrigin()) {
+        const serverHash =
+          payload && typeof payload === "object"
+            ? (payload as { hash?: unknown }).hash
+            : undefined;
+        markApiSchemaMismatch(serverHash);
+      }
+      stopForSchemaMismatch();
+    });
+    stream.addEventListener("resources", (event) => {
+      let payload: unknown;
+      try {
+        payload = JSON.parse((event as MessageEvent<string>).data);
+      } catch {
+        payload = null;
+      }
+      if (!payload || typeof payload !== "object") {
+        void pull().catch(scheduleRetry);
+        return;
+      }
+      const change = payload as PreferenceChangeEvent;
+      if (change.reason !== "change") {
+        if (
+          typeof change.workspaceId !== "string" ||
+          typeof change.epoch !== "string" ||
+          !Array.isArray(change.resources) ||
+          !Array.isArray(change.resourceVersions) ||
+          change.resources.length !== change.resourceVersions.length
+        ) {
+          void pull().catch(scheduleRetry);
+          return;
+        }
+        workspaceId = change.workspaceId;
+        onIdentity?.(change.workspaceId);
+        const workspaceChanged = cursor.observeWorkspace(change.workspaceId);
+        const epochChanged = cursor.observeEpoch(change.epoch);
+        const stateVersion = change.resourceVersions.find(
+          (version, index) =>
+            (version.resource ?? change.resources[index])?.kind === "state",
+        );
+        if (!stateVersion) {
+          void pull().catch(scheduleRetry);
+          return;
+        }
+        if (stateVersion.entitySequenceReset) cursor.reset();
+        const sequences = stateVersion.entitySequences;
+        const baselineSequence =
+          sequences && sequences.length > 0
+            ? Math.max(...sequences)
+            : stateVersion.revision;
+        if (
+          !workspaceChanged &&
+          !epochChanged &&
+          !stateVersion.entitySequenceReset &&
+          cursor.canUseDurableCheckpoint &&
+          cursor.covers(baselineSequence)
+        ) {
+          ready = true;
+          void send();
+          return;
+        }
+        void pull().catch(scheduleRetry);
+        return;
+      }
+      if (
+        !Array.isArray(change.resources) ||
+        !Array.isArray(change.resourceVersions) ||
+        change.resources.length !== change.resourceVersions.length ||
+        change.workspaceId !== workspaceId
+      ) {
+        void pull().catch(scheduleRetry);
+        return;
+      }
+      let nextCursor = cursor.value;
+      const preferenceRows: {
+        scope: PreferenceScope;
+        fields: PreferenceFields;
+      }[] = [];
+      for (const [index, version] of change.resourceVersions.entries()) {
+        const resource = version.resource ?? change.resources[index];
+        if (!resource) {
+          void pull().catch(scheduleRetry);
+          return;
+        }
+        if (resource.kind !== "state") continue;
+        const batch = version.entityChanges;
+        if (
+          version.entitySequenceReset ||
+          !batch ||
+          batch.after !== nextCursor ||
+          batch.through !== version.revision
+        ) {
+          void pull().catch(scheduleRetry);
+          return;
+        }
+        for (const document of batch.documents) {
+          const scope = preferenceScopeFromEntityId(document.id);
+          if (!scope) continue;
+          if (document._deleted) {
+            void pull().catch(scheduleRetry);
+            return;
+          }
+          try {
+            const entity = JSON.parse(document.payload);
+            if (
+              entity.collection !== "uiPreferences" ||
+              entity.id !== scope ||
+              !entity.value ||
+              typeof entity.value.fields !== "object" ||
+              entity.value.fields === null
+            ) {
+              void pull().catch(scheduleRetry);
+              return;
+            }
+            preferenceRows.push({
+              scope,
+              fields: entity.value.fields as PreferenceFields,
+            });
+          } catch {
+            void pull().catch(scheduleRetry);
+            return;
+          }
+        }
+        nextCursor = batch.through;
+      }
+      for (const { scope, fields } of preferenceRows) {
+        confirmed[scope] = JSON.stringify(fields);
+        receivePreferenceFields(scope, fields, storage);
+      }
+      cursor.assign(nextCursor);
     });
     stream.onerror = () => {
       stream?.close();
       stream = undefined;
+      // Without a live stream, reconcile directly. Reopening the stream then
+      // waits for its baseline, which will be skipped if this pull caught up.
+      void pull().catch(scheduleRetry);
       scheduleRetry();
     };
   };
-  const stopWrites = watchPreferenceWrites(() => {
+  stopWrites = watchPreferenceWrites(() => {
     void send();
   });
-  const resume = () => {
-    void pull().then(openStream).catch(scheduleRetry);
+  resume = () => {
+    if (stream) void pull().catch(scheduleRetry);
+    else openStream();
   };
   window.addEventListener("online", resume);
   window.addEventListener("focus", resume);
-  void pull().then(openStream).catch(scheduleRetry);
-  return () => {
-    stopped = true;
-    controller.abort();
-    stream?.close();
-    clearTimeout(retry);
-    stopWrites();
-    window.removeEventListener("online", resume);
-    window.removeEventListener("focus", resume);
-  };
+  if (new URL(origin).origin === apiOrigin()) {
+    stopGateListener = onApiSchemaMismatch(stopForSchemaMismatch);
+    if (stopped) stopGateListener();
+  }
+  if (!stopped) openStream();
+  return stop;
 }

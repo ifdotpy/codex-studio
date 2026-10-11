@@ -5,7 +5,10 @@ import { readRetryDelay, retryableReadError } from "./readRetry";
 import {
   applyEntityChanges,
   emptyEntityProjection,
+  UI_PREFERENCE_ENTITY_IDS,
+  UI_PREFERENCE_SCOPES,
   type EntityRow,
+  type UiPreferenceProjection,
 } from "./entityProjection";
 
 /** Read one baseline, then consume changed documents without a live find query. */
@@ -13,6 +16,7 @@ export async function observeEntityProjection(
   collection: RxCollection<EntityRow>,
   accept: (snapshot: Snapshot) => void,
   fail: (error: unknown) => void,
+  acceptUiPreferences?: (preferences: UiPreferenceProjection) => void,
 ) {
   let projection = emptyEntityProjection();
   let stopped = false;
@@ -27,6 +31,15 @@ export async function observeEntityProjection(
   let markerDirty = false;
   const pendingIds = new Set<string>();
   let published: Snapshot | null = null;
+  const publishUiPreferences = () => {
+    if (!acceptUiPreferences) return;
+    const preferences: UiPreferenceProjection = {};
+    for (const scope of UI_PREFERENCE_SCOPES) {
+      const value = projection.values.uiPreferences.get(scope);
+      if (value) preferences[scope] = value;
+    }
+    acceptUiPreferences(preferences);
+  };
   const publication = createFrameBatch(() => void publishCurrent());
   const publishCurrent = async () => {
     if (stopped || reading) return;
@@ -51,6 +64,8 @@ export async function observeEntityProjection(
       updateMarker(documents.find((row) => row.id === "state:entities:ready"));
       if (current !== generation || !ready || !loaded) return;
       const next = applyEntityChanges(projection, documents, true);
+      if (documents.some((row) => UI_PREFERENCE_ENTITY_IDS.includes(row.id)))
+        publishUiPreferences();
       retryCount = 0;
       if (next && next !== published) {
         published = next;
@@ -92,6 +107,7 @@ export async function observeEntityProjection(
         documents.map((document) => document.toJSON()),
         false,
       );
+      publishUiPreferences();
       loaded = true;
       retryCount = 0;
       publication.schedule();

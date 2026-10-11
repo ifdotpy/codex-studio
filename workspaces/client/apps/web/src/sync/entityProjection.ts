@@ -16,8 +16,17 @@ import type {
   WorkspaceEntityDto,
 } from "../generated/api";
 import type { components } from "../generated/api";
-type UiPreferencesDto = components["schemas"]["UiPreferencesDto"];
+export type UiPreferencesDto = components["schemas"]["UiPreferencesDto"];
 import type { Snapshot } from "../types";
+
+export const UI_PREFERENCE_SCOPES = ["user", "server"] as const;
+export type UiPreferenceScope = (typeof UI_PREFERENCE_SCOPES)[number];
+export const UI_PREFERENCE_ENTITY_IDS = UI_PREFERENCE_SCOPES.map(
+  (scope) => `entity:uiPreferences:${scope}`,
+);
+export type UiPreferenceProjection = Partial<
+  Record<UiPreferenceScope, UiPreferencesDto>
+>;
 
 export type EntityRow = {
   id: string;

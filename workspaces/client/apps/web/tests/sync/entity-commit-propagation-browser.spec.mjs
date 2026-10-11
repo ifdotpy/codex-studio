@@ -99,6 +99,8 @@ test("committed entities propagate between renderer tabs @sync", async ({
           pullStarts[index].set(request, {
             at: timestamp(),
             after: url.searchParams.get("after"),
+            reset: url.searchParams.has("reset"),
+            fresh: url.searchParams.has("fresh"),
           });
         }
       });
@@ -159,7 +161,11 @@ test("committed entities propagate between renderer tabs @sync", async ({
             startedAt:
               pullStarts[index].get(response.request())?.at ?? timestamp(),
             after: pullStarts[index].get(response.request())?.after,
+            reset: pullStarts[index].get(response.request())?.reset ?? false,
+            fresh: pullStarts[index].get(response.request())?.fresh ?? false,
             documents: body.documents || [],
+            checkpoint: body.checkpoint?.seq,
+            maxSeq: body.maxSeq,
           });
         } catch {}
       });
@@ -774,10 +780,13 @@ test("committed entities propagate between renderer tabs @sync", async ({
       "every state pull response must be observed before assertions",
     );
     for (let tab = 0; tab < pulls.length; tab++) {
-      assert.ok(
-        pulls[tab].every((pull) => pull.documents.length > 0),
-        `every state pull in tab ${tab} must contain changed entity rows`,
-      );
+      for (const pull of pulls[tab]) {
+        const bootstrap = Number(pull.after) === 0 || pull.reset || pull.fresh;
+        assert.ok(
+          pull.documents.length > 0,
+          `every state pull in tab ${tab} must contain changed entity rows${bootstrap ? " (bootstrap)" : ""}: ${JSON.stringify(pull)}`,
+        );
+      }
     }
     console.log(
       `ENTITY_PROPAGATION ${JSON.stringify({ results, tabPullCounts: pulls.map((rows) => rows.length) })}`,

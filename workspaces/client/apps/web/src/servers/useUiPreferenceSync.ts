@@ -1,6 +1,8 @@
 import { orderPreferenceServers } from "./preferenceServerOrder";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
+import { fetchApiRequest } from "../api";
 import { connectUiPreferences } from "../sync/uiPreferenceConnection";
+import { createPreferenceSyncConnectionManager } from "./preferenceSyncConnectionManager";
 import {
   capturePreferenceWrite,
   preferenceStorageForServer,
@@ -22,10 +24,20 @@ import {
   type StudioServer,
 } from "./registry";
 
-export function useUiPreferenceSync(servers: StudioServer[]) {
+export function useUiPreferenceSync(
+  servers: StudioServer[],
+  lastSeenByServer: Record<string, number | undefined> = {},
+) {
   const ownership = JSON.stringify(
     servers.map(({ id, origin, credentialId }) => [id, origin, credentialId]),
   );
+  const usableSnapshot = JSON.stringify(
+    servers.map(({ id }) => [id, lastSeenByServer[id]]),
+  );
+  const serverSnapshot = JSON.stringify(servers);
+  const connections = useRef<ReturnType<
+    typeof createPreferenceSyncConnectionManager<StudioServer>
+  > | null>(null);
   useEffect(() => {
     let applying = false;
     const identities = new Map<string, string>();
@@ -164,26 +176,29 @@ export function useUiPreferenceSync(servers: StudioServer[]) {
       const identity = identities.get(server.id);
       if (identity) seed(server, identity);
     }
-    const stops = servers.map((server) =>
-      connectUiPreferences(
-        server.origin,
-        (request) =>
+    const manager = createPreferenceSyncConnectionManager<StudioServer>(
+      (server, onSchemaMismatch) =>
+        connectUiPreferences(
+          server.origin,
           server.id === "local"
-            ? fetch(request)
-            : serverCredentialAdapter().fetch(server, request),
-        preferenceStorageForServer(server.id),
-        (identity) => {
-          if (identities.get(server.id) === identity) return;
-          identities.set(server.id, identity);
-          localStorage.setItem(
-            `studio-server-workspace-id:${server.id}`,
-            identity,
-          );
-          seed(server, identity);
-          apply();
-        },
-      ),
+            ? fetchApiRequest
+            : (request) => serverCredentialAdapter().fetch(server, request),
+          preferenceStorageForServer(server.id),
+          (identity) => {
+            if (identities.get(server.id) === identity) return;
+            identities.set(server.id, identity);
+            localStorage.setItem(
+              `studio-server-workspace-id:${server.id}`,
+              identity,
+            );
+            seed(server, identity);
+            apply();
+          },
+          onSchemaMismatch,
+        ),
     );
+    connections.current = manager;
+    manager.updateServers(servers, lastSeenByServer);
     const stopWrites = watchPreferenceWrites(apply);
     window.addEventListener(SERVER_REGISTRY_EVENT, capture);
     const stored = (event: StorageEvent) => {
@@ -201,11 +216,16 @@ export function useUiPreferenceSync(servers: StudioServer[]) {
     };
     window.addEventListener(preferenceEvent, visual);
     return () => {
-      stops.forEach((stop) => stop());
+      manager.stop();
+      if (connections.current === manager) connections.current = null;
       stopWrites();
       window.removeEventListener(SERVER_REGISTRY_EVENT, capture);
       window.removeEventListener("storage", stored);
       window.removeEventListener(preferenceEvent, visual);
     };
   }, [ownership]);
+  useEffect(() => {
+    connections.current?.updateServers(servers, lastSeenByServer);
+    connections.current?.updateLastSeen(lastSeenByServer);
+  }, [ownership, serverSnapshot, usableSnapshot]);
 }
