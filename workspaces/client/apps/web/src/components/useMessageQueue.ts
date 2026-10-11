@@ -2,7 +2,7 @@ import { serverStorageEventKey } from "../servers/storage";
 import { serverLocalStorage as localStorage } from "../servers/storage";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { get, syncPost, ApiError, errorText } from "../api";
-import type { QueueItemDto } from "../api";
+import type { QueueItemDto, QueueView } from "../api";
 import { updateLocalDraft } from "../sync/localDraft";
 import { onResume } from "../sync/resume";
 import type { paths } from "../generated/api";
@@ -11,8 +11,6 @@ import { watchResourceReads } from "./watchResourceReads";
 import { createQueueResourceRefresh } from "./queueResourceRefresh";
 import { retryableReadError } from "../sync/readRetry";
 
-type QueueView =
-  paths["/api/queue"]["get"]["responses"][200]["content"]["application/json"];
 type QueueMutation =
   paths["/api/queue"]["post"]["requestBody"]["content"]["application/json"];
 type QueueChange<T = QueueMutation> = T extends unknown

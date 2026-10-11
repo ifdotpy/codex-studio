@@ -1,8 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { components } from "../generated/api";
-import type { ResourceVersion } from "../sync/resourceEvents";
-
-type ResourceRef = components["schemas"]["ResourceRef"];
+import type { ResourceRef, ResourceVersion } from "../sync/resourceEvents";
 
 const { watchers, resumeListeners } = vi.hoisted(() => ({
   watchers: new Map<string, (version?: ResourceVersion) => void>(),

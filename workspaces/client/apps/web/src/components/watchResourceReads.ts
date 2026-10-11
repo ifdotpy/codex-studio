@@ -1,10 +1,8 @@
-import type { components } from "../generated/api";
 import { watchResourceChanges } from "../sync/resourceEvents";
 import { onResume } from "../sync/resume";
 import { readRetryDelay, retryableReadError } from "../sync/readRetry";
-import type { ResourceVersion } from "../sync/resourceEvents";
+import type { ResourceRef, ResourceVersion } from "../sync/resourceEvents";
 
-type ResourceRef = components["schemas"]["ResourceRef"];
 type ResourceReadWatcher = (() => void) & { refresh: () => void };
 
 /**
