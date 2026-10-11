@@ -467,6 +467,15 @@ class ProvisionTests(unittest.TestCase):
                          'defaults,nofail,user_subvol_rm_allowed,compress=zstd:3 0 0\n')
         self.assertIn('mount -o remount,compress=zstd:3 /var/lib/codex-studio', self.script)
 
+    def test_needrestart_leaves_studio_units_and_kernel_packages_are_held(self):
+        start = self.script.index("mkdir -p /etc/needrestart/conf.d")
+        line = self.script[start:self.script.index("\n", self.script.index("printf", start))]
+        conf = self.root / 'needrestart.conf'
+        subprocess.run(['bash', '-c', line.replace('/etc/needrestart/conf.d/50-codex-studio.conf', str(conf))
+                        .replace('/etc/needrestart/conf.d', str(self.root))], check=True, timeout=5)
+        self.assertEqual(conf.read_text(), '$nrconf{override_rc}{qr(^codex-studio-)} = 0;\n')
+        self.assertIn('apt-mark hold linux-generic linux-image-generic linux-virtual', self.script)
+
     def test_pnpm_version_follows_root_package_manager_manifest(self):
         root = self.root / 'repository'
         root.mkdir()
