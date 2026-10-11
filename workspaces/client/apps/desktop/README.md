@@ -37,9 +37,11 @@ People see the name LAYR Studio. The runtime identities keep the name Codex
 Studio: the bundle file `Codex Studio.app`, its executable, the bundle
 identifier, and the Electron app name in `main.cjs`. Electron names the macOS
 Keychain item `<app name> Safe Storage` from the app name. That item encrypts
-the saved server credentials, so a new app name would lose them. The package
-step (`bundle-name.mjs`) sets `CFBundleName` and a localized display name, so
-the menu bar, the About panel, the Dock and Finder show LAYR Studio.
+the saved server credentials, so a new app name would lose them. `CFBundleName`
+in `Info.plist` also stays: Electron finds its helper apps as
+`<CFBundleName> Helper.app` and does not start without them. The package step
+(`bundle-name.mjs`) writes the shown name into localized `InfoPlist.strings`,
+so the menu bar, the About panel, the Dock and Finder show LAYR Studio.
 
 The launcher checks `PATH`, `/opt/homebrew/bin`, `/usr/local/bin`, and `/usr/bin`. It skips Python versions below 3.11. Set `CODEX_AGENTS_PYTHON` or `CODEX_BIN` to an absolute executable path when needed. It does not run a login shell. `CODEX_AGENTS_STATE_DIR`, `XDG_STATE_HOME`, and `CODEX_HOME` retain the backend meanings. `CODEX_DESKTOP_PORT` and `CODEX_DESKTOP_PROFILE` support isolated tests.
 

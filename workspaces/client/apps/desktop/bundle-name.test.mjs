@@ -44,7 +44,7 @@ test.skipIf(process.platform !== "darwin")(
         CFBundleDisplayName: "Codex Studio",
         CFBundleExecutable: "Codex Studio",
         CFBundleIdentifier: "local.codex.agents",
-        CFBundleName: "LAYR Studio",
+        CFBundleName: "Codex Studio",
         LSHasLocalizedDisplayName: true,
       });
       for (const locale of ["en", "ru"])
