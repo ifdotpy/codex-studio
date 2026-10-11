@@ -136,6 +136,42 @@ it("applies events that arrive during the baseline read, including deletes", asy
   stop();
 });
 
+it("publishes initial and changed preference rows through the projection observer", async () => {
+  const preference = (scope: "user" | "server", seq: number, name: string) =>
+    ({
+      id: `entity:uiPreferences:${scope}`,
+      seq,
+      payload: JSON.stringify({
+        collection: "uiPreferences",
+        id: scope,
+        value: {
+          fields: { [name]: { value: name, timestamp: seq, writer: "w" } },
+        },
+      }),
+    }) satisfies EntityRow;
+  const input = source([preference("user", 1, "initial")]);
+  const acceptPreferences = vi.fn();
+  const stop = await observeEntityProjection(
+    input.collection,
+    vi.fn(),
+    vi.fn(),
+    acceptPreferences,
+  );
+  await settle();
+  expect(acceptPreferences).toHaveBeenCalledOnce();
+  expect(acceptPreferences.mock.calls[0][0].user.fields.initial.value).toBe(
+    "initial",
+  );
+
+  input.emit(preference("user", 2, "changed"));
+  await vi.advanceTimersByTimeAsync(50);
+  expect(acceptPreferences).toHaveBeenCalledTimes(2);
+  expect(acceptPreferences.mock.calls[1][0].user.fields.changed.value).toBe(
+    "changed",
+  );
+  stop();
+});
+
 it("discards pending publication and old baseline reads when a reset lowers sequences", async () => {
   const input = source([row("a", 100), row("removed", 101)]);
   const oldBaseline = deferred<Array<{ toJSON(): EntityRow }>>();

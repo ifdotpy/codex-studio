@@ -5,7 +5,11 @@ import { RxDBLeaderElectionPlugin } from "rxdb/plugins/leader-election";
 import { replicateRxCollection } from "rxdb/plugins/replication";
 import type { RxCollection, RxDocumentData } from "rxdb";
 import { draftConflictHandler } from "./conflicts";
-import { applyEntityRows, emptyEntityProjection } from "./entityProjection";
+import {
+  applyEntityRows,
+  emptyEntityProjection,
+  type UiPreferenceProjection,
+} from "./entityProjection";
 import { observeEntityProjection } from "./entityProjectionObserver";
 import {
   syncGet,
@@ -1435,12 +1439,18 @@ type TranscriptProjectionPayload = TranscriptPageData | null;
 async function watchStateProjection(
   accept: (payload: StateProjectionPayload) => void,
   fail: (e: unknown) => void,
+  acceptUiPreferences?: (preferences: UiPreferenceProjection) => void,
 ) {
   const { db, state, release } = await acquireProjection("state");
   state.listeners.add(fail);
   let stopEntities: (() => void) | undefined;
   try {
-    stopEntities = await observeEntityProjection(db.projections, accept, fail);
+    stopEntities = await observeEntityProjection(
+      db.projections,
+      accept,
+      fail,
+      acceptUiPreferences,
+    );
     // Start the first incomplete projection pull as soon as the stream has been
     // subscribed, without waiting for its baseline frame. A completed local
     // cache already supplies content and needs no speculative pull.
@@ -2033,9 +2043,13 @@ function subscribeProjection<T>(
 export function subscribeStateProjection(
   accept: (payload: StateProjectionPayload) => void,
   report: (error: unknown | null) => void,
+  acceptUiPreferences?: (preferences: UiPreferenceProjection) => void,
 ) {
-  return subscribeProjection(watchStateProjection, accept, report, () =>
-    refreshProjection(),
+  return subscribeProjection(
+    (next, fail) => watchStateProjection(next, fail, acceptUiPreferences),
+    accept,
+    report,
+    () => refreshProjection(),
   );
 }
 

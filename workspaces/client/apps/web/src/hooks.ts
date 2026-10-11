@@ -43,6 +43,7 @@ import {
   snapshotProjectionError,
   snapshotProjectionStatusReducer,
 } from "./hooks/snapshotProjectionStatus";
+import type { UiPreferenceProjection } from "./sync/entityProjection";
 import type {
   Agent,
   Json,
@@ -88,7 +89,12 @@ export function useChatSnapshot(
   return select(data, rootId);
 }
 
-export function useSnapshot() {
+export function useSnapshot(
+  acceptUiPreferences?: (preferences: UiPreferenceProjection) => void,
+) {
+  const onUiPreferences = useCommittedCallback(
+    acceptUiPreferences ?? (() => {}),
+  );
   const [data, setData] = useState<Snapshot | null>(null);
   const [projectionStatus, dispatchProjectionStatus] = useReducer(
     snapshotProjectionStatusReducer,
@@ -309,6 +315,7 @@ export function useSnapshot() {
               : { type: "projection-failed", error: errorText(error) },
           );
         },
+        acceptUiPreferences ? onUiPreferences : undefined,
       ),
     [],
   );
