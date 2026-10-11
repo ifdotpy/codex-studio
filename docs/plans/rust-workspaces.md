@@ -2,7 +2,7 @@
 
 ## Change contract
 
-This specification is for maintainers and agents migrating Codex Studio. It
+This specification is for maintainers and agents migrating LAYR Studio. It
 owns migration requirements and acceptance criteria, not current runtime
 configuration. Package manifests will own dependencies; schemas will own wire
 shapes; package tests will own executable checks. The tracking issue will own

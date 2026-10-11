@@ -1,4 +1,4 @@
-# Codex Studio
+# LAYR Studio
 
 ## Change Contract
 
