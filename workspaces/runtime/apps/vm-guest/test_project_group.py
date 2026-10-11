@@ -2,7 +2,12 @@
 all agents of the project, and no other project, read."""
 from __future__ import annotations
 
+from contextlib import redirect_stderr
 import hashlib
+import io
+import json
+import pathlib
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -67,6 +72,31 @@ class ProjectGroup(unittest.TestCase):
         self.assertEqual(self.system.groups[group], [lead["owner"], worker["owner"]])
         self.assertEqual(sum(1 for c in self.system.commands if c[:2] == ["/usr/sbin/groupadd", "--system"]
                              and c[-1] == group), 1)
+
+    def test_users_made_before_the_groups_join_them_at_service_start(self):
+        sap, other = "a" * 64, "b" * 64
+        lead = layr_agents._user("studio-p-" + hashlib.sha256(sap.encode()).hexdigest()[:16])
+        worker = layr_agents._user("studio-a-" + "1" * 22)
+        with tempfile.TemporaryDirectory() as folder:
+            root, associations = pathlib.Path(folder, "layr"), pathlib.Path(folder, "agents")
+            (root / "projects" / sap / "lines" / "main").mkdir(parents=True)
+            (root / "projects" / other).mkdir(parents=True)
+            associations.mkdir()
+            for name, value in (("w.json", {"projectId": sap, "owner": worker["owner"]}),
+                                ("lead.json", {"projectId": sap, "owner": lead["owner"]}),
+                                ("root.json", {"projectId": sap, "owner": "root"}),
+                                ("broken.json", None)):
+                (associations / name).write_text("{" if value is None else json.dumps(value))
+            handlers = SimpleNamespace(layr_root=root, associations=associations)
+            with redirect_stderr(io.StringIO()) as errors:
+                layr_agents.AgentHandlers.join_project_groups(handlers)
+                layr_agents.AgentHandlers.join_project_groups(handlers)
+        self.assertEqual(self.system.groups[layr_agents.project_group(sap)], [lead["owner"], worker["owner"]])
+        # A project without main makes no owner, and a bad record changes nothing.
+        self.assertNotIn(layr_agents.project_group(other), self.system.groups)
+        self.assertNotIn("root", sum(self.system.groups.values(), []))
+        self.assertIn("root.json", errors.getvalue())
+        self.assertIn("broken.json", errors.getvalue())
 
     def test_a_project_identity_must_be_valid(self):
         for invalid in ("", None, "x" * 129):
