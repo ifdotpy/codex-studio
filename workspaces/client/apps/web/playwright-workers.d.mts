@@ -1,3 +1,7 @@
+export function darwinAvailableBytes(
+  level: string | number,
+  totalBytes?: number,
+): number | undefined;
 export function availablePlaywrightWorkers(
   environment?: NodeJS.ProcessEnv,
 ): number;

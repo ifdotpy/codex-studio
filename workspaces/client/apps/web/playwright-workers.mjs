@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { mkdirSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -238,15 +239,41 @@ function cgroupMemoryAvailableBytes() {
   return headroom.length ? Math.min(...headroom) : undefined;
 }
 
+/**
+ * Available memory on macOS from the kernel's own measure, kern.memorystatus_level: the
+ * percent of memory that is free or reclaimable at once (the "free percentage" of
+ * memory_pressure). os.freemem() counts only free pages, and a Mac that has run for a while
+ * keeps those near zero while gigabytes of inactive pages wait for reuse.
+ */
+export function darwinAvailableBytes(level, totalBytes = os.totalmem()) {
+  const text = String(level).trim();
+  const percent = Number(text);
+  return /^\d+$/.test(text) && percent <= 100
+    ? Math.floor((totalBytes * percent) / 100)
+    : undefined;
+}
+
 function hostMemoryAvailableBytes() {
   const available = readText("/proc/meminfo")
     ?.split("\n")
     .find((line) => line.startsWith("MemAvailable:"))
     ?.match(/\d+/)?.[0];
   const kibibytes = Number(available);
-  return Number.isFinite(kibibytes) && kibibytes > 0
-    ? kibibytes * 1024
-    : os.freemem();
+  if (Number.isFinite(kibibytes) && kibibytes > 0) return kibibytes * 1024;
+  if (process.platform === "darwin") {
+    try {
+      const bytes = darwinAvailableBytes(
+        execFileSync("/usr/sbin/sysctl", ["-n", "kern.memorystatus_level"], {
+          encoding: "utf8",
+          timeout: 2000,
+        }),
+      );
+      if (bytes !== undefined) return bytes;
+    } catch {
+      // Fall back to the free pages below.
+    }
+  }
+  return os.freemem();
 }
 
 function cgroupCpuLimit() {
