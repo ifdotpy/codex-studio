@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Run a Python unittest suite with machine-readable result records."""
 
+import importlib
 import json
 import os
 from pathlib import Path
 import runpy
 import sys
+import types
 import unittest
 from typing import Any
 
@@ -64,8 +66,35 @@ class StructuredTextTestRunner(unittest.TextTestRunner):
 
 def main() -> None:
     global RESULT_FILE
+    if len(sys.argv) == 4 and sys.argv[1] == "list":
+        kind, target = sys.argv[2:]
+        if kind == "path":
+            sys.path[0] = str(Path(target).resolve().parent)
+            namespace = runpy.run_path(target, run_name="_suite_id_listing")
+            module = types.ModuleType("__main__")
+            module.__dict__.update(namespace)
+            for value in namespace.values():
+                if (isinstance(value, type)
+                        and issubclass(value, unittest.TestCase)
+                        and value.__module__ == "_suite_id_listing"):
+                    value.__module__ = "__main__"
+        elif kind == "module":
+            module = importlib.import_module(target)
+        else:
+            raise SystemExit("suite ID listing expects path|module")
+        suite = unittest.defaultTestLoader.loadTestsFromModule(module)
+
+        def ids(test_suite: Any) -> Any:
+            for test in test_suite:
+                if isinstance(test, unittest.TestSuite):
+                    yield from ids(test)
+                else:
+                    yield test.id()
+
+        print("TEST_IDS:" + json.dumps(list(ids(suite))))
+        return
     if len(sys.argv) < 3 or sys.argv[1] not in {"path", "module"}:
-        raise SystemExit("usage: suite_entry.py path|module TARGET [unittest args]")
+        raise SystemExit("usage: suite_entry.py path|module TARGET [unittest args]; list path|module TARGET")
     kind, target, *arguments = sys.argv[1:]
     RESULT_FILE = os.environ.pop("CODEX_SERVER_TEST_RESULT_FILE", None)
     setattr(unittest, "TextTestRunner", StructuredTextTestRunner)

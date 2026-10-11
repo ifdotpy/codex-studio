@@ -62,7 +62,7 @@ class MessageIntentContract(unittest.TestCase):
         active = self.runtime.agent(agent)
         before = self.database()
         receipts = self.receipts(agent)
-        self.assertEqual(set(receipts), {'send', 'queue'})
+        self.assertEqual(list(receipts), ['send', 'queue'])
         self.assertEqual(receipts['send']['requestedDelivery'], 'after_tool')
         self.assertEqual(receipts['queue']['requestedDelivery'], 'queue')
         self.assertTrue(all(entry['materialized'] for entry in receipts.values()))
