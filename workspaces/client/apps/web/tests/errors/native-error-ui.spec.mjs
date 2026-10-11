@@ -8,13 +8,42 @@ import {
 } from "../playwright.mjs";
 // Real app-server notification handlers, SQLite, event stream, and browser. No inference.
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 test("native error ui", async ({ page: runnerPage }) => {
   const skill = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "codex-stream-ui-"));
+  const codexHome = join(root, "codex-home");
+  const browserService = join(codexHome, "browser-service.mjs");
+  const nodeRepl = join(root, "node-repl");
+  const installedPlugin = join(
+    codexHome,
+    "plugins/cache/openai-bundled/chrome/latest",
+  );
+  await mkdir(join(installedPlugin, "skills/control-chrome"), {
+    recursive: true,
+  });
+  await writeFile(
+    join(installedPlugin, "skills/control-chrome/SKILL.md"),
+    "---\nname: control-chrome\ndescription: Fixture browser skill\n---\n",
+  );
+  await writeFile(browserService, "export {};\n");
+  await writeFile(nodeRepl, "#!/bin/sh\nexit 0\n");
+  await writeFile(
+    join(codexHome, "config.toml"),
+    [
+      '[plugins."chrome@openai-bundled"]',
+      "enabled = true",
+      "[mcp_servers.node_repl]",
+      `command = ${JSON.stringify(nodeRepl)}`,
+      "args = []",
+      "[mcp_servers.node_repl.env]",
+      `NODE_REPL_TRUSTED_SERVICES = ${JSON.stringify(JSON.stringify({ browser: browserService }))}`,
+      "",
+    ].join("\n"),
+  );
   const proc = spawn(
     "python3",
     [
@@ -24,7 +53,11 @@ test("native error ui", async ({ page: runnerPage }) => {
     ],
     {
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, NATIVE_ERROR_HOLD_CAPACITY_RETRY: "1" },
+      env: {
+        ...process.env,
+        CODEX_HOME: codexHome,
+        NATIVE_ERROR_HOLD_CAPACITY_RETRY: "1",
+      },
     },
   );
   let log = "",

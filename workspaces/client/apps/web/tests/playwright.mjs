@@ -717,8 +717,12 @@ export function spawnFixture(command, args, options) {
   const fixtureScratch = mkdtempSync(join(playwrightScratch.root, "fixture-"));
   const home = join(fixtureScratch, "home");
   const inheritedCodexHome = options?.env?.CODEX_HOME;
+  const inheritedClaudeConfigDir = options?.env?.CLAUDE_CONFIG_DIR;
   const parentCodexHome =
     process.env.CODEX_HOME || join(process.env.HOME || homedir(), ".codex");
+  const parentClaudeConfigDir =
+    process.env.CLAUDE_CONFIG_DIR ||
+    join(process.env.HOME || homedir(), ".claude");
   // Callers that explicitly pass a separate CODEX_HOME own its contents. A
   // value copied from the parent environment is not an explicit fixture
   // profile: never expose the host's installed plugins or account config to a
@@ -730,9 +734,16 @@ export function spawnFixture(command, args, options) {
   const codexHome = ownsCodexHome
     ? join(fixtureScratch, "codex-home")
     : inheritedCodexHome;
+  const ownsClaudeConfigDir = !(
+    typeof inheritedClaudeConfigDir === "string" &&
+    resolve(inheritedClaudeConfigDir) !== resolve(parentClaudeConfigDir)
+  );
+  const claudeConfigDir = ownsClaudeConfigDir
+    ? join(fixtureScratch, "claude-config")
+    : inheritedClaudeConfigDir;
   const state = join(fixtureScratch, "state");
   const cache = join(fixtureScratch, "cache");
-  for (const directory of [home, codexHome, state, cache])
+  for (const directory of [home, codexHome, claudeConfigDir, state, cache])
     mkdirSync(directory, { recursive: true });
   if (ownsCodexHome)
     writeFileSync(
@@ -766,6 +777,7 @@ export function spawnFixture(command, args, options) {
         TEMP: playwrightScratch.root,
         HOME: home,
         CODEX_HOME: codexHome,
+        CLAUDE_CONFIG_DIR: claudeConfigDir,
         XDG_STATE_HOME: state,
         XDG_CACHE_HOME: cache,
         PYTHONPATH: [
