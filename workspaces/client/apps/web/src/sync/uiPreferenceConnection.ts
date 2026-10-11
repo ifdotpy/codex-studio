@@ -24,6 +24,7 @@ import {
   type PreferenceFields,
   type PreferenceScope,
 } from "./uiPreferenceMerge";
+import { EntitySequenceCheckpoint } from "./entitySequence";
 import type { components } from "../generated/api";
 type Pull = components["schemas"]["SyncPullResponse"];
 type Fetch = (request: Request) => Promise<Response>;
@@ -45,7 +46,9 @@ export function connectUiPreferences(
 ) {
   let stopped = false;
   let ready = false;
-  let cursor = 0;
+  // Share the main sync client's epoch/reset/coverage rules. This connector
+  // advances it only after a pull or a complete state change batch is applied.
+  const cursor = new EntitySequenceCheckpoint();
   let workspaceId: string | undefined;
   let pulling = false;
   let pullAgain = false;
@@ -133,7 +136,8 @@ export function connectUiPreferences(
     if (stopped || retry) return;
     retry = setTimeout(() => {
       retry = undefined;
-      void pull().then(openStream).catch(scheduleRetry);
+      if (stream) void pull().catch(scheduleRetry);
+      else openStream();
     }, 3000);
   };
   const send = async () => {
@@ -196,13 +200,13 @@ export function connectUiPreferences(
         let more: boolean;
         do {
           const response = (await request(
-            `/api/sync/pull?scope=state:entities:v1&after=${cursor}&limit=500`,
+            `/api/sync/pull?scope=state:entities:v1&after=${Math.max(0, cursor.value)}&limit=500`,
           )) as Pull & { reset?: boolean };
           if (stopped) return;
           workspaceId = response.workspaceId;
           onIdentity?.(response.workspaceId);
           if (response.reset) {
-            cursor = 0;
+            cursor.reset();
             more = true;
             continue;
           }
@@ -219,8 +223,8 @@ export function connectUiPreferences(
               receivePreferenceFields(entity.id, entity.value.fields, storage);
             }
           }
-          cursor = response.checkpoint.seq;
-          more = cursor < (response.maxSeq ?? cursor);
+          cursor.assign(response.checkpoint.seq);
+          more = cursor.value < (response.maxSeq ?? cursor.value);
         } while (more && !stopped);
       } while (pullAgain && !stopped);
       ready = true;
@@ -236,10 +240,16 @@ export function connectUiPreferences(
       resources: JSON.stringify([{ kind: "state" }]),
       [API_SCHEMA_HASH_PARAM]: API_SCHEMA_HASH,
     });
-    stream = new SignedEventSource(
-      origin + `/api/sync/stream?${query}`,
-      fetchWithSchemaGate,
-    );
+    try {
+      stream = new SignedEventSource(
+        origin + `/api/sync/stream?${query}`,
+        fetchWithSchemaGate,
+      );
+    } catch {
+      void pull().catch(scheduleRetry);
+      scheduleRetry();
+      return;
+    }
     stream.addEventListener("api-schema", (event) => {
       let payload: unknown;
       try {
@@ -270,6 +280,45 @@ export function connectUiPreferences(
       }
       const change = payload as PreferenceChangeEvent;
       if (change.reason !== "change") {
+        if (
+          typeof change.workspaceId !== "string" ||
+          typeof change.epoch !== "string" ||
+          !Array.isArray(change.resources) ||
+          !Array.isArray(change.resourceVersions) ||
+          change.resources.length !== change.resourceVersions.length
+        ) {
+          void pull().catch(scheduleRetry);
+          return;
+        }
+        workspaceId = change.workspaceId;
+        onIdentity?.(change.workspaceId);
+        const workspaceChanged = cursor.observeWorkspace(change.workspaceId);
+        const epochChanged = cursor.observeEpoch(change.epoch);
+        const stateVersion = change.resourceVersions.find(
+          (version, index) =>
+            (version.resource ?? change.resources[index])?.kind === "state",
+        );
+        if (!stateVersion) {
+          void pull().catch(scheduleRetry);
+          return;
+        }
+        if (stateVersion.entitySequenceReset) cursor.reset();
+        const sequences = stateVersion.entitySequences;
+        const baselineSequence =
+          sequences && sequences.length > 0
+            ? Math.max(...sequences)
+            : stateVersion.revision;
+        if (
+          !workspaceChanged &&
+          !epochChanged &&
+          !stateVersion.entitySequenceReset &&
+          cursor.canUseDurableCheckpoint &&
+          cursor.covers(baselineSequence)
+        ) {
+          ready = true;
+          void send();
+          return;
+        }
         void pull().catch(scheduleRetry);
         return;
       }
@@ -282,7 +331,7 @@ export function connectUiPreferences(
         void pull().catch(scheduleRetry);
         return;
       }
-      let nextCursor = cursor;
+      let nextCursor = cursor.value;
       const preferenceRows: {
         scope: PreferenceScope;
         fields: PreferenceFields;
@@ -338,11 +387,14 @@ export function connectUiPreferences(
         confirmed[scope] = JSON.stringify(fields);
         receivePreferenceFields(scope, fields, storage);
       }
-      cursor = nextCursor;
+      cursor.assign(nextCursor);
     });
     stream.onerror = () => {
       stream?.close();
       stream = undefined;
+      // Without a live stream, reconcile directly. Reopening the stream then
+      // waits for its baseline, which will be skipped if this pull caught up.
+      void pull().catch(scheduleRetry);
       scheduleRetry();
     };
   };
@@ -350,7 +402,8 @@ export function connectUiPreferences(
     void send();
   });
   resume = () => {
-    void pull().then(openStream).catch(scheduleRetry);
+    if (stream) void pull().catch(scheduleRetry);
+    else openStream();
   };
   window.addEventListener("online", resume);
   window.addEventListener("focus", resume);
@@ -358,6 +411,6 @@ export function connectUiPreferences(
     stopGateListener = onApiSchemaMismatch(stopForSchemaMismatch);
     if (stopped) stopGateListener();
   }
-  if (!stopped) void pull().then(openStream).catch(scheduleRetry);
+  if (!stopped) openStream();
   return stop;
 }

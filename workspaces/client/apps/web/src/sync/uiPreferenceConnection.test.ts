@@ -9,14 +9,21 @@ import {
 } from "./uiPreferenceMerge";
 import { capturePreferenceWrite } from "./uiPreferenceStore";
 const streams = vi.hoisted(() => new Map<string, EventTarget>());
+const failedStreamOrigins = vi.hoisted(() => new Set<string>());
 vi.mock("../servers/eventSource", () => ({
   SignedEventSource: class extends EventTarget {
     onerror: (() => void) | null = null;
+    origin: string;
     constructor(url: string) {
       super();
-      streams.set(new URL(url).origin, this);
+      this.origin = new URL(url).origin;
+      if (failedStreamOrigins.has(this.origin))
+        throw new TypeError("no stream");
+      streams.set(this.origin, this);
     }
-    close() {}
+    close() {
+      streams.delete(this.origin);
+    }
   },
 }));
 import { connectUiPreferences } from "./uiPreferenceConnection";
@@ -117,6 +124,12 @@ function backend(origin: string, initial: PreferenceFields) {
     get pullReads() {
       return pullReads;
     },
+    get sequence() {
+      return sequence;
+    },
+    set sequence(value: number) {
+      sequence = value;
+    },
     set online(value: boolean) {
       online = value;
     },
@@ -131,8 +144,31 @@ function emitStateFrame(origin: string, frame: Record<string, unknown>) {
   Object.defineProperty(event, "data", { value: JSON.stringify(frame) });
   stream.dispatchEvent(event);
 }
+function initialFrame(origin: string, revision: number) {
+  return {
+    protocol: 3,
+    workspaceId: origin,
+    epoch: "epoch-one",
+    revision,
+    reason: "initial",
+    resources: [{ kind: "state" }],
+    resourceVersions: [{ revision, entityChanges: null }],
+  };
+}
+async function waitForBaseline(
+  origin: string,
+  server: ReturnType<typeof backend>,
+) {
+  await vi.waitFor(() => expect(streams.has(origin)).toBe(true));
+  emitStateFrame(origin, initialFrame(origin, server.sequence));
+  await vi.waitFor(() => expect(server.pullReads).toBeGreaterThan(0));
+  // Let the response body and connector's checkpoint assignment settle before
+  // the test publishes a subsequent state change.
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+}
 beforeEach(() => {
   streams.clear();
+  failedStreamOrigins.clear();
   vi.stubGlobal("window", new EventTarget());
   vi.stubGlobal("localStorage", storage());
   vi.stubGlobal("StorageEvent", FakeStorageEvent);
@@ -152,6 +188,10 @@ describe("paired server preference replication", () => {
       connectUiPreferences("https://b.invalid", b.fetch, storage()),
     ];
     try {
+      await Promise.all([
+        waitForBaseline("https://a.invalid", a),
+        waitForBaseline("https://b.invalid", b),
+      ]);
       await vi.waitFor(() => {
         expect(a.fields[size]?.value).toBe(18);
         expect(b.fields[theme]?.value).toBe("dark");
@@ -185,9 +225,7 @@ describe("paired server preference replication", () => {
       localStorage,
     );
     try {
-      await vi.waitFor(() =>
-        expect(streams.has("https://lost.invalid")).toBe(true),
-      );
+      await waitForBaseline("https://lost.invalid", server);
       server.loseResponse = true;
       capturePreferenceWrite(
         "codex-studio-preferences-v1",
@@ -218,9 +256,7 @@ describe("paired server preference replication", () => {
       localStorage,
     );
     try {
-      await vi.waitFor(() =>
-        expect(streams.has("https://idle.invalid")).toBe(true),
-      );
+      await waitForBaseline("https://idle.invalid", server);
       for (let revision = 2; revision < 14; revision++)
         emitStateFrame("https://idle.invalid", {
           protocol: 3,
@@ -256,9 +292,7 @@ describe("paired server preference replication", () => {
       localStorage,
     );
     try {
-      await vi.waitFor(() =>
-        expect(streams.has("https://unrelated.invalid")).toBe(true),
-      );
+      await waitForBaseline("https://unrelated.invalid", server);
       for (let revision = 2; revision < 14; revision++)
         emitStateFrame("https://unrelated.invalid", {
           protocol: 3,
@@ -305,9 +339,7 @@ describe("paired server preference replication", () => {
       localStorage,
     );
     try {
-      await vi.waitFor(() =>
-        expect(streams.has("https://frame.invalid")).toBe(true),
-      );
+      await waitForBaseline("https://frame.invalid", server);
       const theme = '["codex-studio-preferences-v1","theme"]';
       emitStateFrame("https://frame.invalid", {
         protocol: 3,
@@ -367,9 +399,7 @@ describe("paired server preference replication", () => {
       localStorage,
     );
     try {
-      await vi.waitFor(() =>
-        expect(streams.has("https://omitted.invalid")).toBe(true),
-      );
+      await waitForBaseline("https://omitted.invalid", server);
       emitStateFrame("https://omitted.invalid", {
         protocol: 3,
         workspaceId: "https://omitted.invalid",
@@ -387,7 +417,7 @@ describe("paired server preference replication", () => {
     }
   });
 
-  it("pulls once for an initial state frame", async () => {
+  it("waits for the initial baseline and pulls once when it is newer", async () => {
     const server = backend("https://initial.invalid", {});
     const stop = connectUiPreferences(
       "https://initial.invalid",
@@ -398,20 +428,54 @@ describe("paired server preference replication", () => {
       await vi.waitFor(() =>
         expect(streams.has("https://initial.invalid")).toBe(true),
       );
+      expect(server.pullReads).toBe(0);
+      server.sequence = 2;
       emitStateFrame("https://initial.invalid", {
-        protocol: 3,
-        workspaceId: "https://initial.invalid",
-        epoch: "epoch-one",
-        revision: 1,
-        reason: "initial",
-        resources: [{ kind: "state" }],
-        resourceVersions: [{ revision: 1, entityChanges: null }],
+        ...initialFrame("https://initial.invalid", 2),
       });
-      await vi.waitFor(() => expect(server.pullReads).toBe(2));
+      await vi.waitFor(() => expect(server.pullReads).toBe(1));
       expect(server.sessionReads).toBe(0);
       expect(server.writes).toHaveLength(0);
     } finally {
       stop();
+    }
+  });
+
+  it("skips a baseline already covered by the applied checkpoint", async () => {
+    const server = backend("https://caught-up.invalid", {});
+    const stop = connectUiPreferences(
+      "https://caught-up.invalid",
+      server.fetch,
+      localStorage,
+    );
+    try {
+      await waitForBaseline("https://caught-up.invalid", server);
+      emitStateFrame(
+        "https://caught-up.invalid",
+        initialFrame("https://caught-up.invalid", server.sequence),
+      );
+      expect(server.pullReads).toBe(1);
+    } finally {
+      stop();
+    }
+  });
+
+  it("pulls directly when the state stream cannot be opened", async () => {
+    vi.useFakeTimers();
+    failedStreamOrigins.add("https://no-stream.invalid");
+    const server = backend("https://no-stream.invalid", {});
+    const stop = connectUiPreferences(
+      "https://no-stream.invalid",
+      server.fetch,
+      localStorage,
+    );
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(server.pullReads).toBe(1);
+      expect(streams.has("https://no-stream.invalid")).toBe(false);
+    } finally {
+      stop();
+      vi.useRealTimers();
     }
   });
 
@@ -455,6 +519,13 @@ describe("paired server preference replication", () => {
       storage(),
     );
     try {
+      await vi.waitFor(() =>
+        expect(streams.has("https://mismatch.invalid")).toBe(true),
+      );
+      emitStateFrame(
+        "https://mismatch.invalid",
+        initialFrame("https://mismatch.invalid", 1),
+      );
       await vi.advanceTimersByTimeAsync(0);
       expect(fetch).toHaveBeenCalledOnce();
       expect(vi.getTimerCount()).toBe(0);
@@ -489,7 +560,14 @@ describe("paired server preference replication", () => {
       await vi.waitFor(() =>
         expect(streams.has("https://healthy.invalid")).toBe(true),
       );
-      expect(mismatchedFetch).toHaveBeenCalledOnce();
+      await vi.waitFor(() =>
+        expect(streams.has("https://mismatch.invalid")).toBe(true),
+      );
+      emitStateFrame(
+        "https://mismatch.invalid",
+        initialFrame("https://mismatch.invalid", 1),
+      );
+      await vi.waitFor(() => expect(mismatchedFetch).toHaveBeenCalledOnce());
       expect(streams.has("https://mismatch.invalid")).toBe(false);
     } finally {
       stopHealthy();
