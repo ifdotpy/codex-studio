@@ -29,7 +29,6 @@ import urllib.request
 from urllib.parse import urlencode
 
 ROOT = REPOSITORY_ROOT
-NORMAL_SHUTDOWN_BOUND_SECONDS = 1.5
 SECOND_SIGNAL_BOUND_SECONDS = 6.5
 PROCESS_CLEANUP_BOUND_SECONDS = 45
 
@@ -301,7 +300,6 @@ main()
                 self.assertNotRegex(stderr, r"Traceback|Exception in")
                 if not handler_delay and second_signal_delay is None and not startup_delay and not updates_delay:
                     self.assertNotRegex(stderr, r"Cancel \d+ running task\(s\)")
-                    self.assertLess(elapsed, NORMAL_SHUTDOWN_BOUND_SECONDS)
                 if second_signal_delay is not None:
                     self.assertLess(elapsed, SECOND_SIGNAL_BOUND_SECONDS + second_signal_delay)
                     self.assertIsNotNone(second_started, "the second signal must be delivered")

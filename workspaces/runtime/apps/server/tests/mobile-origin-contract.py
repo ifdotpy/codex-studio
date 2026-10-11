@@ -40,8 +40,8 @@ class MobileOriginContract(unittest.TestCase):
 
     def tearDown(self):
         self.server.shutdown()
-        self.server.server_close()
         self.thread.join()
+        self.server.server_close()
         self.temp.cleanup()
 
     def request(self, headers=None, body=None, path="/api/session"):

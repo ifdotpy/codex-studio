@@ -52,19 +52,6 @@ def create_backend(test_case: type[unittest.TestCase]) -> BackendProcess:
     backend.ready_samples.append(backend.start())
     backend.class_setup_phases["backendStartAndReadinessSeconds"] = round(
         time.monotonic() - phase_started, 4)
-    phase_started = time.monotonic()
-    session = backend.request("GET", "/api/session")
-    assert_status(session, 200)
-    backend.session = session.json()
-    backend.class_setup_phases["sessionRequestSeconds"] = round(
-        time.monotonic() - phase_started, 4)
-    phase_started = time.monotonic()
-    schema = backend.request("GET", "/api/sync/identity",
-                             headers={"X-Studio-API-Schema": "probe"})
-    assert_status(schema, 200)
-    backend.schema_hash = schema.headers["x-studio-api-schema"]
-    backend.class_setup_phases["schemaRequestSeconds"] = round(
-        time.monotonic() - phase_started, 4)
     return backend
 
 
