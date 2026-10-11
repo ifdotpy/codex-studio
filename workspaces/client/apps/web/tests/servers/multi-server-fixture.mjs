@@ -223,7 +223,9 @@ export async function fixture(
         initialResources: options.resourceBaseline
           ? JSON.parse(url.searchParams.get("resources") || "[]")
           : undefined,
-        onStreamReady: (send) => notify.push(send),
+        onStreamReady: (send) => {
+          notify.push(send);
+        },
       })
     )
       return;

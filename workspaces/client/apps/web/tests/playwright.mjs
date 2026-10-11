@@ -1682,7 +1682,14 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
       };
       writeFrame("resources", changed);
     }, requestedResources);
-    if (cleanup) response.once("close", cleanup);
+    if (cleanup !== undefined) {
+      if (typeof cleanup !== "function") {
+        throw new TypeError(
+          "Entity sync fixture onStreamReady must return a cleanup function or undefined",
+        );
+      }
+      response.once("close", cleanup);
+    }
     return true;
   }
   response.statusCode = 404;
