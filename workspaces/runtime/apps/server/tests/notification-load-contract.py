@@ -71,8 +71,7 @@ def measure(count=320, agents=24, storm=False, legacy_checkpoint=False,
             connection_observations = []
             connection_guard = threading.Lock()
             scheduler_read_connections = set()
-            preflight_busy_retries = 0
-            callback_retry_counts = {}
+            callback_busy_replacements = {}
             original_sqlite_connect = codex_runtime.sqlite_connect
 
             def observed_sqlite_connect(*args, **kwargs):
@@ -120,6 +119,16 @@ def measure(count=320, agents=24, storm=False, legacy_checkpoint=False,
                     yield db
                 db_durations.append((time.perf_counter() - began) * 1000)
             runtime.notification_db = measured_notification_db
+            original_dispatcher_closed = runtime.close_notification_database
+
+            def measured_dispatcher_closed():
+                local = runtime.__dict__.get("_callback_db")
+                thread_id = threading.get_ident()
+                with connection_guard:
+                    callback_busy_replacements[thread_id] = getattr(
+                        local, "callback_db_busy_replacements", 0)
+                original_dispatcher_closed()
+
             server = AppServer.__new__(AppServer)
             server.supervisor_mode = storm
             server.callbacks = queue.Queue(maxsize=AppServer.CALLBACK_QUEUE_LIMIT)
@@ -128,6 +137,7 @@ def measure(count=320, agents=24, storm=False, legacy_checkpoint=False,
             server.reader_done = threading.Event()
             server.dispatcher_done = threading.Event()
             server.log = io.BytesIO()
+            server.notification_dispatcher_closed = measured_dispatcher_closed
             if storm:
                 from codex_process_supervisor import Journal as SupervisorJournal
                 journal = SupervisorJournal(root / 'supervisor')
@@ -161,7 +171,6 @@ def measure(count=320, agents=24, storm=False, legacy_checkpoint=False,
             blocker, release = threading.Event(), threading.Event()
 
             def notify(message):
-                nonlocal preflight_busy_retries
                 if message["method"] == "fixture/block":
                     blocker.set()
                     release.wait(30)
@@ -170,21 +179,15 @@ def measure(count=320, agents=24, storm=False, legacy_checkpoint=False,
                 runtime.notification(message)
                 connection = getattr(runtime._callback_db, "connection", None)
                 thread_id = threading.get_ident()
-                retry_count = getattr(runtime._callback_db,
-                                      "notification_preflight_busy_retries", 0)
                 if connection is not None:
                     connection_id = id(connection)
                     with connection_guard:
                         callback_connections.setdefault(thread_id, set()).add(connection)
-                        previous_retries = callback_retry_counts.get(thread_id, 0)
-                        preflight_busy_retries += max(0, retry_count - previous_retries)
-                        callback_retry_counts[thread_id] = retry_count
                         connection_observations.append({
                             "thread": thread_id,
                             "connection": connection_id,
                             "method": message.get("method"),
                             "sequence": message.get("_studioSupervisorSequence"),
-                            "preflightBusyRetries": retry_count,
                         })
                 durations.append((time.perf_counter() - start) * 1000)
                 callback_kinds.setdefault(message['method'], []).append(durations[-1])
@@ -280,7 +283,7 @@ def measure(count=320, agents=24, storm=False, legacy_checkpoint=False,
             dispatch.join(5)
             assert not dispatch.is_alive()
             assert len(delays) > 0
-            expected_connections = sum(1 + callback_retry_counts.get(thread_id, 0)
+            expected_connections = sum(1 + callback_busy_replacements.get(thread_id, 0)
                                        for thread_id in callback_connections)
             assert len(connections) == expected_connections, {
                 "actual": len(connections), "expected": expected_connections,
@@ -298,7 +301,7 @@ def measure(count=320, agents=24, storm=False, legacy_checkpoint=False,
                     "inputEventsPerSecond": round(count / max(.001, input_ended - input_started), 1),
                     "processedCallbacksPerSecond": round(len(delays) / max(.001, processing_ended - processing_started), 1),
                     "dispatcherConnections": len(connections),
-                    "notificationPreflightBusyRetries": preflight_busy_retries,
+                    "callbackConnectionBusyReplacements": sum(callback_busy_replacements.values()),
                     "callbackConnectionsByThread": {
                         thread_id: len(connection_ids)
                         for thread_id, connection_ids in callback_connections.items()},

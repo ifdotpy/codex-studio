@@ -147,6 +147,8 @@ EXPENSIVE_SUITES = frozenset({
     f"{TESTS_REL}/account-costs-contract.py", f"{TESTS_REL}/analytics-memory-contract.py",
     f"{TESTS_REL}/analytics-usage-memory-contract.py",
     f"{TESTS_REL}/notification-load-contract.py",
+    # The live scheduler storm is timing-sensitive and belongs in the load tier.
+    f"{TESTS_REL}/notification-scheduler-contract.py",
     f"{TESTS_REL}/peer-conversion-scale-contract.py",
     f"{TESTS_REL}/session-cost-memory-contract.py",
     f"{TESTS_REL}/supervisor-stream-phase-load-contract.py",

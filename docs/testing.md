@@ -52,6 +52,11 @@ The heavy server suites and the reason for each classification are owned by
 | `server-exec-signed-integration.py` |           38.16 s | Signed-in server execution flow                       |
 | `process-supervisor-contract.py`    |           36.05 s | Contract requires a replay wait of about 10.4 seconds |
 
+The load-class suite `workspaces/runtime/apps/server/tests/notification-scheduler-contract.py`
+contains a 1,500-notification storm with a live scheduler. Its busy-retry connection
+count depends on runtime contention, so select it only with
+`just test-server-load workspaces/runtime/apps/server/tests/notification-scheduler-contract.py`.
+
 Measure a suite by running it alone through `just test server <exact-suite-path>`.
 If it exceeds 10 seconds, speed it up first; the maintainer decides whether it
 must move to heavy because it cannot be made fast and deterministic. A suite
