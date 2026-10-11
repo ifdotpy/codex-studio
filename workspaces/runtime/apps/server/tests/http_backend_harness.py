@@ -29,6 +29,23 @@ PROVIDER_FIXTURES = Path(__file__).parent / "fixtures/provider-replay"
 STARTUP_TIMEOUT_SECONDS = 60.0
 HTTP_WAIT_POLL_SECONDS = 0.05
 STOP_TIMEOUT_SECONDS = 4.0
+PROVIDER_SELECTION_ENVIRONMENT = frozenset({
+    "CODEX_BIN",
+    "CODEX_AGENTS_NATIVE_RUNTIME_PIN",
+    "CLAUDE_BIN",
+    "STUDIO_CLAUDE_BIN",
+    "STUDIO_NODE_BIN",
+})
+PROVIDER_CREDENTIAL_ENVIRONMENT = frozenset({
+    "CODEX_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_ACCESS_TOKEN",
+    "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+})
 
 
 @dataclass(frozen=True)
@@ -72,6 +89,7 @@ class BackendProcess:
         self.class_setup_seconds: float | None = None
         self.class_setup_phases: dict[str, float] = {}
         self._process: subprocess.Popen[str] | None = None
+        self._backend_python: Path | None = None
         self._output: queue.Queue[str] = queue.Queue()
         self._reader: threading.Thread | None = None
         self._stderr: list[str] = []
@@ -104,6 +122,7 @@ class BackendProcess:
             command = shlex.split(configured)
         else:
             python = os.environ.get("STUDIO_HTTP_BACKEND_PYTHON", sys.executable)
+            self._backend_python = Path(os.path.abspath(os.path.expanduser(python)))
             command = [python, "-B", str(SERVER_SCRIPT)]
         if not command:
             raise RuntimeError("STUDIO_HTTP_BACKEND_COMMAND is empty")
@@ -122,7 +141,7 @@ class BackendProcess:
     def _environment(self) -> dict[str, str]:
         environment = os.environ.copy()
         for key in tuple(environment):
-            if key.startswith(("CODEX_", "CLAUDE_", "ANTHROPIC_", "OPENAI_", "STUDIO_CLAUDE_")):
+            if key in PROVIDER_SELECTION_ENVIRONMENT | PROVIDER_CREDENTIAL_ENVIRONMENT:
                 environment.pop(key, None)
         values = {
             "HOME": str(self.home),
@@ -154,6 +173,8 @@ class BackendProcess:
         # Native discovery honors this explicit test pin before PATH or its
         # platform-specific ChatGPT location.
         path_entries = [str(executable.parent)] if executable is not None else []
+        if self._backend_python is not None:
+            path_entries.append(str(self._backend_python.parent))
         path_entries.extend(os.defpath.split(os.pathsep))
         values["PATH"] = os.pathsep.join(path_entries)
         environment.update(values)
@@ -195,7 +216,17 @@ class BackendProcess:
         ).start()
         deadline = started + STARTUP_TIMEOUT_SECONDS
         ready_line_at: float
-        line = self._output.get(timeout=max(0.01, deadline - time.monotonic()))
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._raise_backend_not_ready("startup guard expired", self._process.poll())
+            try:
+                line = self._output.get(timeout=min(0.1, remaining))
+                break
+            except queue.Empty:
+                status = self._process.poll()
+                if status is not None:
+                    self._raise_backend_not_ready("process exited before the ready line", status)
         ready_line_at = time.monotonic()
         prefix = "Codex Canvas: "
         if not line.startswith(prefix):
@@ -296,6 +327,15 @@ class BackendProcess:
             "totalReadySeconds": round(self.ready_seconds, 4),
         })
         return self.ready_seconds
+
+    def _raise_backend_not_ready(self, reason: str, exit_status: int | None) -> None:
+        stderr_tail = self.stderr or "<empty>"
+        message = (
+            f"Backend did not emit its ready line: {reason}; "
+            f"child exit status={exit_status}; stderr tail:\n{stderr_tail}"
+        )
+        self.stop()
+        raise RuntimeError(message)
 
     @property
     def stderr(self) -> str:
