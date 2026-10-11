@@ -87,6 +87,31 @@ class ProgressWatchdogTests(unittest.TestCase):
             )
             self.assertEqual(calls, expected)
 
+    def track_dispatches(self, watcher):
+        completed = threading.Condition()
+        count = 0
+        changed = watcher._changed
+
+        def tracked_changed(agent_id):
+            nonlocal count
+            try:
+                changed(agent_id)
+            finally:
+                with completed:
+                    count += 1
+                    completed.notify_all()
+
+        setattr(watcher, "_changed", tracked_changed)
+
+        def wait_for_dispatches(expected):
+            with completed:
+                self.assertTrue(
+                    completed.wait_for(lambda: count >= expected, timeout=2),
+                    f"timed out waiting for {expected} dispatches; saw {count}",
+                )
+
+        return wait_for_dispatches
+
     def test_watches_before_secure_baseline_and_only_signals_new_exact_file_state(self):
         watcher = ProgressFileWatchdog(self.root)
         calls = []
@@ -131,17 +156,41 @@ class ProgressWatchdogTests(unittest.TestCase):
 
     def test_parent_directory_change_checks_only_the_exact_progress_revision(self):
         watcher = ProgressFileWatchdog(self.root)
+        wait_for_dispatches = self.track_dispatches(watcher)
         calls = []
         detach = watcher.subscribe("first", lambda: self.record_callback(calls, True))
         self.addCleanup(detach)
         observer = FakeObserver.instances[0]
         observer.emit("first", "modified", self.first.parent, is_directory=True)
         observer.emit("first", "modified", self.first.parent / "nested", is_directory=True)
+        wait_for_dispatches(1)
         with self.callback_condition:
             self.assertEqual(calls, [])
-        self.first.write_text("Changed through an atomic parent event.\n", encoding="utf-8")
+
+        temporary = self.first.with_suffix(".tmp")
+        temporary.write_text("Changed through an atomic parent event.\n", encoding="utf-8")
+        temporary.replace(self.first)
         observer.emit("first", "modified", self.first.parent, is_directory=True)
+        wait_for_dispatches(2)
         self.assert_callbacks(calls, [True])
+
+    def test_in_place_write_can_publish_transient_and_final_revisions(self):
+        watcher = ProgressFileWatchdog(self.root)
+        wait_for_dispatches = self.track_dispatches(watcher)
+        calls = []
+        detach = watcher.subscribe("first", lambda: self.record_callback(calls, True))
+        self.addCleanup(detach)
+        observer = FakeObserver.instances[0]
+
+        self.first.write_text("", encoding="utf-8")
+        observer.emit("first", "modified", self.first.parent, is_directory=True)
+        wait_for_dispatches(1)
+        self.assert_callbacks(calls, [True])
+
+        self.first.write_text("Completed in-place update.\n", encoding="utf-8")
+        observer.emit("first", "modified", self.first.parent, is_directory=True)
+        wait_for_dispatches(2)
+        self.assert_callbacks(calls, [True, True])
 
     def test_errors_and_recovery_are_each_change_states_even_with_no_revision(self):
         watcher = ProgressFileWatchdog(self.root)
