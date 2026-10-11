@@ -140,6 +140,36 @@ fn new_request_emits_one_row_and_all_alias_intents() {
 }
 
 #[test]
+fn empty_request_id_alias_is_omitted() {
+    let request = input("request-a", "agent-a", 4, 7, "call-a", "thread:", Some(""));
+    let ReservationDecision::Admitted { intents, .. } =
+        decide_reservation(&ReservationSnapshot { existing: None }, &request)
+    else {
+        panic!("new request should be admitted");
+    };
+    assert_eq!(intents.len(), 3);
+    assert!(intents.iter().all(|intent| !matches!(
+        intent,
+        ReservationWriteIntent::InsertAlias(alias) if alias.alias.is_empty()
+    )));
+}
+
+#[test]
+fn existing_snapshot_without_an_operation_is_rejected() {
+    let request = input("request-a", "agent-a", 4, 7, "call-a", "thread:", None);
+    let snapshot = ReservationSnapshot {
+        existing: Some(State::empty(studio_operations::StateRevision(1))),
+    };
+    assert!(matches!(
+        decide_reservation(&snapshot, &request),
+        ReservationDecision::Rejected {
+            error: studio_operations::TransitionError::OperationMissing,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn same_id_and_content_returns_saved_request_without_a_second_row_write() {
     let mut store = MemoryStore::default();
     let first = input("request-a", "agent-a", 4, 7, "call-a", "thread:", None);
