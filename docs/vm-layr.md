@@ -92,6 +92,14 @@ leaves out every ignored folder, so the file changes only what becomes a layer i
 
 Studio does not choose the build command or when a build is good enough to save.
 
+### Compression
+
+The data disk mounts with `compress=zstd:1`; provisioning sets the option on an existing disk
+and remounts it. Only new writes are compressed. Do not recompress old data with
+`btrfs filesystem defragment -c`: it unshares the blocks that states, lines and layers share.
+On the codex-agents history (1,087 states of a 37 MB tree) zstd made the state data three times
+smaller (390 to 131 MB) and the writes faster; btrfs metadata (147 MB) does not compress.
+
 ### Sidebar readiness
 
 On macOS, each project with a folder on this server has `layrReadiness` in its
