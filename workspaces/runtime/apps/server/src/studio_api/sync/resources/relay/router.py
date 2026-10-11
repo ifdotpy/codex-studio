@@ -14,7 +14,11 @@ from studio_api.responses import (
     register_route_components,
 )
 from studio_api.sync.resources.models import ResourceRef
-from studio_api.sync.resources.relay.models import ResourceNotifyAck, ResourceNotifyRequest
+from studio_api.sync.resources.relay.models import (
+    ResourceNotifyAck,
+    ResourceNotifyAckResponse,
+    ResourceNotifyRequest,
+)
 from studio_api.sync.resources.relay.receipts import notify_receipts
 
 if TYPE_CHECKING:
@@ -32,7 +36,7 @@ def create_router(context: ApiContext) -> APIRouter:
 
     @router.post(
         "/api/sync/notify",
-        response_model=ResourceNotifyAck,
+        response_model=ResourceNotifyAckResponse,
         responses={
             200: {"headers": {**API_CONTEXT_RESPONSE_HEADERS, **API_BOUNDARY_RESPONSE_HEADERS}},
             **ERROR_RESPONSES,

@@ -20,7 +20,7 @@ import sys
 from contextlib import closing
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Protocol, cast, get_args, get_origin
+from typing import TYPE_CHECKING, Annotated, Callable, Protocol, cast, get_args, get_origin
 
 from codex_backend_identity import BACKEND_BUILD
 from codex_layout import SERVER_SOURCE_ROOT
@@ -610,6 +610,9 @@ class ApiContext:
     def _response_contract(candidate: object) -> bool:
         if candidate is JsonValue:
             return True
+        if get_origin(candidate) is Annotated:
+            members = get_args(candidate)
+            return bool(members) and ApiContext._response_contract(members[0])
         if isinstance(candidate, type):
             if issubclass(candidate, ResponseModel):
                 return True

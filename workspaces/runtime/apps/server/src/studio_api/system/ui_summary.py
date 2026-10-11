@@ -9,7 +9,7 @@ from typing import ContextManager, Literal
 
 from pydantic import Field
 
-from studio_api.models import ContractModel
+from studio_api.models import ContractModel, ResponseModel
 from studio_api.sync.models import ProjectLocationDto, ProjectAliasDto
 
 
@@ -66,7 +66,7 @@ class SummaryAccount(ContractModel):
     isDefault: bool
 
 
-class UiSummaryResponse(ContractModel):
+class UiSummaryResponse(ResponseModel):
     ready: bool
     busy: bool
     system: str

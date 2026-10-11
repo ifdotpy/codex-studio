@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field, StrictStr
+from pydantic import Field, RootModel, StrictStr
 
 from studio_api.models import ContractModel
 from studio_api.sync.resources.models import ResourceRef
@@ -27,3 +27,6 @@ class ResourceNotifyAck(ContractModel):
 
     requestId: NotifyRequestId
     accepted: Literal[True]
+
+
+ResourceNotifyAckResponse = RootModel[ResourceNotifyAck]
