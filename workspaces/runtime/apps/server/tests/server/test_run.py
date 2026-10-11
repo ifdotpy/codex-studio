@@ -212,6 +212,15 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertEqual(sum(kind == "automated" for _path, kind in automated), 10)
         self.assertFalse(any(kind == "expensive" for _path, kind in automated))
         self.assertTrue(all(path not in RUNNER.EXPENSIVE_SUITES for path, _kind in automated))
+        heavy = RUNNER.only_category(RUNNER.inventory(), "heavy")
+        self.assertEqual({path for path, _kind in heavy}, set(RUNNER.HEAVY_SUITES))
+        self.assertEqual(len(heavy), 3)
+        self.assertTrue(all(kind == "heavy" for _path, kind in heavy))
+        self.assertFalse(set(RUNNER.HEAVY_SUITES).intersection(RUNNER.AUTOMATED_SUITES))
+        self.assertIn("heavy", RUNNER.OPT_IN)
+        runnable, skipped = RUNNER._runnable_entries(heavy, set())
+        self.assertFalse(runnable)
+        self.assertEqual(skipped, heavy)
         runnable, skipped = RUNNER._runnable_entries(automated, {"automated"})
         self.assertEqual({path for path, _kind in runnable}, set(RUNNER.AUTOMATED_SUITES))
         self.assertFalse(skipped)
@@ -224,6 +233,8 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertIn("vm", RUNNER.OPT_IN)
         self.assertIn("automated", RUNNER.OPT_IN)
         self.assertEqual(categories[f"{RUNNER.TESTS_REL}/time-awareness.py"], "safe")
+        for path in RUNNER.HEAVY_SUITES:
+            self.assertEqual(categories[path], "heavy")
         source_roots = (
             SERVER_TESTS_ROOT,
             SERVER_SOURCE_ROOT / "sync" / "benchmarks" / "message_delivery",
@@ -259,6 +270,33 @@ class ServerSuiteRunner(unittest.TestCase):
         runnable, skipped = RUNNER._runnable_entries(entries, set())
         self.assertFalse(runnable)
         self.assertEqual(skipped, entries)
+
+    def test_exact_path_filter_opts_in_automated_and_heavy_suites(self):
+        for group, paths in (("automated", RUNNER.AUTOMATED_SUITES),
+                             ("heavy", RUNNER.HEAVY_SUITES)):
+            path = next(
+                name for name in paths
+                if RUNNER.category(ROOT / name) == group
+            )
+            entries = RUNNER.select_entries(path)
+            with self.subTest(group=group):
+                opted_in = RUNNER.exact_filter_opt_ins(path, entries)
+                self.assertEqual(opted_in, {group})
+                runnable, skipped = RUNNER._runnable_entries(entries, opted_in)
+                self.assertEqual(runnable, entries)
+                self.assertEqual(skipped, [])
+        heavy_path = next(iter(RUNNER.HEAVY_SUITES))
+        self.assertEqual(
+            RUNNER.exact_filter_opt_ins(heavy_path.rsplit("/", 1)[1],
+                                        RUNNER.select_entries(heavy_path)),
+            set(),
+        )
+        load_path = next(iter(RUNNER.EXPENSIVE_SUITES))
+        load_entries = RUNNER.select_entries(load_path)
+        self.assertEqual(RUNNER.exact_filter_opt_ins(load_path, load_entries), set())
+        runnable, skipped = RUNNER._runnable_entries(load_entries, set())
+        self.assertFalse(runnable)
+        self.assertEqual(skipped, load_entries)
 
     def test_explicit_and_legacy_suites_keep_registered_categories(self):
         for name in RUNNER.EXPLICIT_SUITES:
@@ -1063,6 +1101,37 @@ class ServerSuiteRunner(unittest.TestCase):
             self.assertEqual(RUNNER.main(), 0)
         sample.assert_not_called()
         self.assertIn("Focused worker plan: one worker", output.getvalue())
+
+    def test_default_run_reports_suites_over_the_fast_budget_without_failing(self):
+        output = io.StringIO()
+        entries = [("slow-default.py", "safe"), ("heavy.py", "heavy")]
+
+        def run_suites(_entries, _opted_in, _timeout, _expensive_timeout, **_kwargs):
+            RUNNER.SUITE_DURATIONS.clear()
+            RUNNER.SUITE_DURATIONS.update({"slow-default.py": 12.345, "heavy.py": 90.0})
+            return [entries[0]], [], [], 0.5
+
+        with (mock.patch.object(RUNNER.sys, "argv", ["run.py"]),
+              mock.patch.object(RUNNER, "inventory", return_value=entries),
+              mock.patch.object(RUNNER, "run_suites", side_effect=run_suites),
+              contextlib.redirect_stdout(output)):
+            self.assertEqual(RUNNER.main(), 0)
+
+        self.assertIn(
+            f"Default-tier suites over {RUNNER.FAST_SUITE_BUDGET_SECONDS:g}s: "
+            "slow-default.py (12.35s)",
+            output.getvalue(),
+        )
+        self.assertNotIn("heavy.py", output.getvalue())
+
+    def test_expensive_class_cannot_run_without_a_single_suite_selection(self):
+        stderr = io.StringIO()
+        with (mock.patch.object(RUNNER.sys, "argv", ["run.py", "--only", "expensive"]),
+              contextlib.redirect_stderr(stderr)):
+            with self.assertRaises(SystemExit) as raised:
+                RUNNER.main()
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("load-class suites must be selected one at a time", stderr.getvalue())
 
     def test_tmpfs_scratch_root_requires_capacity_for_all_workers_and_cleans_up(self):
         with tempfile.TemporaryDirectory(prefix="server-runner-tmpfs-") as temp:

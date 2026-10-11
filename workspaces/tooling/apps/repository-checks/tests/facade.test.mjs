@@ -421,6 +421,22 @@ test("Vitest summaries count test cases rather than test files", () => {
   );
 });
 
+test("Playwright launcher summaries count browser cases for composed heavy runs", () => {
+  const item = { name: "codex-agents-web", ecosystem: "pnpm" };
+  assert.deepEqual(
+    parseCounts(
+      item,
+      "  5 passed (1.2s)\n  1 failed (1.2s)\n  2 skipped\nPlaywright output: /var/tmp/run/playwright-output",
+    ),
+    { passed: 5, failed: 1, skipped: 2, executed: 6, summaryFound: true },
+  );
+  assert.equal(
+    parseCounts(item, "No tests found\nPlaywright output: /var/tmp/run")
+      .summaryFound,
+    false,
+  );
+});
+
 test("Node test runner summaries count executed and skipped cases", () => {
   const item = { name: "codex-studio-tooling", ecosystem: "pnpm" };
   assert.deepEqual(

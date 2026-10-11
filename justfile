@@ -35,6 +35,26 @@ boundaries-check:
 check-affected base *args:
     @node {{quote(facade)}} check-affected {{quote(base)}} {{args}}
 
-[doc("Run the server runner's audited offline automation class.")]
-test-server-opt-in:
-    @pnpm run test:server:opt-in
+[doc("Run default server and bridge, Rust nextest, web type and unit checks, and tooling tests.")]
+test-fast:
+    @node {{quote(facade)}} test-fast
+
+[doc("Run all three manually classified heavy server suites.")]
+test-server-heavy:
+    @node {{quote(facade)}} test-server-category heavy
+
+[doc("Run one server opt-in category; defaults to the audited automated set.")]
+test-server-opt-in category="automated":
+    @node {{quote(facade)}} test-server-category {{quote(category)}}
+
+[doc("Run one exact load-class server suite after printing its manual-run conditions.")]
+test-server-load suite="":
+    @node {{quote(facade)}} test-server-load {{quote(suite)}}
+
+[doc("Run the full web browser project with its 900-second global cap.")]
+test-browser:
+    @node {{quote(facade)}} test-browser
+
+[doc("Run heavy server suites followed by the full browser project; no load suites.")]
+test-heavy:
+    @node {{quote(facade)}} test-heavy

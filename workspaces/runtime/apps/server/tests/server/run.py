@@ -61,7 +61,8 @@ EXPLICIT_SUITES = (
     "runtime-live.py", "time-awareness.py", "tool-parity.py",
     "workspace-protocol.py", "workspace-races.py", "workspace-native-turn.py",
 )
-OPT_IN = {"automated", "native", "live", "expensive", "browser", "vm"}
+OPT_IN = {"automated", "native", "live", "expensive", "browser", "vm", "heavy"}
+FAST_SUITE_BUDGET_SECONDS = 10.0
 DEFAULT_TIMEOUT_SECONDS = 120
 EXPENSIVE_TIMEOUT_SECONDS = 900
 TEST_TMP_ROOT = Path(os.environ.get(
@@ -93,6 +94,7 @@ SUITE_OUTCOME_LOCK = threading.Lock()
 EXPECTED_FAILURES = []
 UNEXPECTED_SUCCESSES = []
 TEST_OUTCOME_COUNTS = {}
+SUITE_DURATIONS = {}
 HOME_AUDIT_BLOCKED_PATHS = []
 HOME_AUDIT_ISOLATED_ENV_EVENTS = []
 EXPECTED_FAILURES_PATH = TESTS / "server" / "expected_failures.txt"
@@ -180,6 +182,16 @@ AUTOMATED_SUITES = {
     f"{TESTS_REL}/native-safety-contract.py": "automated",
     f"{TESTS_REL}/swarm-retry-contract.mjs": "automated",
 }
+HEAVY_SUITES = {
+    f"{TESTS_REL}/agent-move-signed-integration.py":
+        ("signed-in multi-server lifecycle; measured 70 s", 70.0),
+    f"{TESTS_REL}/server-exec-signed-integration.py":
+        ("signed-in server execution flow; measured 61 s", 61.0),
+    f"{TESTS_REL}/process-supervisor-contract.py":
+        ("supervisor replay wait required by contract; measured 45 s", 45.0),
+}
+if set(HEAVY_SUITES).intersection(AUTOMATED_SUITES):
+    raise AssertionError("heavy suites must not also be in AUTOMATED_SUITES")
 NON_TESTS = {
     f"{TESTS_REL}/test_isolation.py": "shared fixture helper",
     f"{TESTS_REL}/vm-native-fixture.py": "shared VM provider fixture helper",
@@ -216,6 +228,8 @@ def category(path):
         return "live"
     if relative in AUTOMATED_SUITES:
         return AUTOMATED_SUITES[relative]
+    if relative in HEAVY_SUITES:
+        return "heavy"
     if relative in EXPENSIVE_SUITES:
         return "expensive"
     return "safe"
@@ -282,6 +296,9 @@ def inventory():
     for path in AUTOMATED_SUITES:
         if (ROOT / path).is_file():
             entries[path] = category(ROOT / path)
+    for path in HEAVY_SUITES:
+        if (ROOT / path).is_file():
+            entries[path] = category(ROOT / path)
     for directory in COMPONENT_ROOTS:
         for path in (ROOT / directory).glob("test_*.py"):
             entries[path.relative_to(ROOT).as_posix()] = "component"
@@ -312,6 +329,8 @@ def exact_entry(path):
     if relative in LEGACY_SERVER_JS:
         return relative, LEGACY_SERVER_JS[relative]
     if relative in AUTOMATED_SUITES:
+        return relative, category(path)
+    if relative in HEAVY_SUITES:
         return relative, category(path)
     if path.parent == TESTS and path.name in EXPLICIT_SUITES:
         return relative, category(path)
@@ -389,6 +408,25 @@ def only_category(entries, kind):
     if kind == "automated":
         return [(path, category) for path, category in entries if path in AUTOMATED_SUITES]
     return [(path, category) for path, category in entries if category == kind]
+
+
+def exact_filter_opt_ins(pattern, entries):
+    """Allow exact file-path selection of automated suites without category flags."""
+    if not pattern or any(character in pattern for character in "*?["):
+        return set()
+    if "/" not in pattern and "\\" not in pattern:
+        return set()
+    candidate = Path(pattern)
+    if not candidate.is_absolute():
+        candidate = ROOT / candidate
+    try:
+        relative = candidate.resolve(strict=True).relative_to(ROOT).as_posix()
+    except (OSError, ValueError):
+        return set()
+    if len(entries) != 1 or entries[0][0] != relative:
+        return set()
+    kind = entries[0][1]
+    return {kind} if kind in {"automated", "heavy"} else set()
 
 
 def run_process(command, cwd, timeout, environment):
@@ -1381,6 +1419,7 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
     runnable, skipped = _runnable_entries(entries, opted_in)
     failures = []
     with SUITE_OUTCOME_LOCK:
+        SUITE_DURATIONS.clear()
         EXPECTED_FAILURES.clear()
         UNEXPECTED_SUCCESSES.clear()
         TEST_OUTCOME_COUNTS.clear()
@@ -1497,6 +1536,8 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
             relative, error, suite_elapsed, peak_rss = future.result()
             suite_seconds[relative] = suite_elapsed
             max_suite_rss = max(max_suite_rss, peak_rss)
+            with SUITE_OUTCOME_LOCK:
+                SUITE_DURATIONS[relative] = suite_elapsed
             status = f"failed ({error})" if error else "passed"
             print(f"Finished {relative}: {status}, {suite_elapsed:.2f}s", flush=True)
             if error:
@@ -1589,16 +1630,17 @@ def main():
         if args.include:
             parser.error("--only cannot be combined with --include")
         entries = only_category(entries, args.only)
+    implicit_opt_ins = exact_filter_opt_ins(args.filter, entries)
     load_sample_seconds = args.load_sample_seconds
     if args.filter:
         selected_runnable = sum(
             1 for _path, kind in entries
-            if kind in {"safe", "component"} or kind in args.include
+            if kind in {"safe", "component"} or kind in args.include or kind in implicit_opt_ins
         )
         if selected_runnable < available_cpu_count():
             load_sample_seconds = 0.0
     if args.show_jobs:
-        opted_in = set(args.include) | ({args.only} if args.only else set())
+        opted_in = set(args.include) | ({args.only} if args.only else set()) | implicit_opt_ins
         runnable, _skipped = _runnable_entries(entries, opted_in)
         profile = _load_profile()
         focused_slots = (_focused_slot_count(profile)
@@ -1637,7 +1679,9 @@ def main():
         else:
             print("No server tests matched the filter.", file=sys.stderr)
         return 2
-    opted_in = set(args.include) | ({args.only} if args.only else set())
+    if (args.only == "expensive" or "expensive" in args.include) and len(entries) != 1:
+        parser.error("load-class suites must be selected one at a time")
+    opted_in = set(args.include) | ({args.only} if args.only else set()) | implicit_opt_ins
     runnable, skipped, failures, elapsed = run_suites(
         entries, opted_in, args.timeout, args.expensive_timeout,
         workers=args.jobs, load_sample_seconds=load_sample_seconds,
@@ -1679,6 +1723,19 @@ def main():
         print(f"HOME audit isolated Codex child environments: {isolated_env_events}")
     for path, reason in failures:
         print(f"FAIL {path}: {reason}")
+    if not args.only and not args.include and all(
+        kind in {"safe", "component"} for _path, kind in runnable
+    ):
+        over_budget = sorted(
+            ((path, SUITE_DURATIONS[path]) for path, _kind in runnable
+             if SUITE_DURATIONS.get(path, 0) > FAST_SUITE_BUDGET_SECONDS),
+            key=lambda item: (-item[1], item[0]),
+        )
+        if over_budget:
+            details = ", ".join(f"{path} ({duration:.2f}s)" for path, duration in over_budget)
+            print(f"Default-tier suites over {FAST_SUITE_BUDGET_SECONDS:g}s: {details}")
+        else:
+            print(f"Default-tier suites over {FAST_SUITE_BUDGET_SECONDS:g}s: none")
     return 1 if failures or unexpected else 0
 
 
