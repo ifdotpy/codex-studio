@@ -144,7 +144,17 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
         .length === 1
     )
       return route.abort();
-    await route.fulfill({ json: { status: "pending" } });
+    await route.fulfill({
+      json: {
+        id: body.request_id,
+        leadId: body.id,
+        targetAccountKey: body.account_key,
+        scope: body.scope,
+        status: "pending",
+        created: Date.now() / 1000,
+        members: {},
+      },
+    });
   });
   const limits = (route) => ({
     accountKey:
@@ -197,15 +207,26 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
     .getByText("Loading account limits…", { exact: true })
     .waitFor({ state: "hidden" });
   await page.keyboard.press("Escape");
-  await page
-    .getByRole("button", { name: "Chat settings", exact: true })
-    .click();
-  const picker = page.getByTestId("account-picker");
-  await picker.click();
-  assert.ok(
-    await page.getByRole("menuitem", { name: /Signed out/ }).isDisabled(),
+  const mainSettingsTrigger = page
+    .locator(".composer-context-row")
+    .getByRole("button", { name: "Main agent settings", exact: true });
+  await mainSettingsTrigger.click();
+  const executionSettings = page.locator(".execution-dropdown");
+  await executionSettings.waitFor({ state: "visible" });
+  const signedOutTile = executionSettings.getByRole("button", {
+    name: "Select account Signed out",
+    exact: true,
+  });
+  assert.equal(
+    await signedOutTile.count(),
+    0,
+    "Signed-out accounts are not offered in the account tiles",
   );
-  await page.getByRole("menuitem", { name: /work@example.invalid/ }).click();
+  const workTile = executionSettings.getByRole("button", {
+    name: "Select account Work",
+    exact: true,
+  });
+  await workTile.click();
   const transfer = page.getByRole("dialog", {
     name: "Transfer this chat",
     exact: true,
@@ -218,90 +239,65 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
   );
   await transfer.getByRole("button", { name: "Cancel", exact: true }).click();
   assert.equal(transferCalls, 0);
-  await picker.click();
-  await page.getByRole("menuitem", { name: /work@example.invalid/ }).click();
+  await workTile.click();
   await transfer
     .getByRole("button", { name: "Transfer chat", exact: true })
     .click();
   await transfer.waitFor({ state: "hidden" });
   assert.equal(transferCalls, 1);
-  await page
-    .getByRole("button", { name: "Subagent defaults", exact: true })
+  await mainSettingsTrigger.click();
+  await executionSettings.waitFor({ state: "visible" });
+  await executionSettings
+    .getByRole("group", { name: "Agent role", exact: true })
+    .getByRole("button", { name: "Worker", exact: true })
     .click();
-  const subagentAccount = page.getByLabel("Subagent account", {
-    exact: true,
-  });
-  const defaults = page.getByRole("dialog", {
-    name: "Subagent defaults",
+  const subagentAccount = executionSettings.getByRole("group", {
+    name: "Subagent account",
     exact: true,
   });
   assert.equal(
-    await defaults.getByRole("button", { name: /Save/ }).count(),
+    await executionSettings.getByRole("button", { name: /Save/ }).count(),
     0,
     "The account choice applies at once",
   );
-  await subagentAccount.selectOption("work");
+  await subagentAccount
+    .getByRole("button", { name: "Select account Work", exact: true })
+    .click();
   await page.locator(".execution-error[role=alert]").waitFor();
   assert.equal(transferCalls, 2, "the account choice transfers without a save");
   assert.equal(
-    await subagentAccount.inputValue(),
-    "",
+    await subagentAccount
+      .getByRole("button", { name: "Automatic", exact: true })
+      .getAttribute("aria-pressed"),
+    "true",
     "a failed transfer reverts the account",
   );
   const subagentTransferResponse = page.waitForResponse((response) =>
     response.url().endsWith("/api/agents/account-transfer"),
   );
-  await defaults.getByRole("button", { name: "Retry", exact: true }).click();
+  await executionSettings
+    .getByRole("button", { name: "Retry", exact: true })
+    .click();
   await subagentTransferResponse;
-  await defaults
+  await executionSettings
     .getByRole("status")
-    .filter({ hasText: /^Saved/ })
+    .filter({ hasText: /^Account transfer accepted\.$/ })
     .waitFor();
   assert.equal(transferCalls, 3);
   assert.ok(transferRequests[1].request_id);
   assert.equal(transferRequests[1].request_id, transferRequests[2].request_id);
   assert.equal(transferRequests[2].account_key, "work");
   assert.equal(transferRequests[2].scope, "subagents");
-  assert.equal(await subagentAccount.inputValue(), "work");
-  await page.keyboard.press("Escape");
-  await picker.click();
-  await page.getByRole("menuitem", { name: /Manage accounts/ }).click();
-  const manager = page.getByRole("dialog", {
-    name: "Accounts",
-    exact: true,
-  });
-  await manager.waitFor();
+  // Pending transfers keep the stored tile selected; the acceptance status
+  // does not name the target account until the transfer snapshot advances.
   assert.equal(
-    await manager.getByRole("button", { name: "Sign in" }).count(),
-    0,
+    await subagentAccount
+      .getByRole("button", { name: "Automatic", exact: true })
+      .getAttribute("aria-pressed"),
+    "true",
+    "the accepted transfer stays pending until replication updates the default",
   );
-  await manager
-    .getByRole("button", { name: "Add account", exact: true })
-    .click();
-  const add = page.getByRole("dialog", {
-    name: "Add account",
-    exact: true,
-  });
-  await add.getByRole("button", { name: "Sign in" }).waitFor();
-  assert.equal(await add.locator(".account-row").count(), 0);
-  await add.getByRole("button", { name: "Back to accounts" }).click();
-  const work = manager.locator('[data-account="work"]');
-  await work
-    .getByRole("button", { name: "Disconnect account", exact: true })
-    .click();
-  const disconnect = page.getByRole("dialog", {
-    name: "Disconnect account",
-    exact: true,
-  });
-  await disconnect.waitFor();
-  assert.equal(disconnectCalls, 0);
-  await disconnect
-    .getByRole("button", { name: "Disconnect account", exact: true })
-    .click();
-  await work
-    .getByRole("button", { name: "Reconnect account", exact: true })
-    .waitFor();
-  assert.equal(disconnectCalls, 1);
+  await page.keyboard.press("Escape");
   await page.setViewportSize({ width: 390, height: 844 });
   assert.ok(
     await page.evaluate(
@@ -309,28 +305,14 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
     ),
   );
   await page.screenshot({ path: join(evidence, "accounts-390.png") });
-  await work
-    .getByRole("button", { name: "Reconnect account", exact: true })
-    .click();
-  await work
-    .getByRole("button", { name: "Disconnect account", exact: true })
-    .waitFor();
-  await page.keyboard.press("Escape");
-  await manager.waitFor({ state: "hidden" });
-  const chatSettings = page.getByRole("dialog", {
-    name: "Chat settings",
-    exact: true,
-  });
   assert.ok(
-    await chatSettings.isVisible(),
-    "Escape closes only account management",
+    (
+      await page
+        .getByRole("button", { name: "Subagent defaults", exact: true })
+        .textContent()
+    )?.includes("Personal"),
+    "Mobile settings retain the current subagent account name",
   );
-  assert.ok(
-    await picker.locator(".account-picker-label").isVisible(),
-    "Mobile settings retain the account name",
-  );
-  await page.keyboard.press("Escape");
-  await chatSettings.waitFor({ state: "hidden" });
   await page
     .getByRole("button", { name: "Studio settings", exact: true })
     .click();
@@ -362,18 +344,67 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
     .getByRole("tab", { name: "Accounts", exact: true })
     .click();
   const transfersBeforeDefaultChange = transferCalls;
-  const studioManager = studioSettings.locator(".accounts-manager-inline");
-  const workRow = studioManager.locator('[data-account="work"]');
-  await workRow
-    .getByRole("button", { name: "Use work@example.invalid by default" })
+  const accountsPanel = studioSettings.getByRole("region", {
+    name: "Accounts",
+    exact: true,
+  });
+  await accountsPanel
+    .getByRole("button", { name: "Add account", exact: true })
     .click();
-  await workRow.getByText("Application default", { exact: true }).waitFor();
+  const add = page.getByRole("dialog", { name: "Add account", exact: true });
+  await add.getByRole("group", { name: "Account type", exact: true }).waitFor();
+  assert.equal(
+    await add
+      .getByRole("button", { name: "Continue", exact: true })
+      .isDisabled(),
+    true,
+    "The account type must be chosen before starting sign-in",
+  );
+  await add.getByRole("button", { name: "Cancel", exact: true }).click();
+  const workRow = accountsPanel
+    .locator(".server-account-row")
+    .filter({ hasText: "work@example.invalid" });
+  await workRow.waitFor();
+  await workRow
+    .getByRole("button", { name: "Actions for work@example.invalid" })
+    .click();
+  await page
+    .getByRole("menuitem", { name: "Make default", exact: true })
+    .click();
+  await workRow.getByText(/Default · /).waitFor();
   assert.equal(defaultAccountCalls, 1);
   assert.equal(defaultAccountKey, "work");
-  const personal = studioManager.locator('[data-account="default"]');
-  await personal
-    .getByRole("button", { name: "Delete account", exact: true })
+  await workRow
+    .getByRole("button", { name: "Actions for work@example.invalid" })
     .click();
+  await page.getByRole("menuitem", { name: "Sign out", exact: true }).click();
+  const disconnect = page.getByRole("dialog", {
+    name: "Disconnect account",
+    exact: true,
+  });
+  await disconnect.waitFor();
+  assert.equal(disconnectCalls, 0);
+  await disconnect
+    .getByRole("button", { name: "Disconnect account", exact: true })
+    .click();
+  const reconnect = workRow.locator(
+    '.server-account-chip[data-state="reauth"]',
+  );
+  await reconnect.waitFor();
+  await reconnect.click();
+  const signIn = page.getByRole("dialog", {
+    name: /Sign in to Codex · work@example\.invalid/,
+  });
+  await signIn.waitFor();
+  await page.keyboard.press("Escape");
+  assert.equal(disconnectCalls, 1);
+  const personal = accountsPanel
+    .locator(".server-account-row")
+    .filter({ hasText: "personal@example.invalid" });
+  await personal
+    .getByRole("button", { name: "Actions for personal@example.invalid" })
+    .click();
+  await page.getByRole("menuitem", { name: "Remove", exact: true }).click();
   const deletion = page.getByRole("dialog", {
     name: "Delete account",
     exact: true,
@@ -412,15 +443,25 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
     name: "Studio settings",
     exact: true,
   });
-  const reopenedManager = reopenedSettings.locator(".accounts-manager-inline");
-  const reopenedPersonal = reopenedManager.locator('[data-account="default"]');
-  await reopenedPersonal
-    .getByRole("button", { name: "Delete account", exact: true })
+  await reopenedSettings
+    .getByRole("tab", { name: "Accounts", exact: true })
     .click();
+  const reopenedAccounts = reopenedSettings.getByRole("region", {
+    name: "Accounts",
+    exact: true,
+  });
+  const reopenedPersonal = reopenedAccounts
+    .locator(".server-account-row")
+    .filter({ hasText: "personal@example.invalid" });
+  await reopenedPersonal
+    .getByRole("button", { name: "Actions for personal@example.invalid" })
+    .click();
+  await page.getByRole("menuitem", { name: "Remove", exact: true }).click();
   const reopenedDeletion = page.getByRole("dialog", {
     name: "Delete account",
     exact: true,
   });
+  await reopenedDeletion.waitFor();
   await reopenedDeletion
     .getByRole("button", { name: "Delete account", exact: true })
     .click();
@@ -435,31 +476,19 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
   await page.screenshot({
     path: join(evidence, "studio-settings-dark-390.png"),
   });
+  await reopenedAccounts.screenshot({
+    path: join(evidence, "accounts-dark-390.png"),
+  });
   await page.keyboard.press("Escape");
   await reopenedSettings.waitFor({ state: "hidden" });
-  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
-  await page
-    .getByRole("menuitem", { name: "Chat settings", exact: true })
-    .click();
-  assert.match(
-    await picker.locator(".account-picker-label").textContent(),
-    /personal@example.invalid/,
-  );
-  await picker.click();
-  await page.getByRole("menuitem", { name: /Manage accounts/ }).click();
-  await manager.waitFor();
-  await page.waitForFunction(
-    (element) => getComputedStyle(element).opacity === "1",
-    await manager.elementHandle(),
-  );
-  await page.screenshot({ path: join(evidence, "accounts-dark-390.png") });
+  assert.match(await mainSettingsTrigger.textContent(), /Work/);
   assert.equal(
     await page.locator("html").getAttribute("data-mantine-color-scheme"),
     "dark",
   );
   expect(errors).toEqual([]);
   console.log(
-    "PASS context disclosure, truthful limits loading, transfer confirmation, unavailable choices, add/manage separation, disconnect/reconnect, mobile layout. " +
+    "PASS context disclosure, truthful limits loading, account tile transfer confirmation, account rows, deletion retry, mobile layout. " +
       evidence,
   );
 });
