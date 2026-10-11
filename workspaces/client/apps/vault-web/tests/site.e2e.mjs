@@ -1,7 +1,8 @@
-// The built site against the real vault function with a fake S3 that holds the writer's fixture
-// (workspaces/runtime/apps/vault/test/fixture), in headless Chromium with a virtual authenticator
-// that has PRF: the paper key unlocks, a passkey is added and then unlocks alone, a file
-// downloads with the writer's content, and a passkey is removed.
+// The built site behind the real gateway with a fake S3 that holds the writer's fixture
+// (workspaces/runtime/apps/vault/test/fixture) for two vaults, in headless Chromium with a
+// virtual authenticator that has PRF: the paper key unlocks, a passkey is added and then unlocks
+// alone, the same passkey opens the second vault, files download and show in Quick Look with
+// the writer's content, and a passkey is removed.
 //
 //   pnpm --filter studio-vault-web run build && node tests/site.e2e.mjs
 import { chromium } from "playwright";
@@ -9,8 +10,10 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import http from "node:http";
-import { extname, join, relative } from "node:path";
-import { makeHandler } from "../../../../runtime/apps/vault/lambda/handler.mjs";
+import { join, relative } from "node:path";
+import { Readable } from "node:stream";
+import { makeGateway } from "../../../../runtime/apps/vault/gateway/server.mjs";
+import { makeVault } from "../../../../runtime/apps/vault/src/service.mjs";
 import {
   generateIdentity,
   recipientOf,
@@ -33,21 +36,21 @@ const expected = JSON.parse(
 );
 const paper = await generateIdentity();
 
+// The same writer objects serve two vaults, "proj" and "other".
 const objects = new Map();
 const walk = (dir) =>
-  readdirSync(dir).forEach((n) =>
-    statSync(join(dir, n)).isDirectory()
-      ? walk(join(dir, n))
-      : objects.set(
-          relative(join(fixture, "objects"), join(dir, n)),
-          readFileSync(join(dir, n)),
-        ),
-  );
+  readdirSync(dir).forEach((n) => {
+    if (statSync(join(dir, n)).isDirectory()) return walk(join(dir, n));
+    const key = relative(join(fixture, "objects"), join(dir, n));
+    objects.set(key, readFileSync(join(dir, n)));
+    objects.set(key.replace(/^proj\//, "other/"), readFileSync(join(dir, n)));
+  });
 walk(join(fixture, "objects"));
-objects.set(
-  "proj/slots/paper.age",
-  Buffer.from(await sealSlot(vaultIdentity, await recipientOf(paper))),
+const paperSlot = Buffer.from(
+  await sealSlot(vaultIdentity, await recipientOf(paper)),
 );
+objects.set("proj/slots/paper.age", paperSlot);
+objects.set("other/slots/paper.age", paperSlot);
 
 const s3 = {
   async send(command) {
@@ -59,11 +62,22 @@ const s3 = {
             .filter((k) => k.startsWith(input.Prefix))
             .map((Key) => ({ Key })),
         };
-      case "GetObjectCommand":
+      case "GetObjectCommand": {
+        const data = objects.get(input.Key);
+        if (!data)
+          throw Object.assign(new Error("missing"), { name: "NoSuchKey" });
         return {
-          Body: { transformToByteArray: async () => objects.get(input.Key) },
+          ContentLength: data.length,
+          Body: Object.assign(Readable.from([data]), {
+            transformToByteArray: async () => data,
+          }),
         };
+      }
       case "PutObjectCommand":
+        if (input.IfNoneMatch === "*" && objects.has(input.Key))
+          throw Object.assign(new Error("exists"), {
+            name: "PreconditionFailed",
+          });
         objects.set(input.Key, Buffer.from(input.Body));
         return {};
       case "DeleteObjectCommand":
@@ -73,60 +87,24 @@ const s3 = {
     throw new Error(command.constructor.name);
   },
 };
-let port;
-const handler = makeHandler({
-  s3,
-  env: {
-    BUCKET: "b",
-    PREFIX: "proj",
-    RECIPIENT: await recipientOf(vaultIdentity),
-    TOKEN_SECRET: "t".repeat(64),
-  },
-  presign: async (_client, command) =>
-    `http://localhost:${port}/s3/${command.input.Key}`,
-});
-const types = {
-  ".html": "text/html",
-  ".js": "text/javascript",
-  ".css": "text/css",
-  ".wasm": "application/wasm",
-};
-const server = http.createServer(async (request, response) => {
-  const url = new URL(request.url, "http://localhost");
-  if (url.pathname.startsWith("/fn/")) {
-    let body = "";
-    for await (const chunk of request) body += chunk;
-    const result = await handler({
-      requestContext: { http: { method: request.method } },
-      rawPath: url.pathname.slice(3),
-      body,
-    });
-    response.writeHead(result.statusCode, result.headers).end(result.body);
-  } else if (url.pathname.startsWith("/s3/")) {
-    const data = objects.get(decodeURIComponent(url.pathname.slice(4)));
-    response.writeHead(data ? 200 : 404).end(data);
-  } else if (url.pathname === "/config.json") {
-    response.writeHead(200, { "content-type": "application/json" }).end(
-      JSON.stringify({
-        functionUrl: `http://localhost:${port}/fn/`,
-        prefix: "proj",
-      }),
-    );
-  } else {
-    const file = join(dist, url.pathname === "/" ? "index.html" : url.pathname);
-    try {
-      response
-        .writeHead(200, {
-          "content-type": types[extname(file)] ?? "application/octet-stream",
-        })
-        .end(readFileSync(file));
-    } catch {
-      response.writeHead(404).end();
-    }
-  }
-});
+const recipient = await recipientOf(vaultIdentity);
+const secret = Buffer.alloc(32, 9);
+const vaults = Object.fromEntries(
+  ["proj", "other"].map((prefix) => [
+    prefix,
+    makeVault({ s3, bucket: "b", prefix, recipient, secret }),
+  ]),
+);
+const server = http.createServer(
+  makeGateway({
+    config: () => ({ projects: { proj: {}, other: {} } }),
+    vaultFor: (name) => vaults[name] ?? null,
+    site: dist,
+  }),
+);
 await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-port = server.address().port;
+const port = server.address().port;
+const sha = (data) => createHash("sha256").update(data).digest("hex");
 
 const browser = await chromium.launch();
 try {
@@ -145,8 +123,14 @@ try {
       automaticPresenceSimulation: true,
     },
   });
-  page.on("pageerror", (error) => console.error("page error:", error.message));
-  await page.goto(`http://localhost:${port}/`);
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const site = `http://localhost:${port}`;
+
+  // Two vaults: the root page asks for one.
+  await page.goto(`${site}/`);
+  await page.waitForSelector("#empty-text:has-text('Choose a vault')");
+  await page.click("#vaults a:has-text('proj')");
   await page.waitForSelector("#unlock:not([hidden])");
   assert.equal(
     await page.isHidden("#with-passkey"),
@@ -183,20 +167,42 @@ try {
       .join("\n"),
   );
   await page.click("#paper-form button");
-  await page.waitForSelector("#browse:not([hidden])");
+  await page.waitForSelector("#columns:not([hidden])");
   assert.equal(await page.inputValue("#state"), "4");
-  await page.click("text=src/");
+
+  // Column view: a folder opens the next column, a file shows its preview with Download.
+  await page.click("#columns .item:has-text('src')");
+  await page.click("#columns .item:has-text('app.py')");
+  await page.waitForSelector(".column.preview h3:has-text('app.py')");
   const download = page.waitForEvent("download");
-  await page.click("text=app.py");
-  const data = readFileSync(await (await download).path());
+  await page.click(".column.preview button:has-text('Download')");
   assert.equal(
-    createHash("sha256").update(data).digest("hex"),
+    sha(readFileSync(await (await download).path())),
     expected.states[3]["src/app.py"][0],
   );
+  assert.equal(await page.textContent("#crumbs"), "projsrcapp.py");
 
-  // An earlier state.
+  // Quick Look shows the text; Escape closes it.
+  await page.keyboard.press(" ");
+  await page.waitForSelector("#ql-body pre");
+  assert.equal(
+    sha(Buffer.from(await page.textContent("#ql-body pre"))),
+    expected.states[3]["src/app.py"][0],
+  );
+  await page.keyboard.press("Escape");
+  await page.waitForSelector("#quicklook-panel", { state: "hidden" });
+
+  // List view and an earlier state.
+  await page.click("#view-list");
+  await page.waitForSelector("#list:not([hidden])");
   await page.selectOption("#state", "2");
-  await page.waitForSelector("text=empty.txt");
+  await page.click("#crumbs button:first-child");
+  await page.waitForSelector("#list-rows .item:has-text('empty.txt')");
+
+  // Search finds a file in any folder.
+  await page.fill("#filter", "tool");
+  await page.waitForSelector("#list-rows .item:has-text('bin/tool.bin')");
+  await page.fill("#filter", "");
 
   // A passkey on this device, then a fresh tab that opens with the passkey alone.
   await page.click("#passkeys");
@@ -206,11 +212,37 @@ try {
   assert.ok(
     [...objects.keys()].some((k) => k.startsWith("proj/slots/passkey-")),
   );
+  await page.click("#close-passkeys");
   await page.reload();
   await page.waitForSelector("#with-passkey:not([hidden])");
   await page.click("#with-passkey");
-  await page.waitForSelector("#browse:not([hidden])");
+  await page.waitForSelector("#list:not([hidden])");
   assert.equal(await page.inputValue("#state"), "4");
+
+  // The same passkey opens the second vault after one paper unlock there.
+  await page.click("#vaults a:has-text('other')");
+  await page.waitForSelector("#unlock:not([hidden])");
+  assert.equal(await page.isHidden("#with-passkey"), true);
+  await page.fill("#paper", words.join(" "));
+  await page.click("#paper-form button");
+  await page.waitForSelector("#list:not([hidden])");
+  await page.click("#passkeys");
+  await page.click("#use-existing");
+  await page.waitForSelector("#passkey-list li button");
+  const ids = (prefix) =>
+    [...objects.keys()]
+      .filter((k) => k.startsWith(`${prefix}/slots/passkey-`))
+      .map((k) => k.slice(prefix.length + 7));
+  assert.deepEqual(ids("other"), ids("proj"));
+  // One credential, two vaults: the slots differ, because the PRF salt is per vault.
+  assert.notDeepEqual(
+    objects.get(`other/slots/${ids("other")[0]}`),
+    objects.get(`proj/slots/${ids("proj")[0]}`),
+  );
+  await page.click("#close-passkeys");
+  await page.reload();
+  await page.click("#with-passkey");
+  await page.waitForSelector("#list:not([hidden])");
 
   // Removing the passkey removes its slot; the paper slot stays.
   await page.click("#passkeys");
@@ -219,10 +251,10 @@ try {
     () => !document.querySelector("#passkey-list li button"),
   );
   assert.equal(
-    [...objects.keys()].filter((k) => k.startsWith("proj/slots/")).join(),
-    "proj/slots/paper.age",
+    [...objects.keys()].filter((k) => k.startsWith("other/slots/")).join(),
+    "other/slots/paper.age",
   );
-  assert.equal(await page.textContent("#status"), "");
+  assert.deepEqual(errors, []);
   console.log("site e2e: passed");
 } finally {
   await browser.close();

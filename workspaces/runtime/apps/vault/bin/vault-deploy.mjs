@@ -1,20 +1,14 @@
 #!/usr/bin/env node
 // Deploy or update the AWS side of a project vault (cloud/template.yaml) with the keys that
-// vault-keys made, upload the site and the paper slot, and give the VM a write-only key.
+// vault-keys made, register the vault with the gateway (vault-gateway), and give the VM a
+// write-only key.
 //
 //   node vault-deploy.mjs --project <prefix> --profile <aws profile> --region <region>
 //        [--folder <Studio project folder>] [--new-writer-key]
 //
+// The vault may live in another AWS account than the gateway: --profile names the vault's account.
 // --folder configures the VM (codex_vault.py configure) when the writer has no key yet or
 // --new-writer-key asks for one; the secret goes through a pipe, never to a file.
-import {
-  CloudFormationClient,
-  CreateStackCommand,
-  DescribeStacksCommand,
-  UpdateStackCommand,
-  waitUntilStackCreateComplete,
-  waitUntilStackUpdateComplete,
-} from "@aws-sdk/client-cloudformation";
 import {
   CreateAccessKeyCommand,
   DeleteAccessKeyCommand,
@@ -26,13 +20,17 @@ import {
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
-import { fromIni } from "@aws-sdk/credential-providers";
-import { execFileSync, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { extname, join, relative } from "node:path";
+import { spawnSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
+import {
+  CloudFormationClient,
+  awsConfig,
+  deployStack,
+  here,
+  settings,
+} from "../src/cloud.mjs";
 
 const { values: args } = parseArgs({
   options: {
@@ -49,132 +47,49 @@ if (!args.project || !args.profile) {
   );
   process.exit(2);
 }
-const here = new URL("..", import.meta.url).pathname;
-const keys = join(homedir(), ".config/studio-vault", args.project);
+// The gateway serves /api/ and /assets/ itself.
+if (["api", "assets"].includes(args.project)) {
+  console.error(
+    `vault-deploy: ${args.project} is a gateway path; choose another name`,
+  );
+  process.exit(2);
+}
+const keys = join(settings, args.project);
 const recipient = readFileSync(join(keys, "recipient.txt"), "utf8").trim();
 const paperSlot = readFileSync(join(keys, "paper.age"));
-const config = {
-  region: args.region,
-  credentials: fromIni({ profile: args.profile }),
-};
+let gatewaySettings;
+try {
+  gatewaySettings = JSON.parse(
+    readFileSync(join(settings, "gateway.json"), "utf8"),
+  );
+} catch {
+  console.error("vault-deploy: no gateway yet; run vault-gateway first");
+  process.exit(2);
+}
+const config = awsConfig(args.profile, args.region);
 const s3 = new S3Client(config);
 const cfn = new CloudFormationClient(config);
 const iam = new IAMClient(config);
-const stack = `studio-vault-${args.project.replace(/[^A-Za-z0-9-]/g, "-")}`;
-const log = (...parts) => console.error(...parts);
+const stack = `studio-vault-${args.project}`;
 
-// 1. The function code goes to the artifacts bucket of the bootstrap stack of this account and region.
-async function deployStack(StackName, TemplateBody, Parameters = []) {
-  const common = {
-    StackName,
-    TemplateBody,
-    Parameters,
-    Capabilities: ["CAPABILITY_IAM"],
-  };
-  let exists = true;
-  try {
-    await cfn.send(new DescribeStacksCommand({ StackName }));
-  } catch {
-    exists = false;
-  }
-  if (exists) {
-    try {
-      await cfn.send(new UpdateStackCommand(common));
-      log(`updating ${StackName}`);
-      await waitUntilStackUpdateComplete(
-        { client: cfn, maxWaitTime: 1800 },
-        { StackName },
-      );
-    } catch (error) {
-      if (!String(error.message).includes("No updates are to be performed"))
-        throw error;
-    }
-  } else {
-    log(`creating ${StackName}`);
-    await cfn.send(new CreateStackCommand({ ...common, OnFailure: "DELETE" }));
-    await waitUntilStackCreateComplete(
-      { client: cfn, maxWaitTime: 3600 },
-      { StackName },
-    );
-  }
-  return Object.fromEntries(
-    (
-      await cfn.send(new DescribeStacksCommand({ StackName }))
-    ).Stacks[0].Outputs.map((o) => [o.OutputKey, o.OutputValue]),
-  );
-}
-const artifacts = (
-  await deployStack(
-    "studio-vault-bootstrap",
-    readFileSync(join(here, "cloud/bootstrap.yaml"), "utf8"),
-  )
-).ArtifactsBucket;
-execFileSync(process.execPath, [join(here, "lambda/build.mjs")], {
-  stdio: ["ignore", "ignore", "inherit"],
-});
-const zip = readFileSync(join(here, "dist/lambda.zip"));
-const codeKey = `lambda/${createHash("sha256").update(zip).digest("hex")}.zip`;
-await s3.send(
-  new PutObjectCommand({ Bucket: artifacts, Key: codeKey, Body: zip }),
-);
-
-// 2. The vault stack.
-const parameters = Object.entries({
+// 1. The vault stack.
+const outputs = await deployStack(cfn, stack, "template.yaml", {
   Prefix: args.project,
-  Recipient: recipient,
-  CodeBucket: artifacts,
-  CodeKey: codeKey,
-}).map(([ParameterKey, ParameterValue]) => ({ ParameterKey, ParameterValue }));
-log(`deploying ${stack} (a new CloudFront distribution takes some minutes)`);
-const outputs = await deployStack(
-  stack,
-  readFileSync(join(here, "cloud/template.yaml"), "utf8"),
-  parameters,
-);
+  GatewayRoleArn: gatewaySettings.role,
+});
 
-// 3. The site, its configuration, the public vault record and the paper slot.
-const site = join(here, "../../../client/apps/vault-web/dist");
-const types = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript",
-  ".css": "text/css",
-  ".wasm": "application/wasm",
-  ".json": "application/json",
-  ".svg": "image/svg+xml",
-};
-const upload = async (Key, Body, ContentType) =>
-  s3.send(
-    new PutObjectCommand({
-      Bucket: outputs.BucketName,
-      Key,
-      Body,
-      ContentType,
+// 2. The public vault record and the paper slot.
+await s3.send(
+  new PutObjectCommand({
+    Bucket: outputs.BucketName,
+    Key: `${args.project}/vault.json`,
+    Body: JSON.stringify({
+      format: 1,
+      recipient,
+      created: Math.floor(Date.now() / 1000),
     }),
-  );
-const walk = (dir) =>
-  readdirSync(dir).flatMap((n) =>
-    statSync(join(dir, n)).isDirectory() ? walk(join(dir, n)) : [join(dir, n)],
-  );
-for (const file of walk(site)) {
-  await upload(
-    `site/${relative(site, file)}`,
-    readFileSync(file),
-    types[extname(file)] ?? "application/octet-stream",
-  );
-}
-await upload(
-  "site/config.json",
-  JSON.stringify({ functionUrl: outputs.FunctionUrl, prefix: args.project }),
-  "application/json",
-);
-await upload(
-  `${args.project}/vault.json`,
-  JSON.stringify({
-    format: 1,
-    recipient,
-    created: Math.floor(Date.now() / 1000),
+    ContentType: "application/json",
   }),
-  "application/json",
 );
 try {
   await s3.send(
@@ -193,6 +108,23 @@ try {
     }),
   );
 }
+
+// 3. The gateway serves the vault through its reader role; it reads this within 5 minutes.
+await new S3Client(
+  awsConfig(gatewaySettings.profile, gatewaySettings.region),
+).send(
+  new PutObjectCommand({
+    Bucket: gatewaySettings.artifacts,
+    Key: `gateway/projects/${args.project}.json`,
+    Body: JSON.stringify({
+      bucket: outputs.BucketName,
+      region: args.region,
+      role: outputs.ReaderRoleArn,
+      recipient,
+    }),
+    ContentType: "application/json",
+  }),
+);
 
 // 4. A write-only key for the VM, passed through a pipe.
 if (args.folder) {
@@ -243,6 +175,7 @@ if (args.folder) {
   }
 }
 // Public facts for vault-restore and vault-view.
+const site = `https://${gatewaySettings.host}/${args.project}/`;
 writeFileSync(
   join(keys, "cloud.json"),
   JSON.stringify(
@@ -250,7 +183,7 @@ writeFileSync(
       profile: args.profile,
       region: args.region,
       bucket: outputs.BucketName,
-      site: outputs.SiteUrl,
+      site,
       stack,
     },
     null,
@@ -261,8 +194,7 @@ console.log(
   JSON.stringify(
     {
       stack,
-      site: outputs.SiteUrl,
-      function: outputs.FunctionUrl,
+      site,
       bucket: outputs.BucketName,
     },
     null,

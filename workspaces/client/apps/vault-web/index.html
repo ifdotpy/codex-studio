@@ -2,62 +2,214 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
     <meta name="color-scheme" content="light dark" />
-    <title>Vault</title>
-    <link rel="stylesheet" href="./src/style.css" />
+    <title>Desk</title>
+    <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <header>
-      <h1>Vault <span id="project"></span></h1>
-      <nav id="actions" hidden>
-        <label
-          >State
-          <select id="state"></select
-        ></label>
-        <button id="passkeys" type="button">Passkeys</button>
-        <button id="lock" type="button">Lock</button>
-      </nav>
-    </header>
-    <main>
-      <p id="status" role="status"></p>
-      <section id="unlock" hidden>
-        <h2>Unlock</h2>
-        <button id="with-passkey" type="button" hidden>
-          Unlock with passkey
-        </button>
-        <form id="paper-form">
-          <label for="paper">Paper key (24 words)</label>
-          <textarea
-            id="paper"
-            rows="3"
-            autocomplete="off"
-            autocapitalize="characters"
-            spellcheck="false"
-            placeholder="24 words, in order"
-          ></textarea>
-          <button type="submit">Unlock with paper key</button>
-        </form>
-        <p class="note">
-          The browser decrypts the files. The key stays in this tab until you
-          lock it.
-        </p>
+    <div id="window">
+      <aside id="sidebar">
+        <h2>Vaults</h2>
+        <ul id="vaults"></ul>
+        <div id="sidebar-foot" hidden>
+          <button id="passkeys" type="button">Passkeys…</button>
+          <button id="lock" type="button">Lock</button>
+        </div>
+      </aside>
+      <div id="sidebar-scrim" hidden></div>
+
+      <section id="main">
+        <header id="toolbar">
+          <button
+            id="toggle-sidebar"
+            class="tool"
+            type="button"
+            aria-label="Show vaults"
+          >
+            <svg viewBox="0 0 20 20">
+              <rect x="2.5" y="3.5" width="15" height="13" rx="2.5" />
+              <path d="M7.5 3.5v13" />
+            </svg>
+          </button>
+          <div class="nav">
+            <button
+              id="back"
+              class="tool"
+              type="button"
+              aria-label="Back"
+              disabled
+            >
+              <svg viewBox="0 0 20 20"><path d="M12.5 4.5 7 10l5.5 5.5" /></svg>
+            </button>
+            <button
+              id="forward"
+              class="tool"
+              type="button"
+              aria-label="Forward"
+              disabled
+            >
+              <svg viewBox="0 0 20 20">
+                <path d="M7.5 4.5 13 10l-5.5 5.5" />
+              </svg>
+            </button>
+          </div>
+          <h1 id="title">Desk</h1>
+          <div id="browse-tools" hidden>
+            <div class="segmented" role="group" aria-label="View">
+              <button
+                id="view-columns"
+                class="tool"
+                type="button"
+                aria-label="Columns"
+                aria-pressed="true"
+              >
+                <svg viewBox="0 0 20 20">
+                  <rect x="2.5" y="4.5" width="15" height="11" rx="1.5" />
+                  <path d="M7.5 4.5v11M12.5 4.5v11" />
+                </svg>
+              </button>
+              <button
+                id="view-list"
+                class="tool"
+                type="button"
+                aria-label="List"
+                aria-pressed="false"
+              >
+                <svg viewBox="0 0 20 20">
+                  <path d="M3 5.5h14M3 10h14M3 14.5h14" />
+                </svg>
+              </button>
+            </div>
+            <select id="state" aria-label="Version"></select>
+            <button
+              id="quicklook"
+              class="tool"
+              type="button"
+              aria-label="Quick Look"
+              disabled
+            >
+              <svg viewBox="0 0 20 20">
+                <path
+                  d="M1.5 10S4.5 4.5 10 4.5 18.5 10 18.5 10 15.5 15.5 10 15.5 1.5 10 1.5 10Z"
+                />
+                <circle cx="10" cy="10" r="2.5" />
+              </svg>
+            </button>
+            <input
+              id="filter"
+              type="search"
+              placeholder="Search"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </div>
+        </header>
+
+        <div id="content">
+          <div id="columns" hidden></div>
+          <div id="list" hidden>
+            <div class="list-head">
+              <span>Name</span><span>Size</span><span>Kind</span>
+            </div>
+            <ul id="list-rows"></ul>
+          </div>
+
+          <div id="unlock" class="center" hidden>
+            <div class="card">
+              <svg class="lock-icon" viewBox="0 0 48 48">
+                <rect x="9" y="21" width="30" height="22" rx="5" />
+                <path d="M16 21v-6a8 8 0 0 1 16 0v6" />
+              </svg>
+              <h2><span id="unlock-name"></span> is locked</h2>
+              <p class="note">
+                Your browser decrypts the files. The key stays in this tab until
+                you lock it.
+              </p>
+              <button id="with-passkey" class="primary" type="button" hidden>
+                Unlock with passkey
+              </button>
+              <details id="paper-box">
+                <summary>Use the paper key</summary>
+                <form id="paper-form">
+                  <textarea
+                    id="paper"
+                    rows="4"
+                    autocomplete="off"
+                    autocapitalize="none"
+                    spellcheck="false"
+                    placeholder="24 words, in order"
+                    aria-label="Paper key"
+                  ></textarea>
+                  <button type="submit">Unlock</button>
+                </form>
+              </details>
+            </div>
+          </div>
+
+          <div id="empty" class="center" hidden>
+            <p id="empty-text"></p>
+          </div>
+        </div>
+
+        <footer id="pathbar">
+          <nav id="crumbs" aria-label="Path"></nav>
+          <span id="status" role="status"></span>
+        </footer>
       </section>
-      <section id="browse" hidden>
-        <nav id="crumbs" aria-label="Folder"></nav>
-        <ul id="entries"></ul>
-      </section>
-      <section id="passkey-panel" hidden>
-        <h2>Passkeys</h2>
+    </div>
+
+    <div id="quicklook-panel" class="overlay" hidden>
+      <div
+        class="ql-window"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="ql-name"
+      >
+        <header>
+          <button id="ql-close" class="tool" type="button" aria-label="Close">
+            <svg viewBox="0 0 20 20"><path d="m5 5 10 10M15 5 5 15" /></svg>
+          </button>
+          <h2 id="ql-name"></h2>
+          <button id="ql-download" type="button">Download</button>
+        </header>
+        <div id="ql-body"></div>
+      </div>
+    </div>
+
+    <div id="passkey-panel" class="overlay" hidden>
+      <div
+        class="sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="passkey-title"
+      >
+        <h2 id="passkey-title">Passkeys of <span id="passkey-vault"></span></h2>
         <ul id="passkey-list"></ul>
         <form id="add-form">
           <label for="label">Name of this device</label>
-          <input id="label" autocomplete="off" />
-          <button type="submit">Add a passkey on this device</button>
+          <div class="row">
+            <input id="label" autocomplete="off" placeholder="MacBook" />
+            <button type="submit">Add a new passkey</button>
+          </div>
         </form>
-        <button id="close-passkeys" type="button">Back to files</button>
-      </section>
-    </main>
-    <script type="module" src="./src/main.js"></script>
+        <p class="note">
+          A passkey of another vault on this site can open this vault too.
+          <button id="use-existing" class="link" type="button">
+            Use an existing passkey
+          </button>
+        </p>
+        <div class="actions">
+          <button id="close-passkeys" class="primary" type="button">
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
   </body>
 </html>

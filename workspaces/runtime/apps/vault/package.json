@@ -2,9 +2,11 @@
   "name": "studio-vault",
   "version": "1.0.0",
   "private": true,
-  "description": "Reader, Lambda, cloud template and Mac tools of the project vault (docs/vault.md)",
+  "description": "Reader, gateway, cloud templates and Mac tools of the project vault (docs/vault.md)",
   "bin": {
-    "vault-init": "./bin/vault-init.mjs",
+    "vault-deploy": "./bin/vault-deploy.mjs",
+    "vault-gateway": "./bin/vault-gateway.mjs",
+    "vault-keys": "./bin/vault-keys.mjs",
     "vault-restore": "./bin/vault-restore.mjs",
     "vault-view": "./bin/vault-view.mjs"
   },
@@ -15,14 +17,14 @@
   },
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "build:lambda": "node lambda/build.mjs"
+    "build:gateway": "node gateway/build.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-cloudformation": "3.1149.0",
     "@aws-sdk/client-iam": "3.1149.0",
     "@aws-sdk/client-s3": "3.1149.0",
+    "@aws-sdk/client-ssm": "3.1149.0",
     "@aws-sdk/credential-providers": "3.1149.0",
-    "@aws-sdk/s3-request-presigner": "3.1149.0",
     "@bokuweb/zstd-wasm": "0.0.27",
     "@scure/bip39": "2.4.0",
     "age-encryption": "0.3.1"

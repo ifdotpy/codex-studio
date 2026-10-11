@@ -1,11 +1,11 @@
-// The vault function, the passkeys and the reader of the site (docs/vault.md).
+// The gateway API, the passkeys and the reader of the site (docs/vault.md, "Gateway").
 import { VaultReader, zstdReady } from "studio-vault/reader";
 import {
-  PRF_SALT,
   decryptWith,
   identityFromPaper,
   identityFromSecret,
   openSlot,
+  prfSalt,
   recipientOf,
   sealSlot,
 } from "studio-vault/keys";
@@ -20,58 +20,65 @@ const unb64url = (text) =>
       "===".slice((text.length + 3) % 4),
   );
 
+async function request(url, { method = "GET", body, token, raw } = {}) {
+  const headers = {};
+  if (body) headers["content-type"] = "application/json";
+  if (token) headers.authorization = `Bearer ${token}`;
+  const response = await fetch(url, {
+    method,
+    headers,
+    cache: "no-store",
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw Object.assign(new Error(data.error ?? `HTTP ${response.status}`), {
+      status: response.status,
+    });
+  }
+  return raw ? response : response.json();
+}
+
+/** The vaults that this gateway serves. */
+export async function projects() {
+  return (await request("/api/projects")).projects;
+}
+
 export class Vault {
-  static async open() {
-    const config = await (
-      await fetch("./config.json", { cache: "no-store" })
-    ).json();
-    await zstdReady("./zstd.wasm");
-    return new Vault(config);
+  static async open(prefix) {
+    await zstdReady("/zstd.wasm");
+    return new Vault(prefix);
   }
 
-  constructor(config) {
-    this.base = config.functionUrl.replace(/\/?$/, "/");
-    this.prefix = config.prefix;
+  constructor(prefix) {
+    this.prefix = prefix;
+    this.base = `/api/p/${encodeURIComponent(prefix)}/`;
+    this.salt = prfSalt(prefix);
     this.identity = null;
     this.token = null;
-    this.urls = new Map();
-  }
-
-  async call(method, path, body) {
-    const init = body
-      ? {
-          method,
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(body),
-        }
-      : { method };
-    const response = await fetch(this.base + path, init);
-    const data = await response.json();
-    if (!response.ok)
-      throw Object.assign(new Error(data.error ?? `HTTP ${response.status}`), {
-        status: response.status,
-      });
-    return data;
   }
 
   async slots() {
-    return (await this.call("GET", "slots")).slots.map((s) => ({
+    return (await request(`${this.base}slots`)).slots.map((s) => ({
       name: s.name,
       data: unb64(s.data),
     }));
   }
 
   /** Call with a fresh token after a 401 (tokens live 10 minutes). */
-  async authorized(method, path, body) {
-    for (let attempt = 0; attempt < 2; attempt++) {
+  async authorized(path, options = {}) {
+    for (let attempt = 0; ; attempt++) {
       if (!this.token) {
-        const { challenge } = await this.call("GET", "challenge");
+        const { challenge } = await request(`${this.base}challenge`);
         this.token = new TextDecoder().decode(
           await decryptWith(this.identity, unb64(challenge)),
         );
       }
       try {
-        return await this.call(method, path, { ...body, token: this.token });
+        return await request(this.base + path, {
+          ...options,
+          token: this.token,
+        });
       } catch (error) {
         if (error.status !== 401 || attempt) throw error;
         this.token = null;
@@ -89,11 +96,7 @@ export class Vault {
 
   async unlockWithPasskey(slots) {
     const passkeys = slots.filter((s) => s.name.startsWith("passkey-"));
-    if (!passkeys.length)
-      throw new Error("No passkey is set up for this vault yet.");
-    const evalByCredential = Object.fromEntries(
-      passkeys.map((s) => [s.name.slice(8), { first: PRF_SALT }]),
-    );
+    if (!passkeys.length) throw new Error("No passkey opens this vault yet.");
     const credential = await navigator.credentials.get({
       publicKey: {
         challenge: crypto.getRandomValues(new Uint8Array(32)),
@@ -103,32 +106,34 @@ export class Vault {
           type: "public-key",
           id: unb64url(s.name.slice(8)),
         })),
-        extensions: { prf: { evalByCredential } },
+        extensions: { prf: { eval: { first: this.salt } } },
       },
     });
-    const secret = credential.getClientExtensionResults().prf?.results?.first;
-    if (!secret)
-      throw new Error(
-        "This passkey provider gave no PRF result. Use the paper key, or a provider with PRF.",
-      );
     const slot = passkeys.find(
       (s) => s.name === `passkey-${b64url(credential.rawId)}`,
     );
-    await this.unlocked(
-      await openSlot(slot.data, identityFromSecret(new Uint8Array(secret))),
-    );
+    await this.unlocked(await openSlot(slot.data, this.opener(credential)));
   }
 
-  /** Make a passkey on this device and give it a slot. */
+  opener(credential) {
+    const secret = credential.getClientExtensionResults().prf?.results?.first;
+    if (!secret)
+      throw new Error(
+        "This passkey provider gave no PRF result, so it cannot open the vault.",
+      );
+    return identityFromSecret(new Uint8Array(secret));
+  }
+
+  /** Make a new passkey on this device and give it a slot. */
   async addPasskey(label) {
-    const credential = await navigator.credentials.create({
+    const created = await navigator.credentials.create({
       publicKey: {
         challenge: crypto.getRandomValues(new Uint8Array(32)),
-        rp: { id: location.hostname, name: `Vault ${this.prefix}` },
+        rp: { id: location.hostname, name: location.hostname },
         user: {
           id: crypto.getRandomValues(new Uint8Array(16)),
-          name: `vault-${this.prefix}`,
-          displayName: label || `Vault ${this.prefix}`,
+          name: `vault@${location.hostname}`,
+          displayName: label || "Vault",
         },
         pubKeyCredParams: [
           { type: "public-key", alg: -7 },
@@ -138,62 +143,65 @@ export class Vault {
           residentKey: "required",
           userVerification: "required",
         },
-        extensions: { prf: { eval: { first: PRF_SALT } } },
+        extensions: { prf: { eval: { first: this.salt } } },
       },
     });
-    let secret = credential.getClientExtensionResults().prf?.results?.first;
-    if (!secret) {
-      // Some providers give PRF results only when a passkey signs in.
-      const again = await navigator.credentials.get({
-        publicKey: {
-          challenge: crypto.getRandomValues(new Uint8Array(32)),
-          rpId: location.hostname,
-          userVerification: "required",
-          allowCredentials: [{ type: "public-key", id: credential.rawId }],
-          extensions: { prf: { eval: { first: PRF_SALT } } },
-        },
-      });
-      secret = again.getClientExtensionResults().prf?.results?.first;
-    }
-    if (!secret)
-      throw new Error(
-        "This passkey provider has no PRF, so it cannot open the vault.",
-      );
-    const opener = identityFromSecret(new Uint8Array(secret));
-    const slot = await sealSlot(this.identity, await recipientOf(opener));
+    // Some providers give PRF results only when a passkey signs in.
+    const credential = created.getClientExtensionResults().prf?.results?.first
+      ? created
+      : await this.pick([created.rawId]);
+    return this.seal(credential);
+  }
+
+  /** Give a slot to a passkey that already exists, such as one that opens another vault. */
+  async useExistingPasskey() {
+    return this.seal(await this.pick([]));
+  }
+
+  pick(ids) {
+    return navigator.credentials.get({
+      publicKey: {
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        rpId: location.hostname,
+        userVerification: "required",
+        allowCredentials: ids.map((id) => ({ type: "public-key", id })),
+        extensions: { prf: { eval: { first: this.salt } } },
+      },
+    });
+  }
+
+  async seal(credential) {
+    const slot = await sealSlot(
+      this.identity,
+      await recipientOf(this.opener(credential)),
+    );
     const name = `passkey-${b64url(credential.rawId)}`;
-    await this.authorized("PUT", "slot", { name, data: b64(slot) });
+    await this.authorized(`slots/${name}`, {
+      method: "PUT",
+      body: { data: b64(slot) },
+    });
     return name;
   }
 
   async removePasskey(name) {
-    await this.authorized("DELETE", "slot", { name });
+    await this.authorized(`slots/${name}`, { method: "DELETE" });
   }
 
   async unlocked(identity) {
     this.identity = identity;
     this.token = null;
-    const { keys } = await this.authorized("POST", "presign", { list: true });
+    const { states } = await this.authorized("states");
     this.reader = new VaultReader({
       prefix: this.prefix,
-      keys,
+      keys: states.map((name) => `${this.prefix}/states/${name}`),
       identity,
       get: (key) => this.fetchObject(key),
     });
   }
 
   async fetchObject(key) {
-    const known = this.urls.get(key);
-    let url = known && known.until > Date.now() ? known.url : null;
-    if (!url) {
-      url = (await this.authorized("POST", "presign", { keys: [key] })).urls[
-        key
-      ];
-      this.urls.set(key, { url, until: Date.now() + 240_000 });
-    }
-    const response = await fetch(url);
-    if (!response.ok)
-      throw new Error(`Reading ${key}: HTTP ${response.status}`);
+    const name = key.slice(this.prefix.length + 8);
+    const response = await this.authorized(`states/${name}`, { raw: true });
     return new Uint8Array(await response.arrayBuffer());
   }
 
@@ -201,6 +209,5 @@ export class Vault {
     this.identity = null;
     this.token = null;
     this.reader = null;
-    this.urls.clear();
   }
 }
