@@ -3652,7 +3652,7 @@ export default function App() {
           />
         )}
       </Modal>
-      {schemaMismatchDialog}
+      {schemaMismatch && schemaMismatchDialog}
       {toast && (
         <div id="toast" role="status">
           {toast}

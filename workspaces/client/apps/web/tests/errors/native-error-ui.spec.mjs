@@ -740,6 +740,12 @@ test("native error ui", async ({ page: runnerPage }) => {
       .locator(".native-error")
       .getByRole("button", { name: "New chat", exact: true })
       .click();
+    const startChat = page.getByRole("button", {
+      name: "Start chat",
+      exact: true,
+    });
+    await expect(startChat).toBeEnabled();
+    await startChat.click();
     await poll(
       async () =>
         (await state()).runtime.agents
