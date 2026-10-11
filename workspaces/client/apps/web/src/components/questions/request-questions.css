@@ -210,6 +210,39 @@
 .request-card {
   scroll-margin-top: 12px;
 }
+.request-browser-open .request-browser-host {
+  margin: 4px 0;
+  font-size: calc(var(--studio-text-body) + 2px);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.request-browser-open dl {
+  margin: 8px 0;
+  font-size: var(--studio-text-meta);
+}
+.request-browser-open dl > div {
+  display: grid;
+  grid-template-columns: minmax(70px, 1fr) minmax(0, 4fr);
+  gap: 8px;
+  margin-top: 4px;
+}
+.request-browser-open dt {
+  color: var(--muted);
+}
+.request-browser-open dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.request-browser-open summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: var(--studio-text-meta);
+}
+.request-browser-open .request-browser-url {
+  display: block;
+  overflow-wrap: anywhere;
+  font-size: var(--studio-text-meta);
+}
 @media (max-width: 560px) {
   .request-summary .request-copy {
     flex-basis: calc(100% - 30px);

@@ -770,6 +770,11 @@ async function nativeAction(event, request) {
     case "openExternal":
       await shell.openExternal(externalURL(request.value), { activate: false });
       return;
+    case "openSignIn":
+      // Only the local window reaches this case: a server frame gets "Unknown server native
+      // action". The person approved this sign-in link, so the browser comes to the front.
+      await shell.openExternal(externalURL(request.value), { activate: true });
+      return;
     case "showVaultKeys": {
       const file = await vaultKeysScript(request.value, {
         folder: app.getPath("temp"),

@@ -32,6 +32,8 @@ export interface CodexDesktop {
   >;
   revealPath(path: string): Promise<void>;
   openExternal(url: string): Promise<void>;
+  /** Open an approved sign-in link and bring the browser to the front. */
+  openSignIn(url: string): Promise<void>;
   /** Show the paper key of a new vault in Terminal (layr-desk keys). */
   showVaultKeys(prefix: string): Promise<void>;
   onNavigate(

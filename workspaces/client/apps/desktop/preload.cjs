@@ -2,9 +2,13 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 {
   let gesture = 0;
+  let lastAction = -Infinity;
   const owner = new URLSearchParams(location.search).get("studio-server");
   const capture = (event) => {
-    if (event.isTrusted) gesture = performance.now() + 1200;
+    if (event.isTrusted) {
+      gesture = performance.now() + 1200;
+      lastAction = performance.now();
+    }
   };
   window.addEventListener("click", capture, true);
   window.addEventListener("keydown", capture, true);
@@ -103,6 +107,14 @@ const { contextBridge, ipcRenderer } = require("electron");
       saveFile: (value) => invoke("saveFile", value),
       fileAction: (value) => invoke("fileAction", value),
       openExternal: (value) => invoke("openExternal", value),
+      // An approved sign-in link opens after the server answer, so the 1.2 second click
+      // window can pass. It still needs a click or key press of the person in the last 30 s.
+      openSignIn: (value) =>
+        performance.now() - lastAction <= 30000
+          ? invoke("openSignIn", value, false)
+          : Promise.reject(
+              new Error("Use a desktop button or keyboard action."),
+            ),
       showVaultKeys: (value) => invoke("showVaultKeys", value),
       notify: (value) => invoke("notify", value, false),
     }),

@@ -14,7 +14,13 @@ import AnswerFields, {
   type AnswerValue,
   type AnswerValues,
 } from "./AnswerFields";
-import { requestApprovalDetails, requestQuestions } from "./requestData";
+import {
+  BROWSER_OPEN_METHOD,
+  browserOpenDetails,
+  requestApprovalDetails,
+  requestQuestions,
+} from "./requestData";
+import { openSignInPage } from "./openSignIn";
 
 type Props = {
   mainAgentId?: string;
@@ -289,6 +295,7 @@ function RequestCard({
   const owner = agents.find((a) => a.id === r.agent);
   const params = objectValue(r.params);
   const approvalDetails = requestApprovalDetails(r);
+  const browserOpen = browserOpenDetails(r);
   const method = r.method || "";
   const requestThread = stringValue(params.threadId);
   const blocked =
@@ -354,7 +361,18 @@ function RequestCard({
     setSending(true);
     setRequestError("");
     try {
-      await apiPost("/api/answer", { ...body, id: r.id });
+      const result = await apiPost("/api/answer", { ...body, id: r.id });
+      // The server returns the link only for an accepted sign-in link, after it bound the
+      // loopback forward on this Mac. Open it now; nothing opened before the approval.
+      if (browserOpen && result.openUrl) {
+        try {
+          await openSignInPage(result.openUrl);
+        } catch (error) {
+          notify(
+            `Studio approved the link, but the browser did not open: ${errorText(error)}`,
+          );
+        }
+      }
       answerDrafts.delete(draftKey);
       const storageError = writeLocalDraft(
         `studio-answer-draft:${draftKey}`,
@@ -411,6 +429,7 @@ function RequestCard({
       "item/commandExecution/requestApproval",
       "item/fileChange/requestApproval",
       "item/permissions/requestApproval",
+      BROWSER_OPEN_METHOD,
     ].includes(method) ||
     (method === "mcpServer/elicitation/request" && params.mode === "url");
   const reason = stringValue(params.reason);
@@ -496,7 +515,42 @@ function RequestCard({
               </details>
             </div>
           )}
-          {url && /^https?:\/\//.test(url) && (
+          {browserOpen && (
+            <div className="request-browser-open">
+              <p className="request-prompt">
+                Open a sign-in page in your browser
+              </p>
+              <p className="request-browser-host">{browserOpen.host}</p>
+              {(browserOpen.clientId || browserOpen.scope) && (
+                <dl>
+                  {browserOpen.clientId && (
+                    <div>
+                      <dt>Client</dt>
+                      <dd title={browserOpen.clientId}>
+                        {browserOpen.clientId}
+                      </dd>
+                    </div>
+                  )}
+                  {browserOpen.scope && (
+                    <div>
+                      <dt>Access</dt>
+                      <dd title={browserOpen.scope}>{browserOpen.scope}</dd>
+                    </div>
+                  )}
+                </dl>
+              )}
+              <p>
+                {browserOpen.port
+                  ? `The sign-in result goes to this chat's Linux user${browserOpen.linuxUser ? ` (${browserOpen.linuxUser})` : ""} on port ${browserOpen.port} of this Mac.`
+                  : "This page needs no forward. It shows a code or a confirmation."}
+              </p>
+              <details>
+                <summary>Full link</summary>
+                <code className="request-browser-url">{browserOpen.url}</code>
+              </details>
+            </div>
+          )}
+          {!browserOpen && url && /^https?:\/\//.test(url) && (
             <a href={url} target="_blank" rel="noreferrer">
               Open request
             </a>
@@ -559,7 +613,11 @@ function RequestCard({
                 disabled={sending}
                 onClick={() => void post({ decision: "accept" })}
               >
-                {stdinApproval ? "Allow input" : "Approve"}
+                {browserOpen
+                  ? "Open in browser"
+                  : stdinApproval
+                    ? "Allow input"
+                    : "Approve"}
               </Button>
             </>
           ) : (
