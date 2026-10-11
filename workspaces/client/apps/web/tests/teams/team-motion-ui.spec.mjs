@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import {
+  apiSchemaHeaders,
   syncIdentityFixture,
   legacySnapshotRoute,
   test,
@@ -100,7 +101,10 @@ test("Team Motion Ui", async ({
     ).json();
     const identityResponse = syncIdentityFixture(backendIdentity.workspaceId);
     await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: identityResponse }),
+      route.fulfill({
+        json: identityResponse,
+        headers: apiSchemaHeaders(),
+      }),
     );
     await page.route("**/api/sync/pull?*", async (route) => {
       const response = await route.fetch();
