@@ -22,6 +22,49 @@ const normalizeTool = ({ schema, ...entry }) => ({
   input_schema: entry.input_schema ?? schema,
 });
 
+// The paired channel signs canonical JSON and so sorts object keys, while the order of a tool
+// schema's properties is part of the prompt. A move carries the source's tool lists as exact
+// JSON text too; the target reads that text, after checking it against the sorted copy.
+const canonicalJson = (value) =>
+  JSON.stringify(value, (key, entry) =>
+    entry && typeof entry === "object" && !Array.isArray(entry)
+      ? Object.fromEntries(
+          Object.keys(entry)
+            .sort()
+            .map((name) => [name, entry[name]]),
+        )
+      : entry,
+  );
+export function exactList(sorted, text, what) {
+  if (typeof text !== "string") return sorted;
+  const exact = JSON.parse(text);
+  if (sorted !== undefined && canonicalJson(exact) !== canonicalJson(sorted))
+    throw new Error(`The exact ${what} differ from the moved copy`);
+  return exact;
+}
+export function exactSession(session) {
+  if (typeof session?.dynamicToolsJson !== "string") return session;
+  return {
+    ...session,
+    dynamicTools: exactList(
+      session.dynamicTools,
+      session.dynamicToolsJson,
+      "Studio tools",
+    ),
+  };
+}
+export function exactProof(proof) {
+  if (typeof proof?.compiledToolsJson !== "string") return proof;
+  return {
+    ...proof,
+    compiledTools: exactList(
+      proof.compiledTools,
+      proof.compiledToolsJson,
+      "compiled Studio tools",
+    ),
+  };
+}
+
 export async function savedPromptProof(file, session) {
   const bytes = await fs.readFile(file);
   if (bytes.length > 256 * 1024 * 1024 || bytes.at(-1) !== 10)
@@ -57,6 +100,17 @@ export async function savedPromptProof(file, session) {
       row.type === "attachment" &&
       row.attachment?.type === "deferred_tools_delta"
     ) {
+      // Newer CLIs put the definitions that a delta surfaces into the delta itself; an
+      // entry with sameAs repeats a definition that an earlier delta gave.
+      const surfaced = row.attachment.surfacedDefinitions;
+      if (surfaced !== undefined && !Array.isArray(surfaced))
+        throw new Error("The saved deferred tool schemas are incomplete");
+      for (const entry of surfaced || []) {
+        if (entry?.definition === undefined) continue;
+        if (!completeTool(entry.definition))
+          throw new Error("The saved deferred tool schemas are incomplete");
+        deferred.set(entry.definition.name, entry.definition);
+      }
       for (const key of ["removedNames", "addedNames"])
         if (
           row.attachment[key] !== undefined &&
@@ -81,31 +135,44 @@ export async function savedPromptProof(file, session) {
     throw new Error(
       "The session has no verified saved prompt snapshot with complete ordered tool schemas",
     );
+  // Newer CLIs mark inlineTools true, yet keep every MCP tool out of the snapshot and deliver
+  // it through deferred records and deltas, as inlineTools false does. Such a snapshot gets the
+  // deferred proof; its external servers are those whose definitions the history holds.
+  const deferredOnly =
+    snapshot.inlineTools !== false &&
+    !snapshot.tools.some((entry) => entry.name.startsWith("mcp__")) &&
+    (deferred.size > 0 || [...activeNames].some((n) => n.startsWith("mcp__")));
   return {
     snapshotHash: createHash("sha256")
       .update(JSON.stringify(snapshot))
       .digest("hex"),
     tools: snapshot.tools.map(normalizeTool),
-    ...(snapshot.inlineTools === false
+    ...(snapshot.inlineTools === false || deferredOnly
       ? {
           deferredTools: [...deferred.values()],
           activeDeferredNames: [...activeNames],
           inlineTools: false,
+          ...(deferredOnly ? { surfacedExternal: true } : {}),
         }
       : {}),
-    session: Object.fromEntries(
-      [
-        "model",
-        "dynamicTools",
-        "developerInstructions",
-        "approvalPolicy",
-        "sandbox",
-        "claude",
-        "moveTurnOptions",
-      ]
-        .filter((key) => session[key] !== undefined)
-        .map((key) => [key, structuredClone(session[key])]),
-    ),
+    session: {
+      ...Object.fromEntries(
+        [
+          "model",
+          "dynamicTools",
+          "developerInstructions",
+          "approvalPolicy",
+          "sandbox",
+          "claude",
+          "moveTurnOptions",
+        ]
+          .filter((key) => session[key] !== undefined)
+          .map((key) => [key, structuredClone(session[key])]),
+      ),
+      ...(session.dynamicTools !== undefined
+        ? { dynamicToolsJson: JSON.stringify(session.dynamicTools) }
+        : {}),
+    },
   };
 }
 
@@ -152,18 +219,29 @@ export function verifyToolProof(proof, studio, offered) {
       "external_tools",
       mcp.filter((entry) => !entry.name.startsWith("mcp__studio__")),
     );
-  const shape = (entry) => ({
-    name: entry.name,
-    description: entry.description || "",
-    input_schema: entry.input_schema,
-  });
+  // A source catalog that crossed the paired channel has its object keys sorted (the channel
+  // signs canonical JSON), so definitions compare by content, with the tool order kept.
+  const canonical = (value) =>
+    Array.isArray(value)
+      ? value.map(canonical)
+      : value && typeof value === "object"
+        ? Object.fromEntries(
+            Object.keys(value)
+              .sort()
+              .map((key) => [key, canonical(value[key])]),
+          )
+        : value;
+  const shape = (entry) =>
+    JSON.stringify(
+      canonical({
+        name: entry.name,
+        description: entry.description || "",
+        input_schema: entry.input_schema,
+      }),
+    );
   if (JSON.stringify(mcp.map(shape)) !== JSON.stringify(studio.map(shape))) {
-    const before = new Map(
-      mcp.map((entry) => [entry.name, JSON.stringify(shape(entry))]),
-    );
-    const after = new Map(
-      studio.map((entry) => [entry.name, JSON.stringify(shape(entry))]),
-    );
+    const before = new Map(mcp.map((entry) => [entry.name, shape(entry)]));
+    const after = new Map(studio.map((entry) => [entry.name, shape(entry)]));
     const changed = mcp.filter(
       (entry) =>
         after.has(entry.name) &&

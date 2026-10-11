@@ -8,7 +8,12 @@ import {
   TextInput,
 } from "@mantine/core";
 import { Ellipsis, RefreshCw } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
+import {
+  closeMenuFromTriggerOnEscape,
+  restoreMenuTriggerFocusAfterClose,
+  useMenuEscapeSuppression,
+} from "../components/closeMenuFromTriggerOnEscape";
 import { ActionButton, SettingsSection } from "../components/ui/primitives";
 import type { ServerAccount, ServerCommand } from "./navigation";
 import type { StudioServer } from "./registry";
@@ -39,6 +44,13 @@ export default function ServerAccountsPanel({
   const [serverId, setServerId] = useState(servers[0]?.id || "local");
   const [label, setLabel] = useState("");
   const [email, setEmail] = useState("");
+  const [openAccountMenuKey, setOpenAccountMenuKey] = useState<string | null>(
+    null,
+  );
+  const accountMenuTriggers = useRef(new Map<string, HTMLButtonElement>());
+  const { suppressNextEscape, clearSuppression } = useMenuEscapeSuppression(
+    openAccountMenuKey !== null,
+  );
   const rows = useMemo(() => {
     const grouped = new Map<
       string,
@@ -139,16 +151,60 @@ export default function ServerAccountsPanel({
                     )}
                     {row.email && !row.plan && <small>{row.email}</small>}
                   </div>
-                  <Menu position="bottom-end" withinPortal>
+                  <Menu
+                    opened={openAccountMenuKey === row.key}
+                    onChange={(nextOpened) => {
+                      setOpenAccountMenuKey((current) =>
+                        nextOpened
+                          ? row.key
+                          : current === row.key
+                            ? null
+                            : current,
+                      );
+                      if (!nextOpened)
+                        restoreMenuTriggerFocusAfterClose(
+                          accountMenuTriggers.current.get(row.key) ?? null,
+                        );
+                    }}
+                    position="bottom-end"
+                    withinPortal={false}
+                    withInitialFocusPlaceholder={false}
+                  >
                     <Menu.Target>
                       <ActionButton
+                        ref={(node) => {
+                          if (node)
+                            accountMenuTriggers.current.set(row.key, node);
+                          else accountMenuTriggers.current.delete(row.key);
+                        }}
                         actionRole="quiet"
+                        onClick={(event) =>
+                          event.currentTarget.focus({ preventScroll: true })
+                        }
+                        data-mantine-stop-propagation={
+                          openAccountMenuKey === row.key || suppressNextEscape
+                            ? "true"
+                            : undefined
+                        }
+                        onKeyDown={(event) =>
+                          closeMenuFromTriggerOnEscape(
+                            event,
+                            openAccountMenuKey === row.key,
+                            () =>
+                              setOpenAccountMenuKey((current) =>
+                                current === row.key ? null : current,
+                              ),
+                            suppressNextEscape,
+                            clearSuppression,
+                          )
+                        }
+                        onBlur={clearSuppression}
                         aria-label={`Actions for ${row.email || row.label}`}
                       >
                         <Ellipsis size={18} />
                       </ActionButton>
                     </Menu.Target>
-                    <Menu.Dropdown>
+                    <Menu.Dropdown data-mantine-stop-propagation="true">
                       {servers
                         .filter((server) => row.byServer[server.id])
                         .map((server) => (

@@ -1,4 +1,3 @@
-import { serverLocalStorage as localStorage } from "../servers/storage";
 import { accountDisplayName, accountCanStart } from "../accountName";
 import { ProviderMark, remainingLimit } from "./AccountTiles";
 import { ActionButton } from "./ui/primitives";
@@ -35,51 +34,18 @@ import "./accounts.css";
 import AccountSignIn from "./AccountSignIn";
 import AccountManagerHost from "./AccountManagerHost";
 import AccountAddDialog, { type AddAccountIntent } from "./AccountAddDialog";
+import {
+  accountForExternalCommand,
+  confirmAccountDeleteRequest,
+  getOrCreateAccountDeleteRequest,
+} from "./accountDeleteRequests";
 import type { ServerCommand } from "../servers/navigation";
 import { readBuckets, formatPercent } from "./Usage";
-
-const DELETE_REQUESTS_KEY = "codex-studio-account-delete-requests-v1";
-
-function deleteRequestsStorageKey(scope?: string) {
-  return `${DELETE_REQUESTS_KEY}:${scope || "default"}`;
-}
-
-function storedDeleteRequest(scope: string | undefined, accountKey: string) {
-  try {
-    const requests = JSON.parse(
-      localStorage.getItem(deleteRequestsStorageKey(scope)) || "{}",
-    );
-    return typeof requests[accountKey] === "string"
-      ? (requests[accountKey] as string)
-      : "";
-  } catch {
-    return "";
-  }
-}
-
-function saveDeleteRequest(
-  scope: string | undefined,
-  accountKey: string,
-  requestId: string | null,
-) {
-  try {
-    const current = JSON.parse(
-      localStorage.getItem(deleteRequestsStorageKey(scope)) || "{}",
-    );
-    const requests =
-      current && typeof current === "object" && !Array.isArray(current)
-        ? current
-        : {};
-    if (requestId) requests[accountKey] = requestId;
-    else delete requests[accountKey];
-    localStorage.setItem(
-      deleteRequestsStorageKey(scope),
-      JSON.stringify(requests),
-    );
-  } catch {
-    // The live dialog still retains its exact request identity when storage is unavailable.
-  }
-}
+import {
+  closeMenuFromTriggerOnEscape,
+  restoreMenuTriggerFocusAfterClose,
+  useMenuEscapeSuppression,
+} from "./closeMenuFromTriggerOnEscape";
 
 export type AccountsState = GetResult<"/api/accounts">;
 export type Account = AccountsState["accounts"][number];
@@ -580,6 +546,13 @@ export default function Accounts({
   dialogsOnly?: boolean;
 }) {
   const [opened, setOpened] = useState(false);
+  const [openActionMenuAccountId, setOpenActionMenuAccountId] = useState<
+    string | null
+  >(null);
+  const actionMenuTriggers = useRef(new Map<string, HTMLButtonElement>());
+  const { suppressNextEscape, clearSuppression } = useMenuEscapeSuppression(
+    openActionMenuAccountId !== null,
+  );
   const [pending, setPending] = useState("");
   const [error, setError] = useState("");
   const [home, setHome] = useState("");
@@ -726,15 +699,7 @@ export default function Accounts({
         onExternalCommandHandled?.();
         return;
       }
-      const account = current.accounts.find(
-        (candidate) =>
-          (candidate.provider === "claude" ? "claude" : "codex") ===
-            command.provider &&
-          (command.email
-            ? candidate.email?.toLocaleLowerCase() ===
-              command.email.toLocaleLowerCase()
-            : candidate.label === command.label),
-      );
+      const account = accountForExternalCommand(current.accounts, command);
       if (command.action === "account-sign-in") {
         if (account && !command.forceAdd) {
           if (account.provider === "claude") setClaudeLogin(account);
@@ -762,9 +727,11 @@ export default function Accounts({
       } else if (command.operation === "disconnect") {
         setDisconnectChoice(account);
       } else {
-        const requestId = crypto.randomUUID();
+        const requestId = getOrCreateAccountDeleteRequest(
+          state.scope,
+          account.id,
+        );
         setDeleteRequestId(requestId);
-        saveDeleteRequest(state.scope, account.id, requestId);
         setDeleteChoice(account);
       }
       onExternalCommandHandled?.();
@@ -921,20 +888,78 @@ export default function Accounts({
                                 onSaved={state.setData}
                                 disabled={!!pending}
                               />
-                              <Menu position="bottom-end" withinPortal>
+                              <Menu
+                                opened={openActionMenuAccountId === account.id}
+                                onChange={(nextOpened) => {
+                                  setOpenActionMenuAccountId((current) =>
+                                    nextOpened
+                                      ? account.id
+                                      : current === account.id
+                                        ? null
+                                        : current,
+                                  );
+                                  if (!nextOpened)
+                                    restoreMenuTriggerFocusAfterClose(
+                                      actionMenuTriggers.current.get(
+                                        account.id,
+                                      ) ?? null,
+                                    );
+                                }}
+                                position="bottom-end"
+                                withinPortal={false}
+                                withInitialFocusPlaceholder={false}
+                              >
                                 <Menu.Target>
                                   <ActionButton
+                                    ref={(node) => {
+                                      if (node)
+                                        actionMenuTriggers.current.set(
+                                          account.id,
+                                          node,
+                                        );
+                                      else
+                                        actionMenuTriggers.current.delete(
+                                          account.id,
+                                        );
+                                    }}
                                     actionRole="quiet"
                                     className="account-card-menu"
+                                    onClick={(event) =>
+                                      event.currentTarget.focus({
+                                        preventScroll: true,
+                                      })
+                                    }
                                     loading={
                                       pending === `default:${account.id}`
                                     }
+                                    data-mantine-stop-propagation={
+                                      openActionMenuAccountId === account.id ||
+                                      suppressNextEscape
+                                        ? "true"
+                                        : undefined
+                                    }
+                                    onKeyDown={(event) =>
+                                      closeMenuFromTriggerOnEscape(
+                                        event,
+                                        openActionMenuAccountId === account.id,
+                                        () =>
+                                          setOpenActionMenuAccountId(
+                                            (current) =>
+                                              current === account.id
+                                                ? null
+                                                : current,
+                                          ),
+                                        suppressNextEscape,
+                                        clearSuppression,
+                                      )
+                                    }
+                                    onBlur={clearSuppression}
                                     aria-label={`Actions for ${account.email || account.label}`}
                                   >
                                     <Ellipsis size={18} />
                                   </ActionButton>
                                 </Menu.Target>
-                                <Menu.Dropdown>
+                                <Menu.Dropdown data-mantine-stop-propagation="true">
                                   {account.id !==
                                     state.data.defaultAccountKey && (
                                     <Menu.Item
@@ -1023,15 +1048,10 @@ export default function Accounts({
                                       disabled={!!pending}
                                       onClick={() => {
                                         const requestId =
-                                          storedDeleteRequest(
+                                          getOrCreateAccountDeleteRequest(
                                             state.scope,
                                             account.id,
-                                          ) || crypto.randomUUID();
-                                        saveDeleteRequest(
-                                          state.scope,
-                                          account.id,
-                                          requestId,
-                                        );
+                                          );
                                         setDeleteRequestId(requestId);
                                         setDeleteChoice(account);
                                       }}
@@ -1344,12 +1364,17 @@ export default function Accounts({
             if (!deleteChoice || !deleteRequestId) return;
             void action("delete", async () => {
               state.setData(
-                await post("/api/accounts/delete", {
-                  account_key: deleteChoice.id,
-                  request_id: deleteRequestId,
-                }),
+                await confirmAccountDeleteRequest(
+                  state.scope,
+                  deleteChoice.id,
+                  deleteRequestId,
+                  (requestId) =>
+                    post("/api/accounts/delete", {
+                      account_key: deleteChoice.id,
+                      request_id: requestId,
+                    }),
+                ),
               );
-              saveDeleteRequest(state.scope, deleteChoice.id, null);
               setDeleteChoice(null);
               setDeleteRequestId("");
             });

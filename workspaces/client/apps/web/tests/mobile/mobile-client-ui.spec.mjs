@@ -120,6 +120,17 @@ test("Mobile client ui", async ({
         await mainSettings.waitFor({ state: "hidden" });
       }
     };
+    const startProjectChat = async (name) => {
+      await page.getByRole("button", { name, exact: true }).click();
+      const dialog = page.getByRole("dialog", {
+        name: "New chat",
+        exact: true,
+      });
+      await dialog.waitFor();
+      await dialog
+        .getByRole("button", { name: "Start chat", exact: true })
+        .click();
+    };
     const selectedAccount = () =>
       page
         .getByRole("dialog", { name: "Main agent settings", exact: true })
@@ -294,9 +305,7 @@ test("Mobile client ui", async ({
       await route.abort("failed");
       confirmServerCreation();
     });
-    await page
-      .getByRole("button", { name: "New chat in this project", exact: true })
-      .click();
+    await startProjectChat("New chat in this project");
     await serverCreated;
     await page
       .getByRole("button", { name: "Retry chat request", exact: true })
@@ -391,15 +400,17 @@ test("Mobile client ui", async ({
         response.url() === url + "/api/leads" &&
         response.request().method() === "POST",
     );
-    await page
-      .getByRole("button", { name: "New chat in this project", exact: true })
-      .click();
+    await startProjectChat("New chat in this project");
     const next = await nextResponse;
     assert.ok(next.ok());
     const nextRequest = next.request().postDataJSON();
     const nextChat = await next.json();
     assert.equal(nextRequest.reuse_empty, false);
-    assert.equal(nextRequest.account_key, "default");
+    assert.equal(
+      nextRequest.account_key,
+      undefined,
+      "project-bound chats inherit the project account without an account override",
+    );
     assert.equal(nextRequest.previous, created.id);
     assert.equal(nextChat.id, nextRequest.id);
     assert.notEqual(nextChat.id, created.id);
@@ -426,9 +437,7 @@ test("Mobile client ui", async ({
         response.url() === url + "/api/leads" &&
         response.request().method() === "POST",
     );
-    await page
-      .getByRole("button", { name: "New chat in fixture-account", exact: true })
-      .click();
+    await startProjectChat("New chat in fixture-account");
     const other = await otherResponse;
     assert.ok(other.ok());
     const otherRequest = other.request().postDataJSON();

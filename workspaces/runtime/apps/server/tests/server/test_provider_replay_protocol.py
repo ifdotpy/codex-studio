@@ -12,9 +12,10 @@ import time
 import unittest
 
 from codex_layout import SERVER_TESTS_ROOT
+sys.path.insert(0, str(SERVER_TESTS_ROOT))
+from provider_replay_dispatch import dispatch_rpc_lines
 
 REPLAY_SERVER = SERVER_TESTS_ROOT / "provider-replay-server.py"
-sys.path.insert(0, str(SERVER_TESTS_ROOT))
 PROVIDER_RUNNER_PATH = SERVER_TESTS_ROOT / "provider-replay-runner.py"
 PROVIDER_RUNNER_SPEC = importlib.util.spec_from_file_location("provider_replay_runner", PROVIDER_RUNNER_PATH)
 PROVIDER_RUNNER = importlib.util.module_from_spec(PROVIDER_RUNNER_SPEC)
@@ -22,6 +23,121 @@ PROVIDER_RUNNER_SPEC.loader.exec_module(PROVIDER_RUNNER)
 
 
 class ReplayProtocol(unittest.TestCase):
+    def test_dispatch_keeps_ordinary_rpc_order_and_overlaps_turn_starts(self):
+        first_started = threading.Event()
+        second_started = threading.Event()
+        release_first = threading.Event()
+        release_turns = threading.Event()
+        errors = queue.Queue()
+        ordinary_seen = []
+        turn_seen = []
+
+        def ordinary_handler(line):
+            request_id = json.loads(line)["id"]
+            ordinary_seen.append(request_id)
+            if request_id == 1:
+                first_started.set()
+                if not release_first.wait(2):
+                    raise AssertionError("test did not release first ordinary RPC")
+            elif request_id == 2:
+                second_started.set()
+
+        def turn_handler(line):
+            request_id = json.loads(line)["id"]
+            turn_seen.append(request_id)
+            (first_started if request_id == 3 else second_started).set()
+            if not release_turns.wait(2):
+                raise AssertionError("test did not release concurrent turns")
+
+        def run(lines, handler, concurrent_methods):
+            try:
+                dispatch_rpc_lines(lines, handler, concurrent_methods)
+            except BaseException as error:
+                errors.put(error)
+
+        ordinary = [json.dumps({"id": value, "method": "thread/read"}) for value in (1, 2)]
+        worker = threading.Thread(target=run, args=(ordinary, ordinary_handler, set()))
+        worker.start()
+        self.assertTrue(first_started.wait(1), "first ordinary RPC did not start")
+        self.assertFalse(second_started.wait(1), "second ordinary RPC overtook the first")
+        release_first.set()
+        worker.join(2)
+        self.assertFalse(worker.is_alive(), "ordinary RPC dispatcher did not finish")
+        self.assertEqual(ordinary_seen, [1, 2])
+        if not errors.empty():
+            raise errors.get()
+
+        first_started.clear()
+        second_started.clear()
+        turns = [json.dumps({"id": value, "method": "turn/start"}) for value in (3, 4)]
+        worker = threading.Thread(target=run, args=(turns, turn_handler, {"turn/start"}))
+        worker.start()
+        self.assertTrue(first_started.wait(1), "first turn did not start")
+        self.assertTrue(second_started.wait(1), "second turn did not overlap the first")
+        release_turns.set()
+        worker.join(2)
+        self.assertFalse(worker.is_alive(), "turn dispatcher did not finish")
+        self.assertCountEqual(turn_seen, [3, 4])
+        if not errors.empty():
+            raise errors.get()
+
+    def test_ordinary_rpc_error_is_propagated_only_after_stdin_exhaustion(self):
+        requesting_next_line = threading.Event()
+        release_eof = threading.Event()
+        finished = threading.Event()
+        errors = queue.Queue()
+
+        def lines():
+            yield json.dumps({"id": 1, "method": "unknown/method"})
+            requesting_next_line.set()
+            if not release_eof.wait(2):
+                raise AssertionError("test did not release the simulated stdin EOF")
+
+        def handler(_line):
+            raise RuntimeError("unknown RPC")
+
+        def dispatch():
+            try:
+                dispatch_rpc_lines(lines(), handler, set())
+            except Exception as error:
+                errors.put(error)
+            finally:
+                finished.set()
+
+        worker = threading.Thread(target=dispatch)
+        worker.start()
+        self.assertTrue(requesting_next_line.wait(1), "dispatcher did not continue reading stdin")
+        self.assertFalse(finished.is_set(), "handler error ended the process before stdin EOF")
+        self.assertTrue(errors.empty(), "handler error escaped before stdin EOF")
+        release_eof.set()
+        worker.join(2)
+        self.assertFalse(worker.is_alive(), "dispatcher did not finish after stdin EOF")
+        self.assertIsInstance(errors.get_nowait(), RuntimeError)
+
+    def test_supervisor_capture_prefix_waits_for_recorded_orphan_response(self):
+        contract = PROVIDER_RUNNER.ProviderReplay()
+        orphan = {"id": "supervisor-orphan-3",
+                  "result": {"turn": {"id": "replay-turn-1", "status": "inProgress"}}}
+        fixture = {
+            "expectedMissingReplies": [{"method": "turn/start", "id": 3}],
+            "allowedOrphanResponses": [orphan],
+        }
+        recorded = {"turn/start": {"direction": "in", "responseFor": "turn/start",
+                                    "message": {"result": {"turn": {"id": "$turnId"}}}}}
+        prefix = [{"direction": "out", "message": {
+            "id": 3, "method": "turn/start", "params": {}}}]
+        self.assertFalse(contract.capture_is_settled(prefix, recorded, fixture))
+        complete = prefix + [{"direction": "in", "message": orphan}]
+        self.assertTrue(contract.capture_is_settled(complete, recorded, fixture))
+
+    def test_claude_startup_diagnostic_includes_child_stderr(self):
+        with tempfile.TemporaryDirectory(prefix="provider-replay-stderr-") as directory:
+            log = Path(directory) / "state" / "account-servers" / "claude" / "app-server.log"
+            log.parent.mkdir(parents=True)
+            log.write_text("Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'fixture-sdk'\n",
+                           encoding="utf-8")
+            self.assertIn("ERR_MODULE_NOT_FOUND", PROVIDER_RUNNER.app_server_stderr(Path(directory)))
+
     def invoke(self, method, recorded_replies=None, request_id=17):
         with tempfile.TemporaryDirectory(prefix="provider-replay-protocol-") as directory:
             root = Path(directory)

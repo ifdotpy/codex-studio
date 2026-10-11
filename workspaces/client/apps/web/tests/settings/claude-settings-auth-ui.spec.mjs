@@ -4,7 +4,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 
-import { test } from "../playwright.mjs";
+import {
+  apiSchemaHeaders,
+  apiSchemaHandshakeSse,
+  protocol3SseEvent,
+  syncIdentityFixture,
+  syncProtocolFixture,
+  test,
+} from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -23,6 +30,7 @@ test.afterEach(async ({ browser }, testInfo) => {
 test("claude settings auth ui", async ({ browser: _browser }) => {
   test.setTimeout(120_000);
   const root = resolve(import.meta.dirname, "../../");
+  const workspaceId = "0123456789abcdef0123456789abcdef";
   const require = createRequire(join(root, "package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const cacheDir = await mkdtemp(join(tmpdir(), "claude-settings-auth-"));
@@ -41,6 +49,41 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
             res.end(
               '<div id="root"></div><script type="module" src="/claude-settings-auth-fixture.tsx"></script>',
             );
+          });
+          server.middlewares.use("/api/sync/stream", (req, res) => {
+            const resources = JSON.parse(
+              new URL(req.url || "/", "http://localhost").searchParams.get(
+                "resources",
+              ) || "[]",
+            );
+            res.writeHead(200, {
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache",
+              Connection: "keep-alive",
+              ...apiSchemaHeaders(),
+            });
+            res.write(
+              apiSchemaHandshakeSse(
+                protocol3SseEvent("resources", {
+                  protocol: 3,
+                  workspaceId,
+                  epoch: "claude-settings-auth",
+                  revision: 1,
+                  reason: "initial",
+                  resources,
+                  resourceVersions: resources.map((resource) => ({
+                    resource,
+                    revision: 1,
+                  })),
+                }),
+              ),
+            );
+            const heartbeat = setInterval(() => {
+              res.write(
+                `event: heartbeat\ndata: ${JSON.stringify({ protocol: 3, workspaceId, epoch: "claude-settings-auth", revision: 1 })}\n\n`,
+              );
+            }, 1000);
+            res.on("close", () => clearInterval(heartbeat));
           });
         },
         resolveId(id) {
@@ -128,6 +171,20 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
       }
       return route.fulfill({ json: {} });
     });
+    await page.route("**/api/sync/identity", (route) =>
+      route.fulfill({
+        json: syncIdentityFixture(workspaceId),
+        headers: apiSchemaHeaders(),
+      }),
+    );
+    await page.route("**/api/sync/protocol", (route) =>
+      route.fulfill({
+        json: syncProtocolFixture(),
+        headers: apiSchemaHeaders(),
+      }),
+    );
+    // The broad API fixture below must not turn the event stream into JSON.
+    await page.route("**/api/sync/stream?*", (route) => route.fallback());
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/check`,
     );
@@ -228,7 +285,9 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
       await emptyChat.getByLabel("Extended thinking").isDisabled(),
       true,
     );
-    await emptyChat.getByText("Advanced", { exact: true }).click();
+    await emptyChat
+      .getByText("More settings and actions", { exact: true })
+      .click();
     assert.equal(
       await emptyChat.getByLabel("Auto-compact token limit").isDisabled(),
       true,
