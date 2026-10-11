@@ -3,6 +3,7 @@ import {
   stubEntityState,
   readFixtureSyncContract,
   readApiSchemaHash,
+  entityPullFixture,
   test,
   spawnFixture as spawn,
 } from "../playwright.mjs";
@@ -44,12 +45,50 @@ test(
       const state = await readTestState(origin);
       const a = state.threads.find((x) => x.name === "Other project");
       const b = state.threads.find((x) => x.name === "Release lead");
+      // `useChatPrefetch.ts:157-175` ranks eligible chats and watches the top
+      // 12 on desktop; `resourceEvents.ts:240-253` aggregates those watchers.
+      // Pin 12 other managed chats so this visible target stays outside baseline.
+      const initialWatchRows = state.threads
+        .filter(
+          (agent) =>
+            agent.id !== a.id &&
+            agent.id !== b.id &&
+            agent.source === "managed" &&
+            !agent.archived,
+        )
+        .slice(0, 12);
+      assert.equal(initialWatchRows.length, 12);
+      for (const agent of initialWatchRows) agent.pinned = true;
+      Object.assign(a, { pinned: false, updated: 0 });
       page = runnerPage;
       await page.setViewportSize({ width: 1440, height: 960 });
       page.setDefaultTimeout(10000);
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.addInitScript(() => {
+        window.__resourceFrames = [];
+        window.__chatSwitchPrepareStartedAt = undefined;
+        const addEventListener = EventSource.prototype.addEventListener;
+        EventSource.prototype.addEventListener = function (
+          type,
+          listener,
+          options,
+        ) {
+          if (type === "resources") {
+            const observe = (event) => {
+              try {
+                window.__resourceFrames.push({
+                  ...JSON.parse(event.data),
+                  receivedAt: performance.now(),
+                });
+              } catch {
+                /* Ignore non-resource handshake frames. */
+              }
+            };
+            addEventListener.call(this, type, observe, options);
+          }
+          return addEventListener.call(this, type, listener, options);
+        };
         window.__chatSwitchStartedAt = undefined;
         window.__chatSwitchFirstRowsPaintAt = undefined;
         window.__chatSwitchPaintAt = undefined;
@@ -103,18 +142,12 @@ test(
       let latestASequence = 10;
       const responseFor = (id, data, seq, after = 0) => ({
         ...syncContract.identity,
-        documents:
-          after < seq
-            ? [
-                {
-                  id: `transcript:${id}`,
-                  payload: JSON.stringify(data),
-                  seq,
-                  _deleted: false,
-                },
-              ]
-            : [],
-        checkpoint: { seq: Math.max(after, seq) },
+        ...entityPullFixture(snapshot, {
+          scope: `transcript:${id}`,
+          after,
+          transcript: data,
+          transcriptSeq: seq,
+        }),
       });
       await page.route("**/api/sync/pull?*", async (r) => {
         const url = new URL(r.request().url());
@@ -205,14 +238,30 @@ test(
         ),
       );
       const open = async (id, message) => {
+        const firstVisit = !visited.has(id);
         const chat = page.locator(`[data-chat="${id}"]`);
         const selector = `[data-message="${message}"]`;
         const prefix = message.slice(0, message.lastIndexOf("-"));
         await chat.evaluate((element, target) => {
+          window.__chatSwitchPrepareStartedAt = undefined;
           window.__chatSwitchStartedAt = undefined;
           window.__chatSwitchFirstRowsPaintAt = undefined;
           window.__chatSwitchPaintAt = undefined;
           window.__chatSwitchScrollStartedAt = undefined;
+          const markPrepareIntent = (event) => {
+            if (
+              event.target instanceof Element &&
+              event.target.closest(`[data-chat="${element.dataset.chat}"]`)
+            ) {
+              window.__chatSwitchPrepareStartedAt = performance.now();
+              window.removeEventListener(
+                "pointerover",
+                markPrepareIntent,
+                true,
+              );
+            }
+          };
+          window.addEventListener("pointerover", markPrepareIntent, true);
           element.addEventListener(
             "pointerdown",
             () => {
@@ -266,13 +315,15 @@ test(
             { once: true },
           );
         }, prefix);
-        if (id === a.id && !visited.has(id)) coldSwitchArmed = true;
+        if (id === a.id && firstVisit) coldSwitchArmed = true;
         await chat.click();
         await page.waitForFunction(
           () => typeof window.__chatSwitchFirstRowsPaintAt === "number",
         );
         const firstRowsTiming = await page.evaluate((id) => {
           const startedAt = window.__chatSwitchStartedAt;
+          const prepareStartedAt = window.__chatSwitchPrepareStartedAt;
+          const gestureStartedAt = prepareStartedAt ?? startedAt;
           const firstRowsAt = window.__chatSwitchFirstRowsPaintAt;
           const resource = performance
             .getEntriesByType("resource")
@@ -281,13 +332,24 @@ test(
               return (
                 url.pathname === "/api/sync/pull" &&
                 url.searchParams.get("scope") === `transcript:${id}` &&
-                entry.startTime >= startedAt &&
+                entry.startTime >= gestureStartedAt &&
                 entry.startTime <= firstRowsAt
               );
             })
             .sort((left, right) => left.startTime - right.startTime)[0];
           return {
             clickToFirstRowsMs: firstRowsAt - startedAt,
+            prepareToFirstRowsMs:
+              typeof prepareStartedAt === "number"
+                ? firstRowsAt - prepareStartedAt
+                : null,
+            prepareToPullStartMs:
+              resource && typeof prepareStartedAt === "number"
+                ? resource.startTime - prepareStartedAt
+                : null,
+            fixturePullStartAfterGestureMs: resource
+              ? resource.startTime - gestureStartedAt
+              : null,
             fixturePullStartAfterClickMs: resource
               ? resource.startTime - startedAt
               : null,
@@ -304,7 +366,7 @@ test(
                 const url = new URL(entry.name);
                 return (
                   url.pathname.startsWith("/api/") &&
-                  entry.startTime >= startedAt &&
+                  entry.startTime >= gestureStartedAt &&
                   entry.startTime <= firstRowsAt
                 );
               })
@@ -316,7 +378,7 @@ test(
             longTasks: window.__chatSwitchLongTasks
               .filter(
                 (entry) =>
-                  entry.startTime >= startedAt &&
+                  entry.startTime >= gestureStartedAt &&
                   entry.startTime <= firstRowsAt,
               )
               .map((entry) => ({
@@ -345,6 +407,18 @@ test(
           scrollAndTargetMountMs: targetMountAfterScrollMs,
         };
         console.log("chat-switch timing", JSON.stringify(timing));
+        assert.equal(
+          typeof timing.prepareToFirstRowsMs,
+          "number",
+          "Pointer entry is recorded before opening the row",
+        );
+        if (id === a.id && firstVisit) {
+          assert.ok(
+            timing.prepareToPullStartMs !== null &&
+              timing.prepareToPullStartMs >= 0,
+            `The cold transcript pull starts at or after the row prepare gesture: ${JSON.stringify(timing)}`,
+          );
+        }
         return firstRowsTiming.clickToFirstRowsMs;
       };
       await page
@@ -359,7 +433,120 @@ test(
           return url.pathname === "/api/session" && entry.responseEnd > 0;
         });
       });
+      const projectionDatabaseName =
+        `rxdb-dexie-studio-entity-projection-${syncContract.identity.workspaceId}-` +
+        `${readApiSchemaHash()}--0--projections`;
+      const targetWasCold = await page.evaluate(
+        async ({ databaseName, documentId }) => {
+          const databases = await indexedDB.databases();
+          if (!databases.some((database) => database.name === databaseName))
+            return false;
+          const request = indexedDB.open(databaseName);
+          const db = await new Promise((resolve, reject) => {
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+          });
+          const found = await Promise.all(
+            [...db.objectStoreNames].map(
+              (store) =>
+                new Promise((resolve) => {
+                  const query = db
+                    .transaction(store, "readonly")
+                    .objectStore(store)
+                    .getAll();
+                  query.onsuccess = () =>
+                    resolve(query.result.some((row) => row.id === documentId));
+                  query.onerror = () => resolve(false);
+                }),
+            ),
+          );
+          db.close();
+          return found.some(Boolean);
+        },
+        {
+          databaseName: projectionDatabaseName,
+          documentId: `transcript:${a.id}`,
+        },
+      );
+      assert.equal(
+        targetWasCold,
+        false,
+        "The target chat has no stored transcript before the user opens it",
+      );
+      await page.waitForFunction(() =>
+        window.__resourceFrames.some((frame) => frame.reason === "initial"),
+      );
+      const targetInInitialSubscription = await page.evaluate(
+        (targetId) =>
+          window.__resourceFrames.some(
+            (frame) =>
+              frame.reason === "initial" &&
+              frame.resources?.some(
+                (resource) =>
+                  resource.kind === "transcript" &&
+                  resource.agentId === targetId,
+              ),
+          ),
+        a.id,
+      );
+      assert.equal(
+        targetInInitialSubscription,
+        false,
+        "The cold target is outside the initial top-12 transcript subscription",
+      );
+      const priorTargetPulls = requests.filter((item) => item.id === a.id);
+      assert.equal(
+        priorTargetPulls.length,
+        0,
+        `The cold chat has no transcript pull before pointer intent; pulls=${JSON.stringify(priorTargetPulls.map(({ at, route }) => ({ at, scope: new URL(route.request().url()).searchParams.get("scope") })))}`,
+      );
+      const pullsBeforeColdOpen = requests.filter(
+        (item) => item.id === a.id,
+      ).length;
       const cold = await open(a.id, "a-29");
+      const coldOpenPulls = requests
+        .filter((item) => item.id === a.id)
+        .slice(pullsBeforeColdOpen);
+      assert.ok(
+        coldOpenPulls.length > 0,
+        "Opening the cold chat requests its transcript from entity sync",
+      );
+      console.log(
+        "cold-open transcript requests",
+        JSON.stringify(
+          coldOpenPulls.map(({ id, at, route }) => ({
+            id,
+            path: new URL(route.request().url()).pathname,
+            scope: new URL(route.request().url()).searchParams.get("scope"),
+            at,
+          })),
+        ),
+      );
+      console.log(
+        "cold-open prepare trace",
+        JSON.stringify(
+          await page.evaluate(
+            (targetId) => ({
+              targetedFrames: window.__resourceFrames
+                .filter((frame) =>
+                  frame.resources?.some(
+                    (resource) =>
+                      resource.kind === "transcript" &&
+                      resource.agentId === targetId,
+                  ),
+                )
+                .map(({ reason, receivedAt, resources }) => ({
+                  reason,
+                  receivedAt,
+                  transcriptAgentIds: resources
+                    .filter((resource) => resource.kind === "transcript")
+                    .map((resource) => resource.agentId),
+                })),
+            }),
+            a.id,
+          ),
+        ),
+      );
       assert.ok(
         cold < 1500,
         `Cold history appears without the old three-second delay: ${cold}ms`,
