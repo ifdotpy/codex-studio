@@ -180,6 +180,12 @@ class MobileStateHttpContract(unittest.TestCase):
         unchanged = self.get(f"/api/sync/pull?scope=state:entities:v1&after={checkpoint}")
         self.assertEqual(unchanged["documents"], [])
         self.assertEqual(unchanged["checkpoint"], {"seq": checkpoint})
+        for _ in range(3):
+            between_writes = self.get(
+                f"/api/sync/pull?scope=state:entities:v1&after={checkpoint}"
+            )
+            self.assertEqual(between_writes["documents"], [])
+            self.assertEqual(between_writes["checkpoint"], {"seq": checkpoint})
         self.stop_server()
         self.start_server()
         self.assertEqual(self.get("/api/sync/identity"), identity)
