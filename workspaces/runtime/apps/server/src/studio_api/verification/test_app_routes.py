@@ -273,6 +273,7 @@ class ApplicationRouteContract(unittest.TestCase):
         session_path = cast(dict[str, object], session_paths["/api/session"])
         get_session = cast(dict[str, object], session_path["get"])
         responses = cast(dict[str, object], get_session["responses"])
+        self.assertTrue({"200", "400", "401", "403", "429", "500", "503"}.issubset(responses))
         success = cast(dict[str, object], responses["200"])
         content = cast(dict[str, object], success["content"])
         media_type = cast(dict[str, object], content["application/json"])

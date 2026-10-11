@@ -80,13 +80,20 @@ class AnalyticsProviderTokens(AnalyticsTokens):
     __pydantic_extra__: dict[str, JsonValue]
 
 
-class AnalyticsPendingUsage(ContractModel):
+class AnalyticsStoredRecord(ContractModel):
+    """Stored analytics rows pass through; retain unrecognized JSON fields."""
+
+    model_config = ConfigDict(extra="allow")
+    __pydantic_extra__: dict[str, JsonValue]
+
+
+class AnalyticsPendingUsage(AnalyticsStoredRecord):
     responseId: str | None
     turnId: str | None
     usage: AnalyticsProviderTokens
 
 
-class AnalyticsUsageAssociation(ContractModel):
+class AnalyticsUsageAssociation(AnalyticsStoredRecord):
     responseId: str | None
     turnId: str | None
     total: AnalyticsProviderTokens
@@ -172,7 +179,7 @@ class AnalyticsDuration(ContractModel):
     p95: int | float | None
 
 
-class AnalyticsAgentRecord(ContractModel):
+class AnalyticsAgentRecord(AnalyticsStoredRecord):
     id: str
     name: str | None = None
     rootId: str | None = None
@@ -204,7 +211,7 @@ class AnalyticsAgentTotal(AnalyticsAgentRecord):
     protocolDuration: AnalyticsDuration
 
 
-class AnalyticsEventMetadata(ContractModel):
+class AnalyticsEventMetadata(AnalyticsStoredRecord):
     agentId: str
     agentName: str | None = None
     rootId: str | None = None
@@ -246,6 +253,11 @@ class AnalyticsUsageRecord(AnalyticsEventMetadata):
     rawTokenUsageRecord: JsonValue | None = None
     turnUsage: AnalyticsProviderTokens | None = None
     requestUsage: AnalyticsProviderTokens | None = None
+    # A native usage notice may enrich an existing response row with these
+    # fields; older and response-only records legitimately omit them.
+    noticeAt: int | float | None = None
+    noticeLast: AnalyticsProviderTokens | None = None
+    noticeTotal: AnalyticsProviderTokens | None = None
     usageSource: str | None = None
 
 
@@ -337,7 +349,7 @@ class AnalyticsRateLimitRecord(ContractModel):
     data: JsonValue
 
 
-class AnalyticsHistoryContext(ContractModel):
+class AnalyticsHistoryContext(AnalyticsStoredRecord):
     threadId: str | None = None
     window: int | float | None = None
     turnId: str | None = None
@@ -357,7 +369,7 @@ class AnalyticsFilesystemRemap(ContractModel):
     proof: Literal["samePathInodeHeaderAnchor"]
 
 
-class AnalyticsHistoryRecord(ContractModel):
+class AnalyticsHistoryRecord(AnalyticsStoredRecord):
     id: str | None = None
     agent: str | None = None
     accountKey: str | None = None
@@ -428,7 +440,7 @@ class AnalyticsGroupTotal(ContractModel):
     tokens: AnalyticsTokens
 
 
-class AnalyticsNotification(ContractModel):
+class AnalyticsNotification(AnalyticsStoredRecord):
     id: str
     agent: str
     root: str | None = None

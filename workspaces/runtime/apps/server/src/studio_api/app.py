@@ -16,7 +16,7 @@ from studio_api.core_models import SessionResponse
 from studio_api.middleware import HttpTraceMiddleware, RequestBoundary
 from studio_api.multi_server.boundary import MultiServerBoundary
 from studio_api.models import ErrorResponse, JsonValue
-from studio_api.responses import error_response, install_error_response_docs
+from studio_api.responses import api_read_responses, error_response, install_error_response_docs
 
 STATIC_ALLOWLIST = frozenset({
     "index.html", "studio-sw.js", "studio-renderer.json", "manifest.webmanifest", "apple-touch-icon.png",
@@ -37,7 +37,12 @@ def create_app(context: ApiContext) -> FastAPI:
     # begin-before-dispatch and finish-after-response coverage.
     app.add_middleware(HttpTraceMiddleware)
 
-    @app.get("/api/session", response_model=SessionResponse, tags=["core"])
+    @app.get(
+        "/api/session",
+        response_model=SessionResponse,
+        responses=api_read_responses(),
+        tags=["core"],
+    )
     async def session(request: Request) -> object:
         return context.send(request, {"token": context.token})
 

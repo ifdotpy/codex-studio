@@ -35,6 +35,7 @@ class _Runtime:
         self.export_factory: Callable[..., Generator[bytes, None, None]] = self._valid_export
         self.export_closed = False
         self.invalid_response = False
+        self.analytics_result: dict[str, JsonValue] | None = None
 
     def analytics(self, **options: str) -> dict[str, JsonValue]:
         self.analytics_calls.append(options)
@@ -47,6 +48,8 @@ class _Runtime:
             }
         if getattr(self, "invalid_response", False):
             return {"unexpected": "invalid output"}
+        if self.analytics_result is not None:
+            return self.analytics_result
         result: dict[str, JsonValue] = {
             "at": 123.0,
             "tokens": {"inputTokens": 7},
@@ -314,6 +317,37 @@ class InsightsRouterTests(unittest.TestCase):
         )
         self.assertEqual(response.json(), {"at": 123.0, "tokens": {"inputTokens": 7}})
         self.assertIn("Server-Timing", response.headers)
+
+    def test_analytics_timeline_accepts_native_notice_enrichment(self) -> None:
+        usage = {
+            "agentId": "agent-fixture",
+            "rootId": "root-fixture",
+            "accountKey": "account-fixture",
+            "accountHistory": [],
+            "id": "usage-fixture",
+            "at": 10.0,
+            "recordedAt": 11.0,
+            "source": "live",
+            "timestampSource": "observed",
+            "last": {"inputTokens": 4},
+            "total": {"inputTokens": 12},
+            "delta": {"inputTokens": 4},
+            "cumulativeDelta": {"inputTokens": 4},
+            "counterDomain": "nativeNotice",
+            "modelContextWindow": None,
+            "reset": None,
+            "baselineMissing": False,
+            "noticeAt": 10.5,
+            "noticeLast": {"inputTokens": 4},
+            "noticeTotal": {"inputTokens": 12},
+            "legacyStoredField": {"version": 1},
+        }
+        self.context.runtime.analytics_result = {"timeline": [usage]}
+
+        response = self.client.get("/api/analytics")
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(usage, response.json()["timeline"][0])
 
     def test_invalid_analytics_enum_does_not_call_runtime(self) -> None:
         response = self.client.get("/api/analytics?scope=unknown")

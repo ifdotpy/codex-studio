@@ -23,12 +23,7 @@ from studio_api.insights.models import (
     SessionCostQuery,
 )
 from studio_api.models import JsonValue
-from studio_api.responses import (
-    API_BOUNDARY_RESPONSE_HEADERS,
-    API_CONTEXT_RESPONSE_HEADERS,
-    error_responses,
-    response_headers,
-)
+from studio_api.responses import api_read_responses
 
 if TYPE_CHECKING:
     from studio_api.context import ApiContext
@@ -146,21 +141,15 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.get(
         "/api/analytics",
         response_model=AnalyticsResponse,
-        responses={
-            200: {
-                "headers": {
-                    **API_CONTEXT_RESPONSE_HEADERS,
-                    **API_BOUNDARY_RESPONSE_HEADERS,
-                    **response_headers(
-                        "Content-Disposition",
-                        "Cache-Control",
-                        "X-Content-Type-Options",
-                        "Server-Timing",
-                    ),
-                },
-            },
-            **error_responses((400, 403, 404, 500, 503)),
-        },
+        responses=api_read_responses(
+            errors=(404,),
+            headers=(
+                "Content-Disposition",
+                "Cache-Control",
+                "X-Content-Type-Options",
+                "Server-Timing",
+            ),
+        ),
     )
     def analytics(
         request: Request, _query_schema: Annotated[AnalyticsQuery, Query()]
@@ -185,7 +174,11 @@ def create_router(context: ApiContext) -> APIRouter:
             return _error(context, request, error)
         return context.send(request, result, server_timing=timing)
 
-    @router.get("/api/costs", response_model=AccountCostResponse)
+    @router.get(
+        "/api/costs",
+        response_model=AccountCostResponse,
+        responses=api_read_responses(),
+    )
     def costs(request: Request, _query_schema: Annotated[AccountCostQuery, Query()]) -> Response:
         query = _query_first_values(request)
         account_key = query.get("account_key", "default")
@@ -196,7 +189,11 @@ def create_router(context: ApiContext) -> APIRouter:
             return _error(context, request, error)
         return context.send(request, result)
 
-    @router.get("/api/session-cost", response_model=SessionCostResponse)
+    @router.get(
+        "/api/session-cost",
+        response_model=SessionCostResponse,
+        responses=api_read_responses(),
+    )
     def session_cost(
         request: Request, _query_schema: Annotated[SessionCostQuery, Query()]
     ) -> Response:
