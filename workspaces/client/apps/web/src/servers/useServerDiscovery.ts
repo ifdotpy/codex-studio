@@ -186,16 +186,17 @@ export function useServerDiscovery(
         writeServers(paired);
     }
     if (next?.aliases) {
-      const aliases = effectiveDiscoveryAliases(
-        next.aliases,
-        Object.fromEntries(
-          ["local", ...readServers().map((server) => server.id)].map((id) => [
-            id,
-            localStorage.getItem(`studio-server-workspace-id:${id}`),
-          ]),
-        ),
-        readPreferenceFields("user"),
-      );
+      const aliases =
+        effectiveDiscoveryAliases(
+          next.aliases,
+          Object.fromEntries(
+            ["local", ...readServers().map((server) => server.id)].map((id) => [
+              id,
+              localStorage.getItem(`studio-server-workspace-id:${id}`),
+            ]),
+          ),
+          readPreferenceFields("user"),
+        ) ?? next.aliases;
       if (aliases.local) localStorage.setItem(LOCAL_ALIAS_KEY, aliases.local);
       const paired = readServers().map((server) =>
         aliases[server.id] ? { ...server, alias: aliases[server.id] } : server,
