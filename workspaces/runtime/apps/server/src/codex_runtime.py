@@ -81,6 +81,7 @@ if TYPE_CHECKING:
         ToolRequestRecord,
         WorkRecord,
         WorkspaceOperationRecord,
+        RecordStore,
     )
     from studio_api.sync.resources.models import ResourceRef
 
@@ -2675,55 +2676,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             db.execute("PRAGMA query_only=ON")
             yield db
 
-    @overload
-    def records(self, db: sqlite3.Connection, table: Literal["agents"], *, shared: Literal[True]) -> tuple["AgentRecord", ...]: ...
-
-    @overload
-    def records(self, db: sqlite3.Connection, table: Literal["agents"], *, shared: Literal[False] = False) -> list["AgentRecord"]: ...
-
-    @overload
-    def records(self, db: sqlite3.Connection, table: Literal["agents"], *, shared: bool) -> list["AgentRecord"] | tuple["AgentRecord", ...]: ...
-
-    @overload
-    def records(self, db: sqlite3.Connection, table: Literal["work"], *, shared: bool = False) -> list["WorkRecord"]: ...
-
-    @overload
-    def records(self, db: sqlite3.Connection, table: Literal["plans"], *, shared: bool = False) -> list["PlanRecord"]: ...
-
-    @overload
-    def records(self, db: sqlite3.Connection, table: Literal["annotations"], *, shared: bool = False) -> list["AnnotationRecord"]: ...
-
-    @overload
-    def records(self, db: sqlite3.Connection, table: Literal["checkpoints"], *, shared: bool = False) -> list["CheckpointRecord"]: ...
-
-    @overload
-    def records(self, db: sqlite3.Connection, table: Literal["complaints"], *, shared: bool = False) -> list["ComplaintRecord"]: ...
-
-    @overload
-    def records(self, db: sqlite3.Connection, table: Literal["projects"], *, shared: bool = False) -> list["ProjectRecord"]: ...
-
-    @overload
-    def records(self, db: sqlite3.Connection, table: Literal["account_transfers"], *, shared: bool = False) -> list["AccountTransferRecord"]: ...
-
-    @overload
-    def records(self, db: sqlite3.Connection, table: Literal["workspace_operations"], *, shared: bool = False) -> list["WorkspaceOperationRecord"]: ...
-
-    @overload
-    def records(self, db: sqlite3.Connection, table: Literal["rooms"], *, shared: bool = False) -> list["RoomRecord"]: ...
-
-    @overload
-    def records(self, db: sqlite3.Connection, table: Literal["requests"], *, shared: bool = False) -> list["RequestRecord"]: ...
-
-    @overload
-    def records(self, db: sqlite3.Connection, table: Literal["native_notices"], *, shared: bool = False) -> list["NativeNoticeRecord"]: ...
-
-    @overload
-    def records(self, db: sqlite3.Connection, table: Literal["rules"], *, shared: bool = False) -> list["RuleRecord"]: ...
-
-    @overload
-    def records(self, db: sqlite3.Connection, table: Literal["tool_requests"], *, shared: bool = False) -> list["ToolRequestRecord"]: ...
-
-    def records(self: Any, db: Any, table: Any = None, *, shared: Any = False) -> Any:
+    def _records(self: Any, db: Any, table: Any = None, *, shared: Any = False) -> Any:
         # Calls already in progress may still use the former static form.
         if table is None:
             db, table, runtime = self, db, None
@@ -3351,58 +3304,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             "AND json_extract(record,'$.status')='pending' LIMIT 1", (agent_id,)).fetchone()
         return "approval" if pending else "running"
 
-    @overload
-    def put(self, db: sqlite3.Connection, table: Literal["agents"], record: "AgentRecord", *, sync_rooms: bool = True) -> None: ...
-
-    @overload
-    def put(self, db: sqlite3.Connection, table: Literal["work"], record: "WorkRecord", *, sync_rooms: bool = True) -> None: ...
-
-    @overload
-    def put(self, db: sqlite3.Connection, table: Literal["plans"], record: "PlanRecord", *, sync_rooms: bool = True) -> None: ...
-
-    @overload
-    def put(self, db: sqlite3.Connection, table: Literal["annotations"], record: "AnnotationRecord", *, sync_rooms: bool = True) -> None: ...
-
-    @overload
-    def put(self, db: sqlite3.Connection, table: Literal["checkpoints"], record: "CheckpointRecord", *, sync_rooms: bool = True) -> None: ...
-
-    @overload
-    def put(self, db: sqlite3.Connection, table: Literal["complaints"], record: "ComplaintRecord", *, sync_rooms: bool = True) -> None: ...
-
-    @overload
-    def put(self, db: sqlite3.Connection, table: Literal["projects"], record: "ProjectRecord", *, sync_rooms: bool = True) -> None: ...
-
-    @overload
-    def put(self, db: sqlite3.Connection, table: Literal["account_transfers"], record: "AccountTransferRecord", *, sync_rooms: bool = True) -> None: ...
-
-    @overload
-    def put(self, db: sqlite3.Connection, table: Literal["workspace_operations"], record: "WorkspaceOperationRecord", *, sync_rooms: bool = True) -> None: ...
-
-    @overload
-    def put(self, db: sqlite3.Connection, table: Literal["rooms"], record: "RoomRecord", *, sync_rooms: bool = True) -> None: ...
-
-    @overload
-    def put(self, db: sqlite3.Connection, table: Literal["requests"], record: "RequestRecord | QuestionRequestRecord | MonitorApprovalRequestRecord", *, sync_rooms: bool = True) -> None: ...
-
-    @overload
-    def put(self, db: sqlite3.Connection, table: Literal["safety_retries"], record: "NativeSafetyRetryRecord", *, sync_rooms: bool = True) -> None: ...
-
-    @overload
-    def put(self, db: sqlite3.Connection, table: Literal["native_notices"], record: "NativeNoticeRecord", *, sync_rooms: bool = True) -> None: ...
-
-    @overload
-    def put(self, db: sqlite3.Connection, table: Literal["rules"], record: "RuleRecord", *, sync_rooms: bool = True) -> None: ...
-
-    @overload
-    def put(self, db: sqlite3.Connection, table: Literal["tool_requests"], record: "ToolRequestRecord", *, sync_rooms: bool = True) -> None: ...
-
-    @overload
-    def put(self, db: sqlite3.Connection, table: Literal["monitors"], record: "dict[str, JsonValue]", *, sync_rooms: bool = True, monitor_output: bool = False) -> None: ...
-
-    @overload
-    def put(self, db: sqlite3.Connection, table: str, record: "AgentRecord | WorkRecord | PlanRecord | AnnotationRecord | CheckpointRecord | ComplaintRecord | ProjectRecord | AccountTransferRecord | WorkspaceOperationRecord | RoomRecord | RequestRecord | NativeSafetyRetryRecord | NativeNoticeRecord | RuleRecord | ToolRequestRecord | dict[str, JsonValue]", *, sync_rooms: bool = True, monitor_output: bool = False, previous_record: Any = None) -> None: ...
-
-    def put(self, db: sqlite3.Connection, table: str, record: Any, *, sync_rooms: bool = True, monitor_output: bool = False, previous_record: Any = None) -> None:
+    def _put(self, db: sqlite3.Connection, table: str, record: Any, *, sync_rooms: bool = True, monitor_output: bool = False, previous_record: Any = None) -> None:
         if table == "projects" and "_project_server_id" in self.__dict__:
             from codex_project_locations import normalize as normalize_project_locations
             normalize_project_locations(self, record)
@@ -3543,6 +3445,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 owners = {(previous or {}).get("owner"), record.get("owner")}
                 for owner in {str(v) for v in owners if v}:
                     self._stage_team_task_resources(db, owner)
+
+    if TYPE_CHECKING:
+        records = RecordStore.records
+        put = RecordStore.put
+    else:
+        records = _records
+        put = _put
 
     def invalidate_agent_records(self, _key=None):
         with self.__dict__.setdefault("_agent_records_cache_lock", threading.RLock()):

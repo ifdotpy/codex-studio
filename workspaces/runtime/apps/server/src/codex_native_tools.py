@@ -10,7 +10,7 @@ import stat
 import threading
 import time
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     import sqlite3
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 
 ACTIVE = {"running", "starting", "approval"}
-TABLE = "native_catalog_updates"
+TABLE: Literal["native_catalog_updates"] = "native_catalog_updates"
 
 
 def catalog(tools: list[dict[str, "Any"]]) -> list[dict[str, "Any"]]:

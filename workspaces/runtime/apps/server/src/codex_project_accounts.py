@@ -17,7 +17,7 @@ def set_project_accounts(runtime: "Runtime", data: dict[str, object]) -> "Projec
         raise ValueError("Select at least one project account")
     keys = sorted(set(keys))
     default = data.get("account_key")
-    if default not in keys:
+    if not isinstance(default, str) or default not in keys:
         raise ValueError("The default must be a selected project account")
     revision = data.get("expected_revision")
     if type(revision) is not int or revision < 0:
@@ -42,7 +42,19 @@ def set_project_accounts(runtime: "Runtime", data: dict[str, object]) -> "Projec
         if revision != current:
             raise ValueError("Project accounts changed. Reload before saving")
         if project is None:
-            project = {"id": path, "path": path, "name": Path(path).name or path, "created": time.time()}  # type: ignore[assignment]  # typed-narrowing: draft gains account fields next
-        project.update(accountKey=default, accountKeys=keys, accountRevision=current + 1)  # type: ignore[call-arg, union-attr]  # typed-update
-        runtime.put(db, "projects", project)  # type: ignore[arg-type]  # typed-narrowing: populated project follows update below
-        return project  # type: ignore[return-value]  # typed-narrowing: populated project follows update below
+            new_project: ProjectRecord = {
+                "id": path,
+                "path": path,
+                "name": Path(path).name or path,
+                "created": time.time(),
+                "accountKey": default,
+                "accountKeys": keys,
+                "accountRevision": current + 1,
+            }
+            project = new_project
+        else:
+            project["accountKey"] = default
+            project["accountKeys"] = keys
+            project["accountRevision"] = current + 1
+        runtime.put(db, "projects", project)
+        return project
