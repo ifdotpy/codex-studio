@@ -351,7 +351,7 @@ class ServerSuiteRunner(unittest.TestCase):
 
         def execute(command, _cwd, _timeout, environment):
             selectors = command[command.index("-v") + 1:]
-            commands.extend(selectors)
+            commands.append(selectors)
             outcome = Path(environment["CODEX_SERVER_TEST_RESULT_FILE"])
             outcome.write_text("".join(json.dumps({"id": f"__main__.{selector}",
                                                    "outcome": "failed" if selector.endswith("second") else "passed"})
@@ -372,30 +372,22 @@ class ServerSuiteRunner(unittest.TestCase):
                 [(path, "safe")], set(), 1, 1, root=ROOT, execute=execute,
             )
 
-        self.assertEqual(sorted(commands), sorted(test_id.removeprefix("__main__.") for test_id in ids))
-        self.assertEqual(len(commands), len(set(commands)))
+        flattened = [selector for group in commands for selector in group]
+        self.assertEqual(sorted(flattened), sorted(test_id.removeprefix("__main__.") for test_id in ids))
+        self.assertEqual(len(flattened), len(set(flattened)))
+        self.assertEqual(len(commands), 2)
+        self.assertTrue(all(len(group) == 3 for group in commands))
+        self.assertIn("(2 slice(s)", output.getvalue())
         self.assertEqual(len(failures), 1)
         self.assertIn("Sample.test_second", failures[0][1])
         self.assertIn("reproduce:", failures[0][1])
 
-    def test_slice_count_tracks_profile_need_and_caps_focused_runs(self):
-        self.assertEqual(RUNNER._suite_slice_count("suite.py", 72, 30, False,
-                                                   {"suite.py": 10.0}), 1)
-        self.assertEqual(RUNNER._suite_slice_count("suite.py", 72, 30, False,
-                                                   {"suite.py": 11.0}), 3)
-        self.assertEqual(RUNNER._suite_slice_count("suite.py", 72, 30, False,
-                                                   {"suite.py": 45.0}), 8)
-        self.assertEqual(RUNNER._suite_slice_count(
-            "suite.py", 72, 30, False, {"suite.py": 12.0}, {"suite.py": 66.0}), 8)
-        self.assertEqual(RUNNER._suite_slice_count(
-            "suite.py", 72, 30, False, {"suite.py": 9.0}, {"suite.py": 66.0}), 1)
-        self.assertEqual(RUNNER._suite_slice_count("suite.py", 72, 4, False,
-                                                   {"suite.py": 45.0}), 4)
-        self.assertEqual(RUNNER._suite_slice_count("suite.py", 4, 4, True, {}), 1)
-        self.assertEqual(RUNNER._suite_slice_count("suite.py", 72, 2, True, {}), 2)
+    def test_focused_slice_count_is_capped_and_skips_small_suites(self):
+        self.assertEqual(RUNNER._focused_suite_slice_count("suite.py", 4, 4), 1)
+        self.assertEqual(RUNNER._focused_suite_slice_count("suite.py", 72, 4), 4)
+        self.assertEqual(RUNNER._focused_suite_slice_count("suite.py", 72, 2), 2)
         runner_suite = f"{RUNNER.TESTS_REL}/server/test_run.py"
-        self.assertEqual(RUNNER._suite_slice_count(runner_suite, 59, 30, False,
-                                                   {runner_suite: 90.0}), 1)
+        self.assertEqual(RUNNER._focused_suite_slice_count(runner_suite, 59, 4), 1)
 
     def test_runner_suite_is_explicitly_excluded_from_test_slicing(self):
         relative = f"{RUNNER.TESTS_REL}/server/test_run.py"
@@ -424,57 +416,6 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertEqual(failures, [])
         self.assertEqual(len(commands), 1)
         list_ids.assert_not_called()
-
-    def test_sliced_suites_share_the_planned_worker_process_bound(self):
-        entries = [("first.py", "safe"), ("second.py", "safe")]
-        ids_by_path = {
-            path: [f"__main__.Sample.test_{index}" for index in range(8)]
-            for path, _kind in entries
-        }
-        active = 0
-        maximum_active = 0
-        active_lock = threading.Lock()
-
-        def execute(command, _cwd, _timeout, environment):
-            nonlocal active, maximum_active
-            selectors = command[command.index("-v") + 1:]
-            with active_lock:
-                active += 1
-                maximum_active = max(maximum_active, active)
-            try:
-                time.sleep(0.02)
-                outcome = Path(environment["CODEX_SERVER_TEST_RESULT_FILE"])
-                outcome.write_text("".join(
-                    json.dumps({"id": f"__main__.{selector}", "outcome": "passed"}) + "\n"
-                    for selector in selectors
-                ))
-                return 0, None, [], []
-            finally:
-                with active_lock:
-                    active -= 1
-
-        with (tempfile.TemporaryDirectory(prefix="runner-slice-bound-") as temp,
-              contextlib.redirect_stdout(io.StringIO()),
-              mock.patch.object(RUNNER, "TEST_TMP_ROOT", Path(temp)),
-              mock.patch.object(RUNNER, "worker_plan", return_value={
-                  "workers": 2, "memoryWorkerSlots": 2,
-              }),
-              mock.patch.object(RUNNER, "_load_profile", return_value={
-                  "suiteSeconds": {"first.py": 20.0, "second.py": 20.0},
-              }),
-              mock.patch.object(RUNNER, "is_unittest_suite", return_value=True),
-              mock.patch.object(RUNNER, "has_module_level_mutable_state", return_value=False),
-              mock.patch.object(RUNNER, "has_custom_unittest_suite", return_value=False),
-              mock.patch.object(RUNNER, "_suite_test_ids",
-                                side_effect=lambda relative, *_args: ids_by_path[relative]),
-              mock.patch.object(RUNNER, "_unix_socket_path_error", return_value=None)):
-            _runnable, _skipped, failures, _elapsed = RUNNER.run_suites(
-                entries, set(), 1, 1, root=ROOT, execute=execute, workers=2,
-            )
-
-        self.assertEqual(failures, [])
-        self.assertEqual(maximum_active, 2)
-        self.assertLessEqual(maximum_active, 2)
 
     def test_plain_assertion_script_is_not_test_sliced(self):
         commands = []
@@ -1300,7 +1241,8 @@ class ServerSuiteRunner(unittest.TestCase):
             self.assertEqual(RUNNER.main(), 0)
 
         self.assertIn(
-            f"Default-tier suites over {RUNNER.FAST_SUITE_BUDGET_SECONDS:g}s: "
+            f"Parallel-run default-tier suites over {RUNNER.FAST_SUITE_BUDGET_SECONDS:g}s "
+            "(check alone with 'just test server <exact-suite-path>'): "
             "slow-default.py (12.35s)",
             output.getvalue(),
         )

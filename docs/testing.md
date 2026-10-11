@@ -25,9 +25,10 @@ The fast tier is deterministic and each suite is expected to finish in at most
 pre-PR and pre-merge check, and the hosted CI tier. Use `just test-fast` for the
 whole repository. For one server suite between edits, use
 `just test server <exact-suite-path>`; exact paths automatically include suites
-from the automated or heavy list. The runner prints any default-tier suite over
-10 seconds at the end of a default run, with its measured duration, but duration
-does not fail the run.
+from the automated or heavy list. At the end of a default run, the runner reports
+suite durations over 10 seconds measured inside that parallel run. These values
+are informational; check a suite's 10-second budget by running it alone with
+`just test server <exact-suite-path>`.
 
 Heavy runs are manual, announced runs and are excluded from hosted CI for now.
 The runner owns the server suite categories; the commands below select them
