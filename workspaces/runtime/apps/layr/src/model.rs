@@ -59,17 +59,17 @@ pub struct StateRec {
     pub running: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conflicts: Vec<Conflict>,
-    /// Snapshots of regenerable layers: layer path to snapshot name in `states/`.
+    /// Snapshots of regenerable caches: cache path to snapshot name in `states/`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub layers: BTreeMap<String, String>,
-    /// The user who made the layer snapshots (a uid of the state's machine).
+    pub caches: BTreeMap<String, String>,
+    /// The user who made the cache snapshots (a uid of the state's machine).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub layer_by: Option<u32>,
-    /// The layers may go to lines of other users: they were saved on a protected line by someone
-    /// who may save there. Other layers go only to lines of the user who made them, because a
-    /// layer holds code that review does not see.
+    pub cache_by: Option<u32>,
+    /// The caches may go to lines of other users: they were saved on a protected line by someone
+    /// who may save there. Other caches go only to lines of the user who made them, because a
+    /// cache holds code that review does not see.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub layer_shared: bool,
+    pub cache_shared: bool,
 }
 
 /// The pointers of a line at one time.
@@ -156,11 +156,11 @@ pub fn is_name(s: &str) -> bool {
     crate::store::check_name("name", s).is_ok()
 }
 
-/// A layer snapshot name: `<state-id>@<path with '/' as %2F>`.
-pub fn is_layer_name(s: &str, state: &str) -> bool {
+/// A cache snapshot name: `<state-id>@<path with '/' as %2F>`.
+pub fn is_cache_name(s: &str, state: &str) -> bool {
     match s.split_once('@') {
         Some((id, p)) => {
-            // `.venv` is a layer path; the whole name starts with the state ID, so a dot
+            // `.venv` is a cache path; the whole name starts with the state ID, so a dot
             // after the `@` makes no hidden or parent entry.
             id == state
                 && !p.is_empty()
@@ -203,10 +203,10 @@ pub fn validate(r: &Record) -> anyhow::Result<()> {
         if let Some(l) = &s.line {
             uuid("line", l)?;
         }
-        for (path, snap) in &s.layers {
+        for (path, snap) in &s.caches {
             crate::fsutil::check_rel(path)?;
-            if !is_layer_name(snap, &s.id) {
-                bail!("record {}: bad layer name {snap:?}", r.seq);
+            if !is_cache_name(snap, &s.id) {
+                bail!("record {}: bad cache name {snap:?}", r.seq);
             }
         }
         for c in &s.conflicts {
@@ -257,20 +257,20 @@ pub fn validate(r: &Record) -> anyhow::Result<()> {
             uuid("deleted state", v.as_str().unwrap_or(""))?;
         }
     }
-    if let (Some(st), Some(l)) = (d.get("state").and_then(|v| v.as_str()), d.get("layers").and_then(|v| v.as_object())) {
-        for (path, snap) in l {
+    if let (Some(st), Some(c)) = (d.get("state").and_then(|v| v.as_str()), d.get("caches").and_then(|v| v.as_object())) {
+        for (path, snap) in c {
             crate::fsutil::check_rel(path)?;
-            if !is_layer_name(snap.as_str().unwrap_or(""), st) {
-                bail!("record {}: bad layer name", r.seq);
+            if !is_cache_name(snap.as_str().unwrap_or(""), st) {
+                bail!("record {}: bad cache name", r.seq);
             }
         }
     }
     if let (Some(st), Some(u)) = (d.get("state").and_then(|v| v.as_str()), d.get("uuids").and_then(|v| v.as_object())) {
         for (snap, id) in u {
-            if !is_layer_name(snap, st) {
-                bail!("record {}: bad layer name", r.seq);
+            if !is_cache_name(snap, st) {
+                bail!("record {}: bad cache name", r.seq);
             }
-            uuid("layer subvolume", id.as_str().unwrap_or(""))?;
+            uuid("cache subvolume", id.as_str().unwrap_or(""))?;
         }
     }
     if let Some(c) = d.get("config").and_then(|v| v.as_object()) {
@@ -307,9 +307,9 @@ mod tests {
             time: 0,
             running: false,
             conflicts: vec![],
-            layers: BTreeMap::new(),
-            layer_by: None,
-            layer_shared: false,
+            caches: BTreeMap::new(),
+            cache_by: None,
+            cache_shared: false,
         }
     }
 
@@ -321,14 +321,14 @@ mod tests {
     }
 
     #[test]
-    fn a_layer_path_may_start_with_a_dot() {
+    fn a_cache_path_may_start_with_a_dot() {
         let id = "01a12290-0000-7000-8000-000000000003";
-        assert!(is_layer_name(&format!("{id}@.venv"), id));
-        assert!(is_layer_name(&format!("{id}@web%2Fnode_modules"), id));
+        assert!(is_cache_name(&format!("{id}@.venv"), id));
+        assert!(is_cache_name(&format!("{id}@web%2Fnode_modules"), id));
         for bad in [".", "..", "", "a/b", "a b"] {
-            assert!(!is_layer_name(&format!("{id}@{bad}"), id), "{bad}");
+            assert!(!is_cache_name(&format!("{id}@{bad}"), id), "{bad}");
         }
-        assert!(!is_layer_name(&format!("{id}@.venv"), "01a12290-0000-7000-8000-000000000004"));
+        assert!(!is_cache_name(&format!("{id}@.venv"), "01a12290-0000-7000-8000-000000000004"));
     }
 
     #[test]
@@ -345,7 +345,7 @@ mod tests {
         assert!(validate(&r).is_err());
         let mut r = rec();
         let mut s = state("01a12290-0000-7000-8000-000000000003");
-        s.layers.insert("target".into(), "../../etc".into());
+        s.caches.insert("target".into(), "../../etc".into());
         r.states.push(s);
         assert!(validate(&r).is_err());
         let mut r = rec();

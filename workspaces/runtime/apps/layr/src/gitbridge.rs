@@ -1,4 +1,4 @@
-//! The remote bridge to git, and the `.git` layer of each line for tools that call git.
+//! The remote bridge to git, and the `.git` folder of each line for tools that call git.
 //!
 //! The project git object store is `<project>/git` (a bare repository, readable by the readers).
 //! Import makes a state from a git commit with only the changed paths. Export builds a git tree
@@ -775,11 +775,11 @@ pub fn push(ctx: &Ctx, repo: &Repo, url: &str, commit: &str, branch: &str, force
     Ok(())
 }
 
-// ----- the .git layer of a line -----
+// ----- the .git folder of a line -----
 
-/// Give a new working folder a `.git` layer (a nested subvolume) so tools that call git see the
+/// Give a new working folder a `.git` folder (a nested subvolume) so tools that call git see the
 /// nearest mapped commit. Objects come from the project store through `alternates`.
-pub fn make_git_layer(repo: &Repo, line: &Line, state: &str, w: &Path) -> Result<()> {
+pub fn make_git_folder(repo: &Repo, line: &Line, state: &str, w: &Path) -> Result<()> {
     if !has_store(repo) {
         return Ok(());
     }
@@ -838,16 +838,16 @@ pub fn make_git_layer(repo: &Repo, line: &Line, state: &str, w: &Path) -> Result
     Ok(())
 }
 
-/// Point the `.git` layer of a line at the commit of a new head (after an export or import).
-/// The layer belongs to the line owner, so all access goes through descriptors of the `.git`
+/// Point the `.git` folder of a line at the commit of a new head (after an export or import).
+/// The folder belongs to the line owner, so all access goes through descriptors of the `.git`
 /// folder and never follows a link the owner made.
-pub fn refresh_git_layer(repo: &Repo, line: &Line) -> Result<()> {
+pub fn refresh_git_folder(repo: &Repo, line: &Line) -> Result<()> {
     let g = repo.working(line).join(".git");
     let dir = match fsutil::open_dir_nofollow(&g) {
         Ok(d) => d,
         Err(_) => return Ok(()),
     };
-    // Only the layer layr made (a nested subvolume); a .git folder the line owner made is its own.
+    // Only the subvolume layr made; a .git folder the line owner made is its own.
     {
         use std::os::unix::fs::MetadataExt;
         if dir.metadata()?.ino() != 256 {

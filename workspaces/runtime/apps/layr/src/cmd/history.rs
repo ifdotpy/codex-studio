@@ -884,7 +884,7 @@ pub fn rev_parse(ctx: &Ctx, args: &[String]) -> Result<i32> {
     if a.has("--git-dir") || a.has("--absolute-git-dir") || a.has("--git-common-dir") {
         let g = repo.working(h.line()?).join(".git");
         if !g.exists() {
-            return Err(exit(128, "fatal: this line has no .git layer"));
+            return Err(exit(128, "fatal: this line has no .git folder"));
         }
         outln!(ctx, "{}", g.display());
     }

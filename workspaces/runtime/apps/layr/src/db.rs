@@ -345,8 +345,8 @@ impl Db {
                     }
                 }
             }
-            "save.layers" => {
-                // Only the machine that made the state adds its layers (names and subvolume
+            "save.caches" => {
+                // Only the machine that made the state adds its caches (names and subvolume
                 // UUIDs, which a receiver checks).
                 if let Some(st) = s("state") {
                     let row: Option<(String, String)> = tx
@@ -355,10 +355,10 @@ impl Db {
                     if let Some((raw, machine)) = row {
                         if machine == rec.machine {
                             let mut v: serde_json::Value = serde_json::from_str(&raw)?;
-                            v["layers"] = d.get("layers").cloned().unwrap_or_default();
-                            v["layer_uuids"] = d.get("uuids").cloned().unwrap_or_default();
-                            v["layer_by"] = serde_json::json!(rec.actor.uid);
-                            v["layer_shared"] = serde_json::json!(d.get("shared").and_then(|x| x.as_bool()).unwrap_or(false));
+                            v["caches"] = d.get("caches").cloned().unwrap_or_default();
+                            v["cache_uuids"] = d.get("uuids").cloned().unwrap_or_default();
+                            v["cache_by"] = serde_json::json!(rec.actor.uid);
+                            v["cache_shared"] = serde_json::json!(d.get("shared").and_then(|x| x.as_bool()).unwrap_or(false));
                             tx.execute("UPDATE states SET rec=?2 WHERE id=?1", params![st, v.to_string()])?;
                         }
                     }
@@ -385,13 +385,13 @@ impl Db {
         Ok(())
     }
 
-    /// The subvolume UUID of a layer snapshot, from the signed save.layers record.
-    pub fn layer_uuid(&self, state: &str, name: &str) -> Result<Option<String>> {
+    /// The subvolume UUID of a cache snapshot, from the signed save.caches record.
+    pub fn cache_uuid(&self, state: &str, name: &str) -> Result<Option<String>> {
         let raw: Option<String> =
             self.conn.query_row("SELECT rec FROM states WHERE id=?1", params![state], |r| r.get(0)).optional()?;
         Ok(raw
             .and_then(|r| serde_json::from_str::<serde_json::Value>(&r).ok())
-            .and_then(|v| v["layer_uuids"][name].as_str().map(|s| s.to_string())))
+            .and_then(|v| v["cache_uuids"][name].as_str().map(|s| s.to_string())))
     }
 
     pub fn trusted(&self, machine: &str) -> Result<Option<String>> {
@@ -630,7 +630,7 @@ impl Db {
 }
 
 /// Every setting acts on one machine (admin, members, merge commands, remotes, retention,
-/// push policy, layers, backups): settings never come from another machine's records. Those
+/// push policy, caches, backups): settings never come from another machine's records. Those
 /// values stay as `<key>@<machine>`; a restore takes over the values of the machine that wrote
 /// the backup.
 pub fn local_key(_k: &str) -> bool {
@@ -672,9 +672,9 @@ mod tests {
             time: 0,
             running: false,
             conflicts: vec![],
-            layers: Default::default(),
-            layer_by: None,
-            layer_shared: false,
+            caches: Default::default(),
+            cache_by: None,
+            cache_shared: false,
         });
         r
     }

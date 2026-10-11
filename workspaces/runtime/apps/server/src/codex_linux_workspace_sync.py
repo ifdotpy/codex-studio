@@ -132,7 +132,7 @@ def _object_pack(root, prior, current, directory, floor):
             (pack.with_suffix('.idx'), metadata+'/objects/pack/'+name+'.idx')]
 
 
-# Folders that a build makes again. They stay on the Mac; in the VM they are layr layers.
+# Folders that a build makes again. They stay on the Mac; in the VM they are layr caches.
 REGENERABLE = {'node_modules', '.venv', 'venv', '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache',
                '.turbo', '.next'}
 

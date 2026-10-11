@@ -19,7 +19,7 @@ tracks or would track, the files that Git ignores (such as `.env`), and the Git 
 It leaves on the Mac the folders that Git ignores (data, downloads, copies of other
 projects), except a folder that is itself a nested repository, which keeps its own rules,
 and regenerable folders (`REGENERABLE`, and `target` next to a `Cargo.toml`): in the VM a
-build makes them again, or they come from a layr layer. `.worktrees`, a worktree of a project
+build makes them again, or they come from a layr cache. `.worktrees`, a worktree of a project
 repository in any other folder, and the Studio store stay too. A submodule whose store is in
 its parent's `.git` comes with it; a Git store outside the project is refused. A folder
 without Git is taken whole, without regenerable folders and without the folders that its
@@ -65,7 +65,7 @@ running) moves a project and its Git worktrees into layr:
 `codex_layr_exec.py PROJECT_FOLDER -- COMMAND...` (installed app scripts, Studio Python,
 VM running) runs one command in the project's VM main line as the owner of main, the user of
 the lead. It is how the user or a Mac agent sets up a project without a chat, for example a
-first build and `layr save --layers` ("Warm layers" below):
+first build and `layr save --caches` ("Warm caches" below):
 
 - Guest method `project.exec` (root broker): it reads the owner from the main folder, runs
   the command with `runuser`, never as root, in main or `--subpath` below it, and returns the
@@ -77,17 +77,17 @@ first build and `layr save --layers` ("Warm layers" below):
   `--operation-id`.
 - The broker keeps each command's argv and output in `layr-admin/commands/<id>/`.
 
-### Warm layers
+### Warm caches
 
 A `.layrattributes` file in the project gives paths attributes: a line is a pattern of the
 `.gitignore` form and attributes. `node_modules regenerable` marks the folders that a build
-makes again; `-regenerable` unsets it. layr turns a regenerable folder into a layer only if
+makes again; `-regenerable` unsets it. layr turns a regenerable folder into a cache only if
 the ignore rules ignore it (layr `docs/design.md`, section 5). The import already leaves out
-every ignored folder, so the attribute changes only what becomes a layer in the VM:
+every ignored folder, so the attribute changes only what becomes a cache in the VM:
 
 1. The file is part of main; on the Mac it comes with Mac folder sync.
 2. A build in main (the lead's, or the operator's through `codex_layr_exec.py`) makes the
-   folders; `layr save --layers` in main gives them to the head of main.
+   folders; `layr save --caches` in main gives them to the head of main.
 3. Each new line from main starts with a copy-on-write copy of the nearest saved folders.
    Lines made before the save build their own.
 

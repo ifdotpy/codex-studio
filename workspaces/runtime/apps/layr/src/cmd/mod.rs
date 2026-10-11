@@ -183,7 +183,7 @@ Lines and states:
 Remote (git bridge):
    remote, fetch, pull, push, clone
 Projects and machines:
-   init, projects, config, layer, export, backup, sync, serve-peer, gc, fsck, reindex, daemon
+   init, projects, config, cache, export, backup, sync, serve-peer, gc, fsck, reindex, daemon
 
 Lines are folders: <root>/projects/<project>/lines/<line>. Run commands inside a line folder.
 ";
@@ -250,7 +250,7 @@ pub fn run(ctx: &Ctx, argv: &[String]) -> Result<i32> {
         "machines" => admin::machines(ctx, &rest),
         "debug" => admin::debug(ctx, &rest),
         "config" => admin::config(ctx, &rest),
-        "layer" => admin::layer(ctx, &rest),
+        "cache" => admin::cache(ctx, &rest),
         "remote" => remote::remote(ctx, &rest),
         "fetch" => remote::fetch(ctx, &rest),
         "pull" => remote::pull(ctx, &rest),

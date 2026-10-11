@@ -169,12 +169,12 @@ impl<'a> Project<'a> {
             self.lines_dir().join(".invalid-name")
         }
     }
-    /// Path of a layer snapshot `<state-id>@<path>`.
-    pub fn layer_path(&self, state: &str, name: &str) -> PathBuf {
-        if crate::model::is_layer_name(name, state) {
+    /// Path of a cache snapshot `<state-id>@<path>`.
+    pub fn cache_path(&self, state: &str, name: &str) -> PathBuf {
+        if crate::model::is_cache_name(name, state) {
             self.states_dir().join(name)
         } else {
-            self.states_dir().join(".invalid-layer")
+            self.states_dir().join(".invalid-cache")
         }
     }
     pub fn stage_path(&self, line_id: &str) -> PathBuf {
