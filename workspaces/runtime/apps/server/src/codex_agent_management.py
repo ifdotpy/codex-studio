@@ -1257,10 +1257,7 @@ def manage_agent(rt: "Runtime", actor_id: str, args: dict[str, "Any"], epoch: in
         if input_recovery.get('status') == 'waiting':
             rollout_issue = _native_rollout_issue(rt, target)
             if rollout_issue:
-                return {'status': 'unreadable',
-                        'recovery': {'status': 'unreadable', 'rollout': rollout_issue},
-                        'inputRecovery': input_recovery, 'requests': request_recovery,
-                        'next': 'The native rollout contains a malformed record. Saved inputs were not changed or replayed; repair or replace the native history before continuing.'}
+                return _unreadable_recovery(rollout_issue, input_recovery, request_recovery)
             return {'status': 'waiting', 'recovery': {'status': 'waiting'},
                     'inputRecovery': input_recovery, 'requests': request_recovery,
                     'next': 'Native input history is unavailable or the thread is active. Keep the input waiting and recover again later.'}
@@ -1268,12 +1265,20 @@ def manage_agent(rt: "Runtime", actor_id: str, args: dict[str, "Any"], epoch: in
     if action == 'recover' and result.get('status') in {'skipped', 'unconfirmed'}:
         rollout_issue = _native_rollout_issue(rt, target)
         if rollout_issue:
-            return {'status': 'unreadable',
-                    'recovery': {'status': 'unreadable', 'rollout': rollout_issue},
-                    'inputRecovery': input_recovery, 'requests': request_recovery,
-                    'next': 'The native rollout contains a malformed record. Saved inputs were not changed or replayed; repair or replace the native history before continuing.'}
+            return _unreadable_recovery(rollout_issue, input_recovery, request_recovery)
     return {'status': 'checked', 'recovery': result, 'inputRecovery': input_recovery, 'requests': request_recovery,
             'next': 'Inspect the worker. Use orchestration_send for an explicit continuation; never replay unknown mutations'}
+
+
+def _unreadable_recovery(rollout_issue: dict[str, "Any"],
+                         input_recovery: dict[str, "Any"] | None,
+                         request_recovery: dict[str, "Any"] | None) -> dict[str, "Any"]:
+    return {'status': 'unreadable',
+            'recovery': {'status': 'unreadable', 'rollout': rollout_issue},
+            'inputRecovery': input_recovery, 'requests': request_recovery,
+            'next': ('Inspect the worker and preserve its saved inputs. Recovery did not change or replay them. '
+                     'A lead may archive only after resolving input_delivery blockers; otherwise retain this '
+                     'worker and arrange a reviewed native history repair or a fresh thread.')}
 
 
 def _native_rollout_issue(rt: "Runtime", agent: "AgentRecord") -> dict[str, "Any"] | None:
