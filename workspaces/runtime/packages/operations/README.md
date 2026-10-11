@@ -5,13 +5,16 @@
 - **Responsibility:** Pure decision logic for one scoped mutating request from
   reservation through dispatch, uncertain outcome, and evidence-based recovery.
 - **Public interface:** Named request and scope IDs, closed state/event/decision/
-  error enums, and `transition(state, event) -> decision`. The adjacent PyO3
-  binding owns typed conversion from persisted Studio tool-request records.
+  error enums, `transition(state, event) -> decision`, and a typed reservation
+  decision with row and alias write intents. The adjacent PyO3 binding owns
+  conversion from persisted Studio tool-request records.
 - **Boundaries:** No Python, application, provider, subprocess, SQLite, filesystem,
   network, clock, randomness, or global-state access. The caller validates
   untrusted bytes, persists a decision and its effect intent with the expected
   revision, then performs the intent.
-- **Invariants:** Request identity is immutable and compacted settled requests
+- **Invariants:** Reservation snapshots contain one request projection;
+  retries of the same content return existing state without dispatch intents.
+  Request identity is immutable and compacted settled requests
   retain typed tombstones; a request cannot dispatch twice;
   stale or duplicate events cannot regress state; unknown outcomes require
   positive evidence to settle; cancellation after dispatch preserves uncertainty.

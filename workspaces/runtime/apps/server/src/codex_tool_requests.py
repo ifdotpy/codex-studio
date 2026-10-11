@@ -10,7 +10,7 @@ import uuid
 from typing import Any, TYPE_CHECKING, Protocol
 
 from codex_records import RecordStore
-from codex_operations_adapter import native
+from codex_operations_adapter import native, reserve_tool_request as reserve_native_tool_request
 
 _LIFECYCLE_FIELDS = (
     "stage", "outcome", "cancelRequested", "id", "callId", "accountKey",
@@ -421,15 +421,7 @@ class RequestMixin:
             if actor is None or actor.get("deletedAt"):
                 raise ValueError("Unknown managed agent")
             record = self.tool_request(key, db)
-            if record:
-                decision = _lifecycle(
-                    record,
-                    "Admit",
-                    admission_signature=signature,
-                    admission_agent=actor["id"],
-                )
-                _require_decision(decision)
-                record = self._refresh_tool_request(db, record)
+            existing_record = record
             call_id = str(params.get("callId", message.get("id")))
             if not record:
                 now = time.time()
@@ -437,8 +429,8 @@ class RequestMixin:
                           "callId": call_id, "tool": params.get("tool"), "signature": signature,
                           "rpcId": message.get("id"), "turnId": params.get("turnId"), "epoch": actor.get("epoch"),
                           "accountKey": account_key, "connectionId": connection_id,
-                          "created": now, "updated": now, "stage": "queued", "outcome": "pending",
-                          "cancelRequested": False, "readOnly": request_read_only(params.get("tool"), args),
+                          "created": now, "updated": now,
+                          "readOnly": request_read_only(params.get("tool"), args),
                           "timing": {"reservationBeganAt": reservation_started,
                                      "reservationLockedAt": reservation_locked}}
                 from codex_connection_recovery import supervisor_identity
@@ -457,21 +449,28 @@ class RequestMixin:
                         record["callbackQueueDelayMs"] = max(0, dispatched - received) * 1000
                 if identity_tool in {"orchestration_spawn", "orchestration_send", "orchestration_review", "orchestration_servers", "orchestration_move", "orchestration_teleport"} and "request_id" in identity_args:
                     record["request_id"] = identity_args["request_id"]
-                decision = _lifecycle(record, "Admit", empty=True)
-                _require_decision(decision)
-                _apply_decision(record, decision)
-                self.put(db, "tool_requests", record)
-                cached = self.tool_result(db, key)
-                if cached:
-                    record = self.finish_tool_request(key, cached, db=db)
-            aliases = [call_id, _prefix(account_key, params["threadId"]) + call_id]
-            if record.get("request_id"):
-                aliases.append(record["request_id"])
-            for alias in aliases:
-                # Preserve aliases across retries. An ambiguous short identifier
-                # requires the canonical key instead of selecting another operation.
-                db.execute("INSERT OR IGNORE INTO runtime_tool_request_aliases VALUES (?,?,?)",
-                           (actor["id"], alias, key))
+            aliases = [call_id, _prefix(account_key, params["threadId"]) + call_id,
+                       *([record["request_id"]] if record.get("request_id") else [])]
+            decision_kind, intents = reserve_native_tool_request(
+                record, signature, actor["id"], existing_record, _LIFECYCLE_FIELDS,
+                [(actor["id"], alias, key) for alias in aliases], _content_fingerprint)
+            if decision_kind == "ReturnExisting":
+                record = self._refresh_tool_request(db, record)
+            for intent in intents:
+                intent_kind, intent_value = next(iter(intent.items()))
+                if intent_kind == "ReserveRequest":
+                    if decision_kind != "Admitted":
+                        raise RuntimeError("Rust requested a second reservation row write")
+                    record.update(stage="queued", outcome="pending", cancelRequested=False)
+                    self.put(db, "tool_requests", record)
+                    cached = self.tool_result(db, key)
+                    if cached:
+                        record = self.finish_tool_request(key, cached, db=db)
+                elif intent_kind == "InsertAlias":
+                    db.execute("INSERT OR IGNORE INTO runtime_tool_request_aliases VALUES (?,?,?)",
+                               (intent_value["agent"], intent_value["alias"], intent_value["request"]))
+                else:
+                    raise RuntimeError("Rust returned an unknown tool request reservation intent")
             if record.setdefault("timing", {}).get("reservationEndedAt") is None:
                 record["timing"]["reservationEndedAt"] = time.monotonic_ns()
                 self.put(db, "tool_requests", record)

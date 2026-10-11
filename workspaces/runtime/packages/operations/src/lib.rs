@@ -4,6 +4,13 @@
 //! compare [`Decision::expected_revision`] in the same transaction that stores
 //! [`Decision::next_state`] and its [`EffectIntent`] values.
 
+mod reservation;
+
+pub use reservation::{
+    RequestAlias, ReservationDecision, ReservationInput, ReservationSnapshot, ReservationStore,
+    ReservationWriteIntent, decide_reservation, reserve_in_store,
+};
+
 use std::fmt;
 
 macro_rules! string_id {

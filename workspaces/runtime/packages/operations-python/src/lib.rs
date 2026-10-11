@@ -5,7 +5,7 @@ use pyo3::prelude::*;
 
 mod record_adapter;
 
-const PROTOCOL_VERSION: u32 = 2;
+const PROTOCOL_VERSION: u32 = 3;
 
 fn catch_panic<T, F>(operation: F) -> Result<T, ()>
 where
@@ -74,6 +74,18 @@ fn transition_record(
     }
 }
 
+#[pyfunction]
+fn reserve_tool_request(snapshot_json: &str) -> PyResult<String> {
+    let result = catch_panic(|| record_adapter::reserve_tool_request(snapshot_json));
+    match result {
+        Ok(Ok(result)) => Ok(result),
+        Ok(Err(message)) => Err(PyValueError::new_err(message)),
+        Err(()) => Err(PyRuntimeError::new_err(
+            "Rust tool request reservation panicked",
+        )),
+    }
+}
+
 #[pymodule]
 #[allow(unsafe_code)]
 fn studio_operations_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -85,6 +97,7 @@ fn studio_operations_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("PERSISTED_OUTCOMES", record_adapter::OUTCOME_NAMES.to_vec())?;
     module.add_class::<TransitionResult>()?;
     module.add_function(wrap_pyfunction!(transition_record, module)?)?;
+    module.add_function(wrap_pyfunction!(reserve_tool_request, module)?)?;
     Ok(())
 }
 

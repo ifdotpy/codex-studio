@@ -338,6 +338,48 @@ class RequestContract(unittest.TestCase):
             self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_tool_requests').fetchone()[0], 0)
             self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_tool_request_aliases').fetchone()[0], 0)
 
+    def test_reservation_fault_before_row_write_rolls_back_and_retry_admits(self):
+        original_put = self.runtime.put
+
+        def fail_request_write(db, table, record):
+            if table == 'tool_requests':
+                raise RuntimeError('injected before reservation row write')
+            return original_put(db, table, record)
+
+        with patch.object(self.runtime, 'put', fail_request_write):
+            with self.assertRaisesRegex(RuntimeError, 'before reservation row write'):
+                self.reserve(call='fault-before-row')
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_tool_requests').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_tool_request_aliases').fetchone()[0], 0)
+        admitted = self.reserve(call='fault-before-row')
+        self.assertEqual(admitted['stage'], 'queued')
+        self.assertTrue(self.runtime.begin_tool_request(admitted['id']))
+
+    def test_reservation_fault_after_commit_returns_saved_request_without_second_dispatch(self):
+        original_db = self.runtime.db
+        raise_after_commit = True
+
+        @contextmanager
+        def fail_once_after_commit():
+            nonlocal raise_after_commit
+            with original_db() as db:
+                yield db
+            if raise_after_commit:
+                raise_after_commit = False
+                raise RuntimeError('injected after reservation commit')
+
+        with patch.object(self.runtime, 'db', fail_once_after_commit):
+            with self.assertRaisesRegex(RuntimeError, 'after reservation commit'):
+                self.reserve(call='fault-after-commit')
+            replay = self.reserve(call='fault-after-commit')
+            self.assertEqual(replay['stage'], 'queued')
+            self.assertTrue(self.runtime.begin_tool_request(replay['id']))
+            self.assertFalse(self.runtime.begin_tool_request(replay['id']))
+        with original_db() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_tool_requests').fetchone()[0], 1)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_tool_request_aliases').fetchone()[0], 2)
+
     def save_operation_receipt(self, key, value):
         with self.runtime.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS runtime_operation_receipts(id TEXT PRIMARY KEY, signature TEXT, result TEXT)')

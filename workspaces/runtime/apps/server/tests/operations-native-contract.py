@@ -22,7 +22,10 @@ sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 import studio_operations_native as native
 
 from codex_operations_adapter import PROTOCOL_VERSION, check_protocol
-from codex_tool_requests import RequestMixin, _apply_decision, _lifecycle, _missing_receipt_outcome
+from codex_tool_requests import (
+    RequestMixin, _apply_decision, _content_fingerprint, _lifecycle,
+    _missing_receipt_outcome,
+)
 
 FIXTURE = (
     Path(__file__).resolve().parents[3]
@@ -47,6 +50,35 @@ def _record(stage="queued", outcome="pending", cancelled=False):
 
 
 class OperationsNativeContract(unittest.TestCase):
+    def test_reservation_bridge_returns_write_intents_and_existing_aliases_only(self):
+        record = _record()
+        fingerprint = list(_content_fingerprint(record['signature'], record['agent']))
+        snapshot = {
+            'candidate': {'record': record, 'fingerprint': fingerprint},
+            'existing': None,
+            'aliases': [{'agent': 'agent-a', 'alias': 'call-a', 'request': record['id']}],
+        }
+        decision, rejection = json.loads(native.reserve_tool_request(json.dumps(snapshot)))
+        self.assertIsNone(rejection)
+        self.assertEqual(list(decision), ['Admitted'])
+        intents = decision['Admitted']['intents']
+        self.assertEqual([list(intent)[0] for intent in intents], ['ReserveRequest', 'InsertAlias'])
+
+        snapshot['candidate']['record']['epoch'] = 9
+        snapshot['existing'] = {
+            'record': {**record, 'stage': 'queued', 'outcome': 'pending'},
+            'fingerprint': fingerprint,
+        }
+        decision, rejection = json.loads(native.reserve_tool_request(json.dumps(snapshot)))
+        self.assertIsNone(rejection)
+        self.assertEqual(list(decision), ['ReturnExisting'])
+        self.assertEqual([list(intent)[0] for intent in decision['ReturnExisting']['intents']], ['InsertAlias'])
+
+        snapshot['candidate']['fingerprint'] = list(b'\x02' * 32)
+        decision, rejection = json.loads(native.reserve_tool_request(json.dumps(snapshot)))
+        self.assertEqual(list(decision), ['Rejected'])
+        self.assertEqual(rejection, 'This request id has different content')
+
     def test_python_fixture_replays_through_typed_record_boundary(self):
         for case in json.loads(FIXTURE.read_text(encoding="utf-8")):
             with self.subTest(case=case["name"]):
@@ -170,6 +202,12 @@ class OperationsNativeContract(unittest.TestCase):
 
     def test_stub_literal_members_match_rust_exports(self):
         tree = ast.parse((Path(SERVER_SOURCE_ROOT) / "studio_operations_native.pyi").read_text())
+        functions = {
+            node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)
+        }
+        reservation = functions["reserve_tool_request"]
+        self.assertEqual([arg.arg for arg in reservation.args.args], ["snapshot_json"])
+        self.assertEqual(ast.unparse(reservation.returns), "str")
         aliases = {
             target.id: node.value
             for node in tree.body if isinstance(node, ast.Assign)

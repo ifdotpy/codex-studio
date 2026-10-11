@@ -4,7 +4,8 @@ use serde::Deserialize;
 use studio_operations::{
     AccountId, AccountThreadEpoch, AgentId, AttemptIdentity, ContentFingerprint, Event, EventId,
     EventKind, IdentityScope, Operation, OperationIdentity, OperationState, ProcessGeneration,
-    RequestId, State, StateRevision, ThreadId, TransitionError, transition,
+    RequestAlias, RequestId, ReservationDecision, ReservationInput, ReservationSnapshot, State,
+    StateRevision, ThreadId, TransitionError, transition,
 };
 
 const DIFFERENT_CONTENT: &str = "This request id has different content";
@@ -240,6 +241,54 @@ pub(crate) fn transition_record(
         &decision.kind,
         &decision.next_state,
     ))
+}
+
+#[derive(Debug, Deserialize)]
+struct ReservationCommand {
+    candidate: ReservationRecord,
+    existing: Option<ReservationRecord>,
+    aliases: Vec<RequestAlias>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReservationRecord {
+    record: ToolRequestRecord,
+    fingerprint: Vec<u8>,
+}
+
+pub(crate) fn reserve_tool_request(command_json: &str) -> Result<String, String> {
+    let command: ReservationCommand = serde_json::from_str(command_json)
+        .map_err(|error| format!("Invalid tool request reservation snapshot: {error}"))?;
+    let candidate_fingerprint = fingerprint(command.candidate.fingerprint)?;
+    let identity = identity_for_record(&command.candidate.record);
+    let attempt = attempt_for_record(&command.candidate.record, None);
+    let existing = command
+        .existing
+        .map(|stored| {
+            let content = fingerprint(stored.fingerprint)?;
+            let state = state_for_record(&stored.record, ContentFingerprint(content))?;
+            Ok::<State, String>(state)
+        })
+        .transpose()?;
+    let input = ReservationInput {
+        identity,
+        content: ContentFingerprint(candidate_fingerprint),
+        attempt,
+        aliases: command.aliases,
+    };
+    let decision = studio_operations::decide_reservation(&ReservationSnapshot { existing }, &input);
+    let message = match &decision {
+        ReservationDecision::Rejected { error, .. } => Some(rejection_message(*error)),
+        ReservationDecision::Admitted { .. } | ReservationDecision::ReturnExisting { .. } => None,
+    };
+    serde_json::to_string(&(decision, message))
+        .map_err(|error| format!("Could not encode tool request reservation decision: {error}"))
+}
+
+fn fingerprint(value: Vec<u8>) -> Result<[u8; 32], String> {
+    value
+        .try_into()
+        .map_err(|_| "Tool request content fingerprint must contain 32 bytes".to_owned())
 }
 
 fn state_for_record(
