@@ -37,11 +37,30 @@ PROVIDER_ENV = {"codex": frozenset({"CODEX_HOME"}),
                                      "STUDIO_CLAUDE_ACCOUNT"})}
 
 
-def ensure_agents_group():
+def ensure_group(name):
     try:
-        grp.getgrnam(AGENTS_GROUP)
+        grp.getgrnam(name)
     except KeyError:
-        subprocess.run(["/usr/sbin/groupadd", "--system", AGENTS_GROUP], check=True, capture_output=True, timeout=30)
+        subprocess.run(["/usr/sbin/groupadd", "--system", name], check=True, capture_output=True, timeout=30)
+
+
+def ensure_agents_group():
+    ensure_group(AGENTS_GROUP)
+
+
+def project_group(project_id):
+    """The group of every agent user of one project: a layr principal (`@studio-g-...`) for the
+    readers of an overlay that all agents of the project, and no other project, may read."""
+    identifier(project_id)
+    return "studio-g-" + hashlib.sha256(project_id.encode()).hexdigest()[:16]
+
+
+def join_project_group(user, project_id):
+    group = project_group(project_id)
+    ensure_group(group)
+    if user["owner"] not in grp.getgrnam(group).gr_mem:
+        subprocess.run(["/usr/sbin/usermod", "-aG", group, user["owner"]], check=True, capture_output=True, timeout=30)
+    return user
 
 
 def _user(name):
@@ -64,7 +83,7 @@ def _user(name):
 
 def ensure_project_owner(project_id):
     identifier(project_id)
-    return _user("studio-p-" + hashlib.sha256(project_id.encode()).hexdigest()[:16])
+    return join_project_group(_user("studio-p-" + hashlib.sha256(project_id.encode()).hexdigest()[:16]), project_id)
 
 
 class AgentHandlers:
@@ -196,7 +215,8 @@ class AgentHandlers:
                 parent = self.context(params["parentAgentId"])
                 require(parent["projectId"] == params["projectId"] and not parent["readOnly"],
                         "The parent must own a writable line in this project")
-                user = _user("studio-a-" + uuid.UUID(params["agentId"]).hex[:22])
+                user = join_project_group(_user("studio-a-" + uuid.UUID(params["agentId"]).hex[:22]),
+                                          params["projectId"])
                 name = params["agentId"]
                 readonly = params.get("readOnly", False)
                 require(type(readonly) is bool, "readOnly must be a boolean")
