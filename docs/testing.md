@@ -11,6 +11,8 @@ Tests must use disposable state and must not attach to an existing Studio backen
 send paid model requests, or interrupt user agents. Desktop checks use hidden
 windows. A simulated provider proves only the supplied protocol scenarios.
 
+Representative cold and warm check measurements are recorded in [the 2026-10-11 timing report](verification/2026-10-11-check-timings.md).
+
 The root [package scripts](../package.json) are the entry points. Client discovery
 and execution belong to the configurations in `workspaces/client/apps/web/`; the server inventory belongs
 to [the server runner](../workspaces/runtime/apps/server/tests/server/run.py). Do not add a second handwritten list
