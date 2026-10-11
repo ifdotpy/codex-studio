@@ -1,0 +1,93 @@
+{
+  "recipient": "age1d55twgeeqvj3vywmcxdadudcr9s0zsk88gxn0lhfdjfg40cqd37sgecqap",
+  "states": [
+    {
+      "src/app.py": [
+        "74b0774471214a28ddb0bb437d5c1a7936024c788f04c8aca61317b9eb3797bb",
+        "100644"
+      ],
+      "bin/tool.bin": [
+        "8fe432cb092ea74b8cab7f06e473b59735f5e0ac957160be534bc93c02942d70",
+        "100755"
+      ],
+      "link": [
+        "04791d82dd15fdd480f084d7ef65a10789fa5012cb7935f76080763444d48a00",
+        "120000"
+      ],
+      "empty.txt": [
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "100644"
+      ]
+    },
+    {
+      "src/app.py": [
+        "324baf27017ccffd08a3e79d19e0784baf581ef1f3a8787d7b0b336afe5b47d9",
+        "100644"
+      ],
+      "bin/tool.bin": [
+        "8fe432cb092ea74b8cab7f06e473b59735f5e0ac957160be534bc93c02942d70",
+        "100755"
+      ],
+      "link": [
+        "04791d82dd15fdd480f084d7ef65a10789fa5012cb7935f76080763444d48a00",
+        "120000"
+      ],
+      "empty.txt": [
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "100644"
+      ],
+      "notes/2.md": [
+        "6480266b7d4df621be136e30eae9bb84506a431bbb1965d9b7190373c2ed04af",
+        "100644"
+      ]
+    },
+    {
+      "src/app.py": [
+        "8eda11e70c37d8d0b443da80f3159621b773d1255217c0fac5abbf65eae305b2",
+        "100644"
+      ],
+      "bin/tool.bin": [
+        "8fe432cb092ea74b8cab7f06e473b59735f5e0ac957160be534bc93c02942d70",
+        "100755"
+      ],
+      "link": [
+        "04791d82dd15fdd480f084d7ef65a10789fa5012cb7935f76080763444d48a00",
+        "120000"
+      ],
+      "notes/2.md": [
+        "6480266b7d4df621be136e30eae9bb84506a431bbb1965d9b7190373c2ed04af",
+        "100644"
+      ],
+      "notes/3.md": [
+        "68deab2fba92ac922be311b71d1dcbbd387601e76712539274d64fe7a993595b",
+        "100644"
+      ]
+    },
+    {
+      "src/app.py": [
+        "908a7326d9a39777d2a70477a8b39087f6a3328f3be61601ad1186d2faaffefa",
+        "100644"
+      ],
+      "bin/tool.bin": [
+        "8fe432cb092ea74b8cab7f06e473b59735f5e0ac957160be534bc93c02942d70",
+        "100755"
+      ],
+      "link": [
+        "04791d82dd15fdd480f084d7ef65a10789fa5012cb7935f76080763444d48a00",
+        "120000"
+      ],
+      "notes/2.md": [
+        "6480266b7d4df621be136e30eae9bb84506a431bbb1965d9b7190373c2ed04af",
+        "100644"
+      ],
+      "notes/3.md": [
+        "68deab2fba92ac922be311b71d1dcbbd387601e76712539274d64fe7a993595b",
+        "100644"
+      ],
+      "notes/4.md": [
+        "a1e76f8aade6b2a97145b150e0e00777462a4463210c96e8f6adbfc297d7b226",
+        "100644"
+      ]
+    }
+  ]
+}

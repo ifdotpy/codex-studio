@@ -1,0 +1,141 @@
+:root {
+  --bg: #f7f7f5;
+  --fg: #1d1d1b;
+  --muted: #6b6b66;
+  --line: #deded8;
+  --accent: #2456c7;
+  --panel: #ffffff;
+  font:
+    15px/1.45 -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161615;
+    --fg: #ececea;
+    --muted: #9a9a94;
+    --line: #2e2e2b;
+    --accent: #7aa2ff;
+    --panel: #1f1f1d;
+  }
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+}
+header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+h1 {
+  font-size: 18px;
+  margin: 0;
+}
+h1 span {
+  color: var(--muted);
+  font-weight: 400;
+}
+h2 {
+  font-size: 16px;
+}
+main {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 16px;
+}
+nav#actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+button,
+select,
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+button {
+  cursor: pointer;
+}
+button:hover {
+  border-color: var(--accent);
+}
+textarea,
+input {
+  width: 100%;
+}
+form {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+}
+.note,
+#status {
+  color: var(--muted);
+}
+#crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+#crumbs button {
+  border: none;
+  background: none;
+  color: var(--accent);
+  padding: 2px 4px;
+}
+#entries,
+#passkey-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+#entries li,
+#passkey-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+}
+#entries li:first-child,
+#passkey-list li:first-child {
+  border-top: none;
+}
+#entries button.name {
+  border: none;
+  background: none;
+  padding: 0;
+  text-align: left;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+#entries .folder button.name {
+  color: var(--accent);
+}
+#entries .size {
+  color: var(--muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
