@@ -355,6 +355,11 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
             runtime._callback_db = local
             connection = sqlite3.connect(":memory:")
             connection.execute("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT)")
+            connection.execute(
+                "CREATE INDEX runtime_agent_live_root ON runtime_agents("
+                "json_extract(record,'$.rootId'),id) "
+                "WHERE json_extract(record,'$.deletedAt') IS NULL"
+            )
             connection.execute("CREATE TABLE runtime_tasks(id TEXT PRIMARY KEY, record TEXT)")
             connection.execute("CREATE TABLE runtime_rooms(id TEXT PRIMARY KEY, record TEXT)")
             connection.execute("CREATE TABLE runtime_federation_rooms(id TEXT PRIMARY KEY, record TEXT)")

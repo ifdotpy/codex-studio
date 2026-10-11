@@ -2289,7 +2289,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         members = db.execute(
             "SELECT id FROM runtime_agents WHERE id=? "
             "AND json_extract(record,'$.deletedAt') IS NULL "
-            "UNION SELECT id FROM runtime_agents WHERE json_extract(record,'$.rootId')=? "
+            "UNION SELECT id FROM runtime_agents INDEXED BY runtime_agent_live_root "
+            "WHERE json_extract(record,'$.rootId')=? "
             "AND json_extract(record,'$.deletedAt') IS NULL",
             (root_id, root_id),
         )
