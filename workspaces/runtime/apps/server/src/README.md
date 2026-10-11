@@ -11,8 +11,6 @@ and the affected integration contracts before delivery.
 - [Analytics](analytics/README.md): rollout translation, local tests, and benchmarks.
 - [Native notifications](native_notifications/README.md): route notices to the
   right account and chat without reading every agent.
-- [Transcript storage](transcript_storage/README.md): keep full text durable while
-  limiting repeated search-index work.
 - [UI synchronization](sync/README.md): refresh the data that changed and preserve
   reconnect and offline behavior.
 - [Message delivery scenario](sync/benchmarks/message_delivery/README.md): measure
