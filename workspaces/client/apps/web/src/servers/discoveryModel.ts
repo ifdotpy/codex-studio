@@ -25,6 +25,23 @@ export type DiscoveryActions = {
 
 import type { ServerAccessState } from "./accessContract";
 import { serveOrigin } from "./registry";
+import type { PreferenceFields } from "../sync/uiPreferenceMerge";
+
+export function effectiveDiscoveryAliases(
+  aliases: Record<string, string> | undefined,
+  identities: Record<string, string | null | undefined>,
+  fields: PreferenceFields,
+): Record<string, string> | undefined {
+  if (!aliases) return aliases;
+  const result = { ...aliases };
+  for (const [id, identity] of Object.entries(identities)) {
+    const value =
+      identity && fields[JSON.stringify([`server-alias:${identity}`])]?.value;
+    if (typeof value === "string") result[id] = value;
+  }
+  return result;
+}
+
 export function discoverySnapshot(
   state: ServerAccessState,
 ): DiscoverySnapshot | null {
