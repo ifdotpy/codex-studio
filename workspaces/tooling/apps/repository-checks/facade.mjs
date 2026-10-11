@@ -815,8 +815,17 @@ export function parseCounts(item, output) {
     const testOutcomes = output.match(/Test outcomes: (\{[^\n]*\})/);
     const outcomes = testOutcomes ? JSON.parse(testOutcomes[1]) : {};
     const passed = (outcomes.passed ?? 0) + (suite ? +suite[1] : 0);
+    const structuredFailedSuites =
+      output.match(/^FAIL .*failing IDs:/gm)?.length ?? 0;
+    const unstructuredFailedSuites = Math.max(
+      0,
+      (suite ? +suite[2] : 0) - structuredFailedSuites,
+    );
     const failed =
-      (outcomes.failed ?? 0) + (outcomes.error ?? 0) + (suite ? +suite[2] : 0);
+      (outcomes.failed ?? 0) +
+      (outcomes.error ?? 0) +
+      (outcomes.unexpected_success ?? 0) +
+      unstructuredFailedSuites;
     const skipped =
       (outcomes.skipped ?? 0) + (suite ? +suite[3] + +suite[4] : 0);
     return {

@@ -397,6 +397,27 @@ test("server summaries count assertion scripts as executed suites and reject no 
   );
 });
 
+test("server failure counts do not double count structured failures or passing tracebacks", () => {
+  const item = { name: "server", ecosystem: "server" };
+  const output = [
+    "Exception in thread Thread-1 (serve_forever):",
+    "Traceback (most recent call last):",
+    "ValueError: Invalid file descriptor: -1",
+    "test_mobile_origin (__main__.MobileOriginContract.test_config_is_exact_https_origin) ... ok",
+    "Finished workspaces/runtime/apps/server/tests/mobile-origin-contract.py: passed, 0.02s",
+    "Server suites: 1 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment)",
+    'Test outcomes: {"error":0,"failed":1,"passed":8}',
+    "FAIL workspaces/runtime/apps/server/tests/tool-request-http-contract.py: test failure; failing IDs: ['ToolRequestHTTPContract.test_provider_tool_request']",
+  ].join("\n");
+  assert.equal(parseCounts(item, output).failed, 1);
+
+  const plainScriptFailure = [
+    "Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment)",
+    "FAIL workspaces/runtime/apps/server/tests/assertion-script.py: exit 1",
+  ].join("\n");
+  assert.equal(parseCounts(item, plainScriptFailure).failed, 1);
+});
+
 test("server failure summaries print failing suite IDs", async () => {
   const originalWrite = process.stdout.write;
   let printed = "";
