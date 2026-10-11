@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import {
-  syncIdentityFixture,
+  apiSchemaHeaders,
+  readFixtureSyncContract,
+  stubEntityState,
   legacySnapshotRoute,
   test,
   expect,
@@ -71,9 +73,36 @@ test("Team Motion Ui", async ({
     const target = initial.threads.find(
       (a) => a.rootId === lead.id && a.name === "Worker 00",
     );
-    let phase = 0;
+    const entitySnapshot = structuredClone(initial);
+    delete entitySnapshot.token;
+    delete entitySnapshot.threads;
+    entitySnapshot.runtime.requests = [];
+    for (const agent of entitySnapshot.runtime.agents) {
+      if (agent.rootId !== lead.id || agent.isLead) continue;
+      agent.status = agent.name === "Worker 01" ? "queued" : "running";
+      agent.overview = {
+        task: "Independent worker task",
+        result: "Independent worker report",
+      };
+    }
+    const targetAgent = entitySnapshot.runtime.agents.find(
+      (agent) => agent.id === target.id,
+    );
+    targetAgent.status = "queued";
+    targetAgent.overview = {
+      task: "Verify the exact response receipt.",
+      result:
+        "Verified the exact response receipt. " +
+        "Keep this explanation open while the worker starts. ".repeat(10),
+    };
+    const syncFixture = await stubEntityState(
+      testPage,
+      entitySnapshot,
+      await readFixtureSyncContract(origin),
+    );
     let created = false;
     const releases = [];
+    let olderPollStarted;
     let holdOldList = false,
       releaseOldList;
     const shell = (id, created) => ({
@@ -95,65 +124,32 @@ test("Team Motion Ui", async ({
         stateRequests.push(request.url());
     });
     await page.setViewportSize({ width: 1440, height: 980 });
-    const backendIdentity = await (
-      await fetch(`${origin}/api/sync/identity`)
-    ).json();
-    const identityResponse = syncIdentityFixture(backendIdentity.workspaceId);
-    await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: identityResponse }),
-    );
-    await page.route("**/api/sync/pull?*", async (route) => {
-      const response = await route.fetch();
-      const data = await response.json();
-      data.documents = (data.documents || []).filter((document) => {
-        if (document._deleted) return true;
-        const entity = JSON.parse(document.payload);
-        if (entity.collection === "request") return false;
-        if (entity.collection !== "agent") return true;
-        const a = entity.value;
-        if (a.rootId === lead.id && !a.isLead) {
-          a.status = "running";
-          a.overview = {
-            task: "Independent worker task",
-            result: "Independent worker report",
-          };
-          if (a.id === target.id) {
-            a.status = phase === 0 ? "queued" : "running";
-            a.overview = {
-              task: "Verify the exact response receipt.",
-              result:
-                "Verified the exact response receipt. " +
-                "Keep this explanation open while the worker starts. ".repeat(
-                  10,
-                ),
-            };
-          } else if (a.name === "Worker 01") {
-            a.status = "queued";
-          }
-          entity.value = a;
-          document.payload = JSON.stringify(entity);
-        }
-        return true;
-      });
-      await route.fulfill({ response, json: data });
-    });
     await page.route("**/api/terminals", async (route) => {
       const snapshot = [...shells];
       if (holdOldList) {
         holdOldList = false;
-        await new Promise((resolve) => (releaseOldList = resolve));
+        await new Promise((resolve) => {
+          releaseOldList = resolve;
+          olderPollStarted();
+        });
       } else if (created)
         await new Promise((resolve) => releases.push(resolve));
-      await route.fulfill({ json: { items: snapshot } });
+      await route.fulfill({
+        json: { items: snapshot },
+        headers: apiSchemaHeaders(),
+      });
     });
     await page.route("**/api/terminals/create", async (route) => {
       const next = shell("New stable terminal", 2);
       shells.unshift(next);
       created = true;
-      await route.fulfill({ json: next });
+      await route.fulfill({ json: next, headers: apiSchemaHeaders() });
     });
     await page.route("**/api/terminals/output?*", (route) =>
-      route.fulfill({ json: { text: "", offset: 0, status: "exited" } }),
+      route.fulfill({
+        json: { text: "", offset: 0, status: "exited" },
+        headers: apiSchemaHeaders(),
+      }),
     );
     await page.goto(origin);
     await page.locator("[data-chat]").first().waitFor();
@@ -184,7 +180,15 @@ test("Team Motion Ui", async ({
         .y,
       scroll: document.querySelector("#workers").scrollTop,
     }));
-    phase = 1;
+    const workingSnapshot = structuredClone(entitySnapshot);
+    workingSnapshot.runtime.agents.find(
+      (agent) => agent.id === target.id,
+    ).status = "running";
+    await syncFixture.update(workingSnapshot, {
+      origin,
+      token: initial.token,
+      resources: [{ kind: "state" }],
+    });
     await page.waitForFunction(
       (id) =>
         document.querySelector(`[data-worker="${id}"] small`)?.textContent ===
@@ -222,11 +226,17 @@ test("Team Motion Ui", async ({
       false,
     );
     await details.locator("summary").click();
-    phase = 0;
+    const queuedSnapshot = structuredClone(entitySnapshot);
+    await syncFixture.update(queuedSnapshot, {
+      origin,
+      token: initial.token,
+      resources: [{ kind: "state" }],
+    });
     await page.waitForFunction(
       (id) =>
-        document.querySelector(`[data-worker="${id}"] small`)?.textContent ===
-        "Queued",
+        document
+          .querySelector(`[data-worker="${id}"] .worker-state`)
+          ?.getAttribute("aria-label") === "Queued",
       target.id,
     );
     assert.equal(
@@ -236,11 +246,18 @@ test("Team Motion Ui", async ({
     );
     // Hold a poll that captured the list before terminal creation.
     holdOldList = true;
+    const waitingForOlderPoll = new Promise((resolve) => {
+      olderPollStarted = resolve;
+    });
     await page
       .getByRole("button", { name: "Show terminals", exact: true })
       .click();
-    for (let attempt = 0; !releaseOldList && attempt < 100; attempt++)
-      await new Promise((resolve) => setTimeout(resolve, 10));
+    await syncFixture.update(entitySnapshot, {
+      origin,
+      token: initial.token,
+      resources: [{ kind: "terminals" }],
+    });
+    await waitingForOlderPoll;
     assert.ok(releaseOldList, "The older poll is pending");
     // Delay the list refresh to inspect the optimistic placement separately.
     await page

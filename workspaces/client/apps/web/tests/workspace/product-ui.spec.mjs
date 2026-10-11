@@ -279,11 +279,19 @@ test("product ui", async ({ browser: _browser }) => {
       .getByRole("button", { name: /^New chat in / })
       .first()
       .click();
+    await page
+      .getByRole("dialog", { name: "New chat", exact: true })
+      .getByRole("button", { name: "Start chat", exact: true })
+      .click();
     await page.locator("#toast").waitFor();
     await page.locator(".project-tree-heading").first().hover();
     await page
       .getByRole("button", { name: /^New chat in / })
       .first()
+      .click();
+    await page
+      .getByRole("dialog", { name: "New chat", exact: true })
+      .getByRole("button", { name: "Start chat", exact: true })
       .click();
     await poll(
       async () =>
@@ -300,6 +308,10 @@ test("product ui", async ({ browser: _browser }) => {
     await page
       .getByRole("button", { name: /^New chat in / })
       .first()
+      .click();
+    await page
+      .getByRole("dialog", { name: "New chat", exact: true })
+      .getByRole("button", { name: "Start chat", exact: true })
       .click();
     await poll(
       async () => (await page.locator("#message").inputValue()) === "",
