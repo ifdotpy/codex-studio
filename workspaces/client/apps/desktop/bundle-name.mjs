@@ -5,6 +5,9 @@ import path from "node:path";
 // Sets the name that macOS shows in the menu bar, the About panel, the Dock and
 // Finder. The bundle file name, executable, bundle identifier and Electron app
 // name stay "Codex Studio": installs, recovery and the Keychain item use them.
+// CFBundleName in Info.plist stays too: Electron finds its helper apps as
+// "<CFBundleName> Helper.app" and does not start without them. The localized
+// InfoPlist.strings carry the shown name.
 export function setBundleDisplayName(application, name) {
   const info = path.join(application, "Contents/Info.plist");
   const fileName = path.basename(application, ".app");
@@ -19,7 +22,6 @@ export function setBundleDisplayName(application, name) {
     throw new Error(
       `CFBundleDisplayName "${current}" must equal the bundle file name "${fileName}".`,
     );
-  execFileSync("plutil", ["-replace", "CFBundleName", "-string", name, info]);
   execFileSync("plutil", [
     "-replace",
     "LSHasLocalizedDisplayName",
