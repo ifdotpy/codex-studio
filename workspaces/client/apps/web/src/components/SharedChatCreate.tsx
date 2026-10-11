@@ -33,6 +33,8 @@ function ParticipantFields({
   change,
   accounts,
   frozen,
+  opened,
+  onOpenedChange,
   valid,
 }: {
   index: number;
@@ -40,11 +42,11 @@ function ParticipantFields({
   change: (value: Participant) => void;
   accounts: AccountsState;
   frozen: boolean;
+  opened: boolean;
+  onOpenedChange: (opened: boolean) => void;
   valid: (ready: boolean) => void;
 }) {
   const catalog = useWorkerModels(value.account_key, !!value.account_key);
-  const [opened, setOpened] = useState(false);
-  const trigger = useRef<HTMLButtonElement>(null);
   const readyAccounts = accounts.accounts.filter((account) =>
     accountCanStart(account),
   );
@@ -95,35 +97,26 @@ function ParticipantFields({
         if (opened && event.target instanceof HTMLElement)
           event.target.setAttribute("data-mantine-stop-propagation", "true");
       }}
-      onKeyDownCapture={(event) => {
-        if (opened && event.key === "Escape") {
-          event.preventDefault();
-          event.stopPropagation();
-          setOpened(false);
-          trigger.current?.focus();
-        }
-      }}
     >
       <span>Agent {index + 1}</span>
       <Popover
         opened={opened && !frozen}
-        onChange={setOpened}
-        position="bottom-end"
+        onChange={onOpenedChange}
+        position={index === 0 ? "top-end" : "bottom-end"}
         width={360}
+        closeOnEscape
         trapFocus
         returnFocus
       >
         <Popover.Target>
           <Button
-            ref={trigger}
             type="button"
             className="shared-create-chip"
             aria-label={`Settings for agent ${index + 1}`}
             aria-expanded={opened && !frozen}
-            data-mantine-stop-propagation={opened ? "true" : undefined}
             disabled={frozen}
             leftSection={<ProviderMark provider={provider} />}
-            onClick={() => setOpened((old) => !old)}
+            onClick={() => onOpenedChange(!opened)}
           >
             <span>{summary}</span>
           </Button>
@@ -231,6 +224,7 @@ export default function SharedChatCreate({
   const [valid, setValid] = useState([false, false]);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
+  const [openParticipant, setOpenParticipant] = useState<number | null>(null);
   const lock = useRef(false);
   const finished = useRef(false);
   const remember = (value: Creation | null) => {
@@ -362,6 +356,12 @@ export default function SharedChatCreate({
             value={value}
             accounts={accounts}
             frozen={!!attempt}
+            opened={openParticipant === index}
+            onOpenedChange={(opened) =>
+              setOpenParticipant((current) =>
+                opened ? index : current === index ? null : current,
+              )
+            }
             change={(next) =>
               setParticipants((old) =>
                 old.map((p, i) => (i === index ? next : p)),

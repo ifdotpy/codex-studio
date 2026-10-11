@@ -215,8 +215,16 @@ test("radio create browser", async ({ page: runnerPage }) => {
       }),
       "codex",
     );
-    await page.keyboard.press("Escape");
     await form.getByRole("button", { name: "Settings for agent 2" }).click();
+    await expect(
+      form.getByRole("button", { name: "Settings for agent 1" }),
+    ).toHaveAttribute("aria-expanded", "false");
+    await expect(
+      page.getByRole("dialog", { name: "Settings for agent 1" }),
+    ).toBeHidden();
+    await expect(
+      form.getByRole("button", { name: "Settings for agent 2" }),
+    ).toHaveAttribute("aria-expanded", "true");
     assert.equal(
       await modelValue(page.getByLabel("Model for agent 2", { exact: true })),
       "opus",
@@ -226,6 +234,12 @@ test("radio create browser", async ({ page: runnerPage }) => {
       /Opus 5.5/,
     );
     await page.keyboard.press("Escape");
+    await expect(
+      form.getByRole("button", { name: "Settings for agent 2" }),
+    ).toHaveAttribute("aria-expanded", "false");
+    await expect(
+      page.getByRole("dialog", { name: "Settings for agent 2" }),
+    ).toBeHidden();
     await form.getByLabel("Chat name").fill("Architecture discussion");
     const screenshots = join(tmpdir(), "refresh-shared-screenshots");
     await mkdir(screenshots, { recursive: true });
@@ -252,6 +266,12 @@ test("radio create browser", async ({ page: runnerPage }) => {
         path: join(screenshots, `${profile}-shared.png`),
       });
       await form.getByRole("button", { name: "Settings for agent 1" }).click();
+      await expect(
+        form.getByRole("button", { name: "Settings for agent 2" }),
+      ).toHaveAttribute("aria-expanded", "false");
+      await expect(
+        page.getByRole("dialog", { name: "Settings for agent 2" }),
+      ).toBeHidden();
       await expect(
         page.getByLabel("Account for agent 1", { exact: true }),
       ).toBeVisible();
@@ -293,7 +313,7 @@ test("radio create browser", async ({ page: runnerPage }) => {
       0,
     );
     assert.equal(
-      await page.locator(".sidebar-row").innerText(),
+      await page.locator(".sidebar-row strong").innerText(),
       "Architecture discussion",
     );
     await page.getByRole("button", { name: "New chat", exact: true }).click();
