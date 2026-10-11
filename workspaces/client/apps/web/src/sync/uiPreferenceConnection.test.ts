@@ -61,6 +61,14 @@ function backend(origin: string, initial: PreferenceFields) {
   const writes: { fields: PreferenceFields; requestId: string | null }[] = [];
   let sessionReads = 0;
   let pullReads = 0;
+  const seedBaseline = () => {
+    const key = JSON.stringify([`server-label:test:${new URL(origin).host}`]);
+    const value = `baseline:${origin}`;
+    fields = mergePreferenceFields(fields, {
+      [key]: { value, timestamp: 0, writer: "fixture" },
+    });
+    return { key, value };
+  };
   const fetch = async (request: Request) => {
     if (!online) throw new TypeError("offline");
     const url = new URL(request.url);
@@ -124,6 +132,7 @@ function backend(origin: string, initial: PreferenceFields) {
     get pullReads() {
       return pullReads;
     },
+    seedBaseline,
     get sequence() {
       return sequence;
     },
@@ -160,11 +169,14 @@ async function waitForBaseline(
   server: ReturnType<typeof backend>,
 ) {
   await vi.waitFor(() => expect(streams.has(origin)).toBe(true));
+  const marker = server.seedBaseline();
   emitStateFrame(origin, initialFrame(origin, server.sequence));
-  await vi.waitFor(() => expect(server.pullReads).toBeGreaterThan(0));
-  // Let the response body and connector's checkpoint assignment settle before
-  // the test publishes a subsequent state change.
-  for (let i = 0; i < 5; i++) await Promise.resolve();
+  await vi.waitFor(() => {
+    const cache = JSON.parse(
+      localStorage.getItem("studio-ui-preference-fields-v1:user") || "{}",
+    );
+    expect(cache[marker.key]?.value).toBe(marker.value);
+  });
 }
 beforeEach(() => {
   streams.clear();
@@ -363,6 +375,7 @@ describe("paired server preference replication", () => {
                     id: "user",
                     value: {
                       fields: {
+                        ...server.fields,
                         [theme]: {
                           value: "dark",
                           timestamp: 2,
@@ -381,11 +394,13 @@ describe("paired server preference replication", () => {
       expect(server.pullReads).toBe(1);
       expect(server.sessionReads).toBe(0);
       expect(server.writes).toHaveLength(0);
-      expect(
-        JSON.parse(
-          localStorage.getItem("studio-ui-preference-fields-v1:user")!,
-        )[theme].value,
-      ).toBe("dark");
+      await vi.waitFor(() => {
+        expect(
+          JSON.parse(
+            localStorage.getItem("studio-ui-preference-fields-v1:user")!,
+          )[theme]?.value,
+        ).toBe("dark");
+      });
     } finally {
       stop();
     }

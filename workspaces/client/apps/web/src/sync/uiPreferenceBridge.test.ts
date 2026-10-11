@@ -37,9 +37,6 @@ vi.mock("./uiPreferenceStore", () => ({
 import { createUiPreferenceBridge } from "./uiPreferenceBridge";
 
 const storage = {} as Storage;
-const settle = async () => {
-  for (let index = 0; index < 6; index++) await Promise.resolve();
-};
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -91,7 +88,6 @@ describe("UI preference projection bridge", () => {
     const bridge = createUiPreferenceBridge(storage);
     const stop = bridge.start();
     bridge.receiveProjection({});
-    await settle();
     mocks.syncPost.mockClear();
 
     mocks.read.mockImplementation((scope) =>
@@ -100,8 +96,7 @@ describe("UI preference projection bridge", () => {
         : {},
     );
     changed();
-    await settle();
-    expect(mocks.syncPost).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(mocks.syncPost).toHaveBeenCalledOnce());
     expect(mocks.syncPost.mock.calls[0][0]).toBe("/api/sync/preferences");
     expect(mocks.syncPost.mock.calls[0][2]).toHaveProperty("requestId");
     expect(mocks.transportWrite).toHaveBeenCalledOnce();
@@ -130,8 +125,7 @@ describe("UI preference projection bridge", () => {
     bridge.start();
     bridge.receiveProjection({});
     changed();
-    await settle();
-    expect(mocks.syncPost).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(mocks.syncPost).toHaveBeenCalledOnce());
     expect(mocks.transportWrite).not.toHaveBeenCalled();
   });
 });
