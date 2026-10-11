@@ -135,7 +135,7 @@ class WorkWakeContract(unittest.TestCase):
         rt._publish_committed_resource_changes = lambda: published.append(clock.now)
         rt.dispatch = dispatch or (lambda **_options: seen.append(clock.now))
         for name in ('monitors_tick', 'rules_tick', 'capacity_tick', 'usage_resume_tick',
-                     'accepted_archive_tick', 'retry_monitor_results', 'runtime_maintenance_tick', 'turn_item_links_tick'):
+                     'accepted_archive_tick', 'retry_monitor_results', 'runtime_maintenance_tick'):
             setattr(rt, name, lambda: None)
         with clock.installed():
             rt.schedule()

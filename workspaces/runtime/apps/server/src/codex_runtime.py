@@ -6279,7 +6279,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def schedule(self):
         first_tick = True
         deadlines = dict.fromkeys(("dispatch", "cross_server", "monitors", "rules", "capacity",
-                                   "usage_resume", "archive", "monitor_results", "runtime", "turn_items"), 0.0)
+                                   "usage_resume", "archive", "monitor_results", "runtime"), 0.0)
         phase_errors = {}
         local = self.__dict__.setdefault("_callback_db", threading.local())
         local.reuse = True
@@ -6309,7 +6309,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     ("archive", 1, self.accepted_archive_tick),
                     ("monitor_results", 1, self.retry_monitor_results),
                     ("runtime", 5, self.runtime_maintenance_tick),
-                    ("turn_items", .25, self.turn_item_links_tick),
                 )
                 for name, interval, run in phases:
                     if self.closed:
@@ -6357,11 +6356,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if agent_id is None:
             return self.dispatch_all(maintenance=maintenance)
         return self.dispatch_candidates(agent_id)
-
-    def turn_item_links_tick(self):
-        from codex_turn_item_links import backfill_batch as backfill_turn_item_links
-        with self.db() as db:
-            backfill_turn_item_links(db)
 
     def runtime_maintenance_tick(self):
         from codex_task_recovery import queue_task_recovery
