@@ -77,7 +77,7 @@ test("Account settings errors", async () => {
   function Harness(){const [error,setError]=useState(initial);const [surface,setSurface]=useState('signin');window.changeError=setError;window.showSurface=setSurface;
   const state={scope:'fixture',data:{accounts:[{id:'default',label:'Fixture account',status:'ready',error}],defaultAccountKey:'default',logins:[{requestId:'request',accountKey:'default',status:'error',error:${JSON.stringify(loginError)}}]},setData:()=>{},refresh:async()=>{},error:''};
   const data={stateDir:'fixture',threads:[agent],runtime:{agents:[agent],requests:[],complaints:[],userMessages:[],userTasks:[]},board:{},nodes:[agent],edges:[],chats:[]};
-  return <MantineProvider><p data-shell>Saved conversation remains available</p>{surface==='signin'?<AccountSignIn state={state} opened={true}/>:surface==='accounts'?<Accounts state={state} accountKey='default' changeAccount={async()=>{}} onError={()=>{}}/>:<Workspace key={surface} opened={true} initialSection={surface} agent={agent} data={data} allRequests={[]} onClose={()=>window.showSurface('signin')} onSelect={()=>{}} refresh={async()=>{}} notify={()=>{}}/>}</MantineProvider>}
+  return <MantineProvider><p data-shell>Saved conversation remains available</p>{surface==='signin'?<AccountSignIn state={state} opened={true}/>:surface==='accounts'?<Accounts state={state} managerOnly onError={()=>{}}/>:<Workspace key={surface} opened={true} initialSection={surface} agent={agent} data={data} allRequests={[]} onClose={()=>window.showSurface('signin')} onSelect={()=>{}} refresh={async()=>{}} notify={()=>{}}/>}</MantineProvider>}
   createRoot(document.getElementById('root')).render(<Harness/>);`;
         },
       },
@@ -215,28 +215,12 @@ test("Account settings errors", async () => {
         metadata: { region: "fixture" },
       };
       await page.evaluate((value) => window.changeError(value), changed);
-      await page.evaluate(() => window.showSurface("accounts"));
-      await page
-        .getByRole("button", { name: "Account: Fixture account" })
-        .click();
-      await details(changed);
-      await page
-        .getByRole("menuitem", { name: /Manage accounts/ })
-        .click({ force: true });
-      await page.getByRole("dialog").waitFor();
-      await details(changed);
-      const limits = page.getByLabel("Limits for Fixture account");
-      await limits
-        .getByText(failure.message, { exact: true })
-        .waitFor({ state: "attached" });
-      await page.keyboard.press("Escape");
       limitsHttpFailure = true;
-      await page
-        .getByRole("button", { name: "Account: Fixture account" })
-        .click();
-      await page
-        .getByRole("menuitem", { name: /Manage accounts/ })
-        .click({ force: true });
+      await page.evaluate(() => window.showSurface("accounts"));
+      const manager = page.locator(".accounts-manager-inline");
+      await manager.waitFor();
+      await details(changed, manager);
+      const limits = manager.getByLabel("Limits for Fixture account");
       await limits
         .getByText("Provider request failed")
         .waitFor({ state: "attached" });

@@ -1,25 +1,3 @@
-.account-picker {
-  max-width: 190px;
-  padding: 0 8px;
-  flex-shrink: 1;
-  min-width: 38px;
-  font-size: 12px;
-}
-.account-picker-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.account-picker .mantine-Button-label {
-  min-width: 0;
-}
-.account-menu-identity {
-  display: flex;
-  flex-direction: column;
-  overflow-wrap: anywhere;
-  gap: 3px;
-}
-.account-menu-identity small,
 .account-menu-note,
 .accounts-intro {
   color: var(--muted);
@@ -140,24 +118,7 @@
   font-size: var(--studio-text-meta);
   overflow-wrap: anywhere;
 }
-@media (max-width: 900px) {
-  .account-picker {
-    max-width: 135px;
-  }
-}
 @media (max-width: 600px) {
-  .account-picker {
-    width: 32px;
-    padding: 0;
-    flex-shrink: 0;
-  }
-  .account-picker .account-picker-label,
-  .account-picker .mantine-Button-section[data-position="right"] {
-    display: none;
-  }
-  .account-picker .mantine-Button-section[data-position="left"] {
-    margin: 0;
-  }
   .account-capacity-pool {
     grid-template-columns: 38px minmax(0, 1fr);
     gap: 8px;
@@ -225,26 +186,6 @@
   }
 }
 
-:is(.chat-settings-panel, .studio-settings-panel) .account-picker {
-  width: auto;
-  max-width: 100%;
-  min-height: 36px;
-  padding: 0 10px;
-  justify-self: start;
-}
-:is(.chat-settings-panel, .studio-settings-panel)
-  .account-picker
-  .account-picker-label,
-:is(.chat-settings-panel, .studio-settings-panel)
-  .account-picker
-  .mantine-Button-section[data-position="right"] {
-  display: inline-flex;
-}
-:is(.chat-settings-panel, .studio-settings-panel)
-  .account-picker
-  .mantine-Button-section[data-position="left"] {
-  margin-inline-end: 8px;
-}
 .account-capacity-pool > div:has(> :only-child) {
   grid-template-columns: minmax(0, 1fr);
 }

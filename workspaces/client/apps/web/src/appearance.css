@@ -375,7 +375,7 @@
     font-size: 13px;
     padding-inline: 10px;
   }
-  .chat-settings-panel :is(.mantine-Button-label, .account-picker-label) {
+  .chat-settings-panel .mantine-Button-label {
     min-width: 0;
     white-space: normal;
     overflow-wrap: anywhere;
@@ -533,14 +533,6 @@
 }
 .chat-settings-panel .agent-mode-limit-label input {
   width: 64px;
-}
-.chat-settings-panel .account-picker-label {
-  flex: 1;
-}
-.chat-settings-panel .account-picker .mantine-Button-label::after {
-  content: "Change";
-  margin-left: 12px;
-  color: var(--muted);
 }
 .settings-change-label {
   color: var(--muted);

@@ -32,7 +32,7 @@ test("claude login ui", async ({ page: runnerPage }) => {
         },
         load(id) {
           if (id === entry)
-            return `import React from 'react';import {createRoot} from 'react-dom/client';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';import Accounts from '/src/components/Accounts.tsx';import AccountSignInNotice from '/src/components/AccountSignInNotice.tsx';const account={id:'claude',label:'Personal',email:'me@example.com',provider:'claude',status:'changed',error:"This profile's account changed. Restore its original login or add a separate profile."};const state={scope:'fixture',data:{accounts:[account],defaultAccountKey:'claude'},setData:()=>{},refresh:async()=>{},error:''};createRoot(document.getElementById('root')).render(<MantineProvider><AccountSignInNotice account={account} errors={[{message:"An unrelated earlier error"}]} onSignIn={key=>window.signInAccount=key}/><Accounts state={state} accountKey='claude' changeAccount={async()=>{}} onError={()=>{}}/></MantineProvider>);`;
+            return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {MantineProvider,Modal,Button} from '@mantine/core';import '@mantine/core/styles.css';import Accounts from '/src/components/Accounts.tsx';import AccountSignInNotice from '/src/components/AccountSignInNotice.tsx';const account={id:'claude',label:'Personal',email:'me@example.com',provider:'claude',status:'changed',error:"This profile's account changed. Restore its original login or add a separate profile."};const state={scope:'fixture',data:{accounts:[account],defaultAccountKey:'claude'},setData:()=>{},refresh:async()=>{},error:''};function Fixture(){const[opened,setOpened]=useState(false);return <MantineProvider><AccountSignInNotice account={account} errors={[{message:"An unrelated earlier error"}]} onSignIn={key=>window.signInAccount=key}/><Button onClick={()=>setOpened(true)}>Manage accounts</Button><Modal opened={opened} onClose={()=>setOpened(false)} title='Accounts'><Accounts managerOnly state={state} onError={()=>{}}/></Modal></MantineProvider>}createRoot(document.getElementById('root')).render(<Fixture/>);`;
         },
       },
     ],
@@ -101,8 +101,7 @@ test("claude login ui", async ({ page: runnerPage }) => {
       });
     });
     const open = async () => {
-      await page.getByRole("button", { name: "me@example.com" }).click();
-      await page.getByRole("menuitem", { name: /Manage accounts/ }).click();
+      await page.getByRole("button", { name: "Manage accounts" }).click();
       await page
         .getByRole("button", {
           name: "Actions for me@example.com",
