@@ -25,13 +25,15 @@ from upload import Uploads, sha, tree_space
 
 READ_METHODS = {"health", "provider.attach", "provider.list", "provider.rpc",
                 "upload.begin", "upload.chunk", "upload.commit", "file.stat", "file.read"}
-READ_METHODS |= {"project.ensure", "share.status", "layr.health", "sync.mac.read", "sync.mac.hashes", "sync.mac.head"}
+READ_METHODS |= {"project.ensure", "share.status", "layr.health", "sync.mac.read", "sync.mac.hashes", "sync.mac.head",
+                 "vault.status"}
 METHODS = READ_METHODS | {"exec", "sync.push", "provider.start", "provider.write",
                           "provider.stop", "credentials.put"}
 LAYR_READ_METHODS = {"agent.context", "line.status", "line.evidence", "agent.progress", "layr.provider.list", "layr.provider.rpc", "layr.file.stat", "layr.file.read"}
 LAYR_METHODS = LAYR_READ_METHODS | {"line.bind", "line.branch", "line.save", "line.merge", "line.remove", "agent.release", "layr.provider.start", "layr.provider.stop", "layr.credentials.sync", "layr.exec"}
 READ_METHODS |= LAYR_READ_METHODS
 METHODS |= LAYR_METHODS
+METHODS |= {"vault.configure", "vault.push"}
 METHODS |= {"project.import", "project.exec", "share.configure", "share.name", "sync.mac.apply", "sync.mac.handoff",
             "sync.mac.worktree"}
 METHODS |= {"host.exec", "host.configure"}
@@ -393,7 +395,7 @@ class Service:
             return await admin_request(request_id, "layr." + method, params, emit=emit)
         if method in {"project.ensure", "project.import", "project.exec", "share.configure", "share.name", "share.status", "layr.health",
                       "sync.mac.apply", "sync.mac.read", "sync.mac.hashes", "sync.mac.head",
-                      "sync.mac.handoff", "sync.mac.worktree"}:
+                      "sync.mac.handoff", "sync.mac.worktree", "vault.configure", "vault.push", "vault.status"}:
             return await admin_request(request_id, method, params, emit=emit)
         if method in {"host.configure", "host.exec"}:
             from host_exec_protocol import HostExecError
