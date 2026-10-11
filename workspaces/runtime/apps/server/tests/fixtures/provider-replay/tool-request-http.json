@@ -1,5 +1,6 @@
 {
   "source": "hand-authored app-server tool frame based on the public item/tool/call protocol",
+  "boundaryOnly": true,
   "waitForToolResponse": true,
   "eventsByThread": {
     "replay-thread-1": [

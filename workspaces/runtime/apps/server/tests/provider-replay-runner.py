@@ -520,7 +520,8 @@ class ProviderReplay(unittest.TestCase):
     def test_all_recorded_fixtures(self):
         fixture_dir = SERVER_TESTS_ROOT / "fixtures" / "provider-replay"
         names = sorted(path.stem for path in fixture_dir.glob("*.json")
-                       if path.name != "codex-rpc-replies.json")
+                       if path.name != "codex-rpc-replies.json"
+                       and not json.loads(path.read_text(encoding="utf-8")).get("boundaryOnly"))
         self.assertGreaterEqual(len(names), 6)
         if os.environ.get("PROVIDER_REPLAY_FILTER"):
             names = [os.environ["PROVIDER_REPLAY_FILTER"]]

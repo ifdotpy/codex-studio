@@ -332,7 +332,11 @@ class BackendProcess:
     def received_provider_frames(self) -> list[dict[str, Any]]:
         if self._codex_log is None or not self._codex_log.exists():
             return []
-        return [json.loads(line) for line in self._codex_log.read_text(encoding="utf-8").splitlines()]
+        contents = self._codex_log.read_text(encoding="utf-8")
+        lines = contents.splitlines()
+        if contents and not contents.endswith("\n"):
+            lines = lines[:-1]
+        return [json.loads(line) for line in lines]
 
     def provider_start_times(self) -> list[float]:
         if self._provider_start_log is None or not self._provider_start_log.exists():
