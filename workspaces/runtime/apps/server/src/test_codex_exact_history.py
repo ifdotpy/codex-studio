@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 import uuid
 import zipfile
 
-from codex_exact_history import export_codex, extend_codex_history, frozen_codex_parameters, unpack_codex, private_write
+from codex_exact_history import export_codex, extend_codex_history, frozen_codex_parameters, inspect_jsonl, unpack_codex, private_write
 
 
 class ExactHistory(unittest.TestCase):
@@ -46,6 +46,21 @@ class ExactHistory(unittest.TestCase):
         self.assertEqual(settings['baseInstructions'], 'Exact base\n')
         self.assertEqual(settings['developerInstructions'], 'Unchanged\n')
         self.assertEqual([tool['name'] for tool in settings['dynamicTools']], ['z', 'a'])
+
+    def test_inspection_reports_truncated_record_without_returning_its_contents(self) -> None:
+        prefix = b'{"padding":"' + b'x' * (319 - len(b'{"padding":"') - len(b'","truncated-key"'))
+        malformed = prefix + b'","truncated-key"\n'
+        source = self.sessions / 'rollout-corrupt.jsonl'
+        source.write_bytes(b'{"type":"session_meta"}\n' + malformed)
+
+        issue = inspect_jsonl(source)
+
+        self.assertEqual(issue, {
+            'file': source.name, 'line': 2, 'recordBytes': 320,
+            'byteOffset': len(b'{"type":"session_meta"}\n'),
+            'error': "Expecting ':' delimiter: line 2 column 1 (char 320)",
+        })
+        self.assertNotIn('padding', json.dumps(issue))
 
     def test_ancestor_keeps_the_exact_boundary(self) -> None:
         ancestor = self.rollout()

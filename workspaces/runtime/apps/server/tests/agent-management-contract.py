@@ -21,6 +21,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import uuid
 from unittest.mock import patch
 
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
@@ -269,6 +270,34 @@ class Contract(unittest.TestCase):
     def test_recover_reads_native_state_without_replay(self):
         result=self.call('recover');self.assertEqual(result['recovery']['status'],'unconfirmed')
         self.assertEqual(self.rt.calls,[('reconcile','worker')])
+    def test_recover_reports_malformed_rollout_without_replaying_pending_inputs(self):
+        thread = str(uuid.uuid4())
+        home = Path(self.tmp.name) / 'codex'
+        sessions = home / 'sessions'
+        sessions.mkdir(parents=True)
+        prefix = b'{"padding":"' + b'x' * (319 - len(b'{"padding":"') - len(b'","truncated-key"'))
+        malformed = prefix + b'","truncated-key"\n'
+        rollout = sessions / ('rollout-' + thread + '.jsonl')
+        rollout.write_bytes(b'{"type":"session_meta"}\n' + malformed)
+        self.rt.accounts = type('Accounts', (), {'home': lambda _self, _account: home})()
+        self.worker(threadId=thread, status='failed', inFlight=False,
+                    error="Expecting ':' delimiter: line 2 column 1 (char 320)")
+        with self.rt.db() as db:
+            db.execute("INSERT INTO runtime_events VALUES ('pending-1','worker',1,'monitor_exit','pending')")
+        self.rt.reconcile_turn = lambda key: (self.rt.calls.append(('reconcile', key)) or {'status': 'skipped'})
+
+        result = self.call('recover')
+
+        self.assertEqual(result['status'], 'unreadable')
+        self.assertEqual(result['recovery']['rollout'], {
+            'file': rollout.name, 'line': 2, 'recordBytes': 320,
+            'byteOffset': len(b'{"type":"session_meta"}\n'),
+            'error': "Expecting ':' delimiter: line 2 column 1 (char 320)",
+        })
+        with self.rt.db() as db:
+            event = db.execute("SELECT id,status FROM runtime_events").fetchone()
+            self.assertEqual(tuple(event), ('pending-1', 'pending'))
+        self.assertEqual(self.rt.calls, [('reconcile', 'worker')])
     def test_native_activity_blocks_archive_even_when_local_status_is_completed(self):
         self.rt.native_state='active'
         self.assertEqual(self.call('archive')['blockers'][0]['kind'],'native_state_unconfirmed')

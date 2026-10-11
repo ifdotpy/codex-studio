@@ -35,6 +35,7 @@ def management_tools(tool: "Callable[[str, str, dict[str, Any], list[str]], dict
         'For Linux VM workers, it includes VM disk allocation, disk free space, and RAM. '
         'park waits for a named event after the current turn. list_parked shows event waits. cancel_park wakes a worker. '
         'emit_event wakes every worker waiting for that event once; supply a stable request_id. '
+        'recover reports malformed native rollout records with file and line metadata without changing or replaying saved inputs. '
         'Only the lead may archive, restore, recover, reset tools, or emit an event.',
         {'action': {'type': 'string', 'enum': ['inspect', 'list', 'recover', 'reset_tools', 'archive', 'archive_finished', 'restore', 'list_archived', 'maintenance_report', 'park', 'list_parked', 'cancel_park', 'emit_event']},
          'agent_id': text, 'reason': {'type': 'string', 'maxLength': 1000},
@@ -1254,9 +1255,42 @@ def manage_agent(rt: "Runtime", actor_id: str, args: dict[str, "Any"], epoch: in
         from codex_context_repair import recover_unconfirmed_inputs
         input_recovery = recover_unconfirmed_inputs(rt, target['id'])
         if input_recovery.get('status') == 'waiting':
+            rollout_issue = _native_rollout_issue(rt, target)
+            if rollout_issue:
+                return _unreadable_recovery(rollout_issue, input_recovery, request_recovery)
             return {'status': 'waiting', 'recovery': {'status': 'waiting'},
                     'inputRecovery': input_recovery, 'requests': request_recovery,
                     'next': 'Native input history is unavailable or the thread is active. Keep the input waiting and recover again later.'}
     result = rt.reconcile_turn(target['id'])
+    if action == 'recover' and result.get('status') in {'skipped', 'unconfirmed'}:
+        rollout_issue = _native_rollout_issue(rt, target)
+        if rollout_issue:
+            return _unreadable_recovery(rollout_issue, input_recovery, request_recovery)
     return {'status': 'checked', 'recovery': result, 'inputRecovery': input_recovery, 'requests': request_recovery,
             'next': 'Inspect the worker. Use orchestration_send for an explicit continuation; never replay unknown mutations'}
+
+
+def _unreadable_recovery(rollout_issue: dict[str, "Any"],
+                         input_recovery: dict[str, "Any"] | None,
+                         request_recovery: dict[str, "Any"] | None) -> dict[str, "Any"]:
+    return {'status': 'unreadable',
+            'recovery': {'status': 'unreadable', 'rollout': rollout_issue},
+            'inputRecovery': input_recovery, 'requests': request_recovery,
+            'next': ('Inspect the worker and preserve its saved inputs. Recovery did not change or replay them. '
+                     'A lead may archive only after resolving input_delivery blockers; otherwise retain this '
+                     'worker and arrange a reviewed native history repair or a fresh thread.')}
+
+
+def _native_rollout_issue(rt: "Runtime", agent: "AgentRecord") -> dict[str, "Any"] | None:
+    """Describe malformed saved native history without returning transcript text."""
+    thread = agent.get('threadId')
+    if not isinstance(thread, str) or not thread:
+        return None
+    try:
+        from codex_account_transfer import AccountTransfers
+        from codex_exact_history import inspect_jsonl
+        rollout = AccountTransfers.find_rollout(
+            rt.accounts.home(agent.get('accountKey', 'default')), thread)
+        return inspect_jsonl(rollout)
+    except (AttributeError, OSError, ValueError):
+        return None
