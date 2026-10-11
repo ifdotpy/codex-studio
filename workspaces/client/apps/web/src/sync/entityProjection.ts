@@ -27,7 +27,7 @@ export type EntityRow = {
 };
 
 type EntityCollection = SyncEntityPayload["collection"];
-const ENTITY_COLLECTIONS = new Set<string>([
+const ENTITY_COLLECTIONS = [
   "agent",
   "room",
   "task",
@@ -43,7 +43,18 @@ const ENTITY_COLLECTIONS = new Set<string>([
   "work",
   "workspace",
   "uiPreferences",
-]);
+] as const satisfies readonly EntityCollection[];
+type Assert<T extends true> = T;
+type EntityCollectionsAreComplete = Assert<
+  Exclude<EntityCollection, (typeof ENTITY_COLLECTIONS)[number]> extends never
+    ? true
+    : false
+>;
+const entityCollections = new Set<string>(
+  ENTITY_COLLECTIONS satisfies EntityCollectionsAreComplete extends true
+    ? readonly EntityCollection[]
+    : never,
+);
 type EntityFor<C extends EntityCollection> = Extract<
   SyncEntityPayload,
   { collection: C }
@@ -102,7 +113,7 @@ function parseEntityPayload(payload: string): SyncEntityPayload | null {
   const candidate = parsed as Record<string, unknown>;
   if (
     typeof candidate.collection !== "string" ||
-    !ENTITY_COLLECTIONS.has(candidate.collection) ||
+    !entityCollections.has(candidate.collection) ||
     typeof candidate.id !== "string" ||
     candidate.value === null ||
     typeof candidate.value !== "object" ||

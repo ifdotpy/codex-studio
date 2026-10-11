@@ -49,7 +49,7 @@ from pydantic import BaseModel
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_canvas import Canvas, make_server
-from codex_diagnostics import process_tree, snapshot
+from codex_diagnostics import host_resources, process_tree, snapshot
 from codex_lock_metrics import MeasuredRLock
 from studio_api.system.models import DiagnosticsResponse
 
@@ -112,6 +112,27 @@ class Server:
 
 
 class DiagnosticsContract(unittest.TestCase):
+    def test_host_resources_reads_linux_meminfo_without_macos_commands(self):
+        meminfo = "MemTotal:       16384000 kB\nMemAvailable:   8192000 kB\n"
+        with patch("codex_diagnostics.platform.system", return_value="Linux"), \
+                patch("codex_diagnostics.Path.read_text", return_value=meminfo), \
+                patch("codex_diagnostics.subprocess.check_output") as command:
+            result = host_resources()
+        self.assertEqual(result["totalMemoryBytes"], 16384000 * 1024)
+        self.assertEqual(result["availableMemoryBytes"], 8192000 * 1024)
+        command.assert_not_called()
+
+    def test_host_resources_preserves_macos_memory_reading(self):
+        stats = ("Mach Virtual Memory Statistics: (page size of 4096 bytes)\n"
+                 "Pages free: 100.\nPages inactive: 200.\nPages speculative: 50.\n")
+        with patch("codex_diagnostics.platform.system", return_value="Darwin"), \
+                patch("codex_diagnostics.subprocess.check_output",
+                      side_effect=["1073741824\n", stats]) as command:
+            result = host_resources()
+        self.assertEqual(result["totalMemoryBytes"], 1073741824)
+        self.assertEqual(result["availableMemoryBytes"], 350 * 4096)
+        self.assertEqual(command.call_count, 2)
+
     def test_process_tree_counts_only_descendants_and_removes_commands(self):
         ps = """10 1 10240 2.0 /private/secret/codex-canvas --token hidden
 11 10 20480 0.5 /secret/codex app-server --listen stdio://

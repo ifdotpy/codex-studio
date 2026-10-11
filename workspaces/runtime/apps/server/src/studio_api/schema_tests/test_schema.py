@@ -319,13 +319,13 @@ class SchemaContractTests(unittest.TestCase):
         assert isinstance(payload, dict)
         variants = payload["oneOf"]
         assert isinstance(variants, list)
-        self.assertEqual(len(variants), 14)
+        self.assertEqual(len(variants), 15)
         discriminator = payload["discriminator"]
         assert isinstance(discriminator, dict)
         self.assertEqual(discriminator["propertyName"], "collection")
         mapping = discriminator["mapping"]
         assert isinstance(mapping, dict)
-        self.assertEqual(len(mapping), 14)
+        self.assertEqual(len(mapping), 15)
 
         for collection, dto_model in _DTO_MODELS.items():
             with self.subTest(collection=collection):

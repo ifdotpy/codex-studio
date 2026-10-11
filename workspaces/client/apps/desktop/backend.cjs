@@ -12,138 +12,39 @@ function backendExitStatus(child) {
   return null;
 }
 
-const excludedSourceDirectories = new Set([
-  "tests",
-  "benchmarks",
-  "__pycache__",
-  "vendor",
-  "venv",
-]);
+const backendIdentityTimeoutMs = 10000;
 
-function backendSources(scripts) {
-  const root = fs.realpathSync(scripts);
-  const found = new Map();
-  const relativeName = (file) => {
-    const relative = path.relative(root, file).split(path.sep).join("/");
-    const parts = relative.split("/");
-    if (
-      !relative ||
-      relative.includes("\\") ||
-      path.isAbsolute(relative) ||
-      parts.some((part) => part === "" || part === "." || part === "..")
-    )
-      throw new Error(`Unsafe backend source path: ${relative}`);
-    return relative;
-  };
-  const add = (file) => {
-    const relative = relativeName(file);
-    const info = fs.lstatSync(file);
-    if (info.isSymbolicLink() || !info.isFile())
-      throw new Error(
-        `Backend source must be a local regular file: ${relative}`,
-      );
-    found.set(relative, file);
-  };
-  const symlinkIsDirectory = (file) => {
-    try {
-      return fs.statSync(file).isDirectory();
-    } catch (error) {
-      if (error.code === "ENOENT") return false;
-      throw error;
-    }
-  };
-  const isPackage = (directory) => {
-    const initializer = path.join(directory, "__init__.py");
-    try {
-      const info = fs.lstatSync(initializer);
-      if (info.isSymbolicLink() || !info.isFile())
-        throw new Error(
-          `Backend package initializer must be a regular file: ${relativeName(initializer)}`,
-        );
-      return true;
-    } catch (error) {
-      if (error.code === "ENOENT") return false;
-      throw error;
-    }
-  };
-  const visitPackage = (directory) => {
-    const info = fs.lstatSync(directory);
-    if (info.isSymbolicLink() || !info.isDirectory())
-      throw new Error(
-        `Backend package must be a local directory: ${relativeName(directory)}`,
-      );
-    for (const name of fs.readdirSync(directory).sort()) {
-      if (excludedSourceDirectories.has(name)) continue;
-      const file = path.join(directory, name);
-      const child = fs.lstatSync(file);
-      if (child.isSymbolicLink()) {
-        if (
-          name.endsWith(".py") ||
-          name === "codex_federation_crypto.mjs" ||
-          symlinkIsDirectory(file)
-        )
-          throw new Error(
-            `Backend source must not be a symlink: ${relativeName(file)}`,
-          );
-      } else if (child.isFile() && name.endsWith(".py")) {
-        add(file);
-      } else if (child.isDirectory() && isPackage(file)) {
-        visitPackage(file);
-      }
-    }
-  };
-
-  for (const name of fs.readdirSync(root).sort()) {
-    if (excludedSourceDirectories.has(name)) continue;
-    const file = path.join(root, name);
-    const info = fs.lstatSync(file);
-    if (info.isSymbolicLink()) {
-      if (name.endsWith(".py") || symlinkIsDirectory(file))
-        throw new Error(
-          `Backend source must not be a symlink: ${relativeName(file)}`,
-        );
-    } else if (
-      info.isFile() &&
-      (name.endsWith(".py") ||
-        name === "codex-canvas" ||
-        name === "codex_federation_crypto.mjs")
-    ) {
-      add(file);
-    } else if (info.isDirectory() && isPackage(file)) {
-      visitPackage(file);
-    }
-  }
-  return [...found.entries()].sort(([left], [right]) =>
-    left < right ? -1 : left > right ? 1 : 0,
-  );
-}
-
-function backendBuild(resources) {
-  const packagedScripts = path.join(resources, "scripts");
-  const developmentScripts = path.join(
+function backendBuild(resources, env = process.env) {
+  const developmentIdentity = path.join(
     resources,
-    "workspaces/runtime/apps/server/src",
+    "workspaces/runtime/apps/server/src/codex_backend_identity.py",
   );
-  const scripts = fs.existsSync(path.join(developmentScripts, "codex-canvas"))
-    ? developmentScripts
-    : packagedScripts;
-  const sources = backendSources(scripts);
-  if (!sources.some(([name]) => name === "codex-canvas"))
-    throw new Error("The backend entry point is missing.");
-  const digest = createHash("sha256");
-  for (const [name, file] of sources) {
-    const content = createHash("sha256")
-      .update(fs.readFileSync(file))
-      .digest("hex");
-    digest.update(`${name}\0${content}\n`);
-  }
-  return digest.digest("hex");
+  const identityScript = fs.existsSync(developmentIdentity)
+    ? developmentIdentity
+    : path.join(resources, "scripts/codex_backend_identity.py");
+  const identityInfo = fs.lstatSync(identityScript);
+  if (identityInfo.isSymbolicLink() || !identityInfo.isFile())
+    throw new Error("The backend identity helper must be a regular file.");
+  const output = execFileSync(
+    executable("python3", env),
+    ["-B", identityScript],
+    { encoding: "utf8", timeout: backendIdentityTimeoutMs, env },
+  ).trim();
+  if (!/^[a-f0-9]{64}$/.test(output))
+    throw new Error(
+      "The backend identity helper returned an invalid identity.",
+    );
+  return output;
 }
-function updateStatus(resources, running) {
+function updateStatus(resources, running, env = process.env) {
   let availableBackendBuild;
   try {
-    availableBackendBuild = backendBuild(resources);
-  } catch {
+    availableBackendBuild = backendBuild(resources, env);
+  } catch (error) {
+    console.error(
+      "Cannot compute the installed backend identity:",
+      error.stderr?.toString().trim() || error.message,
+    );
     return { availableBackendBuild: null, updateRequired: null };
   }
   return {
@@ -343,7 +244,7 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
   if (existing)
     return {
       ...existing,
-      ...updateStatus(resources, existing),
+      ...updateStatus(resources, existing, env),
       origin,
       owned: false,
     };
@@ -450,7 +351,7 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
       });
       return {
         ...ready,
-        ...updateStatus(resources, ready),
+        ...updateStatus(resources, ready, env),
         origin,
         owned: ready.pid === child.pid,
       };
