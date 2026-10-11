@@ -39,6 +39,15 @@ test("legacy transcript rows refetch online and stay hidden offline", async ({
         return route.fulfill({
           json: { workspaceId, documents: [], checkpoint: { seq: 0 } },
         });
+      if (scope === "state:entities:v1")
+        return route.fulfill({
+          json: {
+            workspaceId,
+            generation: 1,
+            documents: [],
+            checkpoint: { seq: 0 },
+          },
+        });
       if (scope !== "transcript:lead")
         throw new Error(`Unexpected sync scope ${scope}`);
       if (responseMode === "delta" && after === 0 && deltaReplies++ === 0)
