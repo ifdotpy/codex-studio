@@ -25,9 +25,10 @@ def main(arguments: list[str]) -> int:
     parser.add_argument('--timeout', type=float, default=300, help='seconds, at most 1800')
     parser.add_argument('--operation-id', default=None)
     parser.add_argument('project', type=Path)
-    parser.add_argument('command', nargs=argparse.REMAINDER)
-    options = parser.parse_args(arguments)
-    command = options.command[1:] if options.command[:1] == ['--'] else options.command
+    # Split at the separator first: an option after the folder must not become the command.
+    split = arguments.index('--') if '--' in arguments else len(arguments)
+    options = parser.parse_args(arguments[:split])
+    command = arguments[split + 1:]
     if not command:
         parser.error('give the command after --')
     from codex_linux_vm import Client
