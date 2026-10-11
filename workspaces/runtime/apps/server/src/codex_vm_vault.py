@@ -80,6 +80,12 @@ def _record(client: Any, project_id: str) -> dict[str, Any] | None:
             'lastError': result.get('lastError')}
 
 
+def views(state_dir: Path) -> dict[str, dict[str, Any] | None]:
+    """The sidebar's vault report of every imported project."""
+    return {record.parent.name: vault_view(state_dir, record.parent.name)
+            for record in sorted((state_dir / 'layr-projects').glob('*/project.json'))}
+
+
 def check(client: Any) -> bool:
     """Ask the VM about the vault of every imported project; True when a view changed."""
     changed = False
@@ -115,9 +121,14 @@ def tick(runtime: Any) -> None:
 
     def run() -> None:
         try:
-            if client.status().get('state') == 'running' and check(client):
+            if client.status().get('state') == 'running':
+                check(client)
+            # A new report or a new Desk site (codex_vault.py site) changes what the sidebar shows.
+            current = views(client.state_dir)
+            if current != runtime.__dict__.get('_vault_views'):
                 from codex_vm_agents import refresh_readiness
                 refresh_readiness(runtime)
+                runtime._vault_views = current
         except Exception as error:  # noqa: BLE001 - the next tick tries again
             print('vault check skipped: ' + type(error).__name__ + ': ' + str(error)[:300], file=sys.stderr)
         finally:
