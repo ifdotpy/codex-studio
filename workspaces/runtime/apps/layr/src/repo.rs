@@ -425,7 +425,7 @@ impl<'a> Repo<'a> {
     /// changes since its head, the head, so the next lines made from that head start warm; else a
     /// new automatic state. Only a protected line gives layers to a state that other lines share,
     /// so such a state never holds a layer that only its maker may use.
-    pub fn layers_state(&self, ctx: &Ctx, line: &Line, message: &str, running: bool) -> Result<StateRec> {
+    pub fn layers_state(&self, ctx: &Ctx, line: &Line, message: &str, running: bool, layers: &[String]) -> Result<StateRec> {
         let w = self.working(line);
         if !w.exists() {
             return Err(crate::cmd::exit(1, format!("error: the line '{}' has no working folder", line.name)));
@@ -434,13 +434,14 @@ impl<'a> Repo<'a> {
         if let Some(head) = self.p.db.state(&line.head)? {
             let base = self.p.state_path(&head.id);
             if self.policy().rule_for(&line.name).is_some() && base.exists() {
-                // Changes as git would see them: a layer is an empty folder in a snapshot, and a
-                // merge leaves new owners and times on unchanged files.
-                let layers = self.p.config_strings("regenerable");
+                // Changes as git would see them: a layer is an empty folder in a snapshot, a
+                // merge leaves new owners and times on unchanged files, and ignored files (such
+                // as other build output) are not changes.
                 let in_layer = |path: &str| layers.iter().any(|l| path == l || path.starts_with(&format!("{l}/")));
+                let rules = Rules::new(&self.p.state_path(&st.id));
                 let changed = changes::file_changes(&base, &self.p.state_path(&st.id))?
                     .into_iter()
-                    .any(|c| !skip_path(&c.path) && !in_layer(&c.path));
+                    .any(|c| !skip_path(&c.path) && !in_layer(&c.path) && !rules.ignored(&c.path, false));
                 if !changed {
                     self.discard_states(std::slice::from_ref(&st));
                     return Ok(head);
@@ -745,21 +746,66 @@ impl<'a> Repo<'a> {
                 paths.push(k.clone());
             }
         }
-        for path in paths {
-            let lp = fsutil::safe_join(w, &path)?;
-            if let Some(src) = self.warm_layer(state, &path, uid)? {
+        // These always get a layer, warm or empty. A folder that the line's `.regenerable`
+        // names gets one only warm, from an ancestor that saved it.
+        let fixed = paths.len();
+        let (named, ignored) = (Rules::regenerable(w), Rules::new(w));
+        for k in self.saved_layer_paths(state)? {
+            let parent = Path::new(&k).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+            let parent_ok = parent.is_empty() || fsutil::lmeta(w, &parent).map(|m| m.is_dir()).unwrap_or(false);
+            if !paths.contains(&k) && parent_ok && named.ignored(&k, true) && ignored.ignored(&k, true) {
+                paths.push(k);
+            }
+        }
+        for (i, path) in paths.iter().enumerate() {
+            let lp = fsutil::safe_join(w, path)?;
+            if let Some(src) = self.warm_layer(state, path, uid)? {
                 if lp.symlink_metadata().is_ok() {
-                    fsutil::remove_entry(w, &path)?;
+                    fsutil::remove_entry(w, path)?;
                 }
-                fsutil::make_parents(w, &path, Some((uid, gid)))?;
+                fsutil::make_parents(w, path, Some((uid, gid)))?;
                 btrfs::snapshot(&src, &lp, false)?;
                 // The copy shares its blocks; only its files change owner.
                 give_tree(&lp, uid, gid)?;
                 continue;
             }
-            make_layer(w, &path, uid, gid)?;
+            if i < fixed {
+                make_layer(w, path, uid, gid)?;
+            }
         }
         Ok(())
+    }
+
+    /// The layer paths of the machine setting and of the folders that `.regenerable` files in
+    /// the working folder `w` name.
+    pub fn layer_paths(&self, w: &Path) -> Vec<String> {
+        let mut paths = self.p.config_strings("regenerable");
+        for p in regenerable_folders(w) {
+            if !paths.contains(&p) {
+                paths.push(p);
+            }
+        }
+        paths
+    }
+
+    /// The layer paths that `state` or its ancestors saved (the search of `warm_layer`).
+    fn saved_layer_paths(&self, state: &str) -> Result<BTreeSet<String>> {
+        const SEARCH: usize = 200;
+        let (mut seen, mut found) = (BTreeSet::new(), BTreeSet::new());
+        let mut q = std::collections::VecDeque::from([state.to_string()]);
+        while let Some(id) = q.pop_front() {
+            if seen.len() >= SEARCH {
+                break;
+            }
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            if let Some(rec) = self.p.db.state(&id)? {
+                found.extend(rec.layers.keys().cloned());
+                q.extend(rec.parents);
+            }
+        }
+        Ok(found)
     }
 
     /// The layer snapshot that a line of `uid` starting at `state` takes for `path`: the state's
@@ -967,6 +1013,41 @@ fn give_tree(root: &Path, uid: u32, gid: u32) -> Result<()> {
         fsutil::chown_nofollow(&root.join(p), uid, gid)?;
     }
     fsutil::chown_nofollow(root, uid, gid)
+}
+
+/// The folders of the working folder `w` that a `.regenerable` file names (gitignore patterns)
+/// and that the ignore rules ignore. A named folder that is not ignored is no layer: its files
+/// are in history, and a layer must not hide them. The walk does not enter a named folder or
+/// another subvolume.
+pub fn regenerable_folders(w: &Path) -> Vec<String> {
+    let (named, ignored) = (Rules::regenerable(w), Rules::new(w));
+    // Through descriptors: the owner may change the folder while root reads it.
+    let Ok(t) = Tree::open(w) else { return Vec::new() };
+    let mut found = Vec::new();
+    let mut stack = vec![String::new()];
+    while let Some(dir) = stack.pop() {
+        for name in t.list(&dir).unwrap_or_default() {
+            let rel = if dir.is_empty() { name } else { format!("{dir}/{name}") };
+            if rel == ".git" {
+                continue;
+            }
+            match t.stat(&rel) {
+                Some(m) if m.is_dir() => {
+                    if named.ignored(&rel, true) {
+                        if ignored.ignored(&rel, true) {
+                            found.push(rel);
+                        }
+                    } else if m.ino != 256 {
+                        // Another subvolume (a layer of the machine setting) is not entered.
+                        stack.push(rel);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    found.sort();
+    found
 }
 
 /// Create an empty nested subvolume for a regenerable layer at `path` in the working folder.

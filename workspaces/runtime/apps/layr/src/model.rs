@@ -160,10 +160,13 @@ pub fn is_name(s: &str) -> bool {
 pub fn is_layer_name(s: &str, state: &str) -> bool {
     match s.split_once('@') {
         Some((id, p)) => {
+            // `.venv` is a layer path; the whole name starts with the state ID, so a dot
+            // after the `@` makes no hidden or parent entry.
             id == state
                 && !p.is_empty()
                 && p.chars().all(|c| c.is_ascii_alphanumeric() || "._-%".contains(c))
-                && !p.starts_with('.')
+                && p != "."
+                && p != ".."
         }
         None => false,
     }
@@ -315,6 +318,17 @@ mod tests {
         let a: Actor = serde_json::from_str(r#"{"uid":1,"name":"u","agent":"old label"}"#).unwrap();
         assert_eq!(a.session.as_deref(), Some("old label"));
         assert!(serde_json::to_string(&a).unwrap().contains(r#""session":"old label""#));
+    }
+
+    #[test]
+    fn a_layer_path_may_start_with_a_dot() {
+        let id = "01a12290-0000-7000-8000-000000000003";
+        assert!(is_layer_name(&format!("{id}@.venv"), id));
+        assert!(is_layer_name(&format!("{id}@web%2Fnode_modules"), id));
+        for bad in [".", "..", "", "a/b", "a b"] {
+            assert!(!is_layer_name(&format!("{id}@{bad}"), id), "{bad}");
+        }
+        assert!(!is_layer_name(&format!("{id}@.venv"), "01a12290-0000-7000-8000-000000000004"));
     }
 
     #[test]
