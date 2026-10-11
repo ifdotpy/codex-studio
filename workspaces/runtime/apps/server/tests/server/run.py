@@ -63,6 +63,10 @@ EXPLICIT_SUITES = (
 )
 OPT_IN = {"automated", "native", "live", "expensive", "browser", "vm", "heavy"}
 FAST_SUITE_BUDGET_SECONDS = 10.0
+SUITE_SLICE_TARGET_SECONDS = 5.0
+MAX_SUITE_TEST_SLICES = 8
+FOCUSED_SUITE_TEST_SLICES = 4
+FOCUSED_MIN_TESTS_FOR_SLICING = 5
 DEFAULT_TIMEOUT_SECONDS = 120
 EXPENSIVE_TIMEOUT_SECONDS = 900
 TEST_TMP_ROOT = Path(os.environ.get(
@@ -74,6 +78,7 @@ PROFILE_PATH = RUNNER_LOCK_PATH.parent / f"runner-profile-{REPOSITORY_KEY}.json"
 MEMORY_RESERVE_BYTES = 4 * 1024**3
 FOCUSED_SUITE_LIMIT = 1
 FOCUSED_SLOT_CAP = 4
+NEVER_SLICE_SUITES = frozenset({f"{TESTS_REL}/server/test_run.py"})
 BASELINE_PATH = Path(__file__).with_name("timing-baseline.json")
 TMP_ROOT_OVERRIDE = os.environ.get("CODEX_SERVER_TEST_TMP_ROOT")
 MAX_SHORT_TMP_ROOT_BYTES = 42
@@ -283,6 +288,30 @@ def has_module_level_mutable_state(path):
             if name in mutable_calls and isinstance(node, (ast.Assign, ast.AnnAssign)):
                 return True
     return False
+
+
+def has_custom_unittest_suite(path):
+    """Avoid slicing entrypoints that manually build a suite and ignore CLI IDs."""
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return True
+    aliases = {"unittest"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            aliases.update(alias.asname or alias.name for alias in node.names
+                           if alias.name == "unittest")
+        elif isinstance(node, ast.ImportFrom) and node.module == "unittest":
+            aliases.update(alias.asname or alias.name for alias in node.names
+                           if alias.name == "TestSuite")
+    return any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "TestSuite"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id in aliases
+        for node in ast.walk(tree)
+    )
 
 
 def inventory():
@@ -853,6 +882,25 @@ def _suite_test_ids(relative, root, temporary, deadline):
 def _slice_test_ids(test_ids, count):
     """Split IDs round-robin so every slice gets a similar number of cases."""
     return [test_ids[index::count] for index in range(count) if test_ids[index::count]]
+
+
+def _suite_slice_count(relative, test_count, workers, focused, suite_seconds,
+                       baseline_seconds=None):
+    """Bound test processes by the profiled need and the shared worker plan."""
+    if relative in NEVER_SLICE_SUITES or test_count <= 1 or workers <= 1:
+        return 1
+    if focused:
+        if test_count < FOCUSED_MIN_TESTS_FOR_SLICING:
+            return 1
+        desired = FOCUSED_SUITE_TEST_SLICES
+    else:
+        profiled_seconds = suite_seconds.get(relative, 0)
+        if profiled_seconds <= FAST_SUITE_BUDGET_SECONDS:
+            return 1
+        original_seconds = (baseline_seconds or {}).get(relative, 0)
+        desired = math.ceil(max(profiled_seconds, original_seconds)
+                            / SUITE_SLICE_TARGET_SECONDS)
+    return min(desired, workers, MAX_SUITE_TEST_SLICES, test_count)
 
 
 def _suite_environment(root, temp_root, audit_home=False, relative=None):
@@ -1482,6 +1530,7 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
 
     profile = _load_profile()
     suite_seconds = dict(profile.get("suiteSeconds", {}))
+    baseline_suite_seconds = _read_profile_file(BASELINE_PATH).get("suiteSeconds", {})
     max_suite_rss = 0
     save_measurements = execute is run_process
     suite_tmp_root = TEST_TMP_ROOT
@@ -1607,8 +1656,10 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
     indexed = [(index, relative, kind)
                for index, (_old_index, relative, kind)
                in enumerate(indexed, start=first_pending_index)]
-    # Focused runs use their full bounded slot allocation as slices. Serialize
-    # focused invocations so concurrent calls cannot multiply that allocation.
+    # Suite processes and their test-ID slices share this executor, so their
+    # combined live-process count never exceeds the worker and memory plan.
+    # Focused invocations are serialized so concurrent calls cannot multiply
+    # that allocation.
     pool = ThreadPoolExecutor(max_workers=workers)
     futures = []
     shard_totals = {}
@@ -1616,7 +1667,10 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
         for index, relative, kind in indexed:
             deadline = expensive_timeout if kind == "expensive" else timeout
             slices = None
-            if (is_unittest_suite(root / relative) and not has_module_level_mutable_state(root / relative)
+            if (relative not in NEVER_SLICE_SUITES
+                    and is_unittest_suite(root / relative)
+                    and not has_module_level_mutable_state(root / relative)
+                    and not has_custom_unittest_suite(root / relative)
                     and (focused or suite_seconds.get(relative, 0)
                          > FAST_SUITE_BUDGET_SECONDS)):
                 with tempfile.TemporaryDirectory(dir=suite_tmp_root, prefix=f"{index:03d}-list-") as temporary:
@@ -1628,7 +1682,12 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
                         ids = None
                 if ids:
                     selectors = [test_id.removeprefix(prefix) for test_id in ids]
-                    slices = _slice_test_ids(selectors, min(workers, len(selectors)))
+                    slice_count = _suite_slice_count(
+                        relative, len(selectors), workers, focused, suite_seconds,
+                        baseline_suite_seconds,
+                    )
+                    if slice_count > 1:
+                        slices = _slice_test_ids(selectors, slice_count)
                     expected_prefix = prefix
             if not slices:
                 slices = [None]

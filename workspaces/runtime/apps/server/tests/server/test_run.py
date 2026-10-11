@@ -345,8 +345,8 @@ class ServerSuiteRunner(unittest.TestCase):
 
     def test_test_id_slices_are_disjoint_and_failure_names_single_test(self):
         path = "synthetic.py"
-        ids = ["__main__.Sample.test_first", "__main__.Sample.test_second",
-               "__main__.Sample.test_third", "__main__.Sample.test_fourth"]
+        ids = [f"__main__.Sample.test_{name}"
+               for name in ("first", "second", "third", "fourth", "fifth", "sixth")]
         commands = []
 
         def execute(command, _cwd, _timeout, environment):
@@ -364,6 +364,7 @@ class ServerSuiteRunner(unittest.TestCase):
               mock.patch.object(RUNNER, "_focused_run_slot", return_value=contextlib.nullcontext()),
               mock.patch.object(RUNNER, "is_unittest_suite", return_value=True),
               mock.patch.object(RUNNER, "has_module_level_mutable_state", return_value=False),
+              mock.patch.object(RUNNER, "has_custom_unittest_suite", return_value=False),
               mock.patch.object(RUNNER, "_suite_test_ids", return_value=ids),
               mock.patch.object(RUNNER, "_unix_socket_path_error", return_value=None),
               mock.patch.object(RUNNER, "_load_profile", return_value={"suiteSeconds": {}})):
@@ -376,6 +377,104 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertEqual(len(failures), 1)
         self.assertIn("Sample.test_second", failures[0][1])
         self.assertIn("reproduce:", failures[0][1])
+
+    def test_slice_count_tracks_profile_need_and_caps_focused_runs(self):
+        self.assertEqual(RUNNER._suite_slice_count("suite.py", 72, 30, False,
+                                                   {"suite.py": 10.0}), 1)
+        self.assertEqual(RUNNER._suite_slice_count("suite.py", 72, 30, False,
+                                                   {"suite.py": 11.0}), 3)
+        self.assertEqual(RUNNER._suite_slice_count("suite.py", 72, 30, False,
+                                                   {"suite.py": 45.0}), 8)
+        self.assertEqual(RUNNER._suite_slice_count(
+            "suite.py", 72, 30, False, {"suite.py": 12.0}, {"suite.py": 66.0}), 8)
+        self.assertEqual(RUNNER._suite_slice_count(
+            "suite.py", 72, 30, False, {"suite.py": 9.0}, {"suite.py": 66.0}), 1)
+        self.assertEqual(RUNNER._suite_slice_count("suite.py", 72, 4, False,
+                                                   {"suite.py": 45.0}), 4)
+        self.assertEqual(RUNNER._suite_slice_count("suite.py", 4, 4, True, {}), 1)
+        self.assertEqual(RUNNER._suite_slice_count("suite.py", 72, 2, True, {}), 2)
+        runner_suite = f"{RUNNER.TESTS_REL}/server/test_run.py"
+        self.assertEqual(RUNNER._suite_slice_count(runner_suite, 59, 30, False,
+                                                   {runner_suite: 90.0}), 1)
+
+    def test_runner_suite_is_explicitly_excluded_from_test_slicing(self):
+        relative = f"{RUNNER.TESTS_REL}/server/test_run.py"
+        commands = []
+
+        def execute(command, _cwd, _timeout, _environment):
+            commands.append(command)
+            return 0, None, [], []
+
+        with (tempfile.TemporaryDirectory(prefix="runner-suite-exclusion-") as temp,
+              contextlib.redirect_stdout(io.StringIO()),
+              mock.patch.object(RUNNER, "TEST_TMP_ROOT", Path(temp)),
+              mock.patch.object(RUNNER, "worker_plan", return_value={
+                  "workers": 4, "memoryWorkerSlots": 4,
+              }),
+              mock.patch.object(RUNNER, "_load_profile", return_value={
+                  "suiteSeconds": {relative: 90.0},
+              }),
+              mock.patch.object(RUNNER, "_suite_test_ids") as list_ids,
+              mock.patch.object(RUNNER, "_unix_socket_path_error", return_value=None)):
+            _runnable, _skipped, failures, _elapsed = RUNNER.run_suites(
+                [(relative, "component")], set(), 1, 1,
+                root=ROOT, execute=execute, workers=4,
+            )
+
+        self.assertEqual(failures, [])
+        self.assertEqual(len(commands), 1)
+        list_ids.assert_not_called()
+
+    def test_sliced_suites_share_the_planned_worker_process_bound(self):
+        entries = [("first.py", "safe"), ("second.py", "safe")]
+        ids_by_path = {
+            path: [f"__main__.Sample.test_{index}" for index in range(8)]
+            for path, _kind in entries
+        }
+        active = 0
+        maximum_active = 0
+        active_lock = threading.Lock()
+
+        def execute(command, _cwd, _timeout, environment):
+            nonlocal active, maximum_active
+            selectors = command[command.index("-v") + 1:]
+            with active_lock:
+                active += 1
+                maximum_active = max(maximum_active, active)
+            try:
+                time.sleep(0.02)
+                outcome = Path(environment["CODEX_SERVER_TEST_RESULT_FILE"])
+                outcome.write_text("".join(
+                    json.dumps({"id": f"__main__.{selector}", "outcome": "passed"}) + "\n"
+                    for selector in selectors
+                ))
+                return 0, None, [], []
+            finally:
+                with active_lock:
+                    active -= 1
+
+        with (tempfile.TemporaryDirectory(prefix="runner-slice-bound-") as temp,
+              contextlib.redirect_stdout(io.StringIO()),
+              mock.patch.object(RUNNER, "TEST_TMP_ROOT", Path(temp)),
+              mock.patch.object(RUNNER, "worker_plan", return_value={
+                  "workers": 2, "memoryWorkerSlots": 2,
+              }),
+              mock.patch.object(RUNNER, "_load_profile", return_value={
+                  "suiteSeconds": {"first.py": 20.0, "second.py": 20.0},
+              }),
+              mock.patch.object(RUNNER, "is_unittest_suite", return_value=True),
+              mock.patch.object(RUNNER, "has_module_level_mutable_state", return_value=False),
+              mock.patch.object(RUNNER, "has_custom_unittest_suite", return_value=False),
+              mock.patch.object(RUNNER, "_suite_test_ids",
+                                side_effect=lambda relative, *_args: ids_by_path[relative]),
+              mock.patch.object(RUNNER, "_unix_socket_path_error", return_value=None)):
+            _runnable, _skipped, failures, _elapsed = RUNNER.run_suites(
+                entries, set(), 1, 1, root=ROOT, execute=execute, workers=2,
+            )
+
+        self.assertEqual(failures, [])
+        self.assertEqual(maximum_active, 2)
+        self.assertLessEqual(maximum_active, 2)
 
     def test_plain_assertion_script_is_not_test_sliced(self):
         commands = []
@@ -418,6 +517,12 @@ class ServerSuiteRunner(unittest.TestCase):
             )
         self.assertEqual(failures, [])
         list_ids.assert_not_called()
+
+    def test_custom_test_suite_entrypoints_are_not_test_sliced(self):
+        for name in ("account-transfer-contract.py", "context-repair-wait-contract.py"):
+            path = RUNNER.TESTS / name
+            with self.subTest(name=name):
+                self.assertTrue(RUNNER.has_custom_unittest_suite(path))
 
     def test_aggregates_failed_child_and_reports_opt_in_skip(self):
         calls = []
