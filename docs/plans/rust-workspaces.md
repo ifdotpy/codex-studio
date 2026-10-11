@@ -272,8 +272,10 @@ and shutdown.
   over acknowledged new work to claim rollback success. There is one installation:
   code used only to read or migrate an old format is removed after that
   installation is shown to have completed the migration. Startup visibly refuses
-  an incomplete state. The payload migration has not completed on the installation
-  and its migration code remains. (#61, #64.)
+  an incomplete state. Read-only evidence from the sole installation found no
+  oversized values in the three payload-backfill fields, so that backfill was
+  removed; readers still accept inline values and task-output retention remains
+  available separately. (#61, #64, #37.)
 - **R-22.** Preserve HTTP methods/status/error semantics, null versus absent,
   schema hash handshake, SSE ordering/reconnect, sync cursors, CLI behavior, and
   native protocol framing. Unknown extensible provider fields remain supported;

@@ -149,15 +149,12 @@ def migration_status(runtime):
                                        "status": row[3] if len(row) > 3 else ("complete" if row[2] else "pending"),
                                        "updated": row[4] if len(row) > 4 else None,
                                        "error": row[5] if len(row) > 5 else None}
-                status["payloads"] = {name: payload.get("payload-v1:" + name,
-                                                       {"cursor": 0, "complete": False,
-                                                        "status": "pending", "updated": None,
-                                                        "error": None})
-                                       for name in ("checkpoints", "tool_requests", "tool_results", "tasks")}
+                status["payloads"] = {"tasks": payload.get(
+                    "payload-v1:tasks", {"cursor": 0, "complete": False, "status": "pending",
+                                          "updated": None, "error": None})}
             else:
-                status["payloads"] = {name: {"cursor": 0, "complete": False,
-                                             "status": "pending", "updated": None, "error": None}
-                                       for name in ("checkpoints", "tool_requests", "tool_results", "tasks")}
+                status["payloads"] = {"tasks": {"cursor": 0, "complete": False,
+                                                 "status": "pending", "updated": None, "error": None}}
             if "sync_entity_meta" in tables:
                 values = dict(db.execute("SELECT key,value FROM sync_entity_meta WHERE key IN "
                                          "('entity_tombstone_count','entity_tombstone_floor')"))
