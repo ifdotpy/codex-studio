@@ -503,12 +503,13 @@ def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str, *,
     if not any(entry['path'].endswith('/claude-bridge/package.json') for entry in files):
         raise LinuxVMError('The Claude bridge package manifest is unavailable.')
     pnpm_version = _pnpm_version()
-    # The payload generation: a guest that has provisioned exactly these files and versions
-    # skips provisioning; any change provisions again.
-    generation = hashlib.sha256(json.dumps({'files': files, 'codex': codex_version, 'claude': claude_version,
-                                            'pnpm': pnpm_version}, sort_keys=True).encode()).hexdigest()
-    ready_path = '/var/lib/codex-studio/provision-ready-' + generation
     script = _provision_script(codex_version, claude_version, pnpm_version)
+    # The payload generation: a guest that has provisioned exactly these files, versions and
+    # provision script skips provisioning; any change provisions again. (Before 2026-10-11 the
+    # script was not part of it, so a fix in the script alone never ran.)
+    generation = hashlib.sha256(json.dumps({'files': files, 'codex': codex_version, 'claude': claude_version,
+                                            'pnpm': pnpm_version, 'script': script}, sort_keys=True).encode()).hexdigest()
+    ready_path = '/var/lib/codex-studio/provision-ready-' + generation
     script = script.replace('touch /var/lib/codex-studio/provision-ready\n',
                             'touch /var/lib/codex-studio/provision-ready\ntouch ' + ready_path + '\n')
     files.append({'path': '/opt/codex-studio/provision.sh', 'permissions': '0700', 'content': script})
