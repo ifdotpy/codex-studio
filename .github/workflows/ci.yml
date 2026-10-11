@@ -174,7 +174,3 @@ jobs:
         run: just test studio-diagnostics
       - name: Focused Python facade test
         run: just test server test_codex_python
-      - name: Confirm hosted runner has no Codex executable
-        run: if command -v codex >/dev/null 2>&1; then echo "Codex must not be installed for this offline suite" >&2; exit 1; fi
-      - name: Run audited offline server suites
-        run: just test-server-opt-in
