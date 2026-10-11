@@ -336,7 +336,8 @@ class TerminalsContract(unittest.TestCase):
         marker = self.fixture.project / "environment-proof"
         script = "import os,json; from pathlib import Path; Path('environment-proof').write_text(json.dumps([os.environ.get('CODEX_HOME'),os.environ.get('TERM'),os.environ.get('COLORTERM')])); print('Терминал🙂')"
         self.send(task, shlex.quote(sys.executable) + " -c " + shlex.quote(script) + "\n")
-        f.eventually(marker.exists)
+        # The file exists, empty, before the script has written its content.
+        f.eventually(lambda: marker.exists() and marker.read_text().endswith("]"))
         self.assertEqual(json.loads(marker.read_text()), [os.environ.get("CODEX_HOME"), "xterm-256color", "truecolor"])
         f.eventually(lambda: "Терминал🙂" in self.manager.output(task["id"])["text"])
         self.assertIsNone(self.runtime.server)
