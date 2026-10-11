@@ -153,7 +153,11 @@ def create_router(context: ApiContext) -> APIRouter:
             return orchestration_runtime.multi_server().receive(principal["clientId"], body.model_dump())
         return await dispatch(request, action)
 
-    @router.get("/api/multi-server/v1/pair", response_model=ErrorResponse, include_in_schema=False)
+    @router.get(
+        "/api/multi-server/v1/pair",
+        response_model=ErrorResponse,
+        status_code=404,
+    )
     async def no_pair_get(request: Request) -> Response:
         return context.send(request, {"error": "Not found"}, status=404)
 

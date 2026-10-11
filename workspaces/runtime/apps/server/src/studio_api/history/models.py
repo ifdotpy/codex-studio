@@ -2,15 +2,15 @@
 
 Transcript records mirror the fields emitted by ``Runtime.item`` and enriched
 by ``Runtime.transcript`` / ``codex_transcript_history``. Native provider data
-is represented in the transcript text (or as typed input records), not passed
-through as unvalidated top-level fields.
+is represented as typed JSON, including source fields retained when stored or
+provider transcript records pass through the API.
 """
 
 from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, StrictBool, StrictInt, StrictStr, model_validator
+from pydantic import ConfigDict, Field, StrictBool, StrictInt, StrictStr, model_validator
 
 from studio_api.sync.models import AgentActivity
 from studio_api.models import ContractModel, JsonValue, ResponseModel
@@ -44,6 +44,10 @@ class TranscriptAsset(ContractModel):
 class TranscriptInput(ContractModel):
     """One native/runtime input batch entry shown inside a transcript item."""
 
+    # Stored transcript input objects are spread into history-item responses.
+    model_config = ConfigDict(extra="allow")
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
     id: StrictStr | None = None
     at: float | None = None
     kind: StrictStr
@@ -59,7 +63,10 @@ class TranscriptInput(ContractModel):
 
 
 class TranscriptRecord(ContractModel):
-    """One persisted or synthesized transcript row with named UI fields."""
+    """Persisted/provider transcript row; unknown stored fields pass through."""
+
+    model_config = ConfigDict(extra="allow")
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
     id: StrictStr
     role: StrictStr | None = None
@@ -69,6 +76,7 @@ class TranscriptRecord(ContractModel):
     at: float | StrictStr | None = None
     truncated: StrictBool | None = None
     turnId: StrictStr | None = None
+    threadId: StrictStr | None = None
     turnStatus: StrictStr | None = None
     phase: StrictStr | None = None
     streaming: StrictBool | None = None
@@ -98,6 +106,7 @@ class TranscriptRecord(ContractModel):
     details: JsonValue | None = None
     accountWide: StrictBool | None = None
     previousError: JsonValue | None = None
+    cyberAccessProgram: StrictStr | None = None
 
 
 class TranscriptMessageRecord(TranscriptRecord):
@@ -158,6 +167,9 @@ class TranscriptSearchResponse(ResponseModel):
 class TranscriptItemResponse(TranscriptMessageRecord, ResponseModel):
     """Full transcript item projection, including its canonical sync envelope."""
 
+    model_config = ConfigDict(extra="allow")
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
 
 class SearchResult(ContractModel):
     id: StrictStr
@@ -180,8 +192,13 @@ class SearchItemResponse(TranscriptRecord, ResponseModel):
     """Named producer fields for message, room, work, plan, and complaint items.
 
     ``native`` is the provider protocol's extensible plan update payload; all
-    other returned fields have explicit application-owned types.
+    other known returned fields have explicit application-owned types. Runtime
+    search spreads stored records, and room search spreads provider-owned rows,
+    so unknown source fields pass through.
     """
+
+    model_config = ConfigDict(extra="allow")
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
     kind: Literal["message", "room", "work", "plan", "complaint"]
     agent: StrictStr
@@ -231,12 +248,15 @@ class SearchItemResponse(TranscriptRecord, ResponseModel):
 
 
 class CheckpointSummary(ContractModel):
-    """Public checkpoint record produced by ``capture_checkpoint`` summary."""
+    """Checkpoint summary; other stored keys pass through after payload removal."""
+
+    model_config = ConfigDict(extra="allow")
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
     id: StrictStr
-    agent: StrictStr | None = None
+    agent: StrictStr
     rootId: StrictStr | None = None
-    label: StrictStr
+    label: StrictStr | None = None
     tree: StrictStr | None = None
     commit: StrictStr | None = None
     ref: StrictStr | None = None
@@ -246,6 +266,16 @@ class CheckpointSummary(ContractModel):
     cwd: StrictStr | None = None
     historyParent: StrictStr | None = None
     historyBoundary: int | None = None
+    # Known legacy fields from CheckpointRecord remain typed even though the
+    # current census contains no rows with these keys.
+    path: StrictStr | None = None
+    message: StrictStr | None = None
+    source: StrictStr | None = None
+    worktree: StrictStr | None = None
+    revision: int | None = None
+    error: StrictStr | None = None
+    data: dict[str, JsonValue] | None = None
+    automatic: StrictBool | None = None
 
 
 class CheckpointsResponse(ResponseModel):
@@ -263,6 +293,9 @@ class CheckpointPreviewResponse(ResponseModel):
 
 class CheckpointCaptureResponse(CheckpointSummary, ResponseModel):
     """Flat checkpoint summary returned by the legacy capture endpoint."""
+
+    model_config = ConfigDict(extra="allow")
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 
 class CheckpointRestoreResponse(ResponseModel):

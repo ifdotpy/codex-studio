@@ -773,7 +773,7 @@ function Checkpoints(c: Context) {
                   setPreview({
                     ...value,
                     checkpoint: checkpoint.id,
-                    label: checkpoint.label,
+                    label: checkpoint.label ?? "Checkpoint",
                   });
                 } catch {
                 } finally {

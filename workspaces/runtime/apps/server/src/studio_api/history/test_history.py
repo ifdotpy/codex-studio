@@ -97,7 +97,8 @@ class FakeRuntime:
         return {
             "items": [{"id": "m-1", "role": "user", "title": "You", "text": "hello", "at": 1.0,
                        "inputs": [{"kind": "user", "text": "hello", "truncated": False,
-                                   "assets": []}]}],
+                                   "assets": [], "futureInputField": {"version": 2}}],
+                       "providerFutureField": {"version": 2}}],
             "truncated": False,
             "nextCursor": None,
             "nextAfterCursor": None,
@@ -116,7 +117,8 @@ class FakeRuntime:
 
     def workspace_snapshot(self, agent: str | None) -> dict[str, object]:
         self.calls.append(("workspace_snapshot", agent))
-        return {"checkpoints": [{"id": "cp-1", "label": "Saved", "created": 1.0}]}
+        return {"checkpoints": [{"id": "cp-1", "agent": "agent-1", "label": "Saved", "created": 1.0,
+                                  "futureCheckpointField": {"version": 2}}]}
 
     def branch_conversation(self, agent: str, value: dict[str, object]) -> dict[str, object]:
         self.calls.append(("branch", {"agent": agent, **value}))
@@ -142,7 +144,8 @@ class FakeRuntime:
 
     def checkpoint_capture(self, agent: str, label: str) -> dict[str, object]:
         self.calls.append(("checkpoint_capture", {"agent": agent, "label": label}))
-        return {"id": "cp-2", "agent": agent, "label": label, "created": 2.0}
+        return {"id": "cp-2", "agent": agent, "label": label, "created": 2.0,
+                "futureCheckpointField": {"version": 2}}
 
     @staticmethod
     def checkpoint_summary(value: dict[str, object]) -> dict[str, object]:
@@ -298,7 +301,11 @@ class HistoryRouteTests(unittest.TestCase):
             json={"agent": "agent-1", "checkpoint": "cp-1", "expectedTree": "tree-before"},
         )
         self.assertEqual(checkpoints.json()["checkpoints"][0]["id"], "cp-1")
+        self.assertEqual(
+            checkpoints.json()["checkpoints"][0]["futureCheckpointField"], {"version": 2}
+        )
         self.assertEqual(capture.json()["label"], "Checkpoint")
+        self.assertEqual(capture.json()["futureCheckpointField"], {"version": 2})
         self.assertTrue(preview.json()["canRestore"])
         self.assertEqual(restore.json(), {"status": "restored", "checkpoint": "cp-1"})
 
@@ -531,9 +538,18 @@ class HistoryRouteTests(unittest.TestCase):
                 SearchItemResponse.model_validate(search_record)
         connection.close()
 
-    def test_native_notice_contract_rejects_unknown_severity_and_fields(self) -> None:
+    def test_transcript_contract_preserves_provider_extensions_and_rejects_unknown_severity(self) -> None:
         record = {"id": "notice-1", "role": "system", "text": "Native notice"}
-        for extra in ({"nativeNotice": "fatal"}, {"nativeHookQuiet": "true"}, {"secret": "private"}):
+        with self.assertRaises(ValueError):
+            TranscriptRecord.model_validate({**record, "nativeNotice": "fatal"})
+        parsed = TranscriptRecord.model_validate({**record, "secret": "fixture-extension"})
+        self.assertEqual(parsed.model_dump().get("secret"), "fixture-extension")
+        response = self.client.get("/api/transcript/page?id=agent-1")
+        self.assertEqual(response.status_code, 200, response.text)
+        item = response.json()["items"][0]
+        self.assertEqual(item["providerFutureField"], {"version": 2})
+        self.assertEqual(item["inputs"][0]["futureInputField"], {"version": 2})
+        for extra in ({"nativeHookQuiet": "true"},):
             with self.subTest(extra=extra), self.assertRaises(ValueError):
                 TranscriptRecord.model_validate({**record, **extra})
 

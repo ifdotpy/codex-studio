@@ -74,6 +74,7 @@ import {
   statusLabel,
   type Agent,
   type Json,
+  type KnownApiFields,
   type Message,
   type Room,
   type Snapshot,
@@ -905,11 +906,16 @@ export default function Conversation(p: {
           throw new Error(
             "The full original message is unavailable. Copy the visible text into a new message instead.",
           );
+        const fullFields: KnownApiFields<typeof full> = full;
         original = {
           ...message,
-          ...full,
-          role: full.role || message.role,
-          text: typeof full.text === "string" ? full.text : message.text,
+          ...fullFields,
+          threadId: fullFields.threadId ?? message.threadId,
+          role: fullFields.role || message.role,
+          text:
+            typeof fullFields.text === "string"
+              ? fullFields.text
+              : message.text,
         };
       }
       if (activeId.current === chat && attempt === editAttempt.current)

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Annotated, Literal, TypeAlias
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from studio_api.models import ContractModel, JsonValue, ResponseModel
 
@@ -55,6 +55,13 @@ class AccessClient(ContractModel):
     alias: str | None = None
 
 
+class DiscoveredServer(AccessClient):
+    """Stored discovery record; ``ServerDiscovery.servers`` passes it through."""
+
+    model_config = ConfigDict(extra="allow")
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+
 class InviteSummary(ContractModel):
     inviteId: str
     expires: int
@@ -76,7 +83,7 @@ class AccessSnapshot(ResponseModel):
     protocol: Literal[1]
     identity: ServerIdentity
     clients: list[AccessClient]
-    servers: list[AccessClient]
+    servers: list[DiscoveredServer]
     invites: list[InviteSummary]
     settings: AccessSettings
 

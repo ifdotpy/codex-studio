@@ -146,7 +146,10 @@ export function SearchContent(c: SearchProps) {
           <>
             <div className="workspace-toolbar">
               <Badge variant="light" color="gray">
-                {source.kind || ("type" in source ? source.type : "")}
+                {source.kind ||
+                  ("type" in source && typeof source.type === "string"
+                    ? source.type
+                    : "")}
               </Badge>
               <small className="workspace-muted">{source.id}</small>
             </div>
