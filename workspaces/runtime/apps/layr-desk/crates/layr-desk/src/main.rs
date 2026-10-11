@@ -10,6 +10,9 @@
 //!   layr-desk service install|remove --site https://desk.example.com [--port 8095]
 //!   layr-desk serve   [--config /etc/vault-gateway/config.json] [--tls files|tailscale|none]
 //!   layr-desk push    --project <p> --state-dir <folder> [--config <file>]   (on the project's host)
+//!   layr-desk keys    --project <p>   (shows the paper key of a new vault, in a terminal only)
+//!   layr-desk deploy  --project <p> --profile <aws profile> [--writer <command>] [--new-writer-key]
+//!   layr-desk aws-login --profile <aws profile>     layr-desk aws-profiles [--json]
 //!
 //! The paper key comes from `--paper-file` (24 words or the age form) or from a hidden prompt.
 
@@ -17,12 +20,14 @@ mod aws;
 mod disk;
 mod gateway;
 mod keystore;
+mod profile;
 mod push;
 mod restore;
 mod routes;
 mod s3;
 mod serve;
 mod service;
+mod setup;
 mod tls;
 mod vault;
 mod webdav;
@@ -133,6 +138,23 @@ enum Command {
     Serve(serve::Options),
     /// Push the main head of a layr project into its vault (the writer)
     Push(push::Push),
+    /// Make the keys of a new vault and show its paper key once; run it in a terminal
+    Keys(setup::Keys),
+    /// Make or update the AWS side of a vault with an AWS profile, and give the writer its keys
+    Deploy(setup::Deploy),
+    /// Sign in to an AWS profile through IAM Identity Center (the device flow)
+    AwsLogin {
+        #[arg(long)]
+        profile: String,
+        /// Print the sign-in page and its code as JSON lines, and open no browser
+        #[arg(long)]
+        json: bool,
+    },
+    /// The AWS profiles of this Mac and whether each has a usable sign-in (no AWS call)
+    AwsProfiles {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn paper(target: &Target) -> Result<String> {
@@ -182,6 +204,18 @@ fn signed(reader: &Reader<gateway::Vault>, seq: u64) -> &'static str {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let result = command().await;
+    // A program that runs layr-desk tells a sign-in that has ended from other failures by 3.
+    if let Err(e) = &result {
+        if e.chain().any(|c| c.is::<profile::SignInNeeded>()) {
+            eprintln!("Error: {e:#}");
+            std::process::exit(3);
+        }
+    }
+    result
+}
+
+async fn command() -> Result<()> {
     match Cli::parse().command {
         Command::Projects { site } => {
             for name in gateway::Site::new(&site)?.projects().await? {
@@ -337,6 +371,50 @@ async fn main() -> Result<()> {
         Command::Service { action } => service::run(action)?,
         Command::Serve(options) => serve::run(options).await?,
         Command::Push(args) => push::run(args).await?,
+        Command::Keys(args) => setup::keys(args)?,
+        Command::Deploy(args) => setup::deploy(args).await?,
+        Command::AwsLogin { profile, json } => {
+            let profile = profile::Profile::load(&profile)?;
+            profile
+                .login(&reqwest::Client::new(), |page, code| {
+                    if json {
+                        println!("{}", serde_json::json!({"page": page, "code": code}));
+                    } else {
+                        eprintln!("layr-desk: confirm the code {code} on {page}");
+                        #[cfg(target_os = "macos")]
+                        let _ = std::process::Command::new("/usr/bin/open")
+                            .arg(page)
+                            .status();
+                    }
+                })
+                .await?;
+            if json {
+                println!("{}", serde_json::json!({"signedIn": true}));
+            } else {
+                eprintln!("layr-desk: signed in to the AWS profile {}", profile.name);
+            }
+        }
+        Command::AwsProfiles { json } => {
+            let mut profiles = Vec::new();
+            for name in profile::names()? {
+                profiles.push(match profile::Profile::load(&name) {
+                    Ok(p) => serde_json::json!({"name": name, "region": p.region, "sso": p.sso(), "signedIn": p.signed_in()}),
+                    Err(e) => serde_json::json!({"name": name, "error": format!("{e:#}")}),
+                });
+            }
+            if json {
+                println!("{}", serde_json::json!({ "profiles": profiles }));
+            } else {
+                for p in &profiles {
+                    let state = match (&p["error"], &p["signedIn"]) {
+                        (serde_json::Value::String(e), _) => e.clone(),
+                        (_, serde_json::Value::Bool(true)) => "signed in".into(),
+                        _ => "needs a sign-in".into(),
+                    };
+                    println!("{} {state}", p["name"].as_str().unwrap_or_default());
+                }
+            }
+        }
     }
     Ok(())
 }

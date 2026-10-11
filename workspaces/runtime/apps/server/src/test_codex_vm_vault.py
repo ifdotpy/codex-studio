@@ -7,6 +7,7 @@ from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
+import shlex
 import stat
 import tempfile
 import time
@@ -286,6 +287,134 @@ class ThisMac(unittest.TestCase):
             self.assertTrue(view["unlocked"])
         finally:
             runtime.pool.shutdown()
+
+
+FAKE_SETUP_DESK = r"""#!/usr/bin/env python3
+import json, os, sys, time
+from pathlib import Path
+state = Path(os.environ["FAKE_DESK_STATE"])
+with open(state / "calls", "a") as log:
+    log.write(json.dumps(sys.argv[1:]) + "\n")
+args = sys.argv[1:]
+if args[0] == "aws-profiles":
+    print(json.dumps({"profiles": [{"name": "work", "region": "eu-central-1", "sso": True, "signedIn": False}]}))
+elif args[0] == "deploy":
+    mode = (state / "mode").read_text() if (state / "mode").exists() else "ok"
+    print("layr-desk: creating studio-vault-" + args[2], file=sys.stderr, flush=True)
+    if mode == "signin":
+        print("Error: the AWS profile work needs a sign-in: layr-desk aws-login --profile work", file=sys.stderr)
+        sys.exit(3)
+    if mode == "fail":
+        print("Error: CreateStack studio-vault-x: HTTP 400\n\nCaused by:\n    0: AlreadyExists", file=sys.stderr)
+        sys.exit(1)
+    print(json.dumps({"stack": "s", "site": "https://desk.example.com/" + args[2] + "/", "bucket": "b"}))
+elif args[0] == "aws-login":
+    print(json.dumps({"page": "https://device.example/?code=ABCD", "code": "ABCD"}), flush=True)
+    print(json.dumps({"signedIn": True}))
+"""
+
+
+class Setup(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.state, self.desk_state, self.home = root / "state", root / "desk", root / "home"
+        self.desk_state.mkdir()
+        self.settings = self.home / ".config/studio-vault"
+        self.settings.mkdir(parents=True)
+        (self.settings / "gateway.json").write_text(json.dumps(
+            {"host": "desk.example.com", "profile": "work", "region": "eu-west-1", "role": "r", "artifacts": "a"}))
+        folder = project(self.state, "p")
+        (folder / "project.json").write_text(json.dumps({"projectId": "p", "source": "/Users/me/My Project.v2"}))
+        (folder / "vault.json").write_text(json.dumps({"configured": False}))
+        self.tool = root / "layr-desk"
+        self.tool.write_text(FAKE_SETUP_DESK)
+        self.tool.chmod(0o755)
+        self.runtime = Runtime()
+        self.refreshed: list[Any] = []
+        client = type("Client", (), {"state_dir": self.state})()
+        self.patches = ExitStack()
+        self.patches.enter_context(patch.dict(os.environ, {"FAKE_DESK_STATE": str(self.desk_state),
+                                                           "STUDIO_LAYR_DESK_BIN": str(self.tool),
+                                                           "HOME": str(self.home)}))
+        self.patches.enter_context(patch("codex_linux_workspaces.client", lambda runtime: client))
+        self.patches.enter_context(patch.object(vault, "_refresh", self.refreshed.append))
+
+    def tearDown(self) -> None:
+        self.patches.close()
+        self.runtime.pool.shutdown(wait=True)
+        self.temp.cleanup()
+
+    def calls(self) -> list[list[str]]:
+        path = self.desk_state / "calls"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def keys(self, prefix: str) -> None:
+        (self.settings / prefix).mkdir()
+        (self.settings / prefix / "recipient.txt").write_text("age1x\n")
+
+    def wait(self, start: Any, *args: Any) -> dict[str, Any]:
+        for _ in range(300):
+            job: dict[str, Any] = start(self.runtime, *args)
+            if job["state"] != "running":
+                return job
+            time.sleep(0.02)
+        raise AssertionError("the job did not end")
+
+    def test_the_facts_name_the_vault_after_the_folder_and_show_the_keys_and_profiles(self) -> None:
+        facts = vault.setup_facts(self.runtime, "p")
+        self.assertEqual(facts["prefix"], "my-project-v2")
+        self.assertFalse(facts["keys"])
+        self.assertEqual((facts["site"], facts["region"], facts["gatewayProfile"]),
+                         ("https://desk.example.com/", "eu-west-1", "work"))
+        self.assertEqual(facts["profiles"][0]["name"], "work")
+        self.keys("other")
+        self.assertTrue(vault.setup_facts(self.runtime, "p", "other")["keys"])
+        with self.assertRaises(ValueError):
+            vault.setup_facts(self.runtime, "p", "api")
+
+    def test_a_project_with_a_vault_has_no_setup(self) -> None:
+        (self.state / "layr-projects/p/vault.json").write_text(json.dumps({"configured": True, "prefix": "x"}))
+        with self.assertRaises(ValueError):
+            vault.setup_facts(self.runtime, "p")
+
+    def test_the_setup_needs_the_keys_then_deploys_with_the_vm_writer(self) -> None:
+        with self.assertRaises(ValueError):
+            vault.start_setup(self.runtime, "p", "s-1", "demo", "work", "eu-central-1")
+        self.assertFalse(self.calls())
+        self.keys("demo")
+        done = self.wait(vault.start_setup, "p", "s-2", "demo", "work", "eu-central-1")
+        self.assertEqual((done["state"], done["site"], done["prefix"]), ("done", "https://desk.example.com/demo/", "demo"))
+        self.assertNotIn("progress", done)
+        deploy = [c for c in self.calls() if c[0] == "deploy"]
+        self.assertEqual(len(deploy), 1)
+        self.assertEqual(deploy[0][:7], ["deploy", "--project", "demo", "--profile", "work", "--region", "eu-central-1"])
+        writer = shlex.split(deploy[0][deploy[0].index("--writer") + 1])
+        self.assertTrue(writer[1].endswith("codex_vault.py"))
+        self.assertEqual(writer[2:], ["configure", "/Users/me/My Project.v2"])
+        self.assertEqual(len(self.refreshed), 1)
+        # The same request id reports the same setup and deploys no second time.
+        self.assertEqual(vault.start_setup(self.runtime, "p", "s-2", "demo", "work", "eu-central-1"), done)
+        self.assertEqual(len([c for c in self.calls() if c[0] == "deploy"]), 1)
+
+    def test_a_profile_without_a_sign_in_and_a_failure_say_so(self) -> None:
+        self.keys("demo")
+        (self.desk_state / "mode").write_text("signin")
+        signin = self.wait(vault.start_setup, "p", "s-3", "demo", "work", "eu-central-1")
+        self.assertEqual(signin["state"], "signin")
+        self.assertIn("aws-login --profile work", signin["error"])
+        (self.desk_state / "mode").write_text("fail")
+        failed = self.wait(vault.start_setup, "p", "s-4", "demo", "work", "eu-central-1")
+        self.assertEqual((failed["state"], failed["error"]),
+                         ("failed", "CreateStack studio-vault-x: HTTP 400 Caused by: 0: AlreadyExists"))
+        self.assertFalse(self.refreshed)
+
+    def test_a_sign_in_shows_the_page_and_its_code(self) -> None:
+        done = self.wait(vault.start_login, "work", "l-1")
+        self.assertEqual((done["state"], done["page"], done["code"]), ("done", "https://device.example/?code=ABCD", "ABCD"))
+        self.assertIn(["aws-login", "--profile", "work", "--json"], self.calls())
+        with self.assertRaises(ValueError):
+            vault.start_login(self.runtime, "-bad", "l-2")
 
 
 if __name__ == '__main__':

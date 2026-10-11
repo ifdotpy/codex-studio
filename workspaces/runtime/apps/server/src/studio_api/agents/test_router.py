@@ -761,6 +761,50 @@ def test_project_secret_routes_never_return_or_log_a_value() -> None:
         assert value not in record.getMessage() and value not in str(record.args)
 
 
+def test_vault_setup_routes_pass_their_fields_and_refuse_bad_names() -> None:
+    app, _runtime, _context = _app()
+    calls: list[tuple[object, ...]] = []
+
+    def facts(runtime: object, project_id: str, prefix: str | None) -> dict[str, object]:
+        calls.append(("facts", project_id, prefix))
+        return {"prefix": prefix or "proj", "keys": False, "site": None, "region": "eu-central-1",
+                "gatewayProfile": None, "profiles": [{"name": "work", "signedIn": False}]}
+
+    def setup(runtime: object, project_id: str, request_id: str, prefix: str, profile: str,
+              region: str) -> dict[str, object]:
+        calls.append(("setup", project_id, request_id, prefix, profile, region))
+        if prefix == "taken":
+            raise ValueError("The project has a vault already")
+        return {"requestId": request_id, "state": "running", "prefix": prefix}
+
+    def login(runtime: object, profile: str, request_id: str) -> dict[str, object]:
+        calls.append(("login", profile, request_id))
+        return {"requestId": request_id, "state": "running", "page": "https://device.example/", "code": "AB"}
+
+    with patch("codex_vm_vault.setup_facts", facts), patch("codex_vm_vault.start_setup", setup), \
+            patch("codex_vm_vault.start_login", login):
+        client = TestClient(app)
+        shown = client.post("/api/vault/setup/facts", json={"projectId": "p1"})
+        started = client.post("/api/vault/setup", json={"projectId": "p1", "requestId": "s-1", "prefix": "demo",
+                                                         "profile": "work", "region": "eu-central-1"})
+        refused = client.post("/api/vault/setup", json={"projectId": "p1", "requestId": "s-2", "prefix": "taken",
+                                                         "profile": "work", "region": "eu-central-1"})
+        signin = client.post("/api/vault/aws-login", json={"profile": "work", "requestId": "l-1"})
+        bad = [client.post("/api/vault/setup", json={"projectId": "p1", "requestId": "s-3", "prefix": prefix,
+                                                      "profile": profile, "region": region})
+               for prefix, profile, region in (("a/b", "work", "eu-central-1"), ("x" * 45, "work", "eu-central-1"),
+                                               ("demo", "-x", "eu-central-1"), ("demo", "work", "Mars"))]
+        bad.append(client.post("/api/vault/setup/facts", json={"projectId": "p1", "prefix": "a b"}))
+
+    assert shown.status_code == 200 and shown.json()["profiles"][0]["name"] == "work"
+    assert started.status_code == 200 and started.json()["state"] == "running"
+    assert refused.status_code == 400 and "has a vault" in refused.json()["error"]
+    assert signin.status_code == 200 and signin.json()["page"] == "https://device.example/"
+    assert [response.status_code for response in bad] == [400] * 5
+    assert calls == [("facts", "p1", None), ("setup", "p1", "s-1", "demo", "work", "eu-central-1"),
+                     ("setup", "p1", "s-2", "taken", "work", "eu-central-1"), ("login", "work", "l-1")]
+
+
 class AgentRouterTests(unittest.TestCase):
     def test_durable_action_rejection_happens_before_runtime_call(self) -> None:
         test_durable_action_rejection_happens_before_runtime_call()
@@ -821,6 +865,9 @@ class AgentRouterTests(unittest.TestCase):
 
     def test_vault_pull_route(self) -> None:
         test_vault_pull_route_starts_once_and_refuses_a_project_without_a_vault()
+
+    def test_vault_setup_routes(self) -> None:
+        test_vault_setup_routes_pass_their_fields_and_refuse_bad_names()
 
     def test_project_secret_routes(self) -> None:
         test_project_secret_routes_never_return_or_log_a_value()

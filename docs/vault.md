@@ -181,3 +181,31 @@ The VM root broker pushes with `layr-desk push` (Rust, built at provisioning fro
 source in `workspaces/runtime/apps/layr-desk`), with the configuration on stdin and the same
 writer state folder; an optional `signingKey` makes it sign every tree. `vault.configure` waits
 for a running push.
+
+## Set up a vault
+
+"Set up vault…" in the LAYR menu of a project on this Mac opens `VaultSetup.tsx`. It runs the
+steps of layr-desk's `docs/design.md` ("Set up a vault for a project") with the layr-desk that
+the app carries (`Resources/workspace/bin/layr-desk`):
+
+1. Paper key: the desktop app writes a one-time `.command` script and opens it in Terminal
+   (`desktop/vault-keys.cjs`), which runs `layr-desk keys --project <prefix> --clear`. The words
+   go from layr-desk to Terminal only. Studio's own terminals are not used, because they keep
+   their output in SQLite. The dialog then waits for `~/.config/studio-vault/<prefix>/recipient.txt`.
+2. AWS account: `POST /api/vault/setup/facts` lists the AWS profiles (`layr-desk aws-profiles`)
+   and the gateway's Desk site (`~/.config/studio-vault/gateway.json`). A profile without a
+   usable IAM Identity Center sign-in gets `POST /api/vault/aws-login`, which runs
+   `layr-desk aws-login --json` and shows the AWS page and its code.
+3. Vault: `POST /api/vault/setup` runs, once per request id:
+
+   ```sh
+   layr-desk deploy --project <prefix> --profile <aws profile> --region <region> \
+     --writer "<studio python> <scripts>/codex_vault.py configure <project folder>"
+   ```
+
+   The writer's access key and signing key go through the pipe; a key that the command does
+   not take is deleted again. Exit code 3 means that the profile needs a sign-in. On success
+   the server checks the vault at once, so the LAYR chip gets its cloud.
+
+The vault name comes from the folder name (lower case, at most 44 characters) and can change
+until the paper key is made. A server on another Mac offers the setup guide instead.

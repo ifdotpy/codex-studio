@@ -5,6 +5,9 @@ import type { SidebarBackend } from "./services";
 /** The project vault of a layr project (docs/vault.md): kept by layr-desk, written by the VM. */
 export type ProjectVault = components["schemas"]["ProjectVaultDto"];
 export type VaultPull = components["schemas"]["VaultPullResponse"];
+export type VaultSetupFacts = components["schemas"]["VaultSetupFactsResponse"];
+export type VaultSetupJob = components["schemas"]["VaultSetupResponse"];
+export type VaultLogin = components["schemas"]["VaultLoginResponse"];
 
 /** One server's report of a project's vault; actions go to that server. */
 export type VaultEntry = {
@@ -41,35 +44,52 @@ export function deskLink(vault: ProjectVault): string | null {
   return `${vault.site.replace(/\/*$/, "/")}${encodeURIComponent(vault.prefix)}/`;
 }
 
+type JobOptions<T> = {
+  wait?: (ms: number) => Promise<void>;
+  deadline?: number;
+  onUpdate?: (job: T) => void;
+};
+
 /**
- * Pull the latest vault state into a new folder below `to` (Downloads when left out). The
- * request id stays the same for the whole pull: a repeated request reports the same pull,
- * so a lost reply never starts a second one.
+ * Ask for a job of this Mac's server until it ends. The body keeps the same request id, so a
+ * repeated request reports the same job and a lost reply never starts a second one.
  */
+export async function runJob<T extends { state: string }>(
+  backend: Pick<SidebarBackend, "post">,
+  url: Parameters<SidebarBackend["post"]>[0],
+  body: Record<string, unknown>,
+  {
+    wait = (ms: number) => new Promise<void>((done) => setTimeout(done, ms)),
+    deadline = Date.now() + 60 * 60 * 1000,
+    onUpdate,
+  }: JobOptions<T> = {},
+): Promise<T> {
+  for (;;) {
+    const job = (await backend.post(url, body, { timeoutMs: 30000 })) as T;
+    onUpdate?.(job);
+    if (job.state !== "running") return job;
+    if (Date.now() > deadline)
+      throw new Error(`${url} takes more than an hour`);
+    await wait(1500);
+  }
+}
+
+/** Pull the latest vault state into a new folder below `to` (Downloads when left out). */
 export async function pullVault(
   backend: Pick<SidebarBackend, "post">,
   projectId: string,
   to: string | null,
   {
     requestId = crypto.randomUUID() as string,
-    wait = (ms: number) => new Promise<void>((done) => setTimeout(done, ms)),
-    deadline = Date.now() + 60 * 60 * 1000,
-  }: {
-    requestId?: string;
-    wait?: (ms: number) => Promise<void>;
-    deadline?: number;
-  } = {},
+    ...options
+  }: { requestId?: string } & JobOptions<VaultPull> = {},
 ): Promise<VaultPull> {
-  const body = { projectId, requestId, ...(to ? { to } : {}) };
-  for (;;) {
-    const job = (await backend.post("/api/vault/pull", body, {
-      timeoutMs: 30000,
-    })) as VaultPull;
-    if (job.state !== "running") return job;
-    if (Date.now() > deadline)
-      throw new Error(`The pull into ${job.folder} takes more than an hour`);
-    await wait(1500);
-  }
+  return runJob<VaultPull>(
+    backend,
+    "/api/vault/pull",
+    { projectId, requestId, ...(to ? { to } : {}) },
+    options,
+  );
 }
 
 export function pullText(job: VaultPull): string {
@@ -104,17 +124,24 @@ export function chipWithVault(
   };
 }
 
-export type VaultAction = "desk" | "unlock" | "finder" | "pull" | "setup";
+export type VaultAction =
+  | "desk"
+  | "unlock"
+  | "finder"
+  | "pull"
+  | "setup"
+  | "guide";
 
 /**
- * The vault items of the layr menu. Unlock, Show in Finder and Pull act on this Mac, so they
- * need a project on this Mac's server; Show in Finder needs the desktop app.
+ * The vault items of the LAYR menu. Setup, Unlock, Show in Finder and Pull act on this Mac, so
+ * they need a project on this Mac's server; Show in Finder needs the desktop app. Another
+ * server's project without a vault gets the setup guide.
  */
 export function vaultActions(
   vault: ProjectVault,
   { onThisMac, desktop }: { onThisMac: boolean; desktop: boolean },
 ): VaultAction[] {
-  if (vault.state === "none") return ["setup"];
+  if (vault.state === "none") return onThisMac ? ["setup"] : ["guide"];
   const link = deskLink(vault);
   const here = onThisMac && !!link;
   return [
@@ -123,4 +150,12 @@ export function vaultActions(
     ...(here && desktop && vault.disk ? (["finder"] as const) : []),
     ...(here && vault.unlocked !== false ? (["pull"] as const) : []),
   ];
+}
+
+/** The AWS profile that the setup dialog chooses first: the gateway's, else the first one. */
+export function firstProfile(facts: VaultSetupFacts): string | null {
+  const names = facts.profiles.filter((p) => !p.error).map((p) => p.name);
+  return facts.gatewayProfile && names.includes(facts.gatewayProfile)
+    ? facts.gatewayProfile
+    : (names[0] ?? null);
 }

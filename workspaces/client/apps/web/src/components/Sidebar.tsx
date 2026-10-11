@@ -68,6 +68,7 @@ import {
   type LayrSyncEntry,
 } from "./sidebar/MacSync";
 import LayrMenu from "./sidebar/LayrMenu";
+import VaultSetup from "./sidebar/VaultSetup";
 import VaultUnlock from "./sidebar/VaultUnlock";
 import ProjectSecretsDialog from "./sidebar/ProjectSecretsDialog";
 import {
@@ -271,6 +272,11 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
   } | null>(null);
   // The project and server whose vault unlock dialog is open.
   const [unlockDialog, setUnlockDialog] = useState<{
+    path: string;
+    ownerId?: string;
+  } | null>(null);
+  // The project and server whose vault setup dialog is open.
+  const [setupDialog, setSetupDialog] = useState<{
     path: string;
     ownerId?: string;
   } | null>(null);
@@ -1653,12 +1659,27 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                         actions(entry).includes("setup") && (
                           <Menu.Item
                             key={`${key}:setup`}
+                            onClick={() =>
+                              setSetupDialog({
+                                path: group.path,
+                                ...(entry.ownerId
+                                  ? { ownerId: entry.ownerId }
+                                  : {}),
+                              })
+                            }
+                          >
+                            Set up vault…
+                          </Menu.Item>
+                        ),
+                        actions(entry).includes("guide") && (
+                          <Menu.Item
+                            key={`${key}:guide`}
                             component="a"
                             href={VAULT_SETUP_URL}
                             target="_blank"
                             rel="noreferrer"
                           >
-                            Set up vault…
+                            {`How to set up a vault${suffix}`}
                           </Menu.Item>
                         ),
                       ];
@@ -1682,6 +1703,21 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                   </LayrMenu>
                 )}
               </div>
+              {setupDialog?.path === group.path &&
+                (() => {
+                  const entry = vaultEntries.find(
+                    (item) => item.ownerId === setupDialog.ownerId,
+                  );
+                  return entry ? (
+                    <VaultSetup
+                      entry={entry}
+                      name={group.name}
+                      backend={vaultBackend(entry)}
+                      onClose={() => setSetupDialog(null)}
+                      onDone={(text) => p.notify?.(text)}
+                    />
+                  ) : null;
+                })()}
               {unlockDialog?.path === group.path &&
                 (() => {
                   const entry = vaultEntries.find(

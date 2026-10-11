@@ -2123,6 +2123,27 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/vault/aws-login": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Vault Aws Login
+     * @description Start a sign-in to an AWS profile, or report the sign-in that this requestId
+     *     started.
+     */
+    post: operations["vault_aws_login_api_vault_aws_login_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/vault/pull": {
     parameters: {
       query?: never;
@@ -2138,6 +2159,48 @@ export interface paths {
      *     the pull that this requestId started.
      */
     post: operations["vault_pull_api_vault_pull_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/vault/setup": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Vault Setup
+     * @description Start the setup of the project's vault, or report the setup that this requestId
+     *     started.
+     */
+    post: operations["vault_setup_api_vault_setup_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/vault/setup/facts": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Vault Setup Facts
+     * @description What the vault setup dialog needs: the vault name, the keys on this Mac, the Desk
+     *     site and the AWS profiles.
+     */
+    post: operations["vault_setup_facts_api_vault_setup_facts_post"];
     delete?: never;
     options?: never;
     head?: never;
@@ -13171,6 +13234,59 @@ export interface components {
      */
     UsageResumeStatus: "scheduled" | "started" | "cancelled" | "unknown";
     /**
+     * VaultAwsProfileDto
+     * @description An AWS profile of this Mac: signedIn says whether it has keys or a usable sign-in.
+     */
+    VaultAwsProfileDto: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Error */
+      error?: string | null;
+      /** Name */
+      name: string;
+      /** Region */
+      region?: string | null;
+      /** Signedin */
+      signedIn?: boolean | null;
+      /** Sso */
+      sso?: boolean | null;
+    };
+    /**
+     * VaultLoginRequest
+     * @description Sign in to an AWS profile. A repeated requestId returns the same sign-in.
+     */
+    VaultLoginRequest: {
+      /** Profile */
+      profile: string;
+      /** Requestid */
+      requestId: string;
+    };
+    /**
+     * VaultLoginResponse
+     * @description One AWS sign-in: running (page and code once AWS gives them), done or failed.
+     */
+    VaultLoginResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Code */
+      code?: string | null;
+      /** Error */
+      error?: string | null;
+      /** Page */
+      page?: string | null;
+      /** Requestid */
+      requestId: string;
+      /**
+       * State
+       * @enum {string}
+       */
+      state: "running" | "done" | "failed";
+    };
+    /**
      * VaultPullRequest
      * @description Pull the latest vault state into a new folder below `to` (Downloads when left out).
      *     A repeated requestId returns the same pull.
@@ -13210,6 +13326,81 @@ export interface components {
        * @enum {string}
        */
       state: "running" | "done" | "failed";
+    };
+    /**
+     * VaultSetupFactsRequest
+     * @description The facts for the vault setup dialog; prefix replaces the name from the folder.
+     */
+    VaultSetupFactsRequest: {
+      /** Prefix */
+      prefix?: string | null;
+      /** Projectid */
+      projectId: string;
+    };
+    /**
+     * VaultSetupFactsResponse
+     * @description The vault name, whether this Mac has its keys, the gateway's Desk site and account, and
+     *     the AWS profiles.
+     */
+    VaultSetupFactsResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Gatewayprofile */
+      gatewayProfile: string | null;
+      /** Keys */
+      keys: boolean;
+      /** Prefix */
+      prefix: string;
+      /** Profiles */
+      profiles: components["schemas"]["VaultAwsProfileDto"][];
+      /** Region */
+      region: string;
+      /** Site */
+      site: string | null;
+    };
+    /**
+     * VaultSetupRequest
+     * @description Make the project's vault with an AWS profile. A repeated requestId returns the same job.
+     */
+    VaultSetupRequest: {
+      /** Prefix */
+      prefix: string;
+      /** Profile */
+      profile: string;
+      /** Projectid */
+      projectId: string;
+      /** Region */
+      region: string;
+      /** Requestid */
+      requestId: string;
+    };
+    /**
+     * VaultSetupResponse
+     * @description One vault setup: running (progress), done (site), failed (error), or signin when the
+     *     AWS profile needs a sign-in first.
+     */
+    VaultSetupResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Error */
+      error?: string | null;
+      /** Prefix */
+      prefix: string;
+      /** Progress */
+      progress?: string | null;
+      /** Requestid */
+      requestId: string;
+      /** Site */
+      site?: string | null;
+      /**
+       * State
+       * @enum {string}
+       */
+      state: "running" | "done" | "failed" | "signin";
     };
     /**
      * VaultUnlockRequest
@@ -23750,6 +23941,69 @@ export interface operations {
       };
     };
   };
+  vault_aws_login_api_vault_aws_login_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["VaultLoginRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["VaultLoginResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
   vault_pull_api_vault_pull_post: {
     parameters: {
       query?: never;
@@ -23826,6 +24080,132 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
+    };
+  };
+  vault_setup_api_vault_setup_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["VaultSetupRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["VaultSetupResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  vault_setup_facts_api_vault_setup_facts_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["VaultSetupFactsRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["VaultSetupFactsResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   vault_unlock_api_vault_unlock_post: {

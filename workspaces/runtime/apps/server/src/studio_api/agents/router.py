@@ -37,8 +37,14 @@ from .models import (
     MacSyncResolveRequest,
     MacSyncResolveResponse,
     MacSyncStatusResponse,
+    VaultLoginRequest,
+    VaultLoginResponse,
     VaultPullRequest,
     VaultPullResponse,
+    VaultSetupFactsRequest,
+    VaultSetupFactsResponse,
+    VaultSetupRequest,
+    VaultSetupResponse,
     VaultUnlockRequest,
     VaultUnlockResponse,
     ProjectSecretRemoveRequest,
@@ -382,6 +388,46 @@ def create_router(context: ApiContext) -> APIRouter:
 
         try:
             job = start_pull(current_runtime(), body.projectId, body.requestId, body.to)
+        except (ValueError, OSError, RuntimeError) as error:
+            return context.send(request, {"error": str(error)[:500]}, status=400)
+        return context.send(request, job)
+
+    @router.post("/api/vault/setup/facts", response_model=VaultSetupFactsResponse,
+                 responses=api_write_responses(errors=(400,)))
+    def vault_setup_facts(request: Request, body: VaultSetupFactsRequest) -> Response:
+        """What the vault setup dialog needs: the vault name, the keys on this Mac, the Desk
+        site and the AWS profiles."""
+        from codex_vm_vault import setup_facts
+
+        try:
+            facts = setup_facts(current_runtime(), body.projectId, body.prefix)
+        except (ValueError, OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+            return context.send(request, {"error": str(error)[:500]}, status=400)
+        return context.send(request, facts)
+
+    @router.post("/api/vault/setup", response_model=VaultSetupResponse,
+                 responses=api_write_responses(errors=(400,)))
+    def vault_setup(request: Request, body: VaultSetupRequest) -> Response:
+        """Start the setup of the project's vault, or report the setup that this requestId
+        started."""
+        from codex_vm_vault import start_setup
+
+        try:
+            job = start_setup(current_runtime(), body.projectId, body.requestId, body.prefix,
+                              body.profile, body.region)
+        except (ValueError, OSError, RuntimeError) as error:
+            return context.send(request, {"error": str(error)[:500]}, status=400)
+        return context.send(request, job)
+
+    @router.post("/api/vault/aws-login", response_model=VaultLoginResponse,
+                 responses=api_write_responses(errors=(400,)))
+    def vault_aws_login(request: Request, body: VaultLoginRequest) -> Response:
+        """Start a sign-in to an AWS profile, or report the sign-in that this requestId
+        started."""
+        from codex_vm_vault import start_login
+
+        try:
+            job = start_login(current_runtime(), body.profile, body.requestId)
         except (ValueError, OSError, RuntimeError) as error:
             return context.send(request, {"error": str(error)[:500]}, status=400)
         return context.send(request, job)
