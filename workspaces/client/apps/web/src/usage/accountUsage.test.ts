@@ -45,11 +45,25 @@ describe("account limits cache", () => {
   });
   it("keeps known values after a refresh error without marking them fresh", () => {
     cacheAccountLimits(value("a"));
-    cacheAccountLimits({ ...value("a"), error: "Refresh failed" });
+    const failed = {
+      ...value("a"),
+      error: "Provider request failed",
+      readError: {
+        message: "Provider request failed",
+        status: 503,
+        details: {
+          error: { message: "Provider request failed", code: "overloaded" },
+        },
+      },
+    };
+    cacheAccountLimits(failed);
     expect(cachedAccountLimits("a")?.data).toEqual(value("a").data);
     expect(limitsSnapshotIsFresh(cachedAccountLimits("a"), "a", "a", 20)).toBe(
       false,
     );
+    configureLimitsCache("other-test");
+    configureLimitsCache(`test-${scope}`);
+    expect(cachedAccountLimits("a")).toEqual(failed);
   });
   it("returns no value when nothing is known and honors a newer empty read", () => {
     expect(cachedAccountLimits("unknown")).toBeNull();

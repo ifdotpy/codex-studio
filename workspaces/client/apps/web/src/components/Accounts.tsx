@@ -302,7 +302,9 @@ function AccountCapacity({
         <ErrorDescription
           className="account-action-error"
           role="status"
-          value={limitsError || (!limits?.data && limits?.error)}
+          value={
+            limits?.readError || limitsError || (!limits?.data && limits?.error)
+          }
         />
       )}
       {buckets.map((bucket) => (
