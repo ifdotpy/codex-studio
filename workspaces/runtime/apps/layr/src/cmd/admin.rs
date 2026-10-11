@@ -1,4 +1,4 @@
-//! save, undo, op log, try, checks, gc, fsck, reindex, init, projects, config, layer.
+//! save, undo, op log, try, checks, gc, fsck, reindex, init, projects, config, cache.
 
 use super::{exit, here};
 use crate::args::{parse, Spec};
@@ -17,7 +17,7 @@ use std::path::Path;
 
 pub fn save(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let spec =
-        Spec::new().value("-m|--message").flag("--running").flag("--force").flag("--layers").flag("--all").flag("-q|--quiet");
+        Spec::new().value("-m|--message").flag("--running").flag("--force").flag("--caches").flag("--all").flag("-q|--quiet");
     let a = parse(&spec, args)?;
     let h = here(ctx)?;
     let repo = &h.repo;
@@ -32,24 +32,24 @@ pub fn save(ctx: &Ctx, args: &[String]) -> Result<i32> {
         repo.authorize_line(ctx, &l, crate::repo::LineOp::Save)?;
         let _lock = repo.p.lock()?;
         let l = repo.line(&l.id)?;
-        let layers = if a.has("--layers") { repo.layer_paths(&repo.working(&l)) } else { Vec::new() };
-        let st = if a.has("--layers") {
-            // A layer folder that a tool made again as a plain folder becomes a layer first, so
+        let caches = if a.has("--caches") { repo.cache_paths(&repo.working(&l)) } else { Vec::new() };
+        let st = if a.has("--caches") {
+            // A cache folder that a tool made again as a plain folder becomes a cache first, so
             // its files stay out of the state.
             let (u, g) = repo.owner_ids(&l);
-            for p in &layers {
-                let _ = crate::repo::convert_layer(&repo.working(&l), p, u, g);
+            for p in &caches {
+                let _ = crate::repo::convert_cache(&repo.working(&l), p, u, g);
             }
-            Some(repo.layers_state(ctx, &l, &msg, a.has("--running"), &layers)?)
+            Some(repo.caches_state(ctx, &l, &msg, a.has("--running"), &caches)?)
         } else {
             repo.save(ctx, &l, &msg, a.has("--running"), a.has("--force"))?
         };
         match st {
             Some(s) => {
-                if a.has("--layers") {
-                    // Layers saved on a protected line may warm other users' lines.
+                if a.has("--caches") {
+                    // Caches saved on a protected line may warm other users' lines.
                     let shared = repo.policy().rule_for(&l.name).is_some();
-                    record_layers(ctx, repo, &s.id, &repo.working(&l), &layers, shared)?;
+                    record_caches(ctx, repo, &s.id, &repo.working(&l), &caches, shared)?;
                 }
                 if !a.has("-q") {
                     outln!(ctx, "{} {}", l.name, ids::display(&s.id));
@@ -65,9 +65,9 @@ pub fn save(ctx: &Ctx, args: &[String]) -> Result<i32> {
     Ok(0)
 }
 
-/// Snapshot the layers at `paths` of a working folder (`w`) as the layers of `state` and record
-/// them (`save.layers`, with their subvolume UUIDs). `shared`: they may go to other users' lines.
-pub fn record_layers(
+/// Snapshot the caches at `paths` of a working folder (`w`) as the caches of `state` and record
+/// them (`save.caches`, with their subvolume UUIDs). `shared`: they may go to other users' lines.
+pub fn record_caches(
     ctx: &Ctx,
     repo: &Repo,
     state: &str,
@@ -75,32 +75,32 @@ pub fn record_layers(
     paths: &[String],
     shared: bool,
 ) -> Result<BTreeMap<String, String>> {
-    let mut layers = BTreeMap::new();
+    let mut caches = BTreeMap::new();
     for p in paths {
-        let lp = fsutil::safe_join(w, p)?;
+        let cp = fsutil::safe_join(w, p)?;
         let name = format!("{state}@{}", p.replace('/', "%2F"));
-        if crate::model::is_layer_name(&name, state) && btrfs::is_subvolume(&lp) && !repo.p.layer_path(state, &name).exists() {
-            btrfs::snapshot(&lp, &repo.p.layer_path(state, &name), true)?;
-            layers.insert(p.clone(), name);
+        if crate::model::is_cache_name(&name, state) && btrfs::is_subvolume(&cp) && !repo.p.cache_path(state, &name).exists() {
+            btrfs::snapshot(&cp, &repo.p.cache_path(state, &name), true)?;
+            caches.insert(p.clone(), name);
         }
     }
-    if layers.is_empty() {
-        return Ok(layers);
+    if caches.is_empty() {
+        return Ok(caches);
     }
     let mut uuids = serde_json::Map::new();
-    for snap in layers.values() {
-        let info = btrfs::subvol_info(&repo.p.layer_path(state, snap))?;
+    for snap in caches.values() {
+        let info = btrfs::subvol_info(&repo.p.cache_path(state, snap))?;
         uuids.insert(snap.clone(), serde_json::Value::String(info.uuid));
     }
-    let mut rec = Record::new("save.layers");
-    rec.data = serde_json::json!({"state": state, "layers": layers, "uuids": uuids, "shared": shared});
+    let mut rec = Record::new("save.caches");
+    rec.data = serde_json::json!({"state": state, "caches": caches, "uuids": uuids, "shared": shared});
     if let Err(e) = repo.commit_record(ctx, rec) {
-        for snap in layers.values() {
-            let _ = btrfs::delete_tree(&repo.p.layer_path(state, snap));
+        for snap in caches.values() {
+            let _ = btrfs::delete_tree(&repo.p.cache_path(state, snap));
         }
         return Err(e);
     }
-    Ok(layers)
+    Ok(caches)
 }
 
 /// Undo the newest operation of the given kinds on a line.
@@ -118,7 +118,7 @@ const NOT_UNDOABLE: &[&str] = &[
     "machine.trust",
     "backup",
     "save",
-    "save.layers",
+    "save.caches",
     "check",
     "gc",
     "machine",
@@ -451,7 +451,7 @@ pub fn try_cmd(ctx: &Ctx, args: &[String]) -> Result<i32> {
 /// state, which may come from another user: it gets a clean environment (no tokens or keys of
 /// the caller), only HOME, USER, LOGNAME and PATH.
 ///
-/// The copy starts with the warm layers of the state, but its build output is never kept: layr
+/// The copy starts with the warm caches of the state, but its build output is never kept: layr
 /// cannot tell whether build output is valid for a state (docs/design.md, section 5).
 pub fn run_check(ctx: &Ctx, repo: &Repo, state: &str, argv: &[String], command: &str, quiet: bool) -> Result<i32> {
     run_check_in(ctx, repo, state, argv, command, &[], quiet, false)
@@ -634,18 +634,18 @@ pub fn run_gc(ctx: &Ctx, repo: &Repo, dry: bool) -> Result<Vec<String>> {
     for id in &delete {
         let s = repo.p.db.state(id)?;
         if let Some(s) = &s {
-            for snap in s.layers.values() {
-                let _ = btrfs::delete_tree(&repo.p.layer_path(id, snap));
+            for snap in s.caches.values() {
+                let _ = btrfs::delete_tree(&repo.p.cache_path(id, snap));
             }
         }
         if btrfs::delete_tree(&repo.p.state_path(id)).is_ok() {
             deleted.push(id.clone());
         }
     }
-    let layers = prune_layers(repo)?;
-    if !deleted.is_empty() || !layers.is_empty() {
+    let caches = prune_caches(repo)?;
+    if !deleted.is_empty() || !caches.is_empty() {
         let mut rec = Record::new("gc");
-        rec.data = serde_json::json!({"deleted": deleted, "layers": layers});
+        rec.data = serde_json::json!({"deleted": deleted, "caches": caches});
         repo.commit_record(ctx, rec)?;
     }
     // Old temporary snapshots.
@@ -667,29 +667,29 @@ pub fn run_gc(ctx: &Ctx, repo: &Repo, dry: bool) -> Result<Vec<String>> {
     Ok(deleted)
 }
 
-/// Layer snapshots (build output) are large and only the newest ones warm new lines: they stay
-/// for the heads of lines and for the newest `retention.layers` (5) states with layers. The
-/// states themselves stay; only their layer snapshots go.
-fn prune_layers(repo: &Repo) -> Result<Vec<String>> {
-    let keep_n = repo.p.config_u64("retention.layers", 5) as usize;
+/// Cache snapshots (build output) are large and only the newest ones warm new lines: they stay
+/// for the heads of lines and for the newest `retention.caches` (5) states with caches. The
+/// states themselves stay; only their cache snapshots go.
+fn prune_caches(repo: &Repo) -> Result<Vec<String>> {
+    let keep_n = repo.p.config_u64("retention.caches", 5) as usize;
     let heads: BTreeSet<String> = repo.p.db.lines()?.into_iter().map(|l| l.head).collect();
-    let mut layered: Vec<(i64, String, Vec<String>)> = Vec::new();
+    let mut with_caches: Vec<(i64, String, Vec<String>)> = Vec::new();
     for (id, _) in repo.p.db.present_states()? {
         if let Some(s) = repo.p.db.state(&id)? {
-            let snaps: Vec<String> = s.layers.values().filter(|n| repo.p.layer_path(&id, n).exists()).cloned().collect();
+            let snaps: Vec<String> = s.caches.values().filter(|n| repo.p.cache_path(&id, n).exists()).cloned().collect();
             if !snaps.is_empty() {
-                layered.push((s.time, id, snaps));
+                with_caches.push((s.time, id, snaps));
             }
         }
     }
-    layered.sort_by_key(|x| std::cmp::Reverse(x.0));
+    with_caches.sort_by_key(|x| std::cmp::Reverse(x.0));
     let mut deleted = Vec::new();
-    for (_, id, snaps) in layered.into_iter().skip(keep_n) {
+    for (_, id, snaps) in with_caches.into_iter().skip(keep_n) {
         if heads.contains(&id) {
             continue;
         }
         for n in snaps {
-            if btrfs::delete_tree(&repo.p.layer_path(&id, &n)).is_ok() {
+            if btrfs::delete_tree(&repo.p.cache_path(&id, &n)).is_ok() {
                 deleted.push(n);
             }
         }
@@ -1332,8 +1332,8 @@ pub fn protect(ctx: &Ctx, args: &[String]) -> Result<i32> {
     Ok(0)
 }
 
-/// Regenerable layers: folders kept as nested subvolumes, outside automatic states.
-pub fn layer(ctx: &Ctx, args: &[String]) -> Result<i32> {
+/// Regenerable caches: folders kept as nested subvolumes, outside automatic states.
+pub fn cache(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let h = here(ctx)?;
     let repo = &h.repo;
     let sub = args.first().map(|s| s.as_str()).unwrap_or("list");
@@ -1341,17 +1341,17 @@ pub fn layer(ctx: &Ctx, args: &[String]) -> Result<i32> {
         "list" => {
             // The machine setting, and in a line also the regenerable folders of `.layrattributes`.
             let paths = match &h.line {
-                Some(l) => repo.layer_paths(&repo.working(l)),
+                Some(l) => repo.cache_paths(&repo.working(l)),
                 None => repo.p.config_strings("regenerable"),
             };
             for p in paths {
                 let state = match &h.line {
                     Some(l) => {
-                        let lp = repo.working(l).join(&p);
-                        if btrfs::is_subvolume(&lp) {
-                            "layer"
-                        } else if lp.exists() {
-                            "plain folder (run layr layer repair)"
+                        let cp = repo.working(l).join(&p);
+                        if btrfs::is_subvolume(&cp) {
+                            "cache"
+                        } else if cp.exists() {
+                            "plain folder (run layr cache repair)"
                         } else {
                             "absent"
                         }
@@ -1364,7 +1364,7 @@ pub fn layer(ctx: &Ctx, args: &[String]) -> Result<i32> {
         }
         "add" | "remove" => {
             repo.require(ctx, "config")?;
-            let path = args.get(1).ok_or_else(|| exit(128, "usage: layr layer add|remove <path>"))?;
+            let path = args.get(1).ok_or_else(|| exit(128, "usage: layr cache add|remove <path>"))?;
             fsutil::check_rel(path)?;
             let mut v = repo.p.config_strings("regenerable");
             if sub == "add" {
@@ -1379,27 +1379,27 @@ pub fn layer(ctx: &Ctx, args: &[String]) -> Result<i32> {
             if sub == "add" {
                 if let Some(l) = &h.line {
                     let (u, g) = repo.owner_ids(l);
-                    crate::repo::convert_layer(&repo.working(l), path, u, g)?;
+                    crate::repo::convert_cache(&repo.working(l), path, u, g)?;
                 }
             }
             Ok(0)
         }
         "repair" => {
-            // Layer folders that a tool deleted and made again as plain folders become layers
+            // Cache folders that a tool deleted and made again as plain folders become caches
             // again. Best at a quiet point, when no build runs in the line.
             let l = h.line()?.clone();
             repo.authorize_line(ctx, &l, crate::repo::LineOp::Save)?;
             let _lock = repo.p.lock()?;
             let l = repo.line(&l.id)?;
             let (u, g) = repo.owner_ids(&l);
-            for p in repo.layer_paths(&repo.working(&l)) {
-                if crate::repo::convert_layer(&repo.working(&l), &p, u, g)? {
-                    outln!(ctx, "{p}: a layer again");
+            for p in repo.cache_paths(&repo.working(&l)) {
+                if crate::repo::convert_cache(&repo.working(&l), &p, u, g)? {
+                    outln!(ctx, "{p}: a cache again");
                 }
             }
             Ok(0)
         }
-        _ => Err(exit(128, "usage: layr layer (list|add|remove|repair) [<path>]")),
+        _ => Err(exit(128, "usage: layr cache (list|add|remove|repair) [<path>]")),
     }
 }
 

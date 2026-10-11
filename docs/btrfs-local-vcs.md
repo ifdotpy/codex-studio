@@ -92,7 +92,7 @@ so models learn it quickly, and it has equal convenience. It does not take the n
     layr's default push keeps every state as a commit.
 20. Exploration groups (below) and the `host_exec` slots are Studio workflows built from lines,
     `merge --expect`, `layr export` and the line folders; layr no longer has `group` and `slot`.
-21. The end of an agent turn: `layr layer repair`, then `layr save -m "Studio turn <n>"`
+21. The end of an agent turn: `layr cache repair`, then `layr save -m "Studio turn <n>"`
     (replaces `layr save --turn-end`).
 22. The layr copy in `workspaces/runtime/apps/layr` is vendored from a fixed revision
     (`workspaces/runtime/apps/server/src/update-vm-layr.py`). Moving it to `942c1b6` also needs
@@ -111,11 +111,11 @@ so models learn it quickly, and it has equal convenience. It does not take the n
     - named checks (`layr config check.<name>`, then `layr protect main --check <name>`) run on
       every merge result; their command sets its own `PATH` (checks get a clean environment).
       layr does not keep the build output of a check (changed on 2026-10-10, layr ec725b4): a
-      warm layer comes only from an explicit `layr save --layers` on main, and which tools'
+      warm cache comes only from an explicit `layr save --caches` on main, and which tools'
       output is valid in a new line is Studio's choice (layr `docs/design.md`, section 5).
-      The project's `.layrattributes` file (`regenerable`, layr c6063e4) names the layer folders; the operator
-      (`codex_layr_exec.py`) or the lead builds in main and runs `layr save --layers`
-      ([vm-layr.md](vm-layr.md), "Warm layers");
+      The project's `.layrattributes` file (`regenerable`, layr c6063e4) names the cache folders; the operator
+      (`codex_layr_exec.py`) or the lead builds in main and runs `layr save --caches`
+      ([vm-layr.md](vm-layr.md), "Warm caches");
     - Studio merges as the lead agent's user, not as root: root passes every rule;
     - a task that needs more rights for a while gets a role for a time
       (`layr access grant <agent> maintainer --until 2h`).
@@ -136,10 +136,10 @@ so models learn it quickly, and it has equal convenience. It does not take the n
 | Operation    | One recorded action: save, merge, restore, import, export, delete. Every operation can be undone.                                                           |
 | Project root | The project folder is a btrfs subvolume. Its git object store, if any, is a nested subvolume, so project snapshots and `btrfs send` never include git data. |
 
-A project can have more separate layers: nested subvolumes for data that must be included or
+A project can have more nested subvolumes for data that must be included or
 excluded as a unit. The git object store is one. Regenerable data (for example `target/`,
 `node_modules/`, `.venv/`) is another, so a policy can include it for a live agent move and
-exclude it from long-term replication. A state records the snapshot of each layer.
+exclude it from long-term replication. A state records the snapshot of each cache.
 
 A state is a browsable folder. Reading an old file, or searching old code with `rg`, needs no
 checkout.
@@ -263,7 +263,7 @@ over ssh or the paired server channel, [multiple Studio servers](multi-server.md
 - Data: for each state that the peer lacks, `btrfs send -p <latest common state>`. The receiver
   takes only a state that a signed record names, as exactly one subvolume with the received UUID
   that record names. The file content is trusted together with the machine that made the state.
-- Regenerable layers: sent only for a live agent move (`--auto --layers`), checked against the
+- Regenerable caches: sent only for a live agent move (`--auto --caches`), checked against the
   subvolume ids in the signed `save.layers` record. Not in backups.
 - Divergence: when two machines continue one line, each machine keeps its own head; the other one
   is `<line>@<machine>`, and a normal merge joins them.
@@ -655,7 +655,7 @@ Studio integration:
 - Use layr for Linux workspaces instead of the overlayfs engine
   ([image workspaces](workspace-images.md)) and the git status change detector
   ([Linux VM workspaces](linux-vm-workspaces.md)), behind the same public API.
-- Call `layr layer repair` and `layr save` at the end of each agent turn; run `layr daemon` in the
+- Call `layr cache repair` and `layr save` at the end of each agent turn; run `layr daemon` in the
   VM.
 - The read-only network share of the main line and `states/`.
 

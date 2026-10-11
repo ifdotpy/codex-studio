@@ -93,14 +93,14 @@ pub fn delete_tree(path: &Path) -> Result<()> {
     }
     if is_subvolume(path) {
         // O(1) in the usual case. Only a subvolume with nested subvolumes (a working folder with
-        // its .git or build layers) answers ENOTEMPTY; then the nested ones are found and
+        // its .git folder or caches) answers ENOTEMPTY; then the nested ones are found and
         // destroyed first, through descriptors.
         let (dir, name) = split_parent(path)?;
         match sys::subvol_destroy(dir.as_fd(), &name) {
             Ok(()) => return Ok(()),
             Err(e) if is_not_empty(&e) => {
                 let t = crate::tree::Tree::open(path)?;
-                // The usual nested subvolume first (the .git layer), then a full search.
+                // The usual nested subvolume first (the .git folder), then a full search.
                 if t.stat(".git").map(|m| m.is_dir() && m.ino == FIRST_FREE_OBJECTID).unwrap_or(false) {
                     t.remove(".git")?;
                     if sys::subvol_destroy(dir.as_fd(), &name).is_ok() {
