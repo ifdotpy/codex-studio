@@ -1,37 +1,26 @@
-"""Installed Rust lifecycle binding contract; no backend/provider involved."""
+"""Installed Rust lifecycle binding contract through the Python caller."""
 
-# Support direct execution without runner-provided PYTHONPATH.
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
+from codex_layout import SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
+
 isolate_supervisor_environment()
 
-
-import hashlib
 import json
-import socket
-import subprocess
-import time
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
 
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 
 import studio_operations_native as native
 
-from codex_operations_adapter import (
-    _legacy_state,
-    apply_decision,
-    check_protocol,
-    content_for_record,
-    missing_receipt_outcome,
-    state_for_record,
-    transition_record,
-)
+from codex_operations_adapter import PROTOCOL_VERSION, check_protocol
+from codex_tool_requests import _apply_decision, _lifecycle, _missing_receipt_outcome
 
 FIXTURE = (
     Path(__file__).resolve().parents[3]
@@ -39,150 +28,135 @@ FIXTURE = (
 )
 
 
-def _fingerprint(value):
-    return list(hashlib.sha256(value.encode("utf-8")).digest())
-
-
-def _attempt(epoch, generation=None):
+def _record(stage="queued", outcome="pending", cancelled=False):
     return {
+        "id": "default:thread-a:call-a",
         "agent": "agent-a",
-        "account": "default",
-        "thread": "thread-a",
-        "epoch": epoch,
-        "generation": generation,
+        "accountKey": "default",
+        "threadId": "thread-a",
+        "callId": "call-a",
+        "signature": "signature-a",
+        "epoch": 4,
+        "stage": stage,
+        "outcome": outcome,
+        "cancelRequested": cancelled,
+        "readOnly": False,
     }
 
 
-def _fixture_kind(step):
-    kind = step["kind"]
-    if kind == "admit":
-        return {"Admit": {"content": _fingerprint(step["content"])} }
-    if kind == "dispatch":
-        return "ClaimDispatch"
-    if kind == "cancel":
-        return "Cancel"
-    if kind == "server_restart":
-        return "ServerRestarted"
-    if kind in {"invalid_response", "timeout", "process_lost"}:
-        failure = {
-            "invalid_response": "InvalidPostExecutionResponse",
-            "timeout": "Timeout",
-            "process_lost": "ProcessLost",
-        }[kind]
-        return {"Failure": failure}
-    if kind == "committed_receipt":
-        return "CommittedOperationReceipt"
-    if kind == "applied_response":
-        return "AppliedResponse"
-    if kind == "receipt_missing":
-        return "ReceiptMissing"
-    raise AssertionError(f"Unknown fixture event kind: {kind}")
-
-
 class OperationsNativeContract(unittest.TestCase):
-    def test_python_fixture_replays_through_installed_native_module(self):
-        cases = json.loads(FIXTURE.read_text(encoding="utf-8"))
-        for case in cases:
+    def test_python_fixture_replays_through_typed_record_boundary(self):
+        for case in json.loads(FIXTURE.read_text(encoding="utf-8")):
             with self.subTest(case=case["name"]):
-                state = {"revision": 0, "operation": None, "tombstone": None}
-                identity = {
-                    "scope": {"ToolRequest": {"account": "default", "thread": "thread-a"}},
-                    "request_id": "call-a",
-                }
+                record = _record()
+                record.pop("stage")
+                record.pop("outcome")
                 rejected = False
-                for index, step in enumerate(case["steps"]):
-                    attempt = _attempt(step.get("epoch", 4), step.get("generation"))
+                last_kind = None
+                for step in case["steps"]:
+                    record["epoch"] = step.get("epoch", 4)
+                    if step.get("generation") is not None:
+                        record["supervisor"] = {"generation": step["generation"]}
+                    kind = step["kind"]
                     event = {
-                        "id": f"{case['name']}:{index}",
-                        "expected_revision": state["revision"],
-                        "identity": identity,
-                        "attempt": attempt,
-                        "kind": _fixture_kind(step),
-                    }
-                    decision = json.loads(
-                        native.transition(json.dumps(state), json.dumps(event))
+                        "admit": "Admit",
+                        "dispatch": "ClaimDispatch",
+                        "cancel": "Cancel",
+                        "server_restart": "ServerRestarted",
+                        "invalid_response": "Failure",
+                        "timeout": "Failure",
+                        "process_lost": "Failure",
+                        "committed_receipt": "CommittedOperationReceipt",
+                        "applied_response": "AppliedResponse",
+                        "receipt_missing": "ReceiptMissing",
+                    }[kind]
+                    empty = "stage" not in record
+                    if empty and event == "Admit" and step.get("content") is not None:
+                        record["signature"] = step["content"]
+                    decision = native.transition_record(
+                        json.dumps(record),
+                        event,
+                        empty=empty,
+                        generation=step.get("generation"),
+                        admission_signature=step.get("content"),
+                        admission_agent=record["agent"],
                     )
-                    rejected = isinstance(decision["kind"], dict)
-                    if not rejected:
-                        state = decision["next_state"]
-                actual = (
-                    state["operation"]["state"]
-                    if state["operation"] is not None
-                    else "Absent"
-                )
-                self.assertEqual(actual, case["rust_state"])
-                self.assertEqual(
-                    rejected,
-                    case["name"] == "r14_changed_content_rejects_before_effect",
-                )
-
-    def test_malformed_native_payload_raises_value_error(self):
-        with self.assertRaisesRegex(ValueError, "Invalid operation state"):
-            native.transition("{", "{}")
+                    last_kind = decision.kind
+                    rejected = last_kind == "Rejected"
+                    if rejected:
+                        self.assertEqual(
+                            decision.rejection_message,
+                            "This request id has different content",
+                        )
+                        continue
+                    _apply_decision(record, decision)
+                    if event == "ServerRestarted" and record["stage"] != "cancelled":
+                        # Match the caller's additional recovery label after Rust records
+                        # the uncertain outcome.
+                        record["stage"] = "interrupted"
+                self.assertEqual(rejected, case["name"] == "r14_changed_content_rejects_before_effect")
+                if case["name"] == "r14_same_identity_and_content_returns_saved_running_operation":
+                    self.assertEqual(last_kind, "ReturnExisting")
+                elif case["name"] == "r15_missing_receipt_is_unknown_not_proof":
+                    self.assertEqual(last_kind, "ReceiptMissingUnknown")
+                else:
+                    self.assertEqual(last_kind == "Rejected", rejected)
+                self.assertEqual(record.get("stage", "not_found"), case["python_stage"])
+                self.assertEqual(record.get("outcome", "unknown"), case["python_outcome"])
 
     def test_protocol_mismatch_fails_clearly(self):
+        self.assertEqual(native.PROTOCOL_VERSION, PROTOCOL_VERSION)
         with self.assertRaisesRegex(RuntimeError, "protocol mismatch"):
             check_protocol(SimpleNamespace(PROTOCOL_VERSION=native.PROTOCOL_VERSION + 1))
 
-    def test_all_current_persisted_record_states_replay_without_dispatch(self):
+    def test_supported_persisted_pairs_replay_without_a_transition(self):
         records = [
-            ("queued", "pending", False, "Reserved"),
-            ("running", "pending", False, "Dispatched"),
-            ("running", "pending", True, "CancelRequested"),
-            ("cancelled", "not_applied", True, "CancelledBeforeDispatch"),
-            ("interrupted", "unknown", False, "Unknown"),
-            ("unknown", "unknown", False, "Unknown"),
-            ("queued", "unknown", False, "Unknown"),
-            ("completed", "applied", False, "Applied"),
-            ("failed", "not_applied", False, "NotApplied"),
-            ("failed", "unknown", False, "Unknown"),
+            ("queued", "pending", False, "Reserved", "queued", "pending", False),
+            ("running", "pending", False, "Dispatched", "running", "pending", False),
+            ("running", "pending", True, "CancelRequested", "running", "pending", True),
+            ("cancelled", "not_applied", True, "CancelledBeforeDispatch", "cancelled", "not_applied", True),
+            ("interrupted", "unknown", False, "Unknown", "failed", "unknown", False),
+            ("unknown", "unknown", False, "Unknown", "failed", "unknown", False),
+            ("queued", "unknown", False, "Unknown", "failed", "unknown", False),
+            ("completed", "applied", False, "Applied", "completed", "applied", False),
+            ("failed", "not_applied", False, "NotApplied", "failed", "not_applied", False),
+            ("failed", "unknown", False, "Unknown", "failed", "unknown", False),
         ]
-        for index, (stage, outcome, cancelled, expected) in enumerate(records):
+        for stage, outcome, cancelled, state, persisted_stage, persisted_outcome, persisted_cancel in records:
             with self.subTest(stage=stage, outcome=outcome, cancelled=cancelled):
-                record = {
-                    "id": f"request-{index}",
-                    "agent": "agent-a",
-                    "accountKey": "default",
-                    "threadId": "thread-a",
-                    "callId": f"call-{index}",
-                    "signature": "existing-signature",
-                    "epoch": 4,
-                    "stage": stage,
-                    "outcome": outcome,
-                    "cancelRequested": cancelled,
-                }
-                self.assertEqual(_legacy_state(record)[1], expected)
-                state, _, _ = state_for_record(record)
-                decision, _ = transition_record(
-                    record, "Admit", content=content_for_record(record)
-                )
-                self.assertEqual(decision["kind"], "ReturnExisting")
-                self.assertEqual(state["operation"]["state"], expected)
-                self.assertFalse(apply_decision(record, decision))
+                result = _lifecycle(_record(stage, outcome, cancelled), "Admit")
+                self.assertEqual(result.kind, "ReturnExisting")
+                self.assertEqual(result.stage, persisted_stage)
+                self.assertEqual(result.outcome, persisted_outcome)
+                self.assertEqual(result.cancel_requested, persisted_cancel)
 
-    def test_adapter_transition_performs_no_io(self):
-        record = {
-            "id": "request-io",
-            "agent": "agent-a",
-            "accountKey": "default",
-            "threadId": "thread-a",
-            "callId": "call-io",
-            "signature": "signature",
-            "epoch": 4,
-            "stage": "queued",
-            "outcome": "pending",
-            "cancelRequested": False,
-        }
-        with (
-            patch("builtins.open", side_effect=AssertionError("I/O")),
-            patch.object(Path, "open", side_effect=AssertionError("I/O")),
-            patch.object(socket, "socket", side_effect=AssertionError("I/O")),
-            patch.object(subprocess, "Popen", side_effect=AssertionError("I/O")),
-            patch.object(time, "time", side_effect=AssertionError("I/O")),
+    def test_transition_result_drives_persisted_write_and_duplicate_dispatch_is_noop(self):
+        record = _record()
+        decision = _lifecycle(record, "ClaimDispatch")
+        self.assertEqual(decision.kind, "Transitioned")
+        self.assertTrue(_apply_decision(record, decision))
+        self.assertEqual((record["stage"], record["outcome"]), ("running", "pending"))
+        repeated = _lifecycle(record, "ClaimDispatch")
+        self.assertEqual(repeated.kind, "NoEffect")
+        self.assertFalse(_apply_decision(record, repeated))
+
+    def test_unknown_persisted_pair_rejects_with_legacy_message(self):
+        record = _record("future-stage", "pending")
+        with self.assertRaisesRegex(
+            ValueError,
+            "Unsupported stored tool request lifecycle: future-stage/pending",
         ):
-            decision, _ = transition_record(record, "ClaimDispatch")
-            self.assertEqual(decision["kind"], "Transitioned")
-            self.assertEqual(missing_receipt_outcome("missing-request"), "unknown")
+            _lifecycle(record, "ServerRestarted")
+
+    def test_changed_content_and_missing_receipt_keep_existing_messages(self):
+        record = _record()
+        decision = native.transition_record(
+            json.dumps(record), "Admit", admission_signature="different-signature"
+        )
+        self.assertEqual(decision.kind, "Rejected")
+        self.assertEqual(decision.rejection_code, "DifferentContent")
+        self.assertEqual(decision.rejection_message, "This request id has different content")
+        self.assertEqual(_missing_receipt_outcome("missing-request"), "unknown")
 
 
 if __name__ == "__main__":

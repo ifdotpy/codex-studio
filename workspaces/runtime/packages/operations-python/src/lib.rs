@@ -1,14 +1,11 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-#[cfg(not(test))]
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
-#[cfg(not(test))]
 use pyo3::prelude::*;
-#[cfg(not(test))]
-use studio_operations::{Event, State, transition as core_transition};
 
-#[cfg(not(test))]
-const PROTOCOL_VERSION: u32 = 1;
+mod record_adapter;
+
+const PROTOCOL_VERSION: u32 = 2;
 
 fn catch_panic<T, F>(operation: F) -> Result<T, ()>
 where
@@ -17,38 +14,72 @@ where
     catch_unwind(AssertUnwindSafe(operation)).map_err(|_| ())
 }
 
-#[cfg(not(test))]
-fn transition_json(state_json: &str, event_json: &str) -> PyResult<String> {
-    let result = catch_panic(|| -> PyResult<String> {
-        let state: State = serde_json::from_str(state_json)
-            .map_err(|error| PyValueError::new_err(format!("Invalid operation state: {error}")))?;
-        let event: Event = serde_json::from_str(event_json)
-            .map_err(|error| PyValueError::new_err(format!("Invalid operation event: {error}")))?;
-        let decision = core_transition(&state, &event);
-        serde_json::to_string(&decision).map_err(|error| {
-            PyRuntimeError::new_err(format!("Could not encode operation decision: {error}"))
-        })
+#[pyclass(module = "studio_operations_native")]
+pub struct TransitionResult {
+    #[pyo3(get)]
+    kind: String,
+    #[pyo3(get)]
+    rejection_code: Option<String>,
+    #[pyo3(get)]
+    rejection_message: Option<String>,
+    #[pyo3(get)]
+    stage: Option<String>,
+    #[pyo3(get)]
+    outcome: Option<String>,
+    #[pyo3(get)]
+    cancel_requested: Option<bool>,
+}
+
+impl From<record_adapter::AdapterResult> for TransitionResult {
+    fn from(result: record_adapter::AdapterResult) -> Self {
+        Self {
+            kind: result.kind.to_owned(),
+            rejection_code: result.rejection_code,
+            rejection_message: result.rejection_message,
+            stage: result.stage.map(str::to_owned),
+            outcome: result.outcome.map(str::to_owned),
+            cancel_requested: result.cancel_requested,
+        }
+    }
+}
+
+#[pyfunction]
+#[pyo3(signature = (record_json, event, *, proof=None, empty=false, generation=None, admission_signature=None, admission_agent=None))]
+fn transition_record(
+    record_json: &str,
+    event: &str,
+    proof: Option<&str>,
+    empty: bool,
+    generation: Option<u64>,
+    admission_signature: Option<&str>,
+    admission_agent: Option<&str>,
+) -> PyResult<TransitionResult> {
+    let result = catch_panic(|| {
+        record_adapter::transition_record(
+            record_json,
+            event,
+            proof,
+            empty,
+            generation,
+            admission_signature,
+            admission_agent,
+        )
     });
     match result {
-        Ok(result) => result,
+        Ok(Ok(result)) => Ok(result.into()),
+        Ok(Err(message)) => Err(PyValueError::new_err(message)),
         Err(()) => Err(PyRuntimeError::new_err(
             "Rust operation transition panicked",
         )),
     }
 }
 
-#[cfg(not(test))]
-#[pyfunction]
-fn transition(state_json: &str, event_json: &str) -> PyResult<String> {
-    transition_json(state_json, event_json)
-}
-
-#[cfg(not(test))]
 #[pymodule]
 #[allow(unsafe_code)]
 fn studio_operations_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("PROTOCOL_VERSION", PROTOCOL_VERSION)?;
-    module.add_function(wrap_pyfunction!(transition, module)?)?;
+    module.add_class::<TransitionResult>()?;
+    module.add_function(wrap_pyfunction!(transition_record, module)?)?;
     Ok(())
 }
 

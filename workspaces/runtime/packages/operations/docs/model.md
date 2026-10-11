@@ -12,11 +12,13 @@ does not perform effects or claim provider-level exactly-once execution.
 The boundary input consists of the operation's canonical request identity and
 content fingerprint, attempt account/agent/thread epoch, optional process
 generation on response events, event ID, and expected state revision. The
-adapter canonicalizes content and derives IDs before calling the pure API. The
-private PyO3 module accepts Rust `State` and `Event` as serde JSON strings and
-returns a serde JSON `Decision` in-process. This is FFI data encoding, not a
-subprocess or public wire protocol. Epoch and generation identify an attempt;
-neither is part of operation lookup identity.
+typed record adapter beside the PyO3 binding deserializes persisted tool-request
+fields, maps them to core state and identity, computes the content fingerprint,
+constructs the event, runs the pure API, and maps its result to persisted
+fields. Python passes record JSON and a closed event/proof selection; it does
+not construct lifecycle state or event dictionaries. This is in-process FFI,
+not a subprocess or public wire protocol. Epoch and generation identify an
+attempt; neither is part of operation lookup identity.
 
 The traced Python caller path is `Runtime.request` → `reserve_tool_request` →
 executor queue → `Runtime.dynamic` → `begin_tool_request` → handler/effect →
@@ -203,10 +205,13 @@ the saved state/result, including if the attempt epoch advanced; changed content
 rejects before an effect. Legacy records need no offline migration or added
 revision key. The adapter derives revision from their stored lifecycle fields:
 queued/pending is 0, running/pending is 1, running with cancellation requested
-is 2, and settled stages are 3. It maps existing stage/outcome pairs to typed
-core state before each transition. The caller stamps authenticated actor, time,
-and available process generation; the core does not invent provenance or
-clocks.
+is 2, and settled stages are 3. The Rust record adapter uses closed stage and
+outcome enums; unsupported values keep the existing
+`Unsupported stored tool request lifecycle: stage/outcome` error, which restart
+recovery logs and skips. It maps valid pairs to core state and decisions back
+to persisted stage/outcome/cancelRequested fields. The Python caller stamps
+authenticated actor, time, and available process generation; the pure core does
+not invent provenance or clocks.
 
 For a never-seen empty operation slot, expected revision is zero. If a caller
 later compacts a settled operation, it must retain a typed tombstone containing
@@ -221,10 +226,11 @@ this library.
 ## Verification and isolation evidence
 
 The Rust core's `transition` uses in-memory values and checked integer revision
-arithmetic. The PyO3 binding only parses and serializes the core's serde types,
-and catches Rust panics as Python exceptions. The Python adapter only converts
-stored records to states/events and returned decisions to existing fields; it
-does no I/O. The Python contract test reads
+arithmetic. The PyO3 binding converts the typed persisted-record boundary to
+core values and catches Rust panics as Python exceptions. The Python shim only
+checks module import and protocol version; the caller serializes the stored
+record and applies returned persisted fields inside its existing transaction.
+It does no new I/O. The Python contract test reads
 `tests/fixtures/python-contract-cases.json` directly and replays it through the
 installed extension. The Rust fixture test embeds that same file at compile
 time.

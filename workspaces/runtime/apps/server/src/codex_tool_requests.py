@@ -10,14 +10,7 @@ import uuid
 from typing import Any, TYPE_CHECKING, Protocol
 
 from codex_records import RecordStore
-from codex_operations_adapter import (
-    _legacy_state,
-    apply_decision,
-    content_for_record,
-    missing_receipt_outcome,
-    require_decision,
-    transition_record,
-)
+from codex_operations_adapter import native
 
 if TYPE_CHECKING:
     import sqlite3
@@ -25,6 +18,7 @@ if TYPE_CHECKING:
     from typing import Callable
 
     from codex_records import AgentRecord, JsonObject, ToolRequestRecord
+    from studio_operations_native import EventName, ProofName, TransitionResult
 
 
 def request_tools(tool: "Callable[..., JsonObject]", text: "JsonObject") -> list["JsonObject"]:
@@ -51,6 +45,56 @@ def _arguments(message: "JsonObject") -> tuple["JsonObject", "JsonObject"]:
 
 def _prefix(account: str, thread: str | None) -> str:
     return (str(account) + ":" if account != "default" else "") + str(thread) + ":"
+
+
+def _lifecycle(
+    record: "ToolRequestRecord",
+    event: "EventName",
+    *,
+    proof: "ProofName | None" = None,
+    empty: bool = False,
+    admission_signature: str | None = None,
+    admission_agent: str | None = None,
+) -> "TransitionResult":
+    return native.transition_record(
+        json.dumps(record, ensure_ascii=False),
+        event,
+        proof=proof,
+        empty=empty,
+        admission_signature=admission_signature,
+        admission_agent=admission_agent,
+    )
+
+
+def _require_decision(decision: "TransitionResult") -> None:
+    if decision.kind == "Rejected":
+        raise ValueError(decision.rejection_message or "Invalid tool request lifecycle transition")
+
+
+def _apply_decision(record: "ToolRequestRecord", decision: "TransitionResult") -> bool:
+    _require_decision(decision)
+    if decision.kind != "Transitioned":
+        return False
+    if decision.stage is None or decision.outcome is None or decision.cancel_requested is None:
+        raise RuntimeError("Rust lifecycle decision omitted persisted request fields")
+    record.update(
+        stage=decision.stage,
+        outcome=decision.outcome,
+        cancelRequested=decision.cancel_requested,
+    )
+    return True
+
+
+def _missing_receipt_outcome(request_id: str) -> str:
+    decision = native.transition_record(
+        json.dumps({"id": request_id, "callId": request_id}),
+        "ReceiptMissing",
+        empty=True,
+    )
+    if decision.kind == "ReceiptMissingUnknown":
+        return "unknown"
+    _require_decision(decision)
+    raise RuntimeError("Rust returned an invalid missing-receipt decision")
 
 
 _READ_TOOLS = {"orchestration_read", "orchestration_peers", "orchestration_search", "orchestration_chat_read"}
@@ -229,7 +273,7 @@ class RequestMixin:
             from codex_payloads import resolve_record, state_root
             record = resolve_record(state_root(self), json.loads(row[0]))
             try:
-                _legacy_state(record)
+                _lifecycle(record, "ServerRestarted")
             except ValueError:
                 logging.getLogger(__name__).warning(
                     "Skipping unsupported stored tool request lifecycle during restart: %s/%s",
@@ -241,8 +285,8 @@ class RequestMixin:
                 self.finish_tool_request(record["id"], cached, db=db)
                 continue
             record["updated"] = time.time()
-            decision, _ = transition_record(record, "ServerRestarted")
-            apply_decision(record, decision)
+            decision = _lifecycle(record, "ServerRestarted")
+            _apply_decision(record, decision)
             if record["stage"] == "cancelled":
                 record["error"] = "Server restarted before execution"
                 record["result"] = _cancel_result(record, record["error"])
@@ -353,9 +397,13 @@ class RequestMixin:
                 raise ValueError("Unknown managed agent")
             record = self.tool_request(key, db)
             if record:
-                admission = {**record, "signature": signature, "agent": actor["id"]}
-                decision, _ = transition_record(record, "Admit", content=content_for_record(admission))
-                require_decision(decision)
+                decision = _lifecycle(
+                    record,
+                    "Admit",
+                    admission_signature=signature,
+                    admission_agent=actor["id"],
+                )
+                _require_decision(decision)
                 record = self._refresh_tool_request(db, record)
             call_id = str(params.get("callId", message.get("id")))
             if not record:
@@ -384,11 +432,9 @@ class RequestMixin:
                         record["callbackQueueDelayMs"] = max(0, dispatched - received) * 1000
                 if identity_tool in {"orchestration_spawn", "orchestration_send", "orchestration_review", "orchestration_servers", "orchestration_move", "orchestration_teleport"} and "request_id" in identity_args:
                     record["request_id"] = identity_args["request_id"]
-                decision, _ = transition_record(
-                    record, {"Admit": {"content": content_for_record(record)}}, empty=True
-                )
-                require_decision(decision)
-                apply_decision(record, decision)
+                decision = _lifecycle(record, "Admit", empty=True)
+                _require_decision(decision)
+                _apply_decision(record, decision)
                 self.put(db, "tool_requests", record)
                 cached = self.tool_result(db, key)
                 if cached:
@@ -411,11 +457,11 @@ class RequestMixin:
             record = self.tool_request(key, db)
             if not record:
                 return False
-            decision, _ = transition_record(record, "ClaimDispatch")
-            if isinstance(decision["kind"], dict) or decision["kind"] != "Transitioned":
+            decision = _lifecycle(record, "ClaimDispatch")
+            if decision.kind != "Transitioned":
                 return False
             now = time.time()
-            apply_decision(record, decision)
+            _apply_decision(record, decision)
             record.update(updated=now, started=now)
             record.setdefault("timing", {})["handlerStartedAt"] = time.monotonic_ns()
             record["executionQueueDelayMs"] = max(0, now - record["created"]) * 1000
@@ -451,7 +497,8 @@ class RequestMixin:
         inferred_outcome = outcome is None
         if inferred_outcome:
             outcome = request_result_outcome(record, result)
-        event_kind: Any
+        event_kind: "EventName"
+        proof_kind: "ProofName | None" = None
         # Preserve the old uncertainty rule for inferred rejections; explicitly
         # supplied outcomes retain their existing caller semantics.
         committed = (operation_receipt_evidence(db, key)
@@ -461,15 +508,15 @@ class RequestMixin:
         elif committed:
             event_kind = "CommittedOperationReceipt"
         elif proof == "ReviewChildAbsent":
-            event_kind = {"DefinitiveRejection": "ReviewChildAbsent"}
+            event_kind, proof_kind = "DefinitiveRejection", "ReviewChildAbsent"
         elif outcome == "not_applied":
             proof_kind = "ReadOnlyRejection" if record.get("readOnly") is True else "ExactPreWriteRejection"
-            event_kind = {"DefinitiveRejection": proof_kind}
+            event_kind = "DefinitiveRejection"
         else:
-            event_kind = {"Failure": "InvalidPostExecutionResponse"}
-        decision, _ = transition_record(record, event_kind)
-        require_decision(decision)
-        changed = apply_decision(record, decision)
+            event_kind = "Failure"
+        decision = _lifecycle(record, event_kind, proof=proof_kind)
+        _require_decision(decision)
+        changed = _apply_decision(record, decision)
         if not changed and not (
             record.get("outcome") == "unknown" and record.get("result") != result
         ):
@@ -618,13 +665,13 @@ class RequestMixin:
                         from codex_session_tools import session_tool_name
                         return {'id': request_id, 'stage': 'complete', 'outcome': 'applied',
                                 'tool': session_tool_name(actor), 'operationResult': move['acceptance'], 'move': move}
-                outcome = missing_receipt_outcome(request_id)
+                outcome = _missing_receipt_outcome(request_id)
                 return {"id": request_id, "stage": "not_found", "outcome": outcome,
                         "message": "No receipt found. This does not prove that the operation did not execute."}
             record = self._refresh_tool_request(db, record)
             if action == "cancel":
-                decision, _ = transition_record(record, "Cancel")
-                changed = apply_decision(record, decision)
+                decision = _lifecycle(record, "Cancel")
+                changed = _apply_decision(record, decision)
                 if changed:
                     record.update(cancelRequested=True, updated=time.time())
                 if changed and record["stage"] == "cancelled":

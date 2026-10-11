@@ -15,6 +15,7 @@ from codex_python import prepare_environment, resolve_python
 
 OPERATIONS_BUILD_COMMAND = "cargo build --release -p studio-operations-python"
 NATIVE_MODULE = "studio_operations_native"
+OPERATIONS_PROTOCOL_VERSION = 2
 
 
 def operations_extension(project, packaged_source=None):
@@ -65,7 +66,11 @@ def install_operations_extension(extension, installed_name, python):
     finally:
         temporary.unlink(missing_ok=True)
     check = subprocess.run(
-        [str(python), "-c", "import studio_operations_native as m; assert m.PROTOCOL_VERSION == 1"],
+        [
+            str(python),
+            "-c",
+            f"import studio_operations_native as m; assert m.PROTOCOL_VERSION == {OPERATIONS_PROTOCOL_VERSION}",
+        ],
         check=False,
         capture_output=True,
         text=True,
