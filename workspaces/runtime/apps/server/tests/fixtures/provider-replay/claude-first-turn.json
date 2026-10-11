@@ -29,7 +29,8 @@
           "capabilities": {
             "claudeVersion": 23,
             "claudeBuild": "$bridgeBuild",
-            "passiveAccountRead": true
+            "passiveAccountRead": true,
+            "activityRead": true
           }
         }
       }
