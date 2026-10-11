@@ -536,5 +536,15 @@ describe("owner sidebar services", () => {
     expect(
       sidebarWireRequest(model, "remote", "/api/project-secrets/set", secret),
     ).toEqual(secret);
+    for (const [endpoint, request] of [
+      ["/api/vault/unlock", { projectId: "p1", words: "w" }],
+      ["/api/vault/pull", { projectId: "p1", requestId: "r" }],
+      ["/api/vault/setup/facts", { projectId: "p1" }],
+      ["/api/vault/setup", { projectId: "p1", requestId: "r", prefix: "p" }],
+      ["/api/vault/aws-login", { profile: "work", requestId: "r" }],
+    ] as const)
+      expect(
+        sidebarWireRequest(model, "local", endpoint, { ...request }),
+      ).toEqual(request);
   });
 });
