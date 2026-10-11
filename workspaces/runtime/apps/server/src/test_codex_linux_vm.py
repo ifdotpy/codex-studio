@@ -476,6 +476,12 @@ class ProvisionTests(unittest.TestCase):
         self.assertEqual(conf.read_text(), '$nrconf{override_rc}{qr(^codex-studio-)} = 0;\n')
         self.assertIn('apt-mark hold linux-generic linux-image-generic linux-virtual', self.script)
 
+    def test_flash_kernel_is_removed_before_packages_install(self):
+        packages = self.script.index("apt-get install -y --no-install-recommends")
+        self.assertLess(self.script.index("apt-get -y purge flash-kernel"), packages)
+        self.assertLess(self.script.index("dpkg --configure -a"), packages)
+        self.assertIn("Pin-Priority: -1", self.script)
+
     def test_pnpm_version_follows_root_package_manager_manifest(self):
         root = self.root / 'repository'
         root.mkdir()
