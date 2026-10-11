@@ -5,11 +5,8 @@ remain separate contracts; known disagreements are checked in
 ``test_codex_records.py``.
 """
 
-# A mixin self Protocol must be satisfiable by Runtime. When a slice adds a
-# table overload to RecordStore, it must add the identical overload to Runtime.
-# A helper receiving the runtime uses the narrowest Protocol covering what it
-# uses (RecordStore for record access alone), and the quoted concrete Runtime
-# only when it needs the full class. This lets helpers accept mixin self too.
+# Runtime reuses these overloads as its public class attributes under TYPE_CHECKING.
+# Helpers use this narrow Protocol when they need only record-store operations.
 
 from typing import Literal, NotRequired, Protocol, TypedDict, overload
 from typing import TYPE_CHECKING
@@ -1874,6 +1871,12 @@ class RecordStore(Protocol):
     def put(self, db: "sqlite3.Connection", table: Literal["rules"], record: RuleRecord, *, sync_rooms: bool = True) -> None: ...
     @overload
     def put(self, db: "sqlite3.Connection", table: Literal["tool_requests"], record: ToolRequestRecord, *, sync_rooms: bool = True) -> None: ...
+    @overload
+    def put(self, db: "sqlite3.Connection", table: Literal["monitors"], record: dict[str, JsonValue], *, sync_rooms: bool = True, monitor_output: bool = False) -> None: ...
+    @overload
+    def put(self, db: "sqlite3.Connection", table: Literal["tasks"], record: dict[str, JsonValue], *, sync_rooms: bool = True) -> None: ...
+    @overload
+    def put(self, db: "sqlite3.Connection", table: Literal["native_catalog_updates"], record: dict[str, JsonValue], *, sync_rooms: bool = True) -> None: ...
 
     def agent(self, key: str, db: "sqlite3.Connection | None" = None) -> AgentRecord: ...
     def team_agents(self, db: "sqlite3.Connection", root_id: str, *, include_deleted: bool = False, include_id: str | None = None) -> list[AgentRecord]: ...

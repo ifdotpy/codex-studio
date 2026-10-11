@@ -2,13 +2,15 @@
 import json
 import math
 import sqlite3
-from typing import TYPE_CHECKING, Any
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, TypeGuard
 
 from codex_connection_recovery import supervisor_identity
 from codex_context_repair import blocked
 from codex_tool_response_recovery import _native_proof, _rpc_id
 
 if TYPE_CHECKING:
+    from codex_records import RequestRecord
     from codex_runtime import Runtime
 
 OWNER_FIELDS = ('id', 'accountKey', 'epoch', 'threadId', 'turnId', 'turnEpoch',
@@ -25,6 +27,14 @@ def _object(value: object) -> dict[str, Any] | None:
         except (ValueError, TypeError):
             return None
     return value if isinstance(value, dict) else None
+
+
+def _is_request_record(value: dict[str, Any]) -> TypeGuard["RequestRecord"]:
+    params = value.get('params')
+    created = value.get('createdAt')
+    return (isinstance(value.get('id'), str) and isinstance(value.get('agent'), str)
+            and isinstance(params, dict) and isinstance(params.get('itemId'), str)
+            and isinstance(created, (int, float)) and not isinstance(created, bool))
 
 
 def _time(value: object) -> float | None:
@@ -53,7 +63,7 @@ def _question_requests(db: sqlite3.Connection, owner_id: str, item_id: str) -> l
         "AND json_extract(record,'$.params.itemId')=? LIMIT 2", (owner_id, item_id))]
 
 
-def _scope(db: "sqlite3.Connection", request: dict[str, Any], owner: dict[str, Any]) -> bool:
+def _scope(db: "sqlite3.Connection", request: Mapping[str, Any], owner: dict[str, Any]) -> bool:
     params = request.get('params')
     if not isinstance(params, dict) or not isinstance(params.get('questions'), list) or not params['questions']:
         return False
@@ -117,7 +127,7 @@ def _scope(db: "sqlite3.Connection", request: dict[str, Any], owner: dict[str, A
 def recover_native_questions(runtime: "Runtime", account: str, connection: str,
                              *, agent_id: str | None = None) -> int:
     """Rebind a saved question, without sending an answer or model input."""
-    candidates: list[tuple[str, str, str, dict[str, Any]]] = []
+    candidates: list[tuple[str, str, str, RequestRecord]] = []
     with runtime.lock, runtime.read_db() as db:
         server = runtime.server_for(account, connection)
         identity = supervisor_identity(server)
@@ -140,9 +150,11 @@ def recover_native_questions(runtime: "Runtime", account: str, connection: str,
                 if len(rows) != 1:
                     continue
                 key, raw = rows[0]
-                request = _object(raw)
-                if request is not None and request.get('id') == key and _scope(db, request, owner):
-                    candidates.append((key, raw, owner_raw, request))
+                candidate_request = _object(raw)
+                if (candidate_request is not None and candidate_request.get('id') == key
+                        and _scope(db, candidate_request, owner)
+                        and _is_request_record(candidate_request)):
+                    candidates.append((key, raw, owner_raw, candidate_request))
     restored = 0
     for key, raw, owner_raw, request in candidates:
         # The supervisor database and process identity reads happen outside the
@@ -160,11 +172,16 @@ def recover_native_questions(runtime: "Runtime", account: str, connection: str,
                     or supervisor_identity(server) != identity):
                 break
             current = db.execute('SELECT record FROM runtime_requests WHERE id=?', (key,)).fetchone()
-            owner_id = request['agent']
+            owner_id = request.get('agent')
+            if not isinstance(owner_id, str):
+                continue
             owner_row = db.execute('SELECT record FROM runtime_agents WHERE id=?', (owner_id,)).fetchone()
             if not current or current[0] != raw or not owner_row:
                 continue
-            if _question_requests(db, owner_id, request['params']['itemId']) != [(key, raw)]:
+            params = request.get('params')
+            requested_item_id = params.get('itemId') if isinstance(params, dict) else None
+            if (not isinstance(requested_item_id, str)
+                    or _question_requests(db, owner_id, requested_item_id) != [(key, raw)]):
                 continue
             owner = json.loads(owner_row[0])
             original_owner = json.loads(owner_raw)
@@ -172,7 +189,10 @@ def recover_native_questions(runtime: "Runtime", account: str, connection: str,
                 continue
             if runtime.agent_connection(owner) != connection or not _scope(db, request, owner):
                 continue
-            request.update(status='pending', connectionId=connection, epoch=owner['epoch'], supervisor=identity)
+            request['status'] = 'pending'
+            request['connectionId'] = connection
+            request['epoch'] = owner['epoch']
+            request['supervisor'] = identity
             runtime.put(db, 'requests', request)
             owner['status'] = 'approval'
             runtime.put(db, 'agents', owner)

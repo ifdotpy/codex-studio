@@ -13,7 +13,7 @@ from codex_connection_recovery import supervisor_identity
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
-    from codex_records import AgentRecord
+    from codex_records import AgentRecord, ToolRequestRecord
     from codex_runtime import Runtime
 
 FIELDS = ('id', 'epoch', 'accountKey', 'threadId', 'turnId', 'autoWake',
@@ -112,7 +112,7 @@ def recover(runtime: "Runtime", key: str) -> dict[str, Any]:
                           (key, MAX_RECEIPTS)).fetchall()
     delivered = []
     for (raw,) in rows:
-        record = json.loads(raw)
+        record: ToolRequestRecord = json.loads(raw)
         if (record.get('stage') not in {'completed', 'failed', 'interrupted', 'cancelled'}
                 or record.get('nativeDelivery') or not _rpc_id(record.get('rpcId'))
                 or any(record.get(field) != agent.get(field)

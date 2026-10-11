@@ -11,7 +11,7 @@ def remove_review_assignments(runtime, db):
         for row in rows:
             record = json.loads(row[0])
             record.pop(field, None)
-            runtime.put(db, table, record)
+            runtime._put(db, table, record)
             changed[table] += 1
     # Submitted and uncertain inputs retain their exact receipt and history.
     changed['pending'] = db.execute(

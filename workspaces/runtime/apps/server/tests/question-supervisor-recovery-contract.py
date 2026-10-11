@@ -283,6 +283,30 @@ class QuestionSupervisorRecovery(unittest.TestCase):
         self.assertEqual(self.runtime.agent('owner')['status'], 'running')
         self.assertEqual(self.server.responses, [])
 
+    def test_malformed_and_non_object_request_rows_do_not_block_valid_restore(self):
+        self.restart()
+        owner = self.runtime.agent('owner')
+        owner['activeTools'].extend((
+            {'id':'malformed-question', 'type':'mcpToolCall', 'name':'AskUserQuestion'},
+            {'id':'non-object-question', 'type':'mcpToolCall', 'name':'AskUserQuestion'},
+        ))
+        with self.runtime.db() as db:
+            self.runtime.put(db, 'agents', owner)
+        from codex_question_recovery import _question_requests
+        original = _question_requests
+
+        def requests(db, owner_id, item_id):
+            if item_id == 'malformed-question':
+                return [('malformed', '{')]
+            if item_id == 'non-object-question':
+                return [('non-object', '[]')]
+            return original(db, owner_id, item_id)
+
+        with patch('codex_question_recovery._question_requests', requests):
+            self.restore()
+        self.assertEqual(self.stored()['status'], 'pending')
+        self.assertEqual(self.runtime.agent('owner')['status'], 'approval')
+
     def test_ambiguous_duplicate_question_requests_remain_expired(self):
         self.restart()
         duplicate = self.stored()

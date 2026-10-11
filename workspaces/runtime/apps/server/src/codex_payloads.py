@@ -10,6 +10,10 @@ from pathlib import Path
 import shutil
 import tempfile
 import threading
+from typing import TYPE_CHECKING, overload
+
+if TYPE_CHECKING:
+    from codex_records import ToolRequestRecord
 
 
 EXTERNALIZE_THRESHOLD = 64 * 1024
@@ -205,6 +209,14 @@ def externalize_result(state_dir, db, result: dict) -> dict:
     result["contentItems"] = ref["preview"]
     result["_payloadBlobs"] = {**result.get("_payloadBlobs", {}), "contentItems": ref}
     return result
+
+
+@overload
+def resolve_record(state_dir, record: "ToolRequestRecord") -> "ToolRequestRecord": ...
+
+
+@overload
+def resolve_record(state_dir, record: dict) -> dict: ...
 
 
 def resolve_record(state_dir, record: dict) -> dict:

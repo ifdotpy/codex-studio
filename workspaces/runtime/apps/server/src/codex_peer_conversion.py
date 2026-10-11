@@ -230,7 +230,7 @@ def convert(runtime: "Runtime", data: Any) -> Any:
                     if table == 'rules' and record.get('agent') == source_id:
                         record.update(status='paused', epoch=source.get('epoch', 0) + 1,
                                       error='The lead became a subagent. Resume this watch explicitly.')
-                    runtime.put(db, table, record)
+                    runtime._put(db, table, record)
         for room in affected_rooms:
             if room.get('rootId') != source_id:
                 continue
