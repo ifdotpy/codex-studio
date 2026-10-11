@@ -401,6 +401,32 @@ test("Terminal dock", async () => {
     await page.screenshot({
       path: join(root, "terminal-collapsed-sidebar.png"),
     });
+    // A server view in the combined window has no sidebar: the closed dock is a full-width bar,
+    // and the page ends above it, so the bar never covers the usage line.
+    const frameGeometry = await page.evaluate(async () => {
+      const sidebar = document.querySelector("#sidebar");
+      const parent = sidebar.parentNode;
+      const next = sidebar.nextSibling;
+      sidebar.remove();
+      await new Promise((done) => requestAnimationFrame(() => done()));
+      const dock = document
+        .querySelector(".terminal-dock")
+        .getBoundingClientRect();
+      const root = document.querySelector("#root").getBoundingClientRect();
+      parent.insertBefore(sidebar, next);
+      return { dock: dock.toJSON(), root: root.toJSON(), width: innerWidth };
+    });
+    assert.equal(frameGeometry.dock.left, 0, "The bar starts at the left edge");
+    assert.equal(
+      frameGeometry.dock.right,
+      frameGeometry.width,
+      "The bar is full width",
+    );
+    assert.equal(
+      frameGeometry.root.bottom,
+      frameGeometry.dock.top,
+      "The page ends above the bar",
+    );
     await dock.getByRole("button", { name: "Show terminals" }).click();
     await page.waitForFunction(() => {
       const dock = document
