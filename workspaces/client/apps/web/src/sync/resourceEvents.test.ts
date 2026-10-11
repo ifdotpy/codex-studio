@@ -238,6 +238,61 @@ describe("shared resource event transport", () => {
     stopState();
   });
 
+  it("waits for an initial frame and redelivers an unchanged reopen baseline to opted-in readers", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
+    vi.stubGlobal("EventSource", Source);
+
+    const transport = await import("./resourceEvents");
+    const resource = { kind: "models" } as const;
+    const firstListener = vi.fn();
+    const stopFirst = transport.watchResourceChanges(resource, firstListener);
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    const stream = Source.instances[0]!;
+    const initial = {
+      protocol: 3,
+      workspaceId,
+      epoch: "catalog-epoch",
+      revision: 3,
+      reason: "initial",
+      resources: [resource],
+      resourceVersions: [{ resource, revision: 3 }],
+    };
+    stream.emit("resources", initial);
+    await vi.waitFor(() => expect(firstListener).toHaveBeenCalledTimes(1));
+
+    const baselineListener = vi.fn();
+    const stopBaseline = transport.watchResourceChanges(
+      resource,
+      baselineListener,
+      { waitForBaseline: true },
+    );
+    expect(baselineListener).toHaveBeenCalledTimes(1);
+    expect(baselineListener).toHaveBeenCalledWith({
+      epoch: "catalog-epoch",
+      revision: 3,
+    });
+    stream.emit("resources", initial);
+    await vi.waitFor(() => expect(baselineListener).toHaveBeenCalledTimes(2));
+    expect(baselineListener).toHaveBeenCalledWith({
+      epoch: "catalog-epoch",
+      revision: 3,
+    });
+    stopBaseline();
+    stopFirst();
+  });
+
   it("suppresses only the exact entity sequence batch applied from a response", async () => {
     syncDatabase.mockResolvedValue({ workspaceId });
     vi.stubGlobal("window", {
@@ -1098,10 +1153,18 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("EventSource", Source);
     const transport = await loadTransport();
     const statuses: string[] = [];
-    transport.watchResourceConnection((status) => statuses.push(status));
+    const streamStates: string[] = [];
+    transport.watchResourceConnection((status, stream) => {
+      statuses.push(status);
+      streamStates.push(stream);
+    });
+    expect(streamStates[0]).toBe("stopped");
     const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
     await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
     const source = Source.instances[0]!;
+    expect(streamStates.at(-1)).toBe("connecting");
+    source.open();
+    expect(streamStates.at(-1)).toBe("open");
     source.emit("api-schema", { hash: API_SCHEMA_HASH });
     expect(() => source.emitRaw("resources", null)).not.toThrow();
     expect(source.closed).toBe(true);

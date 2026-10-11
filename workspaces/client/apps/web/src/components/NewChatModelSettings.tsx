@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@mantine/core";
 import { errorText, type GetResult } from "../api";
 import type { Agent } from "../types";
-import type { StudioServer } from "../servers/registry";
+import { serverResourceScope, type StudioServer } from "../servers/registry";
 import { ExecutionSettings } from "./agents/ExecutionSettings";
 import {
   ModelCatalogReader,
@@ -20,7 +20,7 @@ type Props = {
 export default function NewChatModelSettings(props: Props) {
   const reader = useMemo(
     () => ({
-      scope: props.server?.id || "current",
+      scope: serverResourceScope(props.server),
       read: (
         options: Parameters<typeof readNewChatResource<"/api/models">>[2],
       ) => readNewChatResource(props.server, "/api/models", options),

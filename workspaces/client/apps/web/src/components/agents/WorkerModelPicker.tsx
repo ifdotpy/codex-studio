@@ -1,14 +1,16 @@
 import {
+  useCallback,
   createContext,
   useContext,
-  useEffect,
   useMemo,
-  useRef,
-  useState,
+  useSyncExternalStore,
+  type ContextType,
 } from "react";
 import { ApiError, get, errorText, type GetResult } from "../../api";
 import { claudeModelLabel } from "../../claude-model-label";
 import { watchResourceReads } from "../watchResourceReads";
+import type { ResourceVersion } from "../../sync/resourceEvents";
+import { serverResourceScope } from "../../servers/registry";
 
 export type WorkerModelInfo = {
   model: string;
@@ -23,23 +25,6 @@ export type WorkerModelInfo = {
   serviceTiers: { id: string; description?: string }[];
   supportedReasoningEfforts: { reasoningEffort: string }[];
 };
-
-type ModelRetryTicket = { key: string; attempt: number };
-export function consumeModelRetryTicket(
-  ticket: { current: ModelRetryTicket | null },
-  key: string,
-  attempt: number,
-) {
-  const pending = ticket.current;
-  if (!pending) return false;
-  if (pending.key !== key) {
-    ticket.current = null;
-    return false;
-  }
-  if (pending.attempt !== attempt) return false;
-  ticket.current = null;
-  return true;
-}
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -141,7 +126,194 @@ export const ModelCatalogReader = createContext<{
     query?: { account_key?: string; workers?: string; retry?: "1" };
     signal?: AbortSignal;
   }) => Promise<GetResult<"/api/models">>;
-} | null>(null);
+}>({
+  scope: serverResourceScope(),
+  read: (options) => get("/api/models", options),
+});
+
+type ModelCatalogRead = NonNullable<
+  ContextType<typeof ModelCatalogReader>
+>["read"];
+
+type ModelCatalogSnapshot = {
+  models: WorkerModelInfo[];
+  error: string;
+  pending: boolean;
+  loaded: boolean;
+};
+type ModelCatalogEntry = {
+  snapshot: ModelCatalogSnapshot;
+  version?: ResourceVersion;
+  valueVersion?: ResourceVersion;
+  inFlight?: Promise<void>;
+  listeners: Set<() => void>;
+  stopWatching?: () => void;
+};
+
+const emptyModelCatalog: ModelCatalogSnapshot = {
+  models: [],
+  error: "",
+  pending: false,
+  loaded: false,
+};
+const modelCatalogs = new Map<string, ModelCatalogEntry>();
+
+function catalogEntry(key: string): ModelCatalogEntry {
+  let entry = modelCatalogs.get(key);
+  if (!entry) {
+    entry = {
+      snapshot: emptyModelCatalog,
+      listeners: new Set(),
+    };
+    modelCatalogs.set(key, entry);
+  }
+  return entry;
+}
+
+function publishCatalog(
+  entry: ModelCatalogEntry,
+  snapshot: ModelCatalogSnapshot,
+) {
+  if (
+    entry.snapshot.models === snapshot.models &&
+    entry.snapshot.error === snapshot.error &&
+    entry.snapshot.pending === snapshot.pending &&
+    entry.snapshot.loaded === snapshot.loaded
+  )
+    return;
+  entry.snapshot = snapshot;
+  for (const listener of entry.listeners) listener();
+}
+
+function sameResourceVersion(
+  left: ResourceVersion | undefined,
+  right: ResourceVersion | undefined,
+) {
+  return (
+    !!left &&
+    !!right &&
+    left.epoch === right.epoch &&
+    left.revision === right.revision
+  );
+}
+
+function modelRows(data: GetResult<"/api/models">): WorkerModelInfo[] {
+  return Array.isArray(data.data)
+    ? data.data.flatMap((row) => {
+        const parsed = modelInfo(row);
+        return parsed ? [parsed] : [];
+      })
+    : [];
+}
+
+function readModelCatalog(
+  entry: ModelCatalogEntry,
+  read: ModelCatalogRead,
+  accountKey: string,
+  workers: boolean,
+  version?: ResourceVersion,
+  retry = false,
+): Promise<void> {
+  if (version) entry.version = version;
+  const readVersion = version ?? entry.version;
+  const changed =
+    readVersion !== undefined &&
+    !sameResourceVersion(entry.valueVersion, readVersion);
+  if (entry.inFlight) return entry.inFlight;
+  if (!retry && !changed && entry.snapshot.loaded) return Promise.resolve();
+
+  const previous = entry.snapshot;
+  const request = (async () => {
+    try {
+      const data = await read({
+        query: {
+          account_key: accountKey,
+          workers: workers ? "1" : undefined,
+          retry: retry ? "1" : undefined,
+        },
+      });
+      const pending =
+        data.catalogPending === true &&
+        Array.isArray(data.unavailableAccounts) &&
+        data.unavailableAccounts.some(
+          (item) =>
+            item?.catalogPending === true &&
+            typeof item.accountKey === "string" &&
+            typeof item.error === "string",
+        );
+      const models = modelRows(data);
+      publishCatalog(entry, {
+        models:
+          pending && previous.models.length
+            ? Array.from(
+                new Map(
+                  [...previous.models, ...models].map((row) => [
+                    row.model,
+                    row,
+                  ]),
+                ).values(),
+              )
+            : models,
+        error: "",
+        pending,
+        loaded: true,
+      });
+      entry.valueVersion = readVersion;
+    } catch (error) {
+      const pending =
+        error instanceof ApiError &&
+        error.status === 400 &&
+        isRecord(error.details) &&
+        error.details.catalogPending === true;
+      publishCatalog(entry, {
+        models: previous.models,
+        error: pending ? "" : errorText(error),
+        pending,
+        loaded: pending,
+      });
+      if (!pending) throw error;
+      if (pending) entry.valueVersion = readVersion;
+    }
+  })();
+  entry.inFlight = request;
+  void request
+    .finally(() => {
+      if (entry.inFlight === request) entry.inFlight = undefined;
+    })
+    .catch(() => {});
+  return request;
+}
+
+function subscribeModelCatalog(
+  key: string,
+  listener: () => void,
+  read: ModelCatalogRead,
+  accountKey: string,
+  workers: boolean,
+) {
+  const entry = catalogEntry(key);
+  entry.listeners.add(listener);
+  if (!entry.stopWatching) {
+    const stop = watchResourceReads(
+      { kind: "models" },
+      (version) => readModelCatalog(entry, read, accountKey, workers, version),
+      (error) =>
+        publishCatalog(entry, {
+          ...entry.snapshot,
+          error: errorText(error),
+        }),
+      { waitForBaseline: true },
+    );
+    entry.stopWatching = stop;
+  }
+  return () => {
+    entry.listeners.delete(listener);
+    if (!entry.listeners.size && entry.stopWatching) {
+      entry.stopWatching();
+      entry.stopWatching = undefined;
+    }
+  };
+}
 
 export function useWorkerModels(
   accountKey: string,
@@ -149,115 +321,23 @@ export function useWorkerModels(
   workers = false,
 ) {
   const reader = useContext(ModelCatalogReader);
-  const catalogKey = `${reader?.scope || ""}:${accountKey}:${workers}`;
-  const [result, setResult] = useState<{
-    key: string;
-    models: WorkerModelInfo[];
-    error: string;
-    pending?: boolean;
-  } | null>(null);
-  const [attempt, setAttempt] = useState(0);
-  const retrySequence = useRef(0);
-  const retryTicket = useRef<ModelRetryTicket | null>(null);
-  useEffect(() => {
-    if (!enabled) return;
-    let active = true;
-    let explicitRetry = consumeModelRetryTicket(
-      retryTicket,
-      catalogKey,
-      attempt,
-    );
-    const controller = new AbortController();
-    setResult((previous) =>
-      previous?.key === catalogKey ? { ...previous, error: "" } : null,
-    );
-    const load = async () => {
-      let pending = false;
-      const retry = explicitRetry;
-      explicitRetry = false;
-      try {
-        const read =
-          reader?.read ||
-          ((options: {
-            query?: { account_key?: string; workers?: string; retry?: "1" };
-            signal?: AbortSignal;
-          }) => get("/api/models", options));
-        const data = await read({
-          query: {
-            account_key: accountKey,
-            workers: workers ? "1" : undefined,
-            retry: retry ? "1" : undefined,
-          },
-          signal: controller.signal,
-        });
-        if (!active) return;
-        pending =
-          data.catalogPending === true &&
-          Array.isArray(data.unavailableAccounts) &&
-          data.unavailableAccounts.some(
-            (item) =>
-              item?.catalogPending === true &&
-              typeof item.accountKey === "string" &&
-              typeof item.error === "string",
-          );
-        const models = Array.isArray(data.data)
-          ? data.data.flatMap((row) => {
-              const parsed = modelInfo(row);
-              return parsed ? [parsed] : [];
-            })
-          : [];
-        setResult((previous) => ({
-          key: catalogKey,
-          models:
-            pending && previous?.key === catalogKey
-              ? Array.from(
-                  new Map(
-                    [...previous.models, ...models].map((row) => [
-                      row.model,
-                      row,
-                    ]),
-                  ).values(),
-                )
-              : models,
-          error: "",
-          pending,
-        }));
-      } catch (error) {
-        if (!active) return;
-        pending =
-          error instanceof ApiError &&
-          error.status === 400 &&
-          isRecord(error.details) &&
-          error.details.catalogPending === true;
-        setResult((previous) => ({
-          key: catalogKey,
-          models: previous?.key === catalogKey ? previous.models : [],
-          error: pending ? "" : errorText(error),
-          pending,
-        }));
-        if (!pending) throw error;
-      }
-    };
-    const stop = watchResourceReads({ kind: "models" }, load, (error) => {
-      if (active)
-        setResult((previous) => ({
-          key: catalogKey,
-          models: previous?.key === catalogKey ? previous.models : [],
-          error: errorText(error),
-        }));
-    });
-    // A dialog can read another server before that server has a resource stream.
-    if (reader) stop.refresh();
-    return () => {
-      active = false;
-      controller.abort();
-      stop();
-    };
-  }, [accountKey, catalogKey, workers, enabled, attempt, reader]);
-  const current = result?.key === catalogKey ? result : null;
+  const catalogKey = JSON.stringify([reader.scope, accountKey, workers]);
+  const read = useMemo<ModelCatalogRead>(() => reader.read, [reader.read]);
+  const subscribe = useCallback(
+    (listener: () => void) =>
+      enabled
+        ? subscribeModelCatalog(catalogKey, listener, read, accountKey, workers)
+        : () => {},
+    [accountKey, catalogKey, enabled, read, workers],
+  );
+  const getSnapshot = useCallback(
+    () => modelCatalogs.get(catalogKey)?.snapshot || emptyModelCatalog,
+    [catalogKey],
+  );
+  const current = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const models = useMemo(
     () =>
-      current?.models
+      current.models
         .filter((model) => model.model && !model.hidden)
         .map((model): WorkerModelInfo => ({
           ...model,
@@ -271,16 +351,24 @@ export function useWorkerModels(
                 )
               : model.displayName,
         })) || [],
-    [current?.models],
+    [current.models],
   );
   return {
     models,
-    loading: !current || Boolean(current.pending && !current.models.length),
-    error: current?.error || "",
+    loading:
+      !current.loaded || Boolean(current.pending && !current.models.length),
+    error: current.error,
     retry: () => {
-      const next = ++retrySequence.current;
-      retryTicket.current = { key: catalogKey, attempt: next };
-      setAttempt(next);
+      if (!enabled) return;
+      const entry = catalogEntry(catalogKey);
+      void readModelCatalog(
+        entry,
+        read,
+        accountKey,
+        workers,
+        undefined,
+        true,
+      ).catch(() => {});
     },
   };
 }

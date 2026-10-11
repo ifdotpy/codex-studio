@@ -1,7 +1,14 @@
-import { watchResourceChanges } from "../sync/resourceEvents";
+import {
+  watchResourceChanges,
+  watchResourceConnection,
+} from "../sync/resourceEvents";
 import { onResume } from "../sync/resume";
 import { readRetryDelay, retryableReadError } from "../sync/readRetry";
-import type { ResourceRef, ResourceVersion } from "../sync/resourceEvents";
+import type {
+  ResourceRef,
+  ResourceStreamState,
+  ResourceVersion,
+} from "../sync/resourceEvents";
 
 type ResourceReadWatcher = (() => void) & { refresh: () => void };
 
@@ -14,9 +21,13 @@ export function watchResourceReads(
   resources: ResourceRef | readonly ResourceRef[],
   read: (version?: ResourceVersion) => Promise<void>,
   failed: (error: unknown) => void,
+  options: { waitForBaseline?: boolean } = {},
 ): ResourceReadWatcher {
   const refs = Array.isArray(resources) ? resources : [resources];
+  const waitForBaseline = options.waitForBaseline === true;
   let active = true;
+  let baselineSeen = !waitForBaseline;
+  let fallbackReady = false;
   let reading = false;
   let dirty = false;
   let dirtyVersion: ResourceVersion | undefined;
@@ -33,6 +44,8 @@ export function watchResourceReads(
   };
 
   const refresh = (version?: ResourceVersion) => {
+    if (version) baselineSeen = true;
+    if (waitForBaseline && !baselineSeen && !fallbackReady) return;
     dirty = true;
     if (version) dirtyVersion = version;
     if (
@@ -40,17 +53,18 @@ export function watchResourceReads(
       reading ||
       scheduled ||
       retryTimer !== undefined ||
-      !canRead()
+      (!canRead() && !fallbackReady)
     )
       return;
     scheduled = true;
     queueMicrotask(() => {
       scheduled = false;
-      if (!active || reading || !dirty || !canRead()) return;
+      if (!active || reading || !dirty || (!canRead() && !fallbackReady))
+        return;
       reading = true;
       void (async () => {
         try {
-          while (active && dirty && canRead()) {
+          while (active && dirty && (canRead() || fallbackReady)) {
             dirty = false;
             const version = dirtyVersion;
             dirtyVersion = undefined;
@@ -99,11 +113,31 @@ export function watchResourceReads(
   if (typeof window !== "undefined") window.addEventListener("offline", pause);
   if (typeof document !== "undefined")
     document.addEventListener("visibilitychange", pause);
-  const stops = refs.map((resource) => watchResourceChanges(resource, refresh));
+  const stops = refs.map((resource) =>
+    watchResourceChanges(resource, refresh, { waitForBaseline }),
+  );
+  let fallbackStarted = false;
+  const stopConnection = waitForBaseline
+    ? watchResourceConnection((status, stream: ResourceStreamState) => {
+        if (
+          !baselineSeen &&
+          !fallbackStarted &&
+          status !== "schema-mismatch" &&
+          (stream === "stopped" ||
+            status === "degraded" ||
+            status === "offline")
+        ) {
+          fallbackStarted = true;
+          fallbackReady = true;
+          refresh();
+        }
+      })
+    : () => {};
   const dispose = () => {
     active = false;
     dirty = false;
     clearRetry();
+    stopConnection();
     stopResume();
     if (typeof window !== "undefined")
       window.removeEventListener("offline", pause);

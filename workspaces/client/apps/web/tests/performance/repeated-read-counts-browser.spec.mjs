@@ -496,10 +496,6 @@ test("model catalog reads stay within invalidation counts @performance", async (
   });
   assert.ok(modelChecks.length > 0, "model catalog reads were measured");
   for (const check of modelChecks) {
-    test.fail(
-      true,
-      "model catalog hooks issue duplicate identical reads; see workspaces/client/apps/web/tests/KNOWN-FAILURES.md",
-    );
     assert.ok(
       check.count <= 1 + check.invalidations,
       `model catalog reads exceeded 1 + matching invalidations: ${JSON.stringify(check)}`,
