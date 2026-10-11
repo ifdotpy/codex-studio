@@ -89,6 +89,27 @@ class RuntimeResourceTriggerReuseContract(unittest.TestCase):
             self.assertIs(second, first)
         self.assertEqual(self.trigger_ddl(), [])
 
+    def test_default_context_reuses_thread_connection_and_keeps_transaction_isolation(self):
+        del self.runtime._callback_db.reuse
+        with self.runtime.db() as first:
+            first.execute("INSERT INTO runtime_events VALUES ('default-reuse','agent','user','hello','pending',1,1,NULL,NULL)")
+        with self.runtime.db() as second:
+            self.assertIs(second, first)
+            self.assertEqual(second.execute(
+                "SELECT status FROM runtime_events WHERE id='default-reuse'"
+            ).fetchone()[0], "pending")
+
+        with self.assertRaisesRegex(RuntimeError, "rollback"):
+            with self.runtime.db() as db:
+                self.assertIs(db, first)
+                db.execute("UPDATE runtime_events SET status='reserved' WHERE id='default-reuse'")
+                raise RuntimeError("rollback")
+        with self.runtime.db() as db:
+            self.assertIs(db, first)
+            self.assertEqual(db.execute(
+                "SELECT status FROM runtime_events WHERE id='default-reuse'"
+            ).fetchone()[0], "pending")
+
     def test_reused_triggers_stage_each_transaction_and_discard_rollback(self):
         with self.runtime.db() as db:
             db.execute("INSERT INTO runtime_events VALUES ('event','agent','user','hello','pending',1,1,NULL,NULL)")

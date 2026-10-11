@@ -2002,7 +2002,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     @contextmanager
     def db(self, *, busy_timeout=None):
         local = self.__dict__.setdefault("_callback_db", threading.local())
-        reusable = getattr(local, "reuse", False) and not getattr(local, "depth", 0)
+        # Keep one connection per calling thread. SQLite connections never
+        # cross thread boundaries; nested contexts still get an independent
+        # connection and retain their existing transaction behavior.
+        reusable = getattr(local, "reuse", True) and not getattr(local, "depth", 0)
         db = getattr(local, "connection", None) if reusable else None
         if db is None:
             db = sqlite_connect(self.db_path, timeout=15, site="Runtime.db")
@@ -5332,9 +5335,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 or any(not isinstance(value, str) or not value or len(value) > 200 for value in message_ids)):
             raise ValueError("Supply at most 100 message IDs of 1 to 200 characters")
         identities = list(dict.fromkeys(message_ids))
-        with self.db() as db:
-            db.execute("PRAGMA query_only=ON")
-            db.execute("BEGIN")
+        with self.read_db() as db:
             self.checked_actor(db, agent_id)
             rows = db.execute(
                 "SELECT e.id,e.status,e.error,EXISTS (SELECT 1 FROM runtime_items i "
@@ -10912,10 +10913,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             raise ValueError("Unknown workspace view")
 
     def transcript(self, key, before=None, around=None, limit=120, after=None):
-        with self.db() as db:
+        with self.read_db() as db:
             # Read one committed snapshot without waiting for agent execution.
-            db.execute("PRAGMA query_only=ON")
-            db.execute("BEGIN")
             a = self.agent(key, db)
             if a.get("deletedAt"):
                 raise ValueError("This conversation was deleted")
@@ -11373,5 +11372,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.close_analytics_captures()
         self._shutdown_writers_drained = True
         self._close_wal_keeper()
+        local_db = self.__dict__.get("_callback_db")
+        connection = getattr(local_db, "connection", None) if local_db else None
+        if connection is not None:
+            sqlite_assert_clean(connection, "Runtime.close")
+            connection.close()
+            local_db.connection = None
+            local_db.depth = 0
+            local_db.reuse = False
         flock(self.lease, LOCK_UN)
         self.lease.close()
