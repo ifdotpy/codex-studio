@@ -17,9 +17,8 @@ import {
   isApiSchemaMismatch,
   onMatchingApiSchemaResponse,
   registerSyncEntityPersister,
-  type GetResult,
 } from "../api";
-import type { Snapshot } from "../types";
+import type { Snapshot, TranscriptPageData } from "../types";
 import {
   canAcknowledgeEntitySequenceBatch,
   entitySequenceInvalidationCovered,
@@ -1431,7 +1430,7 @@ async function acquireProjection(
 }
 
 type StateProjectionPayload = Snapshot | null;
-type TranscriptProjectionPayload = GetResult<"/api/transcript"> | null;
+type TranscriptProjectionPayload = TranscriptPageData | null;
 
 async function watchStateProjection(
   accept: (payload: StateProjectionPayload) => void,

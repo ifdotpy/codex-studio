@@ -43,14 +43,18 @@ import {
   snapshotProjectionError,
   snapshotProjectionStatusReducer,
 } from "./hooks/snapshotProjectionStatus";
-import type { GetResult } from "./api";
-import type { Agent, Json, Message, Snapshot } from "./types";
+import type {
+  Agent,
+  Json,
+  Message,
+  Snapshot,
+  TranscriptPageData,
+  TranscriptWireItem,
+} from "./types";
 import {
   createChatSnapshotSelector,
   retainArray,
 } from "./hooks/snapshotSelection";
-type TranscriptPageData = GetResult<"/api/transcript">;
-
 // Event callbacks see the latest committed selection without invalidating
 // consumers when another chat changes. Never call these during render.
 export function useCommittedCallback<Args extends unknown[], Result>(
@@ -336,13 +340,14 @@ function eventSender(input: Json): string {
 
 // Native input batches have separate user-visible message identities.
 export function transcriptMessages(
-  source: Message[],
+  source: TranscriptWireItem[],
   id: string | null,
 ): Message[] {
-  return source.flatMap((m: Message) =>
+  return source.flatMap((m: TranscriptWireItem) =>
     m.inputs
       ? m.inputs.map((r, i) => ({
           ...m,
+          threadId: m.threadId ?? undefined,
           id: r.id ? `${id}:${r.id}` : `${m.id}:${i}`,
           sourceId: m.id,
           clientMessageId:
@@ -376,7 +381,7 @@ export function transcriptMessages(
                 )[r.kind] ||
                 "Team activity",
         }))
-      : [m],
+      : [{ ...m, threadId: m.threadId ?? undefined }],
   );
 }
 

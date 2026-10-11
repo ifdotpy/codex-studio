@@ -162,6 +162,11 @@ class AccessTests(unittest.TestCase):
         with self.runtime.read_db() as db:
             self.assertEqual(db.execute("SELECT count(*) FROM runtime_access_audit WHERE action='name'").fetchone()[0], 2)
 
+    def test_pair_get_fallback_declares_its_actual_not_found_status(self) -> None:
+        response = self.client.get("/api/multi-server/v1/pair")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json(), {"error": "Not found"})
+
     def test_name_file_failure_recovers_intent_after_restart(self) -> None:
         service = self.runtime.service
         before = service._keys().copy()
@@ -317,6 +322,43 @@ class AccessTests(unittest.TestCase):
         self.assertEqual(len(snapshot["clients"]), 1)
         self.assertIsNotNone(snapshot["clients"][0]["lastAccess"])
         self.assertEqual(snapshot["clients"][0]["status"], "paired")
+
+    def test_settings_write_preserves_unknown_stored_discovery_fields(self) -> None:
+        service = self.runtime.service
+        service.discovery()
+        record = {
+            "id": "discovered-placeholder",
+            "clientId": "discovered-placeholder",
+            "serverId": "discovered-placeholder",
+            "kind": "server",
+            "label": "Fixture server",
+            "origin": "https://peer.example.invalid",
+            "publicKey": "fixture-public-key",
+            "tailscaleUser": "owner@example.invalid",
+            "status": "discovered",
+            "created": 1.0,
+            "lastAccess": None,
+            "revoked": None,
+            "lastSeen": 2.0,
+            "autoPair": False,
+            "providerExtension": {"revision": 2},
+        }
+        with self.runtime.db() as db:
+            db.execute(
+                "INSERT INTO runtime_access_discovered VALUES(?,?)",
+                (record["id"], json.dumps(record)),
+            )
+        response = self.client.post(
+            "/api/multi-server",
+            json={"action": "settings", "autoPair": False, "requestId": "settings-placeholder"},
+            headers={"X-Canvas-Token": "local-token"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        discovered = next(
+            item for item in response.json()["servers"]
+            if item["id"] == "discovered-placeholder"
+        )
+        self.assertEqual(discovered["providerExtension"], {"revision": 2})
 
     def test_remote_invitation_receipt_does_not_store_the_secret(self) -> None:
         self.assertEqual(self.pair().status_code, 200)

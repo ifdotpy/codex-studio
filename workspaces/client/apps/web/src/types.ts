@@ -50,6 +50,25 @@ type SnapshotRuntime = WorkspaceEntityDto & {
   work: Work[];
 };
 
+// Transcript records retain typed JSON extension fields on the wire. UI state
+// consumes their declared API fields; strip only the generated index signature
+// at this local boundary so optional fields keep their narrower types.
+export type KnownApiFields<T> = T extends Record<string, JsonValue> &
+  (infer Fields)
+  ? Fields
+  : T;
+type TranscriptApiItem = components["schemas"]["TranscriptMessageRecord"];
+type TranscriptApiInput = components["schemas"]["TranscriptInput"];
+export type TranscriptWireItem = Omit<
+  KnownApiFields<TranscriptApiItem>,
+  "inputs"
+> & {
+  inputs?: Array<KnownApiFields<TranscriptApiInput>> | null;
+};
+export type TranscriptPageData = Omit<GetResult<"/api/transcript">, "items"> & {
+  items: TranscriptWireItem[];
+};
+
 /** Fields assembled for renderer consumers from entity collections. */
 type ProjectionSnapshotFields = {
   token: string;
@@ -65,7 +84,6 @@ export type FederationPeer = components["schemas"]["FederationPeer"];
 export type FederationRoom = components["schemas"]["FederationRoom"];
 export type FederationSnapshot = components["schemas"]["FederationSnapshot"];
 
-type TranscriptWireItem = GetResult<"/api/transcript">["items"][number];
 type TranscriptAsset = NonNullable<TranscriptWireItem["assets"]>[number];
 export type LocalMessageAttachment = {
   id: string;
@@ -77,7 +95,7 @@ export type LocalMessageAttachment = {
 };
 export type Message = Omit<
   TranscriptWireItem,
-  "assets" | "deliveryStatus" | "role" | "text"
+  "assets" | "deliveryStatus" | "role" | "text" | "threadId"
 > & {
   assets?: Array<TranscriptAsset | LocalMessageAttachment> | null;
   deliveryStatus?: TranscriptWireItem["deliveryStatus"] | "sending" | "paused";

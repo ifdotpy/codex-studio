@@ -1249,7 +1249,8 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    get?: never;
+    /** No Pair Get */
+    get: operations["no_pair_get_api_multi_server_v1_pair_get"];
     put?: never;
     /** Pair */
     post: operations["pair_api_multi_server_v1_pair_post"];
@@ -2615,7 +2616,7 @@ export interface components {
        */
       protocol: 1;
       /** Servers */
-      servers: components["schemas"]["AccessClient"][];
+      servers: components["schemas"]["DiscoveredServer"][];
       settings: components["schemas"]["AccessSettings"];
     };
     /**
@@ -5260,13 +5261,21 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Agent */
-      agent?: string | null;
+      agent: string;
+      /** Automatic */
+      automatic?: boolean | null;
       /** Commit */
       commit?: string | null;
       /** Created */
       created: number;
       /** Cwd */
       cwd?: string | null;
+      /** Data */
+      data?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
+      /** Error */
+      error?: string | null;
       /** Historyboundary */
       historyBoundary?: number | null;
       /** Historyparent */
@@ -5274,17 +5283,29 @@ export interface components {
       /** Id */
       id: string;
       /** Label */
-      label: string;
+      label?: string | null;
+      /** Message */
+      message?: string | null;
+      /** Path */
+      path?: string | null;
       /** Ref */
       ref?: string | null;
+      /** Revision */
+      revision?: number | null;
       /** Rootid */
       rootId?: string | null;
+      /** Source */
+      source?: string | null;
       /** Threadid */
       threadId?: string | null;
       /** Tree */
       tree?: string | null;
       /** Turnid */
       turnId?: string | null;
+      /** Worktree */
+      worktree?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** CheckpointPreviewRequest */
     CheckpointPreviewRequest: {
@@ -5347,17 +5368,25 @@ export interface components {
     };
     /**
      * CheckpointSummary
-     * @description Public checkpoint record produced by ``capture_checkpoint`` summary.
+     * @description Checkpoint summary; other stored keys pass through after payload removal.
      */
     CheckpointSummary: {
       /** Agent */
-      agent?: string | null;
+      agent: string;
+      /** Automatic */
+      automatic?: boolean | null;
       /** Commit */
       commit?: string | null;
       /** Created */
       created: number;
       /** Cwd */
       cwd?: string | null;
+      /** Data */
+      data?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
+      /** Error */
+      error?: string | null;
       /** Historyboundary */
       historyBoundary?: number | null;
       /** Historyparent */
@@ -5365,17 +5394,29 @@ export interface components {
       /** Id */
       id: string;
       /** Label */
-      label: string;
+      label?: string | null;
+      /** Message */
+      message?: string | null;
+      /** Path */
+      path?: string | null;
       /** Ref */
       ref?: string | null;
+      /** Revision */
+      revision?: number | null;
       /** Rootid */
       rootId?: string | null;
+      /** Source */
+      source?: string | null;
       /** Threadid */
       threadId?: string | null;
       /** Tree */
       tree?: string | null;
       /** Turnid */
       turnId?: string | null;
+      /** Worktree */
+      worktree?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** ClaudeAddStartRequest */
     ClaudeAddStartRequest: {
@@ -6316,6 +6357,52 @@ export interface components {
       name: string;
       /** Path */
       path: string;
+    };
+    /**
+     * DiscoveredServer
+     * @description Stored discovery record; ``ServerDiscovery.servers`` passes it through.
+     */
+    DiscoveredServer: {
+      /** Alias */
+      alias?: string | null;
+      /** Autopair */
+      autoPair?: boolean | null;
+      /** Clientid */
+      clientId: string;
+      /** Created */
+      created: number;
+      /** Id */
+      id: string;
+      /**
+       * Kind
+       * @enum {string}
+       */
+      kind: "ui" | "server";
+      /** Label */
+      label: string;
+      /** Lastaccess */
+      lastAccess: number | null;
+      /** Lastseen */
+      lastSeen?: number | null;
+      /** Origin */
+      origin: string | null;
+      /** Publickey */
+      publicKey: string;
+      /** Reachability */
+      reachability?: ("reachable" | "unreachable" | "unknown") | null;
+      /** Revoked */
+      revoked: number | null;
+      /** Serverid */
+      serverId: string | null;
+      /**
+       * Status
+       * @enum {string}
+       */
+      status: "paired" | "revoked" | "discovered" | "unreachable";
+      /** Tailscaleuser */
+      tailscaleUser: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** DiscoverServers */
     DiscoverServers: {
@@ -10932,7 +11019,9 @@ export interface components {
      * @description Named producer fields for message, room, work, plan, and complaint items.
      *
      *     ``native`` is the provider protocol's extensible plan update payload; all
-     *     other returned fields have explicit application-owned types.
+     *     other known returned fields have explicit application-owned types. Runtime
+     *     search spreads stored records, and room search spreads provider-owned rows,
+     *     so unknown source fields pass through.
      */
     SearchItemResponse: {
       /** Syncentities */
@@ -10959,6 +11048,8 @@ export interface components {
       created?: number | null;
       /** Createdby */
       createdBy?: string | null;
+      /** Cyberaccessprogram */
+      cyberAccessProgram?: string | null;
       /** Decisions */
       decisions?: components["schemas"]["WorkDecisionDto"][] | null;
       /** Deliveries */
@@ -11081,6 +11172,8 @@ export interface components {
       streaming?: boolean | null;
       /** Text */
       text: string;
+      /** Threadid */
+      threadId?: string | null;
       /** Title */
       title?: string | null;
       /** Toolstatus */
@@ -11101,6 +11194,8 @@ export interface components {
       userHidden?: boolean | null;
       /** Version */
       version?: number | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** SearchMigration */
     SearchMigration: {
@@ -12813,6 +12908,8 @@ export interface components {
       text: string;
       /** Truncated */
       truncated: boolean;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /**
      * TranscriptItemResponse
@@ -12833,6 +12930,8 @@ export interface components {
       at?: number | string | null;
       /** Clientmessageid */
       clientMessageId?: string | null;
+      /** Cyberaccessprogram */
+      cyberAccessProgram?: string | null;
       /** Deliveryerror */
       deliveryError?: string | null;
       /** Deliverystatus */
@@ -12901,6 +13000,8 @@ export interface components {
       streaming?: boolean | null;
       /** Text */
       text: string;
+      /** Threadid */
+      threadId?: string | null;
       /**
        * Title
        * @default
@@ -12918,6 +13019,8 @@ export interface components {
       turnId?: string | null;
       /** Turnstatus */
       turnStatus?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /**
      * TranscriptMessageRecord
@@ -12934,6 +13037,8 @@ export interface components {
       at?: number | string | null;
       /** Clientmessageid */
       clientMessageId?: string | null;
+      /** Cyberaccessprogram */
+      cyberAccessProgram?: string | null;
       /** Deliveryerror */
       deliveryError?: string | null;
       /** Deliverystatus */
@@ -13002,6 +13107,8 @@ export interface components {
       streaming?: boolean | null;
       /** Text */
       text: string;
+      /** Threadid */
+      threadId?: string | null;
       /**
        * Title
        * @default
@@ -13019,6 +13126,8 @@ export interface components {
       turnId?: string | null;
       /** Turnstatus */
       turnStatus?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** TranscriptPageResponse */
     TranscriptPageResponse: {
@@ -19791,6 +19900,28 @@ export interface operations {
       };
       /** @description Gateway Timeout */
       504: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  no_pair_get_api_multi_server_v1_pair_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      400: components["responses"]["ApiError400"];
+      403: components["responses"]["ApiError403"];
+      /** @description Successful Response */
+      404: {
         headers: {
           [name: string]: unknown;
         };
