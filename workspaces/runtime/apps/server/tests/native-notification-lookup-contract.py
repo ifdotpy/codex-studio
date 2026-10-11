@@ -156,6 +156,64 @@ class NativeLookup(unittest.TestCase):
         self.assertEqual(task['tail'], 'Original command finished')
         self.assertEqual(self.runtime.agent('target')['turnId'], 'current-turn')
 
+    def test_unchanged_running_task_skips_write_and_projection(self):
+        self.actor()
+        from codex_sync_entities import sync_task_window
+        task = {'id': 'target:command', 'agent': 'target', 'itemId': 'command',
+                'turnId': 'current-turn', 'kind': 'command', 'type': 'commandExecution',
+                'name': 'commandExecution', 'command': 'echo ok', 'status': 'running',
+                'tail': 'same output', 'outputTruncated': False}
+        with self.runtime.db() as db:
+            sync_task_window(db)
+            self.runtime.put(db, 'tasks', task)
+
+        def materialized_state():
+            with self.runtime.db() as db:
+                return (
+                    tuple(db.execute('SELECT record FROM runtime_tasks WHERE id=?', (task['id'],)).fetchone()),
+                    tuple(db.execute("SELECT seq,hash,payload,deleted FROM sync_entities WHERE collection='task' AND id=?",
+                                     (task['id'],)).fetchone()),
+                )
+
+        before = materialized_state()
+        with patch.object(self.runtime, 'put', wraps=self.runtime.put) as put:
+            self.emit(method='item/started', item={
+                'id': 'command', 'type': 'commandExecution', 'command': 'echo ok'})
+        self.assertFalse(any(call.args[1] == 'tasks' for call in put.call_args_list))
+        self.assertEqual(materialized_state(), before)
+
+        # The full put path leaves the same durable and renderer materialization.
+        with self.runtime.db() as db:
+            self.runtime.put(db, 'tasks', task, previous_record=task)
+        self.assertEqual(materialized_state(), before)
+
+    def test_changed_running_task_still_projects(self):
+        agent = self.actor()
+        from codex_sync_entities import sync_task_window
+        task = {'id': 'target:command', 'agent': 'target', 'itemId': 'command',
+                'turnId': 'current-turn', 'kind': 'command', 'type': 'commandExecution',
+                'status': 'running', 'tail': 'before', 'outputTruncated': False}
+        with self.runtime.db() as db:
+            sync_task_window(db)
+            self.runtime.put(db, 'tasks', task)
+        with self.runtime.db() as db:
+            previous_seq = db.execute("SELECT seq FROM sync_entities WHERE collection='task' AND id=?",
+                                      (task['id'],)).fetchone()[0]
+        with patch.object(self.runtime, 'put', wraps=self.runtime.put) as put:
+            self.emit(method='item/completed', item={
+                'id': 'command', 'type': 'commandExecution', 'status': 'completed',
+                'exitCode': 0, 'aggregatedOutput': 'after'})
+        self.assertTrue(any(call.args[1] == 'tasks' for call in put.call_args_list))
+        with self.runtime.db() as db:
+            saved = json.loads(db.execute('SELECT record FROM runtime_tasks WHERE id=?', (task['id'],)).fetchone()[0])
+            projected = json.loads(db.execute("SELECT payload FROM sync_entities WHERE collection='task' AND id=?",
+                                              (task['id'],)).fetchone()[0])
+            next_seq = db.execute("SELECT seq FROM sync_entities WHERE collection='task' AND id=?",
+                                  (task['id'],)).fetchone()[0]
+        self.assertEqual(saved['status'], 'completed')
+        self.assertEqual(projected['value']['status'], 'completed')
+        self.assertGreater(next_seq, previous_seq)
+
     def test_non_task_item_kinds_skip_task_lookup_even_when_ids_collide(self):
         self.actor()
         original_task = {'id': 'target:shared-id', 'agent': 'target', 'itemId': 'shared-id',

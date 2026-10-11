@@ -7605,6 +7605,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             task.update(tail=output[-12000:], outputTruncated=task.get("outputTruncated", False) or len(output) > 12000)
         else:
             return
+        if task == previous_task and not stale:
+            return task
         self.put(db, "tasks", task, previous_record=previous_task)
         if stale:
             row = db.execute("SELECT record FROM runtime_items WHERE id=?", (key,)).fetchone()
