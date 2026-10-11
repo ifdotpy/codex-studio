@@ -36,6 +36,16 @@ class ExecTests(unittest.TestCase):
             'projectId': hashlib.sha256(b'/Users/me/app').hexdigest(), 'argv': ['pnpm', 'install'],
             'subpath': 'web', 'timeoutSeconds': 300}, 'op-1', 330)])
 
+    def test_an_option_after_the_folder_is_not_run_as_the_command(self) -> None:
+        Client.calls = []
+        out, err = io.BytesIO(), io.BytesIO()
+        with patch('codex_linux_vm.Client', Client), patch('sys.stdout', io.TextIOWrapper(out)), \
+                patch('sys.stderr', io.TextIOWrapper(err)):
+            codex_layr_exec.main(['/Users/me/app', '--operation-id', 'op-2', '--', 'id'])
+            for arguments in (['/Users/me/app', 'id'], ['/Users/me/app', '--']):
+                with self.subTest(arguments=arguments), self.assertRaises(SystemExit):
+                    codex_layr_exec.main(arguments)
+        self.assertEqual([(call[1]['argv'], call[2]) for call in Client.calls], [(['id'], 'op-2')])
 
 if __name__ == '__main__':
     unittest.main()
