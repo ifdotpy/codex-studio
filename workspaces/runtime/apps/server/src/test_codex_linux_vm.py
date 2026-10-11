@@ -478,7 +478,8 @@ class ProvisionTests(unittest.TestCase):
 
     def test_flash_kernel_is_removed_before_packages_install(self):
         packages = self.script.index("apt-get install -y --no-install-recommends")
-        self.assertLess(self.script.index("apt-get -y purge flash-kernel"), packages)
+        self.assertLess(self.script.index("dpkg --purge flash-kernel"), packages)
+        self.assertIn("if dpkg -s flash-kernel", self.script)
         self.assertLess(self.script.index("dpkg --configure -a"), packages)
         self.assertIn("Pin-Priority: -1", self.script)
 

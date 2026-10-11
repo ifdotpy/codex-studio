@@ -326,10 +326,12 @@ apt-mark hold linux-generic linux-image-generic linux-virtual linux-image-virtua
 # A guest kernel package pulled in flash-kernel, which fails in a VM that the host boots; its
 # failed trigger stopped every later apt run (2026-10-11). Remove it and keep it out.
 printf 'Package: flash-kernel\nPin: release *\nPin-Priority: -1\n' > /etc/apt/preferences.d/studio-no-flash-kernel
-if dpkg-query -W -f='${Status}' flash-kernel 2>/dev/null | grep -q installed; then
-  FLASH_KERNEL_SKIP=1 timeout --kill-after=5 300 apt-get -y purge flash-kernel || true
+# It fails even when half-configured, and nothing installed depends on it; its initramfs hook
+# leaves with it, so the pending configuration of initramfs-tools then succeeds.
+if dpkg -s flash-kernel >/dev/null 2>&1; then
+  timeout --kill-after=5 300 dpkg --purge flash-kernel || true
 fi
-FLASH_KERNEL_SKIP=1 timeout --kill-after=5 300 dpkg --configure -a || true
+timeout --kill-after=5 600 dpkg --configure -a || true
 # Unattended upgrades stay on, but needrestart must not restart Studio units: on 2026-10-11 it
 # restarted the guest during an upload commit. They take new libraries at the next Studio update.
 mkdir -p /etc/needrestart/conf.d
