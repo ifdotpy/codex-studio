@@ -6381,6 +6381,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         mac_sync_tick(self)
         from codex_vm_vault import tick as vault_tick
         vault_tick(self)
+        from codex_browser_bridge import tick as browser_bridge_tick
+        browser_bridge_tick(self)
         from codex_linux_vm_credentials import tick as linux_credentials_tick
         linux_credentials_tick(self)
         from codex_native_runtime import tick as native_runtime_tick
@@ -10654,7 +10656,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.cancel_monitor(m)
         return {"stopped": sorted(ids)}
 
-    def answer(self, key, data):
+    def answer(self, key, data, *, local_window=False):
+        """Answer a request card. `local_window` is true only for a window on the Mac that runs
+        this server; a sign-in link (browser/open) opens only there."""
+        from codex_browser_bridge import METHOD as BROWSER_OPEN, answer as answer_browser_open
+        with self.lock, self.db() as db:
+            row = db.execute("SELECT record FROM runtime_requests WHERE id=?", (key,)).fetchone()
+            browser_open = bool(row) and json.loads(row[0]).get("method") == BROWSER_OPEN
+        if browser_open:
+            # Binds a Mac port and calls the guest, so it runs without the runtime lock.
+            return answer_browser_open(self, key, data, local=local_window)
         with self.lock, self.db() as db:
             row = db.execute("SELECT record FROM runtime_requests WHERE id=?", (key,)).fetchone()
             if not row:
@@ -11301,6 +11312,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         access = getattr(self, "_paired_access_service", None)
         if access:
             access.close()
+        from codex_browser_bridge import stop as stop_browser_bridge
+        stop_browser_bridge(self)
         with self.lock:
             if self.closed:
                 return

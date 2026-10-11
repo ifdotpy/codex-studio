@@ -113,7 +113,7 @@ class WorkRuntime(Protocol):
     def complaint(self, lead: str | None, body: Body, request_id: str, *, user: bool) -> object: ...
     def delete_question(self, request_id: str) -> object: ...
     def defer_question(self, request_id: str, deferred: bool | None) -> object: ...
-    def answer(self, request_id: str, body: Body) -> object: ...
+    def answer(self, request_id: str, body: Body, *, local_window: bool = False) -> object: ...
 
 
 class CanvasPort(Protocol):
@@ -141,6 +141,21 @@ def _query(model: type[ModelT], request: Request) -> ModelT:
         return model.model_validate(values)
     except (ValidationError, ValueError):
         raise ValueError("Invalid query parameters") from None
+
+
+def local_window(request: Request) -> bool:
+    """True for a Studio window on the Mac that runs this server: a direct loopback or Unix
+    socket request without a paired-server signature and without Tailscale Serve headers.
+    A sign-in redirect reaches only this Mac's loopback, so only such a window opens one."""
+    if isinstance(request.scope.get("studio_principal"), dict):
+        return False
+    if request.scope.get("extensions", {}).get("studio.unix_socket"):
+        return True
+    if any(request.headers.get(name) is not None
+           for name in ("x-forwarded-for", "x-forwarded-host", "x-forwarded-proto")):
+        return False
+    client = request.client
+    return client is not None and client.host in {"127.0.0.1", "::1"}
 
 
 def _runtime(context: ApiContext) -> WorkRuntime:
@@ -370,7 +385,8 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post("/api/answer", response_model=AnswerResult,
                  responses={400: {"model": ErrorResponse}})
     def answer(request: Request, body: AnswerBody) -> Response:
-        return context.send(request, _runtime(context).answer(body.id, body_data(body)))
+        return context.send(request, _runtime(context).answer(
+            body.id, body_data(body), local_window=local_window(request)))
 
     @router.post("/api/chats", response_model=ChatCreated,
                  responses={400: {"model": ErrorResponse}})
