@@ -178,3 +178,8 @@ jobs:
         run: if command -v codex >/dev/null 2>&1; then echo "Codex must not be installed for this offline suite" >&2; exit 1; fi
       - name: Run audited offline server suites
         run: just test-server-opt-in
+      - name: Show the full log of a failed server run
+        if: failure()
+        run: |
+          log="$(ls -t "$XDG_CACHE_HOME"/codex-studio/checks/run-*/full.log 2>/dev/null | head -n 1)"
+          if [ -n "$log" ]; then tail -n 400 "$log"; fi
