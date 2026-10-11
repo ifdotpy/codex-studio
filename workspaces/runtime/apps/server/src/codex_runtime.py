@@ -6495,10 +6495,18 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             else:
                 agents = current_agents(db)
             if agent_id is None:
-                # An empty transfer queue has no tick work and needs no nested writer scope.
-                if db.execute("SELECT 1 FROM runtime_account_transfers "
-                              "WHERE json_extract(record,'$.status')='pending' LIMIT 1").fetchone():
-                    transfer_store(self).tick(agents)
+                transfers = transfer_store(self)
+                has_pending_transfer = db.execute(
+                    "SELECT 1 FROM runtime_account_transfers "
+                    "WHERE json_extract(record,'$.status')='pending' LIMIT 1"
+                ).fetchone()
+                has_referenced_transfer = any(
+                    a.get("accountTransferId")
+                    or (a.get("accountTransfer") or {}).get("status") == "pending"
+                    for a in agents
+                )
+                if has_pending_transfer or transfers.futures or transfers.running or has_referenced_transfer:
+                    transfers.tick(agents)
                     agents = current_agents(db)
             for a in agents:
                 if a.get("claudePreInputRetry"):
