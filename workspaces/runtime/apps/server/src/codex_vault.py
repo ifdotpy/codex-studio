@@ -1,13 +1,15 @@
-"""The project vault from the Mac (docs/vault.md): configure the VM writer, push, read the status.
+"""The project vault from the Mac (docs/vault.md): configure the VM writer (`layr-desk push`, which
+the VM's root broker runs), push, read the status.
 
     python3 codex_vault.py configure PROJECT_FOLDER < config.json   (vault-deploy pipes it)
     python3 codex_vault.py push PROJECT_FOLDER
     python3 codex_vault.py status PROJECT_FOLDER
     python3 codex_vault.py site PROJECT_FOLDER https://desk.example.com/
 
-The configuration holds the writer's AWS key; it goes from stdin to the root broker and is never
-printed or written on the Mac. Its optional "site", the Desk site of the vault, stays on the Mac
-for the sidebar's Desk link; `site` sets it for a vault configured without one.
+The configuration holds the writer's AWS key and, when it has one, the "signingKey" that signs
+each state; they go from stdin to the root broker and are never printed or written on the Mac.
+Its optional "site", the Desk site of the vault, stays on the Mac for the sidebar's Desk link;
+`site` sets it for a vault configured without one.
 """
 from __future__ import annotations
 
@@ -21,6 +23,7 @@ import uuid
 from codex_layr_migration import project_id
 
 FIELDS = ("bucket", "region", "prefix", "recipient", "accessKeyId", "secretAccessKey")
+OPTIONAL_FIELDS = ("signingKey",)
 
 
 def main(arguments: list[str]) -> int:
@@ -44,8 +47,9 @@ def main(arguments: list[str]) -> int:
         missing = [field for field in FIELDS if not isinstance(given.get(field), str)]
         if missing:
             parser.error("the configuration lacks " + ", ".join(missing))
-        result = client.call("vault.configure", {"projectId": project, **{f: given[f] for f in FIELDS}},
-                             request_id="vault-configure:" + str(uuid.uuid4()), timeout=60)
+        params = {"projectId": project, **{f: given[f] for f in FIELDS},
+                  **{f: given[f] for f in OPTIONAL_FIELDS if given.get(f) is not None}}
+        result = client.call("vault.configure", params, request_id="vault-configure:" + str(uuid.uuid4()), timeout=60)
         if isinstance(given.get("site"), str):
             from codex_vm_vault import store_site
             store_site(client.state_dir, project, given["site"])

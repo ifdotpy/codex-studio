@@ -143,9 +143,10 @@ impl Disk {
     }
 
     async fn open(&self, name: &str, identity: &str) -> Result<Project> {
-        let vault = self.site.vault(name).unlocked(identity);
+        let mut vault = self.site.vault(name).unlocked(identity);
+        let policy = vault.policy().await?;
         let names = vault.states().await?;
-        let reader = Arc::new(Reader::new(vault, identity, &names)?);
+        let reader = Arc::new(Reader::new(vault, identity, &names, policy)?);
         let Ok((seq, attempt)) = reader.latest() else {
             let mut files = BTreeMap::new();
             files.insert(

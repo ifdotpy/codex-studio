@@ -1,8 +1,10 @@
 //! The vault reader (docs/design.md, "Reader"): the states of one vault, their trees and the
-//! content of their files. It decrypts with the vault identity and checks each file against
-//! the size and SHA-256 that its tree names.
+//! content of their files. It decrypts with the vault identity, checks each tree against the
+//! vault's signature policy (docs/design.md, "Signatures") and each file against the size and
+//! SHA-256 that its tree names.
 
 use crate::format::{self, Entry, Header, Tree};
+use crate::sign::Policy;
 use crate::{keys, zst};
 use anyhow::{anyhow, bail, Context, Result};
 use sha2::{Digest, Sha256};
@@ -22,25 +24,31 @@ type DecodedTree = (Header, Arc<Vec<u8>>);
 
 /// Decrypted data parts kept in memory, at most this many bytes; trees are kept apart.
 const PART_CACHE: usize = 512 << 20;
+/// Decoded trees kept in memory, at most this many bytes.
+const TREE_CACHE: usize = 256 << 20;
 
 #[derive(Default)]
 struct Cache {
     parts: HashMap<String, Arc<Vec<u8>>>,
     bytes: usize,
+    /// Trees whose signature, when they need one, is checked.
     trees: HashMap<(u64, String), DecodedTree>,
+    tree_bytes: usize,
 }
 
 pub struct Reader<S> {
     store: S,
     identity: age::x25519::Identity,
+    policy: Policy,
     trees: BTreeMap<u64, Vec<String>>,
     cache: Mutex<Cache>,
 }
 
 impl<S: Store> Reader<S> {
     /// `names` are the object names below `states/` (a listing); `identity` is the vault
-    /// identity.
-    pub fn new(store: S, identity: &str, names: &[String]) -> Result<Self> {
+    /// identity, which must belong to the recipient of `policy`.
+    pub fn new(store: S, identity: &str, names: &[String], policy: Policy) -> Result<Self> {
+        policy.check_identity(identity)?;
         let identity = age::x25519::Identity::from_str(identity.trim())
             .map_err(|e| anyhow!("not an age identity: {e}"))?;
         let mut trees: BTreeMap<u64, Vec<String>> = BTreeMap::new();
@@ -55,9 +63,16 @@ impl<S: Store> Reader<S> {
         Ok(Reader {
             store,
             identity,
+            policy,
             trees,
             cache: Mutex::default(),
         })
+    }
+
+    /// Whether state `seq` carries a checked signature: reading it fails without a valid one.
+    /// The other states read as before and show as unsigned.
+    pub fn signed(&self, seq: u64) -> bool {
+        self.policy.signed(seq)
     }
 
     /// Every pushed state, oldest first. A second tree of one `seq` (after a lost reply) is
@@ -99,8 +114,12 @@ impl<S: Store> Reader<S> {
         Ok(part)
     }
 
-    /// The header of one state, without decoding its tree.
+    /// The header of one state. The tree of a state that must be signed is decoded to check its
+    /// signature; the header of another state comes without it.
     pub async fn header(&self, seq: u64, attempt: &str) -> Result<Header> {
+        if self.policy.signed(seq) {
+            return Ok(self.tree(seq, attempt).await?.0);
+        }
         if let Some((header, _)) = self
             .cache
             .lock()
@@ -114,7 +133,8 @@ impl<S: Store> Reader<S> {
         Ok(format::split_tree(&object)?.0)
     }
 
-    /// The header and the canonical tree bytes of one state.
+    /// The header and the canonical tree bytes of one state. Each tree on the way is checked
+    /// against the signature policy before it is kept.
     pub async fn tree(&self, seq: u64, attempt: &str) -> Result<(Header, Arc<Vec<u8>>)> {
         // Walk back to the nearest full tree (or one already decoded), then decode forward.
         let mut pending = Vec::new();
@@ -139,6 +159,7 @@ impl<S: Store> Reader<S> {
             }
             if header.tree == "full" {
                 let bytes = Arc::new(zst::decompress(frame, None)?);
+                self.policy.check(&header, &bytes)?;
                 self.remember(&header, &bytes);
                 if pending.is_empty() {
                     return Ok((header, bytes));
@@ -155,6 +176,7 @@ impl<S: Store> Reader<S> {
         let mut last = None;
         while let Some((header, frame)) = pending.pop() {
             canonical = Arc::new(zst::decompress(&frame, Some(&canonical))?);
+            self.policy.check(&header, &canonical)?;
             self.remember(&header, &canonical);
             last = Some(header);
         }
@@ -163,11 +185,13 @@ impl<S: Store> Reader<S> {
 
     fn remember(&self, header: &Header, bytes: &Arc<Vec<u8>>) {
         let key = (header.seq, header.attempt.clone());
-        self.cache
-            .lock()
-            .unwrap()
-            .trees
-            .insert(key, (header.clone(), bytes.clone()));
+        let mut cache = self.cache.lock().unwrap();
+        if cache.tree_bytes + bytes.len() > TREE_CACHE {
+            cache.trees.clear();
+            cache.tree_bytes = 0;
+        }
+        cache.tree_bytes += bytes.len();
+        cache.trees.insert(key, (header.clone(), bytes.clone()));
     }
 
     /// `path -> entry` of one state (the latest when `state` is none).

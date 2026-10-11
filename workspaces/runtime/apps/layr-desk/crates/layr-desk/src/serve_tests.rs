@@ -369,6 +369,43 @@ async fn slots_are_open_to_read_and_only_passkey_slots_change_once() {
 }
 
 #[tokio::test]
+async fn the_public_part_of_vault_json_is_open_to_read() {
+    let s = setup(None).await;
+    assert_eq!(s.status("GET", "/api/p/p/vault", None).await, 404);
+    let recipient = keys::recipient_of(&s.identity).unwrap();
+    let record = json!({"format": 1, "recipient": recipient, "created": 1791700000});
+    s.bucket
+        .put_new("p/vault.json", record.to_string().into())
+        .await
+        .unwrap();
+    let reply = s.call("GET", "/api/p/p/vault", None).await;
+    assert_eq!(reply.status, 200);
+    assert_eq!(
+        reply.json(),
+        json!({"recipient": recipient, "writer": null, "signedFrom": null})
+    );
+    assert_eq!(reply.header("cache-control"), "no-store");
+    let signed = json!({"format": 1, "recipient": recipient, "created": 1,
+        "writer": "ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ=", "signedFrom": 7});
+    s.bucket
+        .put_new("q/vault.json", signed.to_string().into())
+        .await
+        .unwrap();
+    assert_eq!(
+        s.call("GET", "/api/p/q/vault", None).await.json(),
+        json!({"recipient": recipient, "writer": "ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ=", "signedFrom": 7})
+    );
+    s.bucket.delete("q/vault.json").await.unwrap();
+    s.bucket
+        .put_new("q/vault.json", b"{not json".to_vec())
+        .await
+        .unwrap();
+    assert_eq!(s.status("GET", "/api/p/q/vault", None).await, 502);
+    assert_eq!(s.status("PUT", "/api/p/p/vault", None).await, 401);
+    assert_eq!(s.status("GET", "/api/p/p/vault/x", None).await, 401);
+}
+
+#[tokio::test]
 async fn bodies_are_small_json_with_a_slot_of_1_to_4096_bytes() {
     let s = setup(None).await;
     let tk = s.token("p").await;

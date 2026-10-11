@@ -2,11 +2,12 @@
 //! port of python/test_vault_writer.py, where the reader rebuilds every pushed state. The cross
 //! tests run the Python writer and reader (python/, through tests/cross.py) on the same folders:
 //! the Python reader reads what this writer pushed, and each writer continues a state folder of
-//! the other.
+//! the other. A writer with a signing key signs each tree, and the reader checks them.
 
 use anyhow::{bail, Result};
+use desk_core::sign::Signer;
 use desk_core::writer::{self, Bucket, Layr, Summary, Writer, MAX_DEPTH};
-use desk_core::{keys, zst, Reader, Store};
+use desk_core::{keys, zst, Policy, Reader, Store, VaultInfo};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -269,6 +270,25 @@ impl Test {
     }
 
     fn reader(&self, fake: bool) -> Reader<Objects> {
+        self.reader_with(fake, None, None)
+    }
+
+    /// The reader of a vault.json that names `writer` from `signed_from` on.
+    fn reader_with(
+        &self,
+        fake: bool,
+        writer: Option<&Signer>,
+        signed_from: Option<u64>,
+    ) -> Reader<Objects> {
+        let policy = Policy::new(
+            "proj",
+            &VaultInfo {
+                recipient: keys::recipient_of(&self.identity).unwrap(),
+                writer: writer.map(Signer::public),
+                signed_from,
+            },
+        )
+        .unwrap();
         let states = self.bucket.root.join("proj/states");
         let names: Vec<String> = std::fs::read_dir(&states)
             .unwrap()
@@ -278,7 +298,7 @@ impl Test {
             states,
             fake_to: fake.then(|| keys::recipient_of(&self.identity).unwrap()),
         };
-        Reader::new(store, &self.identity, &names).unwrap()
+        Reader::new(store, &self.identity, &names, policy).unwrap()
     }
 
     /// The Python writer or reader on the folders of this test.
@@ -595,10 +615,62 @@ fn large() -> Vec<u8> {
     out
 }
 
+fn signer(byte: u8) -> Signer {
+    use base64::Engine;
+    Signer::from_base64(&base64::engine::general_purpose::STANDARD.encode([byte; 32])).unwrap()
+}
+
+#[tokio::test]
+async fn a_writer_with_a_key_signs_each_tree_from_its_first_push_on() {
+    let t = Test::new("signed");
+    let source = source();
+    let state = |n: u64| {
+        let mut app = source.clone();
+        app.extend(format!("line {n}\n").as_bytes());
+        files(&[
+            ("app.py", &app, "100644"),
+            ("n.txt", n.to_string().as_bytes(), "100644"),
+        ])
+    };
+    // Two pushes before the writer had a key, then three with it.
+    for n in 1..=5 {
+        t.layr.commit(&format!("s{n}"), &state(n));
+    }
+    let unsigned = t.writer();
+    pushed(&unsigned.push("s1").await.unwrap(), 1);
+    pushed(&unsigned.push("s2").await.unwrap(), 2);
+    let key = signer(5);
+    let writer = t.writer().signed_by(signer(5));
+    for n in 3..=5u64 {
+        pushed(&writer.push(&format!("s{n}")).await.unwrap(), n);
+    }
+    let reader = t.reader_with(false, Some(&key), Some(3));
+    for (seq, attempt) in reader.states() {
+        assert_eq!(reader.signed(seq), seq >= 3);
+        let header = reader.header(seq, &attempt).await.unwrap();
+        assert_eq!(header.sig.is_some(), seq >= 3, "state {seq}");
+        let want = state(seq);
+        assert_eq!(read(&reader, Some((seq, attempt))).await, want);
+    }
+    // The same states under another key, or with every state required to be signed.
+    let other = t.reader_with(false, Some(&signer(6)), Some(3));
+    let err = other.files(None).await.unwrap_err().to_string();
+    assert!(err.contains("does not match"), "{err}");
+    let strict = t.reader_with(false, Some(&key), None);
+    let err = strict.files(Some((1, strict.states()[0].1.clone()))).await;
+    assert!(err.unwrap_err().to_string().contains("no writer signature"));
+    assert!(
+        strict.files(None).await.is_err(),
+        "state 5 rests on state 2"
+    );
+}
+
 #[tokio::test]
 async fn the_python_reader_reads_what_this_writer_pushed() {
     let t = Test::new("python-reads");
-    let writer = t.fake_writer();
+    // Signed trees: the Python reader ignores the signature, desk-core checks it.
+    let key = signer(9);
+    let writer = t.fake_writer().signed_by(signer(9));
     let large = large();
     let mut one = odd_names(b" one");
     one.insert("large.txt".into(), (large.clone(), "100644"));
@@ -635,8 +707,9 @@ async fn the_python_reader_reads_what_this_writer_pushed() {
         states[1]["files"]["tab\there"][2],
         serde_json::json!(["delta", "full"])
     );
+    assert!(states[1]["header"]["sig"].is_string());
     // desk-core reads the same states.
-    let reader = t.reader(true);
+    let reader = t.reader_with(true, Some(&key), Some(1));
     for ((seq, attempt), want) in reader.states().into_iter().zip([&one, &two]) {
         assert_eq!(&read(&reader, Some((seq, attempt))).await, want);
     }

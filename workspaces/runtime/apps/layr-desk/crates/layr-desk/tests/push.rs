@@ -1,10 +1,12 @@
 //! `layr-desk push` end to end: the binary reads its configuration from a file or from standard
 //! input, runs a fake layr command (states as folders), and puts the vault into a fake S3 that
-//! checks every signature and pages its listings. desk-core's reader decrypts every pushed
-//! state with the vault identity.
+//! checks every request signature and pages its listings. desk-core's reader decrypts every
+//! pushed state with the vault identity and checks the writer signature of each tree.
 
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine;
 use bytes::Bytes;
-use desk_core::{keys, Reader, Store};
+use desk_core::{keys, Policy, Reader, Store, VaultInfo};
 use http_body_util::{BodyExt, Full};
 use hyper::{Request, Response};
 use percent_encoding::percent_decode_str;
@@ -300,11 +302,15 @@ async fn push_puts_each_new_head_into_the_vault() {
     }
     let endpoint = serve(objects.clone()).await;
     let identity = keys::generate_identity();
+    let seed = B64.encode([42u8; 32]);
+    let writer = desk_core::sign::Signer::from_base64(&seed)
+        .unwrap()
+        .public();
     let mut config = serde_json::json!({
         "bucket": BUCKET, "region": "us-east-1", "prefix": "proj",
         "recipient": keys::recipient_of(&identity).unwrap(),
         "accessKeyId": KEY_ID, "secretAccessKey": SECRET, "endpoint": endpoint,
-        "projectId": "ignored",
+        "projectId": "ignored", "signingKey": seed,
     });
     let text: Vec<u8> = (0..2000)
         .flat_map(|i| format!("line {i} of the text\n").into_bytes())
@@ -343,7 +349,17 @@ async fn push_puts_each_new_head_into_the_vault() {
         .filter_map(|k| k.strip_prefix("proj/states/"))
         .map(str::to_string)
         .collect();
-    let reader = Reader::new(Memory(objects.clone()), &identity, &names).unwrap();
+    // The trees before this writer are no states at all; vault.json starts signatures after them.
+    let policy = Policy::new(
+        "proj",
+        &VaultInfo {
+            recipient: keys::recipient_of(&identity).unwrap(),
+            writer: Some(writer),
+            signed_from: Some(6),
+        },
+    )
+    .unwrap();
+    let reader = Reader::new(Memory(objects.clone()), &identity, &names, policy).unwrap();
     let states = reader.states();
     let pushed: Vec<_> = states
         .iter()
@@ -352,6 +368,13 @@ async fn push_puts_each_new_head_into_the_vault() {
         .collect();
     assert_eq!(pushed.len(), 2);
     for (state, want) in pushed.into_iter().zip([&text, &changed]) {
+        assert!(reader.signed(state.0));
+        assert!(reader
+            .header(state.0, &state.1)
+            .await
+            .unwrap()
+            .sig
+            .is_some());
         let files = reader.files(Some(state)).await.unwrap();
         assert_eq!(
             files.keys().collect::<Vec<_>>(),
@@ -372,6 +395,7 @@ async fn push_puts_each_new_head_into_the_vault() {
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(stderr.contains("HTTP 403"), "{stderr}");
     assert!(!stderr.contains("wrong-secret"), "{stderr}");
+    assert!(!stderr.contains(seed.as_str()), "{stderr}");
 }
 
 #[test]
@@ -388,6 +412,7 @@ fn a_bad_configuration_is_refused_before_layr_runs() {
         ("bucket", "Bad_Bucket", "bucket"),
         ("region", "eu-central-1.evil.com", "region"),
         ("prefix", "a/b", "prefix"),
+        ("signingKey", "c2VjcmV0LXNlZWQ=", "signing key"),
     ] {
         let mut config = good.clone();
         config[field] = value.into();
@@ -395,6 +420,9 @@ fn a_bad_configuration_is_refused_before_layr_runs() {
         assert!(!output.status.success());
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains(message), "{field}: {stderr}");
+        if field == "signingKey" {
+            assert!(!stderr.contains(value), "{stderr}");
+        }
     }
     let mut config = good.clone();
     config.as_object_mut().unwrap().remove("secretAccessKey");

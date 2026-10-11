@@ -1,8 +1,10 @@
 """Root broker methods of the project vault (docs/vault.md). The configuration, with the writer's
-AWS key, stays in the private broker state; agents never read it."""
+AWS key, stays in the private broker state; agents never read it. `layr-desk push` is the writer."""
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import os
 from pathlib import Path
@@ -13,12 +15,17 @@ import time
 
 from common import GuestError, atomic_json, require
 from layr_share import project_id
-from vault_s3 import S3
-from vault_writer import Writer
 
 READ_METHODS = {"vault.status"}
 METHODS = READ_METHODS | {"vault.configure", "vault.push"}
 LAYR = "/usr/local/bin/layr"
+LAYR_DESK = "/usr/local/bin/layr-desk"
+LAYR_SOCKET = "/run/layr/layr.sock"
+# A first push of a large project on a slow line takes hours; a stuck one must still end.
+PUSH_TIMEOUT = 6 * 3600
+# A new value of one of these starts the writer again with a full push: deltas never cross
+# vaults or keys. A new writer access key keeps the chain.
+VAULT_FIELDS = ("bucket", "prefix", "recipient", "endpoint", "signingKey")
 
 
 def check_config(params):
@@ -34,17 +41,24 @@ def check_config(params):
     endpoint = params.get("endpoint")
     require(endpoint is None or (isinstance(endpoint, str) and endpoint.startswith(("http://127.0.0.1:", "http://localhost:"))),
             "Only a local test endpoint may replace AWS")
-    return {"recipient": recipient, "bucket": bucket, "region": region, "prefix": prefix,
-            "accessKeyId": key_id, "secretAccessKey": secret, "endpoint": endpoint}
+    config = {"recipient": recipient, "bucket": bucket, "region": region, "prefix": prefix,
+              "accessKeyId": key_id, "secretAccessKey": secret, "endpoint": endpoint}
+    # The optional key that signs each state: the base64 seed of an Ed25519 key.
+    signing = params.get("signingKey")
+    if signing is not None:
+        try:
+            seed = base64.b64decode(signing, validate=True) if isinstance(signing, str) else b""
+        except binascii.Error:
+            seed = b""
+        require(len(seed) == 32, "The signing key is invalid")
+        config["signingKey"] = signing
+    return config
 
 
-def age_encrypt(recipient):
-    def encrypt(data):
-        process = subprocess.run(["age", "-r", recipient], input=data, capture_output=True, timeout=600)
-        if process.returncode:
-            raise GuestError("operation_failed", "age failed: " + process.stderr.decode(errors="replace")[:300])
-        return process.stdout
-    return encrypt
+def failure(stderr):
+    """The cause that layr-desk names, on one line: S3 replies and layr messages hold no secret."""
+    text = " ".join(stderr.decode(errors="replace").split())
+    return text.removeprefix("Error: ")[:400]
 
 
 class VaultHandlers:
@@ -62,18 +76,6 @@ class VaultHandlers:
             raise GuestError("not_found", "The project has no vault")
         return json.loads(path.read_text())
 
-    def layr(self, project):
-        environment = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": "/root",
-                       "LAYR_ROOT": str(self.root), "LAYR_SOCKET": "/run/layr/layr.sock"}
-
-        def run(args):
-            process = subprocess.run([LAYR, "--project", project, *args], capture_output=True, cwd="/",
-                                     env=environment, timeout=1800)
-            if process.returncode:
-                raise GuestError("operation_failed", "layr failed: " + process.stderr.decode(errors="replace")[:300])
-            return process.stdout.decode()
-        return run
-
     async def dispatch(self, request_id, method, params, emit):
         project = project_id(params.get("projectId"))
         require((self.root / "projects" / project / "lines/main").is_dir(), "The layr project does not exist")
@@ -82,8 +84,8 @@ class VaultHandlers:
             self.folder(project).mkdir(mode=0o700, exist_ok=True)
             path = self.folder(project) / "config.json"
             old = json.loads(path.read_text()) if path.exists() else {}
-            if any(old.get(k) != config[k] for k in ("bucket", "prefix", "recipient", "endpoint")):
-                # Another vault: its first push is full; deltas never cross vaults or keys.
+            if any(old.get(k) != config.get(k) for k in VAULT_FIELDS):
+                # Another vault: its first push is full.
                 shutil.rmtree(self.folder(project) / "writer", ignore_errors=True)
             atomic_json(self.folder(project) / "config.json", config)
             os.chmod(self.folder(project) / "config.json", 0o600)
@@ -110,9 +112,8 @@ class VaultHandlers:
             try:
                 result = await asyncio.to_thread(self.push, project)
             except Exception as error:
-                # The broker hides unexpected errors; a failed push names its cause (S3 replies and
-                # layr or age messages carry no secrets).
-                message = error.message if isinstance(error, GuestError) else f"{type(error).__name__}: {str(error)[:400]}"
+                # The broker hides unexpected errors; a failed push names its cause.
+                message = str(error) if isinstance(error, GuestError) else f"{type(error).__name__}: {str(error)[:400]}"
                 status["lastError"] = message
                 atomic_json(status_path, status)
                 if isinstance(error, GuestError):
@@ -140,10 +141,28 @@ class VaultHandlers:
             await asyncio.sleep(interval)
 
     def push(self, project):
-        config = self.config(project)
-        s3 = S3(config["bucket"], config["region"], config["accessKeyId"], config["secretAccessKey"],
-                endpoint=config.get("endpoint"))
-        layr = self.layr(project)
-        head = layr(["rev-parse", "main"]).strip()
-        writer = Writer(self.folder(project) / "writer", config["prefix"], layr, age_encrypt(config["recipient"]), s3)
-        return writer.push(head)
+        """`layr-desk push` of the project's main head, as root. The configuration goes on its
+        standard input, so the AWS key is in no argument list and in no other file."""
+        config = {key: value for key, value in self.config(project).items() if value is not None}
+        environment = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": "/root",
+                       "LAYR_ROOT": str(self.root), "LAYR_SOCKET": LAYR_SOCKET}
+        command = [LAYR_DESK, "push", "--project", project, "--state-dir", str(self.folder(project) / "writer"),
+                   "--layr", LAYR, "--config", "-"]
+        try:
+            process = subprocess.run(command, input=json.dumps(config).encode(), capture_output=True, cwd="/",
+                                     env=environment, timeout=PUSH_TIMEOUT)
+        except FileNotFoundError as error:
+            raise GuestError("operation_failed", "layr-desk is not installed") from error
+        except subprocess.TimeoutExpired as error:
+            raise GuestError("operation_failed", f"layr-desk push ran longer than {PUSH_TIMEOUT} seconds") from error
+        if process.returncode:
+            cause = failure(process.stderr) or f"exit status {process.returncode}"
+            raise GuestError("operation_failed", "layr-desk push: " + cause)
+        lines = process.stdout.decode(errors="replace").strip().splitlines()
+        try:
+            summary = json.loads(lines[-1])
+        except (IndexError, ValueError):
+            summary = None
+        if not isinstance(summary, dict) or not isinstance(summary.get("pushed"), bool):
+            raise GuestError("operation_failed", "layr-desk push printed no summary")
+        return summary

@@ -146,9 +146,11 @@ fn paper(target: &Target) -> Result<String> {
     }
 }
 
-/// The vault through its gateway: with the key that `unlock` kept, else with the paper key.
+/// The vault through its gateway: with the key that `unlock` kept, else with the paper key. The
+/// reader checks the identity and the signatures that the vault's vault.json asks for.
 async fn open(target: &Target) -> Result<Reader<gateway::Vault>> {
     let mut vault = gateway::Site::new(&target.site)?.vault(&target.project);
+    let policy = vault.policy().await?;
     let kept = match (&target.paper_file, keystore::system()) {
         (None, Ok(keys)) => keys.get(&keystore::account(&target.site, &target.project)?)?,
         _ => None,
@@ -167,7 +169,15 @@ async fn open(target: &Target) -> Result<Reader<gateway::Vault>> {
     }
     let names = vault.states().await?;
     let identity = vault.identity()?.to_string();
-    Reader::new(vault, &identity, &names)
+    Reader::new(vault, &identity, &names, policy)
+}
+
+fn signed(reader: &Reader<gateway::Vault>, seq: u64) -> &'static str {
+    if reader.signed(seq) {
+        "signed"
+    } else {
+        "unsigned"
+    }
 }
 
 #[tokio::main]
@@ -197,29 +207,52 @@ async fn main() -> Result<()> {
                     problems += 1;
                 }
             }
-            println!("state {seq}: {} files, {problems} differ", files.len());
+            println!(
+                "state {seq} ({}): {} files, {problems} differ",
+                signed(&reader, seq),
+                files.len()
+            );
             if problems > 0 {
                 bail!("the vault and the folder differ");
             }
         }
         Command::States { target, json } => {
+            // A state whose signature fails shows its error; the others still show.
             let reader = open(&target).await?;
             let mut states = Vec::new();
+            let mut refused = 0;
             for (seq, attempt) in reader.states() {
-                let header = reader.header(seq, &attempt).await?;
-                states.push(serde_json::json!({"seq": seq, "attempt": attempt, "time": header.time, "state": header.state}));
+                let signed = reader.signed(seq);
+                states.push(match reader.header(seq, &attempt).await {
+                    Ok(header) => serde_json::json!({"seq": seq, "attempt": attempt, "time": header.time, "state": header.state, "signed": signed}),
+                    Err(e) => {
+                        refused += 1;
+                        serde_json::json!({"seq": seq, "attempt": attempt, "signed": signed, "error": format!("{e:#}")})
+                    }
+                });
             }
             if json {
                 println!("{}", serde_json::json!({ "states": states }));
             } else {
                 for s in &states {
-                    println!(
-                        "{:>6} {} {}",
-                        s["seq"],
-                        s["time"],
-                        s["state"].as_str().unwrap_or("")
-                    );
+                    let mark = if s["signed"] == true {
+                        "signed"
+                    } else {
+                        "unsigned"
+                    };
+                    match s["error"].as_str() {
+                        Some(error) => println!("{:>6} refused: {error}", s["seq"]),
+                        None => println!(
+                            "{:>6} {} {} {mark}",
+                            s["seq"],
+                            s["time"],
+                            s["state"].as_str().unwrap_or("")
+                        ),
+                    }
                 }
+            }
+            if refused > 0 {
+                bail!("{refused} of {} states are refused", states.len());
             }
         }
         Command::Pull {
@@ -242,8 +275,9 @@ async fn main() -> Result<()> {
                 println!("{}", serde_json::to_string(&summary)?);
             } else {
                 println!(
-                    "state {}: {} files ({} bytes) in {}",
+                    "state {} ({}): {} files ({} bytes) in {}",
                     summary.seq,
+                    signed(&reader, summary.seq),
                     summary.files,
                     summary.bytes,
                     to.display()

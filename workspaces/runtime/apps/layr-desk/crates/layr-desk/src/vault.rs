@@ -184,6 +184,23 @@ impl<B: Bucket> Vault<B> {
         Ok(STANDARD.encode(sealed))
     }
 
+    /// The public part of vault.json: the recipient, the writer's key and the first signed
+    /// `seq` (docs/design.md, "Signatures").
+    pub async fn info(&self) -> Result<desk_core::VaultInfo> {
+        let Some(object) = self
+            .bucket
+            .get(&format!("{}/vault.json", self.prefix))
+            .await?
+        else {
+            return fail(404, "the vault has no vault.json");
+        };
+        let data = object.body.collect().await?.to_bytes();
+        match serde_json::from_slice(&data) {
+            Ok(info) => Ok(info),
+            Err(_) => fail(502, "the vault.json of this vault is not valid"),
+        }
+    }
+
     /// Object names below states/, without the prefix.
     pub async fn states(&self) -> Result<Vec<String>> {
         let under = format!("{}/states/", self.prefix);

@@ -1,6 +1,6 @@
 //! The writer (docs/design.md, "Writer"): one push puts a state of a layr project into its
 //! vault. It holds only the vault recipient, and its bucket key may only put new objects and
-//! list names.
+//! list names. With a signing key it signs each tree (docs/design.md, "Signatures").
 //!
 //! The state folder is the one of the Python writer (python/vault_writer.py), so either writer
 //! continues the other:
@@ -10,7 +10,8 @@
 //!   last pushed state, whose files are the bases of file deltas.
 
 use crate::canonical::canonical;
-use crate::format::{self, Entry, Link, Tree};
+use crate::format::{self, Entry, Header, Link, Tree};
+use crate::sign::Signer;
 use crate::zst;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -104,6 +105,7 @@ pub struct Writer<L, B, E> {
     layr: L,
     bucket: B,
     encrypt: E,
+    signer: Option<Signer>,
 }
 
 impl<L, B, E> Writer<L, B, E>
@@ -135,7 +137,14 @@ where
             layr,
             bucket,
             encrypt,
+            signer: None,
         })
+    }
+
+    /// Sign every tree that this writer puts.
+    pub fn signed_by(mut self, signer: Signer) -> Self {
+        self.signer = Some(signer);
+        self
     }
 
     pub fn dir(&self) -> &Path {
@@ -353,13 +362,27 @@ where
         let time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs();
-        let header = json!({
+        let header = Header {
+            v: 1,
+            seq,
+            attempt: attempt.clone(),
+            state: head.to_string(),
+            time: i64::try_from(time)?,
+            tree: if base.is_some() { "delta" } else { "full" }.into(),
+            base: base.map(|l| (l.record.seq, l.record.attempt.clone())),
+            parts: put,
+            sig: None,
+        };
+        let mut line = json!({
             "v": 1, "seq": seq, "attempt": attempt, "state": head, "time": time,
-            "tree": if base.is_some() { "delta" } else { "full" },
-            "base": base.map(|l| json!([l.record.seq, l.record.attempt])),
+            "tree": header.tree, "base": header.base.as_ref().map(|(s, a)| json!([s, a])),
             "parts": put,
         });
-        let mut object = canonical(&header)?;
+        // An unsigned tree keeps the header of the writers before signatures.
+        if let Some(signer) = &self.signer {
+            line["sig"] = signer.sign(&self.prefix, &header, &tree).into();
+        }
+        let mut object = canonical(&line)?;
         object.push(b'\n');
         object.extend_from_slice(&body);
         if !self

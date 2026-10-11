@@ -18,8 +18,11 @@ and `test_host_exec_slot_io.py`. `test_layr_e2e.py` is an opt-in end-to-end run 
 real layr daemon: run it as root on Linux with btrfs, with `LAYR_E2E_ROOT` set to the
 daemon's store. `test_mac_sync_e2e.py` runs Mac folder sync rounds the same way and also
 needs `STUDIO_SERVER_SRC` (the server `src` folder). Provisioning copies the vendored layr sources
-(`workspaces/runtime/apps/layr`) to `/opt/codex-studio/vm/layr`, and `install-layr.sh`
-builds them in the guest.
+(`workspaces/runtime/apps/layr`) to `/opt/codex-studio/vm/layr` and the vendored layr-desk
+sources (`workspaces/runtime/apps/layr-desk`) to `/opt/codex-studio/vm/layr-desk`, and
+`install-layr.sh` builds both in the guest. The vault broker methods (`vault_admin.py`) run
+`layr-desk push` ([vault.md](../../../../docs/vault.md)); `test_vault_admin.py` checks them with a
+fake `layr-desk`, and `test_vault_e2e.py` is the opt-in run with real layr and layr-desk.
 
 The service runs as `studio`. It listens on vsock port 4050. The protocol is in
 [linux-vm-workspaces.md](../../../../docs/linux-vm-workspaces.md).

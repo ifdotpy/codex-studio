@@ -174,3 +174,10 @@ project entity. The Desk site comes from the writer configuration (`site`) or fr
 `codex_vault.py site PROJECT_FOLDER https://desk.example.com/` and stays in
 `layr-projects/<id>/vault-site.json`. Studio finds `layr-desk` through `STUDIO_LAYR_DESK_BIN`,
 `PATH` or `~/.cargo/bin`.
+
+## Writer in the VM
+
+The VM root broker pushes with `layr-desk push` (Rust, built at provisioning from the vendored
+source in `workspaces/runtime/apps/layr-desk`), with the configuration on stdin and the same
+writer state folder; an optional `signingKey` makes it sign every tree. `vault.configure` waits
+for a running push.

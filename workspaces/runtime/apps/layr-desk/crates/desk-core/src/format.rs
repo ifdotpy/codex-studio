@@ -18,6 +18,9 @@ pub struct Header {
     pub tree: String,
     pub base: Option<(u64, String)>,
     pub parts: u32,
+    /// The writer's signature (docs/design.md, "Signatures"); old trees have none.
+    #[serde(default)]
+    pub sig: Option<String>,
 }
 
 /// One frame of a file's chain: where it is and whether it is a delta on the next one.
@@ -95,7 +98,10 @@ pub fn split_tree(object: &[u8]) -> Result<(Header, &[u8])> {
     if header.v != 1 {
         bail!("tree format {} is not known", header.v);
     }
-    if header.tree != "full" && header.base.is_none() {
+    if header.tree != "full" && header.tree != "delta" {
+        bail!("tree kind {:?} is not known", header.tree);
+    }
+    if header.tree == "delta" && header.base.is_none() {
         bail!("a delta tree names no base");
     }
     Ok((header, &object[newline + 1..]))
