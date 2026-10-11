@@ -3348,9 +3348,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def put(self, db: sqlite3.Connection, table: Literal["tool_requests"], record: "ToolRequestRecord", *, sync_rooms: bool = True) -> None: ...
 
     @overload
-    def put(self, db: sqlite3.Connection, table: str, record: "AgentRecord | WorkRecord | PlanRecord | AnnotationRecord | CheckpointRecord | ComplaintRecord | ProjectRecord | AccountTransferRecord | WorkspaceOperationRecord | RoomRecord | RequestRecord | NativeSafetyRetryRecord | NativeNoticeRecord | RuleRecord | ToolRequestRecord | dict[str, JsonValue]", *, sync_rooms: bool = True) -> None: ...
+    def put(self, db: sqlite3.Connection, table: Literal["monitors"], record: "dict[str, JsonValue]", *, sync_rooms: bool = True, monitor_output: bool = False) -> None: ...
 
-    def put(self, db: sqlite3.Connection, table: str, record: Any, *, sync_rooms: bool = True) -> None:
+    @overload
+    def put(self, db: sqlite3.Connection, table: str, record: "AgentRecord | WorkRecord | PlanRecord | AnnotationRecord | CheckpointRecord | ComplaintRecord | ProjectRecord | AccountTransferRecord | WorkspaceOperationRecord | RoomRecord | RequestRecord | NativeSafetyRetryRecord | NativeNoticeRecord | RuleRecord | ToolRequestRecord | dict[str, JsonValue]", *, sync_rooms: bool = True, monitor_output: bool = False) -> None: ...
+
+    def put(self, db: sqlite3.Connection, table: str, record: Any, *, sync_rooms: bool = True, monitor_output: bool = False) -> None:
         if table == "projects" and "_project_server_id" in self.__dict__:
             from codex_project_locations import normalize as normalize_project_locations
             normalize_project_locations(self, record)
@@ -3391,7 +3394,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 sync_task_write(db, record)  # type: ignore[no-untyped-call]
             elif table == "monitors":
                 from codex_sync_entities import sync_monitor_write
-                sync_monitor_write(db, record)  # type: ignore[no-untyped-call]
+                sync_monitor_write(db, record, output_update=monitor_output)  # type: ignore[no-untyped-call]
             elif table == "complaints":
                 sync_entity_put(db, collection, str(record["id"]), self.complaint_entity_view(db, record))  # type: ignore[no-untyped-call]
             elif table == "projects":
@@ -3871,6 +3874,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         or owner.get("accountKey", "default") != account_key
                         or not self.connection_current(account_key, connection_id)):
                     continue
+                self._ensure_private_monitor_log(current)
                 current.update(status="running", error=receipt.get("error"),
                                reattachedConnectionId=connection_id)
                 if receipt.get("finished") is None:
@@ -9805,6 +9809,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     return
                 if preflight and not self.operation_current(a, preflight):
                     return
+            self._ensure_private_monitor_log(m)
             a = self.prepare(a)
             server = self.connect_agent(a)
             if shell_config is None:
@@ -9939,21 +9944,36 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if not row:
                 return
             m = json.loads(row[0])
-            if self.agent(m["agent"], db).get("accountKey", "default") != account_key:
+            if (self.agent(m["agent"], db).get("accountKey", "default") != account_key
+                    or m["status"] != "running"):
                 return
             chunk = base64.b64decode(p.get("deltaBase64", ""))
             path = Path(m["log"])
-            path.parent.mkdir(exist_ok=True)
             # Keep the complete log; only the live UI tail is bounded.
-            with path.open("ab") as log:
+            flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+            try:
+                descriptor = os.open(path, flags, 0o600)
+            except FileNotFoundError:
+                # Recovered monitors may predate the log directory; create it
+                # only on the first attempted log-file creation.
+                ensure_private_dir(path.parent)
+                descriptor = os.open(path, flags, 0o600)
+            with os.fdopen(descriptor, "ab") as log:
                 log.write(chunk)
-            path.chmod(0o600)
             m["bytes"] += len(chunk)
             m["tail"] = (m["tail"] + chunk.decode("utf-8", errors="replace"))[-12000:]
             if chunk:
                 m["activityAt"] = time.time()
                 m["activityGeneration"] = m.get("activityGeneration", 0) + 1
-            self.put(db, "monitors", m)
+            self.put(db, "monitors", m, monitor_output=True)
+
+    @staticmethod
+    def _ensure_private_monitor_log(monitor):
+        """Narrow a recovered log once, before that monitor accepts output."""
+        try:
+            os.chmod(monitor["log"], 0o600)
+        except FileNotFoundError:
+            pass
 
     def monitors_tick(self):
         now = time.time()
