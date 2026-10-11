@@ -242,8 +242,8 @@ For browser access, run `codex-canvas` and open <http://127.0.0.1:4620>.
 Use `codex-control list` to inspect the same runtime from a terminal.
 The desktop package command is owned by its [manifest](../workspaces/client/apps/desktop/package.json).
 
-For a shareable process snapshot, run `codex-diagnostics` (or `scripts/codex-diagnostics` from the checkout) while
-Studio runs. The command calls the read-only `/api/diagnostics` endpoint. It
+For a shareable process snapshot, run `codex-diagnostics` while Studio runs.
+The command calls the read-only `/api/diagnostics` endpoint. It
 reports the Studio process tree, resident memory and CPU by process kind,
 loaded Codex threads per connected account, live Claude queries, queue sizes,
 short runtime lock samples, and host memory. Account names and process command

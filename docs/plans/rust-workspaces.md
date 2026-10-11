@@ -215,9 +215,9 @@ stage and are not part of this relocated layout.
 - **R-12.** Tests are colocated with their packages. Cross-package scenarios
   belong to the consuming app; repository-wide lifecycle checks live under
   tooling. Test-only dependencies are explicit and never leak into shipping apps.
-- **R-13.** Retained Python code moves in bounded component extractions with
-  compatibility launchers when necessary. No massive file move combined with
-  behavioral rewriting; no permanent `legacy` dumping ground or duplicate source.
+- **R-13.** Retained Python code moves in bounded component extractions. No
+  massive file move combined with behavioral rewriting; no permanent `legacy`
+  dumping ground or duplicate source.
 
 Source workspace is a repository term, distinct from agents' runtime worktrees
 and image workspaces. Moving source must not change their state paths or identity.
@@ -480,7 +480,7 @@ stages; this document deliberately does not duplicate completion status.
 | Stage | Deliverable and gate                                                                                                                                                                                                                                                                 | Dependencies                                        |
 | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------- |
 | M-00  | Approve the exact specification, record platform/failure baseline and owners, and publish the tracking issue.                                                                                                                                                                        | D-01–D-07                                           |
-| M-02  | Relocate the source tree and migrate npm to pnpm with compatibility launchers; fix packaging, installs, inventories, imports, test discovery, and docs together.                                                                                                                     | M-00                                                |
+| M-02  | Relocate the source tree and migrate npm to pnpm; fix packaging, installs, inventories, imports, test discovery, and docs together.                                                                                                                                                  | M-00                                                |
 | M-01  | Add pinned Just and root Cargo workspace policies with a real first Rust member: the read-only diagnostics CLI. Preserve its installed command, flags, output, and HTTP caller; validate packaging. Wrap current checks; introduce CI discovery and dependency policy.               | M-02                                                |
 | M-03  | Independently runnable package tests, deterministic contract generation, boundary checks, and migration fixtures.                                                                                                                                                                    | M-01; proceed incrementally alongside M-02          |
 | M-04  | Rust operation-lifecycle core called in-process by the required PyO3 binding; connect the tool-request caller and remove its Python lifecycle decisions. Python keeps database writes and provider effects.                                                                          | Relevant M-02/M-03 slices                           |

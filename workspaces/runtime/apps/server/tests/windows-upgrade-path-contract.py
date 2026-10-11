@@ -137,8 +137,9 @@ class WindowsUpgradeContract(unittest.TestCase):
                     state = install / "state"
                     server.ensure_private_dir(state)
                     old_source = local / "old source Ω"
-                    (old_source / "scripts").mkdir(parents=True)
-                    (old_source / "scripts" / "codex_canvas.py").touch()
+                    server_source = old_source / "workspaces/runtime/apps/server/src"
+                    server_source.mkdir(parents=True)
+                    (server_source / "codex_canvas.py").touch()
                     shutil.copy2(SERVER_SOURCE_ROOT / "codex_windows_server.py", install)
                     executable = getattr(sys, "_base_executable", sys.executable)
                     with socket.socket() as listener:

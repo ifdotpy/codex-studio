@@ -132,9 +132,13 @@ class Services(unittest.TestCase):
         idle.assert_not_called()
         self.assertFalse(any('restart' in call.args[0] for call in run.call_args_list))
 
-    def test_backend_started_through_legacy_launcher_keeps_its_identity(self) -> None:
+    def test_backend_identity_requires_the_current_checkout_launcher(self) -> None:
         current = {'pid': 123, 'supervisorMode': True, 'supervisor': {'protocol': 1}}
-        for launcher, accepted in (('scripts/codex-canvas', True), ('elsewhere/codex-canvas', False)):
+        for launcher, accepted in (
+            ('workspaces/runtime/apps/server/src/codex-canvas', True),
+            ('scripts/codex-canvas', False),
+            ('elsewhere/codex-canvas', False),
+        ):
             with self.subTest(launcher=launcher), patch.object(sys, 'platform', 'linux'), \
                     patch.object(service, 'desktop', return_value=current), \
                     patch.object(service, 'run', return_value=subprocess.CompletedProcess([], 0, '123')), \
@@ -183,19 +187,6 @@ class Services(unittest.TestCase):
             result = service.enable(self.resources, self.state, 4720)
         self.assertTrue(result['supervisorMode'])
         kill.assert_not_called()
-
-    def test_pre_move_resources_keep_their_existing_service_launcher_paths(self) -> None:
-        legacy = self.root / 'legacy'
-        for name in ('codex_process_supervisor.py', 'codex-canvas', 'codex-supervisor'):
-            path = legacy / 'scripts' / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.touch()
-        units = service.linux_units(legacy, self.state, '/usr/bin/python3', 4720)
-        supervisor, backend = (units[name].decode() for name in
-                               ('codex-studio-supervisor.service', 'codex-studio.service'))
-        self.assertIn(str(legacy / 'scripts/codex_process_supervisor.py'), supervisor)
-        self.assertIn(str(legacy / 'scripts/codex-supervisor'), backend)
-        self.assertIn(str(legacy / 'scripts/codex-canvas'), backend)
 
     def test_packaged_workspace_resources_keep_their_launcher_and_recovery_paths(self) -> None:
         resources = self.root / 'Contents/Resources/workspace'

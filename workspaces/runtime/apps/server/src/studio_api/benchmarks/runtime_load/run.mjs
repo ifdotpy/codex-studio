@@ -14,7 +14,7 @@ import { HttpOutcomeTracker } from "./http_outcomes.mjs";
 import { fetchRuntimeIdentity } from "./identity.mjs";
 
 const harness = dirname(fileURLToPath(import.meta.url));
-const repo = resolve(harness, "../../../..");
+const repo = resolve(harness, "../../../../../../../../");
 const harnessFiles = [
   "README.md",
   "http_outcomes.mjs",
@@ -73,7 +73,7 @@ const frontendAt = args.indexOf("--frontend-dist");
 const frontendDist =
   frontendAt >= 0
     ? resolve(args[frontendAt + 1])
-    : join(sourceRoot, "web", "dist");
+    : join(sourceRoot, "workspaces/client/apps/web/dist");
 const frontendRevisionAt = args.indexOf("--frontend-source-revision");
 const frontendSourceRevision =
   frontendRevisionAt >= 0
@@ -110,19 +110,20 @@ const sourceChanges = execFileSync(
   .filter(Boolean);
 const productionSourceDirty = sourceChanges.some(
   (line) =>
-    /^scripts\/codex_[^/]+\.py$/.test(line.slice(3)) ||
-    /^web\/(src|public)\//.test(line.slice(3)),
+    /^workspaces\/runtime\/apps\/server\/src\/codex_[^/]+\.py$/.test(
+      line.slice(3),
+    ) || /^workspaces\/client\/apps\/web\/(src|public)\//.test(line.slice(3)),
 );
 const backendSourceSha256 = await (async () => {
-  const scripts = join(sourceRoot, "scripts");
-  const files = (await readdir(scripts, { withFileTypes: true }))
+  const serverSource = join(sourceRoot, "workspaces/runtime/apps/server/src");
+  const files = (await readdir(serverSource, { withFileTypes: true }))
     .filter((entry) => entry.isFile() && entry.name.endsWith(".py"))
     .map((entry) => entry.name)
     .sort();
   const hash = createHash("sha256");
   for (const file of files) {
     hash.update(file);
-    hash.update(await readFile(join(scripts, file)));
+    hash.update(await readFile(join(serverSource, file)));
   }
   return hash.digest("hex");
 })();
@@ -163,7 +164,9 @@ assert(
 );
 if (outputPath && outputPath.startsWith(repo + "/"))
   throw new Error("--output must be outside the checkout");
-const packageRequire = createRequire(join(sourceRoot, "web/package.json"));
+const packageRequire = createRequire(
+  join(sourceRoot, "workspaces/client/apps/web/package.json"),
+);
 const { chromium } = packageRequire("playwright-core");
 const state = await mkdtemp(join(evidenceRoot, ".runtime-load-case-"));
 const fixture = spawn(
