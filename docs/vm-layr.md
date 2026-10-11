@@ -64,8 +64,8 @@ running) moves a project and its Git worktrees into layr:
 
 `codex_layr_exec.py PROJECT_FOLDER -- COMMAND...` (installed app scripts, Studio Python,
 VM running) runs one command in the project's VM main line as the owner of main, the user of
-the lead. It is how the user or a Mac agent sets up a project, for example layers
-(`layr layer add`) and a first `layr save --layers`, without a chat:
+the lead. It is how the user or a Mac agent sets up a project without a chat, for example a
+first build and `layr save --layers` ("Warm layers" below):
 
 - Guest method `project.exec` (root broker): it reads the owner from the main folder, runs
   the command with `runuser`, never as root, in main or `--subpath` below it, and returns the
@@ -76,6 +76,21 @@ the lead. It is how the user or a Mac agent sets up a project, for example layer
   the command again. The command prints the ID first; after a lost reply, run it again with
   `--operation-id`.
 - The broker keeps each command's argv and output in `layr-admin/commands/<id>/`.
+
+### Warm layers
+
+A `.regenerable` file in the project (the form of a `.gitignore`) names the folders that a
+build makes again, such as `node_modules` or `.venv`. layr turns a named folder into a layer
+only if the ignore rules ignore it (layr `docs/design.md`, section 5). The import already
+leaves out every ignored folder, so the file changes only what becomes a layer in the VM:
+
+1. The file is part of main; on the Mac it comes with Mac folder sync.
+2. A build in main (the lead's, or the operator's through `codex_layr_exec.py`) makes the
+   folders; `layr save --layers` in main gives them to the head of main.
+3. Each new line from main starts with a copy-on-write copy of the nearest saved folders.
+   Lines made before the save build their own.
+
+Studio does not choose the build command or when a build is good enough to save.
 
 ### Sidebar readiness
 

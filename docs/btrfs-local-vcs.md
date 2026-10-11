@@ -113,7 +113,9 @@ so models learn it quickly, and it has equal convenience. It does not take the n
       layr does not keep the build output of a check (changed on 2026-10-10, layr ec725b4): a
       warm layer comes only from an explicit `layr save --layers` on main, and which tools'
       output is valid in a new line is Studio's choice (layr `docs/design.md`, section 5).
-      Studio does not configure layers yet;
+      The project's `.regenerable` file (layr ed5ccf2) names the layer folders; the operator
+      (`codex_layr_exec.py`) or the lead builds in main and runs `layr save --layers`
+      ([vm-layr.md](vm-layr.md), "Warm layers");
     - Studio merges as the lead agent's user, not as root: root passes every rule;
     - a task that needs more rights for a while gets a role for a time
       (`layr access grant <agent> maintainer --until 2h`).

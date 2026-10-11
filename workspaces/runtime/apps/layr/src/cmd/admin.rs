@@ -32,8 +32,15 @@ pub fn save(ctx: &Ctx, args: &[String]) -> Result<i32> {
         repo.authorize_line(ctx, &l, crate::repo::LineOp::Save)?;
         let _lock = repo.p.lock()?;
         let l = repo.line(&l.id)?;
+        let layers = if a.has("--layers") { repo.layer_paths(&repo.working(&l)) } else { Vec::new() };
         let st = if a.has("--layers") {
-            Some(repo.layers_state(ctx, &l, &msg, a.has("--running"))?)
+            // A layer folder that a tool made again as a plain folder becomes a layer first, so
+            // its files stay out of the state.
+            let (u, g) = repo.owner_ids(&l);
+            for p in &layers {
+                let _ = crate::repo::convert_layer(&repo.working(&l), p, u, g);
+            }
+            Some(repo.layers_state(ctx, &l, &msg, a.has("--running"), &layers)?)
         } else {
             repo.save(ctx, &l, &msg, a.has("--running"), a.has("--force"))?
         };
@@ -42,7 +49,7 @@ pub fn save(ctx: &Ctx, args: &[String]) -> Result<i32> {
                 if a.has("--layers") {
                     // Layers saved on a protected line may warm other users' lines.
                     let shared = repo.policy().rule_for(&l.name).is_some();
-                    record_layers(ctx, repo, &s.id, &repo.working(&l), repo.owner_ids(&l), shared)?;
+                    record_layers(ctx, repo, &s.id, &repo.working(&l), &layers, shared)?;
                 }
                 if !a.has("-q") {
                     outln!(ctx, "{} {}", l.name, ids::display(&s.id));
@@ -58,25 +65,23 @@ pub fn save(ctx: &Ctx, args: &[String]) -> Result<i32> {
     Ok(0)
 }
 
-/// Snapshot the layers of a working folder (`w`) as the layers of `state` and record them
-/// (`save.layers`, with their subvolume UUIDs). `shared`: they may go to other users' lines.
-/// A layer folder that a tool made again as a plain folder becomes a layer first.
+/// Snapshot the layers at `paths` of a working folder (`w`) as the layers of `state` and record
+/// them (`save.layers`, with their subvolume UUIDs). `shared`: they may go to other users' lines.
 pub fn record_layers(
     ctx: &Ctx,
     repo: &Repo,
     state: &str,
     w: &Path,
-    owner: (u32, u32),
+    paths: &[String],
     shared: bool,
 ) -> Result<BTreeMap<String, String>> {
     let mut layers = BTreeMap::new();
-    for p in repo.p.config_strings("regenerable") {
-        let _ = crate::repo::convert_layer(w, &p, owner.0, owner.1);
-        let lp = fsutil::safe_join(w, &p)?;
+    for p in paths {
+        let lp = fsutil::safe_join(w, p)?;
         let name = format!("{state}@{}", p.replace('/', "%2F"));
-        if btrfs::is_subvolume(&lp) && !repo.p.layer_path(state, &name).exists() {
+        if crate::model::is_layer_name(&name, state) && btrfs::is_subvolume(&lp) && !repo.p.layer_path(state, &name).exists() {
             btrfs::snapshot(&lp, &repo.p.layer_path(state, &name), true)?;
-            layers.insert(p, name);
+            layers.insert(p.clone(), name);
         }
     }
     if layers.is_empty() {
@@ -1334,7 +1339,12 @@ pub fn layer(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let sub = args.first().map(|s| s.as_str()).unwrap_or("list");
     match sub {
         "list" => {
-            for p in repo.p.config_strings("regenerable") {
+            // The machine setting, and in a line also the folders that `.regenerable` names.
+            let paths = match &h.line {
+                Some(l) => repo.layer_paths(&repo.working(l)),
+                None => repo.p.config_strings("regenerable"),
+            };
+            for p in paths {
                 let state = match &h.line {
                     Some(l) => {
                         let lp = repo.working(l).join(&p);
@@ -1382,7 +1392,7 @@ pub fn layer(ctx: &Ctx, args: &[String]) -> Result<i32> {
             let _lock = repo.p.lock()?;
             let l = repo.line(&l.id)?;
             let (u, g) = repo.owner_ids(&l);
-            for p in repo.p.config_strings("regenerable") {
+            for p in repo.layer_paths(&repo.working(&l)) {
                 if crate::repo::convert_layer(&repo.working(&l), &p, u, g)? {
                     outln!(ctx, "{p}: a layer again");
                 }

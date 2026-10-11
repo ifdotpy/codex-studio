@@ -1,4 +1,5 @@
 //! `.gitignore` rules, read from one snapshot root. A path below an ignored folder is ignored.
+//! `.regenerable` files have the same form: they name the folders that a build makes again.
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::cell::RefCell;
@@ -7,12 +8,18 @@ use std::path::{Path, PathBuf};
 
 pub struct Rules {
     root: PathBuf,
+    files: &'static [&'static str],
     cache: RefCell<HashMap<String, Option<Gitignore>>>,
 }
 
 impl Rules {
     pub fn new(root: &Path) -> Rules {
-        Rules { root: root.to_path_buf(), cache: RefCell::new(HashMap::new()) }
+        Rules { root: root.to_path_buf(), files: &[".gitignore", ".layrignore"], cache: RefCell::new(HashMap::new()) }
+    }
+
+    /// The rules of `.regenerable` files: `ignored` is true for a folder they name.
+    pub fn regenerable(root: &Path) -> Rules {
+        Rules { root: root.to_path_buf(), files: &[".regenerable"], cache: RefCell::new(HashMap::new()) }
     }
 
     fn matcher(&self, dir: &str) -> Option<Gitignore> {
@@ -22,7 +29,7 @@ impl Rules {
         let base = if dir.is_empty() { self.root.clone() } else { self.root.join(dir) };
         let mut b = GitignoreBuilder::new(&base);
         let mut any = false;
-        for name in [".gitignore", ".layrignore"] {
+        for name in self.files {
             let rel = if dir.is_empty() { name.to_string() } else { format!("{dir}/{name}") };
             if crate::fsutil::lmeta(&self.root, &rel).map(|m| m.is_file()).unwrap_or(false) {
                 b.add(base.join(name));
