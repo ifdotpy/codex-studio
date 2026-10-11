@@ -12,6 +12,7 @@ isolate_supervisor_environment()
 
 import concurrent.futures
 import importlib.util
+import os
 from pathlib import Path
 import sys
 import threading
@@ -136,19 +137,52 @@ class WorkspaceReviewContract(unittest.TestCase):
         (path / 'tracked.txt').write_text('edit\n')
         preview = self.runtime.checkpoint_preview(worker['id'], checkpoint['id'])
         request = {'checkpoint_id': checkpoint['id'], 'expectedTree': preview['expectedTree']}
-        server = self.runtime.connect()
+        server = self.runtime.connect_agent(self.runtime.agent(worker['id']))
         original = server.call
+        original_snapshot_tree = self.runtime.snapshot_tree
+        pre_request_check_passed = threading.Event()
+
+        def snapshot_tree(agent):
+            tree = original_snapshot_tree(agent)
+            if tree == preview['expectedTree']:
+                pre_request_check_passed.set()
+            return tree
 
         def change_during_native_call(method, params, timeout=60):
             result = original(method, params, timeout)
             if method == 'thread/fork':
+                self.assertTrue(pre_request_check_passed.is_set())
                 (path / 'tracked.txt').write_text('changed during restore\n')
             return result
 
-        with patch.object(server, 'call', change_during_native_call):
+        with patch.object(self.runtime, 'snapshot_tree', snapshot_tree), patch.object(
+            server, 'call', change_during_native_call
+        ):
             with self.assertRaisesRegex(ValueError, 'Files changed while preparing restore') as error:
                 self.runtime.restore_checkpoint(worker['id'], request)
         self.assertIn('tracked.txt', str(error.exception))
+
+    def test_snapshot_tree_detects_racy_same_size_edit(self):
+        worker, path = self.isolated_worker()
+        tracked = path / 'tracked.txt'
+        tracked.write_text('edit\n')
+        self.git(path, 'config', 'core.trustctime', 'false')
+        os.utime(tracked, ns=(tracked.stat().st_atime_ns, tracked.stat().st_mtime_ns - 10_000_000_000))
+        self.git(path, 'add', 'tracked.txt')
+
+        indexed_stat = tracked.stat()
+        index = path / self.git(path, 'rev-parse', '--git-path', 'index')
+        staged_blob = self.git(path, 'rev-parse', ':tracked.txt')
+        self.assertEqual(staged_blob, self.git(path, 'hash-object', 'tracked.txt'))
+        os.utime(index, ns=(index.stat().st_atime_ns, indexed_stat.st_mtime_ns))
+        tracked.write_text('base\n')
+        os.utime(tracked, ns=(indexed_stat.st_atime_ns, indexed_stat.st_mtime_ns))
+
+        agent = self.runtime.agent(worker['id'])
+        tree = self.runtime.snapshot_tree(agent)
+        actual_blob = self.git(path, 'hash-object', 'tracked.txt')
+        tree_entry = self.git(path, 'ls-tree', tree, '--', 'tracked.txt')
+        self.assertIn(actual_blob, tree_entry)
 
     def test_same_checkpoint_can_restore_a_later_edit(self):
         worker, path = self.isolated_worker()
