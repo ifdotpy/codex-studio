@@ -1219,7 +1219,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
           href={serverViewId ? location.pathname + location.search : "/"}
         >
           <span className="brand-name">
-            <strong>Codex</strong> <span>Studio</span>
+            <strong>LAYR</strong> <span>Studio</span>
           </span>
         </a>
         {p.unreadCount ? (

@@ -163,7 +163,7 @@ async function createFixture(page, options = {}) {
           return React.createElement(
             "p",
             { role: window.snapshot.error ? "alert" : "status" },
-            window.snapshot.error || "Connecting to Codex Studio…",
+            window.snapshot.error || "Connecting to LAYR Studio…",
           );
         }),
       );

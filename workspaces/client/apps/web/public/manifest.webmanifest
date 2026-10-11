@@ -1,6 +1,6 @@
 {
-  "name": "Codex Studio",
-  "short_name": "Codex Studio",
+  "name": "LAYR Studio",
+  "short_name": "LAYR Studio",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

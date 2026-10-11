@@ -2119,7 +2119,7 @@ export default function App() {
           role={error ? "alert" : "status"}
           className={error ? "studio-recovery-banner" : undefined}
         >
-          {error || "Connecting to Codex Studio…"}
+          {error || "Connecting to LAYR Studio…"}
         </p>
         {error && <a href="/">Reload Studio</a>}
       </main>

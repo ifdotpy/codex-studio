@@ -263,7 +263,7 @@ function NativeDictation({
           : Promise.resolve({
               permit: undefined,
               error: Error(
-                "Transcription requires the updated Codex Studio desktop app on macOS. Your recording is saved.",
+                "Transcription requires the updated LAYR Studio desktop app on macOS. Your recording is saved.",
               ),
             }));
       if (!(await beginTranscription(row, attempt)))

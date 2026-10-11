@@ -965,7 +965,7 @@ export default function MultiServerApp() {
           ) : (
             <aside className="server-sidebar" aria-label="Servers and projects">
               <header>
-                <strong>Codex Studio</strong>
+                <strong>LAYR Studio</strong>
                 <Button
                   variant="subtle"
                   aria-label="Studio settings"
