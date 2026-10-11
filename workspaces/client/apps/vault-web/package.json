@@ -13,6 +13,7 @@
     "studio-vault": "workspace:*"
   },
   "devDependencies": {
+    "@bokuweb/zstd-wasm": "0.0.27",
     "playwright": "1.63.0",
     "vite": "8.2.2"
   }
