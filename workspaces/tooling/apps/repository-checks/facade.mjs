@@ -1025,10 +1025,14 @@ export async function execute(
     ...(signal ? { signal } : {}),
     ...(errors.length ? { errors } : {}),
   };
+  const serverFailures =
+    item.ecosystem === "server" && exitCode !== 0
+      ? output.split("\n").filter((line) => line.startsWith("FAIL "))
+      : [];
   if (asJson) process.stdout.write(`${JSON.stringify(result)}\n`);
   else
     process.stdout.write(
-      `${options.label ?? item.name}${caseName ? ` / ${caseName}` : ""}: ${result.status}${counts.passed === null ? "" : ` — ${counts.passed} passed, ${counts.failed} failed, ${counts.skipped} skipped`}${counts.executed === 0 && !options.allowZeroTests ? " — zero tests executed" : ""}; ${durationSeconds}s\nCommand: ${run.command}\nFull log: ${logPath}\n`,
+      `${options.label ?? item.name}${caseName ? ` / ${caseName}` : ""}: ${result.status}${counts.passed === null ? "" : ` — ${counts.passed} passed, ${counts.failed} failed, ${counts.skipped} skipped`}${counts.executed === 0 && !options.allowZeroTests ? " — zero tests executed" : ""}; ${durationSeconds}s\nCommand: ${run.command}\nFull log: ${logPath}\n${serverFailures.length ? `Failing server suites:\n${serverFailures.join("\n")}\n` : ""}`,
     );
   return result;
 }

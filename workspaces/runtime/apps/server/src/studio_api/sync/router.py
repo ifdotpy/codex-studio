@@ -17,8 +17,13 @@ from starlette.types import Receive, Scope, Send
 from pydantic import TypeAdapter, ValidationError
 
 from studio_api.sync.preferences import PreferencePushRequest, PreferencePushResponse, merge_preferences
-from studio_api.models import ErrorResponse
-from studio_api.responses import register_route_components
+from studio_api.responses import (
+    API_BOUNDARY_RESPONSE_HEADERS,
+    API_CONTEXT_RESPONSE_HEADERS,
+    error_responses,
+    register_route_components,
+    response_headers,
+)
 from studio_api.schema import (
     API_SCHEMA_HASH_HEADER,
     API_SCHEMA_HASH_PARAM,
@@ -55,9 +60,18 @@ RESOURCE_HEARTBEAT_SECONDS = 15.0
 MAX_RESOURCE_QUERY_BYTES = 65_536
 MAX_RESOURCE_COUNT = 256
 RESOURCE_REFS_ADAPTER: TypeAdapter[list[ResourceRef]] = TypeAdapter(list[ResourceRef])
-ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
-    status: {"model": ErrorResponse} for status in (400, 403, 404, 409, 413, 415, 426, 500)
+SYNC_READ_RESPONSES = {
+    200: {"headers": {**API_CONTEXT_RESPONSE_HEADERS, **API_BOUNDARY_RESPONSE_HEADERS}},
+    **error_responses((400, 403, 500, 503)),
 }
+SYNC_WRITE_RESPONSES = {
+    200: {"headers": {**API_CONTEXT_RESPONSE_HEADERS, **API_BOUNDARY_RESPONSE_HEADERS}},
+    **error_responses(
+        (400, 403, 408, 409, 413, 415, 426, 500, 503),
+        schema_mismatch=True,
+    ),
+}
+SYNC_STREAM_ERRORS = error_responses((400, 403, 426, 500, 503))
 
 
 class SyncPullProjection(TypedDict):
@@ -169,7 +183,7 @@ def create_router(context: ApiContext) -> APIRouter:
     router = APIRouter()
 
 
-    @router.post("/api/sync/preferences", response_model=PreferencePushResponse, responses=ERROR_RESPONSES)
+    @router.post("/api/sync/preferences", response_model=PreferencePushResponse, responses=SYNC_WRITE_RESPONSES)
     def push_preferences(request: Request, body: PreferencePushRequest) -> object:
         runtime = context.runtime
         if runtime is None:
@@ -179,11 +193,11 @@ def create_router(context: ApiContext) -> APIRouter:
         return context.send(request, result.model_dump(mode="json"))
 
 
-    @router.get("/api/sync/identity", response_model=SyncIdentityResponse, responses=ERROR_RESPONSES)
+    @router.get("/api/sync/identity", response_model=SyncIdentityResponse, responses=SYNC_READ_RESPONSES)
     def identity(request: Request) -> object:
         return context.send(request, _sync_store(context).identity())
 
-    @router.get("/api/sync/protocol", response_model=SyncProtocolResponse, responses=ERROR_RESPONSES)
+    @router.get("/api/sync/protocol", response_model=SyncProtocolResponse, responses=SYNC_READ_RESPONSES)
     def protocol(request: Request) -> object:
         from pathlib import Path
 
@@ -207,7 +221,7 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.get(
         "/api/sync/pull",
         response_model=SyncPullResponse | SyncPullResetResponse,
-        responses=ERROR_RESPONSES,
+        responses=SYNC_READ_RESPONSES,
     )
     def pull(
         request: Request,
@@ -276,11 +290,11 @@ def create_router(context: ApiContext) -> APIRouter:
                     }
                 },
                 "headers": {
-                    "Cache-Control": {"schema": {"type": "string"}},
-                    "X-Accel-Buffering": {"schema": {"type": "string"}},
+                    **API_BOUNDARY_RESPONSE_HEADERS,
+                    **response_headers("Cache-Control", "Content-Type", "X-Accel-Buffering"),
                 },
             },
-            **ERROR_RESPONSES,
+            **SYNC_STREAM_ERRORS,
         },
     )
     async def sync_stream(request: Request, _query: SyncStreamQuery = Depends()) -> StreamingResponse:  # type: ignore[return]
@@ -428,7 +442,7 @@ def create_router(context: ApiContext) -> APIRouter:
         },
     )
 
-    @router.post("/api/sync/drafts", response_model=list[SyncDocument], responses=ERROR_RESPONSES)
+    @router.post("/api/sync/drafts", response_model=list[SyncDocument], responses=SYNC_WRITE_RESPONSES)
     def push_drafts(request: Request, body: DraftPushRequest) -> object:
         # The complete nested request is validated by DraftPushRequest before service access.
         workspace = request.headers.get("X-Canvas-Workspace")

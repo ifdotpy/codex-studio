@@ -26,6 +26,7 @@ from studio_api.context import ApiContext
 from codex_session_costs import SessionCostReader
 from studio_api.insights.router import _stream_export, create_router
 from studio_api.models import ErrorResponse, JsonValue, ResponseModel
+from studio_api.responses import API_BOUNDARY_RESPONSE_HEADERS, API_CONTEXT_RESPONSE_HEADERS
 
 
 class _Runtime:
@@ -242,7 +243,9 @@ class InsightsRouterTests(unittest.TestCase):
         response_headers = openapi["paths"]["/api/analytics"]["get"]["responses"]["200"]["headers"]
         self.assertEqual(
             set(response_headers),
-            {"Content-Disposition", "Cache-Control", "X-Content-Type-Options", "Server-Timing"},
+            set(API_CONTEXT_RESPONSE_HEADERS)
+            | set(API_BOUNDARY_RESPONSE_HEADERS)
+            | {"Content-Disposition", "Server-Timing"},
         )
         response_model = openapi["components"]["schemas"]["AnalyticsResponse"]
 

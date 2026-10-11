@@ -34,6 +34,7 @@ from studio_api.io.models import (
 )
 from studio_api.models import ErrorResponse, JsonValue
 from studio_api.request_helpers import body_data, first_nonempty_query
+from studio_api.responses import API_BOUNDARY_RESPONSE_HEADERS, error_responses, response_headers
 
 if TYPE_CHECKING:
     from studio_api.context import ApiContext
@@ -197,34 +198,32 @@ def create_router(context: ApiContext) -> APIRouter:
             200: {
                 "content": {"text/plain": {"schema": {"type": "string"}}},
                 "headers": {
-                    "Content-Length": {"schema": {"type": "string"}},
-                    "Content-Disposition": {"schema": {"type": "string"}},
-                    "Accept-Ranges": {"schema": {"type": "string"}},
-                    "Cache-Control": {"schema": {"type": "string"}},
-                    "X-Content-Type-Options": {"schema": {"type": "string"}},
-                    "X-Log-Truncated": {"schema": {"type": "string"}},
+                    **API_BOUNDARY_RESPONSE_HEADERS,
+                    **response_headers(
+                        "Content-Length", "Content-Disposition", "Accept-Ranges",
+                        "Cache-Control", "X-Content-Type-Options", "X-Log-Truncated",
+                    ),
                 },
             },
             206: {
                 "content": {"text/plain": {"schema": {"type": "string"}}},
                 "headers": {
-                    "Content-Length": {"schema": {"type": "string"}},
-                    "Content-Disposition": {"schema": {"type": "string"}},
-                    "Accept-Ranges": {"schema": {"type": "string"}},
-                    "Cache-Control": {"schema": {"type": "string"}},
-                    "Content-Range": {"schema": {"type": "string"}},
-                    "X-Content-Type-Options": {"schema": {"type": "string"}},
-                    "X-Log-Truncated": {"schema": {"type": "string"}},
+                    **API_BOUNDARY_RESPONSE_HEADERS,
+                    **response_headers(
+                        "Content-Length", "Content-Disposition", "Accept-Ranges",
+                        "Cache-Control", "Content-Range", "X-Content-Type-Options",
+                        "X-Log-Truncated",
+                    ),
                 },
             },
             416: {
                 "description": "Requested byte range is not satisfiable",
                 "headers": {
-                    "Content-Length": {"schema": {"type": "string"}},
-                    "Content-Range": {"schema": {"type": "string"}},
+                    **API_BOUNDARY_RESPONSE_HEADERS,
+                    **response_headers("Content-Length", "Content-Range"),
                 },
             },
-            400: {"model": ErrorResponse},
+            **error_responses((400, 403, 404, 500, 503)),
         },
     )
     def monitor_log(request: Request, query: Annotated[MonitorLogQuery, Query()]) -> Response:

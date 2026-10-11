@@ -7,8 +7,12 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException, Request
 
-from studio_api.models import ErrorResponse
-from studio_api.responses import register_route_components
+from studio_api.responses import (
+    API_BOUNDARY_RESPONSE_HEADERS,
+    API_CONTEXT_RESPONSE_HEADERS,
+    error_responses,
+    register_route_components,
+)
 from studio_api.sync.resources.models import ResourceRef
 from studio_api.sync.resources.relay.models import ResourceNotifyAck, ResourceNotifyRequest
 from studio_api.sync.resources.relay.receipts import notify_receipts
@@ -17,9 +21,10 @@ if TYPE_CHECKING:
     from studio_api.context import ApiContext
 
 
-ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
-    status: {"model": ErrorResponse} for status in (400, 403, 409, 413, 415, 500, 503)
-}
+ERROR_RESPONSES = error_responses(
+    (400, 403, 408, 409, 413, 415, 426, 500, 503),
+    schema_mismatch=True,
+)
 
 
 def create_router(context: ApiContext) -> APIRouter:
@@ -28,7 +33,10 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post(
         "/api/sync/notify",
         response_model=ResourceNotifyAck,
-        responses=ERROR_RESPONSES,
+        responses={
+            200: {"headers": {**API_CONTEXT_RESPONSE_HEADERS, **API_BOUNDARY_RESPONSE_HEADERS}},
+            **ERROR_RESPONSES,
+        },
     )
     def notify(request: Request, payload: ResourceNotifyRequest) -> object:
         try:

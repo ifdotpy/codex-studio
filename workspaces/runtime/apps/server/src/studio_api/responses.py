@@ -1,8 +1,8 @@
 """Shared safe API error responses."""
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import TYPE_CHECKING, cast
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any, cast
 
 from starlette.requests import Request
 from starlette.responses import Response
@@ -25,6 +25,73 @@ WRITE_METHODS = frozenset({"POST", "PUT", "PATCH"})
 OPENAPI_COMPONENTS_EXTENSION = "x-studio-components"
 OPENAPI_413_DESCRIPTION = "Content Too Large"
 PYTHON_413_DESCRIPTIONS = frozenset({"Request Entity Too Large", OPENAPI_413_DESCRIPTION})
+
+_HEADER_SCHEMA = {"schema": {"type": "string"}}
+_HEADER_COMPONENT_NAMES = {
+    "Cache-Control": "CacheControl",
+    "Content-Length": "ContentLength",
+    "Content-Type": "ContentType",
+    "Content-Encoding": "ContentEncoding",
+    "Vary": "Vary",
+    "X-Content-Type-Options": "XContentTypeOptions",
+    "Referrer-Policy": "ReferrerPolicy",
+    "Content-Security-Policy": "ContentSecurityPolicy",
+    "Server-Timing": "ServerTiming",
+    "X-Studio-API-Schema": "StudioApiSchema",
+    "X-Studio-API-Schema-Mismatch": "StudioApiSchemaMismatch",
+    "X-Studio-Server": "StudioServer",
+    "Content-Disposition": "ContentDisposition",
+    "Accept-Ranges": "AcceptRanges",
+    "Content-Range": "ContentRange",
+    "X-Log-Truncated": "LogTruncated",
+    "X-Accel-Buffering": "AccelBuffering",
+}
+_HEADER_COMPONENTS = {
+    name: {"schema": dict(_HEADER_SCHEMA["schema"])}
+    for name in _HEADER_COMPONENT_NAMES.values()
+}
+
+
+def response_headers(*names: str) -> dict[str, dict[str, JsonValue]]:
+    """Reference shared string-valued HTTP header declarations."""
+    return {
+        name: {"$ref": f"#/components/headers/{_HEADER_COMPONENT_NAMES[name]}"}
+        for name in names
+    }
+
+
+API_CONTEXT_RESPONSE_HEADERS = response_headers(
+    "Cache-Control",
+    "Content-Length",
+    "Content-Type",
+    "Content-Encoding",
+    "Vary",
+    "X-Content-Type-Options",
+    "Referrer-Policy",
+    "Content-Security-Policy",
+    "Server-Timing",
+    "X-Studio-API-Schema",
+)
+API_BOUNDARY_RESPONSE_HEADERS = response_headers(
+    "X-Studio-API-Schema",
+    "X-Studio-Server",
+)
+
+
+def error_responses(
+    statuses: Sequence[int], *, schema_mismatch: bool = False
+) -> dict[int | str, dict[str, Any]]:
+    """Reference the shared error envelope for route-specific error statuses."""
+    headers = {**API_CONTEXT_RESPONSE_HEADERS, **API_BOUNDARY_RESPONSE_HEADERS}
+    responses: dict[int | str, dict[str, Any]] = {
+        status: {"model": ErrorResponse, "headers": dict(headers)} for status in statuses
+    }
+    if schema_mismatch and 426 in responses:
+        responses[426]["headers"] = {
+            **headers,
+            **response_headers("X-Studio-API-Schema-Mismatch"),
+        }
+    return responses
 
 
 def error_response(
@@ -61,6 +128,10 @@ def install_error_response_docs(app: FastAPI) -> None:
         model_schemas["ErrorResponse"] = ErrorResponse.model_json_schema(
             ref_template="#/components/schemas/{model}"
         )
+        header_schemas = components.setdefault("headers", {})
+        if not isinstance(header_schemas, dict):
+            raise TypeError("OpenAPI headers must be an object")
+        header_schemas.update(_HEADER_COMPONENTS)
 
         def normalize_refs(value: JsonValue) -> None:
             if isinstance(value, dict):

@@ -397,6 +397,44 @@ test("server summaries count assertion scripts as executed suites and reject no 
   );
 });
 
+test("server failure summaries print failing suite IDs", async () => {
+  const originalWrite = process.stdout.write;
+  let printed = "";
+  process.stdout.write = (chunk) => {
+    printed += chunk.toString();
+    return true;
+  };
+  try {
+    const output = [
+      "Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment)",
+      'Test outcomes: {"error":1,"failed":0,"passed":3}',
+      "FAIL tests/example-contract.py: test failure; failing IDs: ['Example.test_reports_failure']",
+    ].join("\n");
+    const result = await execute(
+      process.cwd(),
+      { name: "server", ecosystem: "server" },
+      "",
+      false,
+      {
+        commands: [
+          [
+            "node",
+            [
+              "-e",
+              `process.stdout.write(${JSON.stringify(output)}); process.exit(1)`,
+            ],
+          ],
+        ],
+      },
+    );
+    assert.equal(result.exitCode, 1);
+    assert.match(printed, /Failing server suites:/);
+    assert.match(printed, /Example\.test_reports_failure/);
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+});
+
 test("Vitest summaries count test cases rather than test files", () => {
   const item = { name: "codex-agents-web", ecosystem: "pnpm" };
   assert.deepEqual(
