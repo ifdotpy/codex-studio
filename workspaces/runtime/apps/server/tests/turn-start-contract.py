@@ -239,6 +239,36 @@ class TurnStartContract(unittest.TestCase):
         self.assertFalse(self.runtime.agent(a["id"])["inFlight"])
         self.assertEqual(len(self.server.deferred), 1)
 
+    def test_json_parse_failure_before_submission_waits_without_failing_or_resending(self):
+        error = json.JSONDecodeError("Expecting ':' delimiter", '{"partial"', 9)
+        with patch('codex_runtime.append_message_clocks', side_effect=error):
+            agent = self.runtime.create({"name": "Lead", "cwd": self.temp.name, "prompt": "Input"})
+            eventually(lambda: self.runtime.agent(agent["id"]).get("error") == str(error))
+
+        saved = self.runtime.agent(agent["id"])
+        self.assertEqual(saved["status"], "waiting")
+        self.assertFalse(saved["inFlight"])
+        self.assertTrue(saved["nativeFailureHold"])
+        self.assertEqual(self.events()[0]["status"], "pending")
+        self.runtime.dispatch()
+        self.assertEqual(len(self.server.deferred), 0)
+
+    def test_json_parse_failure_after_submission_keeps_input_uncertain_without_resending(self):
+        error = json.JSONDecodeError("Expecting ':' delimiter", '{"partial"', 9)
+        self.server.mode = "silent"
+        key = self.start("silent")
+        attempt_id = self.runtime.agent(key)["startAttempt"]["id"]
+        self.runtime.start_error(key, attempt_id, error)
+
+        saved = self.runtime.agent(key)
+        self.assertEqual(saved["status"], "waiting")
+        self.assertTrue(saved["inFlight"])
+        self.assertEqual(saved["startAttempt"]["executionOutcome"], "unknown")
+        self.assertEqual(self.events()[0]["status"], "uncertain")
+        starts = len([method for method, _ in self.server.calls if method == "turn/start"])
+        self.runtime.dispatch()
+        self.assertEqual(len([method for method, _ in self.server.calls if method == "turn/start"]), starts)
+
     def test_unknown_late_success_recovers_running_without_resending(self):
         key = self.start("silent")
         self.accept()

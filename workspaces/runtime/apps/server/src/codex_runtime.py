@@ -7254,13 +7254,20 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         with self.lock, self.db() as db:
             a = self.agent(agent_id, db)
             attempt = a.get("startAttempt") or {}
+            malformed_history = isinstance(error, json.JSONDecodeError)
+            if malformed_history:
+                # A local JSON parse failure cannot prove that a native input
+                # was rejected. Preserve exact event IDs; submitted requests
+                # stay uncertain, and unsent requests wait for inspection.
+                unknown = unknown or attempt.get("submitted") is True
+                preparation = preparation or attempt.get("submitted") is False
             from codex_claude_input_recovery import ClaudeRetryChanged, recover_rejected_start
             if (isinstance(error, ClaudeRetryChanged) and attempt.get('id') == attempt_id
                     and attempt.get('submitted') is False and attempt.get('epoch') == a['epoch']
                     and a.get('autoWake')):
                 a['nativeFailureHold'] = True
                 preparation = True
-            if attempt.get('id') == attempt_id and not unknown:
+            if attempt.get('id') == attempt_id and not unknown and not malformed_history:
                 recovered = recover_rejected_start(self, db, a, attempt, error=error,
                     account_key=a.get('accountKey', 'default'), connection_id=attempt.get('connectionId'))
                 if recovered:
@@ -7279,7 +7286,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             # their reservation until acceptance, rejection, or disconnection.
             current_epoch = a["epoch"] == attempt["epoch"]
             worktree_hold = current_epoch and not unknown and isinstance(error, WorktreeNeedsReview)
-            if (not unknown and attempt.get("activeAtReservation")
+            if (not unknown and not malformed_history and attempt.get("activeAtReservation")
                     and current_epoch and a["autoWake"]):
                 # Native definitively rejected this busy input. It is safe to
                 # return the exact batch to the outbox, but another busy attempt
@@ -7324,8 +7331,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if not attempt.get("activeAtReservation"):
                     a["inFlight"] = False
                 if current_epoch and a["autoWake"]:
-                    a.update(status="running" if attempt.get("activeAtReservation") else "failed",
+                    waiting_for_history = malformed_history and not attempt.get("submitted")
+                    a.update(status=("waiting" if waiting_for_history else
+                                     "running" if attempt.get("activeAtReservation") else "failed"),
                              error=str(error))
+                    if waiting_for_history:
+                        a["nativeFailureHold"] = True
                 a.pop("startOutcomeHold", None)
             if worktree_hold:
                 a.update(status="paused", autoWake=False, error=str(error))
