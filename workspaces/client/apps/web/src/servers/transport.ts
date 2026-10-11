@@ -64,7 +64,10 @@ export function serverFetch(request: Request) {
   if (
     serverViewId === "local" &&
     isolatedServerView &&
-    !(typeof window !== "undefined" && window.codexDesktop) &&
+    !(
+      typeof window !== "undefined" &&
+      (window as Window & { codexDesktop?: unknown }).codexDesktop
+    ) &&
     request.method === "POST" &&
     LOCAL_FRAME_ACCOUNT_MUTATIONS.has(new URL(request.url).pathname)
   ) {
