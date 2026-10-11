@@ -845,7 +845,7 @@ test("Shell ux ui", async ({
         monitors: [],
       },
     };
-    await stubEntityState(
+    const firstUseEntities = await stubEntityState(
       firstUse,
       emptyState,
       await readFixtureSyncContract(origin),
@@ -863,14 +863,33 @@ test("Shell ux ui", async ({
       createdResolve = resolve;
     });
     await firstUse.route("**/api/projects", (route) => {
-      if (route.request().method() !== "POST") return route.fallback();
+      if (route.request().method() === "GET")
+        return route.fulfill({
+          headers: apiSchemaHeaders(),
+          json: { items: projects },
+        });
       const body = route.request().postDataJSON();
-      if (body?.path) projects.push(body);
-      if (!body?.migration) return route.fallback();
-      return route.fulfill({
-        headers: apiSchemaHeaders(),
-        json: { revision: body.expected_revision, groups: body.groups },
-      });
+      if (body?.migration)
+        return route.fulfill({
+          headers: apiSchemaHeaders(),
+          json: { revision: body.expected_revision, groups: body.groups },
+        });
+      if (body?.path === "/workspace/phone-first") {
+        const project = {
+          id: "phone-first",
+          path: body.path,
+          name: "phone-first",
+          created: 1,
+          locations: [
+            { serverId: "local", path: body.path, projectId: "phone-first" },
+          ],
+        };
+        projects.push(project);
+        emptyState.runtime.projects = projects;
+        void firstUseEntities.update(emptyState);
+        return route.fulfill({ headers: apiSchemaHeaders(), json: project });
+      }
+      return route.fallback();
     });
     await firstUse.route("**/api/leads", (route) => {
       const body = route.request().postDataJSON();
@@ -893,6 +912,16 @@ test("Shell ux ui", async ({
     await folderDialog
       .getByRole("button", { name: "Add project", exact: true })
       .click();
+    const newChatDialog = firstUse.getByRole("dialog", {
+      name: "New chat",
+      exact: true,
+    });
+    const startChat = newChatDialog.getByRole("button", {
+      name: "Start chat",
+      exact: true,
+    });
+    await expect(startChat).toBeEnabled();
+    await startChat.click();
     await createdRequest;
     assert.equal(projects.length, 1);
     assert.equal(creations.length, 1);
