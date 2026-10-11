@@ -49,27 +49,53 @@ class YoloHTTPContract(unittest.TestCase):
         return response.json()
 
     def entity(self, identifier: str) -> dict[str, object] | None:
+        for document in self.state_documents():
+            if document["id"] == f"entity:agent:{identifier}":
+                return json.loads(document["payload"])["value"]
+        return None
+
+    def state_documents(self) -> list[dict[str, object]]:
         response = self.backend.request(
             "GET", "/api/sync/pull?" + urlencode({
                 "scope": "state:entities:v1", "after": 0, "limit": 500,
             }),
         )
         self.assertEqual(response.status, 200, response.body[:1000])
-        for document in response.json()["documents"]:
-            if document["id"] == f"entity:agent:{identifier}":
-                return json.loads(document["payload"])["value"]
-        return None
+        return response.json()["documents"]
 
     def wait_for_idle_entities(self, *identifiers: str) -> None:
-        deadline = time.monotonic() + 2.0
-        states: dict[str, dict[str, object] | None] = {}
+        deadline = time.monotonic() + 3.0
+        last_state: object = None
         while time.monotonic() < deadline:
-            states = {identifier: self.entity(identifier) for identifier in identifiers}
-            if all(state is not None and not state.get("inFlight")
-                   and state.get("status") not in {"running", "starting", "approval"}
-                   for state in states.values()):
+            documents = self.state_documents()
+            agents = {
+                document["id"].removeprefix("entity:agent:"): json.loads(document["payload"])["value"]
+                for document in documents if document["id"].startswith("entity:agent:")
+            }
+            states = {identifier: agents.get(identifier) for identifier in identifiers}
+            root = states[identifiers[0]] if identifiers else None
+            root_id = root.get("rootId") if isinstance(root, dict) else None
+            team_ids = {
+                identifier for identifier, state in agents.items()
+                if isinstance(state, dict) and state.get("rootId") == root_id
+            }
+            busy_agents = {
+                identifier: state for identifier, state in agents.items()
+                if identifier in team_ids and isinstance(state, dict)
+                and (state.get("inFlight") or state.get("workspaceOperation")
+                     or state.get("status") in {"running", "starting", "approval"})
+            }
+            busy_events = [
+                document["id"] for document in documents
+                if document["id"].startswith("entity:event:")
+                and (event := json.loads(document["payload"])["value"]).get("agent") in team_ids
+                and event.get("status") in {"pending", "reserved", "dispatching"}
+            ]
+            last_state = {"states": states, "busyAgents": busy_agents, "busyEvents": busy_events}
+            if (all(state is not None for state in states.values())
+                    and not busy_agents and not busy_events):
                 return
-        self.fail(f"Team records did not settle through HTTP: {states!r}")
+        self.fail(f"Team records did not settle through HTTP: {last_state!r}")
 
     def send_message(self, agent_id: str, message_id: str, text: str) -> list[dict[str, object]]:
         frames_before = self.backend.received_provider_frames()
