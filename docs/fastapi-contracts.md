@@ -152,15 +152,7 @@ in source identities and live-update input hashes, while excluding
 `workspaces/runtime/apps/server/src/studio_api/schema_tests/`.
 
 The live-update mechanism's validation and publication rules are documented in
-[Live updates](live-updates.md). The
-`workspaces/runtime/apps/server/tests/sync-live-patch-http-contract.py` helper requires `_studio_lp_server` and
-`_studio_lp_runtime` injected into `__main__`; it is explicitly excluded from
-normal discovery until an owning fixture runner exists. Verify the default
-discovery classification with `python3 workspaces/runtime/apps/server/tests/server/run.py --filter test_run.py`.
-There is no in-tree caller that supplies those globals, so no standalone
-invocation is valid. Keep it excluded until the fixture owner restores a runner
-and documents that runner's command. Other tests should assert HTTP behavior
-rather than preserve a legacy dispatch class solely for a source pattern.
+[Live updates](live-updates.md).
 
 ## Isolated fixture comparison
 
