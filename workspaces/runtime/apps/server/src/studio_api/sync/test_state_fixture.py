@@ -31,7 +31,7 @@ class StateFixtureResponseTests(unittest.TestCase):
         cache = Path(os.environ.get("TMPDIR", "/tmp"))
         cls.temporary = tempfile.TemporaryDirectory(prefix="sync-entities-fixture-", dir=cache)
         environment = os.environ.copy()
-        environment["PYTHONPATH"] = os.pathsep.join((str(repository / "scripts"), str(repository / "tests")))
+        environment["PYTHONPATH"] = os.pathsep.join((str(repository / "src"), str(repository / "tests")))
         cls.process = subprocess.Popen(
             [sys.executable, "-B", str(repository / "tests" / cls.fixture_name),
              str(Path(cls.temporary.name) / "state"), "0"],

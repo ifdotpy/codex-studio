@@ -8,5 +8,4 @@ workspaces/runtime/apps/server/tests/cross-provider-transfer-contract.py::Portab
 workspaces/runtime/apps/server/tests/cross-provider-transfer-contract.py::PortableTransfers.test_native_history_change_during_export_invalidates_archive
 workspaces/runtime/apps/server/tests/cross-provider-transfer-contract.py::PortableTransfers.test_native_input_arriving_during_export_blocks_submission
 workspaces/runtime/apps/server/tests/cross-provider-transfer-contract.py::PortableTransfers.test_settings_race_before_submission_preserves_newer_choice
-workspaces/runtime/apps/server/tests/process-supervisor-contract.py::ProcessSupervisorContract.test_claude_reattach_keeps_verified_node_after_automatic_discovery_changes
 workspaces/runtime/apps/server/tests/runtime-contract.py::RuntimeContract.test_restart_keeps_pending_events_without_replaying_unknown_work

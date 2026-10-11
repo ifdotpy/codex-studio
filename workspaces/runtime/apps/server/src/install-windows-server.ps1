@@ -25,8 +25,7 @@ function Get-ServeProxy($ServeStatus, [string]$HostName, [int]$Port) {
     return $root.Value.Proxy
 }
 
-if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot 'workspaces\runtime\apps\server\src\codex_canvas.py')) -and
-    -not (Test-Path -LiteralPath (Join-Path $sourceRoot 'scripts\codex_canvas.py'))) {
+if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot 'workspaces\runtime\apps\server\src\codex_canvas.py'))) {
     throw "Source root has no relocated server entrypoint: $sourceRoot"
 }
 if (-not (Test-Path -LiteralPath $python)) {

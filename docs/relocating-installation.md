@@ -15,12 +15,17 @@ dependencies there from the repository root:
 pnpm install --frozen-lockfile
 ```
 
-Keep the existing state-directory path unchanged. Update service and installed
-command references to the launchers in the new layout, while retaining the
-temporary root `scripts/<installed command>` compatibility launchers needed
-by existing installed links or service units. M-02.11 removes these shims; use
-installed command names on `PATH` for new invocations.
-New supervisor units should reference
+Keep the existing state-directory path unchanged. Before using CLI commands,
+run the installer once from the relocated checkout to replace any old dangling
+command links:
+
+```sh
+python3 workspaces/runtime/apps/server/src/install-cli.py
+```
+
+The installer replaces links into this checkout's former root `scripts/`
+directory and keeps unrelated files and links intact. New supervisor units
+should reference
 `workspaces/runtime/apps/server/src/codex-supervisor`. Confirm launcher paths
 and service configuration on the target platform before changing them; this
 guide does not verify a live service installation.

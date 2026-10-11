@@ -7,14 +7,14 @@
 - **Boundaries:** this binary performs one HTTP/1.1 GET to loopback. It has no async runtime, TLS, database, or backend dependency. `serde_json` is the only third-party crate, used to parse JSON while preserving arbitrary-size integers; its `arbitrary_precision` feature supports Python-compatible integer output.
 - **Invariants:** the endpoint path and default port are code-owned; successful output matches `json.dumps(..., indent=2, sort_keys=True)` byte for byte, including ASCII escaping and a trailing newline. Requests have a 30-second connect/read/write timeout and do not follow redirects.
 - **Configuration owner:** `--port` is the only CLI option; the timeout and endpoint are owned by this crate.
-- **Focused check:** `cargo test -p studio-diagnostics tests::formatter_matches_python_json_dump_golden -- --exact`.
+- **Focused check:** `cargo nextest run -p studio-diagnostics -E 'test(~tests::formatter_matches_python_json_dump_golden)'`.
 
 ## Run and verify
 
 ```sh
 cargo build --locked --release -p studio-diagnostics
-cargo test -p studio-diagnostics
-cargo test -p studio-diagnostics tests::formatter_matches_python_json_dump_golden -- --exact
+cargo nextest run -p studio-diagnostics
+cargo nextest run -p studio-diagnostics -E 'test(~tests::formatter_matches_python_json_dump_golden)'
 cargo run --locked -p studio-diagnostics -- --help
 ```
 
@@ -31,4 +31,4 @@ The integration test serves a loopback fixture, checks a committed Python-genera
 
 ## Installation and packaging
 
-`install-cli.py` installs the existing thirteen commands without requiring Rust. It additionally links `codex-diagnostics` when a release binary exists in `target/release`, the configured `CARGO_TARGET_DIR/release`, or a packaged `resources/workspace/bin`; otherwise it prints a one-line build instruction and exits successfully. The installer never invokes Cargo. In a development checkout, build with `cargo build --locked --release -p studio-diagnostics`; `cargo clean` removes that binary and a subsequent install will omit the diagnostics link until it is rebuilt. The CLI has no root `scripts/` compatibility link. Desktop packaging builds with Cargo and includes the binary at `Resources/workspace/bin/codex-diagnostics`.
+`install-cli.py` installs the existing thirteen commands without requiring Rust. It additionally links `codex-diagnostics` when a release binary exists in `target/release`, the configured `CARGO_TARGET_DIR/release`, or a packaged `resources/workspace/bin`; otherwise it prints a one-line build instruction and exits successfully. The installer never invokes Cargo. In a development checkout, build with `cargo build --locked --release -p studio-diagnostics`; `cargo clean` removes that binary and a subsequent install will omit the diagnostics link until it is rebuilt. Desktop packaging builds with Cargo and includes the binary at `Resources/workspace/bin/codex-diagnostics`.
