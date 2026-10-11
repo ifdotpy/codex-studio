@@ -149,6 +149,15 @@ class YoloHTTPContract(unittest.TestCase):
         worker_id = "10000000-0000-4000-8000-000000000203"
         lead = self.create_lead(lead_id)
         self.assertIs(lead["yoloMode"], True)
+        self.assertIs(self.entity(lead_id)["yoloMode"], True)
+        lead_starts = self.send_message(
+            lead_id, "10000000-0000-4000-8000-000000000212",
+            "Use the default lead permissions.",
+        )
+        self.assertEqual(len(lead_starts), 1, lead_starts)
+        lead_turn = lead_starts[0]
+        self.assertEqual(lead_turn["params"]["approvalPolicy"], "never", lead_turn)
+        self.assertEqual(lead_turn["params"]["sandboxPolicy"], {"type": "dangerFullAccess"}, lead_turn)
         worker = self.create_worker(lead_id, worker_id)
         self.assertIs(worker["yoloMode"], True)
         self.assertIs(self.entity(worker_id)["yoloMode"], True)
@@ -229,9 +238,10 @@ class YoloRestartHTTPContract(unittest.TestCase):
         self.assertIs(entity["yoloMode"], False)
 
         before = self.backend.received_provider_frames()
+        message_id = "10000000-0000-4000-8000-000000000210"
         sent = self.backend.request(
             "POST", "/api/messages",
-            body={"id": "10000000-0000-4000-8000-000000000210", "room": identifier,
+            body={"id": message_id, "room": identifier,
                   "text": "Use the persisted permission setting.",
                   "delivery": "queue", "assets": []},
             headers=self.headers(),
@@ -242,7 +252,8 @@ class YoloRestartHTTPContract(unittest.TestCase):
         while time.monotonic() < deadline:
             frames = self.backend.received_provider_frames()
             starts = [frame for frame in frames[len(before):]
-                      if frame.get("method") == "turn/start"]
+                      if frame.get("method") == "turn/start"
+                      and frame.get("params", {}).get("clientUserMessageId") == message_id]
             transcript = self.backend.request(
                 "GET", "/api/transcript?" + urlencode({"id": identifier}), timeout=1.0,
             )
