@@ -205,6 +205,7 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertEqual(categories[f"{RUNNER.SOURCE_REL}/sync/benchmarks/message_delivery/test_benchmark.py"], "expensive")
         self.assertEqual(categories[f"{RUNNER.SOURCE_REL}/studio_api/benchmarks/runtime_load/test_runtime_load.py"], "expensive")
         self.assertEqual(categories[f"{RUNNER.SOURCE_REL}/studio_api/benchmarks/runtime_load/test_http_outcomes.mjs"], "expensive")
+        self.assertEqual(categories[f"{RUNNER.TESTS_REL}/notification-scheduler-contract.py"], "expensive")
         automated = RUNNER.only_category(RUNNER.inventory(), "automated")
         self.assertEqual(len(automated), 26)
         self.assertEqual({path for path, _kind in automated}, set(RUNNER.AUTOMATED_SUITES))

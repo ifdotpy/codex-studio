@@ -2177,6 +2177,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         failed = False
         body_failed = False
         cleanup_error = None
+        replacement_error = None
         try:
             local.resource_db = db
             if busy_timeout is not None:
@@ -2199,9 +2200,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     self.schedule_fast_dispatch(agent_id, kind, event_ids)
                 except Exception:
                     self.changed.set()
-        except BaseException:
+        except BaseException as error:
             failed = True
             body_failed = True
+            replacement_error = error
             pending.pop(db, None)
             analytics.pop(db, None)
             resource_changes.pop(db, None)
@@ -2224,8 +2226,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 except BaseException as error:
                     cleanup_error = error
                     failed = True
+                    if replacement_error is None:
+                        replacement_error = error
             if reusable:
                 if failed:
+                    if isinstance(replacement_error, sqlite3.OperationalError) and sqlite_busy(replacement_error):
+                        local.callback_db_busy_replacements = (
+                            getattr(local, "callback_db_busy_replacements", 0) + 1
+                        )
                     local.connection = None
                     db.close()
                 local.depth = 0
@@ -2621,10 +2629,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 # A body or commit failure is uncertain. Never run it twice.
                 if entered or outer_owner or not sqlite_busy(error) or self.closed or time.monotonic() >= deadline:
                     raise
-                local = self.__dict__.setdefault("_callback_db", threading.local())
-                local.notification_preflight_busy_retries = (
-                    getattr(local, "notification_preflight_busy_retries", 0) + 1
-                )
             time.sleep(min(delay, max(0, deadline - time.monotonic())))
             delay = min(.5, delay * 2)
 

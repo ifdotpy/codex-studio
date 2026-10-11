@@ -9,7 +9,9 @@ from codex_layout import SERVER_SOURCE_ROOT
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
+import io
 import json
+import queue
 import sqlite3
 import tempfile
 import threading
@@ -20,7 +22,7 @@ from unittest.mock import patch
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 import codex_runtime
-from codex_runtime import Runtime
+from codex_runtime import AppServer, Runtime
 
 
 class QuietRuntime(Runtime):
@@ -95,8 +97,8 @@ class NotificationPreflightRetry(unittest.TestCase):
                     raise AssertionError("test did not release the notification callback")
                 runtime.notification(message)
                 callback_result["connectionAfterNotification"] = local.connection
-                callback_result["preflightRetries"] = getattr(
-                    local, "notification_preflight_busy_retries", 0)
+                callback_result["busyReplacements"] = getattr(
+                    local, "callback_db_busy_replacements", 0)
                 runtime.commit_supervisor_event("fixture-handle", message, 41,
                                                 "default", None)
             except BaseException as error:
@@ -127,7 +129,7 @@ class NotificationPreflightRetry(unittest.TestCase):
         self.assertEqual(len(opened), 2)
         self.assertIs(callback_result["initialConnection"], opened[0])
         self.assertIs(callback_result["connectionAfterNotification"], opened[1])
-        self.assertEqual(callback_result["preflightRetries"], 1)
+        self.assertEqual(callback_result["busyReplacements"], 1)
         with runtime.read_db() as db:
             record = json.loads(db.execute(
                 "SELECT record FROM runtime_agents WHERE id=?", (agent["id"],)
@@ -141,6 +143,175 @@ class NotificationPreflightRetry(unittest.TestCase):
         self.assertEqual(record["events"], before_events + 1)
         self.assertEqual(item_count, 1)
         self.assertEqual(cursor[0], 41)
+
+    def test_busy_cursor_commit_retries_without_replaying_a_fixed_batch(self):
+        temporary = tempfile.TemporaryDirectory(prefix="notification-commit-retry-")
+        self.addCleanup(temporary.cleanup)
+        directory = temporary.name
+        scheduler_release = threading.Event()
+        scheduler_started = threading.Event()
+        scheduler_dispatched = threading.Event()
+        original_schedule = Runtime.schedule
+
+        def held_schedule(runtime):
+            scheduler_started.set()
+            if not scheduler_release.wait(3):
+                raise AssertionError("test did not release the live scheduler")
+            return original_schedule(runtime)
+
+        with patch.object(Runtime, "schedule", held_schedule):
+            runtime = Runtime(Path(directory), server_factory=object)
+        self.addCleanup(runtime.close)
+        self.addCleanup(scheduler_release.set)
+        self.assertTrue(scheduler_started.wait(3))
+        agent = runtime.create({"name": "Fixture", "cwd": directory, "prompt": ""},
+                               draft=True, defer=True)
+        with runtime.lock, runtime.db() as db:
+            current = runtime.agent(agent["id"], db)
+            current.update(threadId="fixture-thread", turnId="fixture-turn",
+                           status="running", inFlight=True, autoWake=True, events=0)
+            runtime.put(db, "agents", current)
+
+        with runtime.read_db() as db:
+            before_events = json.loads(db.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (agent["id"],)
+            ).fetchone()[0])["events"]
+
+        messages = []
+        for sequence, (method, item_id, text_value) in enumerate((
+                ("item/started", "first", ""), ("item/completed", "first", "first response"),
+                ("item/started", "second", ""), ("item/completed", "second", "second response")), 1):
+            messages.append({
+                "method": method,
+                "params": {"threadId": "fixture-thread", "turnId": "fixture-turn",
+                           "item": {"id": item_id, "type": "agentMessage", "text": text_value}},
+                "_studioSupervisorSequence": sequence,
+            })
+
+        opened = []
+        injected_busy = threading.Event()
+        injected = False
+        replacements = []
+        callback_sequences = []
+        acknowledgements = []
+        all_acked = threading.Event()
+        original_connect = codex_runtime.sqlite_connect
+
+        def tracked_connect(*args, **kwargs):
+            db = original_connect(*args, **kwargs)
+            local = runtime.__dict__.get("_callback_db")
+            if local is not None and getattr(local, "reuse", False) and not getattr(local, "depth", 0):
+                opened.append(db)
+                original_execute = db.execute
+
+                def execute(sql, parameters=(), /):
+                    nonlocal injected
+                    if (not injected and "INSERT INTO runtime_supervisor_cursor VALUES" in str(sql)):
+                        injected = True
+                        injected_busy.set()
+                        error = sqlite3.OperationalError("database is locked")
+                        error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+                        raise error
+                    return original_execute(sql, parameters)
+
+                db.execute = execute
+            return db
+
+        def notify(message):
+            callback_sequences.append(message["_studioSupervisorSequence"])
+            runtime.notification(message)
+
+        server = AppServer.__new__(AppServer)
+        server.supervisor_mode = True
+        server.lock = threading.RLock()
+        server.callback_lock = threading.RLock()
+        server.callbacks = queue.Queue(maxsize=AppServer.CALLBACK_QUEUE_LIMIT)
+        server.dispatch_stopped = False
+        server.reader_done = threading.Event()
+        server.dispatcher_done = threading.Event()
+        server.closed = True
+        server.transport_error = None
+        server.log = io.BytesIO()
+        server.close_log_if_idle = lambda: None
+        server.died = lambda: None
+        server.notification = notify
+        server.request = lambda _message: None
+        server.supervisor_event_applied = lambda sequence: runtime.supervisor_event_applied(
+            "fixture-handle", sequence)
+        server.supervisor_commit = lambda message, sequence: runtime.commit_supervisor_event(
+            "fixture-handle", message, sequence, "default", None)
+
+        class Journal:
+            def poll(self):
+                return None
+
+            def ack_applied_deltas(self, _lookup):
+                return 0
+
+            def ack(self, sequence):
+                acknowledgements.append(sequence)
+                if len(acknowledgements) == len(messages):
+                    all_acked.set()
+
+        server.proc = Journal()
+
+        def dispatcher_closed():
+            local = runtime.__dict__.get("_callback_db")
+            replacements.append(getattr(local, "callback_db_busy_replacements", 0))
+            runtime.close_notification_database()
+
+        server.notification_dispatcher_closed = dispatcher_closed
+
+        original_dispatch = runtime.dispatch
+
+        def tracked_dispatch(*args, **kwargs):
+            try:
+                return original_dispatch(*args, **kwargs)
+            finally:
+                scheduler_dispatched.set()
+
+        runtime.dispatch = tracked_dispatch
+
+        with patch.object(codex_runtime, "sqlite_connect", tracked_connect):
+            for message in messages:
+                server.enqueue(notify, message)
+            dispatcher = threading.Thread(target=server.dispatch, daemon=True)
+            dispatcher.start()
+            try:
+                self.assertTrue(all_acked.wait(3), "dispatcher did not apply the fixed batch")
+                self.assertTrue(injected_busy.is_set(), "cursor persistence did not hit the forced busy error")
+                server.reader_done.set()
+                dispatcher.join(3)
+                self.assertFalse(dispatcher.is_alive())
+            finally:
+                server.reader_done.set()
+                if dispatcher.is_alive():
+                    dispatcher.join(3)
+
+        self.assertTrue(injected)
+        self.assertEqual(callback_sequences, [1, 2, 3, 4])
+        self.assertEqual(acknowledgements, [1, 2, 3, 4])
+        self.assertEqual(len(opened), 2)
+        self.assertEqual(replacements, [1])
+        with runtime.read_db() as db:
+            record = json.loads(db.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (agent["id"],)
+            ).fetchone()[0])
+            items = db.execute(
+                "SELECT id, record FROM runtime_items WHERE agent=? ORDER BY id", (agent["id"],)
+            ).fetchall()
+            cursor = db.execute(
+                "SELECT sequence FROM runtime_supervisor_cursor WHERE handle='fixture-handle'"
+            ).fetchone()
+        self.assertEqual(record["events"], before_events + 4)
+        self.assertEqual([row[0] for row in items], [agent["id"] + ":first", agent["id"] + ":second"])
+        self.assertEqual([json.loads(row[1])["text"] for row in items],
+                         ["first response", "second response"])
+        self.assertEqual(cursor[0], 4)
+
+        runtime.changed.set()
+        scheduler_release.set()
+        self.assertTrue(scheduler_dispatched.wait(3), "live scheduler did not run its explicitly woken pass")
 
 
 if __name__ == "__main__":
