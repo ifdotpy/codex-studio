@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 PROTOCOL_VERSION = 3
 
 try:
@@ -13,6 +11,7 @@ except ImportError as error:
         "The backend requires studio_operations_native. Build it with "
         "`cargo build --release -p studio-operations-python`."
     ) from error
+
 
 def check_protocol(module: object) -> None:
     if getattr(module, "PROTOCOL_VERSION", None) == PROTOCOL_VERSION:
@@ -24,13 +23,3 @@ def check_protocol(module: object) -> None:
 
 
 check_protocol(native)
-
-if TYPE_CHECKING:
-    from studio_operations_native import ReservationResult
-
-
-def reserve_tool_request(
-    snapshot_json: str,
-    alias_prefix: str,
-) -> "ReservationResult":
-    return native.reserve_tool_request(snapshot_json, alias_prefix)

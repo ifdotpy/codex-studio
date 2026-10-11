@@ -10,12 +10,13 @@ import uuid
 from typing import Any, TYPE_CHECKING, Protocol
 
 from codex_records import RecordStore
-from codex_operations_adapter import native, reserve_tool_request as reserve_native_tool_request
+from codex_operations_adapter import native
 
 _LIFECYCLE_FIELDS = (
     "stage", "outcome", "cancelRequested", "id", "callId", "accountKey",
     "threadId", "agent", "epoch", "supervisor", "readOnly",
 )
+_RESERVATION_FIELDS = (*_LIFECYCLE_FIELDS, "signature", "request_id")
 
 if TYPE_CHECKING:
     import sqlite3
@@ -60,6 +61,13 @@ def _content_fingerprint(signature: str, agent: str) -> bytes:
     ).encode()).digest()
 
 
+def _record_projection(
+    record: "ToolRequestRecord",
+    fields: tuple[str, ...],
+) -> dict[str, Any]:
+    return {field: record[field] for field in fields if field in record}
+
+
 def _lifecycle(
     record: "ToolRequestRecord",
     event: "EventName",
@@ -74,7 +82,7 @@ def _lifecycle(
     agent = "" if agent is None else agent
     fingerprint = _content_fingerprint(signature, agent)
     return native.transition_record(
-        json.dumps({field: record[field] for field in _LIFECYCLE_FIELDS if field in record}, ensure_ascii=False),
+        json.dumps(_record_projection(record, _LIFECYCLE_FIELDS), ensure_ascii=False),
         event,
         fingerprint,
         proof=proof,
@@ -439,17 +447,18 @@ class RequestMixin:
                 if identity_tool in {"orchestration_spawn", "orchestration_send", "orchestration_review", "orchestration_servers", "orchestration_move", "orchestration_teleport"} and "request_id" in identity_args:
                     record["request_id"] = identity_args["request_id"]
             current_fingerprint = _content_fingerprint(signature, actor["id"])
-            existing_fingerprint = _content_fingerprint(
-                record.get("signature") or "", record.get("agent") or "") if has_existing else None
+            projection = _record_projection(record, _RESERVATION_FIELDS)
+            existing = {
+                "record": projection,
+                "fingerprint": list(_content_fingerprint(
+                    record.get("signature") or "", record.get("agent") or "")),
+            } if has_existing else None
             snapshot = json.dumps({
-                "candidate": {"record": {field: record[field] for field in (*_LIFECYCLE_FIELDS, "signature", "request_id")
-                                           if field in record}, "fingerprint": list(current_fingerprint)},
-                "existing": {"record": {field: record[field] for field in (*_LIFECYCLE_FIELDS, "signature", "request_id")
-                                          if field in record}, "fingerprint": list(existing_fingerprint)}
-                if has_existing and existing_fingerprint is not None else None,
+                "candidate": {"record": projection, "fingerprint": list(current_fingerprint)},
+                "existing": existing,
                 "call_id": call_id,
             }, ensure_ascii=False)
-            decision = reserve_native_tool_request(snapshot, _prefix(account_key, params["threadId"]))
+            decision = native.reserve_tool_request(snapshot, _prefix(account_key, params["threadId"]))
             if decision.kind == "Admitted":
                 record.update(stage=decision.stage, outcome=decision.outcome,
                               cancelRequested=decision.cancel_requested)

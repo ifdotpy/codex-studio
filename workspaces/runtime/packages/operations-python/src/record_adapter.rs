@@ -305,18 +305,18 @@ pub(crate) fn reserve_tool_request(
     let decision = studio_operations::decide_reservation(&ReservationSnapshot { existing }, &input);
     match decision {
         ReservationDecision::Rejected { error, .. } => Err(rejection_message(error)),
-        ReservationDecision::Admitted { state, intents } => Ok(reservation_result(
+        ReservationDecision::Admitted { state, intents } => reservation_result(
             ReservationKind::Admitted,
             &state,
             candidate_record.cancel_requested,
             intents,
-        )),
-        ReservationDecision::ReturnExisting { state, intents } => Ok(reservation_result(
+        ),
+        ReservationDecision::ReturnExisting { state, intents } => reservation_result(
             ReservationKind::ReturnExisting,
             &state,
             candidate_record.cancel_requested,
             intents,
-        )),
+        ),
     }
 }
 
@@ -325,11 +325,11 @@ fn reservation_result(
     state: &State,
     cancel_requested: bool,
     intents: Vec<ReservationWriteIntent>,
-) -> ReservationAdapterResult {
+) -> Result<ReservationAdapterResult, String> {
     let operation = state
         .operation
         .as_ref()
-        .expect("reservation has operation state");
+        .ok_or_else(|| "Reservation decision omitted operation state".to_owned())?;
     let (stage, outcome, cancel_requested) = persisted_fields(operation.state, cancel_requested);
     let aliases = intents
         .into_iter()
@@ -342,13 +342,13 @@ fn reservation_result(
             ReservationWriteIntent::ReserveRequest { .. } => None,
         })
         .collect();
-    ReservationAdapterResult {
+    Ok(ReservationAdapterResult {
         kind,
         stage,
         outcome,
         cancel_requested,
         aliases,
-    }
+    })
 }
 
 fn fingerprint(value: Vec<u8>) -> Result<[u8; 32], String> {
