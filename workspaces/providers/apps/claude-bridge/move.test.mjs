@@ -473,3 +473,57 @@ test("an inline snapshot whose MCP tools are all deferred gets the deferred proo
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test("a catalog that crossed the paired channel with sorted keys still matches", () => {
+  const schema = {
+    type: "object",
+    properties: { cwd: { type: "string" }, server: { type: "string" } },
+    required: ["server"],
+    additionalProperties: false,
+  };
+  const current = [
+    { name: "mcp__studio__a", description: "A", input_schema: schema },
+    {
+      name: "mcp__studio__b",
+      description: "B",
+      input_schema: { type: "object" },
+    },
+  ];
+  const sorted = JSON.parse(
+    JSON.stringify(current, (key, value) =>
+      value && typeof value === "object" && !Array.isArray(value)
+        ? Object.fromEntries(
+            Object.keys(value)
+              .sort()
+              .map((k) => [k, value[k]]),
+          )
+        : value,
+    ),
+  );
+  const proof = {
+    inlineTools: false,
+    tools: [{ name: "Bash", input_schema: { type: "object" } }],
+    compiledTools: sorted,
+  };
+  assert.deepEqual(verifyToolProof(proof, current), ["Bash"]);
+  // A real change and a changed tool order still refuse.
+  assert.throws(
+    () =>
+      verifyToolProof(
+        {
+          ...proof,
+          compiledTools: [{ ...sorted[0], description: "Changed" }, sorted[1]],
+        },
+        current,
+      ),
+    /tool definitions differ/,
+  );
+  assert.throws(
+    () =>
+      verifyToolProof(
+        { ...proof, compiledTools: [sorted[1], sorted[0]] },
+        current,
+      ),
+    /tool definitions differ/,
+  );
+});

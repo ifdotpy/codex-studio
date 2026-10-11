@@ -171,18 +171,29 @@ export function verifyToolProof(proof, studio, offered) {
       "external_tools",
       mcp.filter((entry) => !entry.name.startsWith("mcp__studio__")),
     );
-  const shape = (entry) => ({
-    name: entry.name,
-    description: entry.description || "",
-    input_schema: entry.input_schema,
-  });
+  // A source catalog that crossed the paired channel has its object keys sorted (the channel
+  // signs canonical JSON), so definitions compare by content, with the tool order kept.
+  const canonical = (value) =>
+    Array.isArray(value)
+      ? value.map(canonical)
+      : value && typeof value === "object"
+        ? Object.fromEntries(
+            Object.keys(value)
+              .sort()
+              .map((key) => [key, canonical(value[key])]),
+          )
+        : value;
+  const shape = (entry) =>
+    JSON.stringify(
+      canonical({
+        name: entry.name,
+        description: entry.description || "",
+        input_schema: entry.input_schema,
+      }),
+    );
   if (JSON.stringify(mcp.map(shape)) !== JSON.stringify(studio.map(shape))) {
-    const before = new Map(
-      mcp.map((entry) => [entry.name, JSON.stringify(shape(entry))]),
-    );
-    const after = new Map(
-      studio.map((entry) => [entry.name, JSON.stringify(shape(entry))]),
-    );
+    const before = new Map(mcp.map((entry) => [entry.name, shape(entry)]));
+    const after = new Map(studio.map((entry) => [entry.name, shape(entry)]));
     const changed = mcp.filter(
       (entry) =>
         after.has(entry.name) &&
