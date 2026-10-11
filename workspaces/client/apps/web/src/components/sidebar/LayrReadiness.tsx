@@ -71,8 +71,11 @@ export function describeWithLayrReadiness(
 /** A quiet chip after the project name: a layr chat there starts without an import, or why not. */
 export default function ProjectLayrReadiness({
   summary,
+  attention = false,
 }: {
   summary: LayrReadinessSummary | null;
+  /** A report in the tooltip needs the user, for example a Mac folder sync conflict. */
+  attention?: boolean;
 }) {
   if (!summary) return null;
   // Not a span: sidebar code and checks read the project name as the toggle's span.
@@ -80,6 +83,7 @@ export default function ProjectLayrReadiness({
     <small
       className="project-layr-readiness"
       data-state={summary.state}
+      data-attention={attention ? "true" : undefined}
       title={summary.title}
       aria-hidden="true"
     >

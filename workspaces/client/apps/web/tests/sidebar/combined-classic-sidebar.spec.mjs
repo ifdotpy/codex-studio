@@ -380,20 +380,24 @@ for (const [theme, viewport] of [
         await page
           .getByRole("button", { name: "Servers and chats", exact: true })
           .click();
-      const syncChip = projectName.locator(".project-layr-sync");
-      await expect(syncChip).toHaveText("SYNC 1");
-      await expect(syncChip).toHaveAttribute("data-state", "conflict");
-      await expect(syncChip).toHaveAttribute(
+      // One LAYR chip on its own line: the conflict marks it and its tooltip says why.
+      const layrChip = projectName.locator(".project-layr-readiness");
+      await expect(layrChip).toHaveText("LAYR");
+      await expect(layrChip).toHaveAttribute("data-attention", "true");
+      await expect(layrChip).toHaveAttribute(
         "title",
         "REM: Ready for layr chats\nREM: Mac folder sync: 1 file changed on both sides",
       );
-      await expect(projectName.locator(".project-layr-readiness")).toHaveCount(
-        0,
-      );
+      await expect(projectName.locator(".project-layr-sync")).toHaveCount(0);
+      const nameBox = await projectName.locator("span").first().boundingBox();
+      const chipBox = await layrChip.boundingBox();
+      expect(
+        chipBox && nameBox && chipBox.y >= nameBox.y + nameBox.height - 1,
+      ).toBe(true);
       await expect(
         sidebar.getByRole("button", { name: "Home project", exact: true }),
       ).toHaveAccessibleDescription(
-        "REM: Ready for layr chats. REM: Mac folder sync: 1 file changed on both sides. " +
+        "REM: Ready for layr chats; REM: Mac folder sync: 1 file changed on both sides. " +
           "Drag to reorder. Alt + Up or Down also works.",
       );
       await page.screenshot({

@@ -37,6 +37,18 @@ test.each([
   );
 });
 
+test("an attention mark sits on the chip only when asked", () => {
+  const summary = layrReadinessSummary([{ readiness: { state: "ready" } }]);
+  expect(
+    renderToStaticMarkup(createElement(ProjectLayrReadiness, { summary })),
+  ).not.toContain("data-attention");
+  expect(
+    renderToStaticMarkup(
+      createElement(ProjectLayrReadiness, { summary, attention: true }),
+    ),
+  ).toContain('data-attention="true"');
+});
+
 test("shows nothing without a report", () => {
   expect(layrReadinessSummary([])).toBeNull();
   expect(render([])).toBe("");

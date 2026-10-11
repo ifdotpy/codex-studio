@@ -14,6 +14,7 @@ export type LayrSyncEntry = {
 export type LayrSyncSummary = {
   state: LayrSync["state"];
   waiting: number;
+  deletes: number;
   title: string;
 };
 export type MacSyncChoice = "mac" | "vm" | "agent";
@@ -70,64 +71,43 @@ export function layrSyncSummary(
     (total, entry) => total + macSyncOpen(entry.sync).length,
     0,
   );
+  const deletes = entries.reduce(
+    (total, entry) => total + entry.sync.deletes,
+    0,
+  );
   const title = entries
     .map(
       (entry) =>
         (entry.server ? `${entry.server}: ` : "") + layrSyncText(entry.sync),
     )
     .join("\n");
-  return { state, waiting, title };
+  return { state, waiting, deletes, title };
 }
 
-export type ProjectChip =
-  | { kind: "layr"; summary: LayrReadinessSummary }
-  | { kind: "sync"; summary: LayrSyncSummary };
+export type ProjectChip = { summary: LayrReadinessSummary; attention: boolean };
 
-const URGENT_SYNC: LayrSync["state"][] = ["error", "conflict", "paused"];
+const ATTENTION_SYNC: LayrSync["state"][] = ["error", "conflict"];
 
-/** One chip per project row keeps room for the name: a sync problem first, then an
- * unfinished import, then the sync state. Its tooltip has both reports. */
+/** The row has one chip, LAYR, on a second line. A Mac folder sync that needs the user (a
+ * conflict, a failure, files that wait for a choice or deletions to confirm) marks it and
+ * adds its report to the tooltip; a quiet or paused sync does not show. */
 export function projectChip(
   layr: LayrReadinessSummary | null,
   sync: LayrSyncSummary | null,
 ): ProjectChip | null {
-  if (!sync) return layr && { kind: "layr", summary: layr };
-  if (!layr) return { kind: "sync", summary: sync };
-  const title = `${layr.title}\n${sync.title}`;
-  if (!URGENT_SYNC.includes(sync.state) && layr.state !== "ready")
-    return { kind: "layr", summary: { ...layr, title } };
-  return { kind: "sync", summary: { ...sync, title } };
-}
-
-/** The project button keeps its name; assistive technology reads the sync state in its description. */
-export function describeWithLayrSync(
-  summary: LayrSyncSummary | null,
-  description: string,
-): string {
-  if (!summary) return description;
-  const lines = summary.title
-    .split("\n")
-    .map((line) => line.replace(/\.$/, ""));
-  return `${lines.join("; ")}. ${description}`;
-}
-
-/** A quiet chip after the LAYR chip; a conflict shows how many files wait. */
-export default function ProjectLayrSync({
-  summary,
-}: {
-  summary: LayrSyncSummary | null;
-}) {
-  if (!summary) return null;
-  return (
-    <small
-      className="project-layr-sync"
-      data-state={summary.state}
-      title={summary.title}
-      aria-hidden="true"
-    >
-      SYNC{summary.waiting ? ` ${summary.waiting}` : ""}
-    </small>
-  );
+  if (!layr) return null;
+  const attention =
+    !!sync &&
+    (ATTENTION_SYNC.includes(sync.state) ||
+      sync.waiting > 0 ||
+      sync.deletes > 0);
+  return {
+    summary:
+      attention && sync
+        ? { ...layr, title: `${layr.title}\n${sync.title}` }
+        : layr,
+    attention,
+  };
 }
 
 const CHOICES: { choice: MacSyncChoice; label: string; hint: string }[] = [
