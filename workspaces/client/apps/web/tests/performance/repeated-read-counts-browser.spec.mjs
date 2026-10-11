@@ -80,6 +80,8 @@ async function repeatedReadCountsScenario(
     let observedEventCount = 0;
     const streamOpens = [];
     const requestTimeline = [];
+    const accountReadTimings = [];
+    const accountReadByRequest = new Map();
     await page.addInitScript(() => {
       const OriginalEventSource = window.EventSource;
       window.EventSource = class extends OriginalEventSource {
@@ -108,18 +110,34 @@ async function repeatedReadCountsScenario(
         };
         streamOpens.push(attempt);
       }
-      if (measured.has(url.pathname))
-        requestTimeline.push({
+      if (measured.has(url.pathname)) {
+        const entry = {
           at: Date.now(),
           method: request.method(),
           key: `${url.pathname}${url.search}`,
-        });
+        };
+        requestTimeline.push(entry);
+        if (url.pathname === "/api/accounts" && request.method() === "GET") {
+          const timing = {
+            requestAt: entry.at,
+            responseAt: null,
+            status: null,
+          };
+          accountReadTimings.push(timing);
+          accountReadByRequest.set(request, timing);
+        }
+      }
       if (request.method() !== "GET" || !measured.has(url.pathname)) return;
       const key = `${url.pathname}${url.search}`;
       counts.set(key, (counts.get(key) || 0) + 1);
     });
     page.on("response", (response) => {
       const url = new URL(response.url());
+      const accountTiming = accountReadByRequest.get(response.request());
+      if (accountTiming) {
+        accountTiming.responseAt = Date.now();
+        accountTiming.status = response.status();
+      }
       if (url.pathname !== "/api/sync/stream") return;
       const attempt = streamOpens.find(
         (candidate) => candidate.request === response.request(),
@@ -202,6 +220,29 @@ async function repeatedReadCountsScenario(
     const loadSettledAt = Date.now();
     await captureNewResourceEvents();
     if (accountsOnly) {
+      const firstMainStage = loadStreams.find((attempt) =>
+        JSON.parse(
+          new URL(attempt.url, "http://studio.test").searchParams.get(
+            "resources",
+          ),
+        ).some((resource) => resource.kind === "drafts"),
+      );
+      assert.ok(
+        firstMainStage,
+        "the initial main-client stage subscribes to drafts",
+      );
+      const firstStageResources = JSON.parse(
+        new URL(firstMainStage.url, "http://studio.test").searchParams.get(
+          "resources",
+        ),
+      );
+      assert.ok(
+        firstStageResources.some((resource) => resource.kind === "accounts"),
+        "the initial main-client stage subscribes to accounts",
+      );
+      console.log(
+        `ACCOUNTS_STARTUP_TIMING ${JSON.stringify({ firstContentMs: loadFirstContentMs, reads: accountReadTimings.map(({ requestAt, responseAt, status }) => ({ requestMs: requestAt - loadStartedAt, responseMs: responseAt === null ? null : responseAt - loadStartedAt, status })) })}`,
+      );
       const count = load["/api/accounts"] || 0;
       const invalidations = resourceEvents.filter(
         ({ at, event }) =>
@@ -522,10 +563,6 @@ test("model catalog reads stay within invalidation counts @performance", async (
 test("account catalog reads stay within invalidation counts @performance", async ({
   browser,
 }) => {
-  test.fixme(
-    true,
-    "intermittent duplicate /api/accounts read during initial load; see workspaces/client/apps/web/tests/KNOWN-FAILURES.md",
-  );
   test.setTimeout(180_000);
   await repeatedReadCountsScenario(browser, { accountsOnly: true });
 });

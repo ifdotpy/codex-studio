@@ -11,11 +11,14 @@ import type {
 } from "../sync/resourceEvents";
 
 type ResourceReadWatcher = (() => void) & { refresh: () => void };
+type ReadTrigger = { resourceKey: string; version?: ResourceVersion };
 
 /**
  * Run one targeted read for the initial resource baseline and each later
- * notification. If a notification arrives during a read, perform one more
- * read after it settles so the latest version cannot be lost.
+ * resource revision. Reopened streams can repeat an unchanged baseline, so
+ * successful versioned reads are remembered and identical revisions skipped.
+ * If a notification arrives during a read, perform one more read after it
+ * settles so the latest version cannot be lost.
  */
 export function watchResourceReads(
   resources: ResourceRef | readonly ResourceRef[],
@@ -30,7 +33,9 @@ export function watchResourceReads(
   let fallbackReady = false;
   let reading = false;
   let dirty = false;
-  let dirtyVersion: ResourceVersion | undefined;
+  let dirtyTrigger: ReadTrigger | undefined;
+  const lastSuccessfulVersions = new Map<string, ResourceVersion>();
+  let readingTrigger: ReadTrigger | undefined;
   let scheduled = false;
   let retryCount = 0;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -42,12 +47,35 @@ export function watchResourceReads(
     clearTimeout(retryTimer);
     retryTimer = undefined;
   };
+  const sameVersion = (
+    left: ResourceVersion | undefined,
+    right: ResourceVersion | undefined,
+  ) =>
+    !!left &&
+    !!right &&
+    left.epoch === right.epoch &&
+    left.revision === right.revision;
 
-  const refresh = (version?: ResourceVersion) => {
-    if (version) baselineSeen = true;
+  const refresh = (version?: ResourceVersion, resourceKey?: string) => {
+    const trigger =
+      resourceKey === undefined ? undefined : { resourceKey, version };
+    if (version) {
+      baselineSeen = true;
+      if (
+        (trigger &&
+          sameVersion(
+            version,
+            lastSuccessfulVersions.get(trigger.resourceKey),
+          )) ||
+        (trigger &&
+          readingTrigger?.resourceKey === trigger.resourceKey &&
+          sameVersion(version, readingTrigger.version))
+      )
+        return;
+    }
     if (waitForBaseline && !baselineSeen && !fallbackReady) return;
     dirty = true;
-    if (version) dirtyVersion = version;
+    dirtyTrigger = trigger;
     if (
       !active ||
       reading ||
@@ -66,10 +94,24 @@ export function watchResourceReads(
         try {
           while (active && dirty && (canRead() || fallbackReady)) {
             dirty = false;
-            const version = dirtyVersion;
-            dirtyVersion = undefined;
+            const currentTrigger = dirtyTrigger;
+            dirtyTrigger = undefined;
+            if (
+              currentTrigger?.version &&
+              sameVersion(
+                currentTrigger.version,
+                lastSuccessfulVersions.get(currentTrigger.resourceKey),
+              )
+            )
+              continue;
+            readingTrigger = currentTrigger;
             try {
-              await read(version);
+              await read(currentTrigger?.version);
+              if (currentTrigger?.version)
+                lastSuccessfulVersions.set(
+                  currentTrigger.resourceKey,
+                  currentTrigger.version,
+                );
               retryCount = 0;
             } catch (error) {
               if (!active) break;
@@ -81,14 +123,18 @@ export function watchResourceReads(
               if (!active) break;
               if (retryableReadError(error)) {
                 dirty = true;
+                if (currentTrigger && !dirtyTrigger)
+                  dirtyTrigger = currentTrigger;
                 if (canRead()) {
                   retryTimer = setTimeout(() => {
                     retryTimer = undefined;
-                    refresh();
+                    refresh(dirtyTrigger?.version, dirtyTrigger?.resourceKey);
                   }, readRetryDelay(retryCount++));
                 }
                 break;
               }
+            } finally {
+              if (readingTrigger === currentTrigger) readingTrigger = undefined;
             }
           }
         } finally {
@@ -104,7 +150,7 @@ export function watchResourceReads(
       : onResume(() => {
           if (dirty) {
             clearRetry();
-            refresh();
+            refresh(dirtyTrigger?.version, dirtyTrigger?.resourceKey);
           }
         });
   const pause = () => {
@@ -113,9 +159,14 @@ export function watchResourceReads(
   if (typeof window !== "undefined") window.addEventListener("offline", pause);
   if (typeof document !== "undefined")
     document.addEventListener("visibilitychange", pause);
-  const stops = refs.map((resource) =>
-    watchResourceChanges(resource, refresh, { waitForBaseline }),
-  );
+  const stops = refs.map((resource) => {
+    const resourceKey = JSON.stringify(resource);
+    return watchResourceChanges(
+      resource,
+      (version) => refresh(version, resourceKey),
+      { waitForBaseline },
+    );
+  });
   let fallbackStarted = false;
   const stopConnection = waitForBaseline
     ? watchResourceConnection((status, stream: ResourceStreamState) => {

@@ -90,6 +90,7 @@ export function useAccounts(stateDir?: string) {
         await refresh();
       },
       (failure) => setError(errorText(failure)),
+      { waitForBaseline: true },
     );
     return () => {
       latestRead.current++;
