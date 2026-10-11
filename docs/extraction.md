@@ -8,8 +8,8 @@ The original license is retained without new permissions.
 
 The server app owns its Python source, runtime prompts, and server tests. The
 client workspace owns `workspaces/client/apps/web/` and
-`workspaces/client/apps/desktop/`; the repository root temporarily provides compatibility launchers for
-installed commands. The repository also owns its product documentation. The full command guide moved to `docs/cli.md`. The application
+`workspaces/client/apps/desktop/`. The repository also owns its product
+documentation. The full command guide moved to `docs/cli.md`. The application
 does not need the skill checkout to import modules, build, run, or start workers.
 Runtime worker prompts remain with their launcher.
 
