@@ -2,6 +2,9 @@
 """Host_exec caller, lease, transfer, identity and output contracts."""
 from __future__ import annotations
 
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import asyncio
 import base64
 import hashlib
