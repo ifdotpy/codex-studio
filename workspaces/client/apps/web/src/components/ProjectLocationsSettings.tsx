@@ -9,6 +9,11 @@ import {
   type ProjectServerChoice,
 } from "../servers/projectLocations";
 import ProjectDirectoryPicker from "./ProjectDirectoryPicker";
+import {
+  closeMenuFromTriggerOnEscape,
+  restoreMenuTriggerFocusAfterClose,
+  useMenuEscapeSuppression,
+} from "./closeMenuFromTriggerOnEscape";
 import "./project-locations.css";
 
 export default function ProjectLocationsSettings({
@@ -25,6 +30,11 @@ export default function ProjectLocationsSettings({
   const [adding, setAdding] = useState(!!initialServer);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [openLocationMenu, setOpenLocationMenu] = useState<string | null>(null);
+  const locationMenuTriggers = useRef(new Map<string, HTMLButtonElement>());
+  const { suppressNextEscape, clearSuppression } = useMenuEscapeSuppression(
+    openLocationMenu !== null,
+  );
   const request = useRef<{
     id: string;
     server: string;
@@ -95,18 +105,61 @@ export default function ProjectLocationsSettings({
               <small>HEAD {heads[location.serverId]}</small>
             )}
           </div>
-          <Menu withinPortal>
+          <Menu
+            opened={openLocationMenu === location.serverId}
+            onChange={(nextOpened) => {
+              setOpenLocationMenu((current) =>
+                nextOpened
+                  ? location.serverId
+                  : current === location.serverId
+                    ? null
+                    : current,
+              );
+              if (!nextOpened)
+                restoreMenuTriggerFocusAfterClose(
+                  locationMenuTriggers.current.get(location.serverId) ?? null,
+                );
+            }}
+            withinPortal={false}
+            withInitialFocusPlaceholder={false}
+          >
             <Menu.Target>
               <ActionIcon
+                ref={(node) => {
+                  if (node)
+                    locationMenuTriggers.current.set(location.serverId, node);
+                  else locationMenuTriggers.current.delete(location.serverId);
+                }}
                 className="project-location-actions"
                 size={28}
+                onClick={(event) =>
+                  event.currentTarget.focus({ preventScroll: true })
+                }
+                data-mantine-stop-propagation={
+                  openLocationMenu === location.serverId || suppressNextEscape
+                    ? "true"
+                    : undefined
+                }
+                onKeyDown={(event) =>
+                  closeMenuFromTriggerOnEscape(
+                    event,
+                    openLocationMenu === location.serverId,
+                    () =>
+                      setOpenLocationMenu((current) =>
+                        current === location.serverId ? null : current,
+                      ),
+                    suppressNextEscape,
+                    clearSuppression,
+                  )
+                }
+                onBlur={clearSuppression}
                 aria-label={`Options for folder ${location.path}`}
                 disabled={busy}
               >
                 <MoreHorizontal size={16} />
               </ActionIcon>
             </Menu.Target>
-            <Menu.Dropdown>
+            <Menu.Dropdown data-mantine-stop-propagation="true">
               <Menu.Item
                 disabled={(project.locations?.length || 0) < 2}
                 onClick={() => {

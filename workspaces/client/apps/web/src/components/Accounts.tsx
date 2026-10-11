@@ -41,6 +41,11 @@ import {
 } from "./accountDeleteRequests";
 import type { ServerCommand } from "../servers/navigation";
 import { readBuckets, formatPercent } from "./Usage";
+import {
+  closeMenuFromTriggerOnEscape,
+  restoreMenuTriggerFocusAfterClose,
+  useMenuEscapeSuppression,
+} from "./closeMenuFromTriggerOnEscape";
 
 export type AccountsState = GetResult<"/api/accounts">;
 export type Account = AccountsState["accounts"][number];
@@ -541,6 +546,13 @@ export default function Accounts({
   dialogsOnly?: boolean;
 }) {
   const [opened, setOpened] = useState(false);
+  const [openActionMenuAccountId, setOpenActionMenuAccountId] = useState<
+    string | null
+  >(null);
+  const actionMenuTriggers = useRef(new Map<string, HTMLButtonElement>());
+  const { suppressNextEscape, clearSuppression } = useMenuEscapeSuppression(
+    openActionMenuAccountId !== null,
+  );
   const [pending, setPending] = useState("");
   const [error, setError] = useState("");
   const [home, setHome] = useState("");
@@ -876,20 +888,78 @@ export default function Accounts({
                                 onSaved={state.setData}
                                 disabled={!!pending}
                               />
-                              <Menu position="bottom-end" withinPortal>
+                              <Menu
+                                opened={openActionMenuAccountId === account.id}
+                                onChange={(nextOpened) => {
+                                  setOpenActionMenuAccountId((current) =>
+                                    nextOpened
+                                      ? account.id
+                                      : current === account.id
+                                        ? null
+                                        : current,
+                                  );
+                                  if (!nextOpened)
+                                    restoreMenuTriggerFocusAfterClose(
+                                      actionMenuTriggers.current.get(
+                                        account.id,
+                                      ) ?? null,
+                                    );
+                                }}
+                                position="bottom-end"
+                                withinPortal={false}
+                                withInitialFocusPlaceholder={false}
+                              >
                                 <Menu.Target>
                                   <ActionButton
+                                    ref={(node) => {
+                                      if (node)
+                                        actionMenuTriggers.current.set(
+                                          account.id,
+                                          node,
+                                        );
+                                      else
+                                        actionMenuTriggers.current.delete(
+                                          account.id,
+                                        );
+                                    }}
                                     actionRole="quiet"
                                     className="account-card-menu"
+                                    onClick={(event) =>
+                                      event.currentTarget.focus({
+                                        preventScroll: true,
+                                      })
+                                    }
                                     loading={
                                       pending === `default:${account.id}`
                                     }
+                                    data-mantine-stop-propagation={
+                                      openActionMenuAccountId === account.id ||
+                                      suppressNextEscape
+                                        ? "true"
+                                        : undefined
+                                    }
+                                    onKeyDown={(event) =>
+                                      closeMenuFromTriggerOnEscape(
+                                        event,
+                                        openActionMenuAccountId === account.id,
+                                        () =>
+                                          setOpenActionMenuAccountId(
+                                            (current) =>
+                                              current === account.id
+                                                ? null
+                                                : current,
+                                          ),
+                                        suppressNextEscape,
+                                        clearSuppression,
+                                      )
+                                    }
+                                    onBlur={clearSuppression}
                                     aria-label={`Actions for ${account.email || account.label}`}
                                   >
                                     <Ellipsis size={18} />
                                   </ActionButton>
                                 </Menu.Target>
-                                <Menu.Dropdown>
+                                <Menu.Dropdown data-mantine-stop-propagation="true">
                                   {account.id !==
                                     state.data.defaultAccountKey && (
                                     <Menu.Item
