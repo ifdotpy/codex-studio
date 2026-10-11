@@ -1,16 +1,14 @@
 #!/usr/bin/env node
 import {
-  API_SCHEMA_HASH_HEADER,
   test,
   expect,
   spawnFixture as spawn,
-  readApiSchemaHash,
   readTestState,
-  entityPullFixture,
+  readFixtureSyncContract,
+  stubEntityState,
 } from "../playwright.mjs";
 // Production renderer with an isolated fixture. No model calls or user state.
 
-import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -114,9 +112,6 @@ test("Worker Overview Ui", async ({
     let workerStopError = stopReason;
     let pending = true;
     let deferred = false;
-    let fixtureRefreshStage = 0;
-    let appliedFixtureRefreshStage = 0;
-    let fixtureEntitySeq = 0;
     page = testPage;
     await page.setViewportSize({ width: 1440, height: 980 });
     page.setDefaultTimeout(10000);
@@ -137,73 +132,103 @@ test("Worker Overview Ui", async ({
         },
       }),
     );
-    await page.route("**/api/sync/pull?*", async (route) => {
-      const response = await route.fetch();
-      const data = await response.json();
-      const pullUrl = new URL(route.request().url());
-      const isEntityPull =
-        pullUrl.searchParams.get("scope") === "state:entities:v1";
-      for (const document of data.documents ?? []) {
-        if (document._deleted) continue;
-        const entity = JSON.parse(document.payload);
-        if (entity.collection === "agent") {
-          const agent = entity.value;
-          const workerIndex = workers.findIndex(
-            (worker) => worker.id === agent.id,
-          );
-          if (workerIndex >= 0) {
-            const index = Number(workers[workerIndex].name.split(" ")[1]);
-            agent.status =
-              index === 7
-                ? "failed"
-                : index < 8
-                  ? "running"
-                  : index === 24
-                    ? "paused"
-                    : index < 25
-                      ? "queued"
-                      : "completed";
-          }
-          if (agent.id === worker(7).id) agent.error = workerFailure;
-          if (agent.id === worker(24).id)
-            Object.assign(agent, { autoWake: false, error: workerStopError });
-          if (agent.id === worker(0).id && deferred) agent.status = "approval";
-          if (agent.id === worker(1).id)
-            Object.assign(agent, {
-              name: longName,
-              model: "gpt-6-astra",
-              effort: "high",
-              overview: { task, result: mobileReport },
-            });
-          if (agent.id === worker(25).id)
-            Object.assign(agent, {
-              overview: {
-                task: "Verify receipt recovery",
-                result: report,
-                resultTruncated: true,
-                resultFile: resultPath,
-              },
-            });
-          entity.value = agent;
-        }
-        document.payload = JSON.stringify(entity);
+    const entitySnapshot = structuredClone(initial);
+    delete entitySnapshot.token;
+    delete entitySnapshot.threads;
+    const statusForWorker = (agent) => {
+      const index = workers.findIndex((worker) => worker.id === agent.id);
+      if (index === 7) return "failed";
+      if (index < 8) return "running";
+      if (index === 24) return "paused";
+      if (index < 25) return "queued";
+      return "completed";
+    };
+    for (const agent of entitySnapshot.runtime.agents) {
+      agent.status = statusForWorker(agent);
+      if (agent.id === worker(7).id) agent.error = workerFailure;
+      if (agent.id === worker(24).id) {
+        agent.autoWake = false;
+        agent.error = workerStopError;
       }
-      if (isEntityPull && Array.isArray(data.documents)) {
-        const requests = [];
-        if (pending)
-          requests.push({
-            id: "worker-question",
-            agent: worker(0).id,
-            status: "pending",
-            deferred,
-            method: "agent/asyncQuestion",
-            params: {
-              questions: [
-                { id: "scope", question: "Which receipt should I inspect?" },
-              ],
-            },
-          });
-        requests.push({
+      if (agent.id === worker(1).id)
+        Object.assign(agent, {
+          name: longName,
+          model: "gpt-6-astra",
+          effort: "high",
+          overview: { task, result: mobileReport },
+        });
+      if (agent.id === worker(25).id)
+        agent.overview = {
+          task: "Verify receipt recovery",
+          result: report,
+          resultTruncated: true,
+          resultFile: resultPath,
+        };
+    }
+    entitySnapshot.runtime.requests = [
+      {
+        id: "worker-question",
+        agent: worker(0).id,
+        status: "pending",
+        deferred,
+        method: "agent/asyncQuestion",
+        params: {
+          questions: [
+            { id: "scope", question: "Which receipt should I inspect?" },
+          ],
+        },
+      },
+      {
+        id: "answered-worker-question",
+        agent: worker(2).id,
+        status: "answered",
+        method: "agent/asyncQuestion",
+        params: {
+          questions: [{ id: "done", question: "Already answered" }],
+        },
+      },
+    ];
+    const syncFixture = await stubEntityState(
+      page,
+      entitySnapshot,
+      await readFixtureSyncContract(origin),
+    );
+    const refreshFromEntityPull = async () => {
+      const next = structuredClone(entitySnapshot);
+      const updateAgent = (id, updates) => {
+        const agent = next.runtime.agents.find((item) => item.id === id);
+        if (agent) Object.assign(agent, updates);
+      };
+      updateAgent(worker(24).id, {
+        status: typeof workerStopError === "string" ? "paused" : "failed",
+        autoWake: false,
+        error: workerStopError,
+      });
+      updateAgent(worker(7).id, { status: "failed", error: workerFailure });
+      updateAgent(worker(0).id, {
+        status: deferred ? "approval" : "running",
+      });
+      next.runtime.requests = [
+        ...(pending
+          ? [
+              {
+                id: "worker-question",
+                agent: worker(0).id,
+                status: "pending",
+                deferred,
+                method: "agent/asyncQuestion",
+                params: {
+                  questions: [
+                    {
+                      id: "scope",
+                      question: "Which receipt should I inspect?",
+                    },
+                  ],
+                },
+              },
+            ]
+          : []),
+        {
           id: "answered-worker-question",
           agent: worker(2).id,
           status: "answered",
@@ -211,84 +236,15 @@ test("Worker Overview Ui", async ({
           params: {
             questions: [{ id: "done", question: "Already answered" }],
           },
-        });
-        let seq = Math.max(data.checkpoint?.seq ?? 0, data.maxSeq ?? 0);
-        data.documents.push(
-          ...requests.map((value) => {
-            seq += 1;
-            return {
-              id: `entity:request:${value.id}`,
-              seq,
-              _deleted: false,
-              payload: JSON.stringify({
-                collection: "request",
-                id: value.id,
-                value,
-              }),
-            };
-          }),
-        );
-        if (data.checkpoint) data.checkpoint.seq = seq;
-        data.maxSeq = seq;
-        if (!pending) {
-          const tombstoneSeq = data.maxSeq + 1;
-          data.documents.push({
-            id: "entity:request:worker-question",
-            seq: tombstoneSeq,
-            _deleted: true,
-            payload: "{}",
-          });
-          if (data.checkpoint) data.checkpoint.seq = tombstoneSeq;
-          data.maxSeq = tombstoneSeq;
-        }
-      }
-      if (
-        isEntityPull &&
-        Array.isArray(data.documents) &&
-        fixtureRefreshStage > appliedFixtureRefreshStage
-      ) {
-        appliedFixtureRefreshStage = fixtureRefreshStage;
-        const changedAgents = initial.runtime.agents.map((agent) => ({
-          ...agent,
-        }));
-        const updateAgent = (id, updates) => {
-          const index = changedAgents.findIndex((agent) => agent.id === id);
-          if (index >= 0)
-            changedAgents[index] = { ...changedAgents[index], ...updates };
-        };
-        updateAgent(worker(24).id, {
-          status: typeof workerStopError === "string" ? "paused" : "failed",
-          autoWake: false,
-          error: workerStopError,
-        });
-        updateAgent(worker(7).id, { status: "failed", error: workerFailure });
-        updateAgent(worker(0).id, {
-          status: deferred ? "approval" : "running",
-        });
-        const changedState = {
-          ...initial,
-          threads: changedAgents,
-          runtime: { ...initial.runtime, agents: changedAgents },
-        };
-        const projected = entityPullFixture(changedState, {
-          scope: "state:entities:v1",
-          fresh: true,
-        });
-        let seq = Math.max(data.maxSeq, fixtureEntitySeq);
-        for (const id of [worker(24).id, worker(7).id, worker(0).id]) {
-          const source = projected.documents.find(
-            (document) => document.id === `entity:agent:${id}`,
-          );
-          if (!source) continue;
-          seq++;
-          data.documents.push({ ...source, seq });
-        }
-        if (data.checkpoint) data.checkpoint.seq = seq;
-        data.maxSeq = seq;
-        fixtureEntitySeq = seq;
-      }
-      await route.fulfill({ response, json: data });
-    });
+        },
+      ];
+      Object.assign(entitySnapshot, next);
+      await syncFixture.update(next, {
+        origin,
+        token: initial.token,
+        resources: [{ kind: "state" }],
+      });
+    };
     await page.goto(origin);
     const selectLead = () =>
       page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
@@ -325,23 +281,6 @@ test("Worker Overview Ui", async ({
     );
     assert.equal(await card(7).locator(".worker-state svg").count(), 1);
     assert.equal(await card(7).locator(".chat-status-error svg").count(), 1);
-    const refreshFromEntityPull = async () => {
-      fixtureRefreshStage++;
-      const response = await fetch(origin + "/api/sync/notify", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Canvas-Token": initial.token,
-          Origin: origin,
-          [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
-        },
-        body: JSON.stringify({
-          requestId: randomUUID(),
-          resources: [{ kind: "state" }],
-        }),
-      });
-      assert.equal(response.status, 200, await response.clone().text());
-    };
     assert.equal(
       await page.locator("#conversation-title").innerText(),
       "Release lead",
@@ -498,6 +437,7 @@ test("Worker Overview Ui", async ({
     await page.locator("#back-lead").click();
     await search.fill("");
     deferred = true;
+    await refreshFromEntityPull();
     await page.reload();
     await selectLead();
     assert.equal(
@@ -513,6 +453,7 @@ test("Worker Overview Ui", async ({
     assert.match(await card(0).innerText(), /Question deferred/);
     pending = false;
     deferred = false;
+    await refreshFromEntityPull();
     await page.reload();
     await selectLead();
     assert.equal(await count("answer"), 0, "answered requests stop counting");
