@@ -33,7 +33,7 @@ import { projectServerChoices, type LocationProject } from "./projectLocations";
 import { projectChatCommand } from "./projectChatCommand";
 import { frameURL } from "./frameOrigin";
 import { canUnloadFrame } from "./idleFrames";
-import { fetchServerSummary } from "./summary";
+import { fetchServerSummary, summaryFailure } from "./summary";
 import { bindShellTransport } from "./shellTransport";
 import { serverCredentialAdapter } from "./transport";
 import {
@@ -433,9 +433,12 @@ export default function MultiServerApp() {
           setStatus((old) => ({ ...old, [server.id]: "live" }));
           setLastSeen((old) => ({ ...old, [server.id]: Date.now() / 1000 }));
           delay = 30000;
-        } catch {
+        } catch (error) {
           if (!stopped)
-            setStatus((old) => ({ ...old, [server.id]: "offline" }));
+            setStatus((old) => ({
+              ...old,
+              [server.id]: summaryFailure(error),
+            }));
           delay = Math.min(delay * 2, 120000);
         } finally {
           clearTimeout(deadline);
@@ -479,9 +482,12 @@ export default function MultiServerApp() {
           setStatus((old) => ({ ...old, [server.id]: "live" }));
           setLastSeen((old) => ({ ...old, [server.id]: Date.now() / 1000 }));
         })
-        .catch(() => {
+        .catch((error) => {
           if (!stopped)
-            setStatus((old) => ({ ...old, [server.id]: "offline" }));
+            setStatus((old) => ({
+              ...old,
+              [server.id]: summaryFailure(error),
+            }));
         })
         .finally(() => controllers.delete(controller));
     }

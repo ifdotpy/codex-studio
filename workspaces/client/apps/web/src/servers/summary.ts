@@ -18,6 +18,19 @@ export function isSummaryRequest(request: Request, server: StudioServer) {
     !request.body
   );
 }
+/** The server runs another Studio version: it answers, but its API differs from this one. */
+export class SchemaMismatchError extends Error {
+  constructor() {
+    super("The server summary requires a Studio update.");
+  }
+}
+
+/** The connection state that a failed summary request shows. */
+export const summaryFailure = (error: unknown) =>
+  error instanceof SchemaMismatchError
+    ? ("schema-mismatch" as const)
+    : ("offline" as const);
+
 export async function fetchServerSummary(
   server: StudioServer,
   signal: AbortSignal,
@@ -50,7 +63,7 @@ export async function fetchServerSummary(
         : await serverCredentialAdapter().fetch(server, request);
   if (!response.ok) throw new Error("The server summary is unavailable.");
   if (response.headers.get(API_SCHEMA_HASH_HEADER) !== API_SCHEMA_HASH)
-    throw new Error("The server summary requires a Studio update.");
+    throw new SchemaMismatchError();
   const value = await response.json();
   if (
     !value ||

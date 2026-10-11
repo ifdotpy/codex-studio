@@ -1,5 +1,11 @@
 import { expect, it } from "vitest";
-import { isSummaryRequest } from "./summary";
+import { API_SCHEMA_HASH } from "../generated/apiSchema";
+import {
+  fetchServerSummary,
+  isSummaryRequest,
+  SchemaMismatchError,
+  summaryFailure,
+} from "./summary";
 const server = {
   id: "remote",
   label: "Remote",
@@ -34,4 +40,36 @@ it("permits only the exact read-only summary path for the owning server", () => 
       server,
     ),
   ).toBe(false);
+});
+
+it("tells another Studio version from a server that does not answer", async () => {
+  const answer = (hash: string) => {
+    (globalThis as { window?: unknown }).window = {
+      codexDesktop: {
+        serverCredentialAction: async () => ({
+          status: 200,
+          headers: [["x-studio-api-schema", hash]],
+          body: "{}",
+        }),
+      },
+    };
+  };
+  try {
+    answer("another-hash");
+    const other = await fetchServerSummary(
+      server,
+      new AbortController().signal,
+    ).catch((error: unknown) => error);
+    expect(other).toBeInstanceOf(SchemaMismatchError);
+    expect(summaryFailure(other)).toBe("schema-mismatch");
+    answer(API_SCHEMA_HASH);
+    const same = await fetchServerSummary(
+      server,
+      new AbortController().signal,
+    ).catch((error: unknown) => error);
+    expect(same).not.toBeInstanceOf(SchemaMismatchError);
+    expect(summaryFailure(new Error("timeout"))).toBe("offline");
+  } finally {
+    delete (globalThis as { window?: unknown }).window;
+  }
 });

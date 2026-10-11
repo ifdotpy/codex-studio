@@ -116,7 +116,9 @@ export default function ServerManager({
                     ? "Discovered"
                     : statuses[server.id] === "live" || server.id === "local"
                       ? "Active"
-                      : "Unreachable";
+                      : status === "Update required"
+                        ? "Other version"
+                        : "Unreachable";
               const system =
                 summary?.system === "Darwin"
                   ? "macOS"

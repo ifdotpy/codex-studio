@@ -143,12 +143,13 @@ export function sidebarWireRequest(
       ),
     };
   }
-  // Mac folder sync and project secrets name their layr project, which the owning server
-  // keeps as is.
+  // Mac folder sync, project secrets and the project vault name their layr project, which the
+  // owning server keeps as is; an AWS sign-in names no project.
   if (
     endpoint === "/api/mac-sync/resolve" ||
     endpoint === "/api/mac-sync/config" ||
-    endpoint.startsWith("/api/project-secrets/")
+    endpoint.startsWith("/api/project-secrets/") ||
+    endpoint.startsWith("/api/vault/")
   )
     return value;
   if (endpoint !== "/api/projects" && endpoint !== "/api/peer-teams")
