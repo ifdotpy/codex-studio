@@ -48,6 +48,7 @@ export type ResourceConnectionState =
   | "degraded"
   | "offline"
   | "schema-mismatch";
+export type ResourceStreamState = "stopped" | "connecting" | "open";
 type Listener = (version?: ResourceVersion) => void;
 type TabSubscriptions = {
   kind: "subscriptions";
@@ -125,12 +126,13 @@ const RESOURCE_FLUSH_MS = 20;
 const MAX_INACTIVE_RESOURCE_VERSIONS = 128;
 
 const subscribers = new Map<string, Set<Listener>>();
+const baselineSubscribers = new Map<string, Set<Listener>>();
 const resourceRefs = new Map<string, ResourceRef>();
 const resourceValues = new Map<string, Version>();
 const baselineReconciliations = new Set<string>();
 const deliveredEntitySequenceBatches = new Set<string>();
 const transportStatusListeners = new Set<
-  (status: ResourceConnectionState) => void
+  (status: ResourceConnectionState, stream: ResourceStreamState) => void
 >();
 const tokenRateListeners = new Set<(event: ResourceTokenRatesEvent) => void>();
 const peerSubscriptions = new Map<
@@ -142,6 +144,7 @@ let workspaceId: string | undefined;
 let tabId = "";
 let channel: BroadcastChannel | undefined;
 let source: ServerEventSource | undefined;
+let sourceOpened = false;
 let coordinatorActive = false;
 let coordinatorReady = false;
 let initializing = false;
@@ -173,6 +176,7 @@ let activeQueryKey = "";
 let streamUpdateGeneration = 0;
 let keepLiveOnReconfigure = false;
 let pendingResources = new Set<string>();
+let pendingBaselines = new Set<string>();
 let pendingReset = false;
 let currentStatus: ResourceConnectionState = "connecting";
 let stopResume: (() => void) | undefined;
@@ -201,12 +205,29 @@ function setStatus(status: ResourceConnectionState) {
     requireBaselineReconciliation();
   for (const listener of transportStatusListeners) {
     try {
-      listener(status);
+      listener(status, streamState());
     } catch {
       // A status consumer cannot interrupt transport recovery.
     }
   }
   if (owner || independent) broadcast({ kind: "status", status });
+}
+
+function streamState(): ResourceStreamState {
+  if (!source)
+    return coordinatorActive || initializing ? "connecting" : "stopped";
+  return sourceOpened ? "open" : "connecting";
+}
+
+function notifyConnectionListeners() {
+  const stream = streamState();
+  for (const listener of transportStatusListeners) {
+    try {
+      listener(currentStatus, stream);
+    } catch {
+      // A status consumer cannot interrupt transport recovery.
+    }
+  }
 }
 
 function broadcast(message: OutgoingMessage) {
@@ -402,6 +423,7 @@ function dispatchEvent(event: ResourceChangeEvent) {
         version,
         !versions || !!revisionEntry?.entitySequenceReset,
       );
+      if (event.reason !== "change") pendingBaselines.add(key);
     } else if (!rememberResourceVersion(resource, version) && !versions) {
       resourceValues.set(key, version);
     }
@@ -471,13 +493,24 @@ function scheduleFlush() {
           }
         }
         pendingResources = new Set();
+        pendingBaselines = new Set();
       } else {
+        const delivered = new Set<string>();
         for (const key of pendingResources) {
           const version = resourceValues.get(key);
           if (!version) continue;
           for (const listener of subscribers.get(key) || []) listener(version);
+          delivered.add(key);
+        }
+        for (const key of pendingBaselines) {
+          if (delivered.has(key)) continue;
+          const version = resourceValues.get(key);
+          if (!version) continue;
+          for (const listener of baselineSubscribers.get(key) || [])
+            listener(version);
         }
         pendingResources = new Set();
+        pendingBaselines = new Set();
       }
       retryCount = 0;
     } catch (error) {
@@ -717,6 +750,7 @@ function closeSource() {
   schemaHandshakeTimeout = undefined;
   source?.close();
   source = undefined;
+  sourceOpened = false;
   activeQueryKey = "";
 }
 
@@ -788,6 +822,7 @@ function openSource() {
     });
     const connected = openServerEvents(`/api/sync/stream?${query}`);
     source = connected;
+    notifyConnectionListeners();
     let schemaHandshakeReceived = false;
     let connectionOpened = false;
     const failHandshake = () => {
@@ -808,6 +843,8 @@ function openSource() {
     };
     connected.onopen = () => {
       if (source !== connected) return;
+      sourceOpened = true;
+      notifyConnectionListeners();
       connectionOpened = true;
       clearTimeout(schemaHandshakeTimeout);
       if (!schemaHandshakeReceived)
@@ -1148,6 +1185,7 @@ function stopCoordinator() {
   resourceRefs.clear();
   peerSubscriptions.clear();
   setStatus(isApiSchemaMismatch() ? "schema-mismatch" : "connecting");
+  notifyConnectionListeners();
 }
 
 function startCoordinator() {
@@ -1186,6 +1224,7 @@ function startCoordinator() {
 export function watchResourceChanges(
   resource: ResourceRef,
   callback: (version?: ResourceVersion) => void,
+  options: { waitForBaseline?: boolean } = {},
 ): () => void {
   const key = resourceKey(resource);
   if (coordinatorIdleStopTimer !== undefined)
@@ -1195,7 +1234,14 @@ export function watchResourceChanges(
   if (!listeners) subscribers.set(key, (listeners = new Set()));
   resourceRefs.set(key, resource);
   listeners.add(callback);
+  if (options.waitForBaseline) {
+    let baselines = baselineSubscribers.get(key);
+    if (!baselines) baselineSubscribers.set(key, (baselines = new Set()));
+    baselines.add(callback);
+  }
   const known = resourceValues.get(key);
+  // A known version is the most recent baseline/change observed on this
+  // shared stream and can be replayed immediately to a late resource reader.
   if (known) callback(known);
   startCoordinator();
   // A first local listener may attach after another tab already added this
@@ -1207,6 +1253,9 @@ export function watchResourceChanges(
     if (stopped) return;
     stopped = true;
     listeners?.delete(callback);
+    const baselines = baselineSubscribers.get(key);
+    baselines?.delete(callback);
+    if (!baselines?.size) baselineSubscribers.delete(key);
     if (!listeners?.size) {
       subscribers.delete(key);
       resourceRefs.delete(key);
@@ -1221,10 +1270,13 @@ export function watchResourceChanges(
 }
 
 export function watchResourceConnection(
-  listener: (status: ResourceConnectionState) => void,
+  listener: (
+    status: ResourceConnectionState,
+    stream: ResourceStreamState,
+  ) => void,
 ): () => void {
   transportStatusListeners.add(listener);
-  listener(currentStatus);
+  listener(currentStatus, streamState());
   return () => transportStatusListeners.delete(listener);
 }
 

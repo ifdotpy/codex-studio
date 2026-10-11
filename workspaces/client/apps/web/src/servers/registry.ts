@@ -13,6 +13,9 @@ export type StudioServer = {
   workspaceId?: string;
   alias?: string;
 };
+export function serverResourceScope(server?: Pick<StudioServer, "id">) {
+  return !server || server.id === "current" ? "local" : server.id;
+}
 export const LOCAL_NAME_KEY = "studio-local-server-name-v1";
 export const SERVER_REGISTRY_KEY = "studio-paired-servers-v1";
 export const SERVER_REGISTRY_EVENT = "studio-server-registry";

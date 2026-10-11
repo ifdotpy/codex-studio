@@ -10,6 +10,8 @@ const {
   memos,
   cursor,
   watchers,
+  connectionWatchers,
+  connectionStream,
   get,
   post,
   syncPost,
@@ -24,7 +26,13 @@ const {
     dependencies: readonly unknown[] | undefined;
   }>,
   cursor: { state: 0, ref: 0, memo: 0 },
-  watchers: new Map<string, () => void>(),
+  watchers: new Map<string, (version?: unknown) => void>(),
+  connectionWatchers: new Set<
+    (status: string, stream: "stopped" | "connecting" | "open") => void
+  >(),
+  connectionStream: {
+    value: "connecting" as "stopped" | "connecting" | "open",
+  },
   get: vi.fn(),
   post: vi.fn(),
   syncPost: vi.fn(),
@@ -33,6 +41,10 @@ const {
 
 vi.mock("react", async (importOriginal) => {
   const original = await importOriginal<typeof import("react")>();
+  const scheduleEffect = (
+    effect: () => void | (() => void),
+    _dependencies?: readonly unknown[],
+  ) => effects.push(effect);
   return {
     ...original,
     useCallback: (callback: unknown) => callback,
@@ -53,7 +65,7 @@ vi.mock("react", async (importOriginal) => {
         memos[index] = { value: compute(), dependencies };
       return memos[index]!.value;
     },
-    useEffect: (effect: () => void | (() => void)) => effects.push(effect),
+    useEffect: scheduleEffect,
     useRef: (value: unknown) =>
       refs[cursor.ref++] ?? (refs[cursor.ref - 1] = { current: value }),
     useState: (initial: unknown) => {
@@ -70,6 +82,22 @@ vi.mock("react", async (importOriginal) => {
             typeof value === "function" ? value(entry.value) : value;
         },
       ];
+    },
+    useSyncExternalStore: (
+      subscribe: (listener: () => void) => () => void,
+      getSnapshot: () => unknown,
+    ) => {
+      const index = cursor.state++;
+      const entry = states[index] ?? (states[index] = { value: getSnapshot() });
+      entry.value = getSnapshot();
+      scheduleEffect(
+        () =>
+          subscribe(() => {
+            entry.value = getSnapshot();
+          }),
+        [subscribe],
+      );
+      return entry.value;
     },
   };
 });
@@ -95,10 +123,23 @@ vi.mock("../sync/localDraft", () => ({
 vi.mock("../sync/send", () => ({ reconcileOutboxReceipts: reconcile }));
 vi.mock("../sync/resume", () => ({ onResume: () => () => {} }));
 vi.mock("../sync/resourceEvents", () => ({
-  watchResourceChanges: (resource: unknown, callback: () => void) => {
+  watchResourceChanges: (
+    resource: unknown,
+    callback: (version?: unknown) => void,
+  ) => {
     const key = JSON.stringify(resource);
     watchers.set(key, callback);
     return () => watchers.delete(key);
+  },
+  watchResourceConnection: (
+    listener: (
+      status: string,
+      stream: "stopped" | "connecting" | "open",
+    ) => void,
+  ) => {
+    connectionWatchers.add(listener);
+    listener("connecting", connectionStream.value);
+    return () => connectionWatchers.delete(listener);
   },
 }));
 
@@ -120,10 +161,10 @@ function mount(action: () => void) {
   }
 }
 
-function notify(resource: unknown) {
+function notify(resource: unknown, version?: unknown) {
   const callback = watchers.get(JSON.stringify(resource));
   if (!callback) throw new Error("The read callback was not registered");
-  callback();
+  callback(version);
 }
 
 describe("resource read callers", () => {
@@ -141,6 +182,8 @@ describe("resource read callers", () => {
     cursor.ref = 0;
     cursor.memo = 0;
     watchers.clear();
+    connectionWatchers.clear();
+    connectionStream.value = "connecting";
     const storage = new Map<string, string>();
     vi.stubGlobal("localStorage", {
       getItem: (key: string) => storage.get(key) ?? null,
@@ -298,7 +341,8 @@ describe("resource read callers", () => {
       .mockRejectedValueOnce(new TypeError("Failed to fetch"))
       .mockResolvedValue({ data: [{ model: "gpt-6-luna" }] });
     mount(() => useWorkerModels("default", true, true));
-    notify({ kind: "models" });
+    expect(get).not.toHaveBeenCalled();
+    notify({ kind: "models" }, { epoch: "catalog", revision: 1 });
     await vi.advanceTimersByTimeAsync(0);
     expect(get).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1_000);
@@ -314,6 +358,130 @@ describe("resource read callers", () => {
     });
   });
 
+  it("shares a catalog read and refreshes it after a models resource event", async () => {
+    get
+      .mockResolvedValueOnce({ data: [{ model: "before-change" }] })
+      .mockResolvedValueOnce({ data: [{ model: "after-change" }] });
+    mount(() => useWorkerModels("shared-catalog-account", true));
+    mount(() => useWorkerModels("shared-catalog-account", true));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get).toHaveBeenCalledTimes(0);
+    expect(watchers.size).toBe(1);
+
+    notify({ kind: "models" }, { epoch: "catalog", revision: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get).toHaveBeenCalledTimes(1);
+
+    notify({ kind: "models" }, { epoch: "catalog", revision: 2 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(get.mock.calls[1]?.[0]).toBe("/api/models");
+    expect(get.mock.calls[1]?.[1]).toMatchObject({
+      query: { account_key: "shared-catalog-account" },
+    });
+    expect(states[0]?.value).toMatchObject({
+      models: [{ model: "after-change" }],
+    });
+  });
+
+  it("waits for the baseline and rereads once when the catalog changes during its GET", async () => {
+    let resolveFirst!: (value: unknown) => void;
+    get
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveFirst = resolve;
+        }),
+      )
+      .mockResolvedValueOnce({ data: [{ model: "revision-n-plus-one" }] });
+    mount(() => useWorkerModels("interleaving-account", true));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get).not.toHaveBeenCalled();
+
+    notify({ kind: "models" }, { epoch: "catalog", revision: 10 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get).toHaveBeenCalledTimes(1);
+
+    notify({ kind: "models" }, { epoch: "catalog", revision: 11 });
+    resolveFirst({ data: [{ model: "revision-n" }] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(states[0]?.value).toMatchObject({
+      models: [{ model: "revision-n-plus-one" }],
+    });
+  });
+
+  it("does not reread on an unchanged stream reopen and rereads after an epoch change", async () => {
+    get
+      .mockResolvedValueOnce({ data: [{ model: "epoch-one" }] })
+      .mockResolvedValueOnce({ data: [{ model: "epoch-two" }] });
+    mount(() => useWorkerModels("epoch-account", true));
+    notify({ kind: "models" }, { epoch: "epoch-one", revision: 4 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get).toHaveBeenCalledTimes(1);
+
+    notify({ kind: "models" }, { epoch: "epoch-one", revision: 4 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get).toHaveBeenCalledTimes(1);
+
+    notify({ kind: "models" }, { epoch: "epoch-two", revision: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(states[0]?.value).toMatchObject({
+      models: [{ model: "epoch-two" }],
+    });
+  });
+
+  it.each(["degraded", "offline"] as const)(
+    "loads once after a %s stream state and reconciles when its baseline arrives",
+    async (status) => {
+      get
+        .mockResolvedValueOnce({ data: [{ model: "fallback" }] })
+        .mockResolvedValueOnce({ data: [{ model: "baseline-current" }] });
+      mount(() => useWorkerModels(`fallback-${status}-account`, true));
+      for (const listener of connectionWatchers) listener(status, "connecting");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(get).toHaveBeenCalledTimes(1);
+
+      for (const listener of connectionWatchers) listener(status, "connecting");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(get).toHaveBeenCalledTimes(1);
+
+      notify({ kind: "models" }, { epoch: "catalog", revision: 3 });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(get).toHaveBeenCalledTimes(2);
+      expect(states[0]?.value).toMatchObject({
+        models: [{ model: "baseline-current" }],
+      });
+    },
+  );
+
+  it("reads immediately without a stream and reconciles a later baseline once", async () => {
+    connectionStream.value = "stopped";
+    get
+      .mockResolvedValueOnce({ data: [{ model: "before-baseline" }] })
+      .mockResolvedValueOnce({ data: [{ model: "after-baseline" }] });
+    mount(() => useWorkerModels("no-stream-account", true));
+    expect(watchers.size).toBe(1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get).toHaveBeenCalledTimes(1);
+
+    notify({ kind: "models" }, { epoch: "catalog", revision: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(states[0]?.value).toMatchObject({
+      models: [{ model: "after-baseline" }],
+    });
+  });
+
+  it("does not start a read when schema mismatch blocks API requests", async () => {
+    mount(() => useWorkerModels("schema-mismatch-account", true));
+    for (const listener of connectionWatchers)
+      listener("schema-mismatch", "stopped");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get).not.toHaveBeenCalled();
+    expect(watchers.size).toBe(1);
+  });
+
   it("uses the selected account catalog after an account switch", async () => {
     get.mockImplementation(
       async (_path: string, options: { query: { account_key: string } }) => ({
@@ -321,7 +489,7 @@ describe("resource read callers", () => {
       }),
     );
     mount(() => useWorkerModels("first-account", true, true));
-    notify({ kind: "models" });
+    notify({ kind: "models" }, { epoch: "catalog", revision: 1 });
     await vi.advanceTimersByTimeAsync(0);
     expect(states[0]?.value).toMatchObject({
       models: [{ model: "first-account-model" }],
@@ -329,7 +497,7 @@ describe("resource read callers", () => {
 
     for (const cleanup of cleanups.splice(0)) cleanup();
     mount(() => useWorkerModels("current-account", true, true));
-    notify({ kind: "models" });
+    notify({ kind: "models" }, { epoch: "catalog", revision: 2 });
     await vi.advanceTimersByTimeAsync(0);
     expect(states[0]?.value).toMatchObject({
       models: [{ model: "current-account-model" }],
@@ -340,8 +508,8 @@ describe("resource read callers", () => {
     get.mockRejectedValue(
       new ApiError("Pending", 400, { catalogPending: true }),
     );
-    mount(() => useWorkerModels("default", true, true));
-    notify({ kind: "models" });
+    mount(() => useWorkerModels("pending-account", true, true));
+    notify({ kind: "models" }, { epoch: "catalog", revision: 1 });
     await vi.advanceTimersByTimeAsync(60_000);
     expect(get).toHaveBeenCalledTimes(1);
     const state = states.find(

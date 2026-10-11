@@ -304,14 +304,10 @@ test("Worker model", async () => {
       selectedLead.pendingSettings?.model || selectedLead.model,
       "test-model",
     );
-    test.fail(
-      true,
-      "Known renderer catalog duplication: see tests/KNOWN-FAILURES.md (ba4f14c7)",
-    );
     assert.equal(
       requests,
       2,
-      "one account catalog is shared by the worker list and chat; see tests/KNOWN-FAILURES.md for duplicate catalog reads",
+      "one account catalog is shared by the worker list and chat",
     );
     await page.keyboard.press("Escape");
     await openSettings("Subagent defaults");
@@ -326,9 +322,9 @@ test("Worker model", async () => {
       "gpt-6-luna",
     );
     assert.equal(
-      await defaults
-        .getByLabel("Default subagent reasoning", { exact: true })
-        .inputValue(),
+      await modelValue(
+        defaults.getByLabel("Default subagent reasoning", { exact: true }),
+      ),
       "high",
     );
     assert.equal(
