@@ -1,0 +1,12 @@
+nextest-version = "0.9.146"
+
+[profile.default]
+fail-fast = true
+retries = 0
+status-level = "fail"
+final-status-level = "fail"
+failure-output = "final"
+
+[profile.ci]
+fail-fast = false
+junit.path = "junit.xml"

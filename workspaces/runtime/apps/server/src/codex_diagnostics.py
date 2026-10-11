@@ -12,12 +12,12 @@ from pathlib import Path
 
 from codex_native_sweep import _loaded
 from codex_sqlite import diagnostics as sqlite_diagnostics
+from codex_http_traces import route_metrics as http_route_metrics
 
 
 def _kind(command):
     executable = command.split(None, 1)[0].rsplit("/", 1)[-1] if command else ""
-    if ("claude_bridge/bridge.mjs" in command
-            or "workspaces/providers/apps/claude-bridge/bridge.mjs" in command):
+    if "workspaces/providers/apps/claude-bridge/bridge.mjs" in command:
         return "claude_bridge"
     if "codex-code-mode-host" in command:
         return "code_mode_host"
@@ -250,11 +250,11 @@ def snapshot(runtime, root_pid=None, ps_output=None):
             "runtimeLockSamples": sampled,
             "executions": executions,
             "sqliteContention": sqlite_diagnostics(),
+            "httpRequestMetrics": http_route_metrics(),
             "analyticsCapture": getattr(runtime, "analytics_capture_status", lambda: {"available": False})(),
             "migrations": migration_status(runtime),
             "analyticsFileMigration": getattr(runtime, "analytics_migration_status", {"status": "idle"}),
             "searchMigrationError": getattr(runtime, "search_migration_error", None)}
     lock_metrics = getattr(runtime.lock, "runtime_lock_metrics", None)
-    if callable(lock_metrics):
-        result["runtimeLockOperations"] = lock_metrics()
+    result["runtimeLockOperations"] = lock_metrics() if callable(lock_metrics) else []
     return result

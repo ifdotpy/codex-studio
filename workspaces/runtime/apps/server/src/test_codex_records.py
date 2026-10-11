@@ -44,6 +44,7 @@ AGENT_FIELD_GROUPS = {
         worktreePreparation yoloMode
         accountTransferId capacityRetry contextRepairWait epoch lastCompletedTurnStatus lastEvent
         usageResume workspaceOperation remoteWorker remoteOrigin remoteAnchor
+        executionMode hostProjectPath layrError layrLine layrProjectId layrReady layrStateId
     """.split()),
     "private": frozenset("""
         accountHistory accountId accountTransferState activeTools activityPhase
@@ -53,7 +54,8 @@ AGENT_FIELD_GROUPS = {
         claudeInputRequest claudeOptions claudePreInputRetry cleanedWorktree compactionsObservedOnly
         connectionRecovery contextRepair contextRepairHistory
         deliveredMode deliveredModeVersion disconnectRecovery emptyTransferRecovery events
-        executionSettingsAccountKey imageWorkspaceCollect imageWorkspaceMount imageWorkspaceNoticeError
+        executionSettingsAccountKey layrBaseState layrHome layrOwner layrSubpath layrTurnRetryAt
+        layrTurnSaves nativeToolSource imageWorkspaceCollect imageWorkspaceMount imageWorkspaceNoticeError
         imageWorkspaceNoticeId imageWorkspaceNoticeSent imageWorkspaceNoticeText imageWorkspaceHandoffText
         imageWorkspaceSnapshotCommit importedFrom
         lastBudgetWait lastCompletedTurnError lastContextRepairCheck

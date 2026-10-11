@@ -41,7 +41,7 @@ class HttpRequestTracesContract(unittest.TestCase):
                                 time=lambda: 1700000000 + self.clock)
         state = patch.multiple(traces, time=clock, SLOW_MS=50, _ACTIVE={}, _RECENT=[],
                                _SEQUENCE=0, _REVISION=0, _SAVED=None, _UNTRACKED=0,
-                               _ARCHIVE_CHECKED=None)
+                               _ARCHIVE_CHECKED=None, _ROUTE_METRICS={}, _ROUTE_UNTRACKED=0)
         state.start()
         self.addCleanup(state.stop)
         self.entered = threading.Event()
@@ -186,6 +186,54 @@ class HttpRequestTracesContract(unittest.TestCase):
         traces.watchdog(self.root)
         self.assertEqual((self.journal.read_bytes(), self.journal.stat().st_mtime_ns), before)
         self.assertNotIn(token, self.journal.read_text())
+
+    def test_route_metrics_record_real_http_requests_by_route_template(self):
+        for query in ("?scope=first", "?scope=second", "?scope=third"):
+            response = self.request("/api/session" + query)
+            self.assertEqual(response["status"], 200)
+        route_stats = traces.route_metrics()
+        row = next(row for row in route_stats["routes"]
+                   if row["method"] == "GET" and row["route"] == "/api/session")
+        self.assertGreaterEqual(row["count"], 3)
+        self.assertGreaterEqual(row["latencyMs"]["max"], row["latencyMs"]["p50"])
+        self.assertGreater(row["responseBytes"]["p50"], 0)
+        self.assertNotIn("?", json.dumps(route_stats))
+        self.assertNotIn("scope=", json.dumps(route_stats))
+
+    def test_route_metric_samples_are_bounded_and_percentiles_are_reported(self):
+        for sample in range(traces.ROUTE_SAMPLE_LIMIT + 16):
+            traces.record_route("GET", "/fixture", sample * 1_000_000, sample)
+        row = traces.route_metrics()["routes"][0]
+        self.assertEqual(row["count"], traces.ROUTE_SAMPLE_LIMIT + 16)
+        self.assertEqual(row["latencyMs"]["samples"], traces.ROUTE_SAMPLE_LIMIT)
+        self.assertEqual(row["latencyMs"]["p50"], 1039.0)
+        self.assertEqual(row["latencyMs"]["p95"], 1960.0)
+        self.assertEqual(row["latencyMs"]["p99"], 2042.0)
+        self.assertEqual(row["latencyMs"]["max"], 2063.0)
+        self.assertEqual(row["responseBytes"]["max"], traces.ROUTE_SAMPLE_LIMIT + 15)
+
+    def test_route_metric_registry_is_bounded(self):
+        for route in range(traces.ROUTE_LIMIT + 12):
+            traces.record_route("GET", f"/route-{route}", 10, 20)
+        result = traces.route_metrics()
+        self.assertEqual(len(result["routes"]), traces.ROUTE_LIMIT)
+        self.assertEqual(result["untrackedRoutes"], 12)
+
+    def test_route_metric_recording_is_thread_safe(self):
+        workers = 8
+        per_worker = 400
+        threads = [threading.Thread(
+            target=lambda: [traces.record_route("GET", "/concurrent", 10, 20)
+                            for _ in range(per_worker)])
+            for _ in range(workers)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+            self.assertFalse(thread.is_alive())
+        row = next(row for row in traces.route_metrics()["routes"]
+                   if row["route"] == "/concurrent")
+        self.assertEqual(row["count"], workers * per_worker)
 
     def test_handler_exception_and_broken_response_keep_the_error_outcome(self):
         for exception, status in ((RuntimeError, None), (BrokenPipeError, 200)):

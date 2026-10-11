@@ -115,17 +115,14 @@ def diagnostics_binary(project, packaged_source=None):
     return None
 
 
-def install(project, destination, replace_from=None, *, python=None, packaged_source=None):
+def install(project, destination, *, python=None, packaged_source=None):
     project = Path(project).resolve(strict=True)
     destination = Path(destination).expanduser().absolute()
-    old = Path(replace_from).expanduser().resolve() if replace_from else None
     source_root = (
         SERVER_SOURCE_ROOT
         if project == REPOSITORY_ROOT.resolve()
         else project / "workspaces/runtime/apps/server/src"
     )
-    if not source_root.is_dir():
-        source_root = project / "scripts"
     links = []
     for name in COMMANDS:
         source = source_root / name
@@ -138,11 +135,11 @@ def install(project, destination, replace_from=None, *, python=None, packaged_so
                     f"Refusing to replace an existing executable: {target}"
                 )
             resolved = target.resolve()
-            old_sources = () if old is None else (
-                old / "scripts" / name,
-                old / "workspaces/runtime/apps/server/src" / name,
+            dangling_old_link = (
+                not target.exists()
+                and resolved == project / "scripts" / name
             )
-            if resolved != source and all(resolved != path.resolve() for path in old_sources):
+            if resolved != source and not dangling_old_link:
                 raise ValueError(
                     f"Refusing to replace an unrelated command link: {target}"
                 )
@@ -163,14 +160,7 @@ def install(project, destination, replace_from=None, *, python=None, packaged_so
                 f"Refusing to replace an existing executable: {diagnostic_target}"
             )
         resolved = diagnostic_target.resolve()
-        old_sources = () if old is None else (
-            old / "scripts" / "codex-diagnostics",
-            old / "workspaces/runtime/apps/server/src" / "codex-diagnostics",
-            old / "target/release/codex-diagnostics",
-        )
-        if resolved != diagnostic_source and all(
-            resolved != path.resolve() for path in old_sources
-        ):
+        if resolved != diagnostic_source:
             raise ValueError(
                 f"Refusing to replace an unrelated command link: {diagnostic_target}"
             )
@@ -197,10 +187,6 @@ def main():
         "--bin-dir", default=os.environ.get("CODEX_AGENTS_BIN_DIR", "~/.local/bin")
     )
     parser.add_argument(
-        "--replace-from",
-        help="Previous project root whose matching command links can be replaced",
-    )
-    parser.add_argument(
         "--dev",
         action="store_true",
         help="Also prepare the isolated development and mypy environment",
@@ -216,7 +202,7 @@ def main():
         if args.dev:
             prepare_environment(project, development=True)
         paths = install(
-            project, args.bin_dir, args.replace_from, python=python
+            project, args.bin_dir, python=python
         )
     except (ValueError, OSError, RuntimeError) as error:
         parser.exit(1, str(error) + "\n")

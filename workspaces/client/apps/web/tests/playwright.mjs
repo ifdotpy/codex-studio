@@ -65,13 +65,13 @@ const fixtureProcessGroupRegistry = join(
 );
 const repositoryScriptsDirectory = resolve(
   dirname(fileURLToPath(import.meta.url)),
-  "../../../../../scripts",
+  "../../../../../workspaces/runtime/apps/server/src",
 );
 process.once("exit", () => {
   for (const cacheDir of fixtureViteCaches)
     rmSync(cacheDir, { recursive: true, force: true });
 });
-// Playwright global setup resolves this once through scripts/codex_python.py
+// Playwright global setup resolves this once through the server source tree
 // before any test runs and places the selected interpreter in the environment.
 export function getFixturePythonCommand() {
   const command =

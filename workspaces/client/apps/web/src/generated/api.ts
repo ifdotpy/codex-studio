@@ -6076,6 +6076,7 @@ export interface components {
       at: string;
       executions: components["schemas"]["ExecutionLedger"];
       hostResources: components["schemas"]["HostResources"];
+      httpRequestMetrics: components["schemas"]["HttpRequestMetrics"];
       migrations: components["schemas"]["MigrationStatus"];
       /** Nativeaccounts */
       nativeAccounts: {
@@ -6091,9 +6092,7 @@ export interface components {
       /** Resourceattribution */
       resourceAttribution: components["schemas"]["ResourceAttribution"][];
       /** Runtimelockoperations */
-      runtimeLockOperations?:
-        | components["schemas"]["RuntimeLockOperation"][]
-        | null;
+      runtimeLockOperations: components["schemas"]["RuntimeLockOperation"][];
       /** Runtimelocksamples */
       runtimeLockSamples: components["schemas"]["RuntimeLockSample"][];
       /** Searchmigrationerror */
@@ -6861,6 +6860,37 @@ export interface components {
       cpuCount: number | null;
       /** Totalmemorybytes */
       totalMemoryBytes: number | null;
+    };
+    /** HttpMetricSummary */
+    HttpMetricSummary: {
+      /** Max */
+      max: number;
+      /** P50 */
+      p50: number;
+      /** P95 */
+      p95: number;
+      /** P99 */
+      p99: number;
+      /** Samples */
+      samples: number;
+    };
+    /** HttpRequestMetrics */
+    HttpRequestMetrics: {
+      /** Routes */
+      routes: components["schemas"]["HttpRouteMetric"][];
+      /** Untrackedroutes */
+      untrackedRoutes: number;
+    };
+    /** HttpRouteMetric */
+    HttpRouteMetric: {
+      /** Count */
+      count: number;
+      latencyMs: components["schemas"]["HttpMetricSummary"];
+      /** Method */
+      method: string;
+      responseBytes: components["schemas"]["HttpMetricSummary"];
+      /** Route */
+      route: string;
     };
     /** IdRequest */
     IdRequest: {

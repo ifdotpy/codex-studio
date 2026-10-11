@@ -46,7 +46,6 @@ COMPONENT_ROOTS = (
     f"{SOURCE_REL}/analytics/tests",
     f"{SOURCE_REL}/sync/tests",
     f"{SOURCE_REL}/native_notifications/tests",
-    f"{SOURCE_REL}/transcript_storage/tests",
 )
 SCENARIO_BENCHMARK_ROOTS = (
     f"{SOURCE_REL}/sync/benchmarks/message_delivery",
@@ -175,8 +174,6 @@ NON_TESTS = {
     f"{TESTS_REL}/provider-replay-server.py": "provider subprocess fixture, not a test entrypoint",
     f"{TESTS_REL}/server/rpc_replay_contract.py": "shared fixture RPC allowlist",
     f"{TESTS_REL}/server/suite_entry.py": "server suite runner entrypoint",
-    f"{TESTS_REL}/sync-live-patch-http-contract.py":
-        "fixture harness requiring an injected legacy HTTP server and runtime",
     f"{TESTS_REL}/fixtures/current_cleanup_receipts.py": "test fixture data",
     f"{TESTS_REL}/fixtures/current_cleanup_state.py": "test fixture data",
     f"{SOURCE_REL}/sync/benchmarks/message_delivery/benchmark.py": "manual benchmark entrypoint",

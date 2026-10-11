@@ -29,7 +29,12 @@ def requirements_file(scripts: Path, development: bool = False) -> Path:
     """Return the API lock at the repository or packaged workspace root."""
     name = "requirements-dev.txt" if development else "requirements.txt"
     scripts = scripts.resolve()
-    root = REPOSITORY_ROOT if scripts == SERVER_SOURCE_ROOT.resolve() else scripts.parent
+    if scripts == SERVER_SOURCE_ROOT.resolve():
+        root = REPOSITORY_ROOT
+    elif scripts.name == "src":
+        root = scripts.parents[4]
+    else:
+        root = scripts.parent
     return root / name
 
 
@@ -164,7 +169,7 @@ def prepare_environment(
     scripts = (
         SERVER_SOURCE_ROOT
         if project in {REPOSITORY_ROOT.resolve(), SERVER_APP_ROOT.resolve()}
-        else project / "scripts"
+        else project / "workspaces/runtime/apps/server/src"
     )
     lockfile = requirements_file(scripts, development)
     digest = requirements_digest(scripts, development)

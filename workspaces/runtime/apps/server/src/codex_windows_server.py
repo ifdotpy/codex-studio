@@ -34,9 +34,6 @@ def _source_directory(root: Path) -> Path:
     source = root / "workspaces/runtime/apps/server/src"
     if (source / "codex_canvas.py").is_file():
         return source
-    legacy = root / "scripts"
-    if (legacy / "codex_canvas.py").is_file():
-        return legacy
     return source
 
 

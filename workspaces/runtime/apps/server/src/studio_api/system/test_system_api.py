@@ -343,6 +343,8 @@ class SystemApiTests(unittest.TestCase):
                     "activeTracking": {"tracked": 0, "limit": 256, "untrackedStarts": 0},
                 },
             },
+            "httpRequestMetrics": {"routes": [], "untrackedRoutes": 0},
+            "runtimeLockOperations": [],
             "analyticsCapture": {
                 "limit": 64, "byteLimit": 8388608, "queued": 0, "active": 0,
                 "bytes": 0, "completed": 0, "failed": 0, "overflow": 0,

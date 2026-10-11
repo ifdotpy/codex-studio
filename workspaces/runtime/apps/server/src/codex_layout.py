@@ -5,7 +5,7 @@ from pathlib import Path
 SERVER_SOURCE_ROOT = Path(__file__).resolve().parent
 
 if SERVER_SOURCE_ROOT.name == "scripts":
-    # Packaged desktop resources keep the old workspace/scripts tree shape.
+    # Packaged desktop resources store the server runtime at workspace/scripts.
     REPOSITORY_ROOT = SERVER_SOURCE_ROOT.parent
     SERVER_APP_ROOT = REPOSITORY_ROOT
     SERVER_TESTS_ROOT = SERVER_SOURCE_ROOT.parent / "tests"
