@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -16,7 +17,7 @@ spec = importlib.util.spec_from_file_location('reconciliation_fixture',
     Path(__file__).with_name('request-reconciliation-contract.py'))
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
-from codex_tool_requests import request_result_outcome
+from settlement_contract_support import settlement_outcome
 
 
 REJECTIONS = (
@@ -78,7 +79,7 @@ class RejectionOutcomes(unittest.TestCase):
                 (tool, 'Native response timed out; outcome unknown'),
             ):
                 result = {'success': False, 'contentItems': [{'type': 'inputText', 'text': other_error}]}
-                self.assertEqual(request_result_outcome({'tool': other_tool}, result), 'unknown')
+                self.assertEqual(settlement_outcome(other_tool, result), 'unknown')
 
 
 class ArchiveRejections(unittest.TestCase):

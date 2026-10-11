@@ -239,6 +239,67 @@ class RequestContract(unittest.TestCase):
         self.runtime = Ledger(self.runtime.path)
         self.assertEqual(self.runtime.tool_request(record['id'])['outcome'], 'applied')
 
+    def test_nested_operation_commit_before_outer_receipt_keeps_uncertainty(self):
+        record = self.reserve(tool='orchestration_task', args={'action': 'get', 'task_id': 'missing'})
+        self.runtime.begin_tool_request(record['id'])
+        with self.runtime.db() as db:
+            db.execute('CREATE TABLE runtime_operation_receipts (id TEXT PRIMARY KEY, result TEXT NOT NULL)')
+            db.execute('INSERT INTO runtime_operation_receipts VALUES (?,?)',
+                       (record['id'], json.dumps({'success': True, 'contentItems': []})))
+        # The nested domain transaction has committed, but no outer tool result or
+        # receipt exists at this fault point; it is never a reason to run the tool again.
+        with self.runtime.db() as db:
+            self.assertIsNone(self.runtime.tool_result(db, record['id']))
+        error = {'success': False, 'contentItems': [{'type': 'inputText', 'text': 'Unknown task in this team'}]}
+        settled = self.runtime.finish_tool_request(record['id'], error)
+        self.assertEqual((settled['stage'], settled['outcome']), ('failed', 'unknown'))
+        with self.runtime.db() as db:
+            nested = json.loads(db.execute('SELECT result FROM runtime_operation_receipts WHERE id=?',
+                                           (record['id'],)).fetchone()[0])
+        self.assertTrue(nested['success'])
+        self.assertFalse(self.runtime.begin_tool_request(record['id']))
+
+    def test_result_commit_before_receipt_update_is_read_back_and_reconciled(self):
+        record = self.reserve()
+        self.runtime.begin_tool_request(record['id'])
+        result = self.result()
+        with self.runtime.db() as db:
+            db.execute('INSERT INTO runtime_tool_results VALUES (?,?)', (record['id'], json.dumps(result)))
+        original_put = self.runtime.put
+        fail_once = True
+
+        def fail_receipt_write(db, table, value):
+            nonlocal fail_once
+            if table == 'tool_requests' and fail_once:
+                fail_once = False
+                raise RuntimeError('simulated receipt update failure')
+            original_put(db, table, value)
+
+        with patch.object(self.runtime, 'put', side_effect=fail_receipt_write):
+            with self.assertRaisesRegex(RuntimeError, 'simulated receipt update failure'):
+                with self.runtime.db() as db:
+                    saved = self.runtime.tool_result(db, record['id'])
+                    self.runtime.finish_tool_request(record['id'], saved, db=db)
+        self.assertEqual(self.runtime.tool_request(record['id'])['outcome'], 'pending')
+        with self.runtime.db() as db:
+            saved = self.runtime.tool_result(db, record['id'])
+            reconciled = self.runtime.finish_tool_request(record['id'], saved, db=db)
+        self.assertEqual(reconciled['outcome'], 'applied')
+        self.assertEqual(reconciled['result'], result)
+
+    def test_receipt_commit_before_reply_replays_saved_result_without_second_write(self):
+        record = self.reserve()
+        self.runtime.begin_tool_request(record['id'])
+        result = self.result()
+        with patch.object(self.runtime, 'put', wraps=self.runtime.put) as put:
+            with self.runtime.db() as db:
+                first = self.runtime.finish_tool_request(record['id'], result, db=db)
+            with self.runtime.db() as db:
+                replay = self.runtime.finish_tool_request(record['id'], result, db=db)
+        self.assertEqual(first, replay)
+        self.assertEqual(put.call_count, 1)
+        self.assertFalse(self.runtime.begin_tool_request(record['id']))
+
     def test_migrated_receipts_are_recoverable_and_cannot_replay(self):
         with self.runtime.db() as db:
             for call, success in [('legacy-ok', True), ('legacy-error', False)]:

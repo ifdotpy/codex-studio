@@ -3,9 +3,11 @@
 use serde::Deserialize;
 use studio_operations::{
     AccountId, AccountThreadEpoch, AgentId, AttemptIdentity, ContentFingerprint, Event, EventId,
-    EventKind, IdentityScope, Operation, OperationIdentity, OperationState, ProcessGeneration,
-    RequestId, ReservationDecision, ReservationInput, ReservationSnapshot, ReservationWriteIntent,
-    State, StateRevision, ThreadId, TransitionError, transition,
+    EventKind, IdentityScope, Operation, OperationIdentity, OperationState, Outcome,
+    ProcessGeneration, RequestId, RequestTool, ReservationDecision, ReservationInput,
+    ReservationSnapshot, ReservationWriteIntent, ResultEvidence, SettlementDecision,
+    SettlementInput, SettlementKind, State, StateRevision, ThreadId, TransitionError,
+    decide_settlement, transition,
 };
 
 const DIFFERENT_CONTENT: &str = "This request id has different content";
@@ -62,11 +64,22 @@ wire_enum_without_label!(RejectionProof {
     ExactPreWriteRejection => "ExactPreWriteRejection",
     ReviewChildAbsent => "ReviewChildAbsent",
 });
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum RequestOutcome {
+    #[serde(rename = "applied")]
+    Applied,
+    #[serde(rename = "not_applied")]
+    NotApplied,
+    #[serde(rename = "unknown")]
+    Unknown,
+}
 wire_enum!(ResultKind {
     Transitioned => "Transitioned",
     ReturnExisting => "ReturnExisting",
     NoEffect => "NoEffect",
     ReceiptMissingUnknown => "ReceiptMissingUnknown",
+    Persisted => "Persisted",
+    NoChange => "NoChange",
     Rejected => "Rejected",
 });
 wire_enum!(PersistedStage {
@@ -113,6 +126,8 @@ struct ToolRequestRecord {
     supervisor: Option<SupervisorRecord>,
     #[serde(default)]
     read_only: bool,
+    #[serde(default)]
+    tool: Option<RequestTool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -275,6 +290,152 @@ pub(crate) struct ReservationAdapterResult {
     pub(crate) aliases: Vec<(String, String, String)>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SettlementCommand {
+    record: ToolRequestRecord,
+    fingerprint: Vec<u8>,
+    result: serde_json::Value,
+    #[serde(default)]
+    outcome: Option<RequestOutcome>,
+    #[serde(default)]
+    proof: Option<RejectionProof>,
+    #[serde(default)]
+    #[serde(rename = "operation_receipt_result")]
+    operation_receipt_result: Option<String>,
+    #[serde(rename = "result_changed")]
+    result_changed: bool,
+}
+
+pub(crate) fn settle_tool_request(snapshot_json: &str) -> Result<AdapterResult, String> {
+    let command: SettlementCommand = serde_json::from_str(snapshot_json)
+        .map_err(|error| format!("Invalid tool request settlement snapshot: {error}"))?;
+    let request_id = command
+        .record
+        .id
+        .as_deref()
+        .ok_or_else(|| "Settlement snapshot has no request id".to_owned())?;
+    let state = state_for_record(
+        &command.record,
+        ContentFingerprint(fingerprint(command.fingerprint)?),
+    )?;
+    let event_id = EventId::from(format!(
+        "tool-request-settlement:{}:{}",
+        request_id, state.revision.0
+    ));
+    let tool = command.record.tool.unwrap_or(RequestTool::Other);
+    let evidence = result_evidence(&command.result, tool, command.record.read_only);
+    let input = SettlementInput {
+        request_id: RequestId::from(request_id),
+        event_id,
+        evidence,
+        explicit_outcome: command.outcome.map(RequestOutcome::core),
+        proof: command.proof.map(RejectionProof::core),
+        operation_receipt_present: command.operation_receipt_result.is_some(),
+        result_changed: command.result_changed,
+    };
+    let decision = decide_settlement(&state, &input).map_err(rejection_message)?;
+    if decision.event == EventKind::CommittedOperationReceipt {
+        let receipt = command
+            .operation_receipt_result
+            .as_deref()
+            .ok_or_else(|| "Committed operation receipt evidence disappeared".to_owned())?;
+        serde_json::from_str::<serde_json::Value>(receipt)
+            .map_err(|error| format!("Invalid operation receipt result: {error}"))?;
+    }
+    settlement_result(decision, command.record.cancel_requested)
+}
+
+pub(crate) const fn missing_tool_request_outcome() -> &'static str {
+    match studio_operations::missing_receipt_outcome() {
+        Outcome::Unknown => "unknown",
+        Outcome::Applied => "applied",
+        Outcome::NotApplied => "not_applied",
+    }
+}
+
+fn settlement_result(
+    decision: SettlementDecision,
+    cancel_requested: bool,
+) -> Result<AdapterResult, String> {
+    let operation = decision
+        .state
+        .operation
+        .as_ref()
+        .ok_or_else(|| "Settlement decision omitted operation state".to_owned())?;
+    let (stage, outcome, cancel_requested) = persisted_fields(operation.state, cancel_requested);
+    let kind = match decision.kind {
+        SettlementKind::Persisted => ResultKind::Persisted,
+        SettlementKind::NoChange => ResultKind::NoChange,
+    };
+    Ok(AdapterResult {
+        kind: kind.label(),
+        rejection_code: None,
+        rejection_message: None,
+        stage: Some(stage),
+        outcome: Some(outcome),
+        cancel_requested: Some(cancel_requested),
+    })
+}
+
+impl RequestOutcome {
+    const fn core(self) -> Outcome {
+        match self {
+            Self::Applied => Outcome::Applied,
+            Self::NotApplied => Outcome::NotApplied,
+            Self::Unknown => Outcome::Unknown,
+        }
+    }
+}
+
+fn result_evidence(
+    result: &serde_json::Value,
+    tool: RequestTool,
+    read_only: bool,
+) -> ResultEvidence {
+    let success = result.get("success").and_then(serde_json::Value::as_bool);
+    let first_error = result
+        .get("contentItems")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|items| {
+            items.iter().find(|item| {
+                item.get("type").and_then(serde_json::Value::as_str) == Some("inputText")
+            })
+        })
+        .and_then(|item| item.get("text").and_then(serde_json::Value::as_str))
+        .map(str::to_owned);
+    let server_outcome = if tool == RequestTool::OrchestrationServers && success == Some(true) {
+        result
+            .get("contentItems")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|items| items.first())
+            .and_then(|item| item.get("text"))
+            .and_then(serde_json::Value::as_str)
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+            .and_then(|value| {
+                value
+                    .get("outcome")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .and_then(|outcome| match outcome.as_str() {
+                "applied" => Some(Outcome::Applied),
+                "not_applied" => Some(Outcome::NotApplied),
+                "unknown" => Some(Outcome::Unknown),
+                _ => None,
+            })
+    } else {
+        None
+    };
+    ResultEvidence {
+        tool,
+        success,
+        read_only,
+        first_error,
+        server_outcome,
+    }
+}
+
 pub(crate) fn reserve_tool_request(
     command_json: &str,
     alias_prefix: &str,
@@ -339,7 +500,7 @@ fn reservation_result(
                 alias.alias,
                 alias.request.as_str().to_owned(),
             )),
-            ReservationWriteIntent::ReserveRequest { .. } => None,
+            ReservationWriteIntent::SaveRequest { .. } => None,
         })
         .collect();
     Ok(ReservationAdapterResult {
@@ -495,7 +656,7 @@ fn result_for_decision(
     }
 }
 
-fn persisted_fields(
+pub(crate) fn persisted_fields(
     state: OperationState,
     cancel_requested: bool,
 ) -> (PersistedStage, PersistedOutcome, bool) {

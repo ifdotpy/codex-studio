@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 
 try:
     import studio_operations_native as native

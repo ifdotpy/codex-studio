@@ -5,8 +5,9 @@
 - **Responsibility:** Minimal in-process Python binding for `studio-operations`.
 - **Public interface:** `studio_operations_native.transition_record(record_json,
 event, ...) -> TransitionResult`, `studio_operations_native.reserve_tool_request(snapshot_json,
-alias_prefix) -> ReservationResult`, and the protocol version owned by
-  `src/lib.rs` and checked independently by the server adapter.
+alias_prefix) -> ReservationResult`, `settle_tool_request(snapshot_json)
+-> TransitionResult` and `missing_tool_request_outcome()`, and protocol version 4
+  checked by the server adapter.
 - **Boundaries:** The binding deserializes a typed persisted-record view, adapts
   it to the pure Rust lifecycle core, and returns typed persistence fields and
   aliases. It performs no I/O, subprocess work, or fallback.
@@ -19,9 +20,11 @@ alias_prefix) -> ReservationResult`, and the protocol version owned by
   `cargo build --release -p studio-operations-python`; Python contract replay
   runs in the `server` suite after `install-cli.py` installs the built module.
 
-Python passes the stored request record as JSON while event and proof names use
-closed type-stub literals. Rust owns the persisted-record conversion, lifecycle
-state, transition, and result-to-storage mapping. The Rust crate is built with
+Python passes fixed stored-record/result snapshots as JSON while event and proof
+names use closed type-stub literals. Rust owns the persisted-record conversion,
+lifecycle state, transition, reservation and settlement decisions, and
+result-to-storage mapping. The settlement API requires protocol version 4; older
+installed modules must be rebuilt. The Rust crate is built with
 PyO3 0.29, `abi3-py311`, and `extension-module`; no maturin or second runtime
 schema is used.
 

@@ -18,14 +18,15 @@ from unittest.mock import patch
 from types import SimpleNamespace
 
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import studio_operations_native as native
 
 from codex_operations_adapter import PROTOCOL_VERSION, check_protocol
 from codex_tool_requests import (
     RequestMixin, _apply_decision, _content_fingerprint, _lifecycle, _prefix,
-    _missing_receipt_outcome,
 )
+from settlement_contract_support import settlement_outcome
 
 FIXTURE = (
     Path(__file__).resolve().parents[3]
@@ -169,9 +170,10 @@ class OperationsNativeContract(unittest.TestCase):
                 self.assertEqual(record.get("outcome", "unknown"), case["python_outcome"])
 
     def test_protocol_mismatch_fails_clearly(self):
+        self.assertEqual(PROTOCOL_VERSION, 4)
         self.assertEqual(native.PROTOCOL_VERSION, PROTOCOL_VERSION)
         with self.assertRaisesRegex(RuntimeError, "protocol mismatch"):
-            check_protocol(SimpleNamespace(PROTOCOL_VERSION=native.PROTOCOL_VERSION + 1))
+            check_protocol(SimpleNamespace(PROTOCOL_VERSION=3))
 
     def test_supported_persisted_pairs_replay_without_a_transition(self):
         records = [
@@ -233,7 +235,44 @@ class OperationsNativeContract(unittest.TestCase):
         }
         with self.assertRaisesRegex(ValueError, "This request id has different content"):
             native.reserve_tool_request(json.dumps(snapshot), "thread-a:")
-        self.assertEqual(_missing_receipt_outcome("missing-request"), "unknown")
+        self.assertEqual(native.missing_tool_request_outcome(), "unknown")
+
+    def test_settlement_adapter_reads_nested_server_outcomes_and_read_tools(self):
+        for nested, expected in (("applied", "applied"), ("not_applied", "not_applied"),
+                                 ("unknown", "unknown"), ("future", "applied")):
+            result = {"success": True, "contentItems": [{
+                "type": "inputText", "text": json.dumps({"outcome": nested})
+            }]}
+            self.assertEqual(settlement_outcome("orchestration_servers", result), expected)
+        for tool in ("orchestration_read", "orchestration_peers",
+                     "orchestration_search", "orchestration_chat_read"):
+            self.assertEqual(
+                settlement_outcome(tool, {"success": False, "contentItems": []}),
+                "not_applied",
+            )
+
+    def test_settlement_preserves_first_error_and_malformed_receipt_behavior(self):
+        result = {"success": False, "contentItems": [
+            {"type": "inputText", "text": 7},
+            {"type": "inputText", "text": "Unknown work item in this team"},
+        ]}
+        self.assertEqual(settlement_outcome("orchestration_task", result), "unknown")
+        rejected = {"success": False, "contentItems": [
+            {"type": "inputText", "text": "Unknown work item"},
+        ]}
+        with self.assertRaisesRegex(ValueError, "Invalid operation receipt result"):
+            settlement_outcome(
+                "orchestration_task", rejected, operation_receipt_result="not-json"
+            )
+        # The legacy path only reads nested operation evidence for an inferred
+        # rejection; an explicit caller outcome does not parse that row.
+        self.assertEqual(
+            settlement_outcome(
+                "orchestration_task", rejected, outcome="not_applied",
+                operation_receipt_result="not-json",
+            ),
+            "not_applied",
+        )
 
     def test_stub_literal_members_match_rust_exports(self):
         tree = ast.parse((Path(SERVER_SOURCE_ROOT) / "studio_operations_native.pyi").read_text())
@@ -243,6 +282,10 @@ class OperationsNativeContract(unittest.TestCase):
         reservation = functions["reserve_tool_request"]
         self.assertEqual([arg.arg for arg in reservation.args.args], ["snapshot_json", "alias_prefix"])
         self.assertEqual(ast.unparse(reservation.returns), "ReservationResult")
+        settlement = functions["settle_tool_request"]
+        self.assertEqual([arg.arg for arg in settlement.args.args], ["snapshot_json"])
+        self.assertEqual(ast.unparse(settlement.returns), "TransitionResult")
+        self.assertIn("missing_tool_request_outcome", functions)
         aliases = {
             target.id: node.value
             for node in tree.body if isinstance(node, ast.Assign)
