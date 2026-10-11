@@ -3343,6 +3343,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
         return view
 
+    @staticmethod
+    def _active_turn_status(db: sqlite3.Connection, agent_id: str) -> Literal["approval", "running"]:
+        """Status of an agent whose turn is active: a pending request keeps it in approval."""
+        pending = db.execute(
+            "SELECT 1 FROM runtime_requests WHERE json_extract(record,'$.agent')=? "
+            "AND json_extract(record,'$.status')='pending' LIMIT 1", (agent_id,)).fetchone()
+        return "approval" if pending else "running"
+
     @overload
     def put(self, db: sqlite3.Connection, table: Literal["agents"], record: "AgentRecord", *, sync_rooms: bool = True) -> None: ...
 
@@ -3387,14 +3395,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     @overload
     def put(self, db: sqlite3.Connection, table: Literal["tool_requests"], record: "ToolRequestRecord", *, sync_rooms: bool = True) -> None: ...
-
-    @staticmethod
-    def _active_turn_status(db: sqlite3.Connection, agent_id: str) -> Literal["approval", "running"]:
-        """Status of an agent whose turn is active: a pending request keeps it in approval."""
-        pending = db.execute(
-            "SELECT 1 FROM runtime_requests WHERE json_extract(record,'$.agent')=? "
-            "AND json_extract(record,'$.status')='pending' LIMIT 1", (agent_id,)).fetchone()
-        return "approval" if pending else "running"
 
     @overload
     def put(self, db: sqlite3.Connection, table: Literal["monitors"], record: "dict[str, JsonValue]", *, sync_rooms: bool = True, monitor_output: bool = False) -> None: ...
