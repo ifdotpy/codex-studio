@@ -1,7 +1,7 @@
 # VM browser bridge
 
-Status: design. Nothing in this file is implemented. The measurements are from 2026-10-11,
-against `origin/main` at `07ea99c7`.
+Status: the first slice is implemented (sections 2 to 4). The measurements are from
+2026-10-11, against `origin/main` at `07ea99c7`.
 
 ## Goal
 
@@ -107,8 +107,8 @@ approves every link.
 4. The Studio server long-polls the guest service and creates a `browser/open` request card in
    that chat.
 5. The person approves. The server binds the Mac loopback port, tells the guest to arm the
-   callback, and returns the URL to the renderer.
-6. The renderer opens the URL with Electron `openExternal`.
+   callback, and returns the URL to the window.
+6. The window opens the URL with the desktop action `openSignIn`.
 7. The provider sends the browser to `http://127.0.0.1:<port>/...` or `localhost`. The server
    relays this one GET to the tool's listener in the guest and returns a cleaned response.
 8. The forward closes after the first callback with `code` or `error`, after a timeout, or
@@ -116,69 +116,86 @@ approves every link.
 
 ### (a) Guest shim and socket
 
-- `/usr/local/bin/studio-browser` is a Python script that uses only the standard library. It
-  takes one URL argument. It connects to `/run/codex-studio-browser/open.sock` and sends one
-  JSON line `{"v":1,"url":URL,"session":$LAYR_SESSION}`. It reads one reply and prints one
-  status line to stderr. It exits 0 when the request is queued and 1 otherwise. It does not
-  wait for the person: the tool keeps its own timeout, and AWS starts its callback loop only
-  after the launcher returns.
+- `studio_browser.py` (installed as `/usr/local/bin/studio-browser`) is a Python script that
+  uses only the standard library. It takes one URL argument. It connects to
+  `/run/codex-studio-browser/open.sock` and sends one JSON line
+  `{"v":1,"url":URL,"session":$LAYR_SESSION}`. It reads one reply and prints one status line to
+  stderr. It exits 0 when the request is queued and 1 otherwise. It does not wait for the
+  person: the tool keeps its own timeout, and AWS starts its callback loop only after the
+  launcher returns.
 - `/usr/local/bin/xdg-open` is a symbolic link to the shim. `/usr/local/bin` comes before
   `/usr/bin` in the agent `PATH`, so the link also wins if `xdg-utils` is installed later.
 - `agent_env` in `layr_agents.py` adds `BROWSER=/usr/local/bin/studio-browser`.
   `LAUNCH_ENV_NAMES` adds `BROWSER`, so a project secret cannot replace it.
-- The guest service (user `studio`) listens on the socket. Its unit gets
+- The guest service (user `studio`) listens on the socket (`browser_bridge.py`). Its unit gets
   `RuntimeDirectory=codex-studio-browser` with mode 0755. The socket has mode 0666. The access
-  control is `SO_PEERCRED`, as in `layr_admin.py`.
+  control is the kernel peer UID (`SO_PEERCRED`), as in `layr_admin.py`.
 - Identity: the peer UID is the fact, and `session` is only a hint. The service reads
   `agent.context(session)` from the root broker and requires `uid == peer UID`. A worker UID
   belongs to one agent. A lead UID (`studio-p-*`) belongs to a project, and all leads of that
   project share it, so the hint selects the chat among them. A missing or wrong hint is
   refused. No token or secret is in the agent's reach.
-- Limits per UID: 2 open connections, a 16 KB line, a 5 s read deadline, 1 pending request,
-  and 6 requests in 10 minutes.
+- Limits: 2 open connections for each UID, a 16 KB line, a 5 s read deadline, and 6 links in
+  10 minutes for each UID. The newest link of a chat replaces its pending link.
+- The queue is a private JSON file in the guest state (`browser/requests.json`), so it
+  survives a guest service restart. Each item has a sequence number that changes with its
+  state: `pending`, `approved`, `opened`, `declined`, `replaced`, `stale`, `expired` or
+  `closed`.
 
 ### URL policy
 
-The guest checks the URL. The server checks it again before it makes the card, and Electron
-keeps its own `http` and `https` rule.
+`browser_policy.py` is the one rule set. The guest checks the URL. The server imports the same
+file from the guest folder and checks the URL again before it makes the card. Electron keeps
+its own `http` and `https` rule.
 
-- At most 8 KB, no control characters, no user or password part.
-- `https` with a DNS host is accepted. An `https` URL with an IP literal in a private,
-  link-local or loopback range is refused.
-- `http` is accepted only for the hosts `localhost`, `127.0.0.1` and `[::1]`. Then the guest
-  resolves the first hop. It checks that the listener on that port belongs to the peer UID,
-  sends one `GET` without cookies (5 s limit, 64 KB limit), and requires a `3xx` reply whose
-  `Location` passes the `https` rule. That `Location` becomes the URL to open. In the first
-  slice, a loopback page that does not redirect is refused.
+- At most 8 KB, no control characters or spaces, no user or password part.
+- `https` with a DNS host is accepted. An `https` URL to `localhost`, `*.localhost` or an IP
+  literal in a private, link-local, loopback, multicast or reserved range is refused.
+- `http` is accepted only for the hosts `localhost`, `127.0.0.1` and `[::1]` with a port from
+  1024 to 65535. Then the guest resolves the first hop. It checks that the listener on that
+  port belongs to the peer UID, sends one `GET` without cookies (5 s limit, 64 KB limit), and
+  requires a `3xx` reply whose `Location` passes the `https` rule. That `Location` becomes the
+  URL to open. A loopback page that does not redirect is refused.
 - Every other scheme is refused: `file`, `javascript`, `data`, `ftp`, `smb`, application
   schemes and custom schemes.
 - Forward detection: when the final URL has a `redirect_uri` query value with the host
-  `localhost`, `127.0.0.1` or `[::1]` and a port from 1024 to 65535, the request needs a
-  forward on that port and path. A loopback `redirect_uri` without a port is refused. Other
-  `redirect_uri` values need no forward (device code pages, for example).
-- A test installation can allow `http` providers on the guest loopback with a guest service
-  command line flag. Agents cannot set it.
+  `localhost`, `127.0.0.1` or `[::1]`, the request needs a forward on that port and path. The
+  redirect must use `http` and a port from 1024 to 65535. Other `redirect_uri` values need no
+  forward (device code pages, for example).
+- The guest service flag `--test-http-provider HOST:PORT` lets a test provider use `http`.
+  Agents cannot set it.
 
 ### (b) Approval card
 
-- The server polls `browser.wait` and writes one request for each queued item:
-  `method: "browser/open"`, `agent: <chat agent ID>`, and the request ID `uuid5(bridgeId)`.
-  A lost reply never makes a second card.
-- `Requests.tsx` shows it as an approval card, next to `monitor/approve`:
+- The server polls `browser.wait` (`codex_browser_bridge.py`) and writes one request for each
+  new `pending` item: `method: "browser/open"`, `agent: <chat agent ID>`, and the request ID
+  `uuid5(bridgeId)`. A lost reply or a second poll never makes a second card. The server
+  refuses a link of an unknown, deleted or native chat, a link of another project, and a link
+  that fails the URL policy, and closes it in the guest.
+- `Requests.tsx` shows it as an approval card:
   - "Open a sign-in page in your browser", with the provider host in large text.
-  - The chat name (the existing card header) and the project.
-  - When present: `client_id`, `scope`, and "The sign-in result goes to this chat's Linux user
-    on port 8000."
-  - The full URL, collapsed.
-  - The buttons "Open in browser" and "Decline".
+  - The chat name (the card header), and the `client_id` and `scope` when present.
+  - "The sign-in result goes to this chat's Linux user (USER) on port P of this Mac.", or
+    "This page needs no forward." for a link without a loopback redirect.
+  - The full URL, collapsed. The card has no direct link.
+  - The buttons "Decline" and "Open in browser".
 - Accept: the server binds the forward, calls `browser.answer`, and returns
-  `{"status":"answered","openUrl":URL}`. The renderer then calls
-  `window.codexDesktop.openExternal(openUrl)`. Today `openExternal` uses `activate: false`. This
-  action should bring the browser to the front.
+  `{"status":"answered","openUrl":URL}`. The window then calls
+  `window.codexDesktop.openSignIn(openUrl)`. Electron opens the link with `activate: true`, so
+  the browser comes to the front; `openExternal` keeps `activate: false` for other links. The
+  open follows the server answer, so the usual 1.2 second click window can pass. `openSignIn`
+  therefore requires a click or key press of the person in the last 30 seconds. A Studio page
+  in a plain browser opens a new tab.
+- A remote window: only a window on the Mac that runs the server can accept. A request with a
+  paired-server signature, with Tailscale Serve headers, or from another address gets "Open
+  this chat in the window of the Mac that runs its server to sign in, or use the tool's
+  device-code mode." Nothing binds and nothing opens. Decline works from every window.
 - Decline: the server calls `browser.answer` with `decline` and queues a message to the chat:
-  "The person declined to open HOST."
+  "The person declined to open HOST in the browser. ..."
 - Expiry: the guest marks a request `stale` when its loopback listener goes away (it checks
-  every 5 s) or after 10 minutes. The server then closes the card.
+  every 5 s), `expired` after 10 minutes, and `replaced` by a newer link of the chat. The
+  server then marks a pending card `expired`. A backend restart and a stopped chat also
+  expire pending cards (the existing request rules).
 
 ### (c) Loopback forward
 
@@ -188,37 +205,43 @@ keeps its own `http` and `https` rule.
   path `guest.sock` to vsock 4050. No raw TCP stream crosses the VM boundary. The guest
   service sends the GET on the guest loopback. The 2 MB frame limit holds a 256 KB body.
 - Bind, before the guest lease is armed: `127.0.0.1:P` for `127.0.0.1`, `[::1]:P` for
-  `[::1]`, and both for `localhost`. Never `SO_REUSEADDR`. If one bind fails, nothing opens.
-  The card shows "Port P is in use on this Mac" and stays pending. The person can free the
-  port and try again, or decline.
+  `[::1]`, and both for `localhost`. Never `SO_REUSEADDR`. If one bind fails, nothing stays
+  bound and nothing opens. The card stays pending with "Port P is in use on this Mac. Free it
+  and approve again, or decline."
 - Relay rules:
-  - Only `GET`, and only the `redirect_uri` path. Every other request gets a Studio 404 page
-    and never reaches the guest.
-  - Send only `Host`, `User-Agent`, `Accept` and `Accept-Language` to the guest. Drop
-    `Cookie`, `Authorization`, `Referer` and `Origin`.
+  - Only `GET`, and only the `redirect_uri` path. Every other request gets a Studio page
+    (404 or 405) and never reaches the guest.
+  - Send only `User-Agent`, `Accept` and `Accept-Language` to the guest. The guest sets
+    `Host` from the redirect. `Cookie`, `Authorization`, `Referer` and `Origin` never pass.
   - Send the tool's status and body (at most 256 KB) to the browser. `Content-Type` is
-    `text/html` or `text/plain` only. Drop `Set-Cookie` and `Location`. Add
+    `text/html` or `text/plain` only. A `3xx` reply becomes a Studio page. Studio writes every
+    header, so no `Set-Cookie` or `Location` of the tool passes. It adds
     `Content-Security-Policy: sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:`,
     `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`
     and `Connection: close`. The tool's page cannot run a script at a Mac loopback origin.
-  - The server never sends `browser.callback` again after a lost reply, because the tool can
-    already have used the code. The browser gets "Result unknown. Check the chat."
-- Guest side: `browser.callback` checks the lease (request, port, path and expiry). It checks
-  again in `/proc/net/tcp` that the listener on `127.0.0.1:P`, `[::1]:P` or the wildcard
-  belongs to the requester's UID. Then it connects to that address, sends the cleaned request,
-  and returns the status, the content type and the body.
-- Close: after the first relayed callback with `code` or `error` in the query, after 10
-  minutes, after 5 relays, on decline, when the guest reports `stale`, or at server shutdown.
-  A backend restart drops open forwards. The server then marks those cards closed and calls
-  `browser.close`.
+  - After a lost reply, the server never sends `browser.callback` again, because the tool can
+    already have used the code. The browser gets "The sign-in result is unknown. Check the
+    chat in Studio." The guest also keeps a receipt for each request ID.
+- Guest side: `browser.callback` checks the lease (request, port, path and expiry) and the
+  relay count. It checks again in `/proc/net/tcp` that every listener on the port that a
+  loopback connection can reach (`127.0.0.1`, `::1` or a wildcard) belongs to the requester's
+  UID. Then it sends the cleaned GET with `http.client` and returns the status, the content
+  type and the body. A query with `code` or `error` closes the request.
+- Close: after the first relayed callback with `code` or `error`, after 10 minutes, after 5
+  relays, on decline, when the guest reports a final state, or at server shutdown. The
+  backend process ends its forwards when it stops, and the guest lease ends at its deadline
+  or when the tool stops listening.
 - Collisions:
   - A Mac program holds the port: nothing opens, as above. kubelogin can run again with
     `--listen-address 127.0.0.1:18000` when the provider has that redirect registered. AWS can
     use `--redirect-port`.
   - Two agents: the guest kernel lets only one UID listen on a guest port, so kubelogin moves
     to 18000, and AWS and az use random ports. On the Mac, the server keeps one forward per
-    port. A second approval for a busy port waits until the first forward closes. The UID check
-    stops an old lease from sending a code to another agent's listener.
+    port. A second approval for a busy port gets "Another sign-in uses port P on this Mac.
+    Wait until it ends, then approve again." The UID check stops an old lease from sending a
+    code to another agent's listener.
+- A link without a loopback redirect (a device code page) needs no forward. Its approval
+  moves the guest request to `opened`.
 - The long poll `browser.wait` holds one of the 16 guest operation slots.
 
 ### (d) Security
@@ -248,13 +271,15 @@ An agent cannot:
   project, and these chats already share one Linux user.
 - Get a token from the socket. There is none. A hand-written client gets the same checks as
   the shim.
+- Open a link from a remote window. Only a window on the Mac that runs the server accepts.
 
 Remaining risks:
 
 - Consent phishing. An agent can ask the person to sign in at any `https` provider with an
   OAuth client that the agent controls, and then receive a code for the person's account. The
   card shows the host, `client_id` and `scope`, and it says where the result goes. The token
-  stays in that agent's Linux user. A provider allow list per project is an open decision.
+  stays in that agent's Linux user. Each link needs its own approval; there is no provider
+  allow list.
 - Tokens are per Linux user. A worker must sign in again in its own home. Other agents cannot
   read them (home mode 0700).
 - AWS listens on `0.0.0.0` in the guest. The forward uses only the loopback, but the guest
@@ -267,20 +292,23 @@ Remaining risks:
 
 ### Files
 
-| Area    | File                                                                               | Change                                                                                                                             |
-| ------- | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| Guest   | `workspaces/runtime/apps/vm-guest/browser_bridge.py` (new)                         | Socket server, UID and chat check, URL policy, first hop, queue on disk, lease, callback relay, `/proc/net/tcp` owner check.       |
-| Guest   | `workspaces/runtime/apps/vm-guest/studio-browser` (new)                            | The shim.                                                                                                                          |
-| Guest   | `service.py`                                                                       | Start the socket. Add `browser.wait` to `READ_METHODS`, and `browser.answer`, `browser.callback` and `browser.close` to `METHODS`. |
-| Guest   | `layr_agents.py`                                                                   | `BROWSER` in `agent_env` and `LAUNCH_ENV_NAMES`.                                                                                   |
-| Guest   | `install.sh`, `codex-studio-guest.service`                                         | Install the shim and the `xdg-open` link. `RuntimeDirectory=codex-studio-browser` and `RuntimeDirectoryMode=0755`.                 |
-| Guest   | `test_browser_bridge.py` (new), `README.md`                                        | Unit checks and the contract text.                                                                                                 |
-| Server  | `workspaces/runtime/apps/server/src/codex_browser_bridge.py` (new)                 | Poll thread, request records, Mac binds, HTTP relay, close rules.                                                                  |
-| Server  | `codex_runtime.py`                                                                 | `browser/open` branch in `answer()`. Start and stop the bridge with the VM.                                                        |
-| Web     | `workspaces/client/apps/web/src/components/questions/Requests.tsx`                 | The card. Open `openUrl` after a successful answer.                                                                                |
-| Desktop | `workspaces/client/apps/desktop/main.cjs`                                          | Bring the browser to the front for this open.                                                                                      |
-| Helper  | `workspaces/client/apps/desktop/native/linux-vm/main.swift`                        | No change. A helper change needs a VM restart, and a VM restart stops every agent.                                                 |
-| Docs    | `docs/linux-vm-workspaces.md`, `.agents/skills/codex-workspace/references/layr.md` | The method table. One generic paragraph for agents: run the sign-in command; the person approves the link.                         |
+| Area    | File                                                                                                       | Change                                                                                                                      |
+| ------- | ---------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Guest   | `workspaces/runtime/apps/vm-guest/browser_policy.py` (new)                                                 | The URL rules. The server imports the same file.                                                                            |
+| Guest   | `workspaces/runtime/apps/vm-guest/browser_bridge.py` (new)                                                 | Socket, peer UID and chat check, first hop, queue, lease, callback relay, `/proc/net/tcp` owner check.                      |
+| Guest   | `workspaces/runtime/apps/vm-guest/studio_browser.py` (new)                                                 | The shim.                                                                                                                   |
+| Guest   | `service.py`                                                                                               | Starts the socket. `browser.wait` is a read method; `browser.answer`, `browser.callback` and `browser.close` keep receipts. |
+| Guest   | `layr_agents.py`                                                                                           | `BROWSER` in `agent_env` and `LAUNCH_ENV_NAMES`.                                                                            |
+| Guest   | `install.sh`, `codex-studio-guest.service`                                                                 | Install the shim and the `xdg-open` link. `RuntimeDirectory=codex-studio-browser`, mode 0755.                               |
+| Guest   | `test_browser_bridge.py`, `test_browser_fakes.py` (new), `test_project_secrets.py`                         | Guest checks and the shared fakes.                                                                                          |
+| Server  | `workspaces/runtime/apps/server/src/codex_browser_bridge.py` (new)                                         | Poll thread, cards, answer, strict binds, HTTP relay, close rules.                                                          |
+| Server  | `codex_runtime.py`, `studio_api/work/router.py`, `studio_api/work/models.py`                               | Tick and stop of the bridge; `answer(..., local_window=)`; `openUrl` in the answer result.                                  |
+| Server  | `test_codex_browser_bridge.py` (new)                                                                       | Server checks and the fake end-to-end flows.                                                                                |
+| Web     | `Requests.tsx`, `requestData.ts`, `openSignIn.ts`, `request-questions.css`, `desktop.ts`, `generated/api*` | The card, the open after the answer.                                                                                        |
+| Web     | `tests/questions/browser-open-approval-ui.spec.mjs`, `openSignIn.test.ts` (new), `requestData.test.ts`     | Card and open checks.                                                                                                       |
+| Desktop | `main.cjs`, `preload.cjs`, `bridge.d.ts`, `test.mjs`                                                       | The `openSignIn` action.                                                                                                    |
+| Helper  | `workspaces/client/apps/desktop/native/linux-vm/main.swift`                                                | No change.                                                                                                                  |
+| Docs    | `docs/linux-vm-workspaces.md`, `.agents/skills/codex-workspace/references/layr.md`                         | The method table, and one generic paragraph for agents.                                                                     |
 
 ### Protocol
 
@@ -289,88 +317,124 @@ Shim to guest service (Unix socket, one JSON line in each direction):
 ```json
 {"v": 1, "url": "http://localhost:8000/", "session": "<LAYR_SESSION>"}
 {"ok": true, "id": "<bridgeId>", "host": "accounts.example.com"}
-{"ok": false, "code": "invalid_url", "message": "Only https links and loopback redirects can open"}
+{"ok": false, "code": "invalid_url", "message": "Only https sign-in links and loopback sign-in pages can open"}
 ```
 
-The error codes are `invalid_url`, `unknown_agent`, `limit` and `unavailable`.
+The error codes are `invalid_request`, `invalid_url`, `unknown_agent`, `forbidden`, `stale`,
+`unavailable`, `limit` and `internal`.
 
 Server to guest (the existing JSON-RPC on vsock 4050):
 
-| Method             | Params                                         | Result                                                                                                                                            | Retry after a lost reply                        |
-| ------------------ | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| `browser.wait`     | `after` (sequence), `waitSeconds` (at most 20) | `items` (`seq`, `id`, `agentId`, `projectId`, `uid`, `url`, `host`, `redirect` with `host`, `port`, `path` or null, `state`, `expiresAt`), `next` | Yes                                             |
-| `browser.answer`   | `id`, `decision` (`approve` or `decline`)      | `state`, `lease` (`port`, `path`, `expiresAt`); error `stale` when the listener went away                                                         | Yes. The same decision returns the same result. |
-| `browser.callback` | `id`, `target` (path and query), `headers`     | `status`, `contentType`, `body` (base64), `done`                                                                                                  | No                                              |
-| `browser.close`    | `id`, `reason`                                 | `state`                                                                                                                                           | Yes                                             |
+| Method             | Params                                         | Result                                                                                                                                                      | Retry after a lost reply                       |
+| ------------------ | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `browser.wait`     | `after` (sequence), `waitSeconds` (at most 20) | `items` (`seq`, `id`, `agentId`, `projectId`, `uid`, `linuxUser`, `url`, `startUrl`, `host`, `redirect`, `clientId`, `scope`, `state`, `expiresAt`), `next` | Yes                                            |
+| `browser.answer`   | `id`, `decision` (`approve` or `decline`)      | `state`, `lease` (`host`, `port`, `path`, `expiresAt`) or null; error `stale` when the tool stopped                                                         | Yes. The same request ID replays the receipt.  |
+| `browser.callback` | `id`, `target` (path and query), `headers`     | `status`, `contentType`, `body` (base64), `done`                                                                                                            | No. A new request ID for each browser request. |
+| `browser.close`    | `id`, `reason`                                 | `state`                                                                                                                                                     | Yes                                            |
 
-Server to renderer: the request record above. `/api/answer` returns `openUrl` on accept.
+Server to window: the request record above. `/api/answer` returns `openUrl` for an accepted
+`browser/open` card, from a local window only.
 
 ### Tests
 
-- Guest unit tests (`test_browser_bridge.py`):
-  - URL table. Accept an `https` provider, and kubelogin's loopback URL with a fake first hop.
-    Refuse `file:`, `javascript:`, `data:`, a custom scheme, a user part, `http` to another
-    host, a loopback URL to another port, a loopback `redirect_uri` without a port, a port
-    below 1024, and 8 KB plus one byte.
-  - Identity: a valid hint, the hint of another UID, no hint, a lead hint from another project.
-  - Limits: a second pending request, the rate limit, a slow client.
-  - Owner check with fixture `/proc/net/tcp` text: own UID, other UID, wildcard listener, no
-    listener.
-  - Lease: two `browser.answer` calls give one lease. `browser.callback` after `done` is
-    refused.
-- Server tests:
-  - The same `bridgeId` after a lost reply gives one card.
-  - A Mac port held on `0.0.0.0`, `[::]`, only `127.0.0.1`, or only `::1`: nothing opens and
-    the card stays pending.
-  - Relay: drops `Cookie` and `Authorization`, drops `Set-Cookie` and `Location`, adds the CSP
-    sandbox, refuses `POST` and other paths, closes after the first `code`, closes at the
-    timeout, and never sends a callback again after a lost reply.
-- Web test: the card shows the host, the chat and the port. Accept calls `openExternal` with
-  `openUrl`. Decline does not.
-- End to end (opt-in, on an isolated VM, like `test_layr_e2e.py`): the fake OIDC server from
-  these probes runs in the guest, with pinned kubelogin and AWS CLI builds. A scripted HTTP
-  client on the Mac takes the place of the browser, so no browser window opens and no
-  application becomes active.
-  - kubelogin: the card shows the fake provider host after the first hop. The client follows
-    the approved URL through the forward. The fake records one token request. With an
-    RSA-signed fake ID token, `get-token` exits 0 and prints an `ExecCredential`.
-  - AWS: "Successfully logged into Start URL" and a token file.
-  - Negative: another agent user listens on the port, so the callback is refused. A Mac
-    process holds the port, so nothing opens.
-  - A fake run does not prove Gardener or AWS. One manual sign-in with the person on each
-    provider completes the check.
+Run them one at a time:
 
-## 4. First slice
+```sh
+python3 -B -m unittest discover -s workspaces/runtime/apps/vm-guest -p test_browser_bridge.py -v
+python3 -B workspaces/runtime/apps/server/src/test-server.py --filter test_codex_browser_bridge
+pnpm --filter codex-agents-web exec vitest run --config vitest.unit.config.ts src/components/questions
+pnpm --filter codex-agents-web exec playwright test --config playwright.config.ts --project=client tests/questions/browser-open-approval-ui.spec.mjs
+```
 
-Goal: `kubectl oidc-login` for Gardener and `aws sso login`, on the Mac that runs the VM.
+What each check proves:
 
-1. The shim, the `xdg-open` link, and `BROWSER` in `agent_env`.
-2. The guest socket, the URL policy with the loopback first hop, the queue, the four
-   `browser.*` methods and the owner check.
-3. The server poll thread, the `browser/open` card, the strict Mac binds, the HTTP relay, the
-   close rules and the decline message.
-4. The card in `Requests.tsx` with host, chat and port, and the Electron open.
-5. The guest unit tests, the server tests and the fake end-to-end run for both tools.
+- `test_browser_bridge.py` (guest, macOS and Linux):
+  - `Policy`: the accepted link shapes of kubelogin, AWS and device pages, and 28 refused
+    links (schemes, user parts, `http` to a remote host, private and loopback `https`, bad
+    loopback redirects, length and control characters).
+  - `AgentEnvironment`: every agent process gets `BROWSER`, and no project secret can take
+    the name.
+  - `Listeners`: `/proc/net/tcp` and `tcp6` rows give the owner UID; any other UID on a
+    reachable address refuses the port. On Linux, the real table names the test process.
+  - `Bridge`, with the real shim run through `xdg-open` or `$BROWSER` against a real socket:
+    the kubelogin first hop yields the provider page without a code being used; the AWS link
+    queues as is; the lease is idempotent; only the redirect path passes; the relay drops
+    `Cookie` and `Authorization`; a second callback after the code is refused, so the
+    provider gets one token request; missing, unknown and other-UID sessions are refused; a
+    port of another UID and a page without a redirect are refused; the rate limit and the
+    replacement work; the long poll wakes on a new link; a stopped tool makes the request
+    `stale`; decline, device links (`opened`), expiry and a restart of the queue work.
+- `test_codex_browser_bridge.py` (server):
+  - `Flow`: the whole path with the real guest bridge, the real shim, a fake provider and a
+    test HTTP client as the browser. kubelogin style: `xdg-open`, port 8000 when it is free,
+    the tool's own start page. AWS style: `$BROWSER`, a random port, the provider link. Each
+    flow ends with one code at the tool, one token request at the provider, no Mac cookie at
+    the tool, the CSP sandbox and no `Set-Cookie` or `Location` at the browser, the forward
+    closed, and the card answered. Also: a remote window cannot accept and nothing binds;
+    decline queues the chat message; a stopped tool expires the card; a card appears once
+    and follows the guest state.
+  - `Refusals`: six bad items get no card and are closed in the guest; one good item gets one
+    card.
+  - `Relay`: `POST`, other paths and path tricks never reach the tool; only the allowed
+    headers pass; the content type is reduced to text; the forward closes after 5 relays; a
+    lost relay reply closes the forward with a 502 page.
+  - `Binds`: a port held on `0.0.0.0`, `[::]`, only `127.0.0.1` or only `::1` refuses the
+    forward and leaves nothing bound; `localhost` binds both addresses.
+  - `Wiring`: `Runtime.answer` sends `browser/open` to the bridge with the window flag; only a
+    direct local request is a local window; the VM payload carries the three guest files, the
+    shim installation and the socket folder.
+- `openSignIn.test.ts` (web): the desktop uses `openSignIn`, an older desktop falls back to
+  `openExternal`, a plain browser opens a tab without an opener, and other schemes never open.
+- `requestData.test.ts` and `browser-open-approval-ui.spec.mjs` (web): the card shows the
+  host, the client, the access, the port and the Linux user; it has no direct link; nothing
+  opens before the approval; accept opens only the returned link with `openSignIn`; a server
+  refusal (the remote window message) opens nothing and shows the error; decline sends one
+  decline.
+- `test.mjs` (desktop, hidden Electron): `openSignIn` refuses non-http schemes and opens with
+  `activate: true`, while `openExternal` keeps `activate: false`. In a source checkout this
+  test cannot start at `origin/main`: its `resources` path is the `apps` folder, so it reports
+  "Desktop assets are missing".
 
-Not in the first slice: provider allow lists, remembered approvals, loopback pages without a
-redirect, remote clients, and a vsock port in the Swift helper.
+What only a live run can prove:
 
-Rollout: a guest upgrade and a backend restart. The guest service restart keeps providers.
-There is no VM restart. A running provider keeps its old environment. The `xdg-open` link
-works at once for kubelogin. AWS needs `BROWSER` in a new provider, or
-`BROWSER=studio-browser aws sso login` in the command.
+- A real provider: Gardener's identity provider with `kubectl oidc-login`, and AWS IAM
+  Identity Center with `aws sso login`. Each needs one manual sign-in with the person.
+- A real browser on the Mac: Safari or Chrome with a `localhost` redirect, `::1` and
+  `127.0.0.1` behaviour, and the browser coming to the front.
+- The installed VM: the `RuntimeDirectory`, the socket mode, `SO_PEERCRED` across agent users,
+  the agent `PATH` and `BROWSER` in a new provider, and the provider sandbox (see below).
+- The installed desktop app with the `openSignIn` action.
 
-## Open decisions
+## 4. First slice and rollout
 
-1. A provider allow list per project (for example `accounts.sap.com`, `*.awsapps.com`,
-   `oidc.*.amazonaws.com`), or one approval for each link as in this design.
-2. Remote clients: a paired server window opens the browser on another Mac, and the redirect
-   cannot reach this Mac. Refuse forwards there, or move the forward listener to the client.
-3. Bring the browser to the front for this open, or keep the current `activate: false`.
-4. Loopback pages without a redirect (a tool that serves its own start page): refuse them, or
-   open them through the forward with the CSP sandbox.
-5. Whether the Gardener provider offers the device code. If it does, the agent can use
-   `--grant-type=device-code`, and the card needs no forward.
-6. Tokens: one sign-in for each Linux user (this design), or a token store per project.
-7. Check that the shim's Unix socket connect works in the Codex sandbox when network access is
-   off. The sign-in commands need network, so they already run outside that sandbox.
+The first slice covers the shim, the guest socket and methods, the server poll, card, answer
+and forward, the web card and the desktop action. It makes `kubectl oidc-login` and
+`aws sso login` work from a chat on the Mac that runs the VM, as far as fakes can show.
+
+Rollout:
+
+- The guest files reach the VM through the existing guest upgrade
+  (`upgrade-linux-vm-layr.py`). It restarts the VM only when no provider is active. The Swift
+  helper does not change.
+- The server and the web need a backend update. The API schema hash changes (`openUrl`), so
+  the renderer and the backend update together. `openSignIn` needs a desktop app update.
+  Without it, the window falls back to `openExternal` (browser in the background).
+- A running provider keeps its old environment. The `xdg-open` link works at once for
+  kubelogin. AWS needs `BROWSER` in a new provider, or `BROWSER=studio-browser aws sso login`
+  in the command.
+
+## Decisions
+
+1. One approval for each link. There is no provider allow list.
+2. A remote window refuses to open with "Open this chat in the window of the Mac that runs its
+   server to sign in, or use the tool's device-code mode." Nothing is forwarded.
+3. Only this action brings the browser to the front (`openSignIn`); `openExternal` keeps its
+   behaviour.
+4. A loopback start page without a redirect is refused.
+5. Tokens stay with the Linux user. There is no token store.
+
+## Sandbox note
+
+The Codex workspace sandbox without network access can block the shim's Unix socket
+connect. This was not measured, and the sandbox does not change. The sign-in commands need
+network, so they already run where network is allowed, and the shim works there.

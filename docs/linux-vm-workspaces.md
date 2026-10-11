@@ -59,6 +59,16 @@ Provider argv and profile paths are fixed before the root broker drops privilege
 | `layr.exec`             | Run an owner command with a detached journal and deadline     |
 | `layr.file.*`           | Read files through the line owner's permissions               |
 
+The guest service also serves the browser bridge ([vm-browser-bridge.md](vm-browser-bridge.md)).
+Agents send sign-in links on `/run/codex-studio-browser/open.sock`; the peer UID names the chat.
+
+| Method             | Behavior                                                       |
+| ------------------ | -------------------------------------------------------------- |
+| `browser.wait`     | Long-poll the queued sign-in links after a sequence number     |
+| `browser.answer`   | Approve or decline a link; an approval arms the loopback lease |
+| `browser.callback` | Relay one cleaned redirect GET to the tool's loopback listener |
+| `browser.close`    | Close a link and its lease                                     |
+
 ## Turn states and task results
 
 Studio saves a state after each completed, failed or interrupted agent turn.
