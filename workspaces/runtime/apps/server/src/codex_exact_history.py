@@ -14,6 +14,20 @@ MAX_HISTORY_BYTES = 256 * 1024 * 1024
 MAX_HISTORY_FILES = 1024
 
 
+def inspect_jsonl(rollout: Path) -> dict[str, Any] | None:
+    """Return metadata for the first malformed rollout record without exposing it."""
+    offset = 0
+    with rollout.open('rb') as stream:
+        for number, line in enumerate(stream, 1):
+            try:
+                json.loads(line)
+            except json.JSONDecodeError as error:
+                return {'file': rollout.name, 'line': number, 'recordBytes': len(line),
+                        'byteOffset': offset, 'error': str(error)}
+            offset += len(line)
+    return None
+
+
 def private_write(path: Path, data: bytes) -> None:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(dir=path.parent, prefix='.move-')

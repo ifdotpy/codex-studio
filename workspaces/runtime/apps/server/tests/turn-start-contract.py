@@ -239,6 +239,58 @@ class TurnStartContract(unittest.TestCase):
         self.assertFalse(self.runtime.agent(a["id"])["inFlight"])
         self.assertEqual(len(self.server.deferred), 1)
 
+    def test_malformed_rollout_during_real_start_preparation_holds_input_without_resending(self):
+        key = self.start('completed')
+        self.accept()
+        eventually(lambda: not self.runtime.agent(key)['inFlight'])
+        agent = self.runtime.agent(key)
+        home = self.runtime.accounts.home(agent.get('accountKey', 'default'))
+        rollout = home / 'sessions' / (agent['threadId'] + '.jsonl')
+        rollout.parent.mkdir(parents=True, exist_ok=True)
+        header = (json.dumps({'type': 'session_meta', 'payload': {'id': agent['threadId']}}) + '\n').encode()
+        good = (json.dumps({'type': 'event_msg', 'payload': {'type': 'noise'}}) + '\n').encode()
+        malformed = b'{"' + b'a' * 316 + b'"\n'
+        self.assertEqual(len(malformed), 320)
+        rollout.write_bytes(header + good * 660 + malformed)
+        with self.runtime.db() as db:
+            db.execute('INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)',
+                       ('monitor:synthetic', key, 'monitor_exit', 'prior context ' + ('x' * 3200),
+                        'delivered', 1.0, agent['epoch'], agent['lastCompletedTurn'], None))
+
+        native = {'path': str(rollout), 'repairTerminalTurnId': agent['lastCompletedTurn'],
+                  'repairTerminalStatus': 'completed', 'repairTerminalCompletedAt': 2.0}
+        with (patch('codex_context_repair._native_idle', return_value=native),
+              patch('codex_context_repair._reconcile_thread_receipts'),
+              patch('codex_context_repair._source_native_identity', return_value=None)):
+            self.runtime.send(key, 'Continue after restart', 'malformed-rollout-input')
+            eventually(lambda: self.runtime.agent(key).get('error') ==
+                      "Expecting ':' delimiter: line 2 column 1 (char 320)")
+
+        saved = self.runtime.agent(key)
+        self.assertEqual(saved["status"], "waiting")
+        self.assertFalse(saved["inFlight"])
+        self.assertTrue(saved["nativeFailureHold"])
+        self.assertEqual(self.runtime.delivery_receipt('malformed-rollout-input')['status'], 'pending')
+        self.assertEqual(len([method for method, _ in self.server.calls if method == 'turn/start']), 1)
+        self.runtime.dispatch()
+        self.assertEqual(len([method for method, _ in self.server.calls if method == 'turn/start']), 1)
+
+    def test_json_parse_failure_after_submission_keeps_input_uncertain_without_resending(self):
+        error = json.JSONDecodeError("Expecting ':' delimiter", '{"partial"', 9)
+        self.server.mode = "silent"
+        key = self.start("silent")
+        attempt_id = self.runtime.agent(key)["startAttempt"]["id"]
+        self.runtime.start_error(key, attempt_id, error)
+
+        saved = self.runtime.agent(key)
+        self.assertEqual(saved["status"], "waiting")
+        self.assertTrue(saved["inFlight"])
+        self.assertEqual(saved["startAttempt"]["executionOutcome"], "unknown")
+        self.assertEqual(self.events()[0]["status"], "uncertain")
+        starts = len([method for method, _ in self.server.calls if method == "turn/start"])
+        self.runtime.dispatch()
+        self.assertEqual(len([method for method, _ in self.server.calls if method == "turn/start"]), starts)
+
     def test_unknown_late_success_recovers_running_without_resending(self):
         key = self.start("silent")
         self.accept()
