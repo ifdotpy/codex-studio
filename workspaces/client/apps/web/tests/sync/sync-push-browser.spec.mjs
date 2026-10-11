@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import {
   apiSchemaHandshakeSse,
+  apiSchemaHeaders,
   protocol3SseEvent,
+  syncIdentityFixture,
   test,
 } from "../playwright.mjs";
 
@@ -26,11 +28,15 @@ test("Sync push", async ({ context: testContext }) => {
     handle(req, res, next) {
       const url = new URL(req.url, "http://localhost");
       const json = (value) => {
-        res.setHeader("Content-Type", "application/json");
+        for (const [name, value] of Object.entries(
+          apiSchemaHeaders({ "Content-Type": "application/json" }),
+        ))
+          res.setHeader(name, value);
         res.end(JSON.stringify(value));
       };
       if (url.pathname === "/push-check") res.end("<!doctype html>");
-      else if (url.pathname === "/api/sync/identity") json({ workspaceId });
+      else if (url.pathname === "/api/sync/identity")
+        json(syncIdentityFixture(workspaceId));
       else if (url.pathname === "/api/sync/stream") {
         assert.equal(url.searchParams.get("protocol"), "3");
         const resources = JSON.parse(url.searchParams.get("resources") || "[]");

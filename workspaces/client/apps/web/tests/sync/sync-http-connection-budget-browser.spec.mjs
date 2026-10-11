@@ -1,4 +1,10 @@
-import { test, apiSchemaHandshakeSse } from "../playwright.mjs";
+import {
+  apiSchemaHandshakeSse,
+  apiSchemaHeaders,
+  syncIdentityFixture,
+  syncProtocolFixture,
+  test,
+} from "../playwright.mjs";
 // Actual HTTP connection capacity with two renderer windows and slow history.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -96,7 +102,10 @@ test("Sync http connection budget browser", async ({
     handle(req, res, next) {
       const url = new URL(req.url, "http://localhost");
       const json = (value) => {
-        res.writeHead(200, { "Content-Type": "application/json" });
+        res.writeHead(
+          200,
+          apiSchemaHeaders({ "Content-Type": "application/json" }),
+        );
         res.end(JSON.stringify(value));
       };
       if (url.pathname === "/check") {
@@ -112,13 +121,10 @@ test("Sync http connection budget browser", async ({
           method: req.method,
         });
         if (url.pathname === "/api/session") json({ token: "fixture-token" });
-        else if (url.pathname === "/api/sync/identity") json({ workspaceId });
+        else if (url.pathname === "/api/sync/identity")
+          json(syncIdentityFixture(workspaceId));
         else if (url.pathname === "/api/sync/protocol")
-          json({
-            protocolVersion: 1,
-            supportedVersions: [1, 2],
-            capabilities: ["streamChanges"],
-          });
+          json(syncProtocolFixture());
         else if (url.pathname === "/api/sync/stream") {
           res.writeHead(200, {
             "Content-Type": "text/event-stream",
