@@ -5,9 +5,9 @@ import {
   boundaryFindings,
   commandFor,
   execute,
-  main,
   nextestError,
   nextestSelectionError,
+  packageTarget,
   parseCounts,
   parseSelection,
   pruneLogs,
@@ -282,8 +282,12 @@ esac
 });
 
 test("unknown Rust package stays a facade error", async () => {
-  await assert.rejects(
-    main(["test", "codex-package-that-does-not-exist"]),
+  assert.throws(
+    () =>
+      packageTarget(
+        [{ name: "studio-operations", ecosystem: "cargo" }],
+        "codex-package-that-does-not-exist",
+      ),
     /Unknown package/,
   );
 });

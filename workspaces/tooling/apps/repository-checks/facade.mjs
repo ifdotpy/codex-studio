@@ -249,11 +249,14 @@ function assertPinnedCargoToolchain(root) {
 }
 
 function target(root, pkg) {
-  const entry = discover(root);
-  const found = entry.find((item) => item.name === pkg);
+  return packageTarget(discover(root), pkg);
+}
+
+export function packageTarget(packages, pkg) {
+  const found = packages.find((item) => item.name === pkg);
   if (!found)
     fail(
-      `Unknown package "${pkg}". Valid packages: ${entry.map((item) => item.name).join(", ")}`,
+      `Unknown package "${pkg}". Valid packages: ${packages.map((item) => item.name).join(", ")}`,
     );
   return found;
 }
