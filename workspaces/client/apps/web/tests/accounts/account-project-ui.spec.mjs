@@ -199,6 +199,31 @@ test("account project ui", async ({ browser: _browser }) => {
       return;
     if (url.pathname === "/api/session") return json({ token: "fixture" });
 
+    if (url.pathname === "/api/multi-server")
+      return json({
+        identity: { serverId: "fixture-server", label: "This computer" },
+        servers: [],
+      });
+    if (url.pathname === "/api/ui-summary") return json({ system: "Linux" });
+    if (url.pathname === "/api/models")
+      return json({
+        data: [
+          {
+            model: "gpt-6-astra",
+            provider: "codex",
+            displayName: "Astra 6",
+            isDefault: true,
+            supportedReasoningEfforts: [{ reasoningEffort: "medium" }],
+          },
+          {
+            model: "gpt-6-luna",
+            provider: "codex",
+            displayName: "Luna 6",
+            supportedReasoningEfforts: [{ reasoningEffort: "high" }],
+          },
+        ],
+      });
+
     if (
       url.pathname === "/api/accounts" ||
       url.pathname === "/api/accounts/discover" ||
@@ -230,6 +255,7 @@ test("account project ui", async ({ browser: _browser }) => {
       });
     }
     if (url.pathname === "/api/projects") {
+      if (req.method === "GET") return json({ items: projects });
       let project = projects.find((item) => item.path === body.path);
       if (conflict) {
         res.statusCode = 409;
@@ -402,11 +428,28 @@ test("account project ui", async ({ browser: _browser }) => {
       ),
     );
     assert.deepEqual(stateRequests, []);
+    const studioDialog = page.getByRole("dialog", {
+      name: "Studio settings",
+      exact: true,
+    });
     await page.getByRole("button", { name: "Studio settings" }).click();
-    await page
-      .getByRole("button", { name: "Edit name for personal@example.com" })
-      .waitFor();
-    await page.getByRole("button", { name: "Close", exact: true }).click();
+    const personalAccount = page
+      .locator(".server-account-row")
+      .filter({ hasText: "personal@example.com" });
+    await personalAccount
+      .getByRole("button", {
+        name: "Actions for personal@example.com",
+        exact: true,
+      })
+      .click();
+    await page.getByRole("menuitem", { name: "Rename", exact: true }).click();
+    const renameAccount = page.getByRole("dialog", {
+      name: "Rename personal@example.com",
+      exact: true,
+    });
+    await renameAccount.getByRole("textbox", { name: "Name" }).waitFor();
+    await renameAccount.getByRole("button", { name: "Cancel" }).click();
+    await studioDialog.getByRole("button", { name: "Close" }).click();
     const chatSettings = page.getByRole("dialog", {
       name: "Chat settings",
       exact: true,
@@ -449,7 +492,10 @@ test("account project ui", async ({ browser: _browser }) => {
       await closeSettings();
       if (!(await studioSettings.isVisible()))
         await page.getByRole("button", { name: "Studio settings" }).click();
-      await studioSettings.locator('[data-account="default"]').waitFor();
+      await studioSettings
+        .locator(".server-account-row")
+        .filter({ hasText: "personal@example.com" })
+        .waitFor();
     };
     await page.locator('[data-chat="empty"]').click();
     await openSettings();
@@ -538,8 +584,8 @@ test("account project ui", async ({ browser: _browser }) => {
     await page.reload();
     await page.getByRole("button", { name: "Studio settings" }).click();
     await page
-      .getByTestId("studio-settings")
-      .getByText("work@example.com", { exact: true })
+      .locator(".server-account-row")
+      .filter({ hasText: "work@example.com" })
       .waitFor();
     await page.getByRole("button", { name: "Close", exact: true }).click();
     await page.locator('[data-chat="empty"]').click();
@@ -606,6 +652,7 @@ test("account project ui", async ({ browser: _browser }) => {
     assert.equal(agents.find((a) => a.id === "empty").accountKey, "work");
     const newChat = async (name) => {
       await closeSettings();
+      let newChatButton;
       if (name.startsWith("folder ")) {
         const project = page.locator('[data-project-path="/projects/Lumina"]');
         const toggle = project.locator(
@@ -617,18 +664,34 @@ test("account project ui", async ({ browser: _browser }) => {
           '[data-folder-id="review"] > .project-tree-heading',
         );
         await folderHeading.hover();
-        await folderHeading
-          .getByRole("button", { name: `New chat in ${name}`, exact: true })
-          .click();
-        return;
+        newChatButton = folderHeading.getByRole("button", {
+          name: `New chat in ${name}`,
+          exact: true,
+        });
+        await newChatButton.click();
+      } else {
+        newChatButton = page.getByRole("button", {
+          name: `New chat in ${name}`,
+          exact: true,
+        });
+        await newChatButton.locator("..").hover();
+        await newChatButton.focus();
+        await newChatButton.press("Enter");
       }
-      const button = page.getByRole("button", {
-        name: `New chat in ${name}`,
+      const newChatDialog = page.getByRole("dialog", {
+        name: "New chat",
         exact: true,
       });
-      await button.locator("..").hover();
-      await button.focus();
-      await button.press("Enter");
+      await newChatDialog
+        .getByRole("button", { name: "Start chat", exact: true })
+        .click();
+    };
+    const startGeneralNewChat = async () => {
+      await page.getByRole("button", { name: "New chat", exact: true }).click();
+      await page
+        .getByRole("dialog", { name: "New chat", exact: true })
+        .getByRole("button", { name: "Start chat", exact: true })
+        .click();
     };
     const openProject = async (name) => {
       await closeSettings();
@@ -792,7 +855,7 @@ test("account project ui", async ({ browser: _browser }) => {
     const defaultCreate = page.waitForResponse((response) =>
       response.url().endsWith("/api/leads"),
     );
-    await page.getByRole("button", { name: "New chat", exact: true }).click();
+    await startGeneralNewChat();
     await defaultCreate;
     const defaultRequest = bodies
       .filter((r) => r.path === "/api/leads")
@@ -826,7 +889,7 @@ test("account project ui", async ({ browser: _browser }) => {
     const inFolder = page.waitForResponse((response) =>
       response.url().endsWith("/api/leads"),
     );
-    await page.getByRole("button", { name: "New chat", exact: true }).click();
+    await startGeneralNewChat();
     await inFolder;
     assert.equal(
       bodies.filter((r) => r.path === "/api/leads").at(-1).body.project_folder,
@@ -1012,16 +1075,16 @@ test("account project ui", async ({ browser: _browser }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await openStudioAccounts();
     const removalManager = studioSettings;
-    const otherRow = removalManager.locator('[data-account="other"]');
+    const otherRow = removalManager
+      .locator(".server-account-row")
+      .filter({ hasText: "another.long.account@example.com" });
     await otherRow
       .getByRole("button", {
         name: "Actions for another.long.account@example.com",
         exact: true,
       })
       .click();
-    await page
-      .getByRole("menuitem", { name: "Delete account", exact: true })
-      .click();
+    await page.getByRole("menuitem", { name: "Remove", exact: true }).click();
     const deletion = page.getByRole("dialog", {
       name: "Delete account",
       exact: true,

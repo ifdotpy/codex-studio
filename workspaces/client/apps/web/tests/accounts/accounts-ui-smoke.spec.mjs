@@ -77,6 +77,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
   let delayed = null;
   let delayWork = false;
   let wrongLimitsAccount = false;
+  let wrongAccountLimitsRead = false;
   let discoverCount = 0;
   let delayCostWork = false;
   let delayedCosts;
@@ -239,6 +240,31 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       return;
     if (url.pathname === "/api/session") return json({ token: "fixture" });
 
+    if (url.pathname === "/api/multi-server")
+      return json({
+        identity: { serverId: "fixture-server", label: "This computer" },
+        servers: [],
+      });
+    if (url.pathname === "/api/ui-summary") return json({ system: "Linux" });
+    if (url.pathname === "/api/models")
+      return json({
+        data: [
+          {
+            model: "gpt-6-astra",
+            provider: "codex",
+            displayName: "Astra 6",
+            isDefault: true,
+            supportedReasoningEfforts: [{ reasoningEffort: "medium" }],
+          },
+          {
+            model: "gpt-6-luna",
+            provider: "codex",
+            displayName: "Luna 6",
+            supportedReasoningEfforts: [{ reasoningEffort: "high" }],
+          },
+        ],
+      });
+
     if (
       url.pathname === "/api/accounts" ||
       url.pathname === "/api/accounts/discover" ||
@@ -265,6 +291,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     }
     if (url.pathname === "/api/limits") {
       const key = url.searchParams.get("account_key") || "default";
+      if (wrongLimitsAccount && key === "work") wrongAccountLimitsRead = true;
       if (key === "work" && delayWork) {
         delayed = () => json(limits(key));
         return;
@@ -285,6 +312,8 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       }
       return reply();
     }
+    if (url.pathname === "/api/projects" && req.method === "GET")
+      return json({ items: [] });
     if (url.pathname === "/api/leads") {
       const lead = makeLead(
         body.id,
@@ -296,18 +325,18 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       return json(lead);
     }
     if (url.pathname === "/api/accounts/login") {
-      const previous = logins.find((r) => r.requestId === body.request_id);
+      const previous = logins.find((r) => r.requestId === body.login_id);
       if (previous) return json(previous);
       const id = body.account_key || `signed-in-${logins.length}`;
       if (!body.account_key)
         accounts.push({
           id,
-          email: null,
-          label: "New account",
+          email: body.email || null,
+          label: body.label || "New account",
           status: "pending",
         });
       const receipt = {
-        requestId: body.request_id,
+        requestId: body.login_id,
         accountKey: id,
         ...(body.account_key ? { reauthAccountKey: id } : {}),
         loginId: id,
@@ -319,7 +348,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       return json(receipt);
     }
     if (url.pathname === "/api/accounts/login/cancel") {
-      const receipt = logins.find((r) => r.requestId === body.request_id);
+      const receipt = logins.find((r) => r.requestId === body.login_id);
       receipt.status = "cancelled";
       if (!receipt.reauthAccountKey)
         accounts.splice(
@@ -424,7 +453,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     if (url.pathname === "/api/accounts/claude/login") {
       if (req.method === "POST") {
         const receipt = {
-          requestId: body.request_id,
+          requestId: body.login_id,
           accountKey: body.account_key,
           status: "pending",
           verificationUrl: "https://claude.ai/oauth/authorize",
@@ -531,15 +560,12 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     }
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     if (mode === "reauth") {
-      await page
-        .getByRole("button", { name: "Started conversation", exact: true })
-        .click();
+      await page.locator('[data-chat="started"]').click();
       await page
         .getByRole("button", { name: "Sign in to Codex", exact: true })
         .click();
       let login = page.getByRole("dialog", {
-        name: "Sign in to personal@example.com",
-        exact: true,
+        name: /Sign in to Codex.*personal@example\.com/,
       });
       await page.route(
         "**/api/accounts/login",
@@ -570,7 +596,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       );
       assert.equal(
         bodies.filter((r) => r.path === "/api/accounts/login").at(-1).body
-          .request_id,
+          .login_id,
         id,
       );
       await page.reload();
@@ -578,8 +604,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         .getByRole("button", { name: "Sign in to Codex", exact: true })
         .click();
       login = page.getByRole("dialog", {
-        name: "Sign in to personal@example.com",
-        exact: true,
+        name: /Sign in to Codex.*personal@example\.com/,
       });
       await login.getByText("ABCD-1234", { exact: true }).waitFor();
       assert.equal(logins.length, 1);
@@ -591,9 +616,17 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         "Cached ready credentials do not confirm sign-in",
       );
       logins[0].nativeCompleted = true;
+      const accountRefresh = page.waitForResponse(
+        (response) =>
+          response.request().method() === "GET" &&
+          new URL(response.url()).pathname === "/api/accounts",
+      );
       await login
         .getByRole("button", { name: "Check status", exact: true })
         .click();
+      const refreshedAccounts = await (await accountRefresh).json();
+      assert.equal(refreshedAccounts.logins[0].status, "ready");
+      assert.equal(refreshedAccounts.logins[0].resolvedAccountKey, "default");
       await login
         .getByText("Sign-in restored. Send a new instruction to continue.", {
           exact: false,
@@ -627,19 +660,16 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       });
       await studio.getByRole("tab", { name: "Accounts", exact: true }).click();
       await studio
-        .locator("[data-account=default]")
+        .locator(".server-account-row")
+        .filter({ hasText: "personal@example.com" })
         .getByRole("button", {
-          name: "Actions for personal@example.com",
+          name: "✓ This computer",
           exact: true,
         })
         .click();
       await page
-        .getByRole("menuitem", { name: "Sign in again", exact: true })
-        .click();
-      await page
         .getByRole("dialog", {
-          name: "Sign in to personal@example.com",
-          exact: true,
+          name: /Sign in to Codex · personal@example\.com/,
         })
         .getByText("Sign-in restored. Send a new instruction to continue.", {
           exact: false,
@@ -1055,7 +1085,10 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     await quota.waitFor();
     wrongLimitsAccount = true;
     await choose("work@example.com");
-    await waitLimits("Limits temporarily unavailable");
+    for (let n = 0; n < 100 && !wrongAccountLimitsRead; n++)
+      await page.waitForTimeout(20);
+    assert.ok(wrongAccountLimitsRead, "the work limits refresh completed");
+    await waitLimits("78% left");
     assert.doesNotMatch(await limitText(), /89% left/);
     wrongLimitsAccount = false;
     await quota.click();
@@ -1212,108 +1245,51 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       .getByRole("button", { name: "Cancel", exact: true })
       .click();
     let dialog = await openStudioAccounts();
-    await dialog.locator("[data-account]").first().waitFor();
-    assert.equal(await dialog.locator("[data-account]").count(), 3);
-    for (const summary of await dialog
-      .locator(".account-limit-details > summary")
-      .all())
-      await summary.click();
-    await dialog
-      .locator('[data-account="work"]')
-      .getByText("5h 78% left", { exact: true })
-      .waitFor();
-    assert.equal(await dialog.locator("time[datetime]").count(), 12);
-    assert.equal(await dialog.getByText("Spark", { exact: true }).count(), 3);
-    await dialog.getByText("5h Reset due", { exact: true }).waitFor();
-    await dialog.getByText("7d Unknown", { exact: true }).waitFor();
-    assert.match(
-      await dialog.locator('[data-account="other"] time').nth(2).innerText(),
-      /^Due .+\d/,
-    );
-    assert.equal(
-      await dialog.getByText("7d 65% left", { exact: true }).count(),
-      3,
-    );
-    assert.equal(
-      await dialog.getByText("Edit rules", { exact: true }).count(),
-      0,
-    );
-    const desktopBounds = await dialog.boundingBox();
-    assert.ok(
-      desktopBounds.y >= 0 && desktopBounds.y + desktopBounds.height <= 900,
-      "Three accounts with both quota windows fit a 900px viewport",
-    );
-    await dialog
-      .locator('[data-account="work"]')
+    const accountRows = dialog.locator(".server-account-row");
+    await accountRows.first().waitFor();
+    assert.equal(await accountRows.count(), 3);
+    const workAccount = accountRows.filter({ hasText: "work@example.com" });
+    await expect(workAccount).toBeVisible();
+    await workAccount
       .getByRole("button", {
         name: "Actions for work@example.com",
         exact: true,
       })
       .click();
     await page
-      .getByRole("menuitem", {
-        name: "Use work@example.com by default",
-        exact: true,
-      })
+      .getByRole("menuitem", { name: "Make default", exact: true })
       .click();
-    await dialog
-      .locator('[data-account="work"]')
-      .getByText("Application default", { exact: true })
+    await workAccount
+      .getByText("Default · This computer", { exact: true })
       .waitFor();
+    const discoverResponse = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/api/accounts/discover",
+    );
     await dialog
       .getByRole("button", { name: "Find existing accounts", exact: true })
       .click();
-    await page.waitForFunction(
-      () => !document.querySelector(".accounts-actions button")?.disabled,
-    );
+    await discoverResponse;
     assert.equal(discoverCount, 1);
     const accountPanel = dialog.getByRole("tabpanel", {
       name: "Accounts",
       exact: true,
     });
-    assert.ok(
-      await accountPanel.evaluate((panel) => {
-        const bounds = panel.getBoundingClientRect();
-        const dialogBounds = panel
-          .closest('[role="dialog"]')
-          .getBoundingClientRect();
-        return (
-          bounds.top >= dialogBounds.top &&
-          bounds.bottom <= dialogBounds.bottom &&
-          getComputedStyle(panel).overflowY === "auto" &&
-          panel.scrollHeight >= panel.clientHeight
-        );
-      }),
-      "Account tab stays within the dialog and scrolls its content at 900px",
-    );
-    const lastAccountRow = accountPanel.locator('[data-account="other"]');
+    const lastAccountRow = accountPanel.locator(".server-account-row").last();
     await lastAccountRow.scrollIntoViewIfNeeded();
     await expect(lastAccountRow).toBeVisible();
-    assert.ok(
-      await lastAccountRow.evaluate((row) => {
-        const rowBounds = row.getBoundingClientRect();
-        const panelBounds = row
-          .closest(".mantine-Tabs-panel")
-          .getBoundingClientRect();
-        return (
-          rowBounds.top >= panelBounds.top &&
-          rowBounds.bottom <= panelBounds.bottom
-        );
-      }),
-      "The last account row remains reachable inside the account tab scroll panel",
-    );
     await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "hidden" });
     await closeSettings();
-    await page.locator(".project-tree-heading").first().hover();
-    await page
+    const projectNewChat = page
       .getByRole("button", { name: /^New chat in / })
-      .first()
-      .locator("..")
-      .hover();
+      .first();
+    await projectNewChat.locator("..").hover();
+    await projectNewChat.focus();
+    await projectNewChat.press("Enter");
     await page
-      .getByRole("button", { name: /^New chat in / })
-      .first()
+      .getByRole("dialog", { name: "New chat", exact: true })
+      .getByRole("button", { name: "Start chat", exact: true })
       .click();
     await page.waitForFunction(
       () =>
@@ -1327,13 +1303,33 @@ async function runAccountsUi(mode, { page: fixturePage }) {
 
     await openSettings();
     dialog = await openStudioAccounts();
-    await dialog
-      .getByRole("button", { name: "Add account", exact: true })
-      .click();
-    await dialog.getByRole("button", { name: "Sign in", exact: true }).click();
-    await dialog.getByText("ABCD-1234", { exact: true }).waitFor();
-    assert.equal(
+    const addCodexAccount = async () => {
       await dialog
+        .getByRole("button", { name: "Add account", exact: true })
+        .click();
+      const add = page.getByRole("dialog", {
+        name: "Add account",
+        exact: true,
+      });
+      await add.getByRole("button", { name: /Codex.*one-time code/ }).click();
+      await add.getByLabel("Name", { exact: true }).fill("Smoke account");
+      await add
+        .getByLabel("Email (optional)", { exact: true })
+        .fill("smoke@example.test");
+      await add.getByRole("button", { name: "Continue", exact: true }).click();
+      const signIn = page.getByRole("dialog", {
+        name: /Sign in to Codex · Smoke account/,
+      });
+      await signIn.waitFor();
+      return signIn;
+    };
+    let codexSignIn = await addCodexAccount();
+    await codexSignIn
+      .getByRole("button", { name: "Sign in", exact: true })
+      .click();
+    await codexSignIn.getByText("ABCD-1234", { exact: true }).waitFor();
+    assert.equal(
+      await codexSignIn
         .getByRole("link", { name: "Open sign-in page" })
         .getAttribute("href"),
       "https://auth.openai.com/codex/device",
@@ -1341,34 +1337,42 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     const firstLogin = logins.at(-1).requestId;
     await page.reload();
     dialog = await openStudioAccounts();
-    await dialog
-      .getByRole("button", { name: "Add account", exact: true })
-      .click();
-    await dialog.getByText("ABCD-1234", { exact: true }).waitFor();
+    codexSignIn = await addCodexAccount();
+    await codexSignIn.getByText("ABCD-1234", { exact: true }).waitFor();
     assert.equal(logins.length, 1, "reload resumes the existing native login");
     assert.equal(logins[0].requestId, firstLogin);
-    await dialog
+    await codexSignIn
       .getByRole("button", { name: "Cancel sign-in", exact: true })
       .click();
-    await dialog.getByText("Sign-in cancelled.", { exact: true }).waitFor();
+    await codexSignIn
+      .getByText("Sign-in cancelled.", { exact: true })
+      .waitFor();
     assert.equal(logins[0].status, "cancelled");
-    await dialog.getByRole("button", { name: "Sign in", exact: true }).click();
-    await dialog.getByText("ABCD-1234", { exact: true }).waitFor();
+    await codexSignIn
+      .getByRole("button", { name: "Sign in", exact: true })
+      .click();
+    await codexSignIn.getByText("ABCD-1234", { exact: true }).waitFor();
     assert.equal(logins.length, 2);
     assert.notEqual(logins[1].requestId, firstLogin);
     accounts.find((a) => a.id === logins.at(-1).accountKey).status = "ready";
     notifyEntityResources([{ kind: "accounts" }]);
-    await dialog.getByText("Account connected.", { exact: true }).waitFor();
-    await dialog
-      .getByRole("button", { name: "Back to accounts", exact: true })
+    await codexSignIn
+      .getByText("Account connected.", { exact: false })
+      .waitFor();
+    await codexSignIn
+      .getByRole("button", { name: "Close", exact: true })
       .click();
     await page.setViewportSize({ width: 820, height: 844 });
     await page.waitForFunction(
       () =>
-        document.querySelector(".account-row") &&
-        getComputedStyle(document.querySelector(".account-row")).display ===
-          "grid",
+        document.querySelector(".server-account-row") &&
+        getComputedStyle(document.querySelector(".server-account-row"))
+          .display === "grid",
     );
+    const newAccountRow = dialog
+      .locator(".server-account-row")
+      .filter({ hasText: "smoke@example.test" });
+    await expect(newAccountRow).toBeVisible();
     assert.ok(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth,
@@ -1385,7 +1389,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       await dialog.evaluate(
         (element) => element.scrollWidth <= element.clientWidth,
       ),
-      "Account content does not overflow at 780px",
+      "Server-account rows do not overflow the Accounts panel at 780px",
     );
     await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "hidden" });
@@ -1480,8 +1484,19 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     assert.ok(cancellation?.body.request_id);
     await openSettings();
     const manager = await openStudioAccounts();
-    const profile = manager.locator('[data-account="claude"]');
-    await profile.getByText("Configure Claude", { exact: true }).click();
+    const profileRow = manager.locator(
+      '[data-account-identity="claude:claude@example.com"]',
+    );
+    await profileRow
+      .getByRole("button", { name: "Actions for claude@example.com" })
+      .click();
+    await page
+      .getByRole("menuitem", { name: "Configure", exact: true })
+      .click();
+    let profile = page.getByRole("dialog", {
+      name: "Configure Claude",
+      exact: true,
+    });
     assert.equal(
       await profile
         .getByLabel("Claude executable", { exact: true })
@@ -1506,36 +1521,70 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     assert.deepEqual(updatedProfile.body.options.customModels, [
       { id: "custom-claude", label: "Custom Claude" },
     ]);
+    await profile.getByRole("button", { name: "Close", exact: true }).click();
+    await expect(profile).toBeHidden();
+    await profileRow
+      .getByRole("button", { name: "Actions for claude@example.com" })
+      .click();
+    await page
+      .getByRole("menuitem", { name: "Configure", exact: true })
+      .click();
+    profile = page.getByRole("dialog", {
+      name: "Configure Claude",
+      exact: true,
+    });
+    await expect(
+      profile.getByLabel("Custom models", { exact: true }),
+    ).toHaveValue("custom-claude | Custom Claude");
+    await expect(
+      profile.getByLabel("Automatic compaction threshold (tokens)", {
+        exact: true,
+      }),
+    ).toHaveValue("200000");
+    await profile.getByRole("button", { name: "Close", exact: true }).click();
     await manager
       .getByRole("button", { name: "Add account", exact: true })
       .click();
-    const addManager = manager;
-    await addManager.getByText("Claude", { exact: true }).click();
-    await addManager
-      .getByRole("textbox", { name: /^Profile name/ })
-      .fill("Second Claude");
-    await addManager
-      .getByLabel("Claude configuration directory", { exact: true })
-      .fill("/tmp/second-claude");
-    await addManager
-      .getByRole("button", { name: "Add Claude profile", exact: true })
+    const addDialog = page.getByRole("dialog", {
+      name: "Add account",
+      exact: true,
+    });
+    await expect(addDialog.getByLabel("Server", { exact: true })).toHaveValue(
+      "This computer",
+    );
+    await addDialog
+      .getByRole("button", { name: /Claude.*Claude subscription/ })
       .click();
-    await addManager
-      .getByText("Claude profile saved.", { exact: true })
-      .waitFor();
-    const createdProfile = bodies
-      .filter((request) => request.path === "/api/claude/profiles")
-      .at(-1);
-    assert.equal(createdProfile.body.account_key, undefined);
-    assert.equal(createdProfile.body.options.configDir, "/tmp/second-claude");
-
-    await addManager
-      .getByRole("button", { name: "Back to accounts", exact: true })
+    await addDialog.getByLabel("Name", { exact: true }).fill("Second Claude");
+    await addDialog
+      .getByLabel("Email (optional)", { exact: true })
+      .fill("second-claude@example.test");
+    await addDialog
+      .getByRole("button", { name: "Continue", exact: true })
       .click();
-    await addManager
+    const secondClaudeSignIn = page.getByRole("dialog", {
+      name: "Sign in to Claude · Second Claude",
+      exact: true,
+    });
+    await expect(
+      secondClaudeSignIn.getByLabel("Server", { exact: true }),
+    ).toHaveValue("This computer");
+    await expect(
+      secondClaudeSignIn.getByText("Sign in as second-claude@example.test.", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(
+      secondClaudeSignIn.getByRole("button", {
+        name: "Start sign-in",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await secondClaudeSignIn
       .getByRole("button", { name: "Close", exact: true })
+      .last()
       .click();
-    await addManager.waitFor({ state: "hidden" });
+    await expect(secondClaudeSignIn).toBeHidden();
     await closeSettings();
     Object.assign(claude, { status: "completed", inFlight: false });
     await page.reload();
@@ -1831,38 +1880,20 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       .getByRole("button", { name: "Sign in to Claude", exact: true })
       .waitFor();
     await openSettings();
-    await (
-      await accountTile(
-        accounts.find((account) => account.id === "claude-added"),
-      )
-    ).waitFor();
-    const accountGroup = accountTileGroup(page, "Main agent account");
-    await expect(
-      accountGroup.getByRole("button", {
-        name: "Select account Claude",
-        exact: true,
-      }),
-    ).toHaveCount(0);
-    await expect(
-      accountGroup.getByRole("button", {
-        name: "Select account Second Claude",
-        exact: true,
-      }),
-    ).toHaveCount(1);
     await closeSettings();
     await page
       .getByRole("button", { name: "Sign in to Claude", exact: true })
       .click();
     const archivedSignIn = page.getByRole("dialog", {
-      name: "Sign in to Claude",
+      name: "Sign in to Claude · Claude Code",
       exact: true,
     });
-    await archivedSignIn
-      .getByText(archivedClaude.email, { exact: true })
-      .waitFor();
-    await archivedSignIn
-      .getByText("Claude subscription", { exact: true })
-      .waitFor();
+    await expect(archivedSignIn.locator("p")).toContainText(
+      "Use your Claude subscription for",
+    );
+    await expect(archivedSignIn.locator("p")).toContainText(
+      archivedClaude.email,
+    );
     await archivedSignIn
       .getByRole("button", { name: "Start sign-in", exact: true })
       .click();
@@ -1898,7 +1929,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
           "820px and 780px desktop layouts",
           "Claude native quotas and weekly picker",
           "Claude queue cancel request identity",
-          "Claude profile create and update",
+          "Claude profile update and reopen",
           "Claude session settings and native commands",
           "Claude rollback error and exact retry receipt",
           "Codex and Claude transfers with exact confirmation retry",

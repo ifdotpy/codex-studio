@@ -288,9 +288,22 @@ test("Account settings errors", async () => {
         .waitFor();
       assert.equal(limitsReads, readsBeforeChange + 1);
       assert.equal(
-        await limits.getByText(/80%\s*left/).count(),
-        2,
-        "typed notification displays recovered primary and weekly limits",
+        await limits
+          .locator(".account-limit-summary")
+          .getByText("80% left", { exact: true })
+          .count(),
+        1,
+        "the account summary displays the recovered remaining limit",
+      );
+      assert.equal(
+        await limits.getByText(/5h\s+80%\s+left/).count(),
+        1,
+        "typed notification displays the recovered primary limit",
+      );
+      assert.equal(
+        await limits.getByText(/7d\s+80%\s+left/).count(),
+        1,
+        "typed notification displays the recovered weekly limit",
       );
       assert.equal(
         await limits.getByText(failure.message, { exact: true }).count(),
@@ -312,10 +325,24 @@ test("Account settings errors", async () => {
         .first()
         .waitFor();
       assert.equal(limitsReads, readsBeforeReconnect + 1);
-      assert.equal(await limits.getByText(/80%\s*left/).count(), 2);
+      assert.equal(
+        await limits
+          .locator(".account-limit-summary")
+          .getByText("80% left", { exact: true })
+          .count(),
+        1,
+      );
+      assert.equal(await limits.getByText(/5h\s+80%\s+left/).count(), 1);
+      assert.equal(await limits.getByText(/7d\s+80%\s+left/).count(), 1);
       await page.keyboard.press("Escape");
       for (const section of ["rules", "changes", "tools"]) {
         await page.evaluate((value) => window.showSurface(value), section);
+        if (section === "tools")
+          await page
+            .getByText("Some tools could not load. View details.", {
+              exact: true,
+            })
+            .click();
         await page.getByText(failure.message, { exact: true }).waitFor();
         await details(failure);
       }
