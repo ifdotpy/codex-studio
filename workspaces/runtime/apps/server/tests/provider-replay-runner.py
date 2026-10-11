@@ -280,8 +280,6 @@ class ProviderReplay(unittest.TestCase):
                             answer_items = [json.loads(row[0]) for row in db.execute(
                                 "SELECT record FROM runtime_items WHERE agent=? ORDER BY created,id",
                                 (agent["id"],))]
-                            usage_rows = [json.loads(row[0]) for row in db.execute(
-                                "SELECT record FROM analytics_usage WHERE agent=?", (agent["id"],))]
                             tasks = [json.loads(row[0]) for row in db.execute(
                                 "SELECT record FROM runtime_tasks WHERE json_extract(record,'$.agent')=?",
                                 (agent["id"],))]
@@ -291,6 +289,9 @@ class ProviderReplay(unittest.TestCase):
                             child_items = ([json.loads(row[0]) for row in db.execute(
                                 "SELECT record FROM runtime_items WHERE agent=? ORDER BY created,id",
                                 (child["id"],))] if child else [])
+                        with runtime.analytics_db() as analytics_db:
+                            usage_rows = [json.loads(row[0]) for row in analytics_db.execute(
+                                "SELECT record FROM analytics_usage WHERE agent=?", (agent["id"],))]
                         self.assertEqual(saved_agent["status"], expected, saved_agent)
                         self.assertTrue(events, "lead runtime_events must persist")
                         for expected_kind in fixture.get("assert", {}).get("eventKinds", []):
