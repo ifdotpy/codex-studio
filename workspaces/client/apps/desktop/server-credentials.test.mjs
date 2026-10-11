@@ -113,6 +113,25 @@ test("pair retry keeps its key and body, signs exact bytes and refuses another s
       headers: { "X-Canvas-Token": "local-only" },
       requestId: "read-once",
     });
+    // The shell summary sends no request ID. The signed bytes and the header
+    // must still carry the same one, or the server refuses the signature.
+    await adapter.request({
+      serverId: server.id,
+      credentialId: server.credentialId,
+      url: invitation.origin + "/api/ui-summary",
+    });
+    expect(calls.at(-1).headers["x-studio-request-id"]).toMatch(
+      /^[0-9a-f-]{36}$/,
+    );
+    await expect(
+      adapter.request({
+        serverId: server.id,
+        credentialId: server.credentialId,
+        url: invitation.origin + "/api/answer",
+        method: "POST",
+        body: new TextEncoder().encode("{}"),
+      }),
+    ).rejects.toThrow("needs a request ID");
     await expect(
       adapter.request({
         serverId: server.id,

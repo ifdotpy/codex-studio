@@ -298,6 +298,14 @@ function createServerCredentials({
         throw new Error("The server key is unavailable. Pair this UI again.");
       if (!["GET", "POST", "HEAD"].includes(method))
         throw new Error("Unsupported server method.");
+      // The request ID is part of the signed bytes and of its header. A read
+      // without one (the shell summary) gets a new ID; a write needs the
+      // caller's ID, so that a retry repeats the same operation.
+      if (requestId === undefined || requestId === null) {
+        if (method === "POST")
+          throw new Error("A server write needs a request ID.");
+        requestId = crypto.randomUUID();
+      }
       return signed(
         credential,
         new Request(url, {
