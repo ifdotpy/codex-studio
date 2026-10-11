@@ -12,7 +12,6 @@ test("Browser access notice ui", async ({
   page: runnerPage,
   context: runnerContext,
 }) => {
-  test.setTimeout(180_000);
   const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const require = createRequire(
     join(repo, "workspaces/client/apps/web/package.json"),
@@ -95,10 +94,12 @@ test("Browser access notice ui", async ({
     };
     await set({ accountKey: "disabled", active: true });
     await notice.waitFor();
-    await assert.doesNotReject(() =>
-      notice
-        .getByText(/Browser access is off: The Chrome plugin is disabled/)
-        .waitFor(),
+    const details = notice.locator("details");
+    await details.locator("summary").click();
+    assert.equal(await details.evaluate((element) => element.open), true);
+    assert.match(
+      await details.innerText(),
+      /The Chrome plugin is disabled in this account's Codex configuration/,
     );
     await page.screenshot({ path: screenshot });
     await set({ accountKey: "default", active: true });

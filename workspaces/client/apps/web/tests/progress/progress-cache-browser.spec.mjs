@@ -7,7 +7,6 @@ import { join } from "node:path";
 import { test, browserExecutablePath } from "../playwright.mjs";
 
 test("Progress cache", async () => {
-  test.setTimeout(180_000);
   // Cache boundaries use the actual module and isolated browser storage.
   const root = fileURLToPath(new URL("../..//", import.meta.url));
   const require = createRequire(join(root, "package.json"));
@@ -21,7 +20,10 @@ test("Progress cache", async () => {
     root,
     cacheDir,
     server: { host: "127.0.0.1", port: 0 },
-    optimizeDeps: { noDiscovery: true },
+    optimizeDeps: {
+      noDiscovery: true,
+      include: ["react", "react/jsx-runtime", "react/jsx-dev-runtime", "dexie"],
+    },
     plugins: [
       {
         name: "progress-cache-fixture",
@@ -107,7 +109,9 @@ test("Progress cache", async () => {
     });
     const origin = `http://127.0.0.1:${server.httpServer.address().port}/check`;
     await page.goto(origin);
-    await page.waitForFunction(() => !!window.progressCache);
+    await page.waitForFunction(() => !!window.progressCache, undefined, {
+      timeout: 5000,
+    });
     await page.evaluate(async () => {
       await progressCache.readProgress("state-a", "first");
       if (progressCache.peekProgress("state-b", "first") !== null)
@@ -116,7 +120,9 @@ test("Progress cache", async () => {
         throw Error("Agent scope leaked");
     });
     await page.reload();
-    await page.waitForFunction(() => !!window.progressCache);
+    await page.waitForFunction(() => !!window.progressCache, undefined, {
+      timeout: 5000,
+    });
     assert.equal(
       await page.evaluate(
         () => progressCache.peekProgress("state-a", "first")?.markdown,

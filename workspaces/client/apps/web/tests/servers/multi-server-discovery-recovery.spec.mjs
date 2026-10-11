@@ -9,8 +9,22 @@ async function settings(page) {
 }
 async function showFixtureChats(page) {
   await page
-    .getByLabel("Find projects and chats", { exact: true })
+    .getByLabel("Filter projects and chats", { exact: true })
     .fill("chat");
+}
+async function expectOverlappingChats(page) {
+  const rows = page.locator("#chat-list [data-chat]");
+  await expect(rows).toHaveCount(2);
+  expect(
+    await rows.evaluateAll((elements) =>
+      elements.map((element) => element.getAttribute("data-chat")).sort(),
+    ),
+  ).toEqual(
+    [
+      JSON.stringify(["chat", "local", "overlap"]),
+      JSON.stringify(["chat", "remote", "overlap"]),
+    ].sort(),
+  );
 }
 test("revoke cancels an automatic invitation whose reply is still in flight", async ({
   page,
@@ -382,9 +396,7 @@ test("an unused legacy invitation expires into a new attempt without a credentia
     await seedLegacy(page, local, remote, true);
     await page.goto(local.origin + "/?studio-navigation=combined");
     await showFixtureChats(page);
-    await expect(
-      page.locator(".server-sidebar [data-chat=overlap]"),
-    ).toHaveCount(2);
+    await expectOverlappingChats(page);
     const request = local.accessRequests.find(
       (row) => row.action === "ui_invite",
     );
@@ -459,9 +471,7 @@ test("Add to this UI recovers after an uncertain discover blocks revoke before d
       .click();
     await dialog.getByRole("button", { name: "Close", exact: true }).click();
     await showFixtureChats(page);
-    await expect(
-      page.locator(".server-sidebar [data-chat=overlap]"),
-    ).toHaveCount(2);
+    await expectOverlappingChats(page);
     expect(remote.pairs).toHaveLength(1);
   } finally {
     await local.close();

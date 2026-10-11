@@ -299,7 +299,7 @@ test("Account Transfer Ui", async ({
       return json(lead);
     }
     if (url.pathname === "/api/accounts/login") {
-      const previous = logins.find((r) => r.requestId === body.request_id);
+      const previous = logins.find((r) => r.requestId === body.login_id);
       if (previous) return json(previous);
       const id = `signed-in-${logins.length}`;
       accounts.push({
@@ -309,7 +309,7 @@ test("Account Transfer Ui", async ({
         status: "pending",
       });
       const receipt = {
-        requestId: body.request_id,
+        requestId: body.login_id,
         accountKey: id,
         loginId: id,
         verificationUrl: "https://auth.openai.com/codex/device",
@@ -320,7 +320,7 @@ test("Account Transfer Ui", async ({
       return json(receipt);
     }
     if (url.pathname === "/api/accounts/login/cancel") {
-      const receipt = logins.find((r) => r.requestId === body.request_id);
+      const receipt = logins.find((r) => r.requestId === body.login_id);
       receipt.status = "cancelled";
       accounts.splice(
         accounts.findIndex((a) => a.id === receipt.accountKey),

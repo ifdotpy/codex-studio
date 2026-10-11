@@ -1,8 +1,6 @@
 import { test, expect } from "../playwright.mjs";
 import { fixture } from "./multi-server-fixture.mjs";
 
-test.setTimeout(180000);
-
 async function projectFixtures(offline = false) {
   const leads = [];
   const browses = [];
@@ -177,7 +175,6 @@ test("project folders, remote browse, and New chat server choice", async ({
   page,
   context,
 }, testInfo) => {
-  test.setTimeout(180000);
   const { leads, browses, registrations, project, local, remote } =
     await projectFixtures();
   const errors = [];
@@ -197,13 +194,14 @@ test("project folders, remote browse, and New chat server choice", async ({
       .getByRole("button", { name: "New chat in attar", exact: true })
       .click({ timeout: 5000 });
     const frame = page.frameLocator('iframe[title="Studio on Local"]');
-    const dialog = frame.getByRole("dialog", {
+    const dialog = page.getByRole("dialog", {
       name: "New chat",
       exact: true,
     });
     await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
     await expect(dialog).not.toBeVisible();
     expect(leads).toHaveLength(0);
+    await group.locator(".project-tree-heading").hover();
     await group
       .getByRole("button", { name: "New chat in attar", exact: true })
       .click({ timeout: 5000 });
@@ -234,6 +232,7 @@ test("project folders, remote browse, and New chat server choice", async ({
     expect(leads[0].project_id).toBe(project.id);
     expect(leads[0].project_server_id).toBe("local");
     expect(leads[0].token).toBeUndefined();
+    await group.locator(".project-tree-heading").hover();
     await group
       .getByRole("button", { name: "Options for project attar", exact: true })
       .click();
@@ -323,9 +322,10 @@ test("bound local New chat lets the logical project choose its account", async (
     await group
       .getByRole("button", { name: "New chat in attar", exact: true })
       .click({ timeout: 5000 });
-    const dialog = page
-      .frameLocator('iframe[title="Studio on Local"]')
-      .getByRole("dialog", { name: "New chat", exact: true });
+    const dialog = page.getByRole("dialog", {
+      name: "New chat",
+      exact: true,
+    });
     await dialog
       .getByRole("button", { name: /Local.*Active.*chrompile/ })
       .click();
@@ -388,7 +388,7 @@ test("offline paired server is disabled in all project choices", async ({
       .getByRole("button", { name: "New chat in attar", exact: true })
       .click();
     const frame = page.frameLocator('iframe[title="Studio on Local"]');
-    const dialog = frame.getByRole("dialog", {
+    const dialog = page.getByRole("dialog", {
       name: "New chat",
       exact: true,
     });
@@ -463,12 +463,10 @@ for (const variant of ["light", "dark", "mobile"]) {
       await group
         .getByRole("button", { name: "New chat in attar", exact: true })
         .click();
-      const dialog = page
-        .frameLocator('iframe[title="Studio on Local"]')
-        .getByRole("dialog", {
-          name: "New chat",
-          exact: true,
-        });
+      const dialog = page.getByRole("dialog", {
+        name: "New chat",
+        exact: true,
+      });
       await expect(
         dialog.getByRole("button", { name: "Start chat", exact: true }),
       ).toBeVisible();

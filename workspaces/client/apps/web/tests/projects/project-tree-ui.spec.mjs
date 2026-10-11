@@ -15,7 +15,6 @@ import { createRequire } from "node:module";
 test("project pointer and keyboard order persist without collapsing", async ({
   page: runnerPage,
 }) => {
-  test.setTimeout(240_000);
   const skill = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const { _electron } = createRequire(
     join(skill, "workspaces/client/apps/web/package.json"),
@@ -510,9 +509,25 @@ test("project pointer and keyboard order persist without collapsing", async ({
       exact: true,
     });
     await dialog.getByLabel("Folder path").fill(folders["Empty project"]);
+    const directoryReadStartedAt = performance.now();
+    const directoryRead = page.waitForResponse((response) => {
+      const request = response.request();
+      const url = new URL(response.url());
+      return (
+        request.method() === "GET" &&
+        url.pathname === "/api/directories" &&
+        url.searchParams.get("path") === folders["Empty project"]
+      );
+    });
     await dialog
       .getByRole("button", { name: "Open path", exact: true })
       .click();
+    const directoryResponse = await directoryRead;
+    assert.equal(directoryResponse.status(), 200);
+    const directoryReadMs = Math.round(
+      performance.now() - directoryReadStartedAt,
+    );
+    console.log(`Project directory GET completed in ${directoryReadMs} ms`);
     await dialog
       .getByRole("button", { name: "Add project", exact: true })
       .click();

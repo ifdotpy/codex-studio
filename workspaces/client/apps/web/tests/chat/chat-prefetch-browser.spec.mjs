@@ -6,7 +6,6 @@ test("Chat prefetch browser", async ({
   browser: testBrowser,
   context: runnerContext,
 }) => {
-  test.setTimeout(300_000);
   const { createServer } = await import(
     new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
   );
@@ -20,6 +19,29 @@ test("Chat prefetch browser", async ({
       {
         name: "prefetch-fixture",
         configureServer(server) {
+          server.middlewares.use(
+            "/fixture/resource-event",
+            (request, response) => {
+              const url = new URL(request.url, "http://127.0.0.1");
+              const workspace = url.searchParams.get("workspace");
+              const agentId = url.searchParams.get("agent");
+              const revision = Number(url.searchParams.get("revision"));
+              const resource = { kind: "transcript", agentId };
+              for (const stream of streams)
+                stream.write(
+                  `event: resources\ndata: ${JSON.stringify({
+                    protocol: 3,
+                    workspaceId: workspace,
+                    epoch: "fixture-epoch",
+                    revision,
+                    reason: "change",
+                    resources: [resource],
+                    resourceVersions: [{ resource, revision }],
+                  })}\n\n`,
+                );
+              response.end("ok");
+            },
+          );
           server.middlewares.use("/api/sync/stream", (_request, response) => {
             response.setHeader("Content-Type", "text/event-stream");
             response.write(apiSchemaHandshakeSse());
@@ -360,9 +382,18 @@ test("Chat prefetch browser", async ({
       }),
     );
     await page.evaluate((workspace) => {
-      window.filtered = client.prefetchTranscript(workspace, "filtered");
+      window.filtered = client
+        .prefetchTranscript(workspace, "filtered")
+        .then((result) => {
+          window.filteredResult = result;
+          return result;
+        });
     }, workspaceId);
-    await until(() => running === 1, "The pre-filter reply is held");
+    await until(
+      () => pulls.some((pull) => pull.scope === "transcript:filtered"),
+      `The filtered pull starts; pulls=${JSON.stringify(pulls)}; pageErrors=${JSON.stringify(errors)}`,
+    );
+    assert.equal(running, 1, "The pre-filter reply is held");
     await page.evaluate(async () => {
       const { db } = await client.syncDatabase();
       const storage = db.projections.storageInstance;
@@ -383,7 +414,7 @@ test("Chat prefetch browser", async ({
       };
     });
     releaseFiltered();
-    await page.waitForFunction(() => filterRead);
+    await page.waitForFunction(() => filterRead, undefined, { timeout: 5000 });
     documents.set("transcript:filtered", doc("filtered", 9));
     await second.evaluate(
       (workspace) => client.prefetchTranscript(workspace, "filtered"),
@@ -467,6 +498,14 @@ test("Chat prefetch browser", async ({
     );
 
     documents.set("transcript:active", doc("active", 10));
+    assert.equal(
+      await second.evaluate(
+        (workspace) => client.prefetchTranscript(workspace, "active"),
+        workspaceId,
+      ),
+      true,
+      "The active transcript is persisted before subscribing",
+    );
     await second.evaluate(async () => {
       window.activeValues = [];
       window.stopActive = client.subscribeTranscriptProjection(
@@ -514,19 +553,42 @@ test("Chat prefetch browser", async ({
       { payload: null, seq: 7 },
     );
     await page.reload();
-    await page.evaluate(async () => {
+    const reloadedTombstone = await page.evaluate(async (workspace) => {
       window.client = await import("/src/sync/client.ts");
       window.cache = await import("/src/sync/transcriptCache.ts");
       Object.defineProperty(navigator, "onLine", {
         configurable: true,
         value: false,
       });
-      window.stop = client.subscribeTranscriptProjection(
-        "transcript:race",
-        () => {},
-        () => {},
-      );
-    });
+      return await new Promise((resolve, reject) => {
+        let stop = () => {};
+        const timeout = setTimeout(() => {
+          stop();
+          reject(new Error("Durable transcript hydration did not complete."));
+        }, 5000);
+        stop = client.subscribeTranscriptProjection(
+          "transcript:race",
+          () => {
+            const hydrated = cache.peekTranscript(workspace, "race");
+            if (hydrated?.seq !== 7) return;
+            clearTimeout(timeout);
+            stop();
+            resolve(hydrated);
+          },
+          (error) => {
+            clearTimeout(timeout);
+            stop();
+            reject(error);
+          },
+        );
+        window.stop = stop;
+      });
+    }, workspaceId);
+    assert.deepEqual(
+      reloadedTombstone,
+      { payload: null, seq: 7 },
+      "The subscription emits the durable tombstone after asynchronous hydration",
+    );
     assert.deepEqual(
       await page.evaluate(
         (workspace) => cache.peekTranscript(workspace, "race"),
@@ -590,84 +652,57 @@ test("Chat prefetch browser", async ({
       "Failures release their transport slots for later chats",
     );
 
-    // The shared coordinator carries compact revisions through the real channel.
-    await second.evaluate((workspace) => {
+    // The typed resource coordinator carries transcript invalidations through
+    // the live resource stream.
+    await second.evaluate(() => {
       window.revisionHints = [];
-      window.stopHints = client.watchTranscriptRevisions(workspace, (value) =>
-        revisionHints.push(value),
+      window.stopHints = client.watchSyncInvalidations(
+        (version) => revisionHints.push(version),
+        "transcript:a",
       );
-    }, workspaceId);
+    });
     await until(
       () => streams.size === 1,
-      "Revision hints reuse one workspace stream",
+      "Transcript invalidations reuse one workspace stream",
     );
-    const hint = async (workspace, revisions) => {
+    const hint = async (workspace, agentId, revision) => {
       await second.evaluate(
-        ({ workspace, revisions, channelWorkspace }) => {
-          const channel = new BroadcastChannel(
-            `codex-sync-${location.origin}-${channelWorkspace}`,
-          );
-          channel.postMessage({
-            protocol: 2,
-            kind: "generations",
-            workspaceId: workspace,
-            generations: { state: 1, transcripts: 1, drafts: 0 },
-            transcriptRevisions: revisions,
-          });
-          channel.close();
-        },
-        { workspace, revisions, channelWorkspace: workspaceId },
+        async ({ workspace, agentId, revision }) =>
+          fetch(
+            `/fixture/resource-event?workspace=${encodeURIComponent(workspace)}` +
+              `&agent=${encodeURIComponent(agentId)}&revision=${revision}`,
+          ),
+        { workspace, agentId, revision },
       );
-      await delay(100);
     };
-    await hint("c".repeat(32), { a: 99 });
+    await hint(workspaceId, "b", 7);
     assert.deepEqual(
       await second.evaluate(() => revisionHints),
       [],
-      "Foreign workspace hints are rejected",
+      "Unwatched transcript resources are ignored",
     );
-    await hint(workspaceId, { a: 7 });
-    assert.deepEqual(await second.evaluate(() => revisionHints.at(-1)), {
-      a: 7,
-    });
-    await second.evaluate((workspace) => {
-      const channel = new BroadcastChannel(
-        `codex-sync-${location.origin}-${workspace}`,
-      );
-      channel.postMessage({
-        protocol: 2,
-        kind: "heartbeat",
-        workspaceId: workspace,
-        generations: { state: 1, transcripts: 1, drafts: 0 },
-      });
-      channel.close();
-    }, workspaceId);
-    await delay(100);
-    assert.deepEqual(
-      await second.evaluate(() => revisionHints.at(-1)),
-      { a: 7 },
-      "An older tab heartbeat cannot clear current server revisions",
-    );
-    await hint(workspaceId, { a: -1 });
-    assert.deepEqual(
-      await second.evaluate(() => revisionHints.at(-1)),
-      { a: 7 },
-      "Malformed revisions cannot replace valid hints",
+    await hint(workspaceId, "a", 8);
+    await second.waitForFunction(() => revisionHints.length === 1);
+    assert.equal(
+      await second.evaluate(() => revisionHints.at(-1)?.revision),
+      8,
+      "A same-workspace watched transcript invalidation is delivered",
     );
     await second.evaluate(() => stopHints());
     await until(
       () => streams.size === 0,
-      "Revision hint disposal releases its shared stream",
+      "Invalidation watcher disposal releases its shared stream",
     );
 
     // The memory view is bounded; evicted chats remain in IndexedDB.
     await second.evaluate((workspace) => {
       for (let i = 0; i < 64; i++)
-        cache.cacheTranscript(workspace, `memory-${i}`, {
-          id: `transcript:memory-${i}`,
-          seq: 100 + i,
-          payload: "{}",
-        });
+        cache.cacheTranscriptValue(
+          workspace,
+          `memory-${i}`,
+          { items: [] },
+          100 + i,
+        );
     }, workspaceId);
     assert.equal(
       await second.evaluate(
@@ -679,11 +714,12 @@ test("Chat prefetch browser", async ({
     );
     await second.evaluate((workspace) => {
       for (let i = 64; i < 320; i++)
-        cache.cacheTranscript(workspace, `memory-${i}`, {
-          id: `transcript:memory-${i}`,
-          seq: 100 + i,
-          payload: "{}",
-        });
+        cache.cacheTranscriptValue(
+          workspace,
+          `memory-${i}`,
+          { items: [] },
+          100 + i,
+        );
     }, workspaceId);
     assert.equal(
       await second.evaluate(
