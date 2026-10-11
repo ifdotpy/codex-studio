@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Vendor one committed layr revision. Never read its working tree."""
+"""Vendor one committed revision of layr or layr-desk. Never read its working tree."""
 from __future__ import annotations
 
 import argparse
@@ -10,15 +10,21 @@ from pathlib import Path
 import subprocess
 import tarfile
 
+# The paths that each vendored source takes from its repository (docs/vm-layr.md, docs/vault.md).
+SOURCES = {
+    "layr": ("src", "Cargo.toml", "Cargo.lock", "LICENSE"),
+    "layr-desk": ("Cargo.toml", "Cargo.lock", "crates/desk-core", "crates/layr-desk", "LICENSE"),
+}
 
-def update(source: Path, revision: str, destination: Path) -> None:
+
+def update(source: Path, revision: str, destination: Path, paths: tuple[str, ...] = SOURCES["layr"]) -> None:
     def git(*args: str) -> bytes:
         return subprocess.run(["git", "-C", str(source), *args], check=True,
                               capture_output=True, timeout=30).stdout
 
     commit = git("rev-parse", revision + "^{commit}").decode().strip()
     tree = git("rev-parse", commit + "^{tree}").decode().strip()
-    payload = git("archive", commit, "src", "Cargo.toml", "Cargo.lock", "LICENSE")
+    payload = git("archive", commit, *paths)
     destination.mkdir(parents=True, exist_ok=True)
     # Only files recorded by the preceding vendor manifest can be removed.
     manifest = destination / "manifest.json"
@@ -47,9 +53,11 @@ def update(source: Path, revision: str, destination: Path) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--name", choices=sorted(SOURCES), default="layr")
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--revision", required=True)
     parser.add_argument("--destination", type=Path,
-                        default=Path(__file__).resolve().parents[2] / "layr")
+                        help="the vendored folder; by default workspaces/runtime/apps/<name>")
     arguments = parser.parse_args()
-    update(arguments.source.resolve(), arguments.revision, arguments.destination.resolve())
+    destination = arguments.destination or Path(__file__).resolve().parents[2] / arguments.name
+    update(arguments.source.resolve(), arguments.revision, destination.resolve(), SOURCES[arguments.name])

@@ -658,6 +658,30 @@ def test_vault_pull_route_starts_once_and_refuses_a_project_without_a_vault() ->
     assert escape.status_code == 400
 
 
+def test_vault_unlock_route_never_echoes_the_words() -> None:
+    app, _runtime, _context = _app()
+    seen: list[str] = []
+
+    def unlock(runtime: object, project_id: str, words: str) -> dict[str, bool]:
+        seen.append(words)
+        if "wrong" in words:
+            raise ValueError("this paper key does not open the vault")
+        return {"unlocked": True}
+
+    with unittest.TestCase().assertNoLogs("studio_api.context", "ERROR"), \
+            patch("codex_vm_vault.unlock", unlock):
+        client = TestClient(app)
+        ok = client.post("/api/vault/unlock", json={"projectId": "p1", "words": "secret words"})
+        wrong = client.post("/api/vault/unlock", json={"projectId": "p1", "words": "wrong secret"})
+        escape = client.post("/api/vault/unlock", json={"projectId": "../p1", "words": "x"})
+        empty = client.post("/api/vault/unlock", json={"projectId": "p1", "words": ""})
+
+    assert ok.status_code == 200 and ok.json() == {"unlocked": True}
+    assert wrong.status_code == 400 and "secret" not in wrong.text
+    assert (escape.status_code, empty.status_code) == (400, 400)
+    assert seen == ["secret words", "wrong secret"]
+
+
 class AgentRouterTests(unittest.TestCase):
     def test_durable_action_rejection_happens_before_runtime_call(self) -> None:
         test_durable_action_rejection_happens_before_runtime_call()
@@ -712,6 +736,9 @@ class AgentRouterTests(unittest.TestCase):
 
     def test_mac_sync_routes(self) -> None:
         test_mac_sync_routes_pause_resume_and_reject_bad_choices()
+
+    def test_vault_unlock_route(self) -> None:
+        test_vault_unlock_route_never_echoes_the_words()
 
     def test_vault_pull_route(self) -> None:
         test_vault_pull_route_starts_once_and_refuses_a_project_without_a_vault()

@@ -4,6 +4,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdtempSync,
+  realpathSync,
   rmSync,
   writeFileSync,
   mkdirSync,
@@ -92,8 +93,10 @@ function main() {
     return 0;
   }
 
-  const temporaryRoot = mkdtempSync(
-    path.join(os.tmpdir(), "codex-staged-check-"),
+  // The real path: on macOS the temporary folder is below the /var link, and Oxfmt matches
+  // ignorePatterns only when a file path starts with the folder of its configuration.
+  const temporaryRoot = realpathSync(
+    mkdtempSync(path.join(os.tmpdir(), "codex-staged-check-")),
   );
   try {
     const indexPaths = getIndexPaths();

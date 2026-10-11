@@ -97,6 +97,38 @@ try {
       path.join(resources, "requirements.txt"),
     );
     await mkdir(path.join(resources, "bin"), { recursive: true });
+    // layr-desk for the Desk disk, vault unlock and Pull on this Mac (docs/vault.md), from
+    // the vendored source; Studio installs the disk agent with this binary.
+    const layrDeskTarget = path.join(cargoTargetDirectory, "layr-desk");
+    execFileSync(
+      "cargo",
+      [
+        "build",
+        "--locked",
+        "--release",
+        "--manifest-path",
+        path.join(
+          repositoryRoot,
+          "workspaces/runtime/apps/layr-desk/Cargo.toml",
+        ),
+        "-p",
+        "layr-desk",
+        "--target-dir",
+        layrDeskTarget,
+      ],
+      {
+        cwd: repositoryRoot,
+        stdio: "inherit",
+        env: {
+          ...process.env,
+          CARGO_PROFILE_RELEASE_DEBUG: "0",
+          CARGO_PROFILE_RELEASE_STRIP: "symbols",
+        },
+      },
+    );
+    const layrDesk = path.join(resources, "bin", "layr-desk");
+    await cp(path.join(layrDeskTarget, "release/layr-desk"), layrDesk);
+    signCode(layrDesk, identity);
     await cp(
       path.join(repositoryRoot, "workspaces/runtime/apps/server/prompts"),
       path.join(resources, "prompts"),

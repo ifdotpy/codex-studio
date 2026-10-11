@@ -2084,6 +2084,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/vault/unlock": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Vault Unlock
+     * @description Keep the vault key on this Mac from the paper words; the words reach only layr-desk.
+     */
+    post: operations["vault_unlock_api_vault_unlock_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/voice/approval_speech": {
     parameters: {
       query?: never;
@@ -8950,6 +8970,8 @@ export interface components {
      *     the Desk link of the vault.
      */
     ProjectVaultDto: {
+      /** Disk */
+      disk?: string | null;
       /** Lastpush */
       lastPush?: number | null;
       /** Prefix */
@@ -8965,6 +8987,8 @@ export interface components {
        * @enum {string}
        */
       state: "ok" | "error" | "none";
+      /** Unlocked */
+      unlocked?: boolean | null;
     };
     /** ProjectWriteRequest */
     ProjectWriteRequest: {
@@ -13074,6 +13098,25 @@ export interface components {
        * @enum {string}
        */
       state: "running" | "done" | "failed";
+    };
+    /**
+     * VaultUnlockRequest
+     * @description The paper words of the project's vault, to keep its key on this Mac.
+     */
+    VaultUnlockRequest: {
+      /** Projectid */
+      projectId: string;
+      /** Words */
+      words: string;
+    };
+    /** VaultUnlockResponse */
+    VaultUnlockResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Unlocked */
+      unlocked: boolean;
     };
     /**
      * VersionedRuntimeRecord
@@ -23354,6 +23397,84 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["VaultPullResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Local origin and session token required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Request body timed out */
+      408: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description The server workspace changed. Reload before sending. */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Invalid request size */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description JSON required */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  vault_unlock_api_vault_unlock_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["VaultUnlockRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["VaultUnlockResponse"];
         };
       };
       /** @description Bad Request */

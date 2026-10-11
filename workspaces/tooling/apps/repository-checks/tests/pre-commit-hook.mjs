@@ -196,6 +196,18 @@ try {
 
   {
     const root = fixture();
+    // Vendored sources keep their upstream bytes; the Oxfmt ignorePatterns skip them.
+    stage(
+      root,
+      "workspaces/runtime/apps/layr-desk/crates/vectors.json",
+      '{"a":[1,\n2]}\n',
+    );
+    const result = runHook(root);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  }
+
+  {
+    const root = fixture();
     stage(root, "desktop/source outside web.js", "export const valid = 1;\n");
     const result = runHook(root);
     assert.equal(result.status, 0, result.stderr || result.stdout);

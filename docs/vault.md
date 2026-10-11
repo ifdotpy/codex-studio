@@ -155,6 +155,18 @@ The project menu of an imported layr project shows its vault:
   reply never starts a second one.
 - **Set up vault…** opens the layr-desk setup steps when the project has no vault.
 
+- **Unlock on this Mac…** asks for the paper words of a vault whose key this Mac does not keep
+  yet. The words go to this Mac's server and to `layr-desk unlock --paper-file -` on stdin;
+  no reply, log or error repeats them. The Keychain then keeps the vault key.
+- **Show in Finder** opens the vault's folder on the Desk disk (`~/Desk/<prefix>`).
+
+Studio carries `layr-desk` (`Resources/workspace/bin`, built from the vendored source in
+`workspaces/runtime/apps/layr-desk` by the package script), so nothing is installed by hand.
+When a vault has a Desk site, the server keeps the Desk disk agent (`layr-desk service`) on
+this Mac for that site with the app's own binary, and asks `layr-desk status` which vaults
+this Mac keeps a key for. A `layr-desk` outside the app (a development build on `PATH`) only
+reports; it never replaces the agent.
+
 The server asks the VM for `vault.status` of every imported project every 2 minutes, outside
 the runtime lock, and keeps the report in `layr-projects/<id>/vault.json`. The sidebar reads
 only that record; the time of a check stays out of it, so a quiet vault does not change the
