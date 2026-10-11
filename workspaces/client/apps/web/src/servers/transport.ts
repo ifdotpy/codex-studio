@@ -57,9 +57,17 @@ export function apiOrigin() {
     : (globalThis.location?.origin ?? "http://localhost");
 }
 export function serverFetch(request: Request) {
+  // In a browser the backend also serves the local frame origin and takes
+  // these account requests there. In the desktop a separate UI host serves the
+  // frames and owns no API, so the desktop bridge carries them to the local
+  // server with the session token, like every other local frame request.
   if (
     serverViewId === "local" &&
     isolatedServerView &&
+    !(
+      typeof window !== "undefined" &&
+      (window as Window & { codexDesktop?: unknown }).codexDesktop
+    ) &&
     request.method === "POST" &&
     LOCAL_FRAME_ACCOUNT_MUTATIONS.has(new URL(request.url).pathname)
   ) {
