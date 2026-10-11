@@ -1582,6 +1582,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         # identity. Project-location migration below reuses this identity.
         self._project_server_id = self.paired_access().local_server_id
         with self.db() as db:
+            try:
+                self.require_file_migration_complete(db)
+            except RuntimeError as error:
+                self._cleanup_failed_initialization(error)
+                raise
             db.execute("PRAGMA journal_mode=WAL")
             startup_memory_mark("migrations-indexes-start")
             db.executescript("""
@@ -1849,8 +1854,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             startup_memory_mark("runtime-init-complete")
             if server_factory is AppServer:
                 self.analytics_history_start()
-                from codex_analytics_storage import start as start_analytics_migration
-                start_analytics_migration(self)
             with self.read_db() as db:
                 federation_enabled = bool(db.execute(
                     "SELECT 1 FROM runtime_federation_settings WHERE id='global' "
@@ -1902,7 +1905,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 scheduler.join()
             except BaseException as error:
                 errors.append(error)
-        for name in ("analytics_history_thread", "analytics_migration_thread", "search_migration_thread"):
+        for name in ("analytics_history_thread", "search_migration_thread"):
             worker = getattr(self, name, None)
             if worker is not None and worker.ident is not None and worker is not threading.current_thread():
                 try:
@@ -2626,10 +2629,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     @contextmanager
     def analytics_read_db(self):
-        """Read a complete old+new analytics view while an online copy is active."""
+        """Open analytics in query-only mode."""
         with self.analytics_db() as db:
-            from codex_analytics_storage import install_legacy_read_views
-            install_legacy_read_views(db)  # type: ignore[no-untyped-call]
             db.execute("PRAGMA query_only=ON")
             yield db
 
@@ -6278,7 +6279,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def schedule(self):
         first_tick = True
         deadlines = dict.fromkeys(("dispatch", "cross_server", "monitors", "rules", "capacity",
-                                   "usage_resume", "archive", "monitor_results", "runtime", "turn_items"), 0.0)
+                                   "usage_resume", "archive", "monitor_results", "runtime"), 0.0)
         phase_errors = {}
         local = self.__dict__.setdefault("_callback_db", threading.local())
         local.reuse = True
@@ -6308,7 +6309,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     ("archive", 1, self.accepted_archive_tick),
                     ("monitor_results", 1, self.retry_monitor_results),
                     ("runtime", 5, self.runtime_maintenance_tick),
-                    ("turn_items", .25, self.turn_item_links_tick),
                 )
                 for name, interval, run in phases:
                     if self.closed:
@@ -6356,11 +6356,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if agent_id is None:
             return self.dispatch_all(maintenance=maintenance)
         return self.dispatch_candidates(agent_id)
-
-    def turn_item_links_tick(self):
-        from codex_turn_item_links import backfill_batch as backfill_turn_item_links
-        with self.db() as db:
-            backfill_turn_item_links(db)
 
     def runtime_maintenance_tick(self):
         from codex_task_recovery import queue_task_recovery
@@ -11360,7 +11355,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             # A final import batch can still need self.lock and the database.
             # Retain the runtime lease until that writer has stopped.
             history_thread.join()
-        for name in ("analytics_migration_thread", "search_migration_thread"):
+        for name in ("search_migration_thread",):
             worker = getattr(self, name, None)
             if worker is not None and worker is not threading.current_thread():
                 worker.join()

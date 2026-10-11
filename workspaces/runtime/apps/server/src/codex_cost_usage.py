@@ -119,10 +119,6 @@ def install(db: sqlite3.Connection) -> None:
 
 
 def source_state(db: sqlite3.Connection, root: str) -> list[Any] | None:
-    # During the online file migration, a legacy overlay remains authoritative.
-    # Its writes do not pass through these triggers. Keep the legacy reader.
-    if db.execute("SELECT 1 FROM sqlite_temp_master WHERE type='view' AND name='analytics_usage'").fetchone():
-        return None
     try:
         row = db.execute("SELECT token,COALESCE((SELECT revision FROM analytics_cost_roots_v1 WHERE root=?),0),"
                          "COALESCE((SELECT floor FROM analytics_cost_roots_v1 WHERE root=?),0) "

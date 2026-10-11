@@ -114,8 +114,8 @@ class TurnCompletionScope(unittest.TestCase):
         self.assertEqual(len(updates), 1)
         with self.runtime.db() as db:
             plan = ' '.join(row[3] for row in db.execute('EXPLAIN QUERY PLAN ' + next(iter(updates))))
-        self.assertIn('runtime_item_turn_scope', plan)
-        self.assertIn('<expr>=?', plan)
+        self.assertIn('runtime_turn_item_link_scope_v1', plan)
+        self.assertIn('turn_id=?', plan)
         if bounded:
             self.assertIn('created>?', plan)
 
