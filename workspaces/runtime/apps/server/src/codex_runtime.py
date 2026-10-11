@@ -6377,6 +6377,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             from codex_context_repair import recover_context_failures
             agents = current_agents(db)
             recover_context_failures(self, db, agents)
+            # Recovery can write an agent through this connection. Revalidate
+            # before later consumers reuse the decoded roster in this session.
+            agents = current_agents(db)
             from codex_context_repair import _held_restart_marker
             restart_wait_agents = [a for a in agents
                                    if a.get("contextRepairWait") and _held_restart_marker(a)]
