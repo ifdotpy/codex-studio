@@ -34,6 +34,7 @@ export function useUiPreferenceSync(
   const usableSnapshot = JSON.stringify(
     servers.map(({ id }) => [id, lastSeenByServer[id]]),
   );
+  const serverSnapshot = JSON.stringify(servers);
   const connections = useRef<ReturnType<
     typeof createPreferenceSyncConnectionManager<StudioServer>
   > | null>(null);
@@ -224,6 +225,7 @@ export function useUiPreferenceSync(
     };
   }, [ownership]);
   useEffect(() => {
+    connections.current?.updateServers(servers, lastSeenByServer);
     connections.current?.updateLastSeen(lastSeenByServer);
-  }, [ownership, usableSnapshot]);
+  }, [ownership, serverSnapshot, usableSnapshot]);
 }

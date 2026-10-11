@@ -50,8 +50,10 @@ export function createPreferenceSyncConnectionManager<
       }
       for (const server of servers) {
         const entry = connections.get(server.id);
-        if (entry) entry.latestLastSeen = lastSeenByServer[server.id];
-        else start(server, lastSeenByServer[server.id]);
+        if (entry) {
+          entry.server = server;
+          entry.latestLastSeen = lastSeenByServer[server.id];
+        } else start(server, lastSeenByServer[server.id]);
       }
     },
     updateLastSeen(lastSeenByServer: Record<string, number | undefined>) {
