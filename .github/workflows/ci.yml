@@ -159,14 +159,9 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Prepare the Python test environment
         run: |
-          echo "XDG_CACHE_HOME=/var/tmp/codex-studio-facade-cache" >> "$GITHUB_ENV"
-          python3 -m venv /var/tmp/codex-studio-facade-setup
-          setup_python=/var/tmp/codex-studio-facade-setup/bin/python
-          "$setup_python" -c 'import sys; print(sys.prefix); assert sys.prefix.startswith("/var/tmp/")'
+          echo "XDG_CACHE_HOME=$RUNNER_TEMP/codex-studio-cache" >> "$GITHUB_ENV"
           cargo build --release -p studio-operations-python
-          XDG_CACHE_HOME=/var/tmp/codex-studio-facade-cache \
-            "$setup_python" workspaces/runtime/apps/server/src/install-cli.py \
-              --dev --bin-dir /var/tmp/codex-studio-facade-bin
+          XDG_CACHE_HOME="$RUNNER_TEMP/codex-studio-cache" python3 workspaces/runtime/apps/server/src/install-cli.py --dev --bin-dir "$RUNNER_TEMP/codex-studio-bin"
       - name: List facade recipes
         run: just --list
       - name: Focused JavaScript facade test
