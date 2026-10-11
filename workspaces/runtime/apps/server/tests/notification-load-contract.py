@@ -25,6 +25,7 @@ import uuid
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from studio_api.testing import read_runtime_state
+import codex_runtime
 from codex_runtime import AppServer, Runtime
 from codex_lock_metrics import MeasuredRLock
 
@@ -66,6 +67,51 @@ def measure(count=320, agents=24, storm=False, legacy_checkpoint=False,
             traced = MeasuredRLock(runtime.lock)
             runtime.lock = traced
             db_durations = []
+            callback_connections = {}
+            connection_observations = []
+            connection_guard = threading.Lock()
+            scheduler_read_connections = set()
+            preflight_busy_retries = 0
+            callback_retry_counts = {}
+            original_sqlite_connect = codex_runtime.sqlite_connect
+
+            def observed_sqlite_connect(*args, **kwargs):
+                db = original_sqlite_connect(*args, **kwargs)
+                local = getattr(runtime, "_callback_db", None)
+                if (local is not None and getattr(local, "reuse", False)
+                        and not getattr(local, "depth", 0)
+                        and not getattr(local, "scheduler", False)):
+                    thread_id = threading.get_ident()
+                    with connection_guard:
+                        connections.add(db)
+                        callback_connections.setdefault(thread_id, set()).add(db)
+                return db
+
+            codex_runtime.sqlite_connect = observed_sqlite_connect
+            scheduler_pass_condition = threading.Condition()
+            scheduler_passes = 0
+            original_read_db = runtime.read_db
+
+            @contextmanager
+            def measured_read_db():
+                with original_read_db() as db:
+                    if getattr(runtime._callback_db, "scheduler", False):
+                        scheduler_read_connections.add(id(db))
+                    yield db
+
+            runtime.read_db = measured_read_db
+            original_dispatch_all = runtime.dispatch_all
+
+            def measured_dispatch_all(*args, **kwargs):
+                nonlocal scheduler_passes
+                scheduler_owned = getattr(runtime._callback_db, "scheduler", False)
+                if scheduler_owned:
+                    with scheduler_pass_condition:
+                        scheduler_passes += 1
+                        scheduler_pass_condition.notify_all()
+                return original_dispatch_all(*args, **kwargs)
+
+            runtime.dispatch_all = measured_dispatch_all
             original_notification_db = runtime.notification_db
             @contextmanager
             def measured_notification_db():
@@ -115,6 +161,7 @@ def measure(count=320, agents=24, storm=False, legacy_checkpoint=False,
             blocker, release = threading.Event(), threading.Event()
 
             def notify(message):
+                nonlocal preflight_busy_retries
                 if message["method"] == "fixture/block":
                     blocker.set()
                     release.wait(30)
@@ -122,8 +169,23 @@ def measure(count=320, agents=24, storm=False, legacy_checkpoint=False,
                 start = time.perf_counter()
                 runtime.notification(message)
                 connection = getattr(runtime._callback_db, "connection", None)
+                thread_id = threading.get_ident()
+                retry_count = getattr(runtime._callback_db,
+                                      "notification_preflight_busy_retries", 0)
                 if connection is not None:
-                    connections.add(id(connection))
+                    connection_id = id(connection)
+                    with connection_guard:
+                        callback_connections.setdefault(thread_id, set()).add(connection)
+                        previous_retries = callback_retry_counts.get(thread_id, 0)
+                        preflight_busy_retries += max(0, retry_count - previous_retries)
+                        callback_retry_counts[thread_id] = retry_count
+                        connection_observations.append({
+                            "thread": thread_id,
+                            "connection": connection_id,
+                            "method": message.get("method"),
+                            "sequence": message.get("_studioSupervisorSequence"),
+                            "preflightBusyRetries": retry_count,
+                        })
                 durations.append((time.perf_counter() - start) * 1000)
                 callback_kinds.setdefault(message['method'], []).append(durations[-1])
                 delays.append((message["_studioDispatchedAt"] - message["_studioReceivedAt"]) * 1000)
@@ -199,6 +261,15 @@ def measure(count=320, agents=24, storm=False, legacy_checkpoint=False,
             processing_started = time.perf_counter()
             for worker in workloads:
                 worker.start()
+            forced_scheduler_pass = False
+            if live_scheduler:
+                with scheduler_pass_condition:
+                    pass_target = scheduler_passes + 1
+                runtime.changed.set()
+                with scheduler_pass_condition:
+                    forced_scheduler_pass = scheduler_pass_condition.wait_for(
+                        lambda: scheduler_passes >= pass_target, timeout=5)
+                assert forced_scheduler_pass, "scheduler did not run the explicitly requested pass"
             server.callbacks.join()
             processing_ended = time.perf_counter()
             for worker in workloads:
@@ -209,7 +280,14 @@ def measure(count=320, agents=24, storm=False, legacy_checkpoint=False,
             dispatch.join(5)
             assert not dispatch.is_alive()
             assert len(delays) > 0
-            assert len(connections) == 1, connections
+            expected_connections = sum(1 + callback_retry_counts.get(thread_id, 0)
+                                       for thread_id in callback_connections)
+            assert len(connections) == expected_connections, {
+                "actual": len(connections), "expected": expected_connections,
+                "observations": connection_observations,
+            }
+            if live_scheduler:
+                assert len(scheduler_read_connections) == 1, scheduler_read_connections
             metrics = traced.runtime_lock_metrics()
             by_wait = sorted(metrics, key=lambda row: row["totalWaitMs"], reverse=True)
             return {"input": count, "callbacks": len(delays), "queuedBeforeRelease": queued,
@@ -220,6 +298,13 @@ def measure(count=320, agents=24, storm=False, legacy_checkpoint=False,
                     "inputEventsPerSecond": round(count / max(.001, input_ended - input_started), 1),
                     "processedCallbacksPerSecond": round(len(delays) / max(.001, processing_ended - processing_started), 1),
                     "dispatcherConnections": len(connections),
+                    "notificationPreflightBusyRetries": preflight_busy_retries,
+                    "callbackConnectionsByThread": {
+                        thread_id: len(connection_ids)
+                        for thread_id, connection_ids in callback_connections.items()},
+                    "callbackConnectionObservations": connection_observations,
+                    "schedulerReadConnections": len(scheduler_read_connections),
+                    "forcedSchedulerPass": forced_scheduler_pass,
                     "queueDelayMs": {"p50": percentile(delays, .5), "p95": percentile(delays, .95),
                                      "max": percentile(delays, 1)},
                     "callbackDurationMs": {"p50": percentile(durations, .5), "p95": percentile(durations, .95)},
@@ -233,6 +318,7 @@ def measure(count=320, agents=24, storm=False, legacy_checkpoint=False,
                                       for kind, values in callback_kinds.items()},
                     "lock": by_wait[:20]}
         finally:
+            codex_runtime.sqlite_connect = original_sqlite_connect
             runtime.servers.clear()
             runtime.server = None
             runtime.close()

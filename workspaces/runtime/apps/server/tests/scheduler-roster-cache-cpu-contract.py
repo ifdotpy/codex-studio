@@ -82,6 +82,18 @@ class RosterCache(unittest.TestCase):
         db.commit()
         self.db = db
 
+        @contextmanager
+        def read_database():
+            reader = self.connect()
+            reader.execute("PRAGMA query_only=ON")
+            reader.execute("BEGIN")
+            try:
+                yield reader
+            finally:
+                reader.rollback()
+
+        self.runtime.read_db = read_database
+
     def tearDown(self):
         for db in self.connections:
             db.close()
@@ -263,7 +275,7 @@ class RosterCache(unittest.TestCase):
         self.assertEqual(self.roster()[0]["name"], "new")
         self.assertEqual(len(self.scans), 2)
 
-    def dispatch_with_unrelated_write(self, before_read=None):
+    def dispatch_with_unrelated_write(self, before_read=None, recover_agents=None, restart_waits=None):
         self.add(status="running")
         rt = self.runtime
         calls = []
@@ -284,6 +296,8 @@ class RosterCache(unittest.TestCase):
         rt.retry_monitor_results = lambda: None
 
         def recover(_rt, db, agents):
+            if recover_agents is not None:
+                recover_agents(agents)
             db.execute("UPDATE runtime_tasks SET record=json_set(record,'$.status','completed')")
 
         def candidates(_key, current):
@@ -305,6 +319,11 @@ class RosterCache(unittest.TestCase):
                          "codex_native_release.tick", "codex_team_isolation.cancel_pending",
                          "codex_context_repair.tick_restart_input_waits"):
                 stack.enter_context(patch(name, lambda *_args: None))
+            if restart_waits is not None:
+                stack.enter_context(patch(
+                    "codex_context_repair.tick_restart_input_waits",
+                    lambda _rt, agents: restart_waits.extend(agent["id"] for agent in agents),
+                ))
             stack.enter_context(patch("codex_radio.tick", before_read or (lambda *_args: None)))
             stack.enter_context(patch("codex_session_names.session_names",
                                       lambda _rt: type("Names", (), {"tick": lambda self: None})()))
@@ -323,9 +342,26 @@ class RosterCache(unittest.TestCase):
             db.execute("UPDATE runtime_agents SET record=json_set(record,'$.status','approval')")
 
         calls = self.dispatch_with_unrelated_write(before_read)
-        self.assertEqual(len(calls), 3)
-        self.assertEqual(len(self.scans), 3)
+        # Four reads are expected: unlocked snapshot, changed locked decode,
+        # same-session validation after recovery, and the candidate session.
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(len(self.scans), 4)
         self.assertEqual(self.roster(self.connect())[0]["status"], "approval")
+
+    def test_dispatch_reuses_recovered_agents_for_restart_scan(self):
+        restart_waits = []
+
+        def recover(agents):
+            agents[0]["contextRepairWait"] = {"error": "restart wait"}
+            agents[0]["threadId"] = "thread"
+            agents[0]["restartRecovery"] = {
+                "stage": "held", "autoWake": True, "epoch": 1, "threadId": "thread",
+            }
+
+        calls = self.dispatch_with_unrelated_write(recover_agents=recover, restart_waits=restart_waits)
+        self.assertEqual(restart_waits, ["agent"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(self.scans), 1)
 
     def test_private_large_roster_cpu_and_select_counts(self):
         records = []

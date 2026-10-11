@@ -46,7 +46,7 @@ class SchedulerDecode(unittest.TestCase):
         self.runtime.close()
         self.tmp.cleanup()
 
-    def dispatch_with_roster(self, after_first=None, between_sessions=None):
+    def dispatch_with_roster(self, after_read=None, between_sessions=None):
         calls, full_reads = [], []
         original_roster = self.runtime.scheduler_agents
         original_records = self.runtime.records
@@ -55,8 +55,8 @@ class SchedulerDecode(unittest.TestCase):
             agents = original_roster(db)
             calls.append((db, self.runtime.lock._is_owned(),
                           [(a["name"], a["status"]) for a in agents]))
-            if len(calls) == 1 and after_first:
-                after_first(db)
+            if after_read:
+                after_read(len(calls), db)
             return agents
 
         def records(db, table, **kwargs):
@@ -75,18 +75,39 @@ class SchedulerDecode(unittest.TestCase):
 
     def test_reuses_one_roster_across_unchanged_database_sessions(self):
         calls, full_reads = self.dispatch_with_roster()
+        # The one full decode now happens on the unlocked snapshot connection;
+        # the matching locked key proof reuses it without another decode.
         self.assertEqual(len(calls), 1)
-        self.assertTrue(all(locked for _, locked, _ in calls))
+        self.assertFalse(calls[0][1])
         self.assertEqual(full_reads, [])
 
     def test_direct_agent_update_refreshes_within_lock_session(self):
-        def update_agent(db):
-            db.execute("UPDATE runtime_agents SET record=json_set(record,'$.status','approval') "
-                       "WHERE id=?", (self.lead["id"],))
+        def update_agent(call_number, db):
+            if call_number == 1:
+                # A second writable connection changes the row after the
+                # unlocked snapshot decode, forcing a fresh locked roster.
+                with self.runtime.lock, self.runtime.db() as writer:
+                    writer.execute("UPDATE runtime_agents SET record=json_set(record,'$.status','approval') "
+                                   "WHERE id=?", (self.lead["id"],))
+            elif call_number == 2:
+                # Simulate an in-session writer after the locked key check and
+                # roster decode, before that list is handed to later consumers.
+                key = self.runtime.scheduler_roster_key(db)
+                db.execute("UPDATE runtime_agents SET record=json_set(record,'$.status','parked') "
+                           "WHERE id=?", (self.lead["id"],))
+                self.assertNotEqual(key, self.runtime.scheduler_roster_key(db))
 
-        calls, full_reads = self.dispatch_with_roster(after_first=update_agent)
+        calls, full_reads = self.dispatch_with_roster(after_read=update_agent)
         self.assertEqual(calls[0][2], [("Lead", "running")])
-        self.assertIn(("Lead", "approval"), [agent for _, _, agents in calls[1:] for agent in agents])
+        self.assertEqual(calls[1][2], [("Lead", "approval")])
+        self.assertEqual(calls[2][2], [])
+        self.assertIs(calls[1][0], calls[2][0])
+        self.assertEqual(calls[3][2], [])
+        # Four full decodes are expected: unlocked snapshot, locked refresh
+        # after the outside writer, same-session refresh after recovery, and
+        # dispatch_candidates' new-session read after the in-session write.
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(self.runtime.agent(self.lead["id"])["status"], "parked")
         self.assertEqual(full_reads, [])
 
     def test_agent_write_between_lock_sessions_refreshes_roster(self):

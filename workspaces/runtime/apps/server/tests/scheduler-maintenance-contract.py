@@ -316,6 +316,32 @@ class SchedulerConnection(unittest.TestCase):
         self.assertEqual(len(connections), 1)
         with self.assertRaises(sqlite3.ProgrammingError):
             connections[0].execute('SELECT 1')
+
+    def test_scheduler_read_connection_reuses_owner_and_releases_each_snapshot(self):
+        rt = self.rt
+        reads = []
+
+        def dispatch(**_options):
+            with rt.read_db() as reader:
+                reads.append(reader)
+                self.assertIsNone(reader.execute(
+                    "SELECT id FROM runtime_tasks WHERE id='snapshot-commit'"
+                ).fetchone())
+            self.assertFalse(reader.in_transaction)
+            with rt.db() as writer:
+                writer.execute("INSERT INTO runtime_tasks VALUES('snapshot-commit','{}')")
+            with rt.read_db() as reader:
+                reads.append(reader)
+                self.assertIsNotNone(reader.execute(
+                    "SELECT id FROM runtime_tasks WHERE id='snapshot-commit'"
+                ).fetchone())
+            self.assertFalse(reader.in_transaction)
+
+        self.drive(dispatch, steps=[(.001, True)])
+        self.assertEqual(len(reads), 2)
+        self.assertIs(reads[0], reads[1])
+        with self.assertRaises(sqlite3.ProgrammingError):
+            reads[0].execute('SELECT 1')
         self.assertIsNone(getattr(rt._callback_db, 'connection', None))
 
     def test_failed_attach_closes_each_partial_connection(self):

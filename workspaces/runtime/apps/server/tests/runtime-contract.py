@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 import base64
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
@@ -216,6 +217,38 @@ class RuntimeContract(unittest.TestCase):
         self.runtime.dispatch()
         self.assertEqual(len([1 for method, _ in self.runtime.server.calls if method == 'turn/start']), 2)
         self.assertFalse(any(method == 'turn/steer' for method, _ in self.runtime.server.calls))
+
+    def test_dispatch_serves_input_queued_during_unlocked_roster_read(self):
+        class QuietRuntime(Runtime):
+            def schedule(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = QuietRuntime(Path(directory), FakeServer)
+            try:
+                agent = runtime.create({"name": "Lead", "cwd": directory, "prompt": "Coordinate"})
+                original_read_db = runtime.read_db
+                queued = False
+
+                @contextmanager
+                def queue_after_roster_read():
+                    nonlocal queued
+                    with original_read_db() as db:
+                        yield db
+                    if not queued:
+                        queued = True
+                        runtime.send(agent["id"], "Arrived during roster read", "roster-read-wakeup")
+
+                runtime.read_db = queue_after_roster_read
+                self.assertGreaterEqual(runtime.dispatch_all(maintenance=False), 1)
+                eventually(lambda: runtime.agent(agent["id"])["status"] == "running")
+                attempt = runtime.agent(agent["id"])["startAttempt"]
+                self.assertIn("roster-read-wakeup", attempt["events"])
+                starts = [params for method, params in runtime.server.calls if method == "turn/start"]
+                self.assertEqual(len(starts), 1)
+                self.assertIn(starts[0]["clientUserMessageId"], attempt["events"])
+            finally:
+                runtime.close()
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

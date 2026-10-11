@@ -411,6 +411,22 @@ class TransferContract(f.AccountContracts):
         self.assertEqual(self.runtime.agent(self.lead_agent['id'])['accountTransfer']['id'], current['id'])
         self.complete_fork()
 
+    def test_dispatch_tick_repairs_pending_summary_for_terminal_transfer(self):
+        op = self.start_transfer()
+        self.store.action(op['id'], 'cancel')
+        self.set_agent(self.lead_agent['id'], accountTransfer={'id': op['id'], 'status': 'pending'})
+
+        # No transfer row is pending. The roster summary still makes the tick
+        # necessary, as it does on the unoptimized dispatch path.
+        with self.runtime.db() as db:
+            self.assertIsNone(db.execute(
+                "SELECT 1 FROM runtime_account_transfers "
+                "WHERE json_extract(record,'$.status')='pending' LIMIT 1").fetchone())
+        self.runtime.dispatch_candidates(None, lambda db: self.runtime.records(db, 'agents'))
+
+        self.assertEqual(self.receipt(op['id'])['status'], 'cancelled')
+        self.assertEqual(self.runtime.agent(self.lead_agent['id'])['accountTransfer']['status'], 'cancelled')
+
     def test_unreferenced_waiting_transfer_settles_without_replacing_current_summary(self):
         old = self.start_transfer()
         self.store.action(old['id'], 'cancel')

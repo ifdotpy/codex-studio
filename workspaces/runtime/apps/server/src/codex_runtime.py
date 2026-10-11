@@ -2621,6 +2621,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 # A body or commit failure is uncertain. Never run it twice.
                 if entered or outer_owner or not sqlite_busy(error) or self.closed or time.monotonic() >= deadline:
                     raise
+                local = self.__dict__.setdefault("_callback_db", threading.local())
+                local.notification_preflight_busy_retries = (
+                    getattr(local, "notification_preflight_busy_retries", 0) + 1
+                )
             time.sleep(min(delay, max(0, deadline - time.monotonic())))
             delay = min(.5, delay * 2)
 
@@ -2644,15 +2648,32 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     @contextmanager
     def read_db(self):
         """Read a single committed WAL snapshot without the runtime lock."""
-        db = sqlite3.connect(self.db_path.absolute().as_uri() + "?mode=ro", uri=True, timeout=15)
-        db.row_factory = sqlite3.Row
+        local = self.__dict__.get("_callback_db")
+        scheduler_owned = bool(local is not None and getattr(local, "scheduler", False))
+        db = getattr(local, "read_connection", None) if scheduler_owned else None
+        reusable = db is not None
+        if db is None:
+            db = sqlite3.connect(self.db_path.absolute().as_uri() + "?mode=ro", uri=True, timeout=15)
+            db.row_factory = sqlite3.Row
         try:
-            db.execute("PRAGMA query_only=ON")
+            if not reusable:
+                db.execute("PRAGMA query_only=ON")
+                if scheduler_owned:
+                    local.read_connection = db
             db.execute("BEGIN")
             yield db
         finally:
-            db.rollback()
-            db.close()
+            try:
+                if db.in_transaction:
+                    db.rollback()
+            except BaseException:
+                if scheduler_owned and getattr(local, "read_connection", None) is db:
+                    local.read_connection = None
+                    db.close()
+                raise
+            finally:
+                if not scheduler_owned:
+                    db.close()
 
     @contextmanager
     def analytics_db(self, *, busy_timeout=None):
@@ -6301,6 +6322,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     first_tick = False
         finally:
             connection = getattr(local, "connection", None)
+            read_connection = getattr(local, "read_connection", None)
             try:
                 if connection is not None:
                     try:
@@ -6308,10 +6330,19 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     finally:
                         connection.close()
             finally:
-                local.connection = None
-                local.depth = 0
-                local.reuse = False
-                local.scheduler = False
+                try:
+                    if read_connection is not None:
+                        try:
+                            if read_connection.in_transaction:
+                                read_connection.rollback()
+                        finally:
+                            read_connection.close()
+                finally:
+                    local.connection = None
+                    local.read_connection = None
+                    local.depth = 0
+                    local.reuse = False
+                    local.scheduler = False
 
     def dispatch(self, agent_id=None, *, maintenance=True):
         if self.closed:
@@ -6350,12 +6381,19 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         decoded = []
         pending_notices = []
         restart_wait_agents = []
+        # Decode the roster without Runtime.lock; current_agents revalidates its key under the lock.
+        with self.read_db() as roster_db:
+            roster_key = self.scheduler_roster_key(roster_db)
+            roster_agents = self.scheduler_agents(roster_db) if roster_key is not None else None
 
         def current_agents(db):
             key = self.scheduler_roster_key(db)
             unchanged = key is not None and decoded and decoded[0] == key
             if unchanged:
                 return decoded[1]
+            if key is not None and key == roster_key and roster_agents is not None:
+                decoded[:] = [key, roster_agents]
+                return roster_agents
             agents = self.scheduler_agents(db)
             if key is not None and not db.in_transaction and self.scheduler_roster_key(db) == key:
                 decoded[:] = [key, agents]
@@ -6368,9 +6406,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             radio_tick(self, db)
             cancel_pending(self, db)
             from codex_context_repair import recover_context_failures
-            recover_context_failures(self, db, current_agents(db))
+            agents = current_agents(db)
+            recover_context_failures(self, db, agents)
+            # Recovery can write an agent through this connection. Revalidate
+            # before later consumers reuse the decoded roster in this session.
+            agents = current_agents(db)
             from codex_context_repair import _held_restart_marker
-            restart_wait_agents = [a for a in current_agents(db)
+            restart_wait_agents = [a for a in agents
                                    if a.get("contextRepairWait") and _held_restart_marker(a)]
         from codex_context_repair import tick_restart_input_waits
         tick_restart_input_waits(self, restart_wait_agents)
@@ -6487,8 +6529,19 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             else:
                 agents = current_agents(db)
             if agent_id is None:
-                transfer_store(self).tick(agents)
-                agents = current_agents(db)
+                transfers = transfer_store(self)
+                has_pending_transfer = db.execute(
+                    "SELECT 1 FROM runtime_account_transfers "
+                    "WHERE json_extract(record,'$.status')='pending' LIMIT 1"
+                ).fetchone()
+                has_referenced_transfer = any(
+                    a.get("accountTransferId")
+                    or (a.get("accountTransfer") or {}).get("status") == "pending"
+                    for a in agents
+                )
+                if has_pending_transfer or transfers.futures or transfers.running or has_referenced_transfer:
+                    transfers.tick(agents)
+                    agents = current_agents(db)
             for a in agents:
                 if a.get("claudePreInputRetry"):
                     from codex_claude_input_recovery import retire_stopped_retry
