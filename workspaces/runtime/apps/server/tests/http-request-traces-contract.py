@@ -19,6 +19,7 @@ from pathlib import Path
 import sys
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -191,10 +192,19 @@ class HttpRequestTracesContract(unittest.TestCase):
         for query in ("?scope=first", "?scope=second", "?scope=third"):
             response = self.request("/api/session" + query)
             self.assertEqual(response["status"], 200)
-        route_stats = traces.route_metrics()
-        row = next(row for row in route_stats["routes"]
-                   if row["method"] == "GET" and row["route"] == "/api/session")
-        self.assertGreaterEqual(row["count"], 3)
+        deadline = time.monotonic() + 5
+        last_count = 0
+        while True:
+            route_stats = traces.route_metrics()
+            row = next((row for row in route_stats["routes"]
+                        if row["method"] == "GET" and row["route"] == "/api/session"), None)
+            last_count = row["count"] if row else 0
+            if last_count >= 3:
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.fail(f"Expected 3 completed GET /api/session route metrics; last count was {last_count}")
+            threading.Event().wait(min(.01, remaining))
         self.assertGreaterEqual(row["latencyMs"]["max"], row["latencyMs"]["p50"])
         self.assertGreater(row["responseBytes"]["p50"], 0)
         self.assertNotIn("?", json.dumps(route_stats))
