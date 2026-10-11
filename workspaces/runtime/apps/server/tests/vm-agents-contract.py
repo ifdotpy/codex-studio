@@ -3,6 +3,7 @@
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
+import base64
 import copy
 import json
 import ast
@@ -26,6 +27,7 @@ spec.loader.exec_module(fixture)
 from codex_layout import REPOSITORY_ROOT
 from codex_vm_agents import flush_turns, prepare, spawn_spec, workspace_mode
 import codex_linux_vm_share as share
+from codex_linux_vm import LinuxVMError
 
 
 class Guest(fixture.NativeGuest):
@@ -37,6 +39,10 @@ class Guest(fixture.NativeGuest):
         self.imports = 0
         self.saves = 0
         self.lost_save = False
+        # A guest whose line.save fails for good: 'old' (it runs `layr layer repair`) or a code.
+        self.save_failure = None
+        self.error_receipts = {}
+        self.exec_argv = []
         self.merges = 0
         self.state_dir = root / 'vm-state'
         self.during_import = []
@@ -65,8 +71,15 @@ class Guest(fixture.NativeGuest):
             return super().request(method, params, **options)
         self.calls.append((method, copy.deepcopy(params), options))
         identity = options.get('request_id')
+        if identity in self.error_receipts:
+            raise self.error_receipts[identity]
         if method not in {'agent.context', 'line.evidence'} and identity in self.receipts:
             return copy.deepcopy(self.receipts[identity])
+        if method == 'line.save' and self.save_failure:
+            # The guest keeps failures in its receipts as well.
+            code = 'operation_failed' if self.save_failure == 'old' else self.save_failure
+            self.error_receipts[identity] = LinuxVMError('Linux guest line.save', code=code)
+            raise self.error_receipts[identity]
         if method in {'line.bind', 'line.branch'}:
             agent = params['agentId']
             if method == 'line.bind':
@@ -101,6 +114,10 @@ class Guest(fixture.NativeGuest):
             result = {'state': 'removed'}
         elif method == 'layr.credentials.sync':
             result = {'synced': True}
+        elif method == 'layr.exec':
+            self.exec_argv.append(params['argv'])
+            stdout = b'state-from-exec\n' if params['argv'][1] == 'rev-parse' else b''
+            result = {'exitCode': 0, 'stdout': base64.b64encode(stdout).decode(), 'stderr': '', 'reason': None}
         else:
             raise AssertionError(method)
         if method not in {'agent.context', 'line.evidence'}:
@@ -225,6 +242,40 @@ class VmAgents(unittest.TestCase):
         flush_turns(self.runtime, self.runtime.agent(lead['id']))
         self.assertEqual(self.guest.saves, 1)
         self.assertEqual(self.runtime.agent(lead['id'])['layrTurnSaves']['turn-1']['status'], 'saved')
+
+    def pending_turn(self):
+        lead = prepare(self.runtime, self.lead())
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(lead['id'], db)
+            current['layrTurnSaves'] = {'turn-1': {'status': 'pending'}}
+            self.runtime.put(db, 'agents', current)
+        return lead
+
+    def test_an_old_guest_saves_the_turn_as_the_line_owner(self):
+        # Guests before 2026-10-12 run `layr layer repair`, which layr no longer has.
+        lead = self.pending_turn()
+        self.guest.save_failure = 'old'
+        flush_turns(self.runtime, self.runtime.agent(lead['id']))
+        saved = self.runtime.agent(lead['id'])
+        self.assertEqual(saved['layrTurnSaves']['turn-1'], {'status': 'saved', 'stateId': 'state-from-exec'})
+        self.assertEqual(saved['layrStateId'], 'state-from-exec')
+        self.assertEqual(self.guest.exec_argv, [['layr', 'cache', 'repair'],
+                                                ['layr', 'save', '--force', '-m', 'Studio turn turn-1'],
+                                                ['layr', 'rev-parse', 'HEAD@{0}']])
+
+    def test_a_definite_save_failure_retries_with_the_next_attempt(self):
+        lead = self.pending_turn()
+        self.guest.save_failure = 'invalid_params'
+        with self.assertRaises(LinuxVMError):
+            flush_turns(self.runtime, self.runtime.agent(lead['id']))
+        self.assertEqual(self.runtime.agent(lead['id'])['layrTurnSaves']['turn-1'], {'status': 'pending', 'attempt': 1})
+        # The guest is fixed. The first ID would replay its saved failure; the next attempt runs.
+        self.guest.save_failure = None
+        flush_turns(self.runtime, self.runtime.agent(lead['id']))
+        self.assertEqual(self.runtime.agent(lead['id'])['layrTurnSaves']['turn-1']['status'], 'saved')
+        saves = [options['request_id'] for method, _, options in self.guest.calls if method == 'line.save']
+        self.assertEqual(saves, ['layr-turn:' + lead['id'] + ':turn-1', 'layr-turn:' + lead['id'] + ':turn-1:1'])
+        self.assertEqual(self.guest.exec_argv, [])
 
     def test_submission_accepts_exact_state_and_refuses_changed_head(self):
         lead = prepare(self.runtime, self.lead())
