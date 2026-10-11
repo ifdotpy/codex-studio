@@ -38,7 +38,9 @@ feature is off by default; see the [peer federation operator guide](peer-federat
 Paired servers share one sidebar with chat pins, project folders, and chat menus.
 Each chat shows its server alias. Chat actions use the server that owns the chat.
 Each server keeps its saved folders, order, teams, and view preferences.
-Offline servers keep their last known rows until they reconnect.
+Offline servers keep their last known rows until they reconnect; each affected
+chat row carries an offline indicator with a tooltip explaining that it shows
+the last known state.
 The `?studio-navigation=classic` URL remains available for diagnostic checks.
 
 Select **New shared chat** to create one conversation with two agents.

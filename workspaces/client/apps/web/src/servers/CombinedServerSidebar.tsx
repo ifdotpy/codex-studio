@@ -104,6 +104,7 @@ export default function CombinedServerSidebar({
           null,
       ])}
       indicators={model.indicators}
+      offlineServers={model.offlineServers}
       markingRead={marking}
       creating={!!navigation[current]?.creating}
       mobile={mobile}

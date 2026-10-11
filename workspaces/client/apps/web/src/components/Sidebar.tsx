@@ -130,6 +130,7 @@ export type SidebarProps = {
   refresh?: () => Promise<void>;
   notify?: (message: string) => void;
   indicators: Map<string, ChatIndicator>;
+  offlineServers?: ReadonlySet<string>;
   markUnread: (agent: Agent) => void;
   markingRead: Set<string>;
   hideOldChatsThreshold?: number;
@@ -784,6 +785,9 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
         DEFAULT_LOCAL_SERVER_ALIAS
       }
       indicator={p.indicators.get(row.id)}
+      serverOffline={
+        p.offlineServers?.has(services.serverForChat(row.id)) ?? false
+      }
       renaming={renaming === row.id}
       name={renaming === row.id ? name : ""}
       organizing={organizing === row.id}
@@ -924,6 +928,12 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
               .ownerId !== services.owner(projectTarget(group.path)).ownerId
               ? services.alias(projectTarget(group.path, undefined, team.id))
               : undefined
+          }
+          serverOffline={
+            p.offlineServers?.has(
+              services.owner(projectTarget(group.path, undefined, team.id))
+                .ownerId,
+            ) ?? false
           }
           roomId={runtime?.rooms?.find((r) => r.radio?.teamId === team.id)?.id}
           scope={p.data.stateDir}
@@ -1075,6 +1085,13 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                                 services.alias(
                                   projectTarget(group.path, folder.id),
                                 ) || ""
+                              }
+                              offline={
+                                p.offlineServers?.has(
+                                  services.owner(
+                                    projectTarget(group.path, folder.id),
+                                  ).ownerId,
+                                ) ?? false
                               }
                             />
                           )}
@@ -1701,13 +1718,22 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
               <div className="project-chats">
                 {visibleSharedRooms
                   .filter((r) => r.projectPath === group.path)
-                  .map((room) => (
-                    <div
-                      key={room.id}
-                      className={`sidebar-row lead-row ${p.opened === room.id ? "selected" : ""}`}
-                    >
+                  .map((room) => {
+                    const alias =
+                      services.alias?.({ kind: "chat", id: room.id }) ||
+                      aliases[services.serverForChat(room.id)] ||
+                      DEFAULT_LOCAL_SERVER_ALIAS;
+                    const serverOffline =
+                      p.offlineServers?.has(services.serverForChat(room.id)) ??
+                      false;
+                    const chatRow = (
                       <UnstyledButton
                         className="chat-row"
+                        aria-description={
+                          serverOffline
+                            ? `${alias} is unreachable. Showing the last known state.`
+                            : undefined
+                        }
                         aria-current={p.opened === room.id ? "page" : undefined}
                         onClick={() => p.open(room.id)}
                       >
@@ -1719,19 +1745,21 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                                 room.members?.includes(agent.id),
                               )?.provider || undefined
                             }
-                            alias={
-                              services.alias?.({
-                                kind: "chat",
-                                id: room.id,
-                              }) ||
-                              aliases[services.serverForChat(room.id)] ||
-                              DEFAULT_LOCAL_SERVER_ALIAS
-                            }
+                            alias={alias}
+                            offline={serverOffline}
                           />
                         </span>
                       </UnstyledButton>
-                    </div>
-                  ))}
+                    );
+                    return (
+                      <div
+                        key={room.id}
+                        className={`sidebar-row lead-row ${p.opened === room.id ? "selected" : ""}`}
+                      >
+                        {chatRow}
+                      </div>
+                    );
+                  })}
                 {renderProjectChats(group)}
                 {!query &&
                   (viewChatCounts.get(group.path) || 0) >=

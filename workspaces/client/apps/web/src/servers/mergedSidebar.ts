@@ -33,6 +33,9 @@ export function mergeSidebar(
   const single = !combined && sources.length === 1;
   const sourceById = new Map(sources.map((source) => [source.id, source]));
   const chatReferences = new Map<string, SidebarReference>();
+  const offlineServers = new Set<string>();
+  for (const source of sources)
+    if (source.id !== "local" && !source.online) offlineServers.add(source.id);
   const projectReferences = new Map<string, SidebarReference>();
   const folderReferences = new Map<string, SidebarReference>();
   const teamReferences = new Map<string, SidebarReference>();
@@ -261,13 +264,14 @@ export function mergeSidebar(
               members: team.members?.map((id) => chatKey(source.id, id)),
             },
       );
-    for (const room of source.sidebar.rooms)
+    for (const room of source.sidebar.rooms) {
+      const id = chatKey(source.id, room.id);
       rooms.push(
         single
           ? room
           : {
               ...room,
-              id: chatKey(source.id, room.id),
+              id,
               rootId: room.rootId
                 ? chatKey(source.id, room.rootId)
                 : room.rootId,
@@ -286,6 +290,7 @@ export function mergeSidebar(
                 : room.radio,
             },
       );
+    }
     for (const [id, indicator] of source.sidebar.indicators)
       indicators.set(chatKey(source.id, id), indicator);
     for (const id of source.sidebar.unread) unread.add(chatKey(source.id, id));
@@ -592,6 +597,7 @@ export function mergeSidebar(
     collapsed,
     indicators,
     unread,
+    offlineServers,
     chatReferences,
     projectReferences,
     folderReferences,

@@ -46,6 +46,7 @@ export function PeerTeamGroup({
   scope,
   disabled = false,
   serverAlias,
+  serverOffline = false,
 }: {
   itemId?: string;
   roomId?: string;
@@ -54,6 +55,7 @@ export function PeerTeamGroup({
   scope: string;
   disabled?: boolean;
   serverAlias?: string;
+  serverOffline?: boolean;
   team: PeerTeam;
   closed: boolean;
   toggle: () => void;
@@ -150,7 +152,9 @@ export function PeerTeamGroup({
           <ChevronDown size={14} />
           <span>
             {team.name}
-            {serverAlias && <ChatServerLine alias={serverAlias} />}
+            {serverAlias && (
+              <ChatServerLine alias={serverAlias} offline={serverOffline} />
+            )}
           </span>
         </UnstyledButton>
         <Menu withinPortal position="bottom-end">

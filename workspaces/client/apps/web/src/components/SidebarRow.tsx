@@ -31,7 +31,10 @@ import {
   type ChatIndicator,
 } from "./chat-status/chatStatusModel";
 import ChatStatus from "./agents/ChatStatus";
-import { ChatServerLine } from "../servers/ProjectChatRows";
+import {
+  ChatServerLine,
+  offlineServerDescription,
+} from "../servers/ProjectChatRows";
 import { reportPromptComposerRender } from "./prompt-composer/renderProbe";
 
 type Actions = {
@@ -60,6 +63,7 @@ type Props = {
   selected: boolean;
   serverAlias: string;
   indicator?: ChatIndicator;
+  serverOffline?: boolean;
   renaming: boolean;
   name: string;
   organizing: boolean;
@@ -128,6 +132,7 @@ export default function SidebarRow(props: Props) {
       selected={props.selected}
       serverAlias={props.serverAlias}
       indicator={indicator}
+      serverOffline={props.serverOffline}
       renaming={props.renaming}
       name={props.name}
       organizing={props.organizing}
@@ -146,6 +151,7 @@ const SidebarRowView = memo(function SidebarRowView({
   selected,
   serverAlias,
   indicator,
+  serverOffline = false,
   renaming,
   name,
   organizing,
@@ -158,40 +164,52 @@ const SidebarRowView = memo(function SidebarRowView({
 }: Omit<Props, "bindings"> & { bindingValues: Bindings; events: Bindings }) {
   reportPromptComposerRender("sidebar-row", row.id);
   const a = row;
+  const offlineDescription = serverOffline
+    ? offlineServerDescription(serverAlias)
+    : undefined;
+  const chatRow = (
+    <UnstyledButton
+      {...bindingValues}
+      {...events}
+      title={row.name ?? undefined}
+      aria-description={[
+        "Drag onto a team to join it, or onto the project name to leave. Drop a team chat in the center of another lead chat to make it a subagent. Drag to an edge to reorder. Alt + Up or Down also works.",
+        offlineDescription,
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      className="chat-row"
+      data-chat={row.id}
+      onPointerEnter={() => actions.prepare()}
+      onFocus={() => actions.prepare()}
+      onPointerDown={() => actions.prepare()}
+      onClick={() => actions.open()}
+      aria-current={selected}
+    >
+      <span className="row-copy">
+        <strong>
+          {a?.pinned && <Pin size={11} className="chat-pin" />}
+          {row.name ?? ""}
+        </strong>
+        <ChatServerLine
+          provider={a.provider || undefined}
+          alias={serverAlias}
+          offline={serverOffline}
+        />
+      </span>
+      <ChatStatus
+        status={indicator}
+        provider={a.provider ?? undefined}
+        model={a.model ?? undefined}
+      />
+    </UnstyledButton>
+  );
   return (
     <div
       className={`sidebar-row lead-row ${selected ? "selected" : ""}`}
       data-sidebar-item={row.id}
     >
-      <UnstyledButton
-        {...bindingValues}
-        {...events}
-        title={row.name ?? undefined}
-        aria-description="Drag onto a team to join it, or onto the project name to leave. Drop a team chat in the center of another lead chat to make it a subagent. Drag to an edge to reorder. Alt + Up or Down also works."
-        className="chat-row"
-        data-chat={row.id}
-        onPointerEnter={() => actions.prepare()}
-        onFocus={() => actions.prepare()}
-        onPointerDown={() => actions.prepare()}
-        onClick={() => actions.open()}
-        aria-current={selected}
-      >
-        <span className="row-copy">
-          <strong>
-            {a?.pinned && <Pin size={11} className="chat-pin" />}
-            {row.name ?? ""}
-          </strong>
-          <ChatServerLine
-            provider={a.provider || undefined}
-            alias={serverAlias}
-          />
-        </span>
-        <ChatStatus
-          status={indicator}
-          provider={a.provider ?? undefined}
-          model={a.model ?? undefined}
-        />
-      </UnstyledButton>
+      {chatRow}
       {!renaming && (
         <ActionIcon
           className="row-pin-action"
