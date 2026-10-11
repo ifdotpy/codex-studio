@@ -54,6 +54,7 @@ import {
   targetExternalCatalog,
   externalRefusal,
   serverAlias,
+  canonicalJson,
 } from "./move-external.mjs";
 
 // The hash of this bridge's own sources. The server retires an idle bridge whose sources an
@@ -687,7 +688,7 @@ async function proofOptions(s, proof) {
     extraArgs: providerOptions.extraArgs || {},
   };
   const optionsHash = createHash("sha256")
-    .update(JSON.stringify(options))
+    .update(canonicalJson(options))
     .digest("hex");
   externalConfigs.set(optionsHash + ":" + s.cwd, external.configs);
   return {
