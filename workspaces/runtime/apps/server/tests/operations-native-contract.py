@@ -12,7 +12,9 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 import json
+import ast
 import unittest
+from unittest.mock import patch
 from types import SimpleNamespace
 
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
@@ -20,7 +22,7 @@ sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 import studio_operations_native as native
 
 from codex_operations_adapter import PROTOCOL_VERSION, check_protocol
-from codex_tool_requests import _apply_decision, _lifecycle, _missing_receipt_outcome
+from codex_tool_requests import RequestMixin, _apply_decision, _lifecycle, _missing_receipt_outcome
 
 FIXTURE = (
     Path(__file__).resolve().parents[3]
@@ -73,8 +75,8 @@ class OperationsNativeContract(unittest.TestCase):
                     empty = "stage" not in record
                     if empty and event == "Admit" and step.get("content") is not None:
                         record["signature"] = step["content"]
-                    decision = native.transition_record(
-                        json.dumps(record),
+                    decision = _lifecycle(
+                        record,
                         event,
                         empty=empty,
                         generation=step.get("generation"),
@@ -140,23 +142,122 @@ class OperationsNativeContract(unittest.TestCase):
         self.assertEqual(repeated.kind, "NoEffect")
         self.assertFalse(_apply_decision(record, repeated))
 
+    def test_committed_receipt_followed_by_inferred_failure_stays_unknown(self):
+        record = _record("running", "pending")
+        receipt = _lifecycle(record, "CommittedOperationReceipt")
+        self.assertTrue(_apply_decision(record, receipt))
+        self.assertEqual((record["stage"], record["outcome"]), ("failed", "unknown"))
+        failure = _lifecycle(record, "Failure")
+        _apply_decision(record, failure)
+        self.assertEqual(record["outcome"], "unknown")
+        self.assertNotEqual(record["outcome"], "applied")
+
     def test_unknown_persisted_pair_rejects_with_legacy_message(self):
         record = _record("future-stage", "pending")
         with self.assertRaisesRegex(
             ValueError,
-            "Unsupported stored tool request lifecycle: future-stage/pending",
+            "Invalid stored tool request record",
         ):
             _lifecycle(record, "ServerRestarted")
 
     def test_changed_content_and_missing_receipt_keep_existing_messages(self):
         record = _record()
-        decision = native.transition_record(
-            json.dumps(record), "Admit", admission_signature="different-signature"
-        )
+        decision = _lifecycle(record, "Admit", admission_signature="different-signature")
         self.assertEqual(decision.kind, "Rejected")
         self.assertEqual(decision.rejection_code, "DifferentContent")
         self.assertEqual(decision.rejection_message, "This request id has different content")
         self.assertEqual(_missing_receipt_outcome("missing-request"), "unknown")
+
+    def test_stub_literal_members_match_rust_exports(self):
+        tree = ast.parse((Path(SERVER_SOURCE_ROOT) / "studio_operations_native.pyi").read_text())
+        aliases = {
+            target.id: node.value
+            for node in tree.body if isinstance(node, ast.Assign)
+            for target in node.targets if isinstance(target, ast.Name)
+        }
+        contracts = {
+            "EventName": ("EVENT_NAMES", native.EVENT_NAMES),
+            "ProofName": ("PROOF_NAMES", native.PROOF_NAMES),
+            "ResultKind": ("RESULT_NAMES", native.RESULT_NAMES),
+            "PersistedStage": ("PERSISTED_STAGES", native.PERSISTED_STAGES),
+            "PersistedOutcome": ("PERSISTED_OUTCOMES", native.PERSISTED_OUTCOMES),
+        }
+        for alias, (export, expected) in contracts.items():
+            with self.subTest(alias=alias):
+                expression = aliases[alias]
+                members = expression.slice.elts if isinstance(expression.slice, ast.Tuple) else [expression.slice]
+                self.assertIsInstance(expression, ast.Subscript)
+                self.assertEqual([ast.literal_eval(member) for member in members], list(expected), export)
+
+    def test_all_event_and_proof_names_are_accepted_and_unknown_names_rejected(self):
+        for event in native.EVENT_NAMES:
+            with self.subTest(event=event):
+                self.assertIn(_lifecycle(_record(), event).kind, native.RESULT_NAMES)
+        for proof, record in (
+            ("QueuedCancellation", _record("queued", "pending")),
+            ("ReadOnlyRejection", _record("running", "pending")),
+            ("ExactPreWriteRejection", _record("running", "pending")),
+            ("ReviewChildAbsent", _record("running", "pending")),
+        ):
+            with self.subTest(proof=proof):
+                if proof == "ReviewChildAbsent":
+                    _apply_decision(record, _lifecycle(record, "Failure"))
+                decision = _lifecycle(record, "DefinitiveRejection", proof=proof)
+                self.assertEqual(decision.kind, "Transitioned")
+                self.assertTrue(_apply_decision(record, decision))
+                self.assertEqual(record["outcome"], "not_applied")
+        with self.assertRaisesRegex(ValueError, "Unknown tool request event"):
+            _lifecycle(_record(), "NotAnEvent")
+        with self.assertRaisesRegex(ValueError, "Unknown tool request rejection proof"):
+            _lifecycle(_record(), "Failure", proof="NotAProof")
+
+    def test_malformed_arguments_and_record_fields_fail_closed(self):
+        with self.assertRaisesRegex(ValueError, "Invalid stored tool request record"):
+            native.transition_record("{", "Cancel", b"\0" * 32, empty=True)
+        with self.assertRaisesRegex(ValueError, "fingerprint must contain 32 bytes"):
+            native.transition_record("{}", "Cancel", b"bad", empty=True)
+        with self.assertRaises(TypeError):
+            native.transition_record("{}", "Cancel", 7, empty=True)
+        for field, value in (("cancelRequested", 1), ("epoch", "4"),
+                             ("signature", 1), ("agent", 1),
+                             ("supervisor", {"generation": "5"})):
+            with self.subTest(field=field):
+                record = _record()
+                record[field] = value
+                with self.assertRaises(ValueError):
+                    _lifecycle(record, "ServerRestarted")
+        for missing in ("stage", "outcome"):
+            with self.subTest(missing=missing):
+                record = _record()
+                del record[missing]
+                with self.assertRaisesRegex(ValueError, "Unsupported stored tool request lifecycle"):
+                    _lifecycle(record, "ServerRestarted")
+
+    def test_recovery_logs_and_leaves_malformed_record_unapplied(self):
+        import logging
+        import sqlite3
+        from codex_payloads import resolve_record, state_root
+
+        class Runtime(RequestMixin):
+            def __init__(self):
+                self.writes = []
+
+            def put(self, db, kind, record):
+                self.writes.append(record)
+
+        db = sqlite3.connect(":memory:")
+        runtime = Runtime()
+        record = _record()
+        record["cancelRequested"] = 1
+        db.execute("CREATE TABLE runtime_tool_requests (id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+        db.execute("INSERT INTO runtime_tool_requests VALUES (?, ?)", (record["id"], json.dumps(record)))
+        with patch("codex_payloads.resolve_record", side_effect=lambda _root, value: value), \
+             patch("codex_payloads.state_root", return_value="isolated"), \
+             self.assertLogs("codex_tool_requests", level=logging.WARNING) as logs:
+            runtime.setup_tool_requests(db)
+        self.assertIn(record["id"], logs.output[0])
+        self.assertEqual(runtime.writes, [])
+        self.assertEqual(db.execute("SELECT record FROM runtime_tool_requests").fetchone()[0], json.dumps(record))
 
 
 if __name__ == "__main__":

@@ -30,6 +30,11 @@ PersistedStage = Literal[
 PersistedOutcome = Literal["pending", "not_applied", "applied", "unknown"]
 
 PROTOCOL_VERSION: int
+EVENT_NAMES: list[EventName]
+PROOF_NAMES: list[ProofName]
+RESULT_NAMES: list[ResultKind]
+PERSISTED_STAGES: list[PersistedStage]
+PERSISTED_OUTCOMES: list[PersistedOutcome]
 
 class TransitionResult:
     @property
@@ -48,10 +53,10 @@ class TransitionResult:
 def transition_record(
     record_json: str,
     event: EventName,
+    fingerprint: bytes,
     *,
     proof: ProofName | None = ...,
     empty: bool = ...,
     generation: int | None = ...,
-    admission_signature: str | None = ...,
-    admission_agent: str | None = ...,
+    admission_fingerprint: bytes | None = ...,
 ) -> TransitionResult: ...

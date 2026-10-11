@@ -223,7 +223,7 @@ class RequestContract(unittest.TestCase):
             self.runtime.put(db, 'tool_requests', unsupported)
         with self.assertLogs('codex_tool_requests', level='WARNING') as logs:
             self.runtime = Ledger(self.runtime.path)
-        self.assertIn('Skipping unsupported stored tool request lifecycle', logs.output[0])
+        self.assertIn('Skipping invalid stored tool request lifecycle during restart for request', logs.output[0])
         self.assertEqual(self.runtime.tool_request(unsupported['id']), unsupported)
 
     def test_atomic_receipt_obeys_transaction_rollback(self):

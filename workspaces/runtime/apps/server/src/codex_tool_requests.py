@@ -12,6 +12,11 @@ from typing import Any, TYPE_CHECKING, Protocol
 from codex_records import RecordStore
 from codex_operations_adapter import native
 
+_LIFECYCLE_FIELDS = (
+    "stage", "outcome", "cancelRequested", "id", "callId", "accountKey",
+    "threadId", "agent", "epoch", "supervisor", "readOnly",
+)
+
 if TYPE_CHECKING:
     import sqlite3
     from contextlib import AbstractContextManager
@@ -47,22 +52,45 @@ def _prefix(account: str, thread: str | None) -> str:
     return (str(account) + ":" if account != "default" else "") + str(thread) + ":"
 
 
+def _content_fingerprint(signature: str, agent: str) -> bytes:
+    if not isinstance(signature, str) or not isinstance(agent, str):
+        raise ValueError("Stored tool request signature and agent must be strings")
+    return hashlib.sha256(json.dumps(
+        (signature, agent), separators=(",", ":"), ensure_ascii=False,
+    ).encode()).digest()
+
+
 def _lifecycle(
     record: "ToolRequestRecord",
     event: "EventName",
     *,
     proof: "ProofName | None" = None,
     empty: bool = False,
+    generation: int | None = None,
     admission_signature: str | None = None,
     admission_agent: str | None = None,
 ) -> "TransitionResult":
+    signature = record.get("signature", "")
+    agent = record.get("agent", "")
+    signature = "" if signature is None else signature
+    agent = "" if agent is None else agent
+    fingerprint = _content_fingerprint(signature, agent)
+    admission_fingerprint = (
+        _content_fingerprint(
+            admission_signature if admission_signature is not None else signature,
+            admission_agent if admission_agent is not None else agent,
+        )
+        if admission_signature is not None or admission_agent is not None
+        else None
+    )
     return native.transition_record(
-        json.dumps(record, ensure_ascii=False),
+        json.dumps({field: record[field] for field in _LIFECYCLE_FIELDS if field in record}, ensure_ascii=False),
         event,
+        fingerprint,
         proof=proof,
         empty=empty,
-        admission_signature=admission_signature,
-        admission_agent=admission_agent,
+        generation=generation,
+        admission_fingerprint=admission_fingerprint,
     )
 
 
@@ -86,11 +114,7 @@ def _apply_decision(record: "ToolRequestRecord", decision: "TransitionResult") -
 
 
 def _missing_receipt_outcome(request_id: str) -> str:
-    decision = native.transition_record(
-        json.dumps({"id": request_id, "callId": request_id}),
-        "ReceiptMissing",
-        empty=True,
-    )
+    decision = _lifecycle({"id": request_id, "callId": request_id}, "ReceiptMissing", empty=True)
     if decision.kind == "ReceiptMissingUnknown":
         return "unknown"
     _require_decision(decision)
@@ -276,7 +300,8 @@ class RequestMixin:
                 _lifecycle(record, "ServerRestarted")
             except ValueError:
                 logging.getLogger(__name__).warning(
-                    "Skipping unsupported stored tool request lifecycle during restart: %s/%s",
+                    "Skipping invalid stored tool request lifecycle during restart for request %s: %s/%s",
+                    record.get("id", "<missing>"),
                     record.get("stage"), record.get("outcome"),
                 )
                 continue

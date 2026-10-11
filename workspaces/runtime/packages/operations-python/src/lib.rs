@@ -36,33 +36,33 @@ impl From<record_adapter::AdapterResult> for TransitionResult {
             kind: result.kind.to_owned(),
             rejection_code: result.rejection_code,
             rejection_message: result.rejection_message,
-            stage: result.stage.map(str::to_owned),
-            outcome: result.outcome.map(str::to_owned),
+            stage: result.stage.map(|value| value.label().to_owned()),
+            outcome: result.outcome.map(|value| value.label().to_owned()),
             cancel_requested: result.cancel_requested,
         }
     }
 }
 
 #[pyfunction]
-#[pyo3(signature = (record_json, event, *, proof=None, empty=false, generation=None, admission_signature=None, admission_agent=None))]
+#[pyo3(signature = (record_json, event, fingerprint, *, proof=None, empty=false, generation=None, admission_fingerprint=None))]
 fn transition_record(
     record_json: &str,
     event: &str,
+    fingerprint: Vec<u8>,
     proof: Option<&str>,
     empty: bool,
     generation: Option<u64>,
-    admission_signature: Option<&str>,
-    admission_agent: Option<&str>,
+    admission_fingerprint: Option<Vec<u8>>,
 ) -> PyResult<TransitionResult> {
     let result = catch_panic(|| {
         record_adapter::transition_record(
             record_json,
             event,
+            fingerprint,
             proof,
             empty,
             generation,
-            admission_signature,
-            admission_agent,
+            admission_fingerprint,
         )
     });
     match result {
@@ -78,6 +78,11 @@ fn transition_record(
 #[allow(unsafe_code)]
 fn studio_operations_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("PROTOCOL_VERSION", PROTOCOL_VERSION)?;
+    module.add("EVENT_NAMES", record_adapter::EVENT_NAMES.to_vec())?;
+    module.add("PROOF_NAMES", record_adapter::PROOF_NAMES.to_vec())?;
+    module.add("RESULT_NAMES", record_adapter::RESULT_NAMES.to_vec())?;
+    module.add("PERSISTED_STAGES", record_adapter::STAGE_NAMES.to_vec())?;
+    module.add("PERSISTED_OUTCOMES", record_adapter::OUTCOME_NAMES.to_vec())?;
     module.add_class::<TransitionResult>()?;
     module.add_function(wrap_pyfunction!(transition_record, module)?)?;
     Ok(())

@@ -1,7 +1,6 @@
 //! Durable Studio request records at the boundary to the pure lifecycle core.
 
-use serde::{Deserialize, Deserializer};
-use sha2::{Digest, Sha256};
+use serde::Deserialize;
 use studio_operations::{
     AccountId, AccountThreadEpoch, AgentId, AttemptIdentity, ContentFingerprint, Event, EventId,
     EventKind, IdentityScope, Operation, OperationIdentity, OperationState, ProcessGeneration,
@@ -15,112 +14,83 @@ const STALE_EPOCH: &str = "This request belongs to an older account/thread epoch
 const STALE_GENERATION: &str = "This request belongs to an older process generation";
 const GENERATION_UNAVAILABLE: &str = "The request has no captured process generation";
 
-fn deserialize_nonnegative_integer<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = serde_json::Value::deserialize(deserializer)?;
-    Ok(value.as_u64())
-}
-
-fn deserialize_supervisor<'de, D>(deserializer: D) -> Result<Option<SupervisorRecord>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = serde_json::Value::deserialize(deserializer)?;
-    Ok(serde_json::from_value(value).ok())
-}
-
-#[derive(Clone, Debug)]
-enum StoredStage {
-    Queued,
-    Running,
-    Cancelled,
-    Interrupted,
-    Failed,
-    Unknown,
-    Completed,
-    Other(String),
-}
-
-impl StoredStage {
-    fn name(&self) -> &str {
-        match self {
-            Self::Queued => "queued",
-            Self::Running => "running",
-            Self::Cancelled => "cancelled",
-            Self::Interrupted => "interrupted",
-            Self::Failed => "failed",
-            Self::Unknown => "unknown",
-            Self::Completed => "completed",
-            Self::Other(value) => value,
+macro_rules! wire_enum {
+    ($name:ident { $($variant:ident => $label:literal),+ $(,)? }) => {
+        #[derive(Clone, Copy, Debug, Deserialize)]
+        pub(crate) enum $name {
+            $(#[serde(rename = $label)] $variant),+
         }
-    }
-}
 
-impl<'de> Deserialize<'de> for StoredStage {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Ok(match value.as_str() {
-            "queued" => Self::Queued,
-            "running" => Self::Running,
-            "cancelled" => Self::Cancelled,
-            "interrupted" => Self::Interrupted,
-            "failed" => Self::Failed,
-            "unknown" => Self::Unknown,
-            "completed" => Self::Completed,
-            _ => Self::Other(value),
-        })
-    }
-}
+        impl $name {
+            pub(crate) const NAMES: &'static [&'static str] = &[$($label),+];
 
-#[derive(Clone, Debug)]
-enum StoredOutcome {
-    Pending,
-    NotApplied,
-    Applied,
-    Unknown,
-    Other(String),
-}
-
-impl StoredOutcome {
-    fn name(&self) -> &str {
-        match self {
-            Self::Pending => "pending",
-            Self::NotApplied => "not_applied",
-            Self::Applied => "applied",
-            Self::Unknown => "unknown",
-            Self::Other(value) => value,
+            pub(crate) const fn label(self) -> &'static str {
+                match self { $(Self::$variant => $label),+ }
+            }
         }
-    }
+    };
 }
 
-impl<'de> Deserialize<'de> for StoredOutcome {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Ok(match value.as_str() {
-            "pending" => Self::Pending,
-            "not_applied" => Self::NotApplied,
-            "applied" => Self::Applied,
-            "unknown" => Self::Unknown,
-            _ => Self::Other(value),
-        })
-    }
+macro_rules! wire_enum_without_label {
+    ($name:ident { $($variant:ident => $label:literal),+ $(,)? }) => {
+        #[derive(Clone, Copy, Debug, Deserialize)]
+        pub(crate) enum $name {
+            $(#[serde(rename = $label)] $variant),+
+        }
+
+        impl $name {
+            pub(crate) const NAMES: &'static [&'static str] = &[$($label),+];
+        }
+    };
 }
+
+wire_enum!(RequestEvent {
+    Admit => "Admit",
+    ClaimDispatch => "ClaimDispatch",
+    Cancel => "Cancel",
+    ServerRestarted => "ServerRestarted",
+    CommittedOperationReceipt => "CommittedOperationReceipt",
+    AppliedResponse => "AppliedResponse",
+    DefinitiveRejection => "DefinitiveRejection",
+    Failure => "Failure",
+    ReceiptMissing => "ReceiptMissing",
+});
+wire_enum_without_label!(RejectionProof {
+    QueuedCancellation => "QueuedCancellation",
+    ReadOnlyRejection => "ReadOnlyRejection",
+    ExactPreWriteRejection => "ExactPreWriteRejection",
+    ReviewChildAbsent => "ReviewChildAbsent",
+});
+wire_enum!(ResultKind {
+    Transitioned => "Transitioned",
+    ReturnExisting => "ReturnExisting",
+    NoEffect => "NoEffect",
+    ReceiptMissingUnknown => "ReceiptMissingUnknown",
+    Rejected => "Rejected",
+});
+wire_enum!(PersistedStage {
+    Queued => "queued",
+    Running => "running",
+    Cancelled => "cancelled",
+    Interrupted => "interrupted",
+    Failed => "failed",
+    Unknown => "unknown",
+    Completed => "completed",
+});
+wire_enum!(PersistedOutcome {
+    Pending => "pending",
+    NotApplied => "not_applied",
+    Applied => "applied",
+    Unknown => "unknown",
+});
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ToolRequestRecord {
     #[serde(default)]
-    stage: Option<StoredStage>,
+    stage: Option<PersistedStage>,
     #[serde(default)]
-    outcome: Option<StoredOutcome>,
+    outcome: Option<PersistedOutcome>,
     #[serde(default)]
     cancel_requested: bool,
     #[serde(default)]
@@ -134,10 +104,8 @@ struct ToolRequestRecord {
     #[serde(default)]
     agent: Option<String>,
     #[serde(default)]
-    signature: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_nonnegative_integer")]
     epoch: Option<u64>,
-    #[serde(default, deserialize_with = "deserialize_supervisor")]
+    #[serde(default)]
     supervisor: Option<SupervisorRecord>,
     #[serde(default)]
     read_only: bool,
@@ -145,74 +113,10 @@ struct ToolRequestRecord {
 
 #[derive(Debug, Deserialize)]
 struct SupervisorRecord {
-    #[serde(default, deserialize_with = "deserialize_nonnegative_integer")]
+    #[serde(default)]
     generation: Option<u64>,
 }
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RequestEvent {
-    Admit,
-    ClaimDispatch,
-    Cancel,
-    ServerRestarted,
-    CommittedOperationReceipt,
-    AppliedResponse,
-    DefinitiveRejection,
-    Failure,
-    ReceiptMissing,
-}
-
-impl RequestEvent {
-    fn parse(value: &str) -> Result<Self, String> {
-        match value {
-            "Admit" => Ok(Self::Admit),
-            "ClaimDispatch" => Ok(Self::ClaimDispatch),
-            "Cancel" => Ok(Self::Cancel),
-            "ServerRestarted" => Ok(Self::ServerRestarted),
-            "CommittedOperationReceipt" => Ok(Self::CommittedOperationReceipt),
-            "AppliedResponse" => Ok(Self::AppliedResponse),
-            "DefinitiveRejection" => Ok(Self::DefinitiveRejection),
-            "Failure" => Ok(Self::Failure),
-            "ReceiptMissing" => Ok(Self::ReceiptMissing),
-            _ => Err(format!("Unknown tool request event: {value}")),
-        }
-    }
-
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Admit => "Admit",
-            Self::ClaimDispatch => "ClaimDispatch",
-            Self::Cancel => "Cancel",
-            Self::ServerRestarted => "ServerRestarted",
-            Self::CommittedOperationReceipt => "CommittedOperationReceipt",
-            Self::AppliedResponse => "AppliedResponse",
-            Self::DefinitiveRejection => "DefinitiveRejection",
-            Self::Failure => "Failure",
-            Self::ReceiptMissing => "ReceiptMissing",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-enum RejectionProof {
-    QueuedCancellation,
-    ReadOnlyRejection,
-    ExactPreWriteRejection,
-    ReviewChildAbsent,
-}
-
 impl RejectionProof {
-    fn parse(value: Option<&str>) -> Result<Option<Self>, String> {
-        match value {
-            None => Ok(None),
-            Some("QueuedCancellation") => Ok(Some(Self::QueuedCancellation)),
-            Some("ReadOnlyRejection") => Ok(Some(Self::ReadOnlyRejection)),
-            Some("ExactPreWriteRejection") => Ok(Some(Self::ExactPreWriteRejection)),
-            Some("ReviewChildAbsent") => Ok(Some(Self::ReviewChildAbsent)),
-            Some(other) => Err(format!("Unknown tool request rejection proof: {other}")),
-        }
-    }
-
     const fn core(self) -> studio_operations::NonExecutionProof {
         match self {
             Self::QueuedCancellation => studio_operations::NonExecutionProof::QueuedCancellation,
@@ -225,24 +129,9 @@ impl RejectionProof {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-enum ResultKind {
-    Transitioned,
-    ReturnExisting,
-    NoEffect,
-    ReceiptMissingUnknown,
-    Rejected,
-}
-
 impl ResultKind {
     const fn as_str(self) -> &'static str {
-        match self {
-            Self::Transitioned => "Transitioned",
-            Self::ReturnExisting => "ReturnExisting",
-            Self::NoEffect => "NoEffect",
-            Self::ReceiptMissingUnknown => "ReceiptMissingUnknown",
-            Self::Rejected => "Rejected",
-        }
+        self.label()
     }
 }
 
@@ -250,36 +139,58 @@ pub(crate) struct AdapterResult {
     pub(crate) kind: &'static str,
     pub(crate) rejection_code: Option<String>,
     pub(crate) rejection_message: Option<String>,
-    pub(crate) stage: Option<&'static str>,
-    pub(crate) outcome: Option<&'static str>,
+    pub(crate) stage: Option<PersistedStage>,
+    pub(crate) outcome: Option<PersistedOutcome>,
     pub(crate) cancel_requested: Option<bool>,
 }
+
+pub(crate) const EVENT_NAMES: &[&str] = RequestEvent::NAMES;
+pub(crate) const PROOF_NAMES: &[&str] = RejectionProof::NAMES;
+pub(crate) const RESULT_NAMES: &[&str] = ResultKind::NAMES;
+pub(crate) const STAGE_NAMES: &[&str] = PersistedStage::NAMES;
+pub(crate) const OUTCOME_NAMES: &[&str] = PersistedOutcome::NAMES;
 
 pub(crate) fn transition_record(
     record_json: &str,
     event_name: &str,
+    fingerprint: Vec<u8>,
     proof_name: Option<&str>,
     empty: bool,
     generation: Option<u64>,
-    admission_signature: Option<&str>,
-    admission_agent: Option<&str>,
+    admission_fingerprint: Option<Vec<u8>>,
 ) -> Result<AdapterResult, String> {
     let stored: ToolRequestRecord = serde_json::from_str(record_json)
         .map_err(|error| format!("Invalid stored tool request record: {error}"))?;
+    let fingerprint: [u8; 32] = fingerprint
+        .try_into()
+        .map_err(|_| "Tool request content fingerprint must contain 32 bytes".to_owned())?;
     let legacy_state = if empty {
         State::empty(StateRevision(0))
     } else {
-        state_for_record(&stored)?
+        state_for_record(&stored, ContentFingerprint(fingerprint))?
     };
-    let event_kind = RequestEvent::parse(event_name)?;
-    let proof = match RejectionProof::parse(proof_name)? {
-        Some(proof) => Some(proof),
-        None if event_kind == RequestEvent::DefinitiveRejection => Some(if stored.read_only {
-            RejectionProof::ReadOnlyRejection
-        } else {
-            RejectionProof::ExactPreWriteRejection
-        }),
-        None => None,
+    let encoded_event = serde_json::to_string(event_name)
+        .map_err(|error| format!("Could not encode tool request event: {error}"))?;
+    let event_kind: RequestEvent = serde_json::from_str(&encoded_event)
+        .map_err(|_| format!("Unknown tool request event: {event_name}"))?;
+    let proof = match proof_name.map(|name| {
+        serde_json::to_string(name)
+            .map_err(|error| format!("Could not encode tool request rejection proof: {error}"))
+            .and_then(|encoded| {
+                serde_json::from_str(&encoded)
+                    .map_err(|_| format!("Unknown tool request rejection proof: {name}"))
+            })
+    }) {
+        Some(Ok(proof)) => Some(proof),
+        Some(Err(error)) => return Err(error),
+        None => match event_kind {
+            RequestEvent::DefinitiveRejection => Some(if stored.read_only {
+                RejectionProof::ReadOnlyRejection
+            } else {
+                RejectionProof::ExactPreWriteRejection
+            }),
+            _ => None,
+        },
     };
     let revision = legacy_state.revision.0;
     let identity = identity_for_record(&stored);
@@ -287,11 +198,13 @@ pub(crate) fn transition_record(
     let state = legacy_state;
     let kind = match event_kind {
         RequestEvent::Admit => EventKind::Admit {
-            content: content_for_record(
-                admission_signature
-                    .unwrap_or_else(|| stored.signature.as_deref().unwrap_or_default()),
-                admission_agent.unwrap_or_else(|| stored.agent.as_deref().unwrap_or_default()),
-            )?,
+            content: ContentFingerprint(
+                admission_fingerprint
+                    .map(TryInto::try_into)
+                    .transpose()
+                    .map_err(|_| "Admission fingerprint must contain 32 bytes".to_owned())?
+                    .unwrap_or(fingerprint),
+            ),
         },
         RequestEvent::ClaimDispatch => EventKind::ClaimDispatch,
         RequestEvent::Cancel => EventKind::Cancel,
@@ -329,44 +242,56 @@ pub(crate) fn transition_record(
     ))
 }
 
-fn unsupported(stage: &str, outcome: &str) -> String {
-    format!("Unsupported stored tool request lifecycle: {stage}/{outcome}")
-}
-
-fn state_for_record(record: &ToolRequestRecord) -> Result<State, String> {
-    let missing_stage = StoredStage::Other("None".to_owned());
-    let missing_outcome = StoredOutcome::Other("None".to_owned());
-    let stage = record.stage.as_ref().unwrap_or(&missing_stage);
-    let outcome = record.outcome.as_ref().unwrap_or(&missing_outcome);
+fn state_for_record(
+    record: &ToolRequestRecord,
+    content: ContentFingerprint,
+) -> Result<State, String> {
+    let stage = record.stage;
+    let outcome = record.outcome;
     let (revision, state) = match (stage, outcome) {
-        (StoredStage::Queued, StoredOutcome::Pending) => (0, OperationState::Reserved),
-        (StoredStage::Running, StoredOutcome::Pending) if record.cancel_requested => {
+        (Some(PersistedStage::Queued), Some(PersistedOutcome::Pending)) => {
+            (0, OperationState::Reserved)
+        }
+        (Some(PersistedStage::Running), Some(PersistedOutcome::Pending))
+            if record.cancel_requested =>
+        {
             (2, OperationState::CancelRequested)
         }
-        (StoredStage::Running, StoredOutcome::Pending) => (1, OperationState::Dispatched),
-        (StoredStage::Cancelled, StoredOutcome::NotApplied) => {
+        (Some(PersistedStage::Running), Some(PersistedOutcome::Pending)) => {
+            (1, OperationState::Dispatched)
+        }
+        (Some(PersistedStage::Cancelled), Some(PersistedOutcome::NotApplied)) => {
             (3, OperationState::CancelledBeforeDispatch)
         }
         (
-            StoredStage::Queued
-            | StoredStage::Running
-            | StoredStage::Interrupted
-            | StoredStage::Failed
-            | StoredStage::Unknown,
-            StoredOutcome::Unknown,
+            Some(
+                PersistedStage::Queued
+                | PersistedStage::Running
+                | PersistedStage::Interrupted
+                | PersistedStage::Failed
+                | PersistedStage::Unknown,
+            ),
+            Some(PersistedOutcome::Unknown),
         ) => (3, OperationState::Unknown),
-        (StoredStage::Completed, StoredOutcome::Applied) => (3, OperationState::Applied),
-        (StoredStage::Failed, StoredOutcome::NotApplied) => (3, OperationState::NotApplied),
-        _ => return Err(unsupported(stage.name(), outcome.name())),
+        (Some(PersistedStage::Completed), Some(PersistedOutcome::Applied)) => {
+            (3, OperationState::Applied)
+        }
+        (Some(PersistedStage::Failed), Some(PersistedOutcome::NotApplied)) => {
+            (3, OperationState::NotApplied)
+        }
+        _ => {
+            return Err(format!(
+                "Unsupported stored tool request lifecycle: {}/{}",
+                stage.map(PersistedStage::label).unwrap_or("None"),
+                outcome.map(PersistedOutcome::label).unwrap_or("None")
+            ));
+        }
     };
     Ok(State {
         revision: StateRevision(revision),
         operation: Some(Operation {
             identity: identity_for_record(record),
-            content: content_for_record(
-                record.signature.as_deref().unwrap_or_default(),
-                record.agent.as_deref().unwrap_or_default(),
-            )?,
+            content,
             attempt: attempt_for_record(record, None),
             state,
         }),
@@ -413,12 +338,6 @@ fn attempt_for_record(record: &ToolRequestRecord, generation: Option<u64>) -> At
     }
 }
 
-fn content_for_record(signature: &str, agent: &str) -> Result<ContentFingerprint, String> {
-    let canonical = serde_json::to_vec(&(signature, agent))
-        .map_err(|error| format!("Could not encode tool request content: {error}"))?;
-    Ok(ContentFingerprint(Sha256::digest(canonical).into()))
-}
-
 fn result_for_decision(
     record: &ToolRequestRecord,
     kind: &studio_operations::DecisionKind,
@@ -449,17 +368,35 @@ fn result_for_decision(
                 .operation
                 .as_ref()
                 .map(|operation| match operation.state {
-                    OperationState::Reserved => ("queued", "pending", false),
-                    OperationState::Dispatched => ("running", "pending", false),
-                    OperationState::CancelRequested => ("running", "pending", true),
-                    OperationState::CancelledBeforeDispatch => {
-                        ("cancelled", "not_applied", record.cancel_requested)
+                    OperationState::Reserved => {
+                        (PersistedStage::Queued, PersistedOutcome::Pending, false)
                     }
-                    OperationState::NotApplied => {
-                        ("failed", "not_applied", record.cancel_requested)
+                    OperationState::Dispatched => {
+                        (PersistedStage::Running, PersistedOutcome::Pending, false)
                     }
-                    OperationState::Applied => ("completed", "applied", record.cancel_requested),
-                    OperationState::Unknown => ("failed", "unknown", record.cancel_requested),
+                    OperationState::CancelRequested => {
+                        (PersistedStage::Running, PersistedOutcome::Pending, true)
+                    }
+                    OperationState::CancelledBeforeDispatch => (
+                        PersistedStage::Cancelled,
+                        PersistedOutcome::NotApplied,
+                        record.cancel_requested,
+                    ),
+                    OperationState::NotApplied => (
+                        PersistedStage::Failed,
+                        PersistedOutcome::NotApplied,
+                        record.cancel_requested,
+                    ),
+                    OperationState::Applied => (
+                        PersistedStage::Completed,
+                        PersistedOutcome::Applied,
+                        record.cancel_requested,
+                    ),
+                    OperationState::Unknown => (
+                        PersistedStage::Failed,
+                        PersistedOutcome::Unknown,
+                        record.cancel_requested,
+                    ),
                 });
             AdapterResult {
                 kind: result_kind.as_str(),
