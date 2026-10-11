@@ -58,7 +58,7 @@ export function useDesktopNotifications(
           window.dispatchEvent(
             new CustomEvent("desktop-error", {
               detail: denied
-                ? "Enable Allow notifications for Codex Studio in macOS System Settings > Notifications."
+                ? "Enable Allow notifications for LAYR Studio in macOS System Settings > Notifications."
                 : error instanceof Error
                   ? error.message
                   : "Could not show the desktop notification.",

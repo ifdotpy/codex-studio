@@ -267,7 +267,7 @@ test("Desktop Notifications Ui", async ({
     );
     assert.match(
       await page.evaluate(() => window.deniedErrors[0]),
-      /Enable Allow notifications for Codex Studio/,
+      /Enable Allow notifications for LAYR Studio/,
     );
     assert.doesNotMatch(
       await page.evaluate(() => window.deniedErrors[0]),

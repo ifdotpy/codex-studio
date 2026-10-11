@@ -49,7 +49,7 @@ for (const viewport of [
           .getByRole("button", { name: "Toggle conversations" })
           .click();
       await expect(
-        localFrame.getByRole("link", { name: "Codex Studio" }),
+        localFrame.getByRole("link", { name: "LAYR Studio" }),
       ).toBeVisible();
       await expect(localFrame.locator("html")).toHaveAttribute(
         "data-mantine-color-scheme",
@@ -90,7 +90,7 @@ for (const viewport of [
           .getByRole("button", { name: "Toggle conversations" })
           .click();
       const remoteBrand = remoteFrame.getByRole("link", {
-        name: "Codex Studio",
+        name: "LAYR Studio",
       });
       await expect(remoteBrand).toBeVisible();
       await expect(remoteFrame.locator(".chat-pin")).toBeVisible();
@@ -115,7 +115,7 @@ for (const viewport of [
       });
       await page.getByLabel("Studio server").selectOption("local");
       await expect(
-        localFrame.getByRole("link", { name: "Codex Studio" }),
+        localFrame.getByRole("link", { name: "LAYR Studio" }),
       ).toBeVisible();
       expect(local.writes).toEqual([]);
       expect(remote.writes).toEqual([]);

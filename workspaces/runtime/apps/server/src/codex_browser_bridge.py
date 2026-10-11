@@ -77,7 +77,7 @@ def bind_addresses(host: str) -> list[tuple[socket.AddressFamily, str]]:
 
 
 def page(text: str) -> bytes:
-    return ("<!doctype html><meta charset=utf-8><title>Codex Studio</title><p>"
+    return ("<!doctype html><meta charset=utf-8><title>LAYR Studio</title><p>"
             + html.escape(text) + "</p>").encode()
 
 

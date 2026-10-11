@@ -1,4 +1,4 @@
-# Codex Studio web client
+# LAYR Studio web client
 
 ## Change Contract
 
