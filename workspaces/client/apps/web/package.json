@@ -6,8 +6,8 @@
   "scripts": {
     "test:unit": "vitest run --config vitest.unit.config.ts",
     "test:api-contract-types": "tsc --noEmit -p tsconfig.api-contract.json",
-    "test:browser": "pnpm run build && playwright test --config playwright.config.ts --project=client",
-    "test:browser:list": "playwright test --config playwright.config.ts --project=client --list",
+    "test:browser": "pnpm run build && node scripts/run-browser-tests.mjs --config playwright.config.ts --project=client",
+    "test:browser:list": "node scripts/run-browser-tests.mjs --config playwright.config.ts --project=client --list",
     "test:performance": "pnpm run build && PLAYWRIGHT_INCLUDE_SPECIAL=1 playwright test --config playwright.config.ts --project=performance",
     "test:mutation": "stryker run stryker.config.mjs",
     "dev": "vite --force --host 127.0.0.1",

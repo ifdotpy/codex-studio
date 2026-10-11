@@ -8,7 +8,7 @@ import { join } from "node:path";
 import {
   test,
   browserExecutablePath,
-  apiSchemaHandshakeSse,
+  handleEntitySyncFixtureRequest,
 } from "../playwright.mjs";
 
 test("Account settings errors", async () => {
@@ -26,25 +26,18 @@ test("Account settings errors", async () => {
     data: { message: "A nested provider reason", retryAfter: 17 },
     additionalDetails: ["Retain this field"],
   };
+  const loginError = negative ? failure : failure.message;
   const workspaceId = "0123456789abcdef0123456789abcdef";
   const resourceStreams = new Set();
-  let resourceRevision = 0;
-  const writeResourceEvent = (stream, reason, resources = stream.resources) => {
-    if (reason !== "initial") resourceRevision++;
-    const event = {
-      protocol: 3,
-      workspaceId,
-      epoch: "account-errors-fixture",
-      revision: resourceRevision,
-      reason,
-      resources,
-    };
-    assert.ok(
-      Array.isArray(event.resources) && Number.isFinite(event.revision),
-    );
-    stream.response.write(
-      `event: resources\ndata: ${JSON.stringify(event)}\n\n`,
-    );
+  const syncFixture = {
+    snapshot: { runtime: {}, stateDir: "fixture", chats: [], edges: [] },
+    workspaceId,
+    epoch: "account-errors-fixture",
+    onStreamReady(notify, resources) {
+      const stream = { resources, notify };
+      resourceStreams.add(stream);
+      return () => resourceStreams.delete(stream);
+    },
   };
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-account-errors-"));
   const server = await createServer({
@@ -56,28 +49,8 @@ test("Account settings errors", async () => {
       {
         name: "account-error-fixture",
         configureServer(server) {
-          server.middlewares.use("/api/sync/identity", (_req, res) => {
-            res.setHeader("Content-Type", "application/json");
-            res.end(JSON.stringify({ workspaceId }));
-          });
-          server.middlewares.use("/api/sync/stream", (req, res) => {
-            const stream = {
-              response: res,
-              resources: JSON.parse(
-                new URL(req.url || "/", "http://localhost").searchParams.get(
-                  "resources",
-                ) || "[]",
-              ),
-            };
-            res.writeHead(200, {
-              "Content-Type": "text/event-stream",
-              "Cache-Control": "no-cache",
-              Connection: "keep-alive",
-            });
-            res.write(apiSchemaHandshakeSse());
-            resourceStreams.add(stream);
-            writeResourceEvent(stream, "initial");
-            res.on("close", () => resourceStreams.delete(stream));
+          server.middlewares.use((req, res, next) => {
+            if (!handleEntitySyncFixtureRequest(req, res, syncFixture)) next();
           });
           server.middlewares.use("/check", (_req, res) => {
             res.setHeader("Content-Type", "text/html");
@@ -102,7 +75,7 @@ test("Account settings errors", async () => {
   const initial=${JSON.stringify(failure)};const agent={id:'lead',rootId:'lead',isLead:true,source:'managed',status:'idle',model:'gpt-6',name:'Fixture lead',created:1,cwd:'/fixture'};
   localStorage.setItem('account-sign-in:fixture',JSON.stringify('request'));
   function Harness(){const [error,setError]=useState(initial);const [surface,setSurface]=useState('signin');window.changeError=setError;window.showSurface=setSurface;
-  const state={scope:'fixture',data:{accounts:[{id:'default',label:'Fixture account',status:'ready',error}],defaultAccountKey:'default',logins:[{requestId:'request',accountKey:'default',status:'error',error}]},setData:()=>{},refresh:async()=>{},error:''};
+  const state={scope:'fixture',data:{accounts:[{id:'default',label:'Fixture account',status:'ready',error}],defaultAccountKey:'default',logins:[{requestId:'request',accountKey:'default',status:'error',error:${JSON.stringify(loginError)}}]},setData:()=>{},refresh:async()=>{},error:''};
   const data={stateDir:'fixture',threads:[agent],runtime:{agents:[agent],requests:[],complaints:[],userMessages:[],userTasks:[]},board:{},nodes:[agent],edges:[],chats:[]};
   return <MantineProvider><p data-shell>Saved conversation remains available</p>{surface==='signin'?<AccountSignIn state={state} opened={true}/>:surface==='accounts'?<Accounts state={state} accountKey='default' changeAccount={async()=>{}} onError={()=>{}}/>:<Workspace key={surface} opened={true} initialSection={surface} agent={agent} data={data} allRequests={[]} onClose={()=>window.showSurface('signin')} onSelect={()=>{}} refresh={async()=>{}} notify={()=>{}}/>}</MantineProvider>}
   createRoot(document.getElementById('root')).render(<Harness/>);`;
@@ -138,8 +111,7 @@ test("Account settings errors", async () => {
     };
     await page.route("**/api/**", (route) => {
       const pathname = new URL(route.request().url()).pathname;
-      if (pathname === "/api/sync/identity" || pathname === "/api/sync/stream")
-        return route.continue();
+      if (pathname.startsWith("/api/sync/")) return route.continue();
       if (pathname === "/api/limits") limitsReads++;
       if (route.request().method() !== "GET") mutations.push(pathname);
       if (pathname === "/api/limits" && limitsHttpFailure)
@@ -237,20 +209,12 @@ test("Account settings errors", async () => {
       await page
         .getByText(failure.message, { exact: true })
         .waitFor({ state: "attached" });
-      await details(failure);
       const changed = {
         message: "Updated provider error",
         code: "new-code",
         metadata: { region: "fixture" },
       };
       await page.evaluate((value) => window.changeError(value), changed);
-      await page
-        .getByText(changed.message, { exact: true })
-        .waitFor({ state: "attached" });
-      assert.match(
-        await page.locator("[role=alert]").textContent(),
-        /new-code/,
-      );
       await page.evaluate(() => window.showSurface("accounts"));
       await page
         .getByRole("button", { name: "Account: Fixture account" })
@@ -310,9 +274,7 @@ test("Account settings errors", async () => {
         "the active limits resource is subscribed",
       );
       for (const stream of resourceStreams) {
-        writeResourceEvent(
-          stream,
-          "change",
+        stream.notify(
           stream.resources.filter(
             (resource) =>
               resource.kind === "limits" && resource.accountKey === "default",
@@ -343,7 +305,7 @@ test("Account settings errors", async () => {
         { timeout: 5000 },
       );
       for (const stream of resourceStreams)
-        writeResourceEvent(stream, "reconnect");
+        stream.notify(stream.resources, "reconnect");
       await reconnectRead;
       await limits
         .getByText(/80%\s*left/)

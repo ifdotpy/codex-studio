@@ -1,6 +1,6 @@
 import { serverLocalStorage } from "../servers/storage";
 import type { JsonValue } from "../types";
-import type { GetResult } from "../api";
+import type { ApiError, GetResult } from "../api";
 import type { components } from "../generated/api";
 import { providerLimitData, providerRateLimitsDataDto } from "./providerLimits";
 
@@ -9,14 +9,17 @@ export type JsonObject = { [key: string]: JsonValue };
 type AccountRateLimitsDto = components["schemas"]["AccountRateLimitsDto"];
 type UsageLimitsResponse = GetResult<"/api/limits">;
 type ClientLimitMetadata = { loading?: boolean; stale?: boolean };
+export type AccountLimitsReadError = Pick<ApiError, "message" | "status"> & {
+  details: JsonValue;
+};
 export type AccountLimitsSnapshot =
   | (Pick<AccountRateLimitsDto, "accountKey" | "at" | "data" | "error"> &
-      ClientLimitMetadata)
+      ClientLimitMetadata & { readError?: AccountLimitsReadError })
   | (Pick<
       UsageLimitsResponse,
       "accountKey" | "at" | "checkedAt" | "data" | "error" | "readAt"
     > &
-      ClientLimitMetadata);
+      ClientLimitMetadata & { readError?: AccountLimitsReadError });
 
 export function limitsReadSucceeded(
   snapshot: Pick<AccountLimitsSnapshot, "error">,
@@ -42,6 +45,7 @@ function isAccountLimitsSnapshot(
   value: JsonValue,
 ): value is AccountLimitsSnapshot {
   const limits = jsonObject(value);
+  const readError = jsonObject(limits?.readError);
   if (
     !limits ||
     typeof limits.accountKey !== "string" ||
@@ -51,6 +55,12 @@ function isAccountLimitsSnapshot(
     (limits.error !== undefined &&
       limits.error !== null &&
       typeof limits.error !== "string") ||
+    (limits.readError !== undefined &&
+      (!readError ||
+        typeof readError.message !== "string" ||
+        typeof readError.status !== "number" ||
+        !Number.isFinite(readError.status) ||
+        !("details" in readError))) ||
     (limits.readAt !== undefined &&
       limits.readAt !== null &&
       (typeof limits.readAt !== "number" || !Number.isFinite(limits.readAt))) ||

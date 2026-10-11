@@ -1,5 +1,6 @@
 import { defineConfig } from "@playwright/test";
 import { rmSync } from "node:fs";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { browserExecutablePath } from "./tests/browser-executable.mjs";
 import { choosePlaywrightScratchRoot } from "./tests/scratch-root.mjs";
@@ -38,6 +39,7 @@ console.log(
 );
 const globalTimeoutMs = 15 * 60 * 1000;
 const defaultTestTimeoutMs = 30_000;
+const outputDirectory = process.env.PLAYWRIGHT_OUTPUT_DIR;
 const requestedBrowser = process.env.BROWSER ?? "chromium";
 if (requestedBrowser !== "chromium" && requestedBrowser !== "webkit")
   throw new Error(`Unsupported BROWSER value: ${requestedBrowser}`);
@@ -61,6 +63,7 @@ const specialProjects =
     : [];
 
 export default defineConfig({
+  ...(outputDirectory ? { outputDir: outputDirectory } : {}),
   globalSetup: fileURLToPath(
     new URL("./playwright-global-setup.mjs", import.meta.url),
   ),
@@ -82,7 +85,15 @@ export default defineConfig({
   timeout: defaultTestTimeoutMs,
   reporter: [
     ["list"],
-    ["json", { outputFile: `${playwrightScratch.root}/results.json` }],
+    [
+      "json",
+      {
+        outputFile: resolve(
+          outputDirectory || playwrightScratch.root,
+          "results.json",
+        ),
+      },
+    ],
   ],
   projects: [
     {

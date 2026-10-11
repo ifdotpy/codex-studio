@@ -1,4 +1,9 @@
-import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
+import {
+  readTestState,
+  test,
+  spawnFixture as spawn,
+  skipIfWebKitCannotLaunch,
+} from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
@@ -120,10 +125,15 @@ test("Mobile usability", async () => {
     const lead = snapshot.threads.find(
       (agent) => agent.name === "Release lead",
     );
-    browser = await webkit.launch({
-      headless: true,
-      executablePath: webkitPath,
-    });
+    try {
+      browser = await webkit.launch({
+        headless: true,
+        executablePath: webkitPath,
+      });
+    } catch (error) {
+      skipIfWebKitCannotLaunch(test, error);
+      throw error;
+    }
     for (const width of [375, 390, 430, 1440]) {
       const desktop = width === 1440;
       const height = desktop

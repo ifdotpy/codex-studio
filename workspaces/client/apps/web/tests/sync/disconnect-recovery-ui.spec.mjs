@@ -215,7 +215,12 @@ test("disconnect recovery ui", async ({ page: runnerPage }) => {
     await button.click();
     await page
       .getByRole("status")
-      .filter({ hasText: "Native history remains unavailable." })
+      .filter({ hasText: "Could not confirm the previous outcome." })
+      .waitFor();
+    await page.locator(".studio-recovery-banner summary").click();
+    await page
+      .locator(".studio-recovery-banner")
+      .getByText("Native history remains unavailable.", { exact: true })
       .waitFor();
     assert.doesNotMatch(
       await page.getByRole("status").innerText(),

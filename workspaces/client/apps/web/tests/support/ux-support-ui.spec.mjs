@@ -6,7 +6,12 @@ import { tmpdir } from "node:os";
 import { join, extname } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "../playwright.mjs";
+import {
+  expect,
+  handleEntitySyncFixtureRequest,
+  syncIdentityFixture,
+  test,
+} from "../playwright.mjs";
 
 test("ux support ui", async ({ page: runnerPage }) => {
   const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
@@ -16,6 +21,7 @@ test("ux support ui", async ({ page: runnerPage }) => {
   const { build } = await import(require.resolve("vite"));
   const temporary = await mkdtemp(join(tmpdir(), "studio-support-ux-"));
   const entry = join(temporary, "index.html");
+  let page;
   await writeFile(
     entry,
     `<html><div id="root"></div><script type="module" src="${join(repo, "workspaces/runtime/apps/server/tests/fixtures/ux-support.tsx")}"></script></html>`,
@@ -57,8 +63,14 @@ test("ux support ui", async ({ page: runnerPage }) => {
         rollupOptions: { input: entry },
       },
     });
+    const syncFixture = {
+      snapshot: { runtime: {}, stateDir: "fixture", chats: [], edges: [] },
+      workspaceId: syncIdentityFixture().workspaceId,
+    };
     server = createServer(async (request, response) => {
       try {
+        if (handleEntitySyncFixtureRequest(request, response, syncFixture))
+          return;
         const path = new URL(request.url, "http://fixture").pathname;
         const file = join(
           temporary,
@@ -80,7 +92,7 @@ test("ux support ui", async ({ page: runnerPage }) => {
       }
     });
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const page = runnerPage;
+    page = runnerPage;
     await page.setViewportSize({ width: 1100, height: 800 });
     const writes = [];
     const taskSummary = (id, created, agent = "lead") => ({
@@ -120,6 +132,7 @@ test("ux support ui", async ({ page: runnerPage }) => {
     await page.route("**/api/**", async (route) => {
       const request = route.request();
       const path = new URL(request.url()).pathname;
+      if (path.startsWith("/api/sync/")) return route.continue();
       if (request.method() === "POST")
         writes.push({ path, body: request.postDataJSON() });
       if (path === "/api/workspace/tasks") {
@@ -277,6 +290,7 @@ test("ux support ui", async ({ page: runnerPage }) => {
       "PASS: terminal light theme and hide/end confirmation; background selection after first load, refresh, new tasks and scope; draft metadata and explicit actions.",
     );
   } finally {
+    await page?.close();
     if (server) await new Promise((resolve) => server.close(resolve));
     await rm(temporary, { recursive: true, force: true });
   }
