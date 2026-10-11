@@ -83,6 +83,7 @@ BLOCKERS = (
 )
 HAND_REVIEW: dict[str, frozenset[str]] = {
     "workspaces/runtime/apps/server/src/analytics/tests/test_rollout_parser.py": frozenset({"B"}),
+    "workspaces/runtime/apps/server/tests/browser-backend-smoke.py": frozenset({"A"}),
     "workspaces/runtime/apps/server/src/studio_api/sync/resources/test_entity_commit_publisher.py": frozenset({"B", "C"}),
     "workspaces/runtime/apps/server/src/sync/tests/test_sync_store.py": frozenset({"B", "C"}),
     "workspaces/runtime/apps/server/src/test_codex_api_client.py": frozenset({"B", "C"}),
@@ -130,7 +131,7 @@ HAND_SAMPLE = (
     "workspaces/runtime/apps/server/tests/native-action-receipts-contract.py",
     "workspaces/runtime/apps/server/tests/notification-wakeup-contract.py",
     "workspaces/runtime/apps/server/tests/old-turn-task-completion-contract.py",
-    "workspaces/runtime/apps/server/tests/projects-contract.py",
+    "workspaces/runtime/apps/server/tests/browser-backend-smoke.py",
     "workspaces/runtime/apps/server/tests/protocol-reader-contract.py",
     "workspaces/runtime/apps/server/tests/server-exec-path-contract.py",
     "workspaces/runtime/apps/server/tests/sync-entities-contract.py",

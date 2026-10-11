@@ -55,7 +55,7 @@ The blocker columns are non-exclusive. Route/provider mapping is separate from t
 | `workspaces/runtime/apps/server/tests/native-action-receipts-contract.py`                      |                 B/C |          B/C |
 | `workspaces/runtime/apps/server/tests/notification-wakeup-contract.py`                         |                 B/C |          B/C |
 | `workspaces/runtime/apps/server/tests/old-turn-task-completion-contract.py`                    |                   B |            B |
-| `workspaces/runtime/apps/server/tests/projects-contract.py`                                    |                   B |            B |
+| `workspaces/runtime/apps/server/tests/browser-backend-smoke.py`                                |                   A |            A |
 | `workspaces/runtime/apps/server/tests/protocol-reader-contract.py`                             |                   B |            B |
 | `workspaces/runtime/apps/server/tests/server-exec-path-contract.py`                            |                   C |            C |
 | `workspaces/runtime/apps/server/tests/sync-entities-contract.py`                               |                   C |          B/C |
