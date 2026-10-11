@@ -52,12 +52,16 @@ function backend(origin: string, initial: PreferenceFields) {
   let online = true;
   let loseResponse = false;
   const writes: { fields: PreferenceFields; requestId: string | null }[] = [];
+  let sessionReads = 0;
+  let pullReads = 0;
   const fetch = async (request: Request) => {
     if (!online) throw new TypeError("offline");
     const url = new URL(request.url);
     let value: unknown;
-    if (url.pathname === "/api/session") value = { token: "fixture" };
-    else if (url.pathname === "/api/sync/preferences") {
+    if (url.pathname === "/api/session") {
+      sessionReads++;
+      value = { token: "fixture" };
+    } else if (url.pathname === "/api/sync/preferences") {
       expect(request.headers.get("X-Canvas-Token")).toBe("fixture");
       const body = await request.json();
       fields = mergePreferenceFields(fields, body.fields);
@@ -71,7 +75,8 @@ function backend(origin: string, initial: PreferenceFields) {
         throw new TypeError("lost success");
       }
       value = { fields };
-    } else
+    } else {
+      pullReads++;
       value = {
         workspaceId: origin,
         documents:
@@ -92,6 +97,7 @@ function backend(origin: string, initial: PreferenceFields) {
         checkpoint: { seq: sequence },
         maxSeq: sequence,
       };
+    }
     return new Response(JSON.stringify(value), {
       headers: {
         [API_SCHEMA_HASH_HEADER]: API_SCHEMA_HASH,
@@ -105,6 +111,12 @@ function backend(origin: string, initial: PreferenceFields) {
     get fields() {
       return fields;
     },
+    get sessionReads() {
+      return sessionReads;
+    },
+    get pullReads() {
+      return pullReads;
+    },
     set online(value: boolean) {
       online = value;
     },
@@ -112,6 +124,12 @@ function backend(origin: string, initial: PreferenceFields) {
       loseResponse = value;
     },
   };
+}
+function emitStateFrame(origin: string, frame: Record<string, unknown>) {
+  const stream = streams.get(origin)!;
+  const event = new Event("resources");
+  Object.defineProperty(event, "data", { value: JSON.stringify(frame) });
+  stream.dispatchEvent(event);
 }
 beforeEach(() => {
   streams.clear();
@@ -186,6 +204,44 @@ describe("paired server preference replication", () => {
           )[theme],
         ).toEqual(version),
       );
+      expect(server.writes).toHaveLength(1);
+    } finally {
+      stop();
+    }
+  });
+
+  it("ignores unrelated state changes until a preference write is pending", async () => {
+    const server = backend("https://idle.invalid", {});
+    const stop = connectUiPreferences(
+      "https://idle.invalid",
+      server.fetch,
+      localStorage,
+    );
+    try {
+      await vi.waitFor(() =>
+        expect(streams.has("https://idle.invalid")).toBe(true),
+      );
+      for (let revision = 2; revision < 14; revision++)
+        emitStateFrame("https://idle.invalid", {
+          protocol: 3,
+          workspaceId: "https://idle.invalid",
+          epoch: "epoch-one",
+          revision,
+          reason: "change",
+          resources: [{ kind: "state" }],
+          resourceVersions: [{ revision, entityChanges: null }],
+        });
+      await vi.waitFor(() => expect(server.pullReads).toBeGreaterThan(1));
+      expect(server.sessionReads).toBe(0);
+      expect(server.writes).toHaveLength(0);
+
+      capturePreferenceWrite(
+        "codex-studio-preferences-v1",
+        '{"theme":"dark"}',
+        '{"theme":"auto"}',
+      );
+      await vi.waitFor(() => expect(server.writes).toHaveLength(1));
+      expect(server.sessionReads).toBe(1);
       expect(server.writes).toHaveLength(1);
     } finally {
       stop();

@@ -134,16 +134,27 @@ export function connectUiPreferences(
       sendAgain = true;
       return;
     }
+    const pendingFields = () =>
+      (["user", "server"] as const)
+        .map((scope) => {
+          const fields = readPreferenceFields(scope, storage);
+          return {
+            scope,
+            fields,
+            serialized: JSON.stringify(fields),
+          };
+        })
+        .filter(
+          ({ scope, fields, serialized }) =>
+            Object.keys(fields).length > 0 && confirmed[scope] !== serialized,
+        );
+    if (!pendingFields().length) return;
     sending = true;
     try {
       token = (await request("/api/session")).token;
       do {
         sendAgain = false;
-        for (const scope of ["user", "server"] as const) {
-          const fields = readPreferenceFields(scope, storage);
-          const serialized = JSON.stringify(fields);
-          if (!Object.keys(fields).length || confirmed[scope] === serialized)
-            continue;
+        for (const { scope, fields, serialized } of pendingFields()) {
           const result = await request("/api/sync/preferences", {
             scope,
             fields,
