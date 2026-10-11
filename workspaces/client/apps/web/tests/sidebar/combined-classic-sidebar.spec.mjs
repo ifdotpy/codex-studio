@@ -402,6 +402,33 @@ for (const [theme, viewport] of [
         "REM: Ready for layr chats\nREM: Mac folder sync: 1 file changed on both sides",
       );
       await expect(heading.locator(".project-layr-sync")).toHaveCount(0);
+      // The chip starts where the project name starts.
+      {
+        const name = await projectName.locator("span").first().boundingBox();
+        const chip = await layrChip.boundingBox();
+        expect(Math.abs((chip?.x ?? 0) - (name?.x ?? 0))).toBeLessThanOrEqual(
+          1,
+        );
+      }
+      // Its menu closes with Escape and with a click outside it.
+      const chipMenu = page.getByRole("menu").filter({
+        has: page.getByRole("menuitem", { name: "Pause sync (REM)" }),
+      });
+      await layrChip.click();
+      await expect(chipMenu).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(chipMenu).toHaveCount(0);
+      await layrChip.click();
+      await expect(chipMenu).toBeVisible();
+      await sidebar.locator(".projects-heading-label").click();
+      await expect(chipMenu).toHaveCount(0);
+      if (viewport.width >= 760) {
+        // A click in the frame of the main view also closes it.
+        await layrChip.click();
+        await expect(chipMenu).toBeVisible();
+        await page.mouse.click(viewport.width - 20, viewport.height / 2);
+        await expect(chipMenu).toHaveCount(0);
+      }
       const nameBox = await projectName.locator("span").first().boundingBox();
       const chipBox = await layrChip.boundingBox();
       expect(
@@ -484,6 +511,13 @@ for (const [theme, viewport] of [
       await expect(
         page.getByRole("menuitem", { name: "Rename project", exact: true }),
       ).toHaveCount(0);
+      // A project with a vault has a cloud on its chip and the vault report in the tooltip.
+      await expect(layrChip).toHaveAttribute("data-vault", "ok");
+      await expect(layrChip.locator("svg")).toHaveCount(1);
+      await expect(layrChip).toHaveAttribute(
+        "title",
+        /REM: Vault: saved 10 min ago$/,
+      );
       await layrChip.click();
       await expect(
         page.getByText("Vault: saved 10 min ago (REM)"),

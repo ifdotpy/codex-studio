@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  chipWithVault,
   deskLink,
   pullText,
   pullVault,
@@ -83,5 +84,38 @@ describe("vault menu", () => {
         error: "the vault codex-agents is locked on this Mac",
       }),
     ).toBe("The pull failed: the vault codex-agents is locked on this Mac");
+  });
+
+  it("puts a cloud on the LAYR chip of a project with a vault", () => {
+    const chip = {
+      summary: { state: "ready" as const, title: "Ready for layr chats" },
+      attention: false,
+    };
+    const now = 1_791_720_000_000;
+    expect(chipWithVault(chip, [], now)).toBe(chip);
+    expect(
+      chipWithVault(chip, [{ vault: { projectId: "p1", state: "none" } }], now),
+    ).toBe(chip);
+    expect(
+      chipWithVault(
+        chip,
+        [{ vault: vault({ lastPush: now / 1000 - 600 }), server: "REM" }],
+        now,
+      ),
+    ).toEqual({
+      summary: {
+        state: "ready",
+        title: "Ready for layr chats\nREM: Vault: saved 10 min ago",
+      },
+      attention: false,
+      vault: "ok",
+    });
+    const failed = chipWithVault(
+      chip,
+      [{ vault: vault({ state: "error", reason: "403" }) }],
+      now,
+    );
+    expect([failed?.vault, failed?.attention]).toEqual(["error", true]);
+    expect(chipWithVault(null, [{ vault: vault() }], now)).toBeNull();
   });
 });

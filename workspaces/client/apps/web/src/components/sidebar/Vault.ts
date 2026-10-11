@@ -1,4 +1,5 @@
 import type { components } from "../../generated/api";
+import type { ProjectChip } from "./MacSync";
 import type { SidebarBackend } from "./services";
 
 /** The project vault of a layr project (docs/vault.md): kept by layr-desk, written by the VM. */
@@ -75,4 +76,30 @@ export function pullText(job: VaultPull): string {
   return job.state === "done"
     ? `Pulled state ${job.seq} (${job.files} files) into ${job.folder}`
     : `The pull failed: ${job.error ?? "unknown error"}`;
+}
+
+/**
+ * The LAYR chip with the project's vault: a cloud when a vault is set up, marked when its last
+ * push failed, and the vault report in the tooltip.
+ */
+export function chipWithVault(
+  chip: ProjectChip | null,
+  entries: readonly VaultEntry[],
+  now = Date.now(),
+): ProjectChip | null {
+  const vaults = entries.filter((entry) => entry.vault.state !== "none");
+  if (!chip || !vaults.length) return chip;
+  const failed = vaults.some((entry) => entry.vault.state === "error");
+  const lines = vaults.map(
+    (entry) =>
+      (entry.server ? `${entry.server}: ` : "") + vaultLabel(entry.vault, now),
+  );
+  return {
+    summary: {
+      ...chip.summary,
+      title: [chip.summary.title, ...lines].join("\n"),
+    },
+    attention: chip.attention || failed,
+    vault: failed ? "error" : "ok",
+  };
 }

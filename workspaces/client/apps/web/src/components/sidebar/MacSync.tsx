@@ -84,7 +84,12 @@ export function layrSyncSummary(
   return { state, waiting, deletes, title };
 }
 
-export type ProjectChip = { summary: LayrReadinessSummary; attention: boolean };
+export type ProjectChip = {
+  summary: LayrReadinessSummary;
+  attention: boolean;
+  /** The project's vault: a cloud replaces the dot; null without a vault. */
+  vault?: "ok" | "error" | null;
+};
 
 const ATTENTION_SYNC: LayrSync["state"][] = ["error", "conflict"];
 
