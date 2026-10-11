@@ -258,7 +258,10 @@ class LockContract(unittest.TestCase):
         def native(_executable, _env, *, interactive=False):
             modes.append(interactive)
             if interactive:
-                return metadata('after-login')
+                # The login's own probe, or the CLI that the passive probe asks after its
+                # Keychain refusal.
+                login = threading.current_thread().name == 'private-auth-login'
+                return metadata('after-login' if login else 'cli-before-login')
             reading.set()
             self.assertTrue(release.wait(2))
             return {'status': 'error', 'accountId': None, '_authErrorKind': 'keychain'}
@@ -272,10 +275,11 @@ class LockContract(unittest.TestCase):
             release.set()
             self.assertTrue(login.wait(.5))
             self.assertTrue(passive.wait(.5))
-            self.assertEqual(self.results['passive']['_authErrorKind'], 'keychain')
+            self.assertEqual(self.results['passive'], metadata('cli-before-login'))
             self.assertEqual(self.results['login'], metadata('after-login'))
             self.assertEqual(codex_claude.auth_metadata(), metadata('after-login'))
-        self.assertEqual(modes, [False, True])
+        # The login ran its own probe after the passive one, never reusing its result.
+        self.assertEqual(modes, [False, True, True])
         self.assertEqual(self.errors, [])
 
     def test_force_probe_error_keeps_error_cache_and_can_refresh_again(self):
