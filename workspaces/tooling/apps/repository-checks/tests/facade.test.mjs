@@ -5,6 +5,7 @@ import {
   boundaryFindings,
   commandFor,
   execute,
+  executeRecipe,
   nextestError,
   nextestSelectionError,
   packageTarget,
@@ -419,6 +420,42 @@ test("Vitest summaries count test cases rather than test files", () => {
     parseCounts(item, "No test files found, exiting with code 1").executed,
     0,
   );
+});
+
+test("composed runs name and log a failed constituent step", async () => {
+  let printed = "";
+  const write = process.stdout.write;
+  process.stdout.write = function (chunk, ...args) {
+    printed += chunk.toString();
+    return write.call(this, chunk, ...args);
+  };
+  try {
+    const result = await executeRecipe(process.cwd(), "test-fast", [
+      {
+        item: { name: "fixture step", ecosystem: "pnpm" },
+        label: "fixture type check",
+        options: { allowZeroTests: true },
+        commands: [
+          [
+            "node",
+            [
+              "-e",
+              "process.stdout.write('fixture failure output\\n'); process.exit(1)",
+            ],
+          ],
+        ],
+      },
+    ]);
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.failedStep, "fixture type check");
+    assert.match(printed, /test-fast: failed at fixture type check/);
+    assert.match(
+      readFileSync(result.logPath, "utf8"),
+      /fixture failure output/,
+    );
+  } finally {
+    process.stdout.write = write;
+  }
 });
 
 test("Node test runner summaries count executed and skipped cases", () => {

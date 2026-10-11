@@ -26,20 +26,24 @@ repository or change its license without explicit authorization.
 Write everything in this repository in English: code, comments, commit messages,
 pull requests, issues, and documentation.
 
-Run the tests before you open a pull request against `main` or merge into `main`.
-Use the server and client suites in [docs/testing.md](docs/testing.md), and state
-the results in the pull request.
+Run the fast tier before every pull request and merge, and state its results in
+the pull request. Run heavy-tier checks by hand as announced runs; they are not
+in hosted CI for now. Each heavy run has a Just command. A test that needs
+repeated runs to be trusted is defective and must be rewritten or moved to the
+heavy tier. New tests must fit the fast tier. See [docs/testing.md](docs/testing.md)
+for the tier commands and suite lists.
 
 ## Load testing
 
 Keep load, stress, and performance-under-contention runs separate from ordinary
 checks. An ordinary test, suite, or script must not start synthetic CPU, memory,
-disk, or network load. Run a load test only as its own explicitly selected run,
-never alongside the ordinary checks of other agents or the user's work on the
-same machine. State its duration and resource budget before it starts, and tell
-the team. Its owner stops every load generator when the run ends or fails; do not
+disk, or network load. Run a load test only as its own explicitly selected,
+announced run, never alongside the ordinary checks of other agents or the user's
+work on the same machine. State its duration and resource budget before it
+starts. Its owner stops every load generator when the run ends or fails; do not
 leave detached generators. Results of ordinary checks taken while a load run was
-active are not valid evidence.
+active are not valid evidence. See [docs/testing.md](docs/testing.md) for the
+single-suite Just entry.
 
 ## Code checks
 

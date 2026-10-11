@@ -361,15 +361,8 @@ Component tests use actual local adapters/SQLite as appropriate. Protocol replay
 crash injection, property tests, and selected mutation tests target the invariants
 above. No coverage percentage is a substitute for observable correctness.
 
-**R-30.** CI runs the same commands with locked dependencies on declared target
-platforms. Default checks need no credentials, paid requests, live backend,
-foreground windows, or OS input. Installed-provider and live checks are explicit
-separate evidence classes. Mandatory missing dependencies fail their job; optional
-platform/provider checks report named skips and cannot satisfy a release gate.
-Untrusted PR code gets no secrets or privileged self-hosted runner access.
-The server runner owns one `AUTOMATED_SUITES` list: 26 audited offline suites run
-in the default server run or the hosted CI step. Load-class suites are excluded
-from all automation. (#74, #80.)
+**R-30.** Hosted CI runs the fast tier; heavy suites run manually through the
+commands in `docs/testing.md` and stay out of CI for now. (#74, #80.)
 
 Configuration owners: root Rust toolchain/Cargo policy, root pnpm dependency policy,
 root Just recipes delegating to domain recipes, package test manifests, and

@@ -315,6 +315,14 @@ function pnpmTestCommand(item, caseName) {
 export function commandFor(root, item, action, caseName = "", options = {}) {
   if (item.ecosystem === "pnpm") {
     if (action === "test") {
+      if (options.script) {
+        const manifest = manifestFor(item);
+        if (!manifest.scripts?.[options.script])
+          fail(
+            `Package ${item.name} does not declare script ${options.script}`,
+          );
+        return [["pnpm", ["--filter", item.name, "run", options.script]]];
+      }
       const commands = pnpmTestCommand(item, caseName);
       if (options.name) {
         const args = commands[0][1];
@@ -406,6 +414,7 @@ export function commandFor(root, item, action, caseName = "", options = {}) {
               "workspaces/runtime/apps/server/src/test-server.py",
             ),
             ...(caseName ? ["--filter", caseName] : []),
+            ...(options.serverArgs ?? []),
           ],
         ],
       ];
@@ -502,15 +511,17 @@ function plan(root, item, action, caseName, commands, options = {}) {
         ? "mapped package checks (no test filter)"
         : selectorDescription(item, caseName, options),
     requiredSetup: setup,
-    reason:
-      item.ecosystem === "pnpm"
+    reason: options.reason
+      ? options.reason
+      : item.ecosystem === "pnpm"
         ? "Run only the selected package's manifest-owned test or check command."
         : item.ecosystem === "cargo"
           ? "Compile and run only the selected Cargo package and its declared dependencies."
           : "Pass the selected suite filter to the server runner, which owns discovery and isolation.",
     notStarted: NOT_STARTED,
-    costCategory:
-      action === "check"
+    costCategory: options.costCategory
+      ? options.costCategory
+      : action === "check"
         ? item.ecosystem === "pnpm"
           ? "package-local type and unit checks"
           : item.ecosystem === "cargo"
@@ -522,6 +533,7 @@ function plan(root, item, action, caseName, commands, options = {}) {
 }
 
 function selectorDescription(item, caseName, options) {
+  if (options.selector) return options.selector;
   if (item.ecosystem === "cargo")
     return `Cargo test-name substring${options.cargoTargets?.length ? `; Cargo target selection: ${options.cargoTargets.join(" ")}` : ""}${options.passthrough?.length ? `; test harness args after --: ${options.passthrough.join(" ")}` : ""}`;
   if (item.ecosystem === "server")
@@ -551,6 +563,227 @@ function reportPlan(value, json) {
         "Execution: none (plan only)",
       ].join("\n") + "\n",
     );
+}
+
+function browserTestOptions() {
+  return {
+    script: "test:browser",
+    selector: "full client browser project",
+    reason:
+      "Run the web package's isolated browser launcher with its 900 s global cap.",
+    costCategory: "full browser project; 900 s cap",
+  };
+}
+
+function serverCategoryOptions(category, suite = "") {
+  const serverArgs = ["--only", category];
+  if (category === "expensive") {
+    if (!suite)
+      fail(
+        "Select one load-class suite with its exact path; zero tests executed",
+      );
+    if (
+      !suite.includes("/") ||
+      ["*", "?", "["].some((char) => suite.includes(char))
+    )
+      fail(
+        "Load-class selection requires one exact suite path; zero tests executed",
+      );
+    serverArgs.push("--filter", suite);
+  } else if (suite) {
+    fail("A suite path is accepted only for the expensive load-class category");
+  }
+  return {
+    serverArgs,
+    selector:
+      category === "expensive"
+        ? `one exact load-class suite path: ${suite}`
+        : `server runner category: ${category}`,
+    reason:
+      category === "expensive"
+        ? "Run one explicitly selected load-class suite as a separately announced manual run."
+        : "Select the server runner's registered opt-in category without duplicating its suite list.",
+    costCategory:
+      category === "expensive"
+        ? "load-class; manual single-suite run"
+        : `server opt-in category: ${category}`,
+  };
+}
+
+function serverCategoryPlan(root, category, suite = "") {
+  const item = serverPackage();
+  const options = serverCategoryOptions(category, suite);
+  const commands = commandFor(root, item, "test", "", options);
+  const value = plan(root, item, "test", "", commands, options);
+  value.target =
+    category === "expensive"
+      ? `one load-class server suite (${suite})`
+      : `server opt-in category ${category}`;
+  return value;
+}
+
+function browserPlan(root) {
+  const item = packageTarget(discover(root), "codex-agents-web");
+  const options = browserTestOptions();
+  const value = plan(
+    root,
+    item,
+    "test",
+    "",
+    commandFor(root, item, "test", "", options),
+    options,
+  );
+  value.notStarted = "backend, Electron, provider";
+  return value;
+}
+
+function loadClassConditions() {
+  process.stdout.write(
+    "Load-class run conditions: run this as its own announced run; state the duration and resource budget to the team before starting; run no other checks or load jobs alongside it; stop every load generator when the run ends or fails.\n",
+  );
+}
+
+function fastTierCommands(root) {
+  const packages = discover(root);
+  const server = serverPackage();
+  const web = packageTarget(packages, "codex-agents-web");
+  const bridge = packageTarget(packages, "studio-claude-bridge");
+  const tooling = packageTarget(packages, "codex-studio-tooling");
+  return [
+    { item: server, label: "server" },
+    { item: bridge, label: "server bridge" },
+    {
+      item: { name: "Rust workspace", ecosystem: "cargo" },
+      label: "Rust nextest",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--workspace",
+            "--profile",
+            "ci",
+            "--locked",
+            "--message-format",
+            "libtest-json-plus",
+          ],
+        ],
+      ],
+    },
+    {
+      item: web,
+      label: "web focused type check",
+      options: { script: "typecheck:focused", allowZeroTests: true },
+    },
+    {
+      item: web,
+      label: "web API contract type check",
+      options: { script: "test:api-contract-types", allowZeroTests: true },
+    },
+    {
+      item: { name: "client helper type check", ecosystem: "pnpm" },
+      label: "client helper type check",
+      commands: [["pnpm", ["run", "typecheck:client-helper"]]],
+      options: { allowZeroTests: true },
+    },
+    { item: web, label: "web unit tests" },
+    { item: tooling, label: "tooling tests" },
+  ];
+}
+
+function heavyTierCommands(root) {
+  const server = serverPackage();
+  return [
+    {
+      label: "heavy server suites",
+      item: server,
+      options: serverCategoryOptions("heavy"),
+    },
+    {
+      label: "full browser project",
+      item: packageTarget(discover(root), "codex-agents-web"),
+      options: { ...browserTestOptions(), allowZeroTests: true },
+    },
+  ];
+}
+
+function recipePlan(root, name) {
+  const commands =
+    name === "test-fast" ? fastTierCommands(root) : heavyTierCommands(root);
+  const commandLists = commands.map(
+    ({ item, options = {}, commands: override }) =>
+      override ?? commandFor(root, item, "test", "", options),
+  );
+  const fast = name === "test-fast";
+  return {
+    package: name,
+    case: null,
+    target: fast
+      ? "repository fast tier"
+      : "server heavy suites followed by full browser project",
+    workingDirectory: root,
+    invocationDirectory: root,
+    command: reproduction(root, commandLists.flat()),
+    selector: fast
+      ? "default server run, server bridge, Rust workspace nextest, web type checks and unit tests, tooling tests"
+      : "server --only heavy, then codex-agents-web test:browser",
+    requiredSetup:
+      "Frozen pnpm dependencies, managed Python runtime and development dependencies, Rust toolchain and cargo-nextest, browser binaries",
+    reason: fast
+      ? "Run the deterministic fast-tier checks across the repository in one sequential command."
+      : "Run the complete heavy tier sequentially; load-class server suites are excluded.",
+    notStarted: "Electron, provider-dependent opt-in suites, load-class suites",
+    costCategory: fast
+      ? "fast repository checks"
+      : "manual heavy checks; browser cap 900 s",
+    executesNothing: true,
+  };
+}
+
+export async function executeRecipe(root, name, steps) {
+  const planned = recipePlan(root, name);
+  const started = performance.now();
+  for (const { item, label, options = {}, commands } of steps) {
+    const result = await execute(root, item, "", false, {
+      ...options,
+      ...(commands ? { commands } : {}),
+      label,
+    });
+    if (result.exitCode !== 0) {
+      const durationSeconds = Number(
+        ((performance.now() - started) / 1000).toFixed(3),
+      );
+      process.stdout.write(
+        `${name}: failed at ${label}; ${durationSeconds}s\nCommand: ${planned.command}\n`,
+      );
+      return {
+        ...result,
+        package: name,
+        failedStep: label,
+        command: planned.command,
+      };
+    }
+  }
+  const durationSeconds = Number(
+    ((performance.now() - started) / 1000).toFixed(3),
+  );
+  process.stdout.write(
+    `${name}: passed; ${durationSeconds}s\nCommand: ${planned.command}\n`,
+  );
+  return {
+    package: name,
+    status: "passed",
+    durationSeconds,
+    command: planned.command,
+    exitCode: 0,
+  };
+}
+
+async function executeServerCategory(root, category, suite = "") {
+  const options = serverCategoryOptions(category, suite);
+  const result = await execute(root, serverPackage(), "", false, options);
+  return result.exitCode;
 }
 
 export function parseCounts(item, output) {
@@ -713,7 +946,8 @@ export async function execute(
   asJson = false,
   options = {},
 ) {
-  const commands = commandFor(root, item, "test", caseName, options);
+  const commands =
+    options.commands ?? commandFor(root, item, "test", caseName, options);
   const run = plan(root, item, "test", caseName, commands, options);
   const logDir = makeLogDirectory();
   const logPath = path.join(logDir, "full.log");
@@ -770,7 +1004,7 @@ export async function execute(
     errors.push(
       "native runner summary was missing; refusing to report success",
     );
-  if (exitCode === 0 && counts.executed === 0)
+  if (exitCode === 0 && counts.executed === 0 && !options.allowZeroTests)
     errors.push("native runner executed zero tests");
   if (errors.length) exitCode = 1;
   const result = {
@@ -794,14 +1028,14 @@ export async function execute(
   if (asJson) process.stdout.write(`${JSON.stringify(result)}\n`);
   else
     process.stdout.write(
-      `${item.name}${caseName ? ` / ${caseName}` : ""}: ${result.status}${counts.passed === null ? "" : ` — ${counts.passed} passed, ${counts.failed} failed, ${counts.skipped} skipped`}${counts.executed === 0 ? " — zero tests executed" : ""}; ${durationSeconds}s\nCommand: ${run.command}\nFull log: ${logPath}\n`,
+      `${options.label ?? item.name}${caseName ? ` / ${caseName}` : ""}: ${result.status}${counts.passed === null ? "" : ` — ${counts.passed} passed, ${counts.failed} failed, ${counts.skipped} skipped`}${counts.executed === 0 && !options.allowZeroTests ? " — zero tests executed" : ""}; ${durationSeconds}s\nCommand: ${run.command}\nFull log: ${logPath}\n`,
     );
   return result;
 }
 
 function usage() {
   process.stdout.write(
-    "Usage: facade.mjs packages | test <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-plan <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | check <package> [--dry-run] [--json] | contracts-check | boundaries-check | check-affected <base> [--dry-run]\n",
+    "Usage: facade.mjs packages | test <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-plan <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-fast | test-heavy | test-browser | test-server-category <category> | test-server-load <suite-path> | check <package> [--dry-run] [--json] | contracts-check | boundaries-check | check-affected <base> [--dry-run]\n",
   );
 }
 
@@ -1243,11 +1477,66 @@ export async function main(argv = process.argv.slice(2)) {
       requestedCase === "--dry-run" || rest.includes("--dry-run"),
     );
   }
+  const root = rootFrom();
+  if (action === "test-fast") {
+    const result = await executeRecipe(
+      root,
+      "test-fast",
+      fastTierCommands(root),
+    );
+    return result.exitCode;
+  }
+  if (action === "test-heavy") {
+    const result = await executeRecipe(
+      root,
+      "test-heavy",
+      heavyTierCommands(root),
+    );
+    return result.exitCode;
+  }
+  if (action === "test-browser") {
+    const item = packageTarget(discover(root), "codex-agents-web");
+    return (await execute(root, item, "", json, browserTestOptions())).exitCode;
+  }
+  if (action === "test-server-category")
+    return executeServerCategory(root, packageName || "", requestedCase || "");
+  if (action === "test-server-load") {
+    if (!packageName)
+      fail(
+        "Select one load-class suite with its exact path; zero tests executed",
+      );
+    loadClassConditions();
+    return executeServerCategory(root, "expensive", packageName);
+  }
   if (!["test", "test-plan", "check"].includes(action)) {
     usage();
     return action ? 2 : 0;
   }
-  const root = rootFrom();
+  if (action === "test-plan") {
+    if (packageName === "test-fast" || packageName === "test-heavy") {
+      reportPlan(recipePlan(root, packageName), json);
+      return 0;
+    }
+    if (packageName === "test-browser") {
+      reportPlan(browserPlan(root), json);
+      return 0;
+    }
+    if (packageName === "test-server-heavy") {
+      reportPlan(serverCategoryPlan(root, "heavy"), json);
+      return 0;
+    }
+    if (packageName === "test-server-opt-in") {
+      reportPlan(serverCategoryPlan(root, requestedCase || "automated"), json);
+      return 0;
+    }
+    if (packageName === "test-server-load") {
+      reportPlan(
+        serverCategoryPlan(root, "expensive", requestedCase || ""),
+        json,
+      );
+      return 0;
+    }
+  }
   const item = target(root, packageName);
   const selection = parseSelection(
     action === "check" ||

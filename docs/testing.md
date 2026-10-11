@@ -18,6 +18,47 @@ and execution belong to the configurations in `workspaces/client/apps/web/`; the
 to [the server runner](../workspaces/runtime/apps/server/tests/server/run.py). Do not add a second handwritten list
 of the same tests to this document.
 
+## Fast and heavy tiers
+
+The fast tier is deterministic and each suite is expected to finish in at most
+10 seconds when run alone. It is the default developer loop, the required
+pre-PR and pre-merge check, and the hosted CI tier. Use `just test-fast` for the
+whole repository. For one server suite between edits, use
+`just test server <exact-suite-path>`; exact paths automatically include suites
+from the automated or heavy list. The runner prints any default-tier suite over
+10 seconds at the end of a default run, with its measured duration, but duration
+does not fail the run.
+
+Heavy runs are manual, announced runs and are excluded from hosted CI for now.
+The runner owns the server suite categories; the commands below select them
+without maintaining a second suite inventory.
+
+| Tier or purpose     | What it runs                                                                                   | Just command                               |
+| ------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| Fast                | Default server run, server bridge, Rust nextest, web type checks and unit tests, tooling tests | `just test-fast`                           |
+| Heavy server        | All suites in the heavy server list                                                            | `just test-server-heavy`                   |
+| Heavy browser       | Full web browser project, capped at 900 seconds                                                | `just test-browser`                        |
+| All heavy           | Heavy server suites, then the full browser project, sequentially                               | `just test-heavy`                          |
+| Other server opt-in | One runner category: `automated`, `native`, `browser`, `live`, or `vm`                         | `just test-server-opt-in <category>`       |
+| Load-class          | One exact load-class suite, with conditions printed before it starts                           | `just test-server-load <exact-suite-path>` |
+
+The heavy server suites and the reason for each classification are owned by
+`HEAVY_SUITES` in the [server runner](../workspaces/runtime/apps/server/tests/server/run.py):
+
+| Suite                               | Measured duration | Reason                                                |
+| ----------------------------------- | ----------------: | ----------------------------------------------------- |
+| `agent-move-signed-integration.py`  |           44.13 s | Signed-in multi-server lifecycle flow                 |
+| `server-exec-signed-integration.py` |           38.16 s | Signed-in server execution flow                       |
+| `process-supervisor-contract.py`    |           36.05 s | Contract requires a replay wait of about 10.4 seconds |
+
+Measure a suite by running it alone through `just test server <exact-suite-path>`.
+If it exceeds 10 seconds, speed it up first; the maintainer decides whether it
+must move to heavy because it cannot be made fast and deterministic. A suite
+that becomes fast moves back to the fast tier. A test that needs repeated runs
+to be trusted is defective and must be rewritten or moved. New tests must fit
+the fast tier. Load-class suites remain separate and require their own selected
+run; they are never included in `just test-heavy`.
+
 ## Choose an evidence scope
 
 Use the root [`justfile`](../justfile) for the three independent scopes:
@@ -26,8 +67,8 @@ Use the root [`justfile`](../justfile) for the three independent scopes:
    to print the exact native command and setup without executing it.
 2. **One change:** `just check <package>` runs that package's local checks;
    `just check <package> --dry-run` prints the planned commands.
-3. **Pre-PR gate:** run the server and client suites described below and report
-   their results separately. A focused hypothesis does not replace this gate.
+3. **Pre-PR gate:** run `just test-fast` and report its result. A focused
+   hypothesis does not replace this gate.
 
 The repository checks add three focused commands: `just contracts-check` runs
 the existing generated API check in read-only mode; `just boundaries-check`
@@ -91,18 +132,13 @@ interpreter to fixtures. Shared fixtures isolate `HOME`, `CODEX_HOME`, and
 fixture account explicitly. Registered fixture process groups are reaped after
 success, failure, and timeout.
 
-The server listing displays discovered suites;
-use the server runner's `--help` for filters and optional categories. The root
-server script also runs the colocated JavaScript bridge tests. For a focused
-Python contract, use `pnpm run test:server:python -- --filter <name>`.
-`pnpm run test:server:opt-in` selects the runner's audited automation set of 26
-contracts. Sixteen fixture-only suites now run by default after each measured
-under two seconds; ten remain opt-in. `just test-server-opt-in` is the matching
-facade recipe. CI runs all 26 on every pull request and push to `main`; the
-suite list is owned by the server runner, not the workflow. Load-class suites
-remain opt-in for manual runs and are never included in automation. Do not use
-`--include expensive` in automation because that class also contains load,
-scale, latency, and contention suites.
+The server listing displays discovered suites; use the server runner's `--help`
+for filters and categories. The root server script also runs the colocated
+JavaScript bridge tests. For a focused Python contract, use
+`pnpm run test:server:python -- --filter <name>`. The runner owns the audited
+automated suite list used by `just test-server-opt-in automated` and the hosted
+CI audited automation step. Load-class suites include load, scale, latency, and
+contention checks; select one only with `just test-server-load <exact-path>`.
 The backend requires the native lifecycle module. Build the module, then install
 it before server tests or backend startup. For test runs, keep both the managed
 Python cache and command-bin directory in a dedicated temporary root; never
@@ -287,9 +323,7 @@ statically linked executable. All other real-home state stays blocked and
 logged. If no executable resolves, this suite is reported as an environment
 skip with the missing Codex executable named. There is no fake-binary split:
 all 15 tests exercise PTY process creation and the real supervisor/app-server
-lifecycle protocol, so a stub would remove the contract under test. On the
-verified head the default run reports 330 passed suites, 0 failures, and 62
-opt-in skips.
+lifecycle protocol, so a stub would remove the contract under test.
 `pnpm --filter codex-agents-web run test:rxdb-cache` verifies the runtime patch with an exposed
 garbage collector in a child process. These boundaries are not replaced by
 successful browser discovery or mocked unit tests.
@@ -330,17 +364,16 @@ stay under the runner temporary directory. The facade job downloads the Just
 version before invoking it.
 
 Current hosted checks run on pull requests and pushes to `main`. The server
-runner owns one `AUTOMATED_SUITES` list: 26 audited offline suites run either in
-the default server run or in the hosted CI step. Load-class suites are never
-part of automation. The hosted step was restored after its timing-sensitive
-suites were made deterministic in PR #80.
+workflow runs the 26 audited automated suites, the bridge suite, and one focused
+Python suite; it does not run the whole default server run. Heavy and load-class
+suites are excluded from hosted CI. The audited automation step was restored
+after its timing-sensitive suites were made deterministic in PR #80.
 
 - `pnpm run lint:all` and `pnpm run format:check:all` currently exit 1 on
   `main` because of existing findings. M-03.5 will add conservative affected
   checks; changed-file lint and formatting can then be introduced without
   making unrelated baseline findings block a pull request.
-- The full server run currently includes the audited default suites; provider-
-  dependent and load-class suites remain outside automation.
+- Provider-dependent and load-class suites remain separate opt-in evidence.
 - M-03.6 is complete: representative cold and warm timings are recorded in
   [the 2026-10-11 timing report](verification/2026-10-11-check-timings.md).
 - Desktop tests that require Electron and a display remain outside this
