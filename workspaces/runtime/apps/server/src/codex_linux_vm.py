@@ -332,8 +332,14 @@ if [ "$missing_tools" = 1 ] || ! python3 -c 'import ensurepip' >/dev/null 2>&1; 
 fi
 stage data-disk
 if ! blkid /dev/vdb; then mkfs.btrfs -f -L studio-data /dev/vdb; fi
-if ! grep -q 'LABEL=studio-data' /etc/fstab; then echo 'LABEL=studio-data /var/lib/codex-studio btrfs defaults,nofail,user_subvol_rm_allowed 0 0' >> /etc/fstab; fi
-mountpoint -q /var/lib/codex-studio || mount /var/lib/codex-studio
+# zstd:1 compresses new writes; an existing disk takes the options too (docs/vm-layr.md,
+# "Compression"). Old data stays: recompressing it would unshare the blocks of states and lines.
+data_line='LABEL=studio-data /var/lib/codex-studio btrfs defaults,nofail,user_subvol_rm_allowed,compress=zstd:1 0 0'
+if ! grep -qxF "$data_line" /etc/fstab; then
+  { grep -v '^LABEL=studio-data ' /etc/fstab || true; echo "$data_line"; } > /etc/fstab.studio
+  cat /etc/fstab.studio > /etc/fstab && rm /etc/fstab.studio
+fi
+if mountpoint -q /var/lib/codex-studio; then mount -o remount,compress=zstd:1 /var/lib/codex-studio; else mount /var/lib/codex-studio; fi
 rm -f /var/lib/codex-studio/provision-error
 btrfs filesystem resize max /var/lib/codex-studio
 stage node

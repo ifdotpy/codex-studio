@@ -454,6 +454,19 @@ class ProvisionTests(unittest.TestCase):
         self.assertIn('renameat2', self.script)
         self.assertIn('/opt/codex-studio/claude_bridge', bridge_section)
 
+    def test_an_existing_data_disk_line_gets_compression_once(self):
+        start = self.script.index("data_line=")
+        lines = self.script[start:self.script.index("\nif mountpoint -q /var/lib/codex-studio; then", start)]
+        fstab = self.root / 'fstab'
+        fstab.write_text('UUID=1 / ext4 defaults 0 1\n'
+                         'LABEL=studio-data /var/lib/codex-studio btrfs defaults,nofail,user_subvol_rm_allowed 0 0\n')
+        for _ in range(2):
+            subprocess.run(['bash', '-c', lines.replace('/etc/fstab', str(fstab))], check=True, timeout=5)
+        self.assertEqual(fstab.read_text(), 'UUID=1 / ext4 defaults 0 1\n'
+                         'LABEL=studio-data /var/lib/codex-studio btrfs '
+                         'defaults,nofail,user_subvol_rm_allowed,compress=zstd:1 0 0\n')
+        self.assertIn('mount -o remount,compress=zstd:1 /var/lib/codex-studio', self.script)
+
     def test_pnpm_version_follows_root_package_manager_manifest(self):
         root = self.root / 'repository'
         root.mkdir()
