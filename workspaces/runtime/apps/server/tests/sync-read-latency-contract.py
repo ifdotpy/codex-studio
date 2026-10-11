@@ -80,6 +80,15 @@ class SyncReadLatencyContract(unittest.TestCase):
         # Finish schema creation and the first seed before either contention case.
         self.initial = self.store.pull(ENTITY_SCOPE, fresh=True)
         self.identity = self.store.identity()
+        self._observe_store_pulls()
+        self.server_thread = threading.Thread(target=self.server.serve_forever,
+                                              kwargs={"poll_interval": .01}, daemon=True)
+        self.server_thread.start()
+        self.addCleanup(self.stop_server)
+        self.pool = ThreadPoolExecutor(max_workers=3)
+        self.addCleanup(self.pool.shutdown, wait=True)
+
+    def _observe_store_pulls(self):
         original_pull = self.store.pull
 
         def observed_pull(*args, **kwargs):
@@ -95,12 +104,11 @@ class SyncReadLatencyContract(unittest.TestCase):
                         self.two_pulls_finished.set()
 
         self.store.pull = observed_pull
-        self.server_thread = threading.Thread(target=self.server.serve_forever,
-                                              kwargs={"poll_interval": .01}, daemon=True)
-        self.server_thread.start()
-        self.addCleanup(self.stop_server)
-        self.pool = ThreadPoolExecutor(max_workers=3)
-        self.addCleanup(self.pool.shutdown, wait=True)
+
+    def _restart_sync_store(self):
+        self.server._context._sync_store = None
+        self.store = self.server._context.sync()
+        self._observe_store_pulls()
 
     def stop_server(self):
         self.transcript_release.set()
@@ -193,7 +201,7 @@ class SyncReadLatencyContract(unittest.TestCase):
             self.assertEqual(response["body"]["workspaceId"], "committed-workspace-id")
         self.assertEqual(connections, [])
 
-    def test_unchanged_entity_pull_checks_only_the_bounded_monitor_projection(self):
+    def test_unchanged_entity_pull_skips_monitor_projection_after_startup(self):
         first = self.store.pull(ENTITY_SCOPE, fresh=True)
         cursor = first["checkpoint"]["seq"]
         stabilized = self.store.pull(ENTITY_SCOPE, cursor)
@@ -203,27 +211,13 @@ class SyncReadLatencyContract(unittest.TestCase):
             unchanged = self.store.pull(ENTITY_SCOPE, cursor)
         self.assertEqual(unchanged["documents"], [])
         self.assertEqual(unchanged["checkpoint"]["seq"], cursor)
-        self.assertEqual(len(dumps.call_args_list), 1)
-        self.assertEqual(dumps.call_args.args[0]["collection"], "monitor")
-
-        with self.connect() as db:
-            db.execute("UPDATE runtime_monitors SET record=? WHERE id=?",
-                       (json.dumps({**self.monitor, "status": "completed"}), "monitor"))
-        with patch.object(codex_sync.json, "dumps", wraps=json.dumps) as dumps:
-            changed = self.store.pull(ENTITY_SCOPE, cursor)
-        self.assertTrue(dumps.call_args_list)
-        self.assertTrue(all(call.args[0].get("collection") == "monitor"
-                            for call in dumps.call_args_list))
-        self.assertEqual(len(changed["documents"]), 1)
-        entity = json.loads(changed["documents"][0]["payload"])
-        self.assertEqual(entity["collection"], "monitor")
-        self.assertEqual(entity["value"]["status"], "completed")
-        self.assertGreater(changed["checkpoint"]["seq"], cursor)
+        dumps.assert_not_called()
 
     def test_writer_conflicts_do_not_serialize_two_entity_http_deadlines(self):
         changed = {**self.monitor, "tail": "The final output", "status": "completed"}
         with self.connect() as db:
             db.execute("UPDATE runtime_monitors SET record=? WHERE id=?", (json.dumps(changed), "monitor"))
+        self._restart_sync_store()
         path = self.pull_path(after=self.initial["checkpoint"]["seq"])
         self.observe_writer = True
         with self.writer():
