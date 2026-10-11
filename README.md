@@ -11,10 +11,14 @@ Requirements and detailed setup are in the [product guide](docs/product-guide.md
 ```sh
 pnpm install --frozen-lockfile
 git config --local core.hooksPath .githooks
+cargo build --release -p studio-operations-python
 python3 workspaces/runtime/apps/server/src/install-cli.py
 pnpm --filter codex-agents-web run build
 pnpm --filter codex-agents-desktop run start
 ```
+
+The installer copies the built module into the managed Python environment; it
+does not build it.
 
 The root [`package.json`](package.json) owns root commands. Each app manifest
 owns its package commands; see the workspace guides below.
