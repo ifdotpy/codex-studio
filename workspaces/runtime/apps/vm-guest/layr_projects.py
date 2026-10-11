@@ -159,7 +159,10 @@ class Projects:
                     await command(["btrfs", "subvolume", "delete", private_source])
             private_source = await self.freeze_source(source, request_id)
             try:
-                await self.layr(["init", project, "--from", str(private_source), "--owner", owner["owner"]])
+                # Studio chose the files (the code rule of docs/vm-layr.md): ignored files such as
+                # .env and a nested repository that its parent ignores belong in main too.
+                await self.layr(["init", project, "--from", str(private_source), "--include-ignored",
+                                 "--owner", owner["owner"]])
             finally:
                 await command(["btrfs", "subvolume", "delete", private_source])
             await self.apply_policy(project)
