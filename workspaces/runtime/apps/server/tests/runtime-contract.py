@@ -33,6 +33,16 @@ Runtime.image_workspace_support = staticmethod(
     lambda _repo: (False, "disabled in protocol fixture")
 )
 
+# Runtime's scheduler runs maintenance beside every fixture's assertions. Keep
+# cadence driven native work out of call-log contracts; maintenance suites can
+# still drive the original phase once through run_runtime_maintenance_tick.
+_runtime_maintenance_tick = Runtime.runtime_maintenance_tick
+Runtime.runtime_maintenance_tick = lambda _runtime: None
+
+
+def run_runtime_maintenance_tick(runtime):
+    return _runtime_maintenance_tick(runtime)
+
 
 def eventually(predicate, timeout=8):
     end = time.monotonic() + timeout
@@ -65,6 +75,8 @@ class FakeServer:
 
     def call(self, method, params, timeout=60):
         self.calls.append((method, params))
+        if method == 'thread/name/set':
+            return {}
         if method == 'skills/extraRoots/set':
             return {}
         if method == 'thread/settings/update':
@@ -115,6 +127,9 @@ class FakeServer:
         if method == 'model/list':
             return {'data': [{'model': model, 'defaultReasoningEffort': 'medium', 'supportedReasoningEfforts': [{'reasoningEffort': effort} for effort in ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']], 'serviceTiers': [{'id': 'priority'}]} for model in ['test-model', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.6-terra']]}
         raise AssertionError(method)
+
+    def record_call(self, method, params):
+        self.calls.append((method, params))
 
     def write(self, value):
         self.responses.append(value)

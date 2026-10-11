@@ -106,11 +106,7 @@ class StaleTaskWait(f.ContextWait):
         self.wait(task, expected_jobs=0)
         before = self.runtime.agent(self.a['id'])
         self.ended_compaction_run(task)
-        # Runtime's session-name worker may finish an independent metadata RPC
-        # while this test drives the wait transition. Keep the no-replay
-        # assertion focused on calls that can resend or restart this input.
-        calls = copy.deepcopy([(method, params) for method, params in self.server.calls
-                               if method != 'thread/name/set'])
+        calls = copy.deepcopy(self.server.calls)
         with self.runtime.lock, self.runtime.db() as db:
             current = self.runtime.agent(self.a['id'], db)
             current['contextRepairWait']['nextCheckAt'] = 0
@@ -128,8 +124,7 @@ class StaleTaskWait(f.ContextWait):
         self.assertIs(current['startAttempt']['submitted'], False)
         self.assertFalse(current.get('contextRepairWait'))
         self.assertEqual(current['status'], 'starting')
-        self.assertEqual([(method, params) for method, params in self.server.calls
-                          if method != 'thread/name/set'], calls)
+        self.assertEqual(self.server.calls, calls)
 
     def test_compaction_wait_keeps_nonterminal_missing_or_changed_identity(self):
         task = self.task('contextCompaction')

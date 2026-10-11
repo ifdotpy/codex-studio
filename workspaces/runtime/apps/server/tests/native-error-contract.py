@@ -334,7 +334,7 @@ class NativeErrorContract(unittest.TestCase):
                 'durationMs': None, 'entries': entries or []}
 
     def test_hook_failure_updates_one_notice_without_changing_turn(self):
-        calls = [call for call in self.server.calls if call[0] != 'thread/name/set']
+        calls = list(self.server.calls)
         self.send('hook/started', run=self.hook_run())
         entries = [{'kind': 'warning', 'text': 'Warning text'}, {'kind': 'error', 'text': 'Exit failed'},
                    {'kind': 'stop', 'text': 'Stop reason'}, {'kind': 'context', 'text': 'Hidden model context'},
@@ -350,7 +350,7 @@ class NativeErrorContract(unittest.TestCase):
         self.assertNotIn('Second warning', json.dumps(hooks))
         self.assertTrue(self.runtime.agent(self.key)['inFlight'])
         self.assertFalse(self.runtime.agent(self.key).get('error'))
-        self.assertEqual([call for call in self.server.calls if call[0] != 'thread/name/set'], calls)
+        self.assertEqual(self.server.calls, calls)
 
     def test_hook_quiet_success_has_no_durable_notice(self):
         self.send('hook/started', run=self.hook_run())
@@ -394,11 +394,10 @@ class NativeErrorContract(unittest.TestCase):
             a = self.runtime.agent(self.key, db)
             a.update(status='queued', autoWake=True, nativeFailureHold=False, error=None)
             self.runtime.put(db, 'agents', a)
-            calls = [call for call in self.server.calls
-                     if call[0] not in {'account/rateLimits/read', 'thread/name/set'}]
+            calls = [call for call in self.server.calls if call[0] != 'account/rateLimits/read']
         self.runtime.dispatch()
         self.assertEqual([call for call in self.server.calls
-                          if call[0] not in {'account/rateLimits/read', 'thread/name/set'}], calls)
+                          if call[0] != 'account/rateLimits/read'], calls)
         visible = next(a for a in read_runtime_state(self.runtime)['agents'] if a['id'] == self.key)
         self.assertFalse(visible['canSend'])
         self.assertEqual(visible['nativeThreadBlock'], {'threadId': self.a['threadId'], 'error': error})

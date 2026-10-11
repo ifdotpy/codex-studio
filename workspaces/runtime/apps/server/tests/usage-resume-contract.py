@@ -385,6 +385,7 @@ class UsageResumeContract(unittest.TestCase):
         self.runtime.usage_resume_tick()
         self.assertEqual(self.runtime.agent(self.key)['usageResume']['status'], 'started')
         self.assertFalse(self.runtime.agent(self.key).get('nativeFailureHold'))
+        fixture.run_runtime_maintenance_tick(self.runtime)
         self.runtime.dispatch()
         fixture.eventually(lambda: len([call for call in self.server.calls if call[0] == 'turn/start']) == 2)
         started = [params for method, params in self.server.calls if method == 'turn/start'][-1]
