@@ -10818,6 +10818,8 @@ export interface components {
      * @enum {string}
      */
     RoomStatus: "pending" | "approved" | "revoked";
+    /** RootModel[ResourceNotifyAck] */
+    RootModel_ResourceNotifyAck_: components["schemas"]["ResourceNotifyAck"];
     /** RuleBody */
     RuleBody: {
       /**
@@ -13549,6 +13551,10 @@ export interface components {
     };
     /** UiSummaryResponse */
     UiSummaryResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Accounts */
       accounts?: components["schemas"]["SummaryAccount"][];
       /** Agentsrunning */
@@ -22536,7 +22542,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ResourceNotifyAck"];
+          "application/json": components["schemas"]["RootModel_ResourceNotifyAck_"];
         };
       };
       /** @description Bad Request */

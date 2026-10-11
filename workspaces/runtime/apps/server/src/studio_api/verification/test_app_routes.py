@@ -241,8 +241,12 @@ class ApplicationRouteContract(unittest.TestCase):
                 if original_keys & HIDDEN_COMPATIBILITY_ROUTES:
                     self.assertEqual(original_keys, {("POST", "/api/voice/{action:path}")})
                     self.assertFalse(route.include_in_schema)
-                elif not any(key in STREAM_OR_FILE_ROUTES for key in effective_keys):
+                if not any(key in STREAM_OR_FILE_ROUTES for key in effective_keys):
                     self.assertIsNotNone(route.response_model)
+                    self.assertTrue(
+                        ApiContext._response_contract(route.response_model),
+                        "JSON API route response model must be an ApiContext contract",
+                    )
 
     def test_openapi_exposes_existing_query_parameters(self) -> None:
         document = cast(dict[str, object], self.app.openapi())

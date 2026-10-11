@@ -94,7 +94,7 @@ def create_router(context: ApiContext) -> APIRouter:
                     )
                 )
         return context.send(
-            request, read_summary(connect, public_accounts).model_dump(mode="json")
+            request, read_summary(connect, public_accounts).wire_dump()
         )
 
     def linux_vm_configuration(values: LinuxVMSettings | None = None) -> dict[str, JsonValue]:
