@@ -71,6 +71,18 @@ class Broker:
             self.methods.update(mac_sync.METHODS)
             self.read_methods.update(mac_sync.READ_METHODS)
             self.handlers.update({method: handler for method in mac_sync.METHODS})
+        # The project vault writes encrypted states to S3 (docs/vault.md).
+        try:
+            import vault_admin
+        except ModuleNotFoundError as exc:
+            if exc.name != "vault_admin":
+                raise
+        else:
+            handler = vault_admin.VaultHandlers(state, root)
+            require(not self.methods.intersection(vault_admin.METHODS), "The admin method is registered twice")
+            self.methods.update(vault_admin.METHODS)
+            self.read_methods.update(vault_admin.READ_METHODS)
+            self.handlers.update({method: handler for method in vault_admin.METHODS})
 
     def close(self):
         self.db.close()
