@@ -4,7 +4,9 @@ import {
   deskLink,
   vaultActions,
   pullText,
+  firstProfile,
   pullVault,
+  runJob,
   vaultLabel,
   type ProjectVault,
   type VaultPull,
@@ -125,6 +127,12 @@ describe("vault menu", () => {
     expect(vaultActions({ projectId: "p1", state: "none" }, here)).toEqual([
       "setup",
     ]);
+    expect(
+      vaultActions(
+        { projectId: "p1", state: "none" },
+        { onThisMac: false, desktop: true },
+      ),
+    ).toEqual(["guide"]);
     expect(vaultActions(vault({ unlocked: false }), here)).toEqual([
       "desk",
       "unlock",
@@ -145,5 +153,68 @@ describe("vault menu", () => {
       }),
     ).toEqual(["desk"]);
     expect(vaultActions(vault({ site: null }), here)).toEqual([]);
+  });
+
+  it("asks for a job with one request id until it ends, and reports each update", async () => {
+    const replies = [
+      { requestId: "s1", state: "running", prefix: "demo" },
+      {
+        requestId: "s1",
+        state: "running",
+        prefix: "demo",
+        progress: "creating",
+      },
+      {
+        requestId: "s1",
+        state: "done",
+        prefix: "demo",
+        site: "https://d/demo/",
+      },
+    ];
+    const bodies: unknown[] = [];
+    const seen: unknown[] = [];
+    const backend = {
+      post: (async (path: string, body: unknown) => {
+        expect(path).toBe("/api/vault/setup");
+        bodies.push(body);
+        return replies.shift();
+      }) as never,
+    };
+    const body = { projectId: "p1", requestId: "s1", prefix: "demo" };
+    const done = await runJob<{ state: string; site?: string }>(
+      backend,
+      "/api/vault/setup",
+      body,
+      { wait: async () => {}, onUpdate: (job) => seen.push(job.state) },
+    );
+    expect(done.site).toBe("https://d/demo/");
+    expect(bodies).toEqual([body, body, body]);
+    expect(seen).toEqual(["running", "running", "done"]);
+    await expect(
+      runJob(
+        { post: (async () => ({ state: "running" })) as never },
+        "/api/vault/setup",
+        body,
+        { wait: async () => {}, deadline: 0 },
+      ),
+    ).rejects.toThrow("takes more than an hour");
+  });
+
+  it("chooses the gateway's AWS profile first", () => {
+    const facts = {
+      prefix: "demo",
+      keys: false,
+      site: "https://d/",
+      region: "eu-central-1",
+      gatewayProfile: "work",
+      profiles: [
+        { name: "broken", error: "no keys" },
+        { name: "home", signedIn: true },
+        { name: "work", signedIn: false },
+      ],
+    };
+    expect(firstProfile(facts)).toBe("work");
+    expect(firstProfile({ ...facts, gatewayProfile: "gone" })).toBe("home");
+    expect(firstProfile({ ...facts, profiles: [] })).toBeNull();
   });
 });

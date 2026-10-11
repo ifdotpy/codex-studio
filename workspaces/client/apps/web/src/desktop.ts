@@ -37,6 +37,8 @@ export interface DesktopBridge {
     target: { agent?: string; path?: string; asset?: string };
   }): Promise<boolean>;
   openExternal(url: string): Promise<void>;
+  /** Show the paper key of a new vault in Terminal (layr-desk keys). */
+  showVaultKeys(prefix: string): Promise<void>;
   getBackendUpdate?(): Promise<{
     availableBackendBuild: string | null;
     updateRequired: boolean | null;

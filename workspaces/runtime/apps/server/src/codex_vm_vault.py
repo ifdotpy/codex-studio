@@ -1,12 +1,14 @@
 """The project vault in the sidebar (docs/vault.md): the VM writer's report of each imported
-layr project, kept on the host so that the sidebar never waits for the VM, and pulls of the
-latest vault state into a new Mac folder through the layr-desk command."""
+layr project, kept on the host so that the sidebar never waits for the VM, pulls of the latest
+vault state into a new Mac folder, and the setup of a new vault, all through the layr-desk
+command."""
 from __future__ import annotations
 
 import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -16,7 +18,14 @@ from typing import Any
 
 INTERVAL = 120.0
 PULL_TIMEOUT = 3600
-PULLS_KEPT = 50
+# Jobs of each kind that a repeated request id still finds.
+JOBS_KEPT = 50
+SETUP_TIMEOUT = 3600
+LOGIN_TIMEOUT = 900
+# A vault name: the reader role studio-vault-reader-<prefix> has at most 64 characters.
+PREFIX = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,43}')
+PROFILE = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.@+-]{0,127}')
+REGION = re.compile(r'[a-z]{2}(-[a-z]+)+-[0-9]')
 
 
 def _folder(state_dir: Path, project_id: str) -> Path:
@@ -176,6 +185,31 @@ def _desk(command: list[str], **options: Any) -> subprocess.CompletedProcess[str
     return subprocess.run(command, capture_output=True, text=True, timeout=60, **options)
 
 
+def _settings() -> Path:
+    """layr-desk's settings of vaults: gateway.json and one folder of keys per vault."""
+    return Path.home() / '.config/studio-vault'
+
+
+def _jobs(runtime: Any, name: str) -> tuple[dict[str, dict[str, Any]], threading.Lock]:
+    jobs: dict[str, dict[str, Any]] = runtime.__dict__.setdefault(name, {})
+    lock: threading.Lock = runtime.__dict__.setdefault(name + '_lock', threading.Lock())
+    return jobs, lock
+
+
+def _keep(jobs: dict[str, dict[str, Any]], request_id: str, job: dict[str, Any]) -> None:
+    jobs[request_id] = job
+    while len(jobs) > JOBS_KEPT:
+        jobs.pop(next(iter(jobs)))
+
+
+def _reason(stderr: str) -> str:
+    """layr-desk's error with its causes, on one line; AWS replies hold no secret."""
+    text = stderr.strip()
+    at = text.rfind('Error: ')
+    text = text[at + len('Error: '):] if at >= 0 else (text.splitlines() or ['layr-desk failed'])[-1]
+    return ' '.join(text.split())[:500]
+
+
 def ensure_disk(command: str, site: str) -> str | None:
     """Keep the Desk disk agent (layr-desk service) on this Mac for `site`, running the
     layr-desk that the app carries, so no command line step is needed; return where the disk is
@@ -257,8 +291,7 @@ def _target(parent: Path, prefix: str) -> Path:
 def start_pull(runtime: Any, project_id: str, request_id: str, to: str | None = None) -> dict[str, Any]:
     """Pull the latest vault state into a new folder below `to` (Downloads by default). A
     repeated request id returns the same job, so a lost reply never starts a second pull."""
-    pulls: dict[str, dict[str, Any]] = runtime.__dict__.setdefault('_vault_pulls', {})
-    lock: threading.Lock = runtime.__dict__.setdefault('_vault_pulls_lock', threading.Lock())
+    pulls, lock = _jobs(runtime, '_vault_pulls')
     with lock:
         if request_id in pulls:
             return dict(pulls[request_id])
@@ -275,9 +308,7 @@ def start_pull(runtime: Any, project_id: str, request_id: str, to: str | None = 
         command = [layr_desk(), 'pull', '--site', view['site'], '--project', view['prefix'],
                    '--to', str(target), '--json']
         job: dict[str, Any] = {'requestId': request_id, 'state': 'running', 'folder': str(target)}
-        pulls[request_id] = job
-        while len(pulls) > PULLS_KEPT:
-            pulls.pop(next(iter(pulls)))
+        _keep(pulls, request_id, job)
 
     def run() -> None:
         try:
@@ -290,6 +321,149 @@ def start_pull(runtime: Any, project_id: str, request_id: str, to: str | None = 
                 result = json.loads(done.stdout)
                 update = {'state': 'done', 'seq': result['seq'], 'files': result['files'], 'bytes': result['bytes']}
         except (OSError, ValueError, KeyError, subprocess.TimeoutExpired) as error:
+            update = {'state': 'failed', 'error': f'{type(error).__name__}: {str(error)[:400]}'}
+        with lock:
+            job.update(update)
+    runtime.pool.submit(run)
+    return dict(job)
+
+
+def suggested_prefix(source: str) -> str:
+    """A vault name from the project folder's name: lower case, - for other characters."""
+    name = re.sub(r'[^a-z0-9_-]+', '-', Path(source).name.lower()).strip('-_')[:44].strip('-_')
+    return name or 'project'
+
+
+def _new_vault(state_dir: Path, project_id: str, prefix: str | None) -> tuple[str, str]:
+    """The Mac folder and the vault name of a project without a vault."""
+    view = vault_view(state_dir, project_id)
+    if view and view['state'] != 'none':
+        raise ValueError('The project has a vault already')
+    source = _load(_folder(state_dir, project_id) / 'project.json').get('source')
+    if not isinstance(source, str):
+        raise ValueError('The project has no Mac folder')
+    prefix = prefix or suggested_prefix(source)
+    if not PREFIX.fullmatch(prefix) or prefix in ('api', 'assets'):
+        raise ValueError('A vault name has up to 44 letters, digits, - and _, and is not api or assets')
+    return source, prefix
+
+
+def setup_facts(runtime: Any, project_id: str, prefix: str | None = None) -> dict[str, Any]:
+    """What the setup dialog needs: the vault name, whether this Mac has its keys (layr-desk
+    keys), the Desk site of the gateway, and the AWS profiles with their sign-in state."""
+    from codex_linux_workspaces import client as vm_client
+    _source, prefix = _new_vault(vm_client(runtime).state_dir, project_id, prefix)
+    gateway = _load(_settings() / 'gateway.json')
+    done = _desk([layr_desk(), 'aws-profiles', '--json'], stdin=subprocess.DEVNULL)
+    if done.returncode:
+        raise RuntimeError('layr-desk aws-profiles: ' + _reason(done.stderr or done.stdout))
+    host, region, profile = gateway.get('host'), gateway.get('region'), gateway.get('profile')
+    return {'prefix': prefix, 'keys': (_settings() / prefix / 'recipient.txt').is_file(),
+            'site': f'https://{host}/' if isinstance(host, str) else None,
+            'region': region if isinstance(region, str) else 'eu-central-1',
+            'gatewayProfile': profile if isinstance(profile, str) else None,
+            'profiles': json.loads(done.stdout)['profiles']}
+
+
+def _refresh(runtime: Any) -> None:
+    """Show a new vault in the sidebar now, not at the next tick."""
+    from codex_linux_workspaces import client as vm_client
+    from codex_vm_agents import refresh_readiness
+    client = vm_client(runtime)
+    check(client)
+    mac_check(client.state_dir)
+    refresh_readiness(runtime)
+
+
+def start_setup(runtime: Any, project_id: str, request_id: str, prefix: str, profile: str,
+                region: str) -> dict[str, Any]:
+    """Make the project's vault with an AWS profile (layr-desk deploy): the stack, vault.json,
+    the paper slot, the gateway registration, and the VM writer's keys through codex_vault.py
+    configure. A repeated request id reports the same job; 'signin' says that the profile needs
+    a sign-in (start_login) before a new request."""
+    jobs, lock = _jobs(runtime, '_vault_setups')
+    with lock:
+        if request_id in jobs:
+            return dict(jobs[request_id])
+        if not PROFILE.fullmatch(profile) or not REGION.fullmatch(region):
+            raise ValueError('Name an AWS profile and a region')
+        from codex_linux_workspaces import client as vm_client
+        source, prefix = _new_vault(vm_client(runtime).state_dir, project_id, prefix)
+        if not (_settings() / prefix / 'recipient.txt').is_file():
+            raise ValueError('Make the paper key of the vault first')
+        writer = shlex.join([sys.executable, str(Path(__file__).resolve().parent / 'codex_vault.py'),
+                             'configure', source])
+        command = [layr_desk(), 'deploy', '--project', prefix, '--profile', profile, '--region', region,
+                   '--writer', writer]
+        job: dict[str, Any] = {'requestId': request_id, 'state': 'running', 'prefix': prefix}
+        _keep(jobs, request_id, job)
+
+    def run() -> None:
+        update: dict[str, Any]
+        try:
+            with subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True) as process:
+                timer = threading.Timer(SETUP_TIMEOUT, process.kill)
+                timer.start()
+                lines = []
+                assert process.stderr is not None and process.stdout is not None
+                for line in process.stderr:
+                    lines.append(line)
+                    if line.startswith('layr-desk: '):
+                        with lock:
+                            job['progress'] = line.removeprefix('layr-desk: ').strip()[:200]
+                output, code = process.stdout.read(), process.wait()
+                timer.cancel()
+            if code == 3:
+                update = {'state': 'signin', 'error': _reason(''.join(lines))}
+            elif code:
+                update = {'state': 'failed', 'error': _reason(''.join(lines))}
+            else:
+                update = {'state': 'done', 'site': json.loads(output.strip().splitlines()[-1])['site']}
+        except (OSError, ValueError, KeyError, IndexError) as error:
+            update = {'state': 'failed', 'error': f'{type(error).__name__}: {str(error)[:400]}'}
+        if update['state'] == 'done':
+            try:
+                _refresh(runtime)
+            except Exception as error:  # noqa: BLE001 - the next tick shows the vault
+                print('vault refresh after the setup skipped: ' + str(error)[:300], file=sys.stderr)
+        with lock:
+            job.pop('progress', None)
+            job.update(update)
+    runtime.pool.submit(run)
+    return dict(job)
+
+
+def start_login(runtime: Any, profile: str, request_id: str) -> dict[str, Any]:
+    """Sign in to an AWS profile (layr-desk aws-login): the job shows the sign-in page and its
+    code until the person confirms them in the browser."""
+    jobs, lock = _jobs(runtime, '_vault_logins')
+    with lock:
+        if request_id in jobs:
+            return dict(jobs[request_id])
+        if not PROFILE.fullmatch(profile):
+            raise ValueError('Name an AWS profile')
+        command = [layr_desk(), 'aws-login', '--profile', profile, '--json']
+        job: dict[str, Any] = {'requestId': request_id, 'state': 'running'}
+        _keep(jobs, request_id, job)
+
+    def run() -> None:
+        update: dict[str, Any]
+        try:
+            with subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True) as process:
+                timer = threading.Timer(LOGIN_TIMEOUT, process.kill)
+                timer.start()
+                assert process.stderr is not None and process.stdout is not None
+                for line in process.stdout:
+                    shown = json.loads(line)
+                    if isinstance(shown.get('page'), str) and shown['page'].startswith('https://'):
+                        with lock:
+                            job.update(page=shown['page'], code=str(shown.get('code', ''))[:40])
+                stderr, code = process.stderr.read(), process.wait()
+                timer.cancel()
+            update = {'state': 'done'} if code == 0 else {'state': 'failed', 'error': _reason(stderr)}
+        except (OSError, ValueError) as error:
             update = {'state': 'failed', 'error': f'{type(error).__name__}: {str(error)[:400]}'}
         with lock:
             job.update(update)

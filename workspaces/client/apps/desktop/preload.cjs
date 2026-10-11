@@ -103,6 +103,7 @@ const { contextBridge, ipcRenderer } = require("electron");
       saveFile: (value) => invoke("saveFile", value),
       fileAction: (value) => invoke("fileAction", value),
       openExternal: (value) => invoke("openExternal", value),
+      showVaultKeys: (value) => invoke("showVaultKeys", value),
       notify: (value) => invoke("notify", value, false),
     }),
   );

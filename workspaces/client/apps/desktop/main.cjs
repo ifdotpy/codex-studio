@@ -29,6 +29,7 @@ const { frameOwner } = require("./frame-owner.cjs");
 const { pairApproved } = require("./approved-pair.cjs");
 const { startUiHost } = require("./ui-host.cjs");
 const { uiOnlyInstallation } = require("./install-mode.cjs");
+const { layrDesk, vaultKeysScript } = require("./vault-keys.cjs");
 const uiOnly = uiOnlyInstallation({ packaged: app.isPackaged });
 const hidden = process.argv.includes("--hidden");
 const backgroundRecovery = process.argv.includes("--background-recovery");
@@ -260,7 +261,9 @@ async function nativeAction(event, request) {
   ) {
     if (
       owner !== "local" &&
-      ["pickDirectory", "revealPath", "fileAction"].includes(request.method)
+      ["pickDirectory", "revealPath", "fileAction", "showVaultKeys"].includes(
+        request.method,
+      )
     )
       throw new Error(
         "This file belongs to another computer. Use the server folder list or Save As.",
@@ -278,6 +281,7 @@ async function nativeAction(event, request) {
         "fileAction",
         "openExternal",
         "getBackendUpdate",
+        "showVaultKeys",
       ].includes(request.method)
     )
       throw new Error("Unknown server native action.");
@@ -766,6 +770,23 @@ async function nativeAction(event, request) {
     case "openExternal":
       await shell.openExternal(externalURL(request.value), { activate: false });
       return;
+    case "showVaultKeys": {
+      const file = await vaultKeysScript(request.value, {
+        folder: app.getPath("temp"),
+        program: layrDesk({
+          packaged: app.isPackaged,
+          resources: backendResources,
+          env: process.env,
+        }),
+      });
+      trusted(event);
+      const failed = await shell.openPath(file);
+      if (failed) {
+        await fs.rm(file, { force: true });
+        throw new Error(failed);
+      }
+      return;
+    }
     case "getBackendUpdate": {
       if (uiOnly) return { availableBackendBuild: null, updateRequired: false };
       const running = await identity(backend.origin, backend.stateDir);

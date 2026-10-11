@@ -450,6 +450,33 @@ class VaultPullRequest(MacSyncProjectRequest):
     to: str | None = Field(default=None, max_length=4096)
 
 
+_VAULT_PREFIX = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,43}$"
+_REQUEST_ID = r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$"
+_AWS_PROFILE = r"^[A-Za-z0-9][A-Za-z0-9_.@+-]{0,127}$"
+
+
+class VaultSetupFactsRequest(MacSyncProjectRequest):
+    """The facts for the vault setup dialog; prefix replaces the name from the folder."""
+
+    prefix: str | None = Field(default=None, pattern=_VAULT_PREFIX)
+
+
+class VaultSetupRequest(MacSyncProjectRequest):
+    """Make the project's vault with an AWS profile. A repeated requestId returns the same job."""
+
+    requestId: str = Field(pattern=_REQUEST_ID)
+    prefix: str = Field(pattern=_VAULT_PREFIX)
+    profile: str = Field(pattern=_AWS_PROFILE)
+    region: str = Field(pattern=r"^[a-z]{2}(-[a-z]+)+-[0-9]$")
+
+
+class VaultLoginRequest(ContractModel):
+    """Sign in to an AWS profile. A repeated requestId returns the same sign-in."""
+
+    requestId: str = Field(pattern=_REQUEST_ID)
+    profile: str = Field(pattern=_AWS_PROFILE)
+
+
 _SECRET_NAME = r"^[A-Z_][A-Z0-9_]{0,63}$"
 
 
@@ -720,6 +747,50 @@ class VaultPullResponse(ResponseModel):
     seq: int | None = None
     files: int | None = None
     bytes: int | None = None
+    error: str | None = None
+
+
+class VaultAwsProfileDto(ResponseModel):
+    """An AWS profile of this Mac: signedIn says whether it has keys or a usable sign-in."""
+
+    name: str
+    region: str | None = None
+    sso: bool | None = None
+    signedIn: bool | None = None
+    error: str | None = None
+
+
+class VaultSetupFactsResponse(ResponseModel):
+    """The vault name, whether this Mac has its keys, the gateway's Desk site and account, and
+    the AWS profiles."""
+
+    prefix: str
+    keys: bool
+    site: str | None
+    region: str
+    gatewayProfile: str | None
+    profiles: list[VaultAwsProfileDto]
+
+
+class VaultSetupResponse(ResponseModel):
+    """One vault setup: running (progress), done (site), failed (error), or signin when the
+    AWS profile needs a sign-in first."""
+
+    requestId: str
+    state: Literal["running", "done", "failed", "signin"]
+    prefix: str
+    progress: str | None = None
+    site: str | None = None
+    error: str | None = None
+
+
+class VaultLoginResponse(ResponseModel):
+    """One AWS sign-in: running (page and code once AWS gives them), done or failed."""
+
+    requestId: str
+    state: Literal["running", "done", "failed"]
+    page: str | None = None
+    code: str | None = None
     error: str | None = None
 
 
