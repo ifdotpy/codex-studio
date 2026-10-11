@@ -12,7 +12,10 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import shutil
+import sqlite3
 import sys
+import tempfile
 import time
 import unittest
 import uuid
@@ -95,12 +98,58 @@ class HistoryServer(f.fixture.f.FakeServer):
         return super().call(method, params, timeout)
 
 
+class TemplateEndpoint(f.Endpoint):
+    def start(self):
+        shutil.copyfile(Moves._template_dbs[self.name], self.state / 'canvas.sqlite3')
+        super().start()
+
+
 class Moves(f.SignedIntegration):
     test_pair_spawn_native_turn_retry_task_fetch_stop_and_revocation = None
+    _seen_server_ids = set()
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        template = tempfile.TemporaryDirectory(prefix='agent-move-pair-template-')
+        cls.addClassCleanup(template.cleanup)
+        template_root = Path(template.name)
+        owner = f.SignedIntegration('test_signed_server_name_and_peer_status_propagation')
+        try:
+            with patch.object(f.fixture.f, 'FakeServer', HistoryServer):
+                owner.setUp()
+                invitation = owner.a.local({'action': 'create_invite', 'requestId': 'template-invite'})['invitation']
+                owner.b.local({'action': 'accept_invite', 'invitation': invitation, 'requestId': 'template-accept'})
+                cls._template_dbs = {}
+                for endpoint in (owner.a, owner.b):
+                    cls._template_dbs[endpoint.name] = template_root / f'{endpoint.name}.sqlite3'
+                    source = endpoint.runtime.db_path
+                    endpoint.close()
+                    db = sqlite3.connect(source)
+                    try:
+                        result = db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()
+                        if result is not None and result[0] != 0:
+                            raise RuntimeError(f'SQLite checkpoint busy for template endpoint {endpoint.name}: {result}')
+                    finally:
+                        db.close()
+                    for suffix in ('-wal', '-shm'):
+                        sidecar = Path(str(source) + suffix)
+                        if sidecar.exists():
+                            sidecar.unlink()
+                    shutil.copyfile(source, cls._template_dbs[endpoint.name])
+                    if str(template_root).encode() in cls._template_dbs[endpoint.name].read_bytes():
+                        raise RuntimeError(f'Template database contains an absolute path back to {template_root}')
+        finally:
+            owner.stack.close()
 
     def setUp(self):
-        with patch.object(f.fixture.f, 'FakeServer', HistoryServer):
+        with patch.object(f.fixture.f, 'FakeServer', HistoryServer), patch.object(f, 'Endpoint', TemplateEndpoint):
             super().setUp()
+        self._refresh_template_peers()
+        for endpoint in (self.a, self.b):
+            if endpoint.server_id in self._seen_server_ids:
+                self.fail(f'Runtime server identity was reused between tests: {endpoint.server_id}')
+            self._seen_server_ids.add(endpoint.server_id)
         for endpoint in (self.a, self.b):
             rt = endpoint.runtime
             server = rt.connect('default')
@@ -108,10 +157,34 @@ class Moves(f.SignedIntegration):
             self.stack.enter_context(patch.object(rt.accounts, 'get', side_effect=lambda _key, row=row: copy.deepcopy(row)))
             self.stack.enter_context(patch.object(rt.accounts, 'list', side_effect=lambda row=row: [copy.deepcopy(row)]))
             self.stack.enter_context(patch.object(rt.accounts, 'home', return_value=server.home))
-        invitation = self.a.local({'action': 'create_invite', 'requestId': 'invite-a'})['invitation']
-        self.b.local({'action': 'accept_invite', 'invitation': invitation, 'requestId': 'accept-b'})
         self.lead = self.a.runtime.create({'name': 'Lead', 'prompt': '', 'cwd': str(self.a.folder), 'concurrency': 4}, draft=True)
         self.lead = self.a.runtime.prepare(self.lead)
+
+    def _refresh_template_peers(self):
+        for local, peer in ((self.a, self.b), (self.b, self.a)):
+            identity = peer.runtime.paired_access().identity(owner=True)
+            with local.runtime.db() as db:
+                row = db.execute('SELECT record FROM runtime_access_clients WHERE id=?', (identity['serverId'],)).fetchone()
+                if row is None:
+                    candidates = db.execute("SELECT id, record FROM runtime_access_clients WHERE json_extract(record, '$.kind')='server'").fetchall()
+                    if len(candidates) != 1:
+                        self.fail(f'Expected one paired template peer for {local.name}, found {len(candidates)}')
+                    old_id = candidates[0]['id']
+                    record = json.loads(candidates[0]['record'])
+                    db.execute('DELETE FROM runtime_access_clients WHERE id=?', (old_id,))
+                else:
+                    record = json.loads(row['record'])
+                record.update({
+                    'id': identity['serverId'], 'clientId': identity['serverId'],
+                    'serverId': identity['serverId'], 'label': identity['label'],
+                    'kind': 'server', 'origin': identity['origin'],
+                    'publicKey': identity['publicKey'], 'tailscaleUser': f.OWNER,
+                    'status': 'paired', 'created': time.time(), 'lastAccess': None, 'revoked': None,
+                })
+                for field in ('pairingRequestId', 'pairingHash', 'pairingReceipt'):
+                    record.pop(field, None)
+                db.execute('INSERT OR REPLACE INTO runtime_access_clients(id, record) VALUES(?, ?)',
+                           (identity['serverId'], json.dumps(record, separators=(',', ':'), ensure_ascii=False)))
 
     def finish_move(self, actor, key='move-one', tool='orchestration_move'):
         reply = self.tool(self.a, actor, tool, {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': key}, key)
