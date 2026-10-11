@@ -72,6 +72,9 @@ export async function savedPromptProof(file, session) {
   let snapshot;
   const deferred = new Map();
   const activeNames = new Set();
+  // Every name a delta announced since the last compaction. Connectors drop and add their
+  // names around each turn, so the active set at one moment differs from the next.
+  const announced = new Set();
   for (const line of bytes.toString("utf8").trimEnd().split("\n")) {
     const row = JSON.parse(line);
     if (row.sessionId && row.sessionId !== (session.nativeId || session.id))
@@ -80,6 +83,7 @@ export async function savedPromptProof(file, session) {
       snapshot = undefined;
       deferred.clear();
       activeNames.clear();
+      announced.clear();
     }
     if (row.type === "attachment" && row.attachment?.type === "prompt_snapshot")
       snapshot = row.attachment;
@@ -122,7 +126,10 @@ export async function savedPromptProof(file, session) {
           throw new Error("The saved deferred tool names are incomplete");
       for (const name of row.attachment.removedNames || [])
         activeNames.delete(name);
-      for (const name of row.attachment.addedNames || []) activeNames.add(name);
+      for (const name of row.attachment.addedNames || []) {
+        activeNames.add(name);
+        announced.add(name);
+      }
     }
   }
   if (
@@ -151,6 +158,9 @@ export async function savedPromptProof(file, session) {
       ? {
           deferredTools: [...deferred.values()],
           activeDeferredNames: [...activeNames],
+          deferredBuiltinNames: [...announced].filter(
+            (name) => !name.startsWith("mcp__"),
+          ),
           inlineTools: false,
           ...(deferredOnly ? { surfacedExternal: true } : {}),
         }
@@ -199,7 +209,9 @@ export function verifyToolProof(proof, studio, offered) {
     (entry) => !entry.name.startsWith("mcp__"),
   );
   if (proof.inlineTools === false)
-    for (const name of proof.activeDeferredNames || [])
+    for (const name of proof.deferredBuiltinNames ||
+      proof.activeDeferredNames ||
+      [])
       if (
         !name.startsWith("mcp__") &&
         !builtin.some((entry) => entry.name === name)

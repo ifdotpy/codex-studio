@@ -596,3 +596,55 @@ test("a move restores the exact tool order that the paired channel sorted", () =
     moved.dynamicTools,
   );
 });
+
+test("builtin tools stay the same while connectors drop and add their names around turns", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-flicker-"));
+  const file = path.join(root, "native.jsonl");
+  const session = { id: randomUUID(), model: "default", dynamicTools: [] };
+  const row = (attachment) =>
+    JSON.stringify({ type: "attachment", sessionId: session.id, attachment }) +
+    "\n";
+  const schema = { type: "object" };
+  const studio = {
+    name: "mcp__studio__orchestration_teleport",
+    input_schema: schema,
+  };
+  const start =
+    row({
+      type: "prompt_snapshot",
+      systemPrompt: ["[redacted]"],
+      tools: [{ name: "Bash", input_schema: schema }],
+      inlineTools: true,
+    }) +
+    row({
+      type: "deferred_tools_delta",
+      addedNames: [
+        "Monitor",
+        "ListMcpResourcesTool",
+        "mcp__studio__orchestration_teleport",
+      ],
+    }) +
+    row({ type: "deferred_tools_record", entries: [studio] });
+  const dropped = row({
+    type: "deferred_tools_delta",
+    removedNames: ["ListMcpResourcesTool"],
+  });
+  const added = row({
+    type: "deferred_tools_delta",
+    addedNames: ["ListMcpResourcesTool"],
+  });
+  try {
+    const builtins = [];
+    for (const bytes of [start + dropped, start + dropped + added]) {
+      await fs.writeFile(file, bytes);
+      const proof = await savedPromptProof(file, session);
+      builtins.push(
+        verifyToolProof(proof, [{ name: studio.name, input_schema: schema }]),
+      );
+    }
+    assert.deepEqual(builtins[0], builtins[1]);
+    assert.deepEqual(builtins[0], ["Bash", "Monitor", "ListMcpResourcesTool"]);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
