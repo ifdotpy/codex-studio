@@ -1394,6 +1394,18 @@ export function syncProtocolFixture({ unixSocket = false } = {}) {
   };
 }
 
+/** @param {{ skip: (condition: boolean, description?: string) => void }} test @param {unknown} error */
+export function skipIfWebKitCannotLaunch(test, error) {
+  const missingLibrary = String(error).match(
+    /error while loading shared libraries: ([^:]+): cannot open shared object file/i,
+  )?.[1];
+  if (missingLibrary) {
+    const reason = `WebKit cannot launch here: missing ${missingLibrary}, ...`;
+    console.log(`SKIP: ${reason}`);
+    test.skip(true, reason);
+  }
+}
+
 /** @param {string} origin @returns {Promise<{ identity: SyncIdentityResponse, protocol: SyncProtocolResponse }>} */
 export async function readFixtureSyncContract(origin) {
   const [identityResponse, protocolResponse] = await Promise.all([
@@ -1536,7 +1548,7 @@ export function accountTileButton(page, label, accountName) {
  * Serve the same sync routes from a small Node HTTP fixture backend.
  * @param {import("node:http").IncomingMessage} request
  * @param {import("node:http").ServerResponse} response
- * @param {{ snapshot: EntityFixtureState, workspaceId: string, unixSocket?: boolean, versionedResources?: boolean, epoch?: string, onPull?: () => void, onStreamReady?: (notify: (resources: ResourceRef[]) => void) => void }} fixture
+ * @param {{ snapshot: EntityFixtureState, workspaceId: string, unixSocket?: boolean, versionedResources?: boolean, epoch?: string, onPull?: () => void, onStreamReady?: (notify: (resources: ResourceRef[], reason?: "change" | "reconnect") => void, resources: ResourceRef[]) => (() => void) | void }} fixture
  * @returns {boolean} whether this was an /api/sync route
  */
 export function handleEntitySyncFixtureRequest(request, response, fixture) {
@@ -1654,13 +1666,13 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
     const heartbeatTimer = setInterval(heartbeat, 5000);
     heartbeatTimer.unref?.();
     response.once("close", () => clearInterval(heartbeatTimer));
-    fixture.onStreamReady?.((resources) => {
+    const cleanup = fixture.onStreamReady?.((resources, reason = "change") => {
       if (response.destroyed) return;
       /** @type {ResourceChangeEvent} */
       const changed = {
         epoch,
         protocol: RESOURCE_STREAM_PROTOCOL,
-        reason: "change",
+        reason,
         resources,
         resourceVersions: fixture.versionedResources
           ? withResourceVersions(resources, true)
@@ -1669,7 +1681,8 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
         workspaceId: identity.workspaceId,
       };
       writeFrame("resources", changed);
-    });
+    }, requestedResources);
+    if (cleanup) response.once("close", cleanup);
     return true;
   }
   response.statusCode = 404;

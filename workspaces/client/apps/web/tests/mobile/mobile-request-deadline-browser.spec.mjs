@@ -4,7 +4,11 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { test, browserExecutablePath } from "../playwright.mjs";
+import {
+  test,
+  browserExecutablePath,
+  skipIfWebKitCannotLaunch,
+} from "../playwright.mjs";
 
 const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
 const require = createRequire(
@@ -29,14 +33,7 @@ async function runDeadlineChecks(name, engine, executablePath) {
     try {
       browser = await engine.launch({ headless: true, executablePath });
     } catch (error) {
-      const missingLibrary = String(error).match(
-        /error while loading shared libraries: ([^:]+): cannot open shared object file/,
-      )?.[1];
-      if (name === "webkit" && missingLibrary)
-        test.skip(
-          true,
-          `WebKit system library is unavailable: ${missingLibrary}`,
-        );
+      if (name === "webkit") skipIfWebKitCannotLaunch(test, error);
       throw error;
     }
     try {

@@ -206,15 +206,43 @@ For manual native client checks outside the facade, forward a file filter to Vit
 
 ```sh
 pnpm --filter codex-agents-web run test:unit -- tokenRate
-pnpm --filter codex-agents-web run test:browser -- message-delivery-ui
+pnpm --filter codex-agents-web run test:browser -- tests/notices/browser-access-notice-ui.spec.mjs
 pnpm --filter codex-agents-web run test:browser:list
 ```
 
-Install Playwright's managed Chromium with the locally installed CLI when it is
-not available. `CHROME_BIN` can select an existing compatible browser. Browser
-checks run headlessly. Set `BROWSER=webkit` to select Playwright WebKit after
-installing that browser. Live or installed-environment checks and performance
-measurements are explicitly selected separately from the default browser suite.
+The browser command builds the renderer, then uses the web package's browser
+launcher. It redirects `HOME`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, and XDG
+configuration, cache, data, state, and runtime paths to temporary storage for
+the run. It keeps Playwright's browser lookup on the standard per-user cache
+even when fixture setup redirects `XDG_CACHE_HOME`; an explicit
+`PLAYWRIGHT_BROWSERS_PATH` or `CHROME_BIN` still takes precedence. The launcher
+prints its unique temporary output directory at the end; JSON results, traces,
+and attachments are kept there so concurrent or later runs cannot overwrite
+them.
+The launcher inherits the host's `LD_LIBRARY_PATH` and `FONTCONFIG_FILE` when
+set and relies on the system browser libraries and fonts otherwise. Install
+Playwright's managed Chromium with
+`pnpm --filter codex-agents-web exec playwright install chromium` when it is not
+available. Browser checks run headlessly. WebKit requires both its Playwright
+browser and its host system libraries; the mobile usability and request-deadline
+tests skip their WebKit case with an explicit reason when a required library is
+missing. WebKit coverage runs only on machines where WebKit is installed; this
+machine and CI currently do not have it. Set `BROWSER=webkit` to select
+Playwright WebKit. The default browser project is Chromium, although the mobile
+usability test also starts WebKit directly. Live or installed-environment checks
+and performance measurements are explicitly selected separately from the
+default browser suite. The current CI workflow runs the client unit tests but
+does not run the Playwright browser suite.
+The fixture backend uses the repository-managed Python runtime. Resolve it
+before launching the isolated browser command and put it first on `PATH`:
+
+```sh
+export CODEX_AGENTS_PYTHON="$(python3 workspaces/runtime/apps/server/src/codex_python.py)"
+export PATH="$(dirname "$CODEX_AGENTS_PYTHON"):$PATH"
+```
+
+This selects an existing equipped interpreter; it does not install or modify
+the managed runtime.
 Use `pnpm --filter codex-agents-web run test:performance` for the browser performance group.
 To inspect the optional installed-environment group, enable
 `PLAYWRIGHT_INCLUDE_SPECIAL=1` and select the `installed-only` project explicitly.

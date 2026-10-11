@@ -157,7 +157,7 @@ test("Send session token browser", async ({
     assert.deepEqual(posts[0].body, body("old-session"));
     assert.equal(posts[0].headers["x-canvas-token"], "new-token");
     await page.evaluate(async (workspaceId) => {
-      await window.api.syncApi(
+      await window.api.syncPost(
         "/api/token-probe",
         { id: "after-overlap" },
         {
@@ -199,7 +199,7 @@ test("Send session token browser", async ({
     assert.equal(posts.length, 2, "A confirmed message must not be sent again");
     assert.equal(sessions.length, 2);
     await page.evaluate(async (workspaceId) => {
-      await window.api.syncApi(
+      await window.api.syncPost(
         "/api/token-probe",
         { id: "scoped" },
         {
@@ -207,7 +207,7 @@ test("Send session token browser", async ({
           sessionToken: "scoped-token",
         },
       );
-      await window.api.syncApi(
+      await window.api.syncPost(
         "/api/token-probe",
         { id: "global" },
         { workspaceId },
@@ -235,7 +235,7 @@ test("Send session token browser", async ({
       token: "early-old-token",
     });
     await page.evaluate(() =>
-      window.api.syncApi("/api/token-probe", { id: "newer-still-pending" }),
+      window.api.syncPost("/api/token-probe", { id: "newer-still-pending" }),
     );
     assert.equal(tokenProbes.at(-1), "global-token");
     await sessions[3].fulfill({ json: { token: "latest-confirmed-token" } });
@@ -243,7 +243,7 @@ test("Send session token browser", async ({
       token: "latest-confirmed-token",
     });
     await page.evaluate(() =>
-      window.api.syncApi("/api/token-probe", { id: "newer-confirmed" }),
+      window.api.syncPost("/api/token-probe", { id: "newer-confirmed" }),
     );
     assert.equal(tokenProbes.at(-1), "latest-confirmed-token");
 
@@ -286,7 +286,7 @@ test("Send session token browser", async ({
         token: `${order}-valid-token`,
       });
       await page.evaluate(() =>
-        window.api.syncApi("/api/token-probe", {
+        window.api.syncPost("/api/token-probe", {
           id: "after-failed-newer-read",
         }),
       );
@@ -312,7 +312,7 @@ test("Send session token browser", async ({
     });
     await page.evaluate(() => window.olderRead);
     await page.evaluate(() =>
-      window.api.syncApi("/api/token-probe", { id: "manual-owner" }),
+      window.api.syncPost("/api/token-probe", { id: "manual-owner" }),
     );
     assert.equal(tokenProbes.at(-1), "manual-owner-token");
     holdSessions = false;
