@@ -327,22 +327,46 @@ class ContextWait(f.NativeActionRepair):
             history_checks.append(future)
             return future
 
-        # This fixture's live scheduler only waits for wakeups; every dispatch
-        # pass below is driven explicitly. Await the asynchronous history check
-        # directly so the queued state is read once, before forcing another pass.
+        # Hold the background scheduler before it can run a pass; the two passes
+        # under test are driven explicitly below.
         self.assertTrue(self.runtime.scheduler.is_alive())
-        with patch.object(self.runtime.recovery_pool, 'submit', side_effect=track_history_check):
-            self.runtime.dispatch()
-        self.assertEqual(len(history_checks), 1)
-        history_checks[0].result(timeout=8)
-        current = self.runtime.agent(self.a['id'])
-        self.assertFalse(current.get('contextRepairWait'))
-        self.runtime.dispatch()
-        # The second pass is deliberately before these assertions. A fresh
-        # separate read here may already report "starting".
-        self.assertEqual(self.runtime.agent(self.a['id'])['status'], 'starting')
-        self.assertEqual(current['status'], 'queued')
-        self.assertTrue(current['autoWake'])
+        owner = threading.get_ident()
+        release_background = threading.Event()
+        dispatch = self.runtime.dispatch
+        dispatch_candidates = self.runtime.dispatch_candidates
+        candidate_passes = 0
+
+        def hold_background_dispatch(*args, **kwargs):
+            if threading.get_ident() != owner:
+                release_background.wait()
+                return 0
+            return dispatch(*args, **kwargs)
+
+        def defer_first_candidates(*args, **kwargs):
+            nonlocal candidate_passes
+            candidate_passes += 1
+            if candidate_passes == 1:
+                return 0
+            return dispatch_candidates(*args, **kwargs)
+
+        try:
+            with patch.object(self.runtime, 'dispatch', side_effect=hold_background_dispatch), \
+                    patch.object(self.runtime, 'dispatch_candidates', side_effect=defer_first_candidates), \
+                    patch.object(self.runtime.recovery_pool, 'submit', side_effect=track_history_check):
+                self.runtime.dispatch()
+                self.assertEqual(len(history_checks), 1)
+                history_checks[0].result(timeout=8)
+                # Runtime.agent may return a shared cached record. Copy it so
+                # the forced second pass cannot mutate the asserted snapshot.
+                current = copy.deepcopy(self.runtime.agent(self.a['id']))
+                self.assertFalse(current.get('contextRepairWait'))
+                self.runtime.dispatch()
+                self.assertEqual(candidate_passes, 2)
+                self.assertEqual(self.runtime.agent(self.a['id'])['status'], 'starting')
+                self.assertEqual(current['status'], 'queued')
+                self.assertTrue(current['autoWake'])
+        finally:
+            release_background.set()
         try:
             eventually(lambda: any(method == 'turn/start' for method, _ in self.server.calls))
         except AssertionError:

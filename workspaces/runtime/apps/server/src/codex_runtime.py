@@ -2621,6 +2621,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 # A body or commit failure is uncertain. Never run it twice.
                 if entered or outer_owner or not sqlite_busy(error) or self.closed or time.monotonic() >= deadline:
                     raise
+                local = self.__dict__.setdefault("_callback_db", threading.local())
+                local.notification_preflight_busy_retries = (
+                    getattr(local, "notification_preflight_busy_retries", 0) + 1
+                )
             time.sleep(min(delay, max(0, deadline - time.monotonic())))
             delay = min(.5, delay * 2)
 
@@ -2644,15 +2648,32 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     @contextmanager
     def read_db(self):
         """Read a single committed WAL snapshot without the runtime lock."""
-        db = sqlite3.connect(self.db_path.absolute().as_uri() + "?mode=ro", uri=True, timeout=15)
-        db.row_factory = sqlite3.Row
+        local = self.__dict__.get("_callback_db")
+        scheduler_owned = bool(local is not None and getattr(local, "scheduler", False))
+        db = getattr(local, "read_connection", None) if scheduler_owned else None
+        reusable = db is not None
+        if db is None:
+            db = sqlite3.connect(self.db_path.absolute().as_uri() + "?mode=ro", uri=True, timeout=15)
+            db.row_factory = sqlite3.Row
         try:
-            db.execute("PRAGMA query_only=ON")
+            if not reusable:
+                db.execute("PRAGMA query_only=ON")
+                if scheduler_owned:
+                    local.read_connection = db
             db.execute("BEGIN")
             yield db
         finally:
-            db.rollback()
-            db.close()
+            try:
+                if db.in_transaction:
+                    db.rollback()
+            except BaseException:
+                if scheduler_owned and getattr(local, "read_connection", None) is db:
+                    local.read_connection = None
+                    db.close()
+                raise
+            finally:
+                if not scheduler_owned:
+                    db.close()
 
     @contextmanager
     def analytics_db(self, *, busy_timeout=None):
@@ -6301,6 +6322,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     first_tick = False
         finally:
             connection = getattr(local, "connection", None)
+            read_connection = getattr(local, "read_connection", None)
             try:
                 if connection is not None:
                     try:
@@ -6308,10 +6330,19 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     finally:
                         connection.close()
             finally:
-                local.connection = None
-                local.depth = 0
-                local.reuse = False
-                local.scheduler = False
+                try:
+                    if read_connection is not None:
+                        try:
+                            if read_connection.in_transaction:
+                                read_connection.rollback()
+                        finally:
+                            read_connection.close()
+                finally:
+                    local.connection = None
+                    local.read_connection = None
+                    local.depth = 0
+                    local.reuse = False
+                    local.scheduler = False
 
     def dispatch(self, agent_id=None, *, maintenance=True):
         if self.closed:

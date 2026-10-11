@@ -23,6 +23,18 @@ class NotificationScheduler(unittest.TestCase):
         self.assertEqual(result['stormAgents'], 15)
         self.assertEqual(result['idleRoster'], 1800)
         self.assertGreater(result['processedCallbacksPerSecond'], 20)
+        self.assertTrue(result['forcedSchedulerPass'])
+        # Each preflight SQLITE_BUSY discards one callback connection before
+        # the same notification is retried; ordinary callbacks reuse it.
+        self.assertEqual(result['dispatcherConnections'],
+                         1 + result['notificationPreflightBusyRetries'])
+        self.assertEqual(len(result['callbackConnectionsByThread']), 1)
+        self.assertEqual(list(result['callbackConnectionsByThread'].values()),
+                         [1 + result['notificationPreflightBusyRetries']])
+        sequences = [item['sequence'] for item in result['callbackConnectionObservations']]
+        self.assertEqual(sequences, list(range(1, 1501)))
+        self.assertEqual(len(set(sequences)), 1500)
+        self.assertEqual(result['schedulerReadConnections'], 1)
 
 
 if __name__ == '__main__':
