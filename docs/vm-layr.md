@@ -22,7 +22,8 @@ and regenerable folders (`REGENERABLE`, and `target` next to a `Cargo.toml`): in
 build makes them again, or they come from a layr layer. `.worktrees`, a worktree of a project
 repository in any other folder, and the Studio store stay too. A submodule whose store is in
 its parent's `.git` comes with it; a Git store outside the project is refused. A folder
-without Git is taken whole, without regenerable folders.
+without Git is taken whole, without regenerable folders and without the folders that its
+`.gitignore` names.
 The project ID determines a Linux user for all leads of that project.
 `project.ensure` returns the project ID, main path, user, home, and current state ID.
 Later chats use the existing VM main line.
