@@ -27,6 +27,7 @@ sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 sys.path.insert(0, str(SERVER_TESTS_ROOT / "server"))
 from rpc_replay_contract import EMPTY_RESULT_METHODS
 from codex_runtime import AppServer, Runtime
+from codex_claude_controls import bridge_build
 
 OUTBOUND_NOTIFICATION_METHODS = frozenset({"initialized"})
 
@@ -542,6 +543,7 @@ class ProviderReplay(unittest.TestCase):
                 expected_result = expected_result.replace(
                     "$model", request.get("params", {}).get("model", "fixture-model"))
                 expected_result = expected_result.replace("$platform", sys.platform)
+                expected_result = expected_result.replace("$bridgeBuild", bridge_build())
                 self.assertEqual(actual_result, json.loads(expected_result),
                                  f"exact provider RPC result mismatch for {method}; "
                                  f"request={request!r}; response={response!r}")
