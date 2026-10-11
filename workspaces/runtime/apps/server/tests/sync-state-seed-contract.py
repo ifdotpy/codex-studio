@@ -11,6 +11,7 @@ isolate_supervisor_environment()
 
 import importlib.util
 import json
+from contextlib import contextmanager
 from pathlib import Path
 import sqlite3
 import sys
@@ -128,24 +129,54 @@ class CanvasChatSeedContract(unittest.TestCase):
                 with runtime.db() as db:
                     self.assertIsNone(db.execute(
                         "SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'").fetchone())
-                # The scheduler lazily creates persistent indexes on its first
-                # wake, which can race this timeout=0 lock assertion. Pull has
-                # already run above; stop the scheduler so only SyncStore's
-                # read-lock behavior is measured here.
+                # Stop and join the runtime scheduler so only SyncStore's
+                # read-lock behavior is measured while the write lock is held.
                 runtime.closed = True
                 runtime.changed.set()
                 runtime.scheduler.join(timeout=5)
                 self.assertFalse(runtime.scheduler.is_alive())
                 runtime.closed = False
-                with runtime.lock:
-                    blocker = sqlite3.connect(runtime.db_path, timeout=0)
-                    blocker.execute("BEGIN IMMEDIATE")
-                    try:
-                        for _ in range(5):
-                            store.pull("state:entities:v1", fresh=True, reset_support=True)
-                    finally:
-                        blocker.rollback()
-                        blocker.close()
+
+                # Acquiring the test lock is only setup: unrelated SQLite
+                # writers may finish while we wait. The behavior under test
+                # is that pulls complete without attempting a write under the
+                # held lock. Set the pull connections to fail fast so an
+                # accidental write cannot silently wait for this blocker.
+                original_connect = store.connect
+                write_statements = []
+
+                @contextmanager
+                def fail_fast_connect():
+                    with original_connect() as db:
+                        db.execute("PRAGMA busy_timeout=0")
+                        db.set_trace_callback(write_statements.append)
+                        yield db
+
+                with runtime.db() as db:
+                    before_pull = [tuple(row) for row in db.execute(
+                        "SELECT id,seq FROM sync_entities ORDER BY collection,id")]
+
+                store.connect = fail_fast_connect
+                try:
+                    with runtime.lock:
+                        blocker = sqlite3.connect(runtime.db_path, timeout=5)
+                        try:
+                            blocker.execute("BEGIN IMMEDIATE")
+                            for _ in range(5):
+                                store.pull("state:entities:v1", fresh=True, reset_support=True)
+                        finally:
+                            blocker.rollback()
+                            blocker.close()
+                finally:
+                    store.connect = original_connect
+                writes = [statement for statement in write_statements
+                          if statement.lstrip().split(None, 1)[0].upper() in {
+                              "INSERT", "UPDATE", "DELETE", "REPLACE", "CREATE", "DROP", "ALTER",
+                          } or statement.lstrip().upper().startswith("BEGIN IMMEDIATE")]
+                self.assertEqual(writes, [])
+                with runtime.db() as db:
+                    self.assertEqual(before_pull, [tuple(row) for row in db.execute(
+                        "SELECT id,seq FROM sync_entities ORDER BY collection,id")])
                 self.assertIsNone(store.runtime)
                 with runtime.db() as db:
                     before = {row[0]: row[1] for row in db.execute(
