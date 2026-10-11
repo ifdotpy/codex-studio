@@ -568,31 +568,11 @@ class TombstoneMigration(ContractModel):
     pruning: TombstonePruning
 
 
-class AnalyticsFileMigrationState(ContractStrEnum):
-    IDLE = "idle"
-    CHECK_SPACE = "checkSpace"
-    INSUFFICIENT_SPACE = "insufficientSpace"
-    UNSUPPORTED_TABLES = "unsupportedTables"
-    MISSING_TARGET_TABLE = "missingTargetTable"
-    WAITING_FOR_SPACE = "waitingForSpace"
-    COPY = "copy"
-    RETIRE = "retire"
-    COMPLETE = "complete"
-    ERROR = "error"
-
-
-class AnalyticsFileMigration(ContractModel):
-    status: AnalyticsFileMigrationState
-    updated: float | None = None
-    error: str | None = None
-
-
 class MigrationStatus(ContractModel):
     search: SearchMigration | None = None
     payloads: dict[PayloadMigrationName, PayloadMigration] | None = None
     entityTombstones: TombstoneMigration | None = None
     stateReadError: str | None = None
-    analyticsFile: AnalyticsFileMigration
 
 
 class AnalyticsCaptureStatus(ContractModel):
@@ -853,7 +833,6 @@ class DiagnosticsResponse(ResponseModel):
     httpRequestMetrics: HttpRequestMetrics
     analyticsCapture: AnalyticsCaptureStatus
     migrations: MigrationStatus
-    analyticsFileMigration: AnalyticsFileMigration
     searchMigrationError: str | None
     runtimeLockOperations: list[RuntimeLockOperation]
     supervisor: SupervisorDiagnostics

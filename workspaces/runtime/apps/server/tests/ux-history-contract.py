@@ -15,6 +15,7 @@ import base64
 from contextlib import contextmanager
 import json
 from pathlib import Path
+import threading
 import unittest
 import uuid
 from unittest.mock import patch
@@ -103,6 +104,30 @@ class HistoryContract(unittest.TestCase):
         with patch.object(self.runtime,'db',bounded_database):
             self.assertEqual(self.search_after_migration(lead['id'],'no match')['results'],[])
         self.assertLess(steps[0],100000)
+
+    def test_search_does_not_hold_runtime_lock_during_scan(self):
+        lead = self.seed(1)
+        scanning, resume, acquired = threading.Event(), threading.Event(), threading.Event()
+        results = []
+        from codex_search_text import search_texts
+        def blocked(db, refs):
+            scanning.set()
+            resume.wait()
+            return search_texts(db, refs)
+        def search(): results.append(search_history(self.runtime, lead['id'], 'sentence'))
+        def acquire():
+            scanning.wait(5)
+            with self.runtime.lock: acquired.set()
+        workers = [threading.Thread(target=target) for target in (search, acquire)]
+        try:
+            with patch('codex_search_text.search_texts', blocked):
+                for worker in workers: worker.start()
+                self.assertTrue(scanning.wait(5))
+                self.assertTrue(acquired.wait(5), 'runtime.lock stayed held during search')
+        finally:
+            resume.set()
+            for worker in workers: worker.join(5)
+        self.assertEqual(results[0]['results'][0]['id'], lead['id']+':item-0000')
 
     def test_missing_truncated_body_fails_visibly_for_search_and_history_item(self):
         lead = self.lead()

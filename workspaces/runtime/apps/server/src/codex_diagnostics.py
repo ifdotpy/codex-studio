@@ -169,7 +169,6 @@ def migration_status(runtime):
                 }
     except Exception as error:
         status["stateReadError"] = f"{type(error).__name__}: {error}"[:500]
-    status["analyticsFile"] = getattr(runtime, "analytics_migration_status", {"status": "idle"})
     return status
 
 
@@ -253,7 +252,6 @@ def snapshot(runtime, root_pid=None, ps_output=None):
             "httpRequestMetrics": http_route_metrics(),
             "analyticsCapture": getattr(runtime, "analytics_capture_status", lambda: {"available": False})(),
             "migrations": migration_status(runtime),
-            "analyticsFileMigration": getattr(runtime, "analytics_migration_status", {"status": "idle"}),
             "searchMigrationError": getattr(runtime, "search_migration_error", None)}
     lock_metrics = getattr(runtime.lock, "runtime_lock_metrics", None)
     result["runtimeLockOperations"] = lock_metrics() if callable(lock_metrics) else []

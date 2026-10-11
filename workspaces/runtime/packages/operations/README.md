@@ -5,7 +5,8 @@
 - **Responsibility:** Pure decision logic for one scoped mutating request from
   reservation through dispatch, uncertain outcome, and evidence-based recovery.
 - **Public interface:** Named request and scope IDs, closed state/event/decision/
-  error enums, and `transition(state, event) -> decision`.
+  error enums, and `transition(state, event) -> decision`. The adjacent PyO3
+  binding owns typed conversion from persisted Studio tool-request records.
 - **Boundaries:** No Python, application, provider, subprocess, SQLite, filesystem,
   network, clock, randomness, or global-state access. The caller validates
   untrusted bytes, persists a decision and its effect intent with the expected
@@ -18,8 +19,8 @@
   lockfile. The caller supplies time, process generation, account/thread epoch,
   and canonical content identity as data.
 - **Dependencies:** Optional `serde` derives support the in-process PyO3
-  binding; `serde_json` parses the shared fixture in Rust tests and carries the
-  same typed structures through the binding.
+  binding; `serde_json` parses the shared fixture in Rust tests. Persisted
+  Studio record shapes and storage labels stay outside this pure crate.
 - **Focused check:** `cargo nextest run -p studio-operations --locked`; the Python
   caller contract is `just test server operations-native-contract.py` after the
   native module build/install step in [workspace testing](../../../../docs/testing.md).
