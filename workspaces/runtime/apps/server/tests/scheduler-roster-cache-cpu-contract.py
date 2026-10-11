@@ -342,8 +342,10 @@ class RosterCache(unittest.TestCase):
             db.execute("UPDATE runtime_agents SET record=json_set(record,'$.status','approval')")
 
         calls = self.dispatch_with_unrelated_write(before_read)
-        self.assertEqual(len(calls), 3)
-        self.assertEqual(len(self.scans), 3)
+        # Four reads are expected: unlocked snapshot, changed locked decode,
+        # same-session validation after recovery, and the candidate session.
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(len(self.scans), 4)
         self.assertEqual(self.roster(self.connect())[0]["status"], "approval")
 
     def test_dispatch_reuses_recovered_agents_for_restart_scan(self):
