@@ -81,6 +81,31 @@ class SourceArchives(unittest.TestCase):
             self.assertNotIn(skipped, names)
         self.assertEqual(sorted(repo['path'] for repo in result['repositories']), ['.', 'nested'])
 
+    def test_an_inner_worktree_is_skipped_and_a_submodule_keeps_its_store(self):
+        # A worktree inside the project is a line of its own, not code here.
+        self.git('worktree', 'add', '-q', '-b', 'rehearsal', str(self.repo / 'rehearsal'))
+        library = self.root / 'library'
+        subprocess.run(['git', 'init', '-q', '-b', 'main', str(library)], check=True)
+        (library / 'lib.txt').write_text('library')
+        subprocess.run(['git', '-C', str(library), 'add', '.'], check=True)
+        subprocess.run(['git', '-C', str(library), '-c', 'user.name=F', '-c', 'user.email=f@example.test',
+                        'commit', '-qm', 'Library'], check=True)
+        self.git('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', str(library), 'vendor/lib')
+        self.git('commit', '-qm', 'Submodule')
+        result, names = self.archive('linked.tar.gz')
+        self.assertNotIn('rehearsal', names)
+        for kept in ('vendor/lib/.git', 'vendor/lib/lib.txt', '.git/modules/vendor/lib/HEAD',
+                     '.git/modules/vendor/lib/objects'):
+            self.assertIn(kept, names)
+        self.assertEqual(sorted(repo['path'] for repo in result['repositories']), ['.', 'vendor/lib'])
+        # A delta pack holds no submodule objects, and a store outside the project is not copied.
+        with self.assertRaisesRegex(ValueError, 'self-contained'):
+            archive_source(self.repo, self.root / 'delta.tar.gz', result)
+        subprocess.run(['git', '-C', str(library), 'worktree', 'add', '-q', '-b', 'x', str(self.repo / 'external')],
+                       check=True, capture_output=True)
+        with self.assertRaisesRegex(ValueError, 'self-contained'):
+            archive_source(self.repo, self.root / 'external.tar.gz')
+
     def test_delta_uses_head_changes_dirty_paths_and_deletions(self):
         baseline, _ = self.archive('first.tar.gz')
         (self.repo / 'one').unlink()
@@ -237,6 +262,23 @@ class SourceArchives(unittest.TestCase):
         result, names = self.archive('second.tar.gz', baseline)
         self.assertEqual(result['mode'], 'full')
         self.assertIn('keep', names)
+
+    def test_a_folder_without_git_uses_its_gitignore(self):
+        (self.repo / '.git').rename(self.root / 'old-git')
+        (self.repo / '.gitignore').write_text('.tmp/\nprofile/\n')
+        for folder in ('.tmp/image', 'profile', 'reports'):
+            (self.repo / folder).mkdir(parents=True)
+            (self.repo / folder / 'file').write_text('data')
+        # An unreadable link in an ignored folder is never opened.
+        (self.repo / '.tmp/image/layer.tar').symlink_to('nowhere')
+        os.lchmod(self.repo / '.tmp/image/layer.tar', 0)
+        subprocess.run(['git', 'init', '-q', '-b', 'main', str(self.repo / 'code')], check=True)
+        (self.repo / 'code/main.py').write_text('code')
+        _, names = self.archive('plain.tar.gz')
+        for kept in ('.gitignore', 'keep', 'reports/file', 'code/main.py', 'code/.git/HEAD'):
+            self.assertIn(kept, names)
+        for skipped in ('.tmp', 'profile'):
+            self.assertNotIn(skipped, names)
 
     def test_disk_floor_stops_archive_before_upload(self):
         with patch('codex_linux_workspace_sync.shutil.disk_usage', return_value=SimpleNamespace(free=0)):

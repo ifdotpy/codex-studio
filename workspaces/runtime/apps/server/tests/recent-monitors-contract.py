@@ -89,7 +89,7 @@ class ClaudeAccountRefresh(unittest.TestCase):
         from codex_accounts import AccountStore as Accounts
         accounts = Accounts.__new__(Accounts)
         accounts.lock = threading.RLock()
-        accounts.data = {"accounts": {"claude-x": {"provider": "claude", "claudeOptions": {"configDir": "/tmp/x"},
+        accounts.data = {"accounts": {"claude-x": {"id": "claude-x", "provider": "claude", "claudeOptions": {"configDir": "/tmp/x"},
                                                    "status": "ready"}}}
         seen = []
 
