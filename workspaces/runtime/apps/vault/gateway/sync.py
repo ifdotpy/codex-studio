@@ -19,8 +19,17 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-os.environ.setdefault("AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE", "IPv6")
-os.environ.setdefault("AWS_USE_DUALSTACK_ENDPOINT", "true")
+# The instance has IPv6 only. Debian's boto3 gives Route 53 a dual-stack name that does not
+# exist, so name the right one; Route 53 signs in us-east-1, and the other clients name their
+# region. certbot gets the same environment.
+AWS_ENV = {
+    "AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE": "IPv6",
+    "AWS_USE_DUALSTACK_ENDPOINT": "true",
+    "AWS_ENDPOINT_URL_ROUTE_53": "https://route53.global.api.aws",
+    "AWS_DEFAULT_REGION": "us-east-1",
+}
+for name, value in AWS_ENV.items():
+    os.environ.setdefault(name, value)
 import boto3  # noqa: E402
 
 SOURCE = Path("/etc/vault-gateway/source.json")
@@ -28,10 +37,9 @@ CONFIG = Path("/etc/vault-gateway/config.json")
 APP = Path("/opt/vault-gateway")
 UNITS = Path("/etc/systemd/system")
 HOOK = Path("/etc/letsencrypt/renewal-hooks/deploy/vault-gateway")
-ENV = (
-    "Environment=AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE=IPv6\n"
-    "Environment=AWS_USE_DUALSTACK_ENDPOINT=true\n"
-)
+ENV = "".join(f"Environment={name}={value}\n" for name, value in AWS_ENV.items())
+# Debian's certbot.timer renews the certificate.
+CERTBOT_ENV = f"[Service]\n{ENV}"
 
 SYNC_SERVICE = f"""[Unit]
 Description=Studio vault gateway sync
@@ -63,7 +71,9 @@ Wants=network-online.target
 
 [Service]
 ExecStart=/usr/bin/node {APP}/current/gateway.mjs
-{ENV}LoadCredential=tls.crt:{live}/fullchain.pem
+{ENV}# The AWS SDK reads files below the home folder, and a dynamic user has none.
+Environment=HOME=/nonexistent
+LoadCredential=tls.crt:{live}/fullchain.pem
 LoadCredential=tls.key:{live}/privkey.pem
 DynamicUser=yes
 AmbientCapabilities=CAP_NET_BIND_SERVICE
@@ -182,7 +192,7 @@ class Sync:
         return gateway
 
     def dns(self, gateway: dict, listen: str) -> None:
-        route53 = boto3.client("route53", region_name=self.source["region"])
+        route53 = boto3.client("route53")
         host = gateway["host"].rstrip(".") + "."
         found = route53.list_resource_record_sets(
             HostedZoneId=gateway["zone"], StartRecordName=host, StartRecordType="A", MaxItems="1"
@@ -222,6 +232,7 @@ class Sync:
     def services(self, host: str | None) -> None:
         changed = write_if_changed(UNITS / "vault-gateway-sync.service", SYNC_SERVICE)
         changed |= write_if_changed(UNITS / "vault-gateway-sync.timer", SYNC_TIMER)
+        changed |= write_if_changed(UNITS / "certbot.service.d/vault-gateway.conf", CERTBOT_ENV)
         if host:
             if write_if_changed(UNITS / "vault-gateway.service", gateway_service(host)):
                 changed = self.restart = True
