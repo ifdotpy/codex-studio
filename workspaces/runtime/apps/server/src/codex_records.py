@@ -1298,7 +1298,6 @@ class AgentRecord(TypedDict):
     worktreeReady: NotRequired[bool]
     worktreePreparation: NotRequired[WorktreePreparation | None]
     worktreeWarning: NotRequired[str | None]
-    workspaceMode: NotRequired[Literal["image", "worktree", "shared"] | None]
     workspaceBackend: NotRequired[Literal["asif", "vm"] | None]
     workspaceModeExplicit: NotRequired[bool]
     workspaceInGit: NotRequired[bool]
