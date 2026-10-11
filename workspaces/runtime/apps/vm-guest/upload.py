@@ -132,12 +132,13 @@ def extract_tree(archive: Path, destination: Path):
                         while block := input_file.read(1024 * 1024):
                             tree_space(destination, len(block))
                             output.write(block)
-                        output.flush()
-                        os.fsync(output.fileno())
                         os.fchmod(output.fileno(), 0o600 | (item.mode & 0o177))
     for target, link in links:
         with real_directory(destination, target.relative_to(destination).parts[:-1], create=True) as parent:
             os.symlink(link, target.name, dir_fd=parent)
+    # One sync for the whole tree: a sync for each file made a project of 200,000 files
+    # pass the worker deadline. The tree is durable before the apply marker is written.
+    os.sync()
     return expanded
 
 

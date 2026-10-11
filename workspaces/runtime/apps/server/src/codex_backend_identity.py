@@ -20,3 +20,7 @@ def backend_build(scripts=None):
 # Never recalculate this value for an identity request. Installed files can
 # change while the existing process continues to run its original methods.
 BACKEND_BUILD = backend_build()
+
+
+if __name__ == "__main__":
+    print(BACKEND_BUILD)
