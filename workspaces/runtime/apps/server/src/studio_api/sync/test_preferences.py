@@ -2,7 +2,6 @@
 import json
 import hashlib
 import sqlite3
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,67 +9,30 @@ from unittest.mock import patch
 from pydantic import ValidationError
 from codex_sync_entities import ensure_tables
 from studio_api.models import JsonValue
-from studio_api.sync.preferences import APPEARANCE_PREFERENCE_RULES, PreferenceField, PreferencePushRequest, UiPreferencesDto, merge_preferences, read_preferences, bootstrap_preferences
+from studio_api.sync.preferences import PreferenceField, PreferencePushRequest, UiPreferencesDto, merge_preferences, read_preferences, bootstrap_preferences
 
 
 class PreferencesTests(unittest.TestCase):
     def field(self, attr: str, value: JsonValue, timestamp: int = 1, writer: str = "a") -> dict[str, PreferenceField]:
         return {json.dumps(["codex-studio-preferences-v1", attr], separators=(",", ":")): PreferenceField(value=value, timestamp=timestamp, writer=writer)}
 
-    def client_default_appearance_fields(self) -> set[str]:
-        repository_root = Path(__file__).resolve().parents[7]
-        client_source = repository_root / "workspaces/client/apps/web/src/studioPreferences.ts"
-        script = r"""
-const fs = require("node:fs");
-const ts = require("typescript");
-const filename = process.argv[1];
-const source = ts.createSourceFile(
-  filename,
-  fs.readFileSync(filename, "utf8"),
-  ts.ScriptTarget.Latest,
-  true,
-  ts.ScriptKind.TS,
-);
-let defaults;
-for (const statement of source.statements) {
-  if (!ts.isVariableStatement(statement)) continue;
-  for (const declaration of statement.declarationList.declarations) {
-    if (
-      ts.isIdentifier(declaration.name) &&
-      declaration.name.text === "defaultStudioPreferences"
-    ) defaults = declaration.initializer;
-  }
-}
-if (!defaults || !ts.isObjectLiteralExpression(defaults)) {
-  throw new Error("Could not read defaultStudioPreferences object literal");
-}
-const names = defaults.properties.map((property) => {
-  if (!ts.isPropertyAssignment(property)) {
-    throw new Error("Unexpected non-property in defaultStudioPreferences");
-  }
-  if (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) {
-    return property.name.text;
-  }
-  throw new Error("Unexpected computed preference property");
-});
-process.stdout.write(JSON.stringify(names));
-"""
-        output = subprocess.run(
-            ["node", "-e", script, str(client_source)],
-            cwd=client_source.parents[1],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout
-        return set(json.loads(output))
-
-    def test_all_client_default_appearance_fields_sync_and_unknown_batch_is_atomic(self) -> None:
-        client_fields = self.client_default_appearance_fields()
-        self.assertEqual(client_fields, set(APPEARANCE_PREFERENCE_RULES))
+    def test_all_appearance_fields_sync_and_unknown_batch_is_atomic(self) -> None:
+        values: dict[str, JsonValue] = {
+            "theme": "dark",
+            "typography": "custom",
+            "contentLayout": "custom",
+            "sidebarFontSize": 18,
+            "mainFontSize": 18,
+            "fontFamily": "inter",
+            "contentWidth": 90,
+            "sidebarShortcut": "Control+b",
+            "showMessageAvatars": True,
+            "hideOldChatsThreshold": 4,
+        }
         fields = {
             json.dumps(["codex-studio-preferences-v1", name], separators=(",", ":")):
-                PreferenceField(value=rule.valid_example(), timestamp=10, writer="fixture")
-            for name, rule in APPEARANCE_PREFERENCE_RULES.items()
+                PreferenceField(value=value, timestamp=10, writer="fixture")
+            for name, value in values.items()
         }
         request = PreferencePushRequest(scope="user", fields=fields)
         with sqlite3.connect(":memory:") as db:

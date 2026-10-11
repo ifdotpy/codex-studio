@@ -16,7 +16,12 @@ from starlette.concurrency import run_in_threadpool
 from starlette.types import Receive, Scope, Send
 from pydantic import TypeAdapter, ValidationError
 
-from studio_api.sync.preferences import PreferencePushRequest, PreferencePushResponse, merge_preferences
+from studio_api.sync.preferences import (
+    AppearancePreferences,
+    PreferencePushRequest,
+    PreferencePushResponse,
+    merge_preferences,
+)
 from studio_api.responses import (
     API_BOUNDARY_RESPONSE_HEADERS,
     API_CONTEXT_RESPONSE_HEADERS,
@@ -191,6 +196,16 @@ def create_router(context: ApiContext) -> APIRouter:
         with runtime.db() as db:
             result = merge_preferences(db, body)
         return context.send(request, result.model_dump(mode="json"))
+
+    preferences_route = router.routes[-1]
+    register_route_components(
+        preferences_route,
+        {
+            "AppearancePreferences": AppearancePreferences.model_json_schema(
+                ref_template="#/components/schemas/{model}"
+            ),
+        },
+    )
 
 
     @router.get("/api/sync/identity", response_model=SyncIdentityResponse, responses=SYNC_READ_RESPONSES)
