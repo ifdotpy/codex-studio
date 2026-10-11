@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
+import os
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -622,6 +623,41 @@ def test_mac_sync_routes_pause_resume_and_reject_bad_choices() -> None:
     assert busy.status_code == 409
 
 
+def test_vault_pull_route_starts_once_and_refuses_a_project_without_a_vault() -> None:
+    app, runtime, _context = _app()
+    vm = Mock()
+    with tempfile.TemporaryDirectory() as name:
+        state, downloads = Path(name) / "state", Path(name) / "Downloads"
+        downloads.mkdir()
+        (state / "layr-projects" / "p1").mkdir(parents=True)
+        (state / "layr-projects" / "p1" / "vault.json").write_text(json.dumps({"configured": True, "prefix": "proj"}))
+        (state / "layr-projects" / "p2").mkdir()
+        (state / "layr-projects" / "p2" / "vault.json").write_text(json.dumps({"configured": False}))
+        vm.state_dir = state
+        from codex_vm_vault import store_site
+        store_site(state, "p1", "https://desk.example.com/")
+        pool = Mock()
+        setattr(runtime, "pool", pool)
+        tool = Path(name) / "layr-desk"
+        tool.write_text("#!/bin/sh\nexit 0\n")
+        with unittest.TestCase().assertNoLogs("studio_api.context", "ERROR"), \
+                patch("codex_linux_workspaces.client", return_value=vm), \
+                patch.dict(os.environ, {"STUDIO_LAYR_DESK_BIN": str(tool)}):
+            client = TestClient(app)
+            body = {"projectId": "p1", "requestId": "pull-1", "to": str(downloads)}
+            first = client.post("/api/vault/pull", json=body)
+            again = client.post("/api/vault/pull", json=body)
+            plain = client.post("/api/vault/pull", json={"projectId": "p2", "requestId": "pull-2"})
+            escape = client.post("/api/vault/pull", json={"projectId": "../p1", "requestId": "pull-3"})
+
+    assert first.status_code == 200, first.text
+    assert first.json()["state"] == "running" and first.json()["folder"].startswith(str(downloads / "proj "))
+    assert again.json() == first.json()
+    assert pool.submit.call_count == 1
+    assert plain.status_code == 400 and "no vault" in plain.json()["error"]
+    assert escape.status_code == 400
+
+
 class AgentRouterTests(unittest.TestCase):
     def test_durable_action_rejection_happens_before_runtime_call(self) -> None:
         test_durable_action_rejection_happens_before_runtime_call()
@@ -676,3 +712,6 @@ class AgentRouterTests(unittest.TestCase):
 
     def test_mac_sync_routes(self) -> None:
         test_mac_sync_routes_pause_resume_and_reject_bad_choices()
+
+    def test_vault_pull_route(self) -> None:
+        test_vault_pull_route_starts_once_and_refuses_a_project_without_a_vault()

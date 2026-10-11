@@ -6360,6 +6360,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         layr_turn_tick(self)
         from codex_vm_mac_sync import tick as mac_sync_tick
         mac_sync_tick(self)
+        from codex_vm_vault import tick as vault_tick
+        vault_tick(self)
         from codex_linux_vm_credentials import tick as linux_credentials_tick
         linux_credentials_tick(self)
         from codex_native_runtime import tick as native_runtime_tick

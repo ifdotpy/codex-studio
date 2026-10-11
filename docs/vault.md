@@ -19,3 +19,26 @@ vault-deploy --project <prefix> --profile <aws profile> \
 ```
 
 The key goes through the pipe and is deleted again if the command fails.
+
+## Sidebar
+
+The project menu of an imported layr project shows its vault:
+
+- A label: when the VM last saved a change (`Vault: saved 5 min ago`), `the last push failed`
+  with the reason as its tooltip, or `not set up`.
+- **Open in Desk** opens `<site><prefix>/` in the browser.
+- **Pull…** writes the latest vault state into a new folder `<prefix> <date time>` below a
+  folder that the user picks (Downloads without the desktop app). Only the Mac that holds the
+  project's folder shows it. The server runs `layr-desk pull`; the vault key must be kept on
+  this Mac once with `layr-desk unlock`, otherwise the pull reports that command. One request
+  id covers the whole pull (`POST /api/vault/pull` reports the same pull again), so a lost
+  reply never starts a second one.
+- **Set up vault…** opens the layr-desk setup steps when the project has no vault.
+
+The server asks the VM for `vault.status` of every imported project every 2 minutes, outside
+the runtime lock, and keeps the report in `layr-projects/<id>/vault.json`. The sidebar reads
+only that record; the time of a check stays out of it, so a quiet vault does not change the
+project entity. The Desk site comes from the writer configuration (`site`) or from
+`codex_vault.py site PROJECT_FOLDER https://desk.example.com/` and stays in
+`layr-projects/<id>/vault-site.json`. Studio finds `layr-desk` through `STUDIO_LAYR_DESK_BIN`,
+`PATH` or `~/.cargo/bin`.

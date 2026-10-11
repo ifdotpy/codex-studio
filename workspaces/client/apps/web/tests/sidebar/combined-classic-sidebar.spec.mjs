@@ -438,6 +438,45 @@ for (const [theme, viewport] of [
       // Escape would also close the mobile sidebar drawer.
       await syncDialog.getByRole("button", { name: "Close" }).click();
       await expect(syncDialog).toHaveCount(0);
+
+      // The project's vault: the menu tells when it last saved a change and opens its Desk
+      // page; the folder belongs to the remote server, so this Mac does not pull it.
+      remote.snapshot.runtime.projects[0].vault = {
+        projectId: "remote-layr",
+        state: "ok",
+        prefix: "home project",
+        site: "https://desk.example.com/",
+        lastPush: Math.floor(Date.now() / 1000) - 600,
+      };
+      await page.reload();
+      if (viewport.width < 760)
+        await page
+          .getByRole("button", { name: "Servers and chats", exact: true })
+          .click();
+      await heading.hover();
+      await heading
+        .getByRole("button", {
+          name: "Options for project Home project",
+          exact: true,
+        })
+        .click();
+      await expect(
+        page.getByText("Vault: saved 10 min ago (REM)"),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("menuitem", { name: "Open in Desk (REM)", exact: true }),
+      ).toHaveAttribute("href", "https://desk.example.com/home%20project/");
+      await expect(
+        page.getByRole("menuitem", { name: "Pull… (REM)", exact: true }),
+      ).toHaveCount(0);
+      // The screenshot waits for the end of the menu's opening transition.
+      await expect(
+        page.getByRole("menu", { name: "Options for project Home project" }),
+      ).toHaveCSS("opacity", "1");
+      await page.screenshot({
+        path: testInfo.outputPath(`vault-menu-${theme}.png`),
+      });
+      await page.keyboard.press("Escape");
       expect(calls.local).toEqual([]);
       expect(errors).toEqual([]);
       await testInfo.attach("owner-requests", {

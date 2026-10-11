@@ -1,4 +1,5 @@
 import {
+  localSidebarBackend,
   localSidebarServices,
   SidebarBackendProvider,
   useSidebarVisualState,
@@ -67,6 +68,14 @@ import ProjectLayrSync, {
   projectChip,
   type LayrSyncEntry,
 } from "./sidebar/MacSync";
+import {
+  deskLink,
+  pullText,
+  pullVault,
+  VAULT_SETUP_URL,
+  vaultLabel,
+  type VaultEntry,
+} from "./sidebar/Vault";
 import { readServerAliases } from "../servers/registry";
 import {
   DEFAULT_LOCAL_SERVER_ALIAS,
@@ -1327,6 +1336,37 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
               p.notify?.(errorText(error));
             }
           };
+          const vaultEntries: VaultEntry[] =
+            services.vault?.(group.path) ??
+            (group.vault ? [{ vault: group.vault }] : []);
+          const vaultBackend = (entry: VaultEntry) =>
+            entry.ownerId
+              ? services.byOwner(entry.ownerId)
+              : services.owner(projectTarget(group.path));
+          // A pull writes a folder on the server that holds the project: only this Mac pulls.
+          const canPull = (entry: VaultEntry) =>
+            !!deskLink(entry.vault) &&
+            !serverViewId &&
+            vaultBackend(entry).ownerId === localSidebarBackend.ownerId;
+          const pull = async (entry: VaultEntry) => {
+            try {
+              const desktop = window.codexDesktop;
+              const to = desktop ? await desktop.pickDirectory() : null;
+              if (desktop && !to) return;
+              p.notify?.(`Pulling ${group.name} from its vault…`);
+              p.notify?.(
+                pullText(
+                  await pullVault(
+                    vaultBackend(entry),
+                    entry.vault.projectId,
+                    to,
+                  ),
+                ),
+              );
+            } catch (error) {
+              p.notify?.(errorText(error));
+            }
+          };
           const syncDialogEntry =
             syncDialog?.path === group.path
               ? syncEntries.find(
@@ -1522,6 +1562,50 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                           >
                             {`${entry.sync.enabled ? "Pause" : "Resume"} sync${suffix}`}
                           </Menu.Item>,
+                        ];
+                      })}
+                      {vaultEntries.length > 0 && <Menu.Divider />}
+                      {vaultEntries.flatMap((entry) => {
+                        const suffix = entry.server ? ` (${entry.server})` : "";
+                        const key = `vault:${entry.ownerId || "local"}`;
+                        const link = deskLink(entry.vault);
+                        return [
+                          <Menu.Label
+                            key={`${key}:label`}
+                            title={entry.vault.reason ?? undefined}
+                          >
+                            {`${vaultLabel(entry.vault)}${suffix}`}
+                          </Menu.Label>,
+                          link && (
+                            <Menu.Item
+                              key={`${key}:desk`}
+                              component="a"
+                              href={link}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              {`Open in Desk${suffix}`}
+                            </Menu.Item>
+                          ),
+                          canPull(entry) && (
+                            <Menu.Item
+                              key={`${key}:pull`}
+                              onClick={() => void pull(entry)}
+                            >
+                              {`Pull…${suffix}`}
+                            </Menu.Item>
+                          ),
+                          entry.vault.state === "none" && (
+                            <Menu.Item
+                              key={`${key}:setup`}
+                              component="a"
+                              href={VAULT_SETUP_URL}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Set up vault…
+                            </Menu.Item>
+                          ),
                         ];
                       })}
                     </Menu.Dropdown>

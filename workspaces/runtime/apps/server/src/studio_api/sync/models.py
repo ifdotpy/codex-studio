@@ -943,6 +943,18 @@ class ProjectLayrSyncDto(ContractModel):
     reason: str | None = None
 
 
+class ProjectVaultDto(ContractModel):
+    """The project vault of the project's layr project (docs/vault.md): the VM writer's last
+    report. state none: no vault; error: the last push failed (reason). site and prefix make
+    the Desk link of the vault."""
+    projectId: str
+    state: Literal["ok", "error", "none"]
+    prefix: str | None = None
+    site: str | None = None
+    lastPush: float | None = None
+    reason: str | None = None
+
+
 class ProjectEntityDto(ContractModel):
     homeServerId: str | None = None
     locations: list[ProjectLocationDto] | None = None
@@ -968,6 +980,8 @@ class ProjectEntityDto(ContractModel):
     layrReadiness: ProjectLayrReadinessDto | None = None
     # Set with layrReadiness "ready" when the layr project syncs a Mac folder.
     layrSync: ProjectLayrSyncDto | None = None
+    # Set with layrReadiness "ready" after the first check of the project's vault.
+    vault: ProjectVaultDto | None = None
 
 
 class PeerTeamEntityDto(ContractModel):

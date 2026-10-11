@@ -97,6 +97,17 @@ def project_sync(runtime: Any, project: Mapping[str, Any]) -> dict[str, Any] | N
         "state", "enabled", "conflicts", "choices", "withAgent", "deletes", "reason")}}
 
 
+def project_vault(runtime: Any, project: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The sidebar's vault report of an imported project; host records only."""
+    from codex_linux_workspaces import client
+    from codex_vm_vault import vault_view
+    try:
+        state_dir = getattr(client(runtime), "state_dir", None)
+    except (RuntimeError, OSError, ValueError):
+        return None
+    return vault_view(Path(state_dir), project_layr_id(project)) if state_dir else None
+
+
 def project_entity_view(runtime: Any, project: Mapping[str, Any]) -> dict[str, Any]:
     readiness = project_readiness(runtime, project)
     if not readiness:
@@ -106,6 +117,9 @@ def project_entity_view(runtime: Any, project: Mapping[str, Any]) -> dict[str, A
         sync = project_sync(runtime, project)
         if sync is not None:
             view["layrSync"] = sync
+        vault = project_vault(runtime, project)
+        if vault is not None:
+            view["vault"] = vault
     return view
 
 

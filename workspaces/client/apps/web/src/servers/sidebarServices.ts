@@ -13,6 +13,7 @@ import {
 import type { Project } from "../types";
 import type { LayrReadinessEntry } from "../components/sidebar/LayrReadiness";
 import type { LayrSyncEntry } from "../components/sidebar/MacSync";
+import type { VaultEntry } from "../components/sidebar/Vault";
 import { mergeSidebar, type MergedSidebar } from "./mergedSidebar";
 import {
   mergedSidebarPreferences,
@@ -357,6 +358,7 @@ export function createMergedSidebarServices(
     alias: (target: SidebarTarget) => aliases[sidebarOwner(model, target)],
     layrReadiness: (path: string) => sidebarLayrReadiness(model, aliases, path),
     layrSync: (path: string) => sidebarLayrSync(model, aliases, path),
+    vault: (path: string) => sidebarVault(model, aliases, path),
   };
 }
 
@@ -400,6 +402,29 @@ export function sidebarLayrSync(
         : {}),
       ownerId: member.source.id,
       sync,
+    });
+  }
+  return entries;
+}
+
+/** Each macOS server reports the vault of its own layr project; actions go to that server. */
+export function sidebarVault(
+  model: MergedSidebar,
+  aliases: Record<string, string>,
+  path: string,
+): VaultEntry[] {
+  const seen = new Set<string>();
+  const entries: VaultEntry[] = [];
+  for (const member of model.groups.get(path)?.members || []) {
+    const vault = member.project.vault;
+    if (!vault || seen.has(member.source.id)) continue;
+    seen.add(member.source.id);
+    entries.push({
+      ...(model.sources.length > 1
+        ? { server: aliases[member.source.id] || member.source.id }
+        : {}),
+      ownerId: member.source.id,
+      vault,
     });
   }
   return entries;
