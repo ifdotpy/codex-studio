@@ -192,6 +192,7 @@ const confirmedTransfer = (
   requestId: string,
   leadId: string,
   target: string,
+  scope: "team" | "subagents",
 ): Json => {
   const operation = jsonObject(value);
   const receipt = jsonObject(jsonObject(operation?.requests)?.[requestId]);
@@ -200,13 +201,13 @@ const confirmedTransfer = (
     typeof operation.id !== "string" ||
     operation.leadId !== leadId ||
     operation.targetAccountKey !== target ||
-    operation.scope !== "subagents" ||
+    operation.scope !== scope ||
     !["pending", "completed", "cancelled"].includes(String(operation.status)) ||
     (operation.id !== requestId &&
       (!receipt ||
         receipt.leadId !== leadId ||
         receipt.targetAccountKey !== target ||
-        receipt.scope !== "subagents"))
+        receipt.scope !== scope))
   )
     throw new Error("The server did not confirm this account transfer.");
   return operation;
@@ -660,7 +661,13 @@ function ScopedExecutionSettings({
         },
         { timeoutMs: 30000 },
       );
-      const transferResult = confirmedTransfer(op, requestId, agent.id, target);
+      const transferResult = confirmedTransfer(
+        op,
+        requestId,
+        agent.id,
+        target,
+        "subagents",
+      );
       save(subagentTransferReceiptKey, null);
       if (!mounted.current) return;
       setAccountPending({ target, baseline: stored.account_key ?? null });
@@ -721,7 +728,12 @@ function ScopedExecutionSettings({
   });
   const storedTransfer = jsonObject(agent.accountTransfer);
   const snapshotTransfer =
-    storedTransfer?.scope === "subagents" ? storedTransfer : null;
+    storedTransfer &&
+    (teamDefaults
+      ? storedTransfer.scope === "subagents"
+      : storedTransfer.scope !== "subagents")
+      ? storedTransfer
+      : null;
   // Keep the confirmed response until replication changes its old summary.
   const responseIsNewer =
     transfer?.value.id === snapshotTransfer?.id &&
@@ -733,6 +745,9 @@ function ScopedExecutionSettings({
     (responseIsNewer || transfer.baseline === JSON.stringify(snapshotTransfer))
       ? transfer.value
       : snapshotTransfer || transfer?.value;
+  const shownTransferTarget = accounts.find(
+    (account) => account.id === shownTransfer?.targetAccountKey,
+  );
   const runTeamTransferAction = async (action: "retry" | "cancel") => {
     if (
       saveLock.current ||
@@ -747,7 +762,7 @@ function ScopedExecutionSettings({
     try {
       const op = await post("/api/agents/account-transfer", {
         action,
-        scope: "subagents",
+        scope: teamDefaults ? "subagents" : "team",
         request_id: shownTransfer.id,
       });
       const transferResult = confirmedTransfer(
@@ -755,6 +770,7 @@ function ScopedExecutionSettings({
         shownTransfer.id,
         agent.id,
         shownTransfer.targetAccountKey,
+        teamDefaults ? "subagents" : "team",
       );
       if (mounted.current)
         setTransfer({
@@ -1010,6 +1026,15 @@ function ScopedExecutionSettings({
         accountDisabled={
           saving || accountDisabled || (!teamDefaults && !onAccountChange)
         }
+        isAccountDisabled={(account) =>
+          !!(
+            !teamDefaults &&
+            agent.isLead &&
+            shownTransfer?.status === "pending" &&
+            shownTransfer.scope !== "subagents" &&
+            account.id !== shownTransfer.targetAccountKey
+          )
+        }
         models={pickerModels}
         model={pickerModel}
         modelLabel={
@@ -1046,14 +1071,15 @@ function ScopedExecutionSettings({
           For new subagents. An account change also moves existing ones.
         </p>
       )}
-      {teamDefaults && shownTransfer && (
+      {(teamDefaults || agent.isLead) && shownTransfer && (
         <AccountTransferStatus
           transfer={shownTransfer}
-          targetLabel={setupAccountName(
-            accounts.find(
-              (account) => account.id === shownTransfer.targetAccountKey,
-            ),
-          )}
+          targetLabel={
+            teamDefaults
+              ? setupAccountName(shownTransferTarget)
+              : shownTransferTarget?.email ||
+                setupAccountName(shownTransferTarget)
+          }
           showCompleted
           pending={saving}
           onAction={(action) => void runTeamTransferAction(action)}

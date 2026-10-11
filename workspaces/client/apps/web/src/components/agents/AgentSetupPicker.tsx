@@ -38,6 +38,7 @@ export type AgentSetupPickerProps = {
   accountLabel?: string;
   onAccount: (key: string | null) => void;
   automaticAccount?: boolean;
+  isAccountDisabled?: (account: Account) => boolean;
   models: {
     value: string;
     label: string;
@@ -114,6 +115,7 @@ export function AgentSetupPicker(p: AgentSetupPickerProps) {
           onProvider={p.onProvider}
           providers={p.providers}
           disabled={p.accountDisabled}
+          accountDisabled={p.isAccountDisabled}
           automatic={p.automaticAccount}
         />
       )}
