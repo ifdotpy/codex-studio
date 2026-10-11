@@ -13,6 +13,18 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 const run = promisify(execFile);
 const hash = (value) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
+// The paired channel signs canonical JSON, so a catalog from the source arrives with sorted
+// object keys; catalogs and option hashes compare in this canonical form.
+export const canonicalJson = (value) =>
+  JSON.stringify(value, (key, entry) =>
+    entry && typeof entry === "object" && !Array.isArray(entry)
+      ? Object.fromEntries(
+          Object.keys(entry)
+            .sort()
+            .map((name) => [name, entry[name]]),
+        )
+      : entry,
+  );
 export const serverAlias = (name) => name.replace(/[^a-zA-Z0-9_-]/g, "_");
 const safeName = (name) =>
   /^[A-Za-z0-9_.:+ -]{1,128}$/.test(name) ? name : "<unavailable>";
@@ -288,7 +300,7 @@ export async function externalCatalog(
   };
 }
 export function verifyExternalCatalog(source, target) {
-  if (JSON.stringify(source) === JSON.stringify(target)) return;
+  if (canonicalJson(source) === canonicalJson(target)) return;
   const sourceNames = source.flatMap((server) => [
     server.name,
     ...server.tools.map((tool) => tool.name),
@@ -299,8 +311,7 @@ export function verifyExternalCatalog(source, target) {
   ]);
   const changed = source
     .filter(
-      (server, index) =>
-        JSON.stringify(server) !== JSON.stringify(target[index]),
+      (server, index) => canonicalJson(server) !== canonicalJson(target[index]),
     )
     .map((server) => server.name);
   throw externalRefusal(sourceNames, targetNames, changed);
@@ -310,6 +321,38 @@ export function verifyExternalCatalog(source, target) {
 // account's explicitly selected cloud connector ids. Do not load target settings.
 export async function targetExternalCatalog(cwd, expected, dependencies = {}) {
   const local = await (dependencies.localConfigs || localConfigs)(cwd);
+  // claude.ai connectors belong to the account, and Studio moves a Claude chat only to the same
+  // account and organization. A Mac without a person at it cannot open the account's Keychain
+  // entry for the connector proxy, while its CLI loads the connectors itself; there the
+  // source's connector catalog stands.
+  if (
+    expected.some((server) => server.claudeAI) &&
+    !(await (dependencies.proxyToken || proxyToken)().then(
+      () => true,
+      () => false,
+    ))
+  ) {
+    const own = expected.filter((server) => !server.claudeAI);
+    const read = own.length
+      ? await targetExternalCatalog(cwd, own, {
+          ...dependencies,
+          localConfigs: async () => local,
+        })
+      : { catalogs: [], configs: {} };
+    const catalogs = expected.map((server) =>
+      server.claudeAI
+        ? structuredClone(server)
+        : read.catalogs.find((row) => row.name === server.name),
+    );
+    const configs = { ...read.configs };
+    for (const server of expected.filter((row) => row.claudeAI))
+      configs[server.name] = {
+        type: "claudeai-proxy",
+        id: server.proxyId,
+        url: "https://mcp-proxy.anthropic.com/v1/mcp/" + server.proxyId,
+      };
+    return { catalogs, configs, accountConnectors: true };
+  }
   const statuses = expected.map((server) => ({
     name: server.name,
     source: server.claudeAI ? "claudeai" : "user",

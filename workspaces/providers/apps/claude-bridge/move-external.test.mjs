@@ -7,6 +7,7 @@ import {
   externalAliases,
   externalCatalog,
   verifyExternalCatalog,
+  targetExternalCatalog,
   listExternalTools,
   readExternalInstructions,
 } from "./move-external.mjs";
@@ -156,4 +157,75 @@ test("Codex instruction proof initializes without listing resources or calling t
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+test("a catalog with sorted keys from the paired channel still verifies", async () => {
+  const result = await externalCatalog(
+    statuses,
+    "/source",
+    ["anarlog"],
+    dependencies,
+  );
+  const sorted = JSON.parse(
+    JSON.stringify(result.catalogs, (key, value) =>
+      value && typeof value === "object" && !Array.isArray(value)
+        ? Object.fromEntries(
+            Object.keys(value)
+              .sort()
+              .map((k) => [k, value[k]]),
+          )
+        : value,
+    ),
+  );
+  verifyExternalCatalog(sorted, result.catalogs);
+});
+
+test("without the connector token the account's connector catalog stands; local servers are read", async () => {
+  const docs = {
+    name: "claude.ai Claude Docs",
+    alias: "claude_ai_Claude_Docs",
+    configHash: "c",
+    claudeAI: true,
+    proxyId: "srv_1",
+    tools: [
+      {
+        name: "mcp__claude_ai_Claude_Docs__guide",
+        description: "Guide",
+        input_schema: { type: "object" },
+      },
+    ],
+  };
+  const local = (
+    await externalCatalog(statuses, "/source", ["anarlog"], dependencies)
+  ).catalogs[0];
+  let read = 0;
+  const result = await targetExternalCatalog("/target", [docs, local], {
+    ...dependencies,
+    listTools: async (value) => {
+      read++;
+      assert.notEqual(value.type, "claudeai-proxy");
+      return tools;
+    },
+    proxyToken: async () => {
+      throw new Error("The local Claude proxy credential is unavailable");
+    },
+  });
+  assert.equal(read, 1);
+  assert.equal(result.accountConnectors, true);
+  assert.deepEqual(result.catalogs, [docs, local]);
+  assert.deepEqual(result.configs["claude.ai Claude Docs"], {
+    type: "claudeai-proxy",
+    id: "srv_1",
+    url: "https://mcp-proxy.anthropic.com/v1/mcp/srv_1",
+  });
+  // A changed local server still refuses.
+  await assert.rejects(
+    targetExternalCatalog("/target", [docs, { ...local, tools: [] }], {
+      ...dependencies,
+      proxyToken: async () => {
+        throw new Error("unavailable");
+      },
+    }),
+    /anarlog/,
+  );
 });
