@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import dataclass, field
 import time
 from typing import Literal
 
@@ -14,6 +15,76 @@ class PreferenceField(ContractModel):
     value: JsonValue
     timestamp: int = Field(ge=0, le=9_007_199_254_740_991)
     writer: str = Field(min_length=1, max_length=128)
+
+
+@dataclass(frozen=True)
+class AppearancePreferenceRule:
+    """Server acceptance domain for one canonical appearance preference."""
+
+    kind: Literal["choices", "integer", "boolean", "string"]
+    choices: frozenset[str] = field(default_factory=frozenset)
+    minimum: int | None = None
+    maximum: int | None = None
+    max_length: int | None = None
+
+    def accepts(self, value: JsonValue) -> bool:
+        if self.kind == "choices":
+            return isinstance(value, str) and value in self.choices
+        if self.kind == "integer":
+            return (
+                type(value) is int
+                and self.minimum is not None
+                and self.maximum is not None
+                and self.minimum <= value <= self.maximum
+            )
+        if self.kind == "boolean":
+            return type(value) is bool
+        return (
+            isinstance(value, str)
+            and self.max_length is not None
+            and len(value) <= self.max_length
+        )
+
+    def valid_example(self) -> JsonValue:
+        if self.kind == "choices":
+            return min(self.choices)
+        if self.kind == "integer":
+            if self.minimum is None:
+                raise ValueError("Integer appearance rules need a minimum")
+            return self.minimum
+        if self.kind == "boolean":
+            return False
+        return ""
+
+
+# `fields` stays a JSON-keyed map because it also carries dynamic visual and
+# server preference keys. This table is the single server authority for the
+# known appearance fields and their accepted value domains.
+APPEARANCE_PREFERENCE_RULES: dict[str, AppearancePreferenceRule] = {
+    "theme": AppearancePreferenceRule(
+        "choices", choices=frozenset({"auto", "light", "dark"})
+    ),
+    "typography": AppearancePreferenceRule(
+        "choices", choices=frozenset({"original", "custom"})
+    ),
+    "contentLayout": AppearancePreferenceRule(
+        "choices", choices=frozenset({"original", "custom"})
+    ),
+    "sidebarFontSize": AppearancePreferenceRule("integer", minimum=12, maximum=24),
+    "mainFontSize": AppearancePreferenceRule("integer", minimum=12, maximum=24),
+    "fontFamily": AppearancePreferenceRule(
+        "choices",
+        choices=frozenset({"system", "arial", "inter", "georgia", "verdana"}),
+    ),
+    "contentWidth": AppearancePreferenceRule("integer", minimum=60, maximum=100),
+    # Match the server's previous acceptance rule; shortcut parsing remains a
+    # client behavior and is not tightened by this sync repair.
+    "sidebarShortcut": AppearancePreferenceRule("string", max_length=32),
+    "showMessageAvatars": AppearancePreferenceRule("boolean"),
+    "hideOldChatsThreshold": AppearancePreferenceRule(
+        "integer", minimum=1, maximum=50
+    ),
+}
 
 
 class UiPreferencesDto(ContractModel):
@@ -47,22 +118,8 @@ class UiPreferencesDto(ContractModel):
             if appearance:
                 if len(parts) != 2:
                     raise ValueError("Appearance requires a field")
-                attr = parts[1]
-                choices = {"theme": {"auto", "light", "dark"},
-                    "typography": {"original", "custom"}, "contentLayout": {"original", "custom"},
-                    "fontFamily": {"system", "arial", "inter", "georgia", "verdana"}}
-                if attr in choices:
-                    valid = isinstance(value, str) and value in choices[attr]
-                elif attr in {"sidebarFontSize", "mainFontSize", "contentWidth"}:
-                    low, high = (60, 100) if attr == "contentWidth" else (12, 24)
-                    valid = type(value) is int and low <= value <= high
-                elif attr == "showMessageAvatars":
-                    valid = type(value) is bool
-                elif attr == "sidebarShortcut":
-                    valid = isinstance(value, str) and len(value) <= 32
-                else:
-                    valid = False
-                if not valid:
+                rule = APPEARANCE_PREFERENCE_RULES.get(parts[1])
+                if rule is None or not rule.accepts(value):
                     raise ValueError("Invalid Appearance value")
             elif visual and value is not None and type(value) is not bool:
                 raise ValueError("Visual state must be a boolean")
