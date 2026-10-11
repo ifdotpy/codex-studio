@@ -39,7 +39,8 @@ class PayloadContract(unittest.TestCase):
             'request_id': 'mode-' + str(latest.get('agentModeRevision', 0))})
 
     def has_mode(self, result):
-        return any(c.get('text', '').startswith('[Studio agent mode,') for c in result.get('contentItems', []))
+        return any(c.get('text', '').startswith('[Studio subagent concurrency,')
+                   for c in result.get('contentItems', []))
 
     def test_confirmed_thread_preparation_does_not_repeat_static_guidance(self):
         lead = self.start(self.lead())
@@ -90,7 +91,7 @@ class PayloadContract(unittest.TestCase):
             self.assertFalse(self.has_mode(self.runtime.model_tool_result(lead['id'], 'next-' + str(i), raw)))
         with self.runtime.db() as db:
             text = self.runtime.model_turn_context(db, self.runtime.agent(lead['id'], db), 'next-turn')
-        self.assertNotIn('[Studio agent mode,', text)
+        self.assertNotIn('[Studio subagent concurrency,', text)
         self.mode(lead, 'multi')
         changed = self.runtime.model_tool_result(lead['id'], 'first', raw)
         self.assertIn('Multi agent mode', changed['contentItems'][-1]['text'])
