@@ -41,8 +41,13 @@ class RecoveryServer(fixture.FakeServer):
         self.read_entered = threading.Event()
         self.read_gate = None
         self.calls_changed = threading.Event()
+        self.name_set_entered = threading.Event()
 
     def call(self, method, params, timeout=60):
+        if method == 'thread/name/set':
+            self.calls.append((method, params))
+            self.name_set_entered.set()
+            return {}
         if method == 'thread/turns/list':
             self.calls.append((method, params))
             offset = int(params.get('cursor', '0'))
@@ -521,9 +526,44 @@ class TurnRecoveryContract(unittest.TestCase):
     def test_read_timeout_is_not_completion_or_mutation_retry(self):
         before = list(self.server.calls)
         self.server.read_error = TimeoutError('unknown outcome')
-        self.assertEqual(self.runtime.reconcile_turn(self.key)['status'], 'unconfirmed')
+        self.server.read_gate = threading.Event()
+        result = []
+        finished = threading.Event()
+
+        def reconcile():
+            try:
+                result.append(self.runtime.reconcile_turn(self.key))
+            finally:
+                finished.set()
+
+        recovery = threading.Thread(target=reconcile)
+        recovery.start()
+        self.assertTrue(self.server.read_entered.wait(3), 'recovery did not enter thread/read')
+
+        # Reproduce the independent scheduler metadata write inside the read
+        # window. Runtime maintenance normally calls this tick every five seconds.
+        from codex_session_names import session_names
+        names = session_names(self.runtime)
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            agent.pop('nativeNameSynced', None)
+            agent.pop('nativeNameFailure', None)
+            self.runtime.put(db, 'agents', agent)
+            names.pending.pop(self.key, None)
+            names.next_scan = 0
+            self.server.name_set_entered.clear()
+        names.tick()
+        self.assertTrue(self.server.name_set_entered.wait(3), 'session-name tick did not submit thread/name/set')
+        self.server.read_gate.set()
+        self.assertTrue(finished.wait(3), 'recovery did not finish after releasing thread/read')
+        recovery.join()
+        self.assertEqual(result[0]['status'], 'unconfirmed')
         self.assertTrue(self.runtime.agent(self.key)['inFlight'])
-        self.assertEqual([n for n, _ in self.server.calls[len(before):]], ['thread/read'])
+        observed = self.server.calls[len(before):]
+        recovery_calls = [(name, params) for name, params in observed if name != 'thread/name/set']
+        self.assertEqual([name for name, _ in recovery_calls], ['thread/read'])
+        name_sync_calls = [params for name, params in observed if name == 'thread/name/set']
+        self.assertEqual(name_sync_calls, [{'threadId': self.a['threadId'], 'name': 'Lead'}])
 
     def test_missing_exact_turn_and_unknown_status_are_not_completion(self):
         for turn_id, status in [('other-turn', 'completed'), (self.turn, 'inProgress')]:
