@@ -38,12 +38,8 @@ The migration prewrites blob files before a short `BEGIN IMMEDIATE`, then compar
 
 Warm read latency in milliseconds, before to after migration (p50 / p95): transcript page 3.228 / 4.826 to 2.887 / 9.459; task feed 1.854 / 6.757 to 1.687 / 3.749; snapshot 125.711 / 231.867 to 148.265 / 317.621. These are small local fixture measurements with noisy tail latency, not a production load test. Snapshot and task feed omit externalized fields by design.
 
-## Rollout
+Expected logical SQLite payload reduction was approximately 5.19 GB from this sample extrapolation. Actual file shrink occurs only after VACUUM and may differ due to JSON metadata, page reuse, field distribution, and duplicate content.
 
-1. Deploy the code and start the normal server on its existing state directory. Schema setup adds the reference table and triggers without rewriting payload rows.
-2. Check available space on the state filesystem. The migration refuses to grow payload storage when the 64 MiB reserve would be crossed; allow room for projected blob bytes plus continued database growth and filesystem overhead.
-3. Run `python3 scripts/codex_payload_migrate.py --state-dir <state-dir> --table all` while the server remains online. The default batches contain eight rows for blob-backed payloads and one row for task retention. Monitor emitted moved-byte and lock-time metrics; the migration yields on write contention and resumes safely.
-4. Run `python3 scripts/codex_payload_migrate.py --db <state-db> --state-dir <state-dir> --table tasks --restart-tasks` on a schedule to apply retention as rows age. Run with `--gc` after the seven-day orphan grace period to collect unreferenced blobs.
-5. After backup and operational review, schedule SQLite `VACUUM` separately if reclaiming the database file is required. Do not run it as part of the online migration; it needs additional disk and may cause substantial I/O.
+## Retired rollout procedure
 
-Expected logical SQLite payload reduction is approximately 5.19 GB from this sample extrapolation. Actual file shrink occurs only after VACUUM and may differ due to JSON metadata, page reuse, field distribution, and duplicate content.
+On 2026-10-11, the three-table backfill procedure was removed after a read-only rehearsal found no oversized values to migrate in the sole installation; current readers still accept inline values, and task retention remains documented in [the upgrade guide](../upgrade.md).

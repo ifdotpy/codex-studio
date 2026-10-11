@@ -8,7 +8,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import DESKTOP_ROOT, REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from contextlib import ExitStack
 import importlib.util
 import json
 import os
@@ -34,7 +33,6 @@ sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_canvas import Canvas, make_server
 from codex_runtime import AppServer, Runtime
 import codex_turn_item_links
-import codex_payload_migrate
 import codex_work
 import codex_sync_entities
 from codex_payloads import resolve_record, resolve_result
@@ -195,18 +193,12 @@ class UpgradeContract(unittest.TestCase):
                 thread = threading.Thread(target=server.serve_forever, daemon=True)
                 thread.start()
                 try:
-                    # Deterministically model a spacious volume. The database and
-                    # blob fixture are tiny; no large files are allocated.
+                    # The search copy progresses while old inline payloads remain readable.
                     class Usage:
                         free = 128 * 1024**3
-                    with ExitStack() as stack:
-                        stack.enter_context(patch.object(codex_work.shutil, "disk_usage", return_value=Usage()))
-                        stack.enter_context(patch.object(codex_payload_migrate.shutil, "disk_usage", return_value=Usage()))
+
+                    with patch.object(codex_work.shutil, "disk_usage", return_value=Usage()):
                         runtime.search_migration_start()
-                        # Exercise payload migration while search writes the database.
-                        codex_payload_migrate.run(
-                            state, tables=list(codex_payload_migrate.TARGETS), batch_rows=8,
-                            batch_bytes=128 * 1024, max_batches=None)
                         deadline = time.monotonic() + 30
                         while time.monotonic() < deadline:
                             with runtime.db() as db:
@@ -215,11 +207,6 @@ class UpgradeContract(unittest.TestCase):
                                 break
                             time.sleep(.02)
                         self.assertEqual(phase, "complete")
-                    with sqlite3.connect(state / "canvas.sqlite3") as db:
-                        payload_states = dict(db.execute(
-                            "SELECT name,complete FROM runtime_payload_migrations"))
-                    self.assertTrue(all(payload_states.get("payload-v1:" + name) == 1
-                                        for name in codex_payload_migrate.TARGETS))
                     origin = f"http://127.0.0.1:{server.server_address[1]}"
                     def get(path):
                         with urllib.request.urlopen(origin + path, timeout=5) as response:
@@ -266,8 +253,8 @@ class UpgradeContract(unittest.TestCase):
                     tombstones = diagnostics["migrations"]["entityTombstones"]
                     self.assertLessEqual(tombstones["count"], ENTITY_TOMBSTONE_LIMIT)
                     self.assertEqual(pruning["status"], "complete", pruning)
-                    self.assertTrue(all(value["status"] == "complete"
-                                        for value in diagnostics["migrations"]["payloads"].values()))
+                    self.assertEqual(set(diagnostics["migrations"]["payloads"]), {"tasks"})
+                    self.assertEqual(diagnostics["migrations"]["payloads"]["tasks"]["status"], "pending")
                     runtime.search_migration_error = "fixture migration failure"
                     failure_diagnostics = get("/api/diagnostics")
                     self.assertEqual(failure_diagnostics["searchMigrationError"], "fixture migration failure")
@@ -282,6 +269,8 @@ class UpgradeContract(unittest.TestCase):
                                     json.dumps(upgrade_check, sort_keys=True))
                     self.assertEqual(upgrade_check["runningAgentCount"], 1)
                     self.assertEqual(upgrade_check["migrations"]["search"]["phase"], "complete")
+                    self.assertEqual(set(upgrade_check["migrations"]["payloads"]), {"tasks"})
+                    self.assertEqual(set(upgrade_check["migrations"]["payloads"]), {"tasks"})
                     with runtime.db() as db:
                         new_search = {row[0] for row in db.execute(
                             "SELECT m.id FROM runtime_search_next JOIN runtime_search_next_meta m "

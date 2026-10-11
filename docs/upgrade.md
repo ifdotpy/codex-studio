@@ -132,8 +132,8 @@ Use `/api/diagnostics.migrations` to verify:
   `pruning.deleted` must increase until the count is within the limit. A
   client that requests reset support with a cursor below `floor` receives a
   reset response and must perform a fresh entity pull from sequence zero.
-- `payloads` shows one cursor/completion status per table. This migration is
-  manual; run it in the next section. Stop if any entry reports `error`.
+- `payloads.tasks` shows the manual task-output retention cursor when that pass
+  has run. Task retention does not gate an upgrade.
 
 The bounded task, event, and monitor windows are query/sync behavior, not a
 one-time data-copy migration. They do not delete the source runtime records.
@@ -148,28 +148,18 @@ For a low-space wait, the backend must remain available and source data must
 remain intact. Add capacity, then verify that the phase resumes and the cursor
 advances. Do not delete either analytics copy or the old search index manually.
 
-## 4. Run the payload migration
+## 4. Retain old task output and collect blobs
 
-After confirming adequate capacity, externalize large checkpoints, tool
-requests, tool results, and eligible old task tails while Studio continues to
-serve requests:
+Task-output retention is a separate manual operation. It trims eligible old
+task tails while preserving recent tasks:
 
 ```sh
-python3 "$REPO/workspaces/runtime/apps/server/src/codex_payload_migrate.py" --state-dir "$STATE" --table all
+python3 "$REPO/workspaces/runtime/apps/server/src/codex_payload_migrate.py" --state-dir "$STATE"
 ```
 
-The migration checks free space before each batch, uses a 64 MiB reserve, and
-commits each cursor with its row update. It may take minutes or hours depending
-on the payload volume and disk speed. Re-running the command resumes from its
-saved per-table cursor. Do not use `--restart-tasks` during an upgrade; it
-rescans retention eligibility. To collect old unreferenced blobs, use the
-separate `--gc` option only after the migration has completed and its seven-day
-orphan grace period has elapsed.
-
-Run the upgrade check again. Require each `payloads` entry to report
-`complete: true`. Confirm `canvas.sqlite3` still opens and `/api/session`,
-`/api/desktop`, and `/api/sync/identity` still work. Spot-check long transcript bodies and search
-results through the normal UI before considering the upgrade complete.
+Use `--restart-tasks` to rescan retention eligibility after newer task output
+ages into scope. To collect unreferenced blobs, use `--gc` after the seven-day
+orphan grace period; this is independent of task retention.
 
 ## 5. VACUUM only when needed
 

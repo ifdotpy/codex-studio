@@ -23,7 +23,6 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 
-from codex_payload_migrate import migrate_batch
 import codex_payload_migrate
 from codex_payloads import (
     EXTERNALIZE_THRESHOLD,
@@ -86,7 +85,7 @@ class PayloadStorageContract(unittest.TestCase):
         self.assertLess(len(json.dumps(stored_result["contentItems"], ensure_ascii=False).encode()), 4096)
         self.assertGreater(EXTERNALIZE_THRESHOLD, 0)
 
-    def test_migration_is_resumable_and_retains_only_old_nonrecent_tasks(self):
+    def test_task_retention_is_resumable_and_trims_only_old_nonrecent_tasks(self):
         now = 1_800_000_000
         for i in range(130):
             record = {"id": f"a:{i:03}", "agent": "a", "created": now - 10 * 86400 + i,
@@ -95,7 +94,7 @@ class PayloadStorageContract(unittest.TestCase):
         self.db.commit()
         pages = 0
         while True:
-            result = migrate_batch(self.root, self.db, "tasks", batch_rows=13, now=now)
+            result = codex_payload_migrate.migrate_batch(self.root, self.db, batch_rows=13, now=now)
             pages += 1
             if result["done"]:
                 break
@@ -105,9 +104,28 @@ class PayloadStorageContract(unittest.TestCase):
         self.assertEqual(sum(len(item["tail"].encode()) <= TASK_PREVIEW_BYTES for item in rows.values()), 30)
         self.assertEqual(sum(item.get("outputPreviewOnly", False) for item in rows.values()), 30)
         self.assertEqual(rows["a:129"]["tail"], "output-" + "q" * 2048)
-        saved = migrate_batch(self.root, self.db, "tasks", batch_rows=13, now=now)
+        saved = codex_payload_migrate.migrate_batch(self.root, self.db, batch_rows=13, now=now)
         self.assertTrue(saved["done"])
         self.assertEqual(saved["rows"], 0)
+
+    def test_task_retention_runner_reports_only_tasks(self):
+        now = time.time()
+        records = [
+            {"id": f"task-{i:03}", "agent": "agent-a", "created": now - 10 * 86400 + i,
+             "status": "completed", "tail": "output-" + "q" * 2048}
+            for i in range(101)
+        ]
+        self.db.executemany("INSERT INTO runtime_tasks VALUES (?,?)",
+                            [(record["id"], json.dumps(record)) for record in records])
+        self.db.commit()
+
+        result = codex_payload_migrate.run(self.root, max_batches=None, relay=None)
+
+        self.assertEqual(set(result["tables"]), {"tasks"})
+        self.assertEqual(result["tables"]["tasks"]["rowsScanned"], 101)
+        saved = json.loads(self.db.execute(
+            "SELECT record FROM runtime_tasks WHERE id='task-000'").fetchone()["record"])
+        self.assertTrue(saved["outputPreviewOnly"])
 
     def test_task_retention_notifies_only_after_committed_entity_changes(self):
         now = 1_800_000_000
@@ -124,9 +142,9 @@ class PayloadStorageContract(unittest.TestCase):
             self.assertTrue(json.loads(row["record"]).get("outputPreviewOnly"))
             notified.append((request_id, resources))
 
-        result = migrate_batch(self.root, self.db, "tasks", batch_rows=101, now=now, notify=notify)
+        result = codex_payload_migrate.migrate_batch(self.root, self.db, batch_rows=101, now=now, notify=notify)
         self.assertFalse(result["done"])
-        self.assertTrue(migrate_batch(self.root, self.db, "tasks", batch_rows=101, now=now)["done"])
+        self.assertTrue(codex_payload_migrate.migrate_batch(self.root, self.db, batch_rows=101, now=now)["done"])
         self.assertEqual(len(notified), 1)
         self.assertIsInstance(notified[0][1][0].root, TasksResource)
         self.assertIsInstance(notified[0][1][1].root, TaskResource)
@@ -144,12 +162,13 @@ class PayloadStorageContract(unittest.TestCase):
         def failed_notify(_request_id, _resources):
             raise NotifyCommittedWriteError("server unavailable")
 
-        with self.assertRaisesRegex(NotifyCommittedWriteError, "Payload batch committed"):
-            migrate_batch(self.root, self.db, "tasks", batch_rows=101, now=now, notify=failed_notify)
+        with self.assertRaisesRegex(NotifyCommittedWriteError, "Task retention batch committed"):
+            codex_payload_migrate.migrate_batch(self.root, self.db, batch_rows=101, now=now,
+                                                notify=failed_notify)
         migrated = json.loads(self.db.execute(
             "SELECT record FROM runtime_tasks WHERE id='a:000'").fetchone()["record"])
         self.assertTrue(migrated.get("outputPreviewOnly"))
-        resumed = migrate_batch(self.root, self.db, "tasks", batch_rows=101, now=now)
+        resumed = codex_payload_migrate.migrate_batch(self.root, self.db, batch_rows=101, now=now)
         self.assertTrue(resumed["done"])
         self.assertEqual(resumed["rows"], 0)
 
@@ -167,22 +186,23 @@ class PayloadStorageContract(unittest.TestCase):
         self.assertTrue((self.root / "blobs" / ref["sha256"][:2] / ref["sha256"][2:4] / ref["sha256"]).exists())
         self.assertEqual(load_bytes(self.root, ref), b"referenced")
 
-    def test_low_space_persists_waiting_status_without_changing_payload_rows(self):
-        record = {"id": "cp", "items": ["large-" + "x" * 1000]}
-        self.db.execute("INSERT INTO runtime_checkpoints VALUES (?,?)", ("cp", json.dumps(record)))
+    def test_low_space_persists_waiting_status_without_changing_task_rows(self):
+        record = {"id": "task", "agent": "agent-a", "created": 1,
+                  "status": "completed", "tail": "old output"}
+        self.db.execute("INSERT INTO runtime_tasks VALUES (?,?)", ("task", json.dumps(record)))
         self.db.commit()
 
         class Usage:
             free = codex_payload_migrate.FREE_SPACE_RESERVE - 1
 
         with patch.object(codex_payload_migrate.shutil, "disk_usage", return_value=Usage()):
-            result = migrate_batch(self.root, self.db, "checkpoints")
+            result = codex_payload_migrate.migrate_batch(self.root, self.db, now=2_000_000_000)
         self.assertFalse(result["done"])
         self.assertTrue(result["waitingForSpace"])
         self.assertEqual(json.loads(self.db.execute(
-            "SELECT record FROM runtime_checkpoints WHERE id='cp'").fetchone()[0]), record)
+            "SELECT record FROM runtime_tasks WHERE id='task'").fetchone()[0]), record)
         status = self.db.execute("SELECT status,cursor FROM runtime_payload_migrations "
-                                 "WHERE name='payload-v1:checkpoints'").fetchone()
+                                 "WHERE name='payload-v1:tasks'").fetchone()
         self.assertEqual(tuple(status), ("waitingForSpace", 0))
 
 

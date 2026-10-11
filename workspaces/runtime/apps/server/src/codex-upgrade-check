@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from codex_state import ACTIVE, state_dir as default_state_dir
 
 
-PAYLOAD_TABLES = ("checkpoints", "tool_requests", "tool_results", "tasks")
+PAYLOAD_TABLE = "tasks"
 
 
 def git_status(repo: Path) -> dict:
@@ -39,8 +39,8 @@ def table_names(db: sqlite3.Connection) -> set[str]:
 
 def local_migrations(state: Path) -> dict:
     result = {"search": {"phase": "unavailable"},
-              "payloads": {name: {"cursor": 0, "complete": False, "status": "pending",
-                                  "updated": None, "error": None} for name in PAYLOAD_TABLES},
+              "payloads": {PAYLOAD_TABLE: {"cursor": 0, "complete": False, "status": "pending",
+                                            "updated": None, "error": None}},
               "entityTombstones": {"status": "unavailable"},
               "analyticsFile": {"status": "unavailable"}}
     canvas = state / "canvas.sqlite3"
@@ -67,11 +67,10 @@ def local_migrations(state: Path) -> dict:
                                     "status": row[3] if len(row) > 3 else ("complete" if row[2] else "pending"),
                                     "updated": row[4] if len(row) > 4 else None,
                                     "error": row[5] if len(row) > 5 else None}
-                result["payloads"] = {name: rows.get("payload-v1:" + name,
-                                                       {"cursor": 0, "complete": False,
-                                                        "status": "pending", "updated": None,
-                                                        "error": None})
-                                       for name in PAYLOAD_TABLES}
+                result["payloads"] = {PAYLOAD_TABLE: rows.get("payload-v1:" + PAYLOAD_TABLE,
+                                                               {"cursor": 0, "complete": False,
+                                                                "status": "pending", "updated": None,
+                                                                "error": None})}
             if "sync_entity_meta" in names:
                 values = dict(db.execute("SELECT key,value FROM sync_entity_meta WHERE key IN "
                                          "('entity_tombstone_count','entity_tombstone_floor')"))

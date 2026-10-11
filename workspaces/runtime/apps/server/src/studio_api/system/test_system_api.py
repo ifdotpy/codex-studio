@@ -637,12 +637,6 @@ class SystemApiTests(unittest.TestCase):
                 "error": None, "lastBatchBytes": None,
             },
             "payloads": {
-                "checkpoints": {"cursor": 1, "complete": False, "status": "running",
-                                "updated": 1.0, "error": None},
-                "tool_requests": {"cursor": 1, "complete": True, "status": "complete",
-                                  "updated": 1.0, "error": None},
-                "tool_results": {"cursor": 0, "complete": False, "status": "waitingForSpace",
-                                 "updated": None, "error": None},
                 "tasks": {"cursor": 0, "complete": False, "status": "pending",
                           "updated": None, "error": None},
             },
