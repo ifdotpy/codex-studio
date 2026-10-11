@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { components } from "../../generated/api";
 import { answerList } from "./AnswerFields";
-import { requestApprovalDetails, requestQuestions } from "./requestData";
+import {
+  browserOpenDetails,
+  requestApprovalDetails,
+  requestQuestions,
+} from "./requestData";
 
 type RequestDto = components["schemas"]["RequestEntityDto"];
 
@@ -172,5 +176,54 @@ describe("custom answer permission", () => {
     expect(answerList(open, { selected: [], other: "Custom" })).toEqual([
       "Custom",
     ]);
+  });
+});
+
+describe("browserOpenDetails", () => {
+  it("reads the sign-in host, the forward port and the OAuth client", () => {
+    const request: RequestDto = {
+      id: "request-browser",
+      method: "browser/open",
+      params: {
+        bridgeId: "b1",
+        url: "https://accounts.example.com/authorize?client_id=kube",
+        host: "accounts.example.com",
+        redirect: { host: "localhost", port: 8000, path: "/" },
+        clientId: "kube",
+        scope: "openid",
+        linuxUser: "studio-a-1",
+      },
+    };
+    expect(browserOpenDetails(request)).toEqual({
+      host: "accounts.example.com",
+      url: "https://accounts.example.com/authorize?client_id=kube",
+      port: 8000,
+      clientId: "kube",
+      scope: "openid",
+      linuxUser: "studio-a-1",
+    });
+  });
+
+  it("has no forward port for a device code page and ignores other methods", () => {
+    const device: RequestDto = {
+      id: "request-device",
+      method: "browser/open",
+      params: {
+        url: "https://device.example.com/?user_code=ABCD",
+        host: "device.example.com",
+        redirect: null,
+      },
+    };
+    expect(browserOpenDetails(device)).toEqual({
+      host: "device.example.com",
+      url: "https://device.example.com/?user_code=ABCD",
+    });
+    expect(
+      browserOpenDetails({
+        id: "other",
+        method: "monitor/approve",
+        params: {},
+      }),
+    ).toBeUndefined();
   });
 });

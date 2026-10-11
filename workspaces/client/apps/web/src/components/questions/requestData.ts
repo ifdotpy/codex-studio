@@ -87,3 +87,38 @@ export function requestApprovalDetails(request: RequestDto) {
     permissions: params.permissions ?? preview.changes,
   };
 }
+
+export const BROWSER_OPEN_METHOD = "browser/open";
+
+export type BrowserOpenDetails = {
+  host: string;
+  url: string;
+  port?: number;
+  clientId?: string;
+  scope?: string;
+  linuxUser?: string;
+};
+
+/** The sign-in link of a VM agent (docs/vm-browser-bridge.md), or undefined. */
+export function browserOpenDetails(
+  request: RequestDto,
+): BrowserOpenDetails | undefined {
+  if (request.method !== BROWSER_OPEN_METHOD) return undefined;
+  const params = objectValue(request.params);
+  const host = stringValue(params.host);
+  const url = stringValue(params.url);
+  if (!host || !url) return undefined;
+  const redirect = objectValue(params.redirect);
+  const port = typeof redirect.port === "number" ? redirect.port : undefined;
+  const clientId = stringValue(params.clientId);
+  const scope = stringValue(params.scope);
+  const linuxUser = stringValue(params.linuxUser);
+  return {
+    host,
+    url,
+    ...(port !== undefined ? { port } : {}),
+    ...(clientId ? { clientId } : {}),
+    ...(scope ? { scope } : {}),
+    ...(linuxUser ? { linuxUser } : {}),
+  };
+}

@@ -197,8 +197,9 @@ try {
           ? [value.directory]
           : [value.file],
       });
-      shell.openExternal = async (url) => {
+      shell.openExternal = async (url, options) => {
         app.__testExternal = url;
+        app.__testExternalActivate = options?.activate;
       };
       shell.showItemInFolder = (path) => {
         app.__testReveal = path;
@@ -390,9 +391,25 @@ try {
     /HTTP/,
   );
   await invoke("openExternal", "https://example.com/");
-  assert.equal(
-    await desktop.evaluate(({ app }) => app.__testExternal),
-    "https://example.com/",
+  assert.deepEqual(
+    await desktop.evaluate(({ app }) => [
+      app.__testExternal,
+      app.__testExternalActivate,
+    ]),
+    ["https://example.com/", false],
+  );
+  // An approved sign-in link brings the browser to the front; the scheme rule stays.
+  assert.match(
+    (await invoke("openSignIn", "javascript:alert(1)")).error,
+    /HTTP/,
+  );
+  await invoke("openSignIn", "https://accounts.example.com/authorize?x=1");
+  assert.deepEqual(
+    await desktop.evaluate(({ app }) => [
+      app.__testExternal,
+      app.__testExternalActivate,
+    ]),
+    ["https://accounts.example.com/authorize?x=1", true],
   );
   await invoke("revealPath", file);
   assert.equal(await desktop.evaluate(({ app }) => app.__testReveal), file);
