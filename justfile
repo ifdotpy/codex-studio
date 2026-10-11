@@ -34,3 +34,7 @@ boundaries-check:
 [doc("Check changed packages and manifest dependents; accepts --dry-run.")]
 check-affected base *args:
     @node {{quote(facade)}} check-affected {{quote(base)}} {{args}}
+
+[doc("Run the server runner's audited offline automation class.")]
+test-server-opt-in:
+    @pnpm run test:server:opt-in

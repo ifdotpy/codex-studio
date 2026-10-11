@@ -29,6 +29,7 @@ class NativeActionSettingsContract(fixture.PrepareSteerContract):
         self.server.hold.add("review/start")
         result = self.runtime.native_action(a["id"], "review")
         self.assertTrue(result["pending"])
+        fixture.eventually(lambda: self.count("thread/settings/update") == 1)
         calls = self.server.calls
         settings = [params for method, params in calls if method == "thread/settings/update"][-1]
         self.assertEqual(settings["threadId"], a["threadId"])
@@ -47,6 +48,7 @@ class NativeActionSettingsContract(fixture.PrepareSteerContract):
         self.select(a)
         self.server.hold.update({"thread/settings/update", "thread/compact/start"})
         self.assertTrue(self.runtime.native_action(a["id"], "compact")["pending"])
+        fixture.eventually(lambda: any(row["method"] == "thread/settings/update" for row in self.server.delayed))
         self.assertEqual(self.count("thread/compact/start"), 0)
         entry = next(row for row in self.server.delayed if row["method"] == "thread/settings/update")
         entry["future"].set_result({})

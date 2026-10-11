@@ -12,6 +12,7 @@
     "test:client:browser": "pnpm --filter codex-agents-web run test:browser",
     "test:server": "pnpm run test:server:python && pnpm run test:server:bridge",
     "test:server:python": "python3 -B workspaces/runtime/apps/server/src/test-server.py",
+    "test:server:opt-in": "python3 -B workspaces/runtime/apps/server/src/codex_python.py --exec -B workspaces/runtime/apps/server/src/test-server.py --only automated",
     "test:server:bridge": "pnpm --filter studio-claude-bridge run test",
     "test:server:transport": "node workspaces/runtime/apps/server/tests/claude-commands-contract.mjs",
     "test:server:images": "node workspaces/runtime/apps/server/tests/claude-image-contract.mjs",
