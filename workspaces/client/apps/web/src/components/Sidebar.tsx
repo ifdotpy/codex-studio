@@ -68,10 +68,12 @@ import {
   type LayrSyncEntry,
 } from "./sidebar/MacSync";
 import LayrMenu from "./sidebar/LayrMenu";
+import VaultUnlock from "./sidebar/VaultUnlock";
 import ProjectSecretsDialog from "./sidebar/ProjectSecretsDialog";
 import {
   chipWithVault,
   deskLink,
+  vaultActions,
   pullText,
   pullVault,
   VAULT_SETUP_URL,
@@ -265,6 +267,11 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
   } | null>(null);
   // The project and server whose Mac sync conflicts are open.
   const [syncDialog, setSyncDialog] = useState<{
+    path: string;
+    ownerId?: string;
+  } | null>(null);
+  // The project and server whose vault unlock dialog is open.
+  const [unlockDialog, setUnlockDialog] = useState<{
     path: string;
     ownerId?: string;
   } | null>(null);
@@ -1378,11 +1385,14 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
             entry.ownerId
               ? services.byOwner(entry.ownerId)
               : services.owner(projectTarget(group.path));
-          // A pull writes a folder on the server that holds the project: only this Mac pulls.
-          const canPull = (entry: VaultEntry) =>
-            !!deskLink(entry.vault) &&
-            !serverViewId &&
-            vaultBackend(entry).ownerId === localSidebarBackend.ownerId;
+          // Unlock, Pull and the disk act on the Mac that holds the project: only this Mac.
+          const actions = (entry: VaultEntry) =>
+            vaultActions(entry.vault, {
+              onThisMac:
+                !serverViewId &&
+                vaultBackend(entry).ownerId === localSidebarBackend.ownerId,
+              desktop: !!window.codexDesktop,
+            });
           const pull = async (entry: VaultEntry) => {
             try {
               const desktop = window.codexDesktop;
@@ -1622,7 +1632,34 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                             {`Open in Desk${suffix}`}
                           </Menu.Item>
                         ),
-                        canPull(entry) && (
+                        actions(entry).includes("unlock") && (
+                          <Menu.Item
+                            key={`${key}:unlock`}
+                            onClick={() =>
+                              setUnlockDialog({
+                                path: group.path,
+                                ...(entry.ownerId
+                                  ? { ownerId: entry.ownerId }
+                                  : {}),
+                              })
+                            }
+                          >
+                            {`Unlock on this Mac…${suffix}`}
+                          </Menu.Item>
+                        ),
+                        actions(entry).includes("finder") && (
+                          <Menu.Item
+                            key={`${key}:finder`}
+                            onClick={() =>
+                              void window.codexDesktop?.revealPath(
+                                entry.vault.disk!,
+                              )
+                            }
+                          >
+                            {`Show in Finder${suffix}`}
+                          </Menu.Item>
+                        ),
+                        actions(entry).includes("pull") && (
                           <Menu.Item
                             key={`${key}:pull`}
                             onClick={() => void pull(entry)}
@@ -1630,7 +1667,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                             {`Pull…${suffix}`}
                           </Menu.Item>
                         ),
-                        entry.vault.state === "none" && (
+                        actions(entry).includes("setup") && (
                           <Menu.Item
                             key={`${key}:setup`}
                             component="a"
@@ -1671,6 +1708,20 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                   onClose={() => setSecretsDialog(null)}
                 />
               )}
+              {unlockDialog?.path === group.path &&
+                (() => {
+                  const entry = vaultEntries.find(
+                    (item) => item.ownerId === unlockDialog.ownerId,
+                  );
+                  return entry ? (
+                    <VaultUnlock
+                      entry={entry}
+                      backend={vaultBackend(entry)}
+                      onClose={() => setUnlockDialog(null)}
+                      onDone={(text) => p.notify?.(text)}
+                    />
+                  ) : null;
+                })()}
               {syncDialogEntry && (
                 <MacSyncConflicts
                   entry={syncDialogEntry}

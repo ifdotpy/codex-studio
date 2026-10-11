@@ -103,3 +103,24 @@ export function chipWithVault(
     vault: failed ? "error" : "ok",
   };
 }
+
+export type VaultAction = "desk" | "unlock" | "finder" | "pull" | "setup";
+
+/**
+ * The vault items of the layr menu. Unlock, Show in Finder and Pull act on this Mac, so they
+ * need a project on this Mac's server; Show in Finder needs the desktop app.
+ */
+export function vaultActions(
+  vault: ProjectVault,
+  { onThisMac, desktop }: { onThisMac: boolean; desktop: boolean },
+): VaultAction[] {
+  if (vault.state === "none") return ["setup"];
+  const link = deskLink(vault);
+  const here = onThisMac && !!link;
+  return [
+    ...(link ? (["desk"] as const) : []),
+    ...(here && vault.unlocked === false ? (["unlock"] as const) : []),
+    ...(here && desktop && vault.disk ? (["finder"] as const) : []),
+    ...(here && vault.unlocked !== false ? (["pull"] as const) : []),
+  ];
+}

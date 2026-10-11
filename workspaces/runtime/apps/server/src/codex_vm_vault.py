@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -66,6 +67,14 @@ def vault_view(state_dir: Path, project_id: str) -> dict[str, Any] | None:
         view['reason'] = str(status['lastError'])[:300]
     if isinstance(site, str):
         view['site'] = site
+    try:
+        mac = _load(folder / 'vault-mac.json')
+    except (OSError, ValueError):
+        mac = {}
+    if isinstance(mac.get('unlocked'), bool):
+        view['unlocked'] = mac['unlocked']
+    if isinstance(mac.get('disk'), str):
+        view['disk'] = mac['disk']
     return view
 
 
@@ -123,6 +132,11 @@ def tick(runtime: Any) -> None:
         try:
             if client.status().get('state') == 'running':
                 check(client)
+            try:
+                mac_check(client.state_dir)
+            except Exception as error:  # noqa: BLE001 - this Mac's part waits for the next tick
+                print('vault check of this Mac skipped: ' + type(error).__name__ + ': ' + str(error)[:300],
+                      file=sys.stderr)
             # A new report or a new Desk site (codex_vault.py site) changes what the sidebar shows.
             current = views(client.state_dir)
             if current != runtime.__dict__.get('_vault_views'):
@@ -136,15 +150,99 @@ def tick(runtime: Any) -> None:
     runtime.pool.submit(run)
 
 
+def bundled_layr_desk() -> Path:
+    """The layr-desk that the Studio app carries (Resources/workspace/bin)."""
+    return Path(__file__).resolve().parent.parent / 'bin' / 'layr-desk'
+
+
 def layr_desk() -> str:
-    """The layr-desk command: STUDIO_LAYR_DESK_BIN, else PATH, else cargo's folder."""
-    found = os.environ.get('STUDIO_LAYR_DESK_BIN') or shutil.which('layr-desk')
+    """The layr-desk command: STUDIO_LAYR_DESK_BIN, else the app's own, else PATH, else cargo's
+    folder."""
+    found = os.environ.get('STUDIO_LAYR_DESK_BIN')
+    if found:
+        return found
+    if bundled_layr_desk().is_file():
+        return str(bundled_layr_desk())
+    found = shutil.which('layr-desk')
     if found:
         return found
     cargo = Path.home() / '.cargo/bin/layr-desk'
     if cargo.exists():
         return str(cargo)
     raise RuntimeError('The layr-desk command is not installed (cargo install --path crates/layr-desk)')
+
+
+def _desk(command: list[str], **options: Any) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, capture_output=True, text=True, timeout=60, **options)
+
+
+def ensure_disk(command: str, site: str) -> str | None:
+    """Keep the Desk disk agent (layr-desk service) on this Mac for `site`, running the
+    layr-desk that the app carries, so no command line step is needed; return where the disk is
+    mounted. A layr-desk outside the app (a development build) only reports."""
+    status = json.loads(_desk([command, 'service', 'status'], stdin=subprocess.DEVNULL).stdout or '{}')
+    own = Path(command).resolve() == bundled_layr_desk().resolve()
+    current = status.get('installed') and status.get('site') == site \
+        and Path(str(status.get('program'))).resolve() == Path(command).resolve()
+    if own and not current:
+        done = _desk([command, 'service', 'install', '--site', site], stdin=subprocess.DEVNULL)
+        if done.returncode:
+            raise RuntimeError('layr-desk service install: ' + (done.stderr or done.stdout).strip()[-300:])
+        status = json.loads(_desk([command, 'service', 'status'], stdin=subprocess.DEVNULL).stdout or '{}')
+    at = status.get('at') if status.get('installed') and status.get('site') == site else None
+    return at if isinstance(at, str) else None
+
+
+def mac_check(state_dir: Path) -> None:
+    """What this Mac knows about each vault with a Desk site: whether it keeps the vault key
+    (layr-desk unlock) and where the Desk disk shows the vault. One layr-desk call per site; it
+    reads the Keychain and the gateway, not the VM."""
+    projects: dict[str, dict[str, Any]] = {}
+    for record in sorted((state_dir / 'layr-projects').glob('*/project.json')):
+        view = vault_view(state_dir, record.parent.name)
+        if view and view.get('site') and view.get('prefix'):
+            projects[record.parent.name] = view
+    sites = sorted({view['site'] for view in projects.values()})
+    if not sites:
+        return
+    command = layr_desk()
+    # One disk, for the first site; another site's vaults still unlock and pull.
+    disk = ensure_disk(command, sites[0].rstrip('/'))
+    for site in sites:
+        done = _desk([command, 'status', '--site', site, '--json'], stdin=subprocess.DEVNULL)
+        if done.returncode:
+            raise RuntimeError('layr-desk status: ' + (done.stderr or done.stdout).strip()[-300:])
+        unlocked = {p['name']: bool(p['unlocked']) for p in json.loads(done.stdout)['projects']}
+        for name, view in projects.items():
+            if view['site'] != site:
+                continue
+            mac: dict[str, Any] = {'unlocked': unlocked.get(view['prefix'], False)}
+            if disk and site == sites[0]:
+                mac['disk'] = str(Path(disk) / view['prefix'])
+            if _load(_folder(state_dir, name) / 'vault-mac.json') != mac:
+                _write(_folder(state_dir, name) / 'vault-mac.json', mac)
+
+
+def unlock(runtime: Any, project_id: str, words: str) -> dict[str, Any]:
+    """Keep the vault key on this Mac (layr-desk unlock) from the paper words, which go to
+    layr-desk on stdin only and appear in no reply or log."""
+    from codex_linux_workspaces import client as vm_client
+    state_dir = vm_client(runtime).state_dir
+    view = vault_view(state_dir, project_id)
+    if not view or not view.get('site') or not view.get('prefix'):
+        raise ValueError('The project has no vault with a Desk site')
+    done = _desk([layr_desk(), 'unlock', '--site', view['site'], '--project', view['prefix'],
+                  '--paper-file', '-'], input=words)
+    if done.returncode:
+        lines = (done.stderr or done.stdout).strip().splitlines()
+        reason = next((line.strip() for line in lines if 'does not open' in line or 'checksum' in line
+                       or 'not a word' in line), lines[-1] if lines else 'layr-desk failed')
+        # A wrong word would show in the reason: name no word.
+        raise ValueError(re.sub(r'"[^"]*"', 'one word', reason).removeprefix('Error: ')[:300])
+    mac_check(state_dir)
+    from codex_vm_agents import refresh_readiness
+    refresh_readiness(runtime)
+    return {'unlocked': True}
 
 
 def _target(parent: Path, prefix: str) -> Path:

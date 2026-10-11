@@ -958,6 +958,9 @@ class ProjectVaultDto(ContractModel):
     site: str | None = None
     lastPush: float | None = None
     reason: str | None = None
+    # This Mac: whether it keeps the vault key, and where the Desk disk shows the vault.
+    unlocked: bool | None = None
+    disk: str | None = None
 
 
 class ProjectEntityDto(ContractModel):

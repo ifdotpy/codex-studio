@@ -436,6 +436,12 @@ class MacSyncConfigRequest(MacSyncProjectRequest):
     allowDeletes: bool = False
 
 
+class VaultUnlockRequest(MacSyncProjectRequest):
+    """The paper words of the project's vault, to keep its key on this Mac."""
+
+    words: str = Field(min_length=1, max_length=2000)
+
+
 class VaultPullRequest(MacSyncProjectRequest):
     """Pull the latest vault state into a new folder below `to` (Downloads when left out).
     A repeated requestId returns the same pull."""
@@ -686,6 +692,10 @@ class MacSyncStatusResponse(ResponseModel):
     deletes: int
     reason: str | None
     at: float | None
+
+
+class VaultUnlockResponse(ResponseModel):
+    unlocked: bool
 
 
 class VaultPullResponse(ResponseModel):

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   chipWithVault,
   deskLink,
+  vaultActions,
   pullText,
   pullVault,
   vaultLabel,
@@ -117,5 +118,32 @@ describe("vault menu", () => {
     );
     expect([failed?.vault, failed?.attention]).toEqual(["error", true]);
     expect(chipWithVault(null, [{ vault: vault() }], now)).toBeNull();
+  });
+
+  it("offers unlock, Finder and pull only on this Mac", () => {
+    const here = { onThisMac: true, desktop: true };
+    expect(vaultActions({ projectId: "p1", state: "none" }, here)).toEqual([
+      "setup",
+    ]);
+    expect(vaultActions(vault({ unlocked: false }), here)).toEqual([
+      "desk",
+      "unlock",
+    ]);
+    expect(
+      vaultActions(vault({ unlocked: true, disk: "/Users/a/Desk/p" }), here),
+    ).toEqual(["desk", "finder", "pull"]);
+    expect(
+      vaultActions(vault({ unlocked: true, disk: "/Users/a/Desk/p" }), {
+        onThisMac: true,
+        desktop: false,
+      }),
+    ).toEqual(["desk", "pull"]);
+    expect(
+      vaultActions(vault({ unlocked: false }), {
+        onThisMac: false,
+        desktop: true,
+      }),
+    ).toEqual(["desk"]);
+    expect(vaultActions(vault({ site: null }), here)).toEqual([]);
   });
 });

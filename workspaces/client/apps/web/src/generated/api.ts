@@ -2144,6 +2144,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/vault/unlock": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Vault Unlock
+     * @description Keep the vault key on this Mac from the paper words; the words reach only layr-desk.
+     */
+    post: operations["vault_unlock_api_vault_unlock_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/voice/approval_speech": {
     parameters: {
       query?: never;
@@ -9100,6 +9120,8 @@ export interface components {
      *     the Desk link of the vault.
      */
     ProjectVaultDto: {
+      /** Disk */
+      disk?: string | null;
       /** Lastpush */
       lastPush?: number | null;
       /** Prefix */
@@ -9115,6 +9137,8 @@ export interface components {
        * @enum {string}
        */
       state: "ok" | "error" | "none";
+      /** Unlocked */
+      unlocked?: boolean | null;
     };
     /** ProjectWriteRequest */
     ProjectWriteRequest: {
@@ -13274,6 +13298,25 @@ export interface components {
        * @enum {string}
        */
       state: "running" | "done" | "failed";
+    };
+    /**
+     * VaultUnlockRequest
+     * @description The paper words of the project's vault, to keep its key on this Mac.
+     */
+    VaultUnlockRequest: {
+      /** Projectid */
+      projectId: string;
+      /** Words */
+      words: string;
+    };
+    /** VaultUnlockResponse */
+    VaultUnlockResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Unlocked */
+      unlocked: boolean;
     };
     /**
      * VersionedRuntimeRecord
@@ -22241,6 +22284,69 @@ export interface operations {
       403: components["responses"]["ApiError403"];
       /** @description Not Found */
       404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  vault_unlock_api_vault_unlock_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["VaultUnlockRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["VaultUnlockResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
       /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
       /** @description Conflict */

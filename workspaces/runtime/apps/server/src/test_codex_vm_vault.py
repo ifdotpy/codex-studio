@@ -97,7 +97,8 @@ class Ticks(unittest.TestCase):
             refreshes: list[int] = []
             with patch('codex_linux_workspaces.client', lambda r: client), \
                     patch('codex_vm_agents.refresh_readiness', lambda r: refreshes.append(1)), \
-                    patch('platform.system', lambda: 'Darwin'):
+                    patch('platform.system', lambda: 'Darwin'), \
+                    patch.object(vault, 'mac_check', lambda state_dir: None):
                 def tick() -> None:
                     runtime._vault_checked = -vault.INTERVAL * 2
                     vault.tick(runtime)
@@ -186,6 +187,105 @@ class Pulls(unittest.TestCase):
         with self.assertRaises(ValueError):
             vault.start_pull(self.runtime, 'p', 'pull-7', str(self.downloads))
         self.assertFalse(self.runs.exists())
+
+
+
+FAKE_DESK = r'''#!/usr/bin/env python3
+"""A stand-in layr-desk: it keeps its state in the folder of FAKE_DESK_STATE."""
+import json, os, sys
+from pathlib import Path
+state = Path(os.environ["FAKE_DESK_STATE"])
+with open(state / "calls", "a") as log:
+    log.write(json.dumps(sys.argv[1:]) + "\n")
+def load(name, default):
+    path = state / name
+    return json.loads(path.read_text()) if path.exists() else default
+args = sys.argv[1:]
+if args[:2] == ["service", "status"]:
+    print(json.dumps(load("service.json", {"installed": False})))
+elif args[:2] == ["service", "install"]:
+    (state / "service.json").write_text(json.dumps({"installed": True, "program": str(Path(sys.argv[0]).resolve()),
+        "site": args[args.index("--site") + 1], "port": 8095, "at": str(state / "Desk")}))
+elif args[0] == "status":
+    print(json.dumps({"site": args[2], "projects": [{"name": n, "unlocked": n in load("keys.json", [])}
+        for n in ["proj", "other"]]}))
+elif args[0] == "unlock":
+    words = sys.stdin.read()
+    (state / "stdin").write_text(words)
+    if words.strip() != "right words":
+        print('Error: "bogus" is not a word of the paper key list', file=sys.stderr)
+        sys.exit(1)
+    project = args[args.index("--project") + 1]
+    (state / "keys.json").write_text(json.dumps(load("keys.json", []) + [project]))
+'''
+
+
+class ThisMac(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.state, self.desk_state = root / "state", root / "desk"
+        self.desk_state.mkdir()
+        folder = project(self.state, "p")
+        (folder / "vault.json").write_text(json.dumps({"configured": True, "prefix": "proj"}))
+        vault.store_site(self.state, "p", "https://desk.example.com/")
+        self.tool = root / "bin" / "layr-desk"
+        self.tool.parent.mkdir()
+        self.tool.write_text(FAKE_DESK)
+        self.tool.chmod(0o755)
+        client = type("Client", (), {"state_dir": self.state})()
+        self.patches = ExitStack()
+        self.patches.enter_context(patch.dict(os.environ, {"FAKE_DESK_STATE": str(self.desk_state),
+                                                           "STUDIO_LAYR_DESK_BIN": str(self.tool)}))
+        self.patches.enter_context(patch("codex_linux_workspaces.client", lambda runtime: client))
+        self.patches.enter_context(patch("codex_vm_agents.refresh_readiness", lambda runtime: None))
+
+    def tearDown(self) -> None:
+        self.patches.close()
+        self.temp.cleanup()
+
+    def calls(self) -> list[list[str]]:
+        path = self.desk_state / "calls"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def test_the_app_installs_its_disk_agent_once_and_reports_the_lock_state(self) -> None:
+        with patch.object(vault, "bundled_layr_desk", lambda: self.tool):
+            vault.mac_check(self.state)
+            view = vault.vault_view(self.state, "p")
+            assert view is not None
+            self.assertEqual((view["unlocked"], view["disk"]), (False, str(self.desk_state / "Desk" / "proj")))
+            self.assertIn(["service", "install", "--site", "https://desk.example.com"], self.calls())
+            # The agent already runs this program for this site: no second install.
+            before = len([c for c in self.calls() if c[:2] == ["service", "install"]])
+            vault.mac_check(self.state)
+            self.assertEqual(len([c for c in self.calls() if c[:2] == ["service", "install"]]), before)
+
+    def test_a_layr_desk_outside_the_app_never_installs_the_agent(self) -> None:
+        vault.mac_check(self.state)
+        self.assertFalse([c for c in self.calls() if c[:2] == ["service", "install"]])
+        view = vault.vault_view(self.state, "p")
+        assert view is not None
+        self.assertEqual(view["unlocked"], False)
+        self.assertNotIn("disk", view)
+
+    def test_the_words_go_to_layr_desk_on_stdin_only(self) -> None:
+        runtime = Runtime()
+        try:
+            with self.assertRaises(ValueError) as refused:
+                vault.unlock(runtime, "p", "bogus words")
+            self.assertNotIn("bogus", str(refused.exception))
+            self.assertIn("one word is not a word of the paper key list", str(refused.exception))
+            self.assertEqual(vault.unlock(runtime, "p", "right words\n"), {"unlocked": True})
+            self.assertEqual((self.desk_state / "stdin").read_text(), "right words\n")
+            unlock_calls = [c for c in self.calls() if c[0] == "unlock"]
+            self.assertTrue(unlock_calls)
+            self.assertFalse(any("words" in " ".join(c) for c in unlock_calls))
+            self.assertEqual(unlock_calls[0][-2:], ["--paper-file", "-"])
+            view = vault.vault_view(self.state, "p")
+            assert view is not None
+            self.assertTrue(view["unlocked"])
+        finally:
+            runtime.pool.shutdown()
 
 
 if __name__ == '__main__':

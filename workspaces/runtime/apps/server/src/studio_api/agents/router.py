@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import subprocess
 from collections.abc import Callable
 from types import TracebackType
 from typing import ContextManager, Protocol, cast
@@ -39,6 +40,8 @@ from .models import (
     MacSyncStatusResponse,
     VaultPullRequest,
     VaultPullResponse,
+    VaultUnlockRequest,
+    VaultUnlockResponse,
     ProjectSecretRemoveRequest,
     ProjectSecretSetRequest,
     ProjectSecretsListRequest,
@@ -359,6 +362,18 @@ def create_router(context: ApiContext) -> APIRouter:
         if status is None:
             return context.send(request, {"error": "The project has no Mac folder to sync"}, status=400)
         return context.send(request, status)
+
+    @router.post("/api/vault/unlock", response_model=VaultUnlockResponse,
+                 responses=api_write_responses(errors=(400,)))
+    def vault_unlock(request: Request, body: VaultUnlockRequest) -> Response:
+        """Keep the vault key on this Mac from the paper words; the words reach only layr-desk."""
+        from codex_vm_vault import unlock
+
+        try:
+            result = unlock(current_runtime(), body.projectId, body.words)
+        except (ValueError, OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+            return context.send(request, {"error": str(error)[:500]}, status=400)
+        return context.send(request, result)
 
     @router.post("/api/vault/pull", response_model=VaultPullResponse,
                  responses=api_write_responses(errors=(400, 404)))
