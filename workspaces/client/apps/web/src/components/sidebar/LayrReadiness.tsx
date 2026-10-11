@@ -1,3 +1,4 @@
+import { forwardRef, type ButtonHTMLAttributes } from "react";
 import type { components } from "../../generated/api";
 
 export type LayrReadiness = components["schemas"]["ProjectLayrReadinessDto"];
@@ -68,26 +69,31 @@ export function describeWithLayrReadiness(
   return `${lines.join("; ")}. ${description}`;
 }
 
-/** A quiet chip after the project name: a layr chat there starts without an import, or why not. */
-export default function ProjectLayrReadiness({
-  summary,
-  attention = false,
-}: {
-  summary: LayrReadinessSummary | null;
-  /** A report in the tooltip needs the user, for example a Mac folder sync conflict. */
-  attention?: boolean;
-}) {
+/** The LAYR chip under the project name. It opens the layr menu of the project: its Mac
+ * folder sync and its vault. */
+const ProjectLayrReadiness = forwardRef<
+  HTMLButtonElement,
+  {
+    summary: LayrReadinessSummary | null;
+    /** A report in the tooltip needs the user, for example a Mac folder sync conflict. */
+    attention?: boolean;
+  } & Omit<ButtonHTMLAttributes<HTMLButtonElement>, "children">
+>(function ProjectLayrReadiness({ summary, attention = false, ...props }, ref) {
   if (!summary) return null;
-  // Not a span: sidebar code and checks read the project name as the toggle's span.
   return (
-    <small
+    <button
+      {...props}
+      ref={ref}
+      type="button"
       className="project-layr-readiness"
       data-state={summary.state}
       data-attention={attention ? "true" : undefined}
       title={summary.title}
-      aria-hidden="true"
+      aria-label={`layr: ${summary.title.split("\n").join("; ")}`}
     >
       LAYR
-    </small>
+    </button>
   );
-}
+});
+
+export default ProjectLayrReadiness;

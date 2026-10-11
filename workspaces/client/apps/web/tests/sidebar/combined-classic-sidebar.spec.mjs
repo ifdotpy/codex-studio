@@ -156,8 +156,21 @@ for (const [theme, viewport] of [
         hasText: "Home project",
       });
       await expect(projectName).toBeVisible();
-      // Only the remote server reports readiness; the button keeps its name.
-      const readiness = projectName.locator(".project-layr-readiness");
+      const heading = sidebar.locator(".project-tree-heading", {
+        hasText: "Home project",
+      });
+      // Only the remote server reports readiness; the button keeps its name, and the LAYR
+      // chip under it is a button of its own.
+      const readiness = heading.locator(".project-layr-readiness");
+      await expect(projectName.locator(".project-layr-readiness")).toHaveCount(
+        0,
+      );
+      await expect(
+        heading.getByRole("button", {
+          name: "layr: REM: Ready for layr chats",
+          exact: true,
+        }),
+      ).toBeVisible();
       await expect(readiness).toHaveText("LAYR");
       await expect(readiness).toHaveAttribute("data-state", "ready");
       await expect(readiness).toHaveAttribute(
@@ -353,7 +366,7 @@ for (const [theme, viewport] of [
           .getByRole("button", { name: "Servers and chats", exact: true })
           .click();
       await expect(projectName).toBeVisible();
-      await expect(projectName.locator("small")).toHaveCount(0);
+      await expect(heading.locator(".project-layr-readiness")).toHaveCount(0);
       await expect(
         sidebar.getByRole("button", { name: "Home project", exact: true }),
       ).toHaveAccessibleDescription(
@@ -381,14 +394,14 @@ for (const [theme, viewport] of [
           .getByRole("button", { name: "Servers and chats", exact: true })
           .click();
       // One LAYR chip on its own line: the conflict marks it and its tooltip says why.
-      const layrChip = projectName.locator(".project-layr-readiness");
+      const layrChip = heading.locator(".project-layr-readiness");
       await expect(layrChip).toHaveText("LAYR");
       await expect(layrChip).toHaveAttribute("data-attention", "true");
       await expect(layrChip).toHaveAttribute(
         "title",
         "REM: Ready for layr chats\nREM: Mac folder sync: 1 file changed on both sides",
       );
-      await expect(projectName.locator(".project-layr-sync")).toHaveCount(0);
+      await expect(heading.locator(".project-layr-sync")).toHaveCount(0);
       const nameBox = await projectName.locator("span").first().boundingBox();
       const chipBox = await layrChip.boundingBox();
       expect(
@@ -403,17 +416,9 @@ for (const [theme, viewport] of [
       await page.screenshot({
         path: testInfo.outputPath(`sync-row-${theme}.png`),
       });
-      // The remote server takes the choice for its Mac folder.
-      const heading = sidebar.locator(".project-tree-heading", {
-        hasText: "Home project",
-      });
-      await heading.hover();
-      await heading
-        .getByRole("button", {
-          name: "Options for project Home project",
-          exact: true,
-        })
-        .click();
+      // The LAYR chip opens the layr menu; the remote server takes the choice for its Mac
+      // folder.
+      await layrChip.click();
       await page
         .getByRole("menuitem", {
           name: "Choose versions (1) (REM)",
@@ -457,15 +462,34 @@ for (const [theme, viewport] of [
         await page
           .getByRole("button", { name: "Servers and chats", exact: true })
           .click();
+      // The project menu has no layr items: they are only in the LAYR chip's menu.
       await heading.hover();
-      await heading
-        .getByRole("button", {
-          name: "Options for project Home project",
-          exact: true,
-        })
-        .click();
+      const options = heading.getByRole("button", {
+        name: "Options for project Home project",
+        exact: true,
+      });
+      await options.click();
+      await expect(
+        page.getByRole("menuitem", { name: "Rename project", exact: true }),
+      ).toBeVisible();
+      for (const name of [
+        "Choose versions (1) (REM)",
+        "Pause sync (REM)",
+        "Open in Desk (REM)",
+      ])
+        await expect(
+          page.getByRole("menuitem", { name, exact: true }),
+        ).toHaveCount(0);
+      await options.click();
+      await expect(
+        page.getByRole("menuitem", { name: "Rename project", exact: true }),
+      ).toHaveCount(0);
+      await layrChip.click();
       await expect(
         page.getByText("Vault: saved 10 min ago (REM)"),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("menuitem", { name: "Pause sync (REM)", exact: true }),
       ).toBeVisible();
       await expect(
         page.getByRole("menuitem", { name: "Open in Desk (REM)", exact: true }),
@@ -475,7 +499,9 @@ for (const [theme, viewport] of [
       ).toHaveCount(0);
       // The screenshot waits for the end of the menu's opening transition.
       await expect(
-        page.getByRole("menu", { name: "Options for project Home project" }),
+        page.getByRole("menu").filter({
+          has: page.getByRole("menuitem", { name: "Open in Desk (REM)" }),
+        }),
       ).toHaveCSS("opacity", "1");
       await page.screenshot({
         path: testInfo.outputPath(`vault-menu-${theme}.png`),

@@ -1395,12 +1395,6 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                 >
                   <FolderOpen size={18} />
                   <span title={group.name}>{group.name}</span>
-                  {chip && (
-                    <ProjectLayrReadiness
-                      summary={chip.summary}
-                      attention={chip.attention}
-                    />
-                  )}
                 </UnstyledButton>
                 {!archive && (!compact || !!group.path) && (
                   <ActionIcon
@@ -1510,102 +1504,123 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                           Remove from sidebar
                         </Menu.Item>
                       )}
-                      {syncEntries.length > 0 && <Menu.Divider />}
-                      {syncEntries.length > 0 && (
-                        <Menu.Label>Mac folder sync</Menu.Label>
-                      )}
-                      {syncEntries.flatMap((entry) => {
-                        const suffix = entry.server ? ` (${entry.server})` : "";
-                        const key = entry.ownerId || "local";
-                        const waiting =
-                          macSyncOpen(entry.sync).length +
-                          entry.sync.withAgent.length;
-                        return [
-                          waiting > 0 && (
-                            <Menu.Item
-                              key={`${key}:choose`}
-                              onClick={() =>
-                                setSyncDialog({
-                                  path: group.path,
-                                  ...(entry.ownerId
-                                    ? { ownerId: entry.ownerId }
-                                    : {}),
-                                })
-                              }
-                            >
-                              {`Choose versions (${waiting})${suffix}`}
-                            </Menu.Item>
-                          ),
-                          entry.sync.deletes > 0 && (
-                            <Menu.Item
-                              key={`${key}:deletes`}
-                              onClick={() =>
-                                void configureSync(entry, {
-                                  allowDeletes: true,
-                                })
-                              }
-                            >
-                              {`Sync ${entry.sync.deletes} Mac deletions${suffix}`}
-                            </Menu.Item>
-                          ),
-                          <Menu.Item
-                            key={`${key}:pause`}
-                            onClick={() =>
-                              void configureSync(entry, {
-                                enabled: !entry.sync.enabled,
-                              })
-                            }
-                          >
-                            {`${entry.sync.enabled ? "Pause" : "Resume"} sync${suffix}`}
-                          </Menu.Item>,
-                        ];
-                      })}
-                      {vaultEntries.length > 0 && <Menu.Divider />}
-                      {vaultEntries.flatMap((entry) => {
-                        const suffix = entry.server ? ` (${entry.server})` : "";
-                        const key = `vault:${entry.ownerId || "local"}`;
-                        const link = deskLink(entry.vault);
-                        return [
-                          <Menu.Label
-                            key={`${key}:label`}
-                            title={entry.vault.reason ?? undefined}
-                          >
-                            {`${vaultLabel(entry.vault)}${suffix}`}
-                          </Menu.Label>,
-                          link && (
-                            <Menu.Item
-                              key={`${key}:desk`}
-                              component="a"
-                              href={link}
-                              target="_blank"
-                              rel="noreferrer"
-                            >
-                              {`Open in Desk${suffix}`}
-                            </Menu.Item>
-                          ),
-                          canPull(entry) && (
-                            <Menu.Item
-                              key={`${key}:pull`}
-                              onClick={() => void pull(entry)}
-                            >
-                              {`Pull…${suffix}`}
-                            </Menu.Item>
-                          ),
-                          entry.vault.state === "none" && (
-                            <Menu.Item
-                              key={`${key}:setup`}
-                              component="a"
-                              href={VAULT_SETUP_URL}
-                              target="_blank"
-                              rel="noreferrer"
-                            >
-                              Set up vault…
-                            </Menu.Item>
-                          ),
-                        ];
-                      })}
                     </Menu.Dropdown>
                   </Menu>
+                )}
+                {chip && (
+                  <div className="project-tree-layr">
+                    <Menu withinPortal position="bottom-start">
+                      <Menu.Target>
+                        <ProjectLayrReadiness
+                          summary={chip.summary}
+                          attention={chip.attention}
+                        />
+                      </Menu.Target>
+                      <Menu.Dropdown>
+                        {(layr?.title ?? "").split("\n").map((line) => (
+                          <Menu.Label key={`layr:${line}`}>{line}</Menu.Label>
+                        ))}
+                        {syncEntries.length > 0 && <Menu.Divider />}
+                        {syncEntries.length > 0 && (
+                          <Menu.Label>Mac folder sync</Menu.Label>
+                        )}
+                        {syncEntries.flatMap((entry) => {
+                          const suffix = entry.server
+                            ? ` (${entry.server})`
+                            : "";
+                          const key = entry.ownerId || "local";
+                          const waiting =
+                            macSyncOpen(entry.sync).length +
+                            entry.sync.withAgent.length;
+                          return [
+                            waiting > 0 && (
+                              <Menu.Item
+                                key={`${key}:choose`}
+                                onClick={() =>
+                                  setSyncDialog({
+                                    path: group.path,
+                                    ...(entry.ownerId
+                                      ? { ownerId: entry.ownerId }
+                                      : {}),
+                                  })
+                                }
+                              >
+                                {`Choose versions (${waiting})${suffix}`}
+                              </Menu.Item>
+                            ),
+                            entry.sync.deletes > 0 && (
+                              <Menu.Item
+                                key={`${key}:deletes`}
+                                onClick={() =>
+                                  void configureSync(entry, {
+                                    allowDeletes: true,
+                                  })
+                                }
+                              >
+                                {`Sync ${entry.sync.deletes} Mac deletions${suffix}`}
+                              </Menu.Item>
+                            ),
+                            <Menu.Item
+                              key={`${key}:pause`}
+                              onClick={() =>
+                                void configureSync(entry, {
+                                  enabled: !entry.sync.enabled,
+                                })
+                              }
+                            >
+                              {`${entry.sync.enabled ? "Pause" : "Resume"} sync${suffix}`}
+                            </Menu.Item>,
+                          ];
+                        })}
+                        {vaultEntries.length > 0 && <Menu.Divider />}
+                        {vaultEntries.flatMap((entry) => {
+                          const suffix = entry.server
+                            ? ` (${entry.server})`
+                            : "";
+                          const key = `vault:${entry.ownerId || "local"}`;
+                          const link = deskLink(entry.vault);
+                          return [
+                            <Menu.Label
+                              key={`${key}:label`}
+                              title={entry.vault.reason ?? undefined}
+                            >
+                              {`${vaultLabel(entry.vault)}${suffix}`}
+                            </Menu.Label>,
+                            link && (
+                              <Menu.Item
+                                key={`${key}:desk`}
+                                component="a"
+                                href={link}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                {`Open in Desk${suffix}`}
+                              </Menu.Item>
+                            ),
+                            canPull(entry) && (
+                              <Menu.Item
+                                key={`${key}:pull`}
+                                onClick={() => void pull(entry)}
+                              >
+                                {`Pull…${suffix}`}
+                              </Menu.Item>
+                            ),
+                            entry.vault.state === "none" && (
+                              <Menu.Item
+                                key={`${key}:setup`}
+                                component="a"
+                                href={VAULT_SETUP_URL}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                Set up vault…
+                              </Menu.Item>
+                            ),
+                          ];
+                        })}
+                      </Menu.Dropdown>
+                    </Menu>
+                  </div>
                 )}
               </div>
               {syncDialogEntry && (

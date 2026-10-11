@@ -66,21 +66,30 @@
   opacity: 1;
 }
 /* The LAYR chip matches .workspace-mode-badge; the dot tells the VM import state. It sits on
-   a second line under the project name, so the name keeps the whole width. */
-.project-tree-toggle:has(> .project-layr-readiness) {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  column-gap: 9px;
-  row-gap: 3px;
+   a second line under the project name, so the name keeps the whole width, and opens the
+   project's layr menu. */
+.project-tree-heading:has(> .project-tree-layr) {
+  flex-wrap: wrap;
 }
-.project-tree-toggle:has(> .project-layr-readiness) > svg {
-  grid-row: 1 / span 2;
+.project-tree-layr {
+  flex: 1 0 100%;
+  margin-top: -5px;
+  padding: 0 0 4px 35px;
 }
-.project-tree-toggle > .project-layr-readiness {
-  grid-column: 2;
-  justify-self: start;
+.project-tree-layr .project-layr-readiness {
+  cursor: pointer;
+  background: none;
+  font-family: inherit;
 }
-.project-tree-toggle .project-layr-readiness {
+.project-tree-layr .project-layr-readiness:hover,
+.project-tree-layr .project-layr-readiness[aria-expanded="true"] {
+  border-color: var(--muted);
+}
+.project-tree-layr .project-layr-readiness:focus-visible {
+  outline: 2px solid var(--mantine-primary-color-filled);
+  outline-offset: 1px;
+}
+.project-tree-layr .project-layr-readiness {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;

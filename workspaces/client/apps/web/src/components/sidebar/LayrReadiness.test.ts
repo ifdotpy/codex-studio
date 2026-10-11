@@ -30,10 +30,11 @@ test.each([
   const markup = render([{ readiness }]);
   expect(markup).toContain(`data-state="${readiness.state}"`);
   expect(markup).toContain(`title="${text}"`);
-  // The project button carries the words for assistive technology.
-  expect(markup).toContain('aria-hidden="true"');
+  // The chip is a button that names the state for assistive technology.
+  expect(markup).toContain(`aria-label="layr: ${text}"`);
+  expect(markup).toContain('type="button"');
   expect(markup).toMatch(
-    /^<small class="project-layr-readiness"[^>]*>LAYR<\/small>$/,
+    /^<button[^>]*class="project-layr-readiness"[^>]*>LAYR<\/button>$/,
   );
 });
 
