@@ -107,6 +107,20 @@ class NativeBinaryContract(unittest.TestCase):
             self.assertEqual(rows[1]['identity'], {**native.file_identity(old),
                                                  'companions': native.companion_identities(old)})
 
+    def test_explicit_native_runtime_pin_excludes_ambient_candidates(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pinned = fake_binary(root / 'pinned', version='0.154.0')
+            ambient = fake_binary(root / 'ambient', version='0.155.1')
+            env = {
+                'CODEX_AGENTS_NATIVE_RUNTIME_PIN': str(pinned),
+                'CODEX_BIN': str(ambient),
+                'PATH': str(ambient.parent),
+            }
+            with patch.object(native, 'CHATGPT_CODEX', ambient):
+                rows = native.discover_candidates(env=env)
+            self.assertEqual([row['path'] for row in rows], [str(pinned.resolve())])
+
     def test_npm_launcher_resolves_platform_bundle_without_running_javascript(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -7,6 +7,7 @@ import json
 import time
 import unittest
 from urllib.parse import urlencode
+from unittest.mock import patch
 
 from test_isolation import isolate_supervisor_environment
 
@@ -25,6 +26,20 @@ class NativeActionHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "X-Canvas-Workspace": cls.backend.identity["workspaceId"],
             "X-Studio-API-Schema": cls.backend.schema_hash,
         }
+
+    def test_backend_startup_error_reports_exit_status_and_stderr_tail(self) -> None:
+        previous_stderr = self.backend._stderr
+        self.backend._stderr = ["backend bootstrap failed\n"]
+        try:
+            with patch.object(self.backend, "stop"):
+                with self.assertRaisesRegex(RuntimeError, "child exit status=19") as caught:
+                    self.backend._raise_backend_not_ready(
+                        "process exited before the ready line", 19,
+                    )
+        finally:
+            self.backend._stderr = previous_stderr
+        self.assertIn("stderr tail:", str(caught.exception))
+        self.assertIn("backend bootstrap failed", str(caught.exception))
 
     def create_lead(self, identifier: str) -> dict[str, object]:
         response = self.backend.request(
