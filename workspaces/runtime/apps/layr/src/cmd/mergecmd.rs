@@ -8,6 +8,7 @@ use crate::diff;
 use crate::ids;
 use crate::merge;
 use crate::model::{Line, Record, StateKind, StateRec};
+use crate::overlay::{Layer, Mode};
 use crate::repo::{skip_path, Repo};
 use crate::revs;
 use anyhow::Result;
@@ -60,7 +61,114 @@ pub fn merge_states(
     Ok((st, out))
 }
 
+/// The merge of the follow overlays of two lines (docs/overlays.md, section 1): it goes with the
+/// merge of the shared set, and the user who merges must read each of them.
+#[derive(Default)]
+pub struct OverlayMerge {
+    /// The stack of the line after the merge.
+    layers: Vec<Layer>,
+    /// Overlay, its line of the merged line, the new head, the new state (none for a fast-forward).
+    moves: Vec<(String, Line, String, Option<StateRec>)>,
+    messages: Vec<String>,
+    conflicts: usize,
+}
+
+impl OverlayMerge {
+    fn changed(&self) -> bool {
+        !self.moves.is_empty()
+    }
+
+    fn names(&self) -> Vec<String> {
+        self.moves.iter().map(|m| m.0.clone()).collect()
+    }
+
+    fn discard(&self, repo: &Repo) {
+        for (name, _, _, st) in &self.moves {
+            if let (Some(st), Ok(o)) = (st, repo.overlay_repo(name)) {
+                o.discard_states(std::slice::from_ref(st));
+            }
+        }
+    }
+
+    /// The records in the overlays, before the record of the line.
+    fn record(&self, ctx: &Ctx, repo: &Repo) -> Result<()> {
+        for (name, ol, head, st) in &self.moves {
+            let o = repo.overlay_repo(name)?;
+            let _lock = o.p.lock()?;
+            crate::overlay::move_overlay_line(&o, ctx, "merge", ol, head, st.iter().cloned().collect())?;
+        }
+        Ok(())
+    }
+}
+
+/// Merge the follow overlays of `theirs` into those of `line`: a fast-forward, or a three-way merge
+/// in the overlay (states written, no records yet).
+fn plan_overlays(ctx: &Ctx, repo: &Repo, line: &Line, theirs: Option<&Line>, label: &str, message: &str) -> Result<OverlayMerge> {
+    let ours = repo.layers(line)?;
+    let mut m = OverlayMerge { layers: ours.clone(), ..Default::default() };
+    let theirs = match theirs {
+        Some(t) => t,
+        None => return Ok(m),
+    };
+    let r = (|| -> Result<()> {
+        for tl in repo.layers(theirs)? {
+            let info = match repo.overlay_info(&tl.overlay)? {
+                Some(i) if i.mode == Mode::Follow => i,
+                _ => continue,
+            };
+            if !repo.reads_overlay(&tl.overlay, ctx.caller.uid, ctx.caller.gid)? {
+                return Err(exit(
+                    1,
+                    format!("error: merging line '{}' needs the read right of its overlay '{}'", theirs.name, tl.overlay),
+                ));
+            }
+            let i = match ours.iter().position(|l| l.overlay == tl.overlay) {
+                Some(i) => i,
+                None => {
+                    return Err(exit(
+                        1,
+                        format!(
+                            "error: line '{}' shows overlay '{}' (follow mode), which line '{}' does not use; run 'layr overlay use --add {}' in '{}' first",
+                            theirs.name, tl.overlay, line.name, tl.overlay, line.name
+                        ),
+                    ))
+                }
+            };
+            let ours_s = ours[i].state.clone();
+            let o = repo.overlay_repo(&tl.overlay)?;
+            if tl.state == ours_s || o.is_ancestor(&tl.state, &ours_s)? {
+                continue;
+            }
+            let ol =
+                o.p.db
+                    .line_by_name(&Repo::overlay_line_name(&info, &line.id, line.owner))?
+                    .ok_or_else(|| exit(1, format!("error: line '{}' has no line in overlay '{}'", line.name, tl.overlay)))?;
+            if o.is_ancestor(&ours_s, &tl.state)? {
+                m.layers[i].state = tl.state.clone();
+                m.moves.push((tl.overlay.clone(), ol, tl.state.clone(), None));
+                continue;
+            }
+            let base = o
+                .merge_base(&ours_s, &tl.state)?
+                .ok_or_else(|| exit(128, format!("fatal: overlay '{}': refusing to merge unrelated histories", tl.overlay)))?;
+            let (st, out) =
+                merge_states(ctx, &o, &ol, &base, &ours_s, &tl.state, label, vec![ours_s.clone(), tl.state.clone()], message)?;
+            m.conflicts += out.conflicts.len();
+            m.messages.extend(out.messages.iter().map(|x| format!("overlay {}: {x}", tl.overlay)));
+            m.layers[i].state = st.id.clone();
+            m.moves.push((tl.overlay.clone(), ol, st.id.clone(), Some(st)));
+        }
+        Ok(())
+    })();
+    if let Err(e) = r {
+        m.discard(repo);
+        return Err(e);
+    }
+    Ok(m)
+}
+
 /// Move the line to `new_head` and update the working folder in place.
+#[allow(clippy::too_many_arguments)]
 fn finish(
     ctx: &Ctx,
     repo: &Repo,
@@ -70,23 +178,55 @@ fn finish(
     states: Vec<StateRec>,
     working_before: Option<String>,
     local: &std::collections::BTreeSet<String>,
-    data: serde_json::Value,
+    mut data: serde_json::Value,
+    ovl: Option<&OverlayMerge>,
 ) -> Result<Vec<changes::Change>> {
-    if let Err(e) = repo.check_move(ctx, line, new_head) {
+    let fail = |e: anyhow::Error| {
         repo.discard_states(&states);
-        return Err(e);
+        if let Some(o) = ovl {
+            o.discard(repo);
+        }
+        e
+    };
+    if let Err(e) = repo.check_move(ctx, line, new_head) {
+        return Err(fail(e));
     }
-    let old_root = repo.state_root(&line.head)?;
-    let new_root = repo.state_root(new_head)?;
+    // A line with overlays: the full trees of the old and the new head, with the overlays in
+    // place, so the update never touches an overlay file it does not change.
+    let layers = match ovl {
+        Some(o) if o.changed() => o.layers.clone(),
+        _ => repo.layers(line)?,
+    };
+    let view = if layers.is_empty() {
+        None
+    } else {
+        match repo.assemble(line, new_head, &layers) {
+            Ok(v) => Some(v),
+            Err(e) => return Err(fail(e)),
+        }
+    };
+    let old_root = repo.head_tree(line)?;
+    let new_root = match &view {
+        Some(v) => v.path.clone(),
+        None => repo.state_root(new_head)?,
+    };
     let wdir = repo.working(line);
     let applied = match repo.apply_delta(&old_root, &new_root, &wdir, repo.own(line), local, false) {
         Ok(v) => v,
-        Err(e) => {
-            repo.discard_states(&states);
-            return Err(e);
-        }
+        Err(e) => return Err(fail(e)),
     };
+    if let Some(o) = ovl.filter(|o| o.changed()) {
+        if let Err(e) = o.record(ctx, repo) {
+            return Err(fail(e));
+        }
+        data["stack"] = crate::overlay::stack_data(&line.id, &layers);
+        data["line"] = serde_json::json!(line.id);
+        data["overlays"] = serde_json::json!(o.names());
+    }
     repo.move_head(ctx, op, line, new_head, states, working_before, data)?;
+    if let Some(v) = view {
+        repo.install_base(line, v, new_head, &layers)?;
+    }
     let mut l2 = line.clone();
     l2.head = new_head.to_string();
     if let Err(e) = crate::gitbridge::refresh_git_folder(repo, &l2) {
@@ -220,7 +360,17 @@ fn run_line_checks(
         return Err(exit(1, format!("error: line '{}' moved while its checks ran; merge again", line.name)));
     }
     let (st, _scan, _it, _idx) = repo.status(&now)?;
-    Ok((lock, st.local_paths()))
+    Ok((lock, local_paths(repo, &now, &st)?))
+}
+
+/// Paths a merge must not overwrite: local changes, and in a line with overlays also ignored
+/// files (a user's own key where an overlay has one).
+fn local_paths(repo: &Repo, line: &Line, st: &crate::repo::Status) -> Result<std::collections::BTreeSet<String>> {
+    let mut local = st.local_paths();
+    if !repo.layers(line)?.is_empty() {
+        local.extend(st.ignored.iter().cloned());
+    }
+    Ok(local)
 }
 
 fn print_stat(ctx: &Ctx, repo: &Repo, from: &str, to: &str) -> Result<()> {
@@ -290,7 +440,20 @@ pub fn merge_rev(ctx: &Ctx, repo: &Repo, line: &Line, rev: &str, a: &crate::args
     let rule = repo.policy().rule_for(&line.name);
     let line = repo.line(&line.id)?;
     let head = line.head.clone();
-    if theirs == head || repo.is_ancestor(&theirs, &head)? {
+    let label = theirs_line.as_ref().map(|l| l.name.clone()).unwrap_or_else(|| rev.to_string());
+    let message = a.get("-m").map(|s| s.to_string()).unwrap_or_else(|| {
+        if theirs_line.is_some() {
+            format!("Merge line '{label}'")
+        } else {
+            format!("Merge {label}")
+        }
+    });
+    let theirs_line = match theirs_line {
+        Some(l) => Some(repo.localize(l)?).filter(|l| l.head == theirs),
+        None => None,
+    };
+    let up_to_date = theirs == head || repo.is_ancestor(&theirs, &head)?;
+    if up_to_date && theirs_line.as_ref().map(|t| repo.layers(t).map(|v| v.is_empty())).transpose()?.unwrap_or(true) {
         outln!(ctx, "Already up to date.");
         return Ok(0);
     }
@@ -298,10 +461,51 @@ pub fn merge_rev(ctx: &Ctx, repo: &Repo, line: &Line, rev: &str, a: &crate::args
     if !st.staged.is_empty() {
         return Err(exit(1, "error: you have staged changes; commit or stash them before merging."));
     }
-    let mut local = st.local_paths();
-    let ff = repo.is_ancestor(&head, &theirs)?;
+    let mut local = local_paths(repo, &line, &st)?;
     let quiet = a.has("-q");
     let checks = rule.as_ref().map(|r| r.check.clone()).unwrap_or_default();
+    // The follow overlays merge with the line: all of them or none.
+    let ovl = plan_overlays(ctx, repo, &line, theirs_line.as_ref(), &label, &message)?;
+    if !checks.is_empty() && ovl.conflicts > 0 {
+        ovl.discard(repo);
+        return Err(exit(
+            1,
+            format!(
+                "error: the merge of the overlays into the protected line '{}' has conflicts; resolve them in a line first",
+                line.name
+            ),
+        ));
+    }
+    let report = |ctx: &Ctx| {
+        for m in &ovl.messages {
+            outln!(ctx, "{m}");
+        }
+        if ovl.changed() && !quiet {
+            outln!(ctx, "Merged overlays: {}", ovl.names().join(" "));
+        }
+    };
+    if up_to_date {
+        if !ovl.changed() {
+            outln!(ctx, "Already up to date.");
+            return Ok(0);
+        }
+        // Only the overlays changed: the shared set stays.
+        finish(
+            ctx,
+            repo,
+            &line,
+            "merge",
+            &head,
+            vec![],
+            w,
+            &local,
+            serde_json::json!({"theirs": theirs, "overlays_only": true}),
+            Some(&ovl),
+        )?;
+        report(ctx);
+        return Ok(if ovl.conflicts > 0 { 1 } else { 0 });
+    }
+    let ff = repo.is_ancestor(&head, &theirs)?;
     let mut _relock = None;
     if ff && !a.has("--no-ff") && !a.has("--squash") {
         check_paths(ctx, repo, &line, rule.as_ref(), &head, &theirs)?;
@@ -322,28 +526,26 @@ pub fn merge_rev(ctx: &Ctx, repo: &Repo, line: &Line, rev: &str, a: &crate::args
             w,
             &local,
             serde_json::json!({"theirs": theirs, "fast_forward": true}),
+            Some(&ovl),
         )?;
         if !quiet {
             outln!(ctx, "Updating {}..{}\nFast-forward", ids::short(&head), ids::short(&theirs));
             print_stat(ctx, repo, &head, &theirs)?;
         }
-        return Ok(0);
+        report(ctx);
+        return Ok(if ovl.conflicts > 0 { 1 } else { 0 });
     }
     if a.has("--ff-only") {
+        ovl.discard(repo);
         return Err(exit(128, "fatal: Not possible to fast-forward, aborting."));
     }
     let base = match repo.merge_base(&head, &theirs)? {
         Some(b) => b,
-        None => return Err(exit(128, format!("fatal: refusing to merge unrelated histories ({rev})"))),
-    };
-    let label = theirs_line.as_ref().map(|l| l.name.clone()).unwrap_or_else(|| rev.to_string());
-    let message = a.get("-m").map(|s| s.to_string()).unwrap_or_else(|| {
-        if theirs_line.is_some() {
-            format!("Merge line '{label}'")
-        } else {
-            format!("Merge {label}")
+        None => {
+            ovl.discard(repo);
+            return Err(exit(128, format!("fatal: refusing to merge unrelated histories ({rev})")));
         }
-    });
+    };
     let parents = if a.has("--squash") { vec![head.clone()] } else { vec![head.clone(), theirs.clone()] };
     let (state, out) = merge_states(ctx, repo, &line, &base, &head, &theirs, &label, parents, &message)?;
     let sid = state.id.clone();
@@ -353,11 +555,13 @@ pub fn merge_rev(ctx: &Ctx, repo: &Repo, line: &Line, rev: &str, a: &crate::args
         .and_then(|_| check_approvals(ctx, repo, &line, rule.as_ref(), &head, &theirs))
     {
         repo.discard_states(&states);
+        ovl.discard(repo);
         return Err(e);
     }
     if !checks.is_empty() {
         if nconf > 0 {
             repo.discard_states(&states);
+            ovl.discard(repo);
             return Err(exit(
                 1,
                 format!("error: the merge into the protected line '{}' has {nconf} conflict(s); resolve them in a line and merge that line", line.name),
@@ -384,10 +588,12 @@ pub fn merge_rev(ctx: &Ctx, repo: &Repo, line: &Line, rev: &str, a: &crate::args
         w,
         &local,
         serde_json::json!({"theirs": theirs, "base": base, "squash": a.has("--squash"), "conflicts": nconf}),
+        Some(&ovl),
     )?;
     for m in &out.messages {
         outln!(ctx, "{m}");
     }
+    report(ctx);
     if nconf > 0 {
         outln!(
             ctx,
@@ -400,7 +606,7 @@ pub fn merge_rev(ctx: &Ctx, repo: &Repo, line: &Line, rev: &str, a: &crate::args
         outln!(ctx, "Merge made by the 'layr' strategy: {}", ids::short(&sid));
         print_stat(ctx, repo, &head, &sid)?;
     }
-    Ok(0)
+    Ok(if ovl.conflicts > 0 { 1 } else { 0 })
 }
 
 fn pick(ctx: &Ctx, args: &[String], revert: bool) -> Result<i32> {
@@ -477,6 +683,7 @@ fn pick(ctx: &Ctx, args: &[String], revert: bool) -> Result<i32> {
             first_w.take(),
             &local,
             serde_json::json!({"source": p}),
+            None,
         )?;
         line = repo.line(&line.id)?;
         for m in &out.messages {
@@ -578,6 +785,7 @@ pub fn rebase(ctx: &Ctx, args: &[String]) -> Result<i32> {
         w,
         &local,
         serde_json::json!({"upstream": upstream, "onto": onto, "count": states.len()}),
+        None,
     )?;
     if conflicts > 0 {
         outln!(

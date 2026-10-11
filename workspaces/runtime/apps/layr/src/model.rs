@@ -240,9 +240,23 @@ pub fn validate(r: &Record) -> anyhow::Result<()> {
     }
     for k in ["name", "from", "to", "remote"] {
         if let Some(v) = d.get(k).and_then(|v| v.as_str()) {
-            if !is_name(v) {
+            // An overlay is the internal project `<project>%<overlay>`.
+            let overlay_project =
+                r.op == "project" && k == "name" && v.split_once('%').map(|(a, b)| is_name(a) && is_name(b)) == Some(true);
+            if !is_name(v) && !overlay_project {
                 bail!("record {}: bad {k} {v:?}", r.seq);
             }
+        }
+    }
+    // The overlays a line shows: names of overlays and their states.
+    if let Some(st) = d.get("stack") {
+        uuid("stack line", st.get("line").and_then(|v| v.as_str()).unwrap_or(""))?;
+        for l in st.get("layers").and_then(|v| v.as_array()).ok_or_else(|| anyhow::anyhow!("record {}: bad stack", r.seq))? {
+            let name = l.get("overlay").and_then(|v| v.as_str()).unwrap_or("");
+            if !is_name(name) {
+                bail!("record {}: bad overlay name {name:?}", r.seq);
+            }
+            uuid("overlay state", l.get("state").and_then(|v| v.as_str()).unwrap_or(""))?;
         }
     }
     for k in ["ref", "branch"] {
@@ -336,6 +350,34 @@ mod tests {
         let mut r = rec();
         r.states.push(state("01a12290-0000-7000-8000-000000000003"));
         assert!(validate(&r).is_ok());
+    }
+
+    #[test]
+    fn checks_the_stack_of_a_line() {
+        let line = "01a12290-0000-7000-8000-000000000004";
+        let st = "01a12290-0000-7000-8000-000000000005";
+        let mut r = rec();
+        r.data = serde_json::json!({"stack": {"line": line, "layers": [{"overlay": "keys", "state": st}]}});
+        assert!(validate(&r).is_ok());
+        r.data = serde_json::json!({"stack": {"line": line, "layers": [{"overlay": "../keys", "state": st}]}});
+        assert!(validate(&r).is_err(), "an overlay name is a name");
+        r.data = serde_json::json!({"stack": {"line": line, "layers": [{"overlay": "keys", "state": "../x"}]}});
+        assert!(validate(&r).is_err(), "a state is an id");
+        r.data = serde_json::json!({"stack": {"line": "main", "layers": []}});
+        assert!(validate(&r).is_err(), "a line is an id");
+    }
+
+    #[test]
+    fn an_overlay_project_name_only_in_its_project_record() {
+        let mut r = rec();
+        r.op = "project".into();
+        r.data = serde_json::json!({"name": "sap%keys"});
+        assert!(validate(&r).is_ok());
+        r.data = serde_json::json!({"name": "sap%../keys"});
+        assert!(validate(&r).is_err());
+        r.op = "line.create".into();
+        r.data = serde_json::json!({"name": "sap%keys"});
+        assert!(validate(&r).is_err());
     }
 
     #[test]

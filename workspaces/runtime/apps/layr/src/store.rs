@@ -11,6 +11,9 @@
 //!                                     its fsync into a full transaction commit (100 ms against 6)
 //!   meta/stage/<line-id>              staging lines (the index of `layr add`)
 //!   meta/scan, meta/work              temporary snapshots
+//!   meta/base/<line-id>               the full tree of a line with overlays (its layers together)
+//!   meta/overlays/<overlay>/          an overlay: an internal project `<name>%<overlay>` with the
+//!                                     same layout (its own states, records and readers)
 //! ```
 //!
 //! Write order of an operation: snapshots first, then one database transaction with the record
@@ -79,6 +82,22 @@ impl Store {
 
     pub fn projects_dir(&self) -> PathBuf {
         self.root.join("projects")
+    }
+
+    /// The folder of a project. An overlay is the internal project `<project>%<overlay>`, kept
+    /// below the project's private `meta` folder.
+    pub fn project_dir(&self, name: &str) -> Result<PathBuf> {
+        match name.split_once('%') {
+            Some((p, o)) => {
+                check_name("project", p)?;
+                check_name("overlay", o)?;
+                Ok(self.projects_dir().join(p).join("meta").join("overlays").join(o))
+            }
+            None => {
+                check_name("project", name)?;
+                Ok(self.projects_dir().join(name))
+            }
+        }
     }
 
     pub fn project_names(&self) -> Result<Vec<String>> {
@@ -186,10 +205,30 @@ impl<'a> Project<'a> {
     pub fn work_dir(&self) -> PathBuf {
         self.meta_dir().join("work")
     }
+    /// The full trees of lines with overlays, by line id (derived; rebuilt when missing).
+    pub fn base_dir(&self) -> PathBuf {
+        self.meta_dir().join("base")
+    }
+    /// True for an overlay: the internal project `<name>%<overlay>`.
+    pub fn is_overlay(&self) -> bool {
+        self.name.contains('%')
+    }
 
     pub fn create(store: &'a Store, name: &str, actor: &Actor, config: serde_json::Value) -> Result<Project<'a>> {
         check_name("project", name)?;
-        let dir = store.projects_dir().join(name);
+        Self::create_in(store, name, actor, config)
+    }
+
+    /// The internal project of an overlay, `<project>%<overlay>` (`layr overlay create` only).
+    pub fn create_overlay(store: &'a Store, name: &str, actor: &Actor, config: serde_json::Value) -> Result<Project<'a>> {
+        if !name.contains('%') {
+            bail!("not an overlay name: {name}");
+        }
+        Self::create_in(store, name, actor, config)
+    }
+
+    fn create_in(store: &'a Store, name: &str, actor: &Actor, config: serde_json::Value) -> Result<Project<'a>> {
+        let dir = store.project_dir(name)?;
         if db_file(&dir).exists() {
             bail!("project '{name}' already exists");
         }
@@ -219,7 +258,7 @@ impl<'a> Project<'a> {
     /// Folders of a project without records (for a restore or a replica).
     pub fn create_empty(store: &'a Store, name: &str) -> Result<Project<'a>> {
         check_name("project", name)?;
-        let dir = store.projects_dir().join(name);
+        let dir = store.project_dir(name)?;
         if db_file(&dir).exists() {
             bail!("project '{name}' already exists");
         }
@@ -243,7 +282,7 @@ impl<'a> Project<'a> {
 
     /// Open a project that may not have its records yet.
     pub fn open_partial(store: &'a Store, name: &str) -> Result<Project<'a>> {
-        let dir = store.projects_dir().join(name);
+        let dir = store.project_dir(name)?;
         let db = Db::open(&db_file(&dir))?;
         let mut p = Project { store, name: name.to_string(), dir, id: String::new(), db };
         p.id = p.project_id().unwrap_or_default();
@@ -252,8 +291,7 @@ impl<'a> Project<'a> {
 
     pub fn open(store: &'a Store, name: &str) -> Result<Project<'a>> {
         let _t = crate::trace::span("open project");
-        check_name("project", name)?;
-        let dir = store.projects_dir().join(name);
+        let dir = store.project_dir(name)?;
         if !db_file(&dir).is_file() {
             bail!("project '{name}' not found");
         }
@@ -574,5 +612,21 @@ impl<'a> Project<'a> {
     /// The single admin of stores made before roles (`admin`, earlier `lead`); see `access`.
     pub fn legacy_admin(&self) -> u32 {
         self.config_u64("admin", self.config_u64("lead", 0)) as u32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_overlay_lives_in_the_private_folder_of_its_project() {
+        let key = SigningKey::from_bytes(&[7u8; 32]);
+        let store = Store { root: PathBuf::from("/s"), machine: Machine { id: String::new(), name: String::new(), key } };
+        assert_eq!(store.project_dir("sap").unwrap(), PathBuf::from("/s/projects/sap"));
+        assert_eq!(store.project_dir("sap%keys").unwrap(), PathBuf::from("/s/projects/sap/meta/overlays/keys"));
+        for bad in ["sap%", "%keys", "sap%keys%x", "sap%../x", "../sap%keys", "sap/x"] {
+            assert!(store.project_dir(bad).is_err(), "{bad}");
+        }
     }
 }

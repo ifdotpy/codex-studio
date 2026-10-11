@@ -49,6 +49,7 @@ pub fn status(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let a = parse(&spec, args)?;
     let h = here(ctx)?;
     let line = h.line()?.clone();
+    h.repo.check_view(ctx, &line)?;
     let specs = h.specs(&a.rest())?;
     let (st, _scan, _itemp, _index) = h.repo.status(&line)?;
     let porcelain = a.has("--porcelain");
@@ -145,6 +146,14 @@ pub fn status(ctx: &Ctx, args: &[String]) -> Result<i32> {
         }
         outln!(ctx);
     }
+    let moves: Vec<(String, String)> = h.repo.pending_moves(&line).into_iter().filter(|(p, _)| matches(&specs, p)).collect();
+    if !moves.is_empty() {
+        outln!(ctx, "Moves to overlays (the next commit):");
+        for (p, o) in &moves {
+            outln!(ctx, "\t{o}: {}", h.rel(p));
+        }
+        outln!(ctx);
+    }
     if !st.conflicts.is_empty() {
         outln!(ctx, "Unmerged paths:\n  (fix the files, then \"layr add <file>...\" and \"layr commit\")");
         for c in &st.conflicts {
@@ -229,8 +238,14 @@ pub fn begin(ctx: &Ctx, repo: &Repo, line: &Line, op: crate::repo::LineOp) -> Re
 /// Stage paths: copy them from the working snapshot into the staging line. A file that moved
 /// in the working folder (same inode number) is moved in the staging line too, so states keep
 /// the inode and btrfs reports the move.
-fn stage_paths(repo: &Repo, line: &Line, scan: &Path, paths: &BTreeSet<String>) -> Result<()> {
+pub fn stage_paths(repo: &Repo, line: &Line, scan: &Path, paths: &BTreeSet<String>) -> Result<()> {
     let stage = repo.ensure_stage(line)?;
+    stage_into(repo, line, &stage, scan, paths)
+}
+
+/// `stage_paths` into a given copy of the index.
+fn stage_into(repo: &Repo, line: &Line, stage: &Path, scan: &Path, paths: &BTreeSet<String>) -> Result<()> {
+    let stage = stage.to_path_buf();
     let own = repo.own(line);
     let mut gone: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
     for p in paths {
@@ -660,7 +675,11 @@ pub fn commit(ctx: &Ctx, args: &[String]) -> Result<i32> {
         message = String::from_utf8_lossy(&read_caller_file(ctx, f, fsutil::MAX_TEXT)?).into_owned();
     }
     let head = h.repo.state(&line.head)?;
+    let stacked = h.repo.is_stacked(&line)?;
     if a.has("--amend") {
+        if stacked {
+            return Err(exit(1, "error: --amend is not available in a line with overlays yet; make a new commit"));
+        }
         // The amended state replaces the head: the line's history changes.
         h.repo.authorize_line(ctx, &line, crate::repo::LineOp::Rewrite)?;
     }
@@ -671,15 +690,40 @@ pub fn commit(ctx: &Ctx, args: &[String]) -> Result<i32> {
     if message.is_empty() {
         return Err(exit(1, "Aborting commit due to empty commit message (use -m <message>)."));
     }
-    h.repo.authorize_line(ctx, &line, crate::repo::LineOp::Direct)?;
+    // In a line with overlays the owner commits; a change of the shared set also needs the line's
+    // rule (commit_layers checks it), so a protected line takes commits of its overlays only.
+    let op = if stacked { crate::repo::LineOp::Save } else { crate::repo::LineOp::Direct };
+    h.repo.authorize_line(ctx, &line, op)?;
     let _lock = h.repo.p.lock()?;
     let line = h.repo.line(&line.id)?;
-    if a.has("-a") {
+    if a.has("-a") && !stacked {
         let (st, scan, _it, _index) = h.repo.status(&line)?;
         let paths: BTreeSet<String> = st.unstaged.iter().map(|c| c.path.clone()).collect();
         if !paths.is_empty() {
             stage_paths(&h.repo, &line, &scan.path, &paths)?;
         }
+    }
+    let nothing = |h: &Here, line: &Line| -> Result<i32> {
+        let (st2, _s2, _i2, _x2) = h.repo.status(line)?;
+        outln!(ctx, "On line {}", line.name);
+        if !st2.unstaged.is_empty() {
+            outln!(ctx, "Changes not staged for commit:");
+            for c in &st2.unstaged {
+                outln!(ctx, "\tmodified:   {}", h.rel(&c.path));
+            }
+            outln!(ctx, "\nno changes added to commit (use \"layr add\" and/or \"layr commit -a\")");
+        } else if !st2.untracked.is_empty() {
+            outln!(ctx, "nothing added to commit but untracked files present (use \"layr add\" to track)");
+        } else {
+            outln!(ctx, "nothing to commit, working tree clean");
+        }
+        Ok(1)
+    };
+    let author = a
+        .get("--author")
+        .and_then(|au| au.split_once('<').map(|(n, e)| (n.trim().to_string(), e.trim_end_matches('>').trim().to_string())));
+    if stacked {
+        return commit_stacked(ctx, &h, &line, &message, a.has("-a"), a.has("--allow-empty"), a.has("-q"), author, nothing);
     }
     // The new state is a snapshot of the staging line (or the head when nothing is staged);
     // its changes against the head say whether there is anything to commit.
@@ -699,26 +743,11 @@ pub fn commit(ctx: &Ctx, args: &[String]) -> Result<i32> {
     };
     if staged.is_empty() && !a.has("--allow-empty") && !a.has("--amend") {
         h.repo.discard_states(std::slice::from_ref(&state));
-        let (st2, _s2, _i2, _x2) = h.repo.status(&line)?;
-        outln!(ctx, "On line {}", line.name);
-        if !st2.unstaged.is_empty() {
-            outln!(ctx, "Changes not staged for commit:");
-            for c in &st2.unstaged {
-                outln!(ctx, "\tmodified:   {}", h.rel(&c.path));
-            }
-            outln!(ctx, "\nno changes added to commit (use \"layr add\" and/or \"layr commit -a\")");
-        } else if !st2.untracked.is_empty() {
-            outln!(ctx, "nothing added to commit but untracked files present (use \"layr add\" to track)");
-        } else {
-            outln!(ctx, "nothing to commit, working tree clean");
-        }
-        return Ok(1);
+        return nothing(&h, &line);
     }
-    if let Some(au) = a.get("--author") {
-        if let Some((n, e)) = au.split_once('<') {
-            state.author.name = n.trim().to_string();
-            state.author.email = e.trim_end_matches('>').trim().to_string();
-        }
+    if let Some((n, e)) = author {
+        state.author.name = n;
+        state.author.email = e;
     }
     // Content conflicts stay listed while the committed file has markers; the commit clears
     // the other kinds.
@@ -738,22 +767,95 @@ pub fn commit(ctx: &Ctx, args: &[String]) -> Result<i32> {
         let root = if parents_empty(&state) { " (root-commit)" } else { "" };
         outln!(ctx, "[{}{} {}] {}", line.name, root, ids::short(&state.id), message.lines().next().unwrap_or(""));
         let staged = changes::with_renames(&head_root, &new_root, staged);
-        let fds = diff::file_diffs(&head_root, &new_root, &staged)?;
-        ctx.print(&diff::shortstat(&fds));
-        for f in &fds {
-            match (&f.old, &f.new) {
-                (None, Some(n)) => outln!(ctx, " create mode {:06o} {}", n.mode, n.path),
-                (Some(o), None) => outln!(ctx, " delete mode {:06o} {}", o.mode, o.path),
-                (Some(o), Some(n)) if o.path != n.path => outln!(ctx, " rename {} => {} ({}%)", o.path, n.path, f.similarity()),
-                _ => {}
-            }
-        }
+        print_summary(ctx, &head_root, &new_root, &staged)?;
         for c in &cleared {
             outln!(ctx, " resolved conflict: {} ({})", c.path, c.kind);
         }
         if !state.conflicts.is_empty() {
             outln!(ctx, "warning: {} file(s) still have conflict markers; see 'layr status'", state.conflicts.len());
         }
+    }
+    Ok(0)
+}
+
+/// The summary of a commit: the short statistics and the created, deleted and moved files.
+fn print_summary(ctx: &Ctx, old: &Path, new: &Path, list: &[Change]) -> Result<()> {
+    print_fds(ctx, &diff::file_diffs(old, new, list)?);
+    Ok(())
+}
+
+fn print_fds(ctx: &Ctx, fds: &[diff::FileDiff]) {
+    ctx.print(&diff::shortstat(fds));
+    for f in fds {
+        match (&f.old, &f.new) {
+            (None, Some(n)) => outln!(ctx, " create mode {:06o} {}", n.mode, n.path),
+            (Some(o), None) => outln!(ctx, " delete mode {:06o} {}", o.mode, o.path),
+            (Some(o), Some(n)) if o.path != n.path => outln!(ctx, " rename {} => {} ({}%)", o.path, n.path, f.similarity()),
+            _ => {}
+        }
+    }
+}
+
+/// A commit in a line with overlays: the change list split by layer, a new state for each
+/// changed layer (docs/overlays.md, section 3.2).
+#[allow(clippy::too_many_arguments)]
+fn commit_stacked(
+    ctx: &Ctx,
+    h: &Here,
+    line: &Line,
+    message: &str,
+    all: bool,
+    allow_empty: bool,
+    quiet: bool,
+    author: Option<(String, String)>,
+    nothing: impl Fn(&Here, &Line) -> Result<i32>,
+) -> Result<i32> {
+    let repo = &h.repo;
+    let layers = repo.layers(line)?;
+    repo.check_stack(line, &layers)?;
+    let base = repo.head_tree(line)?;
+    let src = match repo.current_stage(line)? {
+        Some(s) => s,
+        None => base.clone(),
+    };
+    // The committed tree: the index, with `-a` the changed files too (staged into a copy, so a
+    // refused commit leaves the index as it was). It becomes the line's base.
+    // The files of `overlay move` come from the working folder as they are now.
+    let pending = repo.pending_moves(line);
+    let new_tree = if all || !pending.is_empty() {
+        let (st, scan, _it, _index) = repo.status(line)?;
+        let mut paths: BTreeSet<String> = BTreeSet::new();
+        if all {
+            paths.extend(st.unstaged.iter().map(|c| c.path.clone()));
+        }
+        paths.extend(pending.keys().cloned());
+        let work = repo.temp_work(&src)?;
+        stage_into(repo, line, &work.path, &scan.path, &paths)?;
+        repo.temp_snapshot(&work.path, true)?
+    } else {
+        repo.temp_snapshot(&src, true)?
+    };
+    let done = match crate::overlay::commit_layers(ctx, repo, line, &layers, new_tree, message, allow_empty, author, !quiet)? {
+        Some(d) => d,
+        None => return nothing(h, line),
+    };
+    repo.drop_stage(line)?;
+    repo.set_pending_moves(line, &BTreeMap::new())?;
+    if !quiet {
+        let subject = message.lines().next().unwrap_or("");
+        match &done.shared {
+            Some(s) => outln!(ctx, "[{} {}] {subject}", line.name, ids::short(&s.id)),
+            None => {
+                let (n, s) = &done.overlays[0];
+                outln!(ctx, "[{} overlay {n} {}] {subject}", line.name, ids::short(&s.id));
+            }
+        }
+        for (i, (n, s)) in done.overlays.iter().enumerate() {
+            if done.shared.is_some() || i > 0 {
+                outln!(ctx, " overlay {n}: {}", ids::short(&s.id));
+            }
+        }
+        print_fds(ctx, &done.fds);
     }
     Ok(0)
 }
@@ -868,12 +970,19 @@ pub fn restore_impl(
         return Ok(0);
     }
     let (index, _it) = repo.index_view(&line)?;
-    let head_root = repo.state_root(&line.head)?;
+    let head_root = repo.head_tree(&line)?;
     let src_id = match source {
         Some(r) => Some(revs::resolve(repo, Some(&line), r)?),
         None => None,
     };
+    // In a line with overlays a source state comes with the line's overlays in place.
+    let layers = repo.layers(&line)?;
+    let src_view = match &src_id {
+        Some(id) if !layers.is_empty() => Some(repo.assemble(&line, id, &layers)?),
+        _ => None,
+    };
     let src_root = match &src_id {
+        Some(_) if src_view.is_some() => src_view.as_ref().unwrap().path.clone(),
         Some(id) => repo.state_root(id)?,
         None => {
             if staged {
@@ -950,7 +1059,13 @@ pub fn reset(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let line = h.repo.line(&line.id)?;
     let repo = &h.repo;
     repo.check_move(ctx, &line, &target)?;
-    let target_root = repo.state_root(&target)?;
+    // A line with overlays moves to the target with its overlays in place.
+    let layers = repo.layers(&line)?;
+    let target_view = if layers.is_empty() { None } else { Some(repo.assemble(&line, &target, &layers)?) };
+    let target_root = match &target_view {
+        Some(v) => v.path.clone(),
+        None => repo.state_root(&target)?,
+    };
     let mode = if a.has("--soft") {
         "soft"
     } else if a.has("--hard") {
@@ -970,7 +1085,7 @@ pub fn reset(ctx: &Ctx, args: &[String]) -> Result<i32> {
             l2.head = target.clone();
             let stage = repo.p.stage_path(&line.id);
             crate::btrfs::snapshot(&keep.path, &stage, false)?;
-            fsutil::atomic_write(&repo.p.meta_dir().join("stage").join(format!("{}.base", line.id)), target.as_bytes(), 0o600)?;
+            repo.mark_stage(&l2)?;
         }
         "mixed" => repo.drop_stage(&line)?,
         "hard" => {
@@ -996,11 +1111,14 @@ pub fn reset(ctx: &Ctx, args: &[String]) -> Result<i32> {
         _ => {
             let (st, _scan, _it2, _idx2) = repo.status(&line)?;
             let wdir = repo.working(&line);
-            repo.apply_delta(&repo.state_root(&line.head)?, &target_root, &wdir, repo.own(&line), &st.local_paths(), false)?;
+            repo.apply_delta(&repo.head_tree(&line)?, &target_root, &wdir, repo.own(&line), &st.local_paths(), false)?;
             repo.drop_stage(&line)?;
         }
     }
     repo.move_head(ctx, "reset", &line, &target, vec![], w, serde_json::json!({"mode": mode}))?;
+    if let Some(v) = target_view {
+        repo.install_base(&line, v, &target, &layers)?;
+    }
     if mode == "hard" && !a.has("-q") {
         let s = repo.state(&target)?;
         outln!(ctx, "HEAD is now at {} {}", ids::short(&target), s.message.lines().next().unwrap_or(""));
@@ -1017,6 +1135,12 @@ pub fn stash(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let h = here(ctx)?;
     let line = h.line()?.clone();
     let repo = &h.repo;
+    if repo.is_stacked(&line)? && !matches!(sub, "list" | "show" | "drop" | "clear") {
+        return Err(exit(
+            1,
+            "error: layr stash is not available in a line with overlays yet; commit the changes or use 'layr save'",
+        ));
+    }
     match sub {
         "list" => {
             for (i, s) in repo.p.db.line_states(&line.id, StateKind::Stash)?.iter().enumerate() {

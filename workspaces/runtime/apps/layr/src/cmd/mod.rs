@@ -4,6 +4,7 @@ pub mod admin;
 pub mod branch;
 pub mod history;
 pub mod mergecmd;
+pub mod overlaycmd;
 pub mod remote;
 pub mod replicate;
 pub mod transfer;
@@ -182,11 +183,17 @@ Lines and states:
    save, undo, op, try, checks, adopt
 Remote (git bridge):
    remote, fetch, pull, push, clone
+Overlays (files with their own readers and history, shown in lines):
+   overlay create, list, readers, use, move, log, show, diff, grep, ls-files
 Projects and machines:
    init, projects, config, cache, export, backup, sync, serve-peer, gc, fsck, reindex, daemon
 
 Lines are folders: <root>/projects/<project>/lines/<line>. Run commands inside a line folder.
 ";
+
+/// The commands that work in an overlay's own project: reading its history, and its checks.
+const OVERLAY_READS: &[&str] =
+    &["log", "show", "diff", "grep", "ls-files", "blame", "rev-parse", "merge-base", "fsck", "reindex", "help", "version"];
 
 pub fn run(ctx: &Ctx, argv: &[String]) -> Result<i32> {
     let (cmd, rest) = match argv.first() {
@@ -197,6 +204,14 @@ pub fn run(ctx: &Ctx, argv: &[String]) -> Result<i32> {
         }
     };
     let rest: Vec<String> = rest.to_vec();
+    // An overlay (`<project>%<overlay>`) is read through layr only: its history, by its readers.
+    if ctx.env("LAYR_PROJECT").map(|p| p.contains('%')).unwrap_or(false) {
+        let reading = OVERLAY_READS.contains(&cmd)
+            || (cmd == "op" && matches!(rest.first().map(|s| s.as_str()), None | Some("log") | Some("show")));
+        if !reading {
+            return Err(exit(1, format!("layr {cmd} is not available in an overlay; see 'layr overlay'")));
+        }
+    }
     match cmd {
         "help" | "--help" | "-h" => {
             ctx.print(HELP);
@@ -256,6 +271,7 @@ pub fn run(ctx: &Ctx, argv: &[String]) -> Result<i32> {
         "pull" => remote::pull(ctx, &rest),
         "push" => remote::push(ctx, &rest),
         "clone" => remote::clone(ctx, &rest),
+        "overlay" => overlaycmd::overlay(ctx, &rest),
         "export" => transfer::export(ctx, &rest),
         "backup" => transfer::backup(ctx, &rest),
         "sync" => replicate::sync(ctx, &rest),

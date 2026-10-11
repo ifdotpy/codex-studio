@@ -112,7 +112,9 @@ impl<'a> Repo<'a> {
             Ok(()) => Ok(()),
             Err(reason) => {
                 let reader_action = crate::access::action_role(action) == Some(Role::Reader);
+                // An overlay is read by its readers only: a former reader keeps its overlay lines.
                 if reader_action
+                    && !self.p.is_overlay()
                     && pol.denied_by(&who, action).is_none()
                     && self.p.db.lines()?.iter().any(|l| l.owner == ctx.caller.uid)
                 {
@@ -139,7 +141,10 @@ impl<'a> Repo<'a> {
         if pol.check(&who, "read").is_ok() {
             return Ok(());
         }
-        if pol.denied_by(&who, "read").is_none() && self.p.db.lines()?.iter().any(|l| l.owner == ctx.caller.uid) {
+        if !self.p.is_overlay()
+            && pol.denied_by(&who, "read").is_none()
+            && self.p.db.lines()?.iter().any(|l| l.owner == ctx.caller.uid)
+        {
             return Ok(());
         }
         bail!("permission denied: user {} may not read project {}", ctx.caller.user, self.p.name)
@@ -336,6 +341,94 @@ impl<'a> Repo<'a> {
         })
     }
 
+    /// An automatic state of a line's working content. For a line with overlays the snapshot
+    /// leaves the overlay files out (a writable snapshot, the files removed, read-only): no state
+    /// of the project holds a file of an overlay.
+    pub fn working_snapshot(&self, ctx: &Ctx, line: &Line, parents: Vec<String>, message: &str) -> Result<StateRec> {
+        let w = self.working(line);
+        let private = self.private_paths(line)?;
+        if private.is_empty() {
+            return self.new_state(ctx, &w, StateKind::Auto, parents, message, Some(line));
+        }
+        let id = ids::new_id();
+        let dst = self.p.state_path(&id);
+        btrfs::snapshot(&w, &dst, false)?;
+        let made = (|| -> Result<btrfs::SubvolInfo> {
+            let t = Tree::open(&dst)?;
+            for p in &private {
+                if t.stat(p).is_some() {
+                    t.remove(p)?;
+                }
+            }
+            btrfs::set_readonly(&dst)?;
+            // An overlay file under another name leaves too: moved from an overlay path, or a
+            // new file with the content of an overlay file (a copy, an editor's backup).
+            let copies = self.private_copies(line, &dst, &private)?;
+            if !copies.is_empty() {
+                btrfs::set_writable(&dst)?;
+                for p in &copies {
+                    t.remove(p)?;
+                }
+                btrfs::set_readonly(&dst)?;
+            }
+            btrfs::subvol_info(&dst)
+        })();
+        let info = match made {
+            Ok(i) => i,
+            Err(e) => {
+                let _ = btrfs::delete_tree(&dst);
+                return Err(e);
+            }
+        };
+        Ok(StateRec {
+            id,
+            kind: StateKind::Auto,
+            parents,
+            line: Some(line.id.clone()),
+            subvol: info.uuid,
+            author: ctx.author(),
+            message: message.to_string(),
+            time: ids::now_ms(),
+            running: false,
+            conflicts: Vec::new(),
+            caches: BTreeMap::new(),
+            cache_by: None,
+            cache_shared: false,
+        })
+    }
+
+    /// Files of a snapshot of the working folder that hold an overlay file under another name:
+    /// moved from a path in `private`, or new with the same content as one of them.
+    fn private_copies(&self, line: &Line, snap: &Path, private: &BTreeSet<String>) -> Result<Vec<String>> {
+        let base = self.head_tree(line)?;
+        let mut by_size: std::collections::HashMap<u64, Vec<&String>> = std::collections::HashMap::new();
+        for p in private {
+            if let Some(m) = fsutil::lmeta(&base, p).filter(|m| !m.is_dir()) {
+                by_size.entry(m.size).or_default().push(p);
+            }
+        }
+        let mut out = Vec::new();
+        for c in changes::file_changes(&base, snap)? {
+            let n = match &c.new {
+                Some(n) => n,
+                None => continue,
+            };
+            if c.old_path.as_ref().map(|o| private.contains(o)).unwrap_or(false) {
+                out.push(c.path.clone());
+                continue;
+            }
+            if c.old.is_none() {
+                for p in by_size.get(&n.size).into_iter().flatten() {
+                    if fsutil::same_entry(&base, p, snap, &c.path, None)? {
+                        out.push(c.path.clone());
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Remove state snapshots that were made for a record that was not written.
     pub fn discard_states(&self, states: &[StateRec]) {
         for s in states {
@@ -401,7 +494,7 @@ impl<'a> Repo<'a> {
         if !w.exists() {
             return Ok(None);
         }
-        let mut st = self.new_state(ctx, &w, StateKind::Auto, vec![line.head.clone()], message, Some(line))?;
+        let mut st = self.working_snapshot(ctx, line, vec![line.head.clone()], message)?;
         st.running = running;
         if !force {
             let prev = self.last_auto(line)?.map(|s| s.id).unwrap_or(line.head.clone());
@@ -430,7 +523,7 @@ impl<'a> Repo<'a> {
         if !w.exists() {
             return Err(crate::cmd::exit(1, format!("error: the line '{}' has no working folder", line.name)));
         }
-        let mut st = self.new_state(ctx, &w, StateKind::Auto, vec![line.head.clone()], message, Some(line))?;
+        let mut st = self.working_snapshot(ctx, line, vec![line.head.clone()], message)?;
         if let Some(head) = self.p.db.state(&line.head)? {
             let base = self.p.state_path(&head.id);
             if self.policy().rule_for(&line.name).is_some() && base.exists() {
@@ -471,20 +564,27 @@ impl<'a> Repo<'a> {
         self.p.meta_dir().join("stage").join(format!("{}.base", line.id))
     }
 
-    /// The staging line, created from the head state if missing or based on an older head.
+    /// The staging line, created from the head (the full tree of a line with overlays) if
+    /// missing or based on an older head or stack.
     pub fn ensure_stage(&self, line: &Line) -> Result<PathBuf> {
         let p = self.p.stage_path(&line.id);
         let basef = self.stage_base_file(line);
+        let key = self.stage_key(line)?;
         if p.exists() {
             let base = std::fs::read_to_string(&basef).unwrap_or_default();
-            if base.trim() == line.head {
+            if base.trim() == key {
                 return Ok(p);
             }
-            btrfs::delete_tree(&p)?;
+            self.drop_stage(line)?;
         }
-        btrfs::snapshot(&self.state_root(&line.head)?, &p, false)?;
-        crate::fsutil::atomic_write(&basef, line.head.as_bytes(), 0o600)?;
+        btrfs::snapshot(&self.head_tree(line)?, &p, false)?;
+        crate::fsutil::atomic_write(&basef, key.as_bytes(), 0o600)?;
         Ok(p)
+    }
+
+    /// Write the key of a staging line made for `line` (a soft reset keeps the index for a new head).
+    pub fn mark_stage(&self, line: &Line) -> Result<()> {
+        crate::fsutil::atomic_write(&self.stage_base_file(line), self.stage_key(line)?.as_bytes(), 0o600)
     }
 
     /// The staging line if it was made from the current head (a stale one is dropped).
@@ -492,7 +592,7 @@ impl<'a> Repo<'a> {
         match self.stage(line) {
             Some(s) => {
                 let base = std::fs::read_to_string(self.stage_base_file(line)).unwrap_or_default();
-                if base.trim() == line.head {
+                if base.trim() == self.stage_key(line)? {
                     Ok(Some(s))
                 } else {
                     self.drop_stage(line)?;
@@ -517,14 +617,14 @@ impl<'a> Repo<'a> {
         match self.stage(line) {
             Some(s) => {
                 let base = std::fs::read_to_string(self.stage_base_file(line)).unwrap_or_default();
-                if base.trim() != line.head {
+                if base.trim() != self.stage_key(line)? {
                     self.drop_stage(line)?;
-                    return Ok((self.state_root(&line.head)?, None));
+                    return Ok((self.head_tree(line)?, None));
                 }
                 let t = self.temp_snapshot(&s, true)?;
                 Ok((t.path.clone(), Some(t)))
             }
-            None => Ok((self.state_root(&line.head)?, None)),
+            None => Ok((self.head_tree(line)?, None)),
         }
     }
 
@@ -533,7 +633,7 @@ impl<'a> Repo<'a> {
     /// Changes of the working content: staged (head to index), unstaged (index to working),
     /// untracked and ignored paths, and conflicts left by a merge.
     pub fn status_of(&self, line: &Line, scan: &Path, index: &Path) -> Result<Status> {
-        let head = self.state_root(&line.head)?;
+        let head = self.head_tree(line)?;
         let mut st = Status::default();
         if index != head.as_path() {
             let staged: Vec<Change> = changes::file_changes(&head, index)?.into_iter().filter(|c| !skip_path(&c.path)).collect();
@@ -577,6 +677,18 @@ impl<'a> Repo<'a> {
         for c in &head_rec.conflicts {
             if conflict_open(scan, c)? {
                 st.conflicts.push(c.clone());
+            }
+        }
+        // Conflicts of a merge of the line's follow overlays.
+        if !self.p.is_overlay() {
+            for l in self.layers(line)? {
+                if let Some(rec) = self.overlay_repo(&l.overlay).ok().and_then(|o| o.p.db.state(&l.state).ok().flatten()) {
+                    for c in &rec.conflicts {
+                        if conflict_open(scan, c)? {
+                            st.conflicts.push(c.clone());
+                        }
+                    }
+                }
             }
         }
         Ok(st)
@@ -664,6 +776,12 @@ impl<'a> Repo<'a> {
 
     /// Create a line from a state: a writable snapshot at `lines/<name>`.
     pub fn create_line(&self, ctx: &Ctx, name: &str, start: &str, owner: u32) -> Result<Line> {
+        self.create_line_from(ctx, name, start, owner, None)
+    }
+
+    /// Create a line; a line made from another line (`source`) shows the overlays of the source
+    /// that its owner reads (docs/overlays.md).
+    pub fn create_line_from(&self, ctx: &Ctx, name: &str, start: &str, owner: u32, source: Option<&Line>) -> Result<Line> {
         check_name("line", name)?;
         if self.p.db.line_by_name(name)?.is_some() {
             bail!("a line named '{name}' already exists");
@@ -679,7 +797,11 @@ impl<'a> Repo<'a> {
             owner,
             machine: self.p.store.machine.id.clone(),
         };
-        self.materialize(&line, start, &dst)?;
+        let layers = match source {
+            Some(s) if !self.p.is_overlay() => self.inherit_layers(ctx, s, &line.id, owner)?,
+            _ => Vec::new(),
+        };
+        self.materialize_with(&line, start, &dst, &layers, true)?;
         let res = (|| -> Result<Record> {
             let mut rec = Record::new("line.create");
             rec.lines.insert(
@@ -692,10 +814,14 @@ impl<'a> Repo<'a> {
                 },
             );
             rec.data = serde_json::json!({"name": name, "start": start});
+            if !layers.is_empty() {
+                rec.data["stack"] = crate::overlay::stack_data(&line.id, &layers);
+            }
             self.p.append(rec, &ctx.actor())
         })();
         if let Err(e) = res {
             let _ = btrfs::delete_tree(&dst);
+            let _ = self.prune_bases(&line, None, 0);
             return Err(e);
         }
         // The owner of the new line may read the git objects (its .git folder uses them).
@@ -707,12 +833,37 @@ impl<'a> Repo<'a> {
     /// service's private work folder (owner, mode, .git folder, caches) and appears at `dst` only
     /// when it is ready, so no other user can change it while root works on it.
     pub fn materialize(&self, line: &Line, state: &str, dst: &Path) -> Result<()> {
+        // A line with overlays gets their files too; its base is made when first needed.
+        let layers = if self.p.is_overlay() { Vec::new() } else { self.layers(line)? };
+        self.materialize_with(line, state, dst, &layers, false)
+    }
+
+    /// `materialize` with the overlay files of `layers`. With `base`, the new folder (made from
+    /// the line's head) is also kept as the line's base.
+    pub fn materialize_with(
+        &self,
+        line: &Line,
+        state: &str,
+        dst: &Path,
+        layers: &[crate::overlay::Layer],
+        base: bool,
+    ) -> Result<()> {
         if dst.exists() {
             bail!("{} already exists", dst.display());
         }
         let tmp = self.p.work_dir().join(ids::new_id());
         btrfs::snapshot(&self.state_root(state)?, &tmp, false)?;
-        let r = self.prepare_at(line, state, &tmp).and_then(|_| Ok(std::fs::rename(&tmp, dst)?));
+        let r = self
+            .put_layers(&tmp, layers, self.own(line))
+            .and_then(|_| self.prepare_at(line, state, &tmp))
+            .and_then(|_| {
+                if base && !layers.is_empty() {
+                    let view = self.temp_snapshot(&tmp, true)?;
+                    self.install_base(line, view, state, layers)?;
+                }
+                Ok(())
+            })
+            .and_then(|_| Ok(std::fs::rename(&tmp, dst)?));
         if r.is_err() {
             let _ = btrfs::delete_tree(&tmp);
         }
@@ -886,7 +1037,7 @@ impl<'a> Repo<'a> {
         if !w.exists() {
             return Ok(None);
         }
-        let st = self.new_state(ctx, &w, StateKind::Auto, vec![line.head.clone()], &format!("after {op}"), Some(line))?;
+        let st = self.working_snapshot(ctx, line, vec![line.head.clone()], &format!("after {op}"))?;
         let id = st.id.clone();
         rec.states.push(st);
         Ok(Some(id))
