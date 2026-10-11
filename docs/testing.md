@@ -145,6 +145,40 @@ JavaScript bridge tests. For a focused Python contract, use
 automated suite list used by `just test-server-opt-in automated` and the hosted
 CI audited automation step. Load-class suites include load, scale, latency, and
 contention checks; select one only with `just test-server-load <exact-path>`.
+
+## HTTP boundary contract tests
+
+A boundary contract test starts a backend process and observes its public HTTP
+responses, provider protocol frames, and HTTP state after a clean restart. It
+does not import `codex_runtime` or any server module on the assertion side and
+does not inspect the database. Run the first reusable corpus with:
+
+```sh
+just test server workspaces/runtime/apps/server/tests/http-boundary-contract.py
+```
+
+By default it launches the same Python entry point used by the desktop launcher
+with an ephemeral port. To run the corpus against another backend without
+changing the tests, set `STUDIO_HTTP_BACKEND_COMMAND` to a shell-style command;
+the selected executable must accept `--port 0` and print its loopback ready URL
+as `Codex Canvas: http://127.0.0.1:<port>`:
+
+```sh
+STUDIO_HTTP_BACKEND_COMMAND='/path/to/codex-backend' \
+  just test server workspaces/runtime/apps/server/tests/http-boundary-contract.py
+```
+
+The server runner supplies `TMPDIR` on memory-backed scratch.
+The harness places state, home directories, Codex and Claude configuration,
+XDG directories, and provider replay files beneath that root. New boundary
+contracts must keep assertions at HTTP/provider/process boundaries and must not
+read SQLite or import server modules.
+Write each contract as a separately named `unittest` method so the runner can
+report, select, and reproduce it by test ID. Share a backend only within a
+class whose methods create independent data; put restart durability in its own
+class, keep process-owning suites unsliced, and record readiness timings without
+asserting on speed.
+
 The backend requires the native lifecycle module. Build the module, then install
 it before server tests or backend startup. For test runs, keep both the managed
 Python cache and command-bin directory in a dedicated temporary root; never

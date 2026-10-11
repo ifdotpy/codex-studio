@@ -53,7 +53,7 @@ def handle(line):
         raise AssertionError(f"Unexpected provider RPC notification in replay: {method!r}")
     params = request.get("params") or {}
     if method in {"initialize", "config/read", "skills/extraRoots/set", "model/list",
-                  "account/rateLimits/read", "thread/resume", "thread/read",
+              "account/rateLimits/read", "thread/loaded/list", "thread/resume", "thread/read",
                   "thread/turns/list"}:
         send(recorded_reply(method, request, thread))
         return
@@ -106,6 +106,11 @@ def handle(line):
 with ThreadPoolExecutor(max_workers=16) as pool:
     futures = []
     for rpc_line in sys.stdin:
+        received = os.environ.get("CODEX_FAKE_RECEIVED")
+        if received:
+            with Path(received).open("a", encoding="utf-8") as capture:
+                capture.write(rpc_line)
+                capture.flush()
         futures.append(pool.submit(handle, rpc_line))
     for future in futures:
         future.result()

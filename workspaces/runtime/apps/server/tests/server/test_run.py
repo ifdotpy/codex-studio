@@ -389,9 +389,14 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertEqual(RUNNER._focused_suite_slice_count("suite.py", 72, 2), 2)
         runner_suite = f"{RUNNER.TESTS_REL}/server/test_run.py"
         self.assertEqual(RUNNER._focused_suite_slice_count(runner_suite, 59, 4), 1)
+        boundary_suite = RUNNER.HTTP_BOUNDARY_CONTRACT_SUITE
+        self.assertEqual(RUNNER._focused_suite_slice_count(boundary_suite, 6, 4), 1)
 
     def test_runner_suite_is_explicitly_excluded_from_test_slicing(self):
-        relative = f"{RUNNER.TESTS_REL}/server/test_run.py"
+        relatives = (
+            f"{RUNNER.TESTS_REL}/server/test_run.py",
+            RUNNER.HTTP_BOUNDARY_CONTRACT_SUITE,
+        )
         commands = []
 
         def execute(command, _cwd, _timeout, _environment):
@@ -405,17 +410,17 @@ class ServerSuiteRunner(unittest.TestCase):
                   "workers": 4, "memoryWorkerSlots": 4,
               }),
               mock.patch.object(RUNNER, "_load_profile", return_value={
-                  "suiteSeconds": {relative: 90.0},
+                  "suiteSeconds": {relative: 90.0 for relative in relatives},
               }),
               mock.patch.object(RUNNER, "_suite_test_ids") as list_ids,
               mock.patch.object(RUNNER, "_unix_socket_path_error", return_value=None)):
             _runnable, _skipped, failures, _elapsed = RUNNER.run_suites(
-                [(relative, "component")], set(), 1, 1,
+                [(relative, "component") for relative in relatives], set(), 1, 1,
                 root=ROOT, execute=execute, workers=4,
             )
 
         self.assertEqual(failures, [])
-        self.assertEqual(len(commands), 1)
+        self.assertEqual(len(commands), len(relatives))
         list_ids.assert_not_called()
 
     def test_plain_assertion_script_is_not_test_sliced(self):
