@@ -93,13 +93,12 @@ class ProgressFileWatchdog:
         self._watches: dict[str, tuple[object, _ProgressEventHandler]] = {}
         self._subscribers: dict[str, dict[str, Callable[[], None]]] = {}
         self._states: dict[str, tuple[str | None, str | None, bool]] = {}
-        self._detaching: set[str] = set()
         self._pending_condition = threading.Condition()
         self._active_ids: set[str] = set()
         self._pending_ids: set[str] = set()
         self._pending_stop = False
         self._dispatcher: threading.Thread | None = None
-        self._stopping = False
+        self._startup_failed = False
         self._closed = False
 
     def subscribe(
@@ -120,29 +119,10 @@ class ProgressFileWatchdog:
 
         token = uuid.uuid4().hex
         with self._condition:
-            while agent_id in self._detaching:
-                self._condition.wait(timeout=WATCHDOG_JOIN_TIMEOUT_SECONDS)
-                if agent_id in self._detaching:
-                    raise RuntimeError("Timed out waiting for progress watch detachment")
-            while self._stopping:
-                if self._dispatcher is threading.current_thread():
-                    # A callback may unsubscribe the final resource and
-                    # immediately resubscribe from this dispatcher thread.
-                    with self._pending_condition:
-                        self._pending_stop = False
-                    self._stopping = False
-                    self._condition.notify_all()
-                    break
-                self._condition.wait(timeout=WATCHDOG_JOIN_TIMEOUT_SECONDS)
-                if self._stopping:
-                    raise RuntimeError("Timed out waiting for progress watcher shutdown")
             if self._closed:
                 raise RuntimeError("Progress file watcher is closed")
-            if not self._watches:
-                with self._pending_condition:
-                    self._active_ids.clear()
-                    self._pending_ids.clear()
-                    self._pending_stop = False
+            if self._startup_failed:
+                raise RuntimeError("Progress file watcher failed to start; close it before reuse")
             first = agent_id not in self._watches
             if first:
                 self._attach_directory(agent_id, directory)
@@ -180,18 +160,22 @@ class ProgressFileWatchdog:
         if started_here:
             observer = cast(_NativeObserver, _observer_class()())
         handler = _ProgressEventHandler(self._enqueue, agent_id, directory)
-        watch = observer.schedule(handler, str(directory), recursive=False)
+        watch: object | None = None
         try:
+            watch = observer.schedule(handler, str(directory), recursive=False)
+            if started_here:
+                self._observer = observer
+            self._watches[agent_id] = (watch, handler)
             if started_here:
                 observer.start()
         except BaseException:
-            observer.unschedule(watch)
-            if started_here and observer.is_alive():
-                observer.stop()
-                observer.join(WATCHDOG_JOIN_TIMEOUT_SECONDS)
+            if watch is not None:
+                observer.unschedule(watch)
+                self._watches.pop(agent_id, None)
+            if started_here and watch is not None:
+                self._startup_failed = True
+                self._observer = observer
             raise
-        self._observer = observer
-        self._watches[agent_id] = (watch, handler)
 
     def _read_snapshot(self, agent_id: str) -> _ProgressSnapshot:
         current = read_progress(self._state_dir, agent_id)
@@ -230,7 +214,6 @@ class ProgressFileWatchdog:
             with self._condition:
                 if self._dispatcher is threading.current_thread():
                     self._dispatcher = None
-                self._stopping = False
                 self._condition.notify_all()
 
     def _changed(self, agent_id: str) -> None:
@@ -248,10 +231,6 @@ class ProgressFileWatchdog:
                 _logger.exception("Progress watcher callback failed for agent %s", agent_id)
 
     def _detach(self, agent_id: str, token: str) -> None:
-        observer_to_update: _NativeObserver | None = None
-        watch: object | None = None
-        dispatcher: threading.Thread | None = None
-        stop_observer = False
         with self._condition:
             subscribers = self._subscribers.get(agent_id)
             if subscribers is None:
@@ -260,46 +239,14 @@ class ProgressFileWatchdog:
             if subscribers:
                 return
             self._subscribers.pop(agent_id, None)
-            watch, _ = self._watches.pop(agent_id)
             self._states.pop(agent_id, None)
-            self._detaching.add(agent_id)
             with self._pending_condition:
                 self._active_ids.discard(agent_id)
                 self._pending_ids.discard(agent_id)
             observer = self._observer
-            observer_to_update = observer
-            if not self._watches and observer is not None:
-                self._observer = None
-                dispatcher = self._dispatcher
-                self._stopping = True
-                stop_observer = True
-        if observer_to_update is None or watch is None:
-            with self._condition:
-                self._detaching.discard(agent_id)
-                self._condition.notify_all()
-            return
-        try:
-            observer_to_update.unschedule(watch)
-            if stop_observer:
-                observer_to_update.stop()
-                observer_to_update.join(WATCHDOG_JOIN_TIMEOUT_SECONDS)
-                if observer_to_update.is_alive():
-                    raise RuntimeError("Progress file watcher did not stop before its deadline")
-        finally:
-            try:
-                if stop_observer:
-                    with self._pending_condition:
-                        self._pending_stop = True
-                        self._pending_ids.clear()
-                        self._pending_condition.notify_all()
-                    if dispatcher is not None and dispatcher is not threading.current_thread():
-                        dispatcher.join(WATCHDOG_JOIN_TIMEOUT_SECONDS)
-                        if dispatcher.is_alive():
-                            raise RuntimeError("Progress change dispatcher did not stop before its deadline")
-            finally:
-                with self._condition:
-                    self._detaching.discard(agent_id)
-                    self._condition.notify_all()
+            watch = self._watches.pop(agent_id, None)
+            if observer is not None and watch is not None:
+                observer.unschedule(watch[0])
 
     def close(self) -> None:
         with self._condition:
@@ -313,3 +260,29 @@ class ProgressFileWatchdog:
             ]
         for agent_id, token in callbacks:
             self._detach(agent_id, token)
+        with self._condition:
+            observer = self._observer
+            dispatcher = self._dispatcher
+            if observer is not None:
+                for watch, _handler in self._watches.values():
+                    observer.unschedule(watch)
+            self._watches.clear()
+            self._states.clear()
+            with self._pending_condition:
+                self._active_ids.clear()
+                self._pending_ids.clear()
+        if observer is not None:
+            observer.stop()
+        with self._pending_condition:
+            self._pending_stop = True
+            self._pending_ids.clear()
+            self._pending_condition.notify_all()
+        if observer is not None and observer.is_alive():
+            observer.join(WATCHDOG_JOIN_TIMEOUT_SECONDS)
+            if observer.is_alive():
+                raise RuntimeError("Progress file watcher did not stop before its deadline")
+        if (dispatcher is not None and dispatcher is not threading.current_thread()
+                and dispatcher.ident is not None):
+            dispatcher.join(WATCHDOG_JOIN_TIMEOUT_SECONDS)
+            if dispatcher.is_alive():
+                raise RuntimeError("Progress change dispatcher did not stop before its deadline")
