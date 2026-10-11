@@ -3,7 +3,13 @@
     "direction": "in",
     "responseFor": "initialize",
     "timestamp": 0,
-    "message": { "result": {} }
+    "message": { "result": { "userAgent": "codex-cli/0.1.0" } }
+  },
+  "thread/loaded/list": {
+    "direction": "in",
+    "responseFor": "thread/loaded/list",
+    "timestamp": 0,
+    "message": { "result": { "data": [] } }
   },
   "config/read": {
     "direction": "in",
