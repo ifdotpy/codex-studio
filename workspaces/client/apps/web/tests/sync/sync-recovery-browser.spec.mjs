@@ -1,4 +1,10 @@
-import { apiSchemaHandshakeSse, test } from "../playwright.mjs";
+import {
+  apiSchemaHeaders,
+  apiSchemaHandshakeSse,
+  protocol3SseEvent,
+  syncIdentityFixture,
+  test,
+} from "../playwright.mjs";
 // Exercise reconnect and delivery state in real React/RxDB browser hooks.
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -24,6 +30,8 @@ test("Sync recovery browser", async ({
     let identityStatus = 503,
       hangSession = false,
       failPull = false,
+      nextStreamResourceEvent = false,
+      streamRevision = 0,
       badReceipt = true;
     let workspaceId = "c".repeat(32);
     const sends = [];
@@ -36,27 +44,43 @@ test("Sync recovery browser", async ({
     await page.route("**/api/sync/identity", (route) =>
       route.fulfill({
         status: identityStatus,
+        headers: apiSchemaHeaders(),
         json:
           identityStatus === 200
-            ? { workspaceId }
+            ? syncIdentityFixture(workspaceId)
             : { error: "Connection unavailable" },
       }),
     );
     await page.route("**/api/session", (route) =>
       hangSession ? undefined : route.fulfill({ json: { token: "fixture" } }),
     );
-    await page.route("**/api/sync/stream*", (route) =>
-      route.fulfill({
+    await page.route("**/api/sync/stream*", (route) => {
+      let body = "";
+      if (nextStreamResourceEvent) {
+        nextStreamResourceEvent = false;
+        streamRevision++;
+        body = protocol3SseEvent("resources", {
+          protocol: 3,
+          workspaceId,
+          epoch: "recovery-fixture",
+          revision: streamRevision,
+          reason: "change",
+          resources: [{ kind: "state" }],
+        });
+      }
+      return route.fulfill({
         contentType: "text/event-stream",
-        body: apiSchemaHandshakeSse(),
-      }),
-    );
+        headers: apiSchemaHeaders({ "content-type": "text/event-stream" }),
+        body: apiSchemaHandshakeSse(body),
+      });
+    });
     await page.route("**/api/sync/pull?*", (route) => {
       const after = Number(
         new URL(route.request().url()).searchParams.get("after"),
       );
       return route.fulfill({
         status: failPull ? 503 : 200,
+        headers: apiSchemaHeaders(),
         json: failPull
           ? { error: "Pull unavailable" }
           : {
@@ -131,16 +155,21 @@ test("Sync recovery browser", async ({
         !window.outbox.error,
     );
     failPull = true;
-    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    nextStreamResourceEvent = true;
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event("offline"));
+      window.dispatchEvent(new Event("online"));
+    });
     await page.waitForFunction(
       () =>
         window.snapshot.error === "Pull unavailable" &&
         window.second.error === "Pull unavailable",
     );
     failPull = false;
-    await page.evaluate(() =>
-      document.dispatchEvent(new Event("visibilitychange")),
-    );
+    nextStreamResourceEvent = true;
+    await page.evaluate(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
     await page.waitForFunction(
       () => !window.snapshot.error && !window.second.error,
     );

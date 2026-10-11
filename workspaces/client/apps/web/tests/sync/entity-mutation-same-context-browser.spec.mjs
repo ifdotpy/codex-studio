@@ -169,7 +169,9 @@ test("mutation projections propagate between pages sharing one browser context @
         pages.every(
           (_, index) =>
             pulls[index].length === countPulls[index] &&
-            pulls[index].every((pull) => pull.documents?.length > 0),
+            pulls[index].some(
+              (pull) => pull.after === "0" && pull.documents?.length > 0,
+            ),
         ),
       "initial state pulls did not settle with rows",
     );
@@ -210,6 +212,13 @@ test("mutation projections propagate between pages sharing one browser context @
       await page
         .getByRole("button", { name: /^New chat in / })
         .first()
+        .click();
+      const newChatDialog = page.getByRole("dialog", {
+        name: "New chat",
+        exact: true,
+      });
+      await newChatDialog
+        .getByRole("button", { name: "Start chat", exact: true })
         .click();
       const response = await responsePromise;
       assert.equal(response.status(), 200);
