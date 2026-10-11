@@ -99,9 +99,40 @@ class Channel {
   close() {}
 }
 
+const activeStops = new Set<() => void>();
+
+function trackStop(stop: () => void) {
+  const trackedStop = () => {
+    activeStops.delete(trackedStop);
+    stop();
+  };
+  activeStops.add(trackedStop);
+  return trackedStop;
+}
+
+async function loadTransport() {
+  const transport = await import("./resourceEvents");
+  return {
+    ...transport,
+    watchResourceChanges: (
+      ...args: Parameters<typeof transport.watchResourceChanges>
+    ) => trackStop(transport.watchResourceChanges(...args)),
+    watchResourceConnection: (
+      ...args: Parameters<typeof transport.watchResourceConnection>
+    ) => trackStop(transport.watchResourceConnection(...args)),
+    watchTokenRateEvents: (
+      ...args: Parameters<typeof transport.watchTokenRateEvents>
+    ) => trackStop(transport.watchTokenRateEvents(...args)),
+  };
+}
+
 describe("shared resource event transport", () => {
-  afterEach(() => {
-    vi.clearAllTimers();
+  afterEach(async () => {
+    for (const stop of activeStops) stop();
+    const api = await import("../api");
+    api.markApiSchemaMismatch();
+    vi.useFakeTimers();
+    expect(vi.getTimerCount()).toBe(0);
     vi.resetModules();
     vi.restoreAllMocks();
     vi.useRealTimers();
@@ -132,7 +163,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
     vi.stubGlobal("EventSource", Source);
     Source.skipNextAutoHandshake = true;
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const stop = transport.watchResourceChanges(
       { kind: "queue", agentId: "agent-one" },
       vi.fn(),
@@ -165,7 +196,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
     vi.stubGlobal("EventSource", Source);
 
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const stopState = transport.watchResourceChanges(
       { kind: "state" },
       vi.fn(),
@@ -223,7 +254,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
     vi.stubGlobal("EventSource", Source);
 
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const state = { kind: "state" } as const;
     const onChange = vi.fn();
     const stop = transport.watchResourceChanges(state, onChange);
@@ -308,7 +339,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
     vi.stubGlobal("EventSource", Source);
 
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const state = { kind: "state" } as const;
     const onChange = vi.fn();
     const stop = transport.watchResourceChanges(state, onChange);
@@ -371,7 +402,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("EventSource", Source);
     vi.stubGlobal("BroadcastChannel", Channel);
 
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
     await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
     const ownerChannel = Channel.instances[0]!;
@@ -407,6 +438,39 @@ describe("shared resource event transport", () => {
     vi.useRealTimers();
   });
 
+  it("cancels the pending idle-stop timer when the coordinator stops", async () => {
+    vi.useFakeTimers();
+    syncDatabase.mockResolvedValue({ workspaceId });
+    const windowStub = {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
+    vi.stubGlobal("window", windowStub);
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
+    vi.stubGlobal("EventSource", Source);
+
+    const transport = await loadTransport();
+    const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    stop();
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    const api = await import("../api");
+    api.markApiSchemaMismatch();
+    expect(vi.getTimerCount()).toBe(0);
+    const removeCalls = windowStub.removeEventListener.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(1_001);
+    expect(windowStub.removeEventListener).toHaveBeenCalledTimes(removeCalls);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("ignores resource-channel messages sent by another schema version", async () => {
     syncDatabase.mockResolvedValue({ workspaceId });
     vi.stubGlobal("window", {
@@ -432,7 +496,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("crypto", { randomUUID: () => "tab-local" });
     vi.stubGlobal("EventSource", Source);
     vi.stubGlobal("BroadcastChannel", Channel);
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const onChange = vi.fn();
     const stop = transport.watchResourceChanges(
       { kind: "queue", agentId: "agent-one" },
@@ -492,7 +556,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
     vi.stubGlobal("EventSource", Source);
     Source.skipNextAutoHandshake = true;
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const stop = transport.watchResourceChanges(
       { kind: "queue", agentId: "agent-one" },
       vi.fn(),
@@ -521,7 +585,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
     vi.stubGlobal("EventSource", Source);
     Source.skipNextAutoHandshake = true;
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const states: string[] = [];
     const stopStatus = transport.watchResourceConnection((status) =>
       states.push(status),
@@ -557,7 +621,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
     vi.stubGlobal("EventSource", Source);
     Source.skipNextAutoHandshake = true;
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const states: string[] = [];
     const onChange = vi.fn();
     const stopStatus = transport.watchResourceConnection((status) =>
@@ -602,7 +666,7 @@ describe("shared resource event transport", () => {
       vi.fn().mockRejectedValue(new TypeError("Failed to fetch")),
     );
     Source.skipNextAutoHandshake = true;
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const states: string[] = [];
     const stopStatus = transport.watchResourceConnection((status) =>
       states.push(status),
@@ -649,7 +713,7 @@ describe("shared resource event transport", () => {
       );
       vi.stubGlobal("fetch", fetch);
       const api = await import("../api");
-      const transport = await import("./resourceEvents");
+      const transport = await loadTransport();
       const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
       await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
       const live = Source.instances[0]!;
@@ -705,7 +769,7 @@ describe("shared resource event transport", () => {
       vi.stubGlobal("fetch", fetch);
       Source.skipNextAutoHandshake = true;
       const api = await import("../api");
-      const transport = await import("./resourceEvents");
+      const transport = await loadTransport();
       const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
       await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
       Source.instances[0]!.onerror?.();
@@ -757,7 +821,7 @@ describe("shared resource event transport", () => {
     );
     vi.stubGlobal("fetch", fetch);
     Source.skipNextAutoHandshake = true;
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const stopFirst = transport.watchResourceChanges(
       { kind: "state" },
       vi.fn(),
@@ -804,7 +868,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
     vi.stubGlobal("EventSource", Source);
     Source.skipNextAutoHandshake = true;
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const states: string[] = [];
     const stopStatus = transport.watchResourceConnection((status) =>
       states.push(status),
@@ -862,7 +926,7 @@ describe("shared resource event transport", () => {
     );
     Source.skipNextAutoHandshake = true;
     const api = await import("../api");
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const states: string[] = [];
     const stopStatus = transport.watchResourceConnection((status) =>
       states.push(status),
@@ -904,7 +968,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
     vi.stubGlobal("EventSource", Source);
     Source.skipNextAutoHandshake = true;
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const states: string[] = [];
     const stopStatus = transport.watchResourceConnection((status) =>
       states.push(status),
@@ -965,7 +1029,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("location", { origin: "http://studio.test" });
     vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
     vi.stubGlobal("EventSource", Source);
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const states: string[] = [];
     const stopStatus = transport.watchResourceConnection((status) =>
       states.push(status),
@@ -999,7 +1063,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
     vi.stubGlobal("EventSource", Source);
     Source.skipNextAutoHandshake = true;
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const onChange = vi.fn();
     const stop = transport.watchResourceChanges({ kind: "state" }, onChange);
     await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
@@ -1032,7 +1096,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("location", { origin: "http://studio.test" });
     vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
     vi.stubGlobal("EventSource", Source);
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const statuses: string[] = [];
     transport.watchResourceConnection((status) => statuses.push(status));
     const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
@@ -1063,7 +1127,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
     vi.stubGlobal("EventSource", Source);
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const statuses: string[] = [];
     transport.watchResourceConnection((status) => statuses.push(status));
     const stop = transport.watchResourceChanges({ kind: "state" }, () => {
@@ -1115,7 +1179,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("EventSource", Source);
     vi.stubGlobal("BroadcastChannel", Channel);
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const statuses: string[] = [];
     const stopStatus = transport.watchResourceConnection((status) =>
       statuses.push(status),
@@ -1175,7 +1239,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("location", { origin: "http://studio.test" });
     vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
     vi.stubGlobal("EventSource", Source);
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const states: string[] = [];
     const stopStatus = transport.watchResourceConnection((status) =>
       states.push(status),
@@ -1207,7 +1271,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
     vi.stubGlobal("EventSource", Source);
     vi.stubGlobal("BroadcastChannel", Channel);
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const states: string[] = [];
     const stopStatus = transport.watchResourceConnection((status) =>
       states.push(status),
@@ -1244,7 +1308,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
     vi.stubGlobal("EventSource", Source);
 
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const panel = { kind: "panel", agentId: "agent-one" } as const;
     const terminal = { kind: "terminal", terminalId: "terminal-one" } as const;
     const panelChanges = vi.fn();
@@ -1328,7 +1392,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
     vi.stubGlobal("EventSource", Source);
 
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const stop = transport.watchResourceChanges(
       { kind: "panel", agentId: "agent-one" },
       vi.fn(),
@@ -1386,7 +1450,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("EventSource", Source);
     vi.stubGlobal("BroadcastChannel", Channel);
 
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
     await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1));
     expect(request.mock.calls[0]?.[1].signal.aborted).toBe(false);
@@ -1436,7 +1500,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("EventSource", Source);
     vi.stubGlobal("BroadcastChannel", Channel);
 
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
     await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1));
     expect(Source.instances).toHaveLength(0);
@@ -1470,7 +1534,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
     vi.stubGlobal("EventSource", Source);
 
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const stop = transport.watchResourceChanges(
       { kind: "voice", agentId: "agent-one" },
       vi.fn(),
@@ -1516,7 +1580,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
     vi.stubGlobal("EventSource", Source);
 
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const resource = { kind: "costs" } as const;
     const onChange = vi.fn();
     const states: string[] = [];
@@ -1577,7 +1641,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
     vi.stubGlobal("EventSource", Source);
 
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const resource = { kind: "costs" } as const;
     const onResourceChange = vi.fn();
     const onTokenRates = vi.fn();
@@ -1638,7 +1702,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("EventSource", Source);
     vi.stubGlobal("BroadcastChannel", Channel);
 
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const local = { kind: "state" } as const;
     const latePeerRef = { kind: "panel", agentId: "late-panel" } as const;
     const localChanges = vi.fn();
@@ -1712,7 +1776,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("EventSource", Source);
     vi.stubGlobal("BroadcastChannel", Channel);
 
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const local = { kind: "state" } as const;
     const bulkRefs = Array.from({ length: 129 }, (_, index) => ({
       kind: "panel" as const,
@@ -1849,7 +1913,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("EventSource", Source);
     vi.stubGlobal("BroadcastChannel", Channel);
 
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const local = { kind: "panel", agentId: "resume-panel" } as const;
     const onChange = vi.fn();
     const stop = transport.watchResourceChanges(local, onChange);
@@ -1921,7 +1985,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("EventSource", Source);
     vi.stubGlobal("BroadcastChannel", Channel);
 
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const a = { kind: "panel", agentId: "follower-resume-a" } as const;
     const b = { kind: "panel", agentId: "follower-resume-b" } as const;
     const onA = vi.fn();
@@ -2017,7 +2081,7 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("EventSource", Source);
     vi.stubGlobal("BroadcastChannel", Channel);
 
-    const transport = await import("./resourceEvents");
+    const transport = await loadTransport();
     const a = { kind: "panel", agentId: "resume-panel-a" } as const;
     const b = { kind: "panel", agentId: "resume-panel-b" } as const;
     const onA = vi.fn();
