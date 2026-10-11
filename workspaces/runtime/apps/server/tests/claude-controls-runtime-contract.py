@@ -24,7 +24,7 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('runtime_fixture', Path(__file__).with_name('runtime-contract.py'))
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
-from codex_claude_controls import action, retire_idle_bridge
+from codex_claude_controls import action, bridge_build, retire_idle_bridge
 
 
 class Runtime(f.Runtime):
@@ -407,8 +407,16 @@ class Controls(unittest.TestCase):
         self.assertTrue(retire_idle_bridge(self.rt, 'default', {'claudeOptions': {}}, self.server))
         self.assertNotIn('default', self.rt.servers)
 
+    def test_a_bridge_whose_sources_an_update_replaced_retires_when_idle(self):
+        for capabilities in ({'claudeVersion': 23}, {'claudeVersion': 23, 'claudeBuild': 'older'}):
+            self.rt.servers['default'] = self.server
+            self.server.initialize_result = {'capabilities': capabilities}
+            self.server.provider_options = {}
+            self.assertTrue(retire_idle_bridge(self.rt, 'default', {'claudeOptions': {}}, self.server))
+            self.assertNotIn('default', self.rt.servers)
+
     def test_current_bridge_version_stays_and_checks_native_tasks(self):
-        self.server.initialize_result = {'capabilities': {'claudeVersion': 23}}
+        self.server.initialize_result = {'capabilities': {'claudeVersion': 23, 'claudeBuild': bridge_build()}}
         self.server.provider_options = {}
         self.assertFalse(retire_idle_bridge(self.rt, 'default', {'claudeOptions': {}}, self.server))
         self.server.state['tasks'] = [{'task_id': 'background'}]

@@ -968,7 +968,11 @@ class Bridge(unittest.TestCase):
         self.assertEqual([i['id'] for i in users],['initial','33333333-3333-4333-8333-333333333333'])
 
     def test_turn_start_steers_active_turn_and_deduplicates_client_id(self):
-        self.assertEqual(self.call('initialize', {})['capabilities']['claudeVersion'], 23)
+        capabilities = self.call('initialize', {})['capabilities']
+        self.assertEqual(capabilities['claudeVersion'], 23)
+        # The bridge reports the same build as the server computes from the files on disk.
+        from codex_claude_controls import bridge_build
+        self.assertEqual(capabilities['claudeBuild'], bridge_build(self.root))
         first = self.turn('steer', 'start-initial')['turn']['id']
         params = {'threadId': self.thread, 'clientUserMessageId': 'start-followup',
                   'input': [{'type': 'text', 'text': 'replacement'}]}

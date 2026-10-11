@@ -1,5 +1,7 @@
 """Native Claude controls with durable workspace reservations and receipts."""
+import hashlib
 import json
+from pathlib import Path
 import re
 import time
 import uuid
@@ -214,10 +216,37 @@ def action(rt, body):
             running.discard(operation_id)
 
 
+def bridge_build(root=None):
+    """The hash of the Claude bridge sources on disk, as the bridge reports it in initialize."""
+    from codex_layout import CLAUDE_BRIDGE_ROOT
+    folder = Path(root or CLAUDE_BRIDGE_ROOT)
+    files = sorted(path for path in folder.glob('*.mjs') if not path.name.endswith('.test.mjs'))
+    key = tuple((path.name, path.stat().st_mtime_ns, path.stat().st_size) for path in files)
+    cached = _BUILD_CACHE.get(folder)
+    if cached and cached[0] == key:
+        return cached[1]
+    digest = hashlib.sha256()
+    for path in files:
+        digest.update(path.name.encode() + b'\n')
+        digest.update(path.read_bytes())
+        digest.update(b'\n')
+    _BUILD_CACHE[folder] = (key, digest.hexdigest())
+    return digest.hexdigest()
+
+
+_BUILD_CACHE: dict[Path, tuple[tuple[tuple[str, int, int], ...], str]] = {}
+
+
 def retire_idle_bridge(rt, key, account, server):
-    """Retire only an idle native process; Runtime.connect holds start_lock."""
-    version = getattr(server, 'initialize_result', {}).get('capabilities', {}).get('claudeVersion')
-    if version == 23 and getattr(server, 'provider_options', {}) == account.get('claudeOptions', {}):
+    """Retire only an idle native process; Runtime.connect holds start_lock. A bridge that an
+    update replaced on disk keeps its old code until it restarts, so its build counts too."""
+    capabilities = getattr(server, 'initialize_result', {}).get('capabilities', {})
+    version = capabilities.get('claudeVersion')
+    try:
+        current = capabilities.get('claudeBuild') == bridge_build()
+    except OSError:
+        current = True
+    if version == 23 and current and getattr(server, 'provider_options', {}) == account.get('claudeOptions', {}):
         return False
 
     def eligible(db):
