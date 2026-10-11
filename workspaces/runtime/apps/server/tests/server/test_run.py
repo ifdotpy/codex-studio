@@ -428,6 +428,45 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertEqual(failures, [])
         self.assertEqual(captured[0]["maxSuiteRssBytes"], 123)
 
+    def test_focused_run_uses_owned_tmpfs_for_all_admission_slots(self):
+        with tempfile.TemporaryDirectory(prefix="server-focused-tmpfs-") as directory:
+            root = Path(directory)
+            disk_root = root / "disk"
+            disk_root.mkdir()
+            owned_root = root / "csst-focused"
+            owned_root.mkdir()
+            calls = []
+            profile = {"maxSuiteRssBytes": 1024, "suiteSeconds": {}}
+
+            def memory_root(workers, simultaneous_runs=1):
+                calls.append((workers, simultaneous_runs))
+                return owned_root
+
+            def execute(_command, _cwd, _timeout, _environment):
+                return 0, None, [], []
+
+            output = io.StringIO()
+            with (contextlib.redirect_stdout(output),
+                  mock.patch.object(RUNNER, "_focused_slot_count", return_value=3),
+                  mock.patch.object(RUNNER, "_focused_run_slot"),
+                  mock.patch.object(RUNNER, "_load_profile", return_value=profile),
+                  mock.patch.object(RUNNER, "_save_profile"),
+                  mock.patch.object(RUNNER, "_measured_child_peak_rss_bytes", return_value=1),
+                  mock.patch.object(RUNNER, "_unix_socket_path_error", return_value=None),
+                  mock.patch.object(RUNNER, "_memory_scratch_root", side_effect=memory_root),
+                  mock.patch.object(RUNNER, "TEST_TMP_ROOT", disk_root),
+                  mock.patch.object(RUNNER, "run_process", execute)):
+                runnable, skipped, failures, _elapsed = RUNNER.run_suites(
+                    [("one.py", "safe")], set(), 1, 1, execute=execute,
+                )
+
+            self.assertEqual(runnable, [("one.py", "safe")])
+            self.assertEqual(skipped, [])
+            self.assertEqual(failures, [])
+            self.assertEqual(calls, [(1, 3)])
+            self.assertIn(f"Scratch root: tmpfs {owned_root}", output.getvalue())
+            self.assertFalse(owned_root.exists())
+
     def test_concurrent_profile_writers_merge_with_unique_atomic_temporaries(self):
         try:
             context = multiprocessing.get_context("fork")
@@ -1049,6 +1088,19 @@ class ServerSuiteRunner(unittest.TestCase):
             probe.assert_called_once_with(owned, RUNNER.SCRATCH_PROBE_MIN_BYTES)
             RUNNER.shutil.rmtree(owned)
             self.assertFalse(owned.exists())
+
+            with (mock.patch.object(RUNNER, "MAX_SHORT_TMP_ROOT_BYTES", 200),
+                  mock.patch.object(RUNNER, "_tmpfs_mounts", return_value=iter([mount])),
+                  mock.patch.object(RUNNER, "_probe_scratch_capacity", return_value=True) as concurrent_probe,
+                  mock.patch.object(RUNNER.shutil, "disk_usage",
+                                    return_value=type("Usage", (), {"free": 600 * 1024**2,
+                                                                     "total": 800 * 1024**2})())):
+                concurrent = RUNNER._memory_scratch_root(1, simultaneous_runs=2)
+            self.assertIsNotNone(concurrent)
+            concurrent_probe.assert_called_once_with(
+                concurrent, RUNNER.SCRATCH_PROBE_MIN_BYTES * 2,
+            )
+            RUNNER.shutil.rmtree(concurrent)
 
     def test_scratch_capacity_probe_fsyncs_and_removes_its_file(self):
         with tempfile.TemporaryDirectory(prefix="server-runner-capacity-") as temp:
