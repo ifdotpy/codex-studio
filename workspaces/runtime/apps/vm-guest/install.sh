@@ -42,9 +42,17 @@ id studio >/dev/null 2>&1 || useradd --create-home --home-dir /home/studio --she
 install -m 0755 -o root -g root "$script_dir/studio_browser.py" /usr/local/bin/studio-browser
 ln -sfn /usr/local/bin/studio-browser /usr/local/bin/xdg-open
 install -d -m 0700 -o studio -g studio /var/lib/codex-studio/guest /var/lib/codex-studio/projects
-sed "s|@REPO@|$repo_dir|g" "$script_dir/codex-studio-guest.service" >/etc/systemd/system/codex-studio-guest.service
+unit=/etc/systemd/system/codex-studio-guest.service
+unit_before=$(cat "$unit" 2>/dev/null || true)
+sed "s|@REPO@|$repo_dir|g" "$script_dir/codex-studio-guest.service" >"$unit"
 install -m 0644 "$script_dir/codex-studio-grow.service" /etc/systemd/system/codex-studio-grow.service
 systemctl daemon-reload
 systemctl start codex-studio-grow.service
 bash "$script_dir/install-layr.sh"
 systemctl enable --now codex-studio-grow.service codex-studio-guest.service
+# Boot can start the guest service before this script writes its new unit. A running service
+# keeps the unit it started with, so a changed unit (such as the RuntimeDirectory of the
+# browser bridge socket) applies only after a restart. Provider owners survive it (KillMode).
+if [ "$(cat "$unit")" != "$unit_before" ]; then
+  systemctl try-restart codex-studio-guest.service
+fi
