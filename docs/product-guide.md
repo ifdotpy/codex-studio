@@ -248,7 +248,9 @@ reports the Studio process tree, resident memory and CPU by process kind,
 loaded Codex threads per connected account, live Claude queries, queue sizes,
 short runtime lock samples, and host memory. Account names and process command
 lines stay out of the output. The snapshot reads process and native state only
-when requested. Resident memory totals can count shared pages more than once.
+when requested. [Host memory collection](../workspaces/runtime/apps/server/src/codex_diagnostics.py)
+uses the operating system's memory data on Linux and macOS. Resident memory
+totals can count shared pages more than once.
 `/api/desktop` reports the selected Codex version and each account's current
 version in `nativeRuntime`. Supervisor accounts adopt an approved update only
 after all local work, native threads, event queues, and receipts are idle.

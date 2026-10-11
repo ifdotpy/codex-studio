@@ -2,11 +2,13 @@
 
 import os
 import json
+import platform
 import re
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from pathlib import Path
 
 from codex_native_sweep import _loaded
 from codex_sqlite import diagnostics as sqlite_diagnostics
@@ -84,15 +86,24 @@ def host_resources():
     """Read host capacity only when a diagnostics request arrives."""
     total = available = None
     try:
-        total = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"],
-                                            text=True, timeout=2).strip())
-        stats = subprocess.check_output(["vm_stat"], text=True, timeout=2)
-        size = re.search(r"page size of (\d+) bytes", stats)
-        pages = [re.search(r"^Pages " + name + r":\s+(\d+)\.", stats, re.M)
-                 for name in ("free", "inactive", "speculative")]
-        if size and all(pages):
-            available = min(total, sum(int(value.group(1)) for value in pages)
-                            * int(size.group(1)))
+        if platform.system() == "Linux":
+            stats = Path("/proc/meminfo").read_text(encoding="ascii")
+            values = {name: int(value) * 1024 for name, value in
+                      re.findall(r"^(MemTotal|MemAvailable):\s+(\d+) kB$", stats, re.M)}
+            total = values.get("MemTotal")
+            available = values.get("MemAvailable")
+        elif platform.system() == "Darwin":
+            total = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"],
+                                                text=True, timeout=2,
+                                                stderr=subprocess.DEVNULL).strip())
+            stats = subprocess.check_output(["vm_stat"], text=True, timeout=2,
+                                            stderr=subprocess.DEVNULL)
+            size = re.search(r"page size of (\d+) bytes", stats)
+            pages = [re.search(r"^Pages " + name + r":\s+(\d+)\.", stats, re.M)
+                     for name in ("free", "inactive", "speculative")]
+            if size and all(pages):
+                available = min(total, sum(int(value.group(1)) for value in pages)
+                                * int(size.group(1)))
     except (OSError, ValueError, subprocess.SubprocessError):
         pass
     return {"cpuCount": os.cpu_count(), "totalMemoryBytes": total,

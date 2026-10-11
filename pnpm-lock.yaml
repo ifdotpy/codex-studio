@@ -177,6 +177,9 @@ importers:
       oxlint:
         specifier: 1.86.0
         version: 1.86.0
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
   workspaces/client/apps/web:
     dependencies:
       '@mantine/core':
@@ -221,6 +224,9 @@ importers:
       rxjs:
         specifier: 7.8.2
         version: 7.8.2
+      studio-claude-bridge:
+        specifier: workspace:*
+        version: link:../../../providers/apps/claude-bridge
     devDependencies:
       '@playwright/test':
         specifier: 1.63.0
