@@ -72,6 +72,20 @@ pub fn delete_subvolume(path: &Path) -> Result<()> {
     sys::subvol_destroy(dir.as_fd(), &name).with_context(|| format!("delete subvolume {}", path.display()))
 }
 
+/// Make a subvolume read-only (a writable snapshot becomes a state after its changes).
+pub fn set_readonly(path: &Path) -> Result<()> {
+    let f = File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let flags = sys::subvol_flags(f.as_fd())?;
+    sys::subvol_set_flags(f.as_fd(), flags | sys::SUBVOL_RDONLY).with_context(|| format!("make {} read-only", path.display()))
+}
+
+/// Make a read-only subvolume writable again (btrfs does not rename a read-only subvolume).
+pub fn set_writable(path: &Path) -> Result<()> {
+    let f = File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let flags = sys::subvol_flags(f.as_fd())?;
+    sys::subvol_set_flags(f.as_fd(), flags & !sys::SUBVOL_RDONLY).with_context(|| format!("make {} writable", path.display()))
+}
+
 pub fn subvol_info(path: &Path) -> Result<SubvolInfo> {
     let f = File::open(path).with_context(|| format!("open {}", path.display()))?;
     let raw = sys::subvol_info(f.as_fd()).with_context(|| format!("subvolume info {}", path.display()))?;

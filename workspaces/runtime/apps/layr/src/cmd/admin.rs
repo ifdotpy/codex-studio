@@ -136,6 +136,8 @@ const NOT_UNDOABLE: &[&str] = &[
     "rebase.step",
     "remote.ref",
     "config",
+    "overlay.create",
+    "overlay.use",
 ];
 
 pub fn undo(ctx: &Ctx, args: &[String]) -> Result<i32> {
@@ -216,6 +218,45 @@ pub fn undo_record(ctx: &Ctx, repo: &Repo, id: &str, force: bool) -> Result<i32>
     let _lock = repo.p.lock()?;
     let mut rec = Record::new("undo");
     rec.data = serde_json::json!({"undo": r.id, "op": r.op});
+    // A commit that changed overlays: their lines move back and the line shows their earlier
+    // states again; the changes stay in the working folder, as for the shared set. The overlay
+    // lines move only after every check of the undo passed.
+    let mut overlay_back: Vec<(String, Line, String)> = Vec::new();
+    let changed: Vec<String> = r
+        .data
+        .get("overlays")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
+        .unwrap_or_default();
+    if !changed.is_empty() {
+        if r.op != "commit" {
+            return Err(exit(1, format!("error: undo of a {} that changed overlays is not available yet", r.op)));
+        }
+        let lid = r.data["line"].as_str().unwrap_or("").to_string();
+        let line = repo.line(&lid)?;
+        let after: Vec<crate::overlay::Layer> = serde_json::from_value(r.data["stack"]["layers"].clone())?;
+        if repo.layers(&line)? != after && !force {
+            return Err(exit(
+                1,
+                "error: the overlays of the line changed after this commit; undo the later operations first, or use --force",
+            ));
+        }
+        let mut before = after.clone();
+        for l in before.iter_mut().filter(|l| changed.contains(&l.overlay)) {
+            let o = repo.overlay_repo(&l.overlay)?;
+            let parent =
+                o.parents(&l.state)?.first().cloned().ok_or_else(|| exit(1, "error: the overlay state has no parent"))?;
+            let info = repo.need_overlay(&l.overlay)?;
+            if let Some(ol) = o.p.db.line_by_name(&Repo::overlay_line_name(&info, &line.id, line.owner))? {
+                if ol.head == l.state {
+                    overlay_back.push((l.overlay.clone(), ol, parent.clone()));
+                }
+            }
+            l.state = parent;
+        }
+        rec.data["line"] = serde_json::json!(lid);
+        rec.data["stack"] = crate::overlay::stack_data(&lid, &before);
+    }
     // Tags.
     match r.op.as_str() {
         "tag" => {
@@ -335,6 +376,11 @@ pub fn undo_record(ctx: &Ctx, repo: &Repo, id: &str, force: bool) -> Result<i32>
             },
         );
     }
+    for (name, ol, parent) in &overlay_back {
+        let o = repo.overlay_repo(name)?;
+        let _l = o.p.lock()?;
+        crate::overlay::move_overlay_line(&o, ctx, "undo", ol, parent, Vec::new())?;
+    }
     let done = repo.commit_record(ctx, rec)?;
     crate::gitbridge::sync_store_access(repo)?;
     outln!(ctx, "Undid {} {} ({}); undo it with 'layr undo {}'", short_op(&r.id), r.op, fmt_time(r.time), short_op(&done.id));
@@ -347,8 +393,10 @@ fn restore_working(repo: &Repo, line: &Line, state: &str) -> Result<()> {
     let scan = repo.scan(line)?;
     let w = repo.working(line);
     let own = repo.own(line);
+    // Automatic states leave the overlay files out: those files stay as they are.
+    let private = repo.private_paths(line)?;
     for c in changes::file_changes(&scan.path, &target)? {
-        if skip_path(&c.path) {
+        if skip_path(&c.path) || private.contains(&c.path) || c.old_path.as_ref().map(|o| private.contains(o)).unwrap_or(false) {
             continue;
         }
         if let Some(src) = &c.old_path {
@@ -643,6 +691,7 @@ pub fn run_gc(ctx: &Ctx, repo: &Repo, dry: bool) -> Result<Vec<String>> {
         }
     }
     let caches = prune_caches(repo)?;
+    repo.prune_all_bases()?;
     if !deleted.is_empty() || !caches.is_empty() {
         let mut rec = Record::new("gc");
         rec.data = serde_json::json!({"deleted": deleted, "caches": caches});
@@ -769,8 +818,92 @@ pub fn fsck(ctx: &Ctx, args: &[String]) -> Result<i32> {
             outln!(ctx, "line {} has no working folder (layr adopt {})", l.name, l.name);
         }
     }
+    if !repo.p.is_overlay() {
+        problems += fsck_overlays(ctx, repo, a.has("--repair"))?;
+    }
     outln!(ctx, "{problems} problem(s)");
     Ok(if problems > 0 { 1 } else { 0 })
+}
+
+/// The overlays of a project (their records, states and snapshots) and the lines that show them
+/// (each layer exists; a kept base equals its layers).
+fn fsck_overlays(ctx: &Ctx, repo: &Repo, repair: bool) -> Result<usize> {
+    let mut problems = 0;
+    for name in repo.overlay_names()? {
+        let o = match repo.overlay_repo(&name) {
+            Ok(o) => o,
+            Err(e) => {
+                problems += 1;
+                outln!(ctx, "overlay {name}: {e:#}");
+                continue;
+            }
+        };
+        match o.p.verify_records() {
+            Ok(v) => {
+                let n: u64 = v.iter().map(|x| x.1).sum();
+                outln!(ctx, "overlay {name}: {n} records, signatures ok");
+            }
+            Err(err) => {
+                problems += 1;
+                outln!(ctx, "overlay {name}: records: {err:#}");
+            }
+        }
+        for e in std::fs::read_dir(o.p.states_dir())?.flatten() {
+            let id = e.file_name().to_string_lossy().into_owned();
+            if o.p.db.state(&id)?.is_none() {
+                problems += 1;
+                if repair {
+                    btrfs::delete_tree(&e.path())?;
+                    outln!(ctx, "overlay {name}: deleted snapshot without record: {id}");
+                } else {
+                    outln!(ctx, "overlay {name}: snapshot without record: {id} (use --repair)");
+                }
+            }
+        }
+        for l in o.lines()? {
+            if !o.p.state_path(&l.head).exists() {
+                problems += 1;
+                outln!(ctx, "overlay {name}: the head of line {} is missing", l.name);
+            }
+        }
+    }
+    for l in repo.lines()? {
+        let layers = repo.layers(&l)?;
+        if layers.is_empty() || l.machine != repo.p.store.machine.id {
+            continue;
+        }
+        let mut ok = true;
+        for x in &layers {
+            if repo.overlay_repo(&x.overlay).map(|o| o.p.state_path(&x.state).exists()).unwrap_or(false) {
+                continue;
+            }
+            ok = false;
+            problems += 1;
+            outln!(ctx, "line {} shows state {} of overlay {}, which is missing", l.name, ids::short(&x.state), x.overlay);
+        }
+        if !ok {
+            continue;
+        }
+        // The kept base against a new assembly of the same layers (a new line's base has empty
+        // cache folders where the state may have files).
+        let base = repo.head_tree(&l)?;
+        let fresh = repo.assemble(&l, &l.head, &layers)?;
+        let caches = repo.cache_paths(&repo.working(&l));
+        let in_cache = |p: &str| caches.iter().any(|c| p == c || p.starts_with(&format!("{c}/")));
+        let diff: Vec<String> = changes::file_changes(&base, &fresh.path)?
+            .into_iter()
+            .filter(|c| !skip_path(&c.path) && !in_cache(&c.path))
+            .map(|c| c.path)
+            .collect();
+        if !diff.is_empty() {
+            problems += 1;
+            outln!(ctx, "line {}: its base differs from its layers in {} path(s)", l.name, diff.len());
+            if repair {
+                repo.prune_bases(&l, None, 0)?;
+            }
+        }
+    }
+    Ok(problems)
 }
 
 pub fn reindex(ctx: &Ctx, _args: &[String]) -> Result<i32> {
@@ -780,6 +913,15 @@ pub fn reindex(ctx: &Ctx, _args: &[String]) -> Result<i32> {
     h.repo.p.rebuild_index()?;
     let n: i64 = h.repo.p.db.conn.query_row("SELECT COUNT(*) FROM records", [], |r| r.get(0))?;
     outln!(ctx, "index rebuilt from {n} records");
+    if !h.repo.p.is_overlay() {
+        for name in h.repo.overlay_names()? {
+            let o = h.repo.overlay_project(&name)?;
+            let _l = o.lock()?;
+            o.rebuild_index()?;
+            let n: i64 = o.db.conn.query_row("SELECT COUNT(*) FROM records", [], |r| r.get(0))?;
+            outln!(ctx, "overlay {name}: index rebuilt from {n} records");
+        }
+    }
     Ok(0)
 }
 

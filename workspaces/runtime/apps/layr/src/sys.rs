@@ -1,7 +1,8 @@
 //! The only module with `unsafe` code: system calls that `rustix` and the standard library do not
 //! wrap. Every other module uses safe wrappers.
 //!
-//! - btrfs ioctls: create, snapshot and destroy subvolumes, subvolume flags and information,
+//! - btrfs ioctls: create, snapshot and destroy subvolumes, read and set subvolume flags,
+//!   subvolume information,
 //!   and `FICLONERANGE`;
 //! - `fork` (the service forks one process per request while it is single threaded);
 //! - switching a child process to a user before `exec` (groups, gid, uid);
@@ -20,6 +21,7 @@ const SNAP_CREATE_V2: libc::c_ulong = 0x5000_9417;
 const SUBVOL_CREATE_V2: libc::c_ulong = 0x5000_9418;
 const SNAP_DESTROY_V2: libc::c_ulong = 0x5000_943f;
 const SUBVOL_GETFLAGS: libc::c_ulong = 0x8008_9419;
+const SUBVOL_SETFLAGS: libc::c_ulong = 0x4008_941a;
 const GET_SUBVOL_INFO: libc::c_ulong = 0x81f8_943c;
 const FICLONERANGE: libc::c_ulong = 0x4020_940d;
 pub const SUBVOL_RDONLY: u64 = 1 << 1;
@@ -112,6 +114,12 @@ pub fn subvol_flags(fd: BorrowedFd) -> io::Result<u64> {
     let mut flags: u64 = 0;
     ioctl_ptr(fd, SUBVOL_GETFLAGS, &mut flags)?;
     Ok(flags)
+}
+
+/// Set the flags of a subvolume (`SUBVOL_RDONLY` makes it read-only).
+pub fn subvol_set_flags(fd: BorrowedFd, flags: u64) -> io::Result<()> {
+    let mut f: u64 = flags;
+    ioctl_ptr(fd, SUBVOL_SETFLAGS, &mut f)
 }
 
 pub struct RawSubvolInfo {

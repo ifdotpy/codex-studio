@@ -190,12 +190,13 @@ pub fn diff(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let (old, new, working): (PathBuf, PathBuf, bool) = match revs_v.len() {
         0 => {
             let l = h.line()?;
+            repo.check_view(ctx, l)?;
             let (idx, it) = repo.index_view(l)?;
             if let Some(t) = it {
                 keep.push(t);
             }
             if cached {
-                (repo.state_root(&l.head)?, idx, false)
+                (repo.head_tree(l)?, idx, false)
             } else {
                 let scan = repo.scan(l)?;
                 let p = scan.path.clone();
@@ -215,7 +216,21 @@ pub fn diff(ctx: &Ctx, args: &[String]) -> Result<i32> {
                 (resolve(x)?, resolve(y)?, false)
             } else {
                 let l = h.line()?;
-                let old = resolve(r)?;
+                repo.check_view(ctx, l)?;
+                // Against the working content of a line with overlays, a state is compared with
+                // the line's overlays in place (its own head: the line's base).
+                let id = revs::resolve(repo, line.as_ref(), r)?;
+                let layers = repo.layers(l)?;
+                let old = if layers.is_empty() {
+                    repo.state_root(&id)?
+                } else if id == l.head {
+                    repo.head_tree(l)?
+                } else {
+                    let v = repo.assemble(l, &id, &layers)?;
+                    let p = v.path.clone();
+                    keep.push(v);
+                    p
+                };
                 let (idx, it) = repo.index_view(l)?;
                 if let Some(t) = it {
                     keep.push(t);
@@ -582,6 +597,7 @@ pub fn show(ctx: &Ctx, args: &[String]) -> Result<i32> {
             let mut _keep = None;
             if rv.is_empty() {
                 let l = h.line()?;
+                repo.check_view(ctx, l)?;
                 let (idx, t) = repo.index_view(l)?;
                 _keep = t;
                 root_path = idx;
@@ -991,6 +1007,7 @@ pub fn blame(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let mut _scan = None;
     if rev.is_none() {
         if let Some(l) = &line {
+            repo.check_view(ctx, l)?;
             let scan = repo.scan(l)?;
             if fsutil::lmeta(&scan.path, &path).map(|m| m.size > fsutil::MAX_TEXT).unwrap_or(false) {
                 return Err(too_large());
@@ -1206,6 +1223,11 @@ pub fn grep(ctx: &Ctx, args: &[String]) -> Result<i32> {
         .collect::<Vec<_>>()
         .join("|");
     let re = regex::bytes::RegexBuilder::new(&joined).case_insensitive(a.has("-i")).build()?;
+    if a.has("--cached") || rev.is_none() {
+        if let Some(l) = &line {
+            repo.check_view(ctx, l)?;
+        }
+    }
     let (root, _t, index) = if a.has("--cached") {
         let l = h.line()?;
         let (idx, t) = repo.index_view(l)?;
@@ -1332,6 +1354,7 @@ pub fn ls_files(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let a = parse(&spec, args)?;
     let h = here(ctx)?;
     let line = h.line()?.clone();
+    h.repo.check_view(ctx, &line)?;
     let specs = h.specs(&a.rest())?;
     let end = if a.has("-z") { "\0" } else { "\n" };
     let show = |p: &str| if a.has("--full-name") { p.to_string() } else { h.rel(p) };

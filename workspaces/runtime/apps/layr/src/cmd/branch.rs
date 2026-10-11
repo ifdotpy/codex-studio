@@ -74,6 +74,24 @@ pub fn branch(ctx: &Ctx, args: &[String]) -> Result<i32> {
                 }
             }
             let _lock = repo.p.lock()?;
+            // Automatic states leave overlay files out: uncommitted changes of them would be lost.
+            if !a.has("-f") && repo.is_stacked(&l)? && repo.working(&l).exists() {
+                let private = repo.private_paths(&l)?;
+                let (st, _scan, _it, _idx) = repo.status(&l)?;
+                let changed = st
+                    .staged
+                    .iter()
+                    .chain(st.unstaged.iter())
+                    .flat_map(|c| [Some(c.path.clone()), c.old_path.clone()])
+                    .flatten()
+                    .any(|p| private.contains(&p));
+                if changed || !repo.pending_moves(&l).is_empty() {
+                    return Err(exit(
+                        1,
+                        format!("error: line '{name}' has uncommitted changes of overlay files, which automatic states do not keep; commit them, or delete the line with -f"),
+                    ));
+                }
+            }
             let last = repo.working_state(ctx, &l, "before line delete")?;
             // Record first, then delete the folder: the content is in the saved state.
             let mut rec = Record::new("line.delete");
@@ -90,6 +108,8 @@ pub fn branch(ctx: &Ctx, args: &[String]) -> Result<i32> {
             repo.commit_record(ctx, rec)?;
             crate::btrfs::delete_tree(&repo.working(&l))?;
             repo.drop_stage(&l)?;
+            repo.set_pending_moves(&l, &Default::default())?;
+            repo.prune_bases(&l, None, 0)?;
             // The owner of a deleted line no longer reads the git objects.
             crate::gitbridge::sync_store_access(repo)?;
             outln!(ctx, "Deleted line {} (was {}).", l.name, ids::short(&l.head));
@@ -139,6 +159,16 @@ pub fn branch(ctx: &Ctx, args: &[String]) -> Result<i32> {
                 },
             },
         };
+        // A line made from a line (its name, or the current line) shows the overlays of that line
+        // that its owner reads; a line made from a state shows none.
+        let source = match a.pos.get(1) {
+            Some(r) => repo.p.db.line_by_name(r)?.map(|l| repo.localize(l)).transpose()?,
+            None => match &current {
+                Some(c) => Some(c.clone()),
+                None => repo.p.db.line_by_name("main")?.map(|l| repo.localize(l)).transpose()?,
+            },
+        }
+        .filter(|l| l.head == start);
         let owner = owner_arg(ctx, a.get("--owner"))?;
         repo.require(ctx, "line.create").map_err(|e| exit(128, format!("fatal: {e}")))?;
         if owner != ctx.caller.uid {
@@ -148,7 +178,7 @@ pub fn branch(ctx: &Ctx, args: &[String]) -> Result<i32> {
             return Err(exit(128, "fatal: only root can create a line owned by root"));
         }
         let _lock = repo.p.lock()?;
-        let l = repo.create_line(ctx, name, &start, owner)?;
+        let l = repo.create_line_from(ctx, name, &start, owner, source.as_ref())?;
         if a.has("--path") {
             outln!(ctx, "{}", repo.working(&l).display());
         } else if !a.has("-q") {

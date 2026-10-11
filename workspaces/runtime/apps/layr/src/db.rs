@@ -263,7 +263,7 @@ impl Db {
                     params![s("machine"), s("public_key"), rec.machine],
                 )?;
             }
-            "project" | "config" => {
+            "project" | "config" | "overlay.create" => {
                 if let Some(obj) = d.get("config").and_then(|v| v.as_object()) {
                     for (k, v) in obj {
                         let key = if foreign && local_key(k) { format!("{k}@{}", rec.machine) } else { k.clone() };
@@ -381,6 +381,17 @@ impl Db {
                 tx.execute("UPDATE states SET dropped=1 WHERE id=?1", params![s("state")])?;
             }
             _ => {}
+        }
+        // The overlays a line shows (`stack.<line id>`), from any record that changes them.
+        if let Some(st) = d.get("stack") {
+            if let (Some(line), Some(layers)) = (st.get("line").and_then(|v| v.as_str()), st.get("layers")) {
+                let key = if foreign { format!("stack.{line}@{}", rec.machine) } else { format!("stack.{line}") };
+                tx.execute(
+                    "INSERT INTO config(key, value, ord) VALUES(?1,?2,?3)
+                     ON CONFLICT(key) DO UPDATE SET value=?2, ord=?3 WHERE excluded.ord > config.ord",
+                    params![key, layers.to_string(), ord],
+                )?;
+            }
         }
         Ok(())
     }
@@ -677,6 +688,35 @@ mod tests {
             cache_shared: false,
         });
         r
+    }
+
+    #[test]
+    fn records_set_the_stack_of_a_line() {
+        let dir = std::env::temp_dir().join(format!("layr-db-stack-{}", std::process::id()));
+        let db = Db::open(&dir).unwrap();
+        let line = "01a12290-0000-7000-8000-00000000eeee";
+        let layers = |s: &str| serde_json::json!([{"overlay": "keys", "state": s}]);
+        let rec = |seq: u64, time: i64, machine: &str, st: &str| {
+            let mut r = Record::new("commit");
+            r.id = format!("01a12290-0000-7000-8000-{:012}", seq);
+            r.machine = machine.into();
+            r.seq = seq;
+            r.time = time;
+            r.data = serde_json::json!({"line": line, "stack": {"line": line, "layers": layers(st)}});
+            r
+        };
+        let (a, b) = ("01a12290-0000-7000-8000-000000000a01", "01a12290-0000-7000-8000-000000000a02");
+        let local = "01a12290-0000-7000-8000-00000000aaaa";
+        db.derive(&rec(2, 20, local, b), &|_| true, local).unwrap();
+        // An older record that arrives later does not replace the newer stack.
+        db.derive(&rec(1, 10, local, a), &|_| true, local).unwrap();
+        assert_eq!(db.config(&format!("stack.{line}")).unwrap(), Some(layers(b)));
+        // Another machine's stacks stay apart.
+        let other = "01a12290-0000-7000-8000-00000000bbbb";
+        db.derive(&rec(3, 30, other, a), &|_| true, local).unwrap();
+        assert_eq!(db.config(&format!("stack.{line}")).unwrap(), Some(layers(b)));
+        assert_eq!(db.config(&format!("stack.{line}@{other}")).unwrap(), Some(layers(a)));
+        let _ = std::fs::remove_file(&dir);
     }
 
     #[test]
