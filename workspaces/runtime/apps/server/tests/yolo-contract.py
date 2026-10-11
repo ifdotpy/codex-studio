@@ -394,37 +394,39 @@ class YoloWorkerMessageOrderingHTTPContract(YoloWorkerMessageOrderingCase):
     hold_worker_thread_start = True
 
     def test_message_ordering_before_and_after_worker_first_turn_is_deterministic(self) -> None:
-        _lead_id, worker_id = self.prepare_team(
-            "10000000-0000-4000-8000-000000000301",
-            "10000000-0000-4000-8000-000000000302",
-            "10000000-0000-4000-8000-000000000303",
-        )
-        self.backend.wait_until(self.backend.provider_gate_started,
-                                "worker thread/start provider gate")
-        message_id = "10000000-0000-4000-8000-000000000311"
-        message = "Use the inherited team permissions before the first turn starts."
-        self.post_message(worker_id, message_id, message)
-        self.backend.release_provider_gate()
-        turn = self.wait_for_message_turn(worker_id, message_id, message)
-        self.assert_inherited_yolo_permissions(turn)
+        with self.subTest(order="message queued before worker first turn starts"):
+            _lead_id, worker_id = self.prepare_team(
+                "10000000-0000-4000-8000-000000000301",
+                "10000000-0000-4000-8000-000000000302",
+                "10000000-0000-4000-8000-000000000303",
+            )
+            self.backend.wait_until(self.backend.provider_gate_started,
+                                    "worker thread/start provider gate")
+            message_id = "10000000-0000-4000-8000-000000000311"
+            message = "Use the inherited team permissions before the first turn starts."
+            self.post_message(worker_id, message_id, message)
+            self.backend.release_provider_gate()
+            turn = self.wait_for_message_turn(worker_id, message_id, message)
+            self.assert_inherited_yolo_permissions(turn)
 
-        _lead_id, settled_worker_id = self.prepare_team(
-            "10000000-0000-4000-8000-000000000311",
-            "10000000-0000-4000-8000-000000000312",
-            "10000000-0000-4000-8000-000000000313",
-        )
+        with self.subTest(order="message queued after worker first turn settles"):
+            _lead_id, settled_worker_id = self.prepare_team(
+                "10000000-0000-4000-8000-000000000321",
+                "10000000-0000-4000-8000-000000000322",
+                "10000000-0000-4000-8000-000000000323",
+            )
 
-        def worker_idle() -> bool:
-            worker = self.entity(settled_worker_id)
-            return bool(worker and not worker.get("inFlight")
-                        and worker.get("status") not in {"starting", "running"})
+            def worker_idle() -> bool:
+                worker = self.entity(settled_worker_id)
+                return bool(worker and not worker.get("inFlight")
+                            and worker.get("status") not in {"starting", "running"})
 
-        self.backend.wait_until(worker_idle, "worker first turn to settle")
-        message_id = "10000000-0000-4000-8000-000000000314"
-        message = "Use the inherited team permissions after the first turn settles."
-        self.post_message(settled_worker_id, message_id, message)
-        turn = self.wait_for_message_turn(settled_worker_id, message_id, message)
-        self.assert_inherited_yolo_permissions(turn)
+            self.backend.wait_until(worker_idle, "worker first turn to settle")
+            message_id = "10000000-0000-4000-8000-000000000324"
+            message = "Use the inherited team permissions after the first turn settles."
+            self.post_message(settled_worker_id, message_id, message)
+            turn = self.wait_for_message_turn(settled_worker_id, message_id, message)
+            self.assert_inherited_yolo_permissions(turn)
 
 
 if __name__ == "__main__":

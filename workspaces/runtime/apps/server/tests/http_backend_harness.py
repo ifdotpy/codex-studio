@@ -25,11 +25,11 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[5]
 SERVER_SCRIPT = REPOSITORY_ROOT / "workspaces/runtime/apps/server/src/codex-canvas"
 PROVIDER_REPLAY = Path(__file__).with_name("provider-replay-server.py")
 PROVIDER_FIXTURES = Path(__file__).parent / "fixtures/provider-replay"
-# Guards against a backend that never becomes ready; it is not a startup time budget.
-STARTUP_TIMEOUT_SECONDS = 60.0
+# One generous guard for a genuinely hung backend/provider interaction.
+HTTP_WAIT_GUARD_SECONDS = 60.0
 HTTP_WAIT_POLL_SECONDS = 0.05
+STARTUP_TIMEOUT_SECONDS = HTTP_WAIT_GUARD_SECONDS
 STOP_TIMEOUT_SECONDS = 4.0
-HTTP_WAIT_GUARD_SECONDS = STARTUP_TIMEOUT_SECONDS
 PROVIDER_SELECTION_ENVIRONMENT = frozenset({
     "CODEX_BIN",
     "CODEX_AGENTS_NATIVE_RUNTIME_PIN",
@@ -61,6 +61,10 @@ class HttpResult:
 
 class ProviderSelectionError(RuntimeError):
     """The backend selected a native provider other than the replay fixture."""
+
+
+class HTTPTransportError(RuntimeError):
+    """An HTTP connection failed and may succeed on the next condition poll."""
 
 
 class BackendProcess:
@@ -95,6 +99,7 @@ class BackendProcess:
         self._reader: threading.Thread | None = None
         self._stderr: list[str] = []
         self._stderr_lock = threading.Lock()
+        self._condition_deadline = threading.local()
         self._codex_log: Path | None = None
         self.session: dict[str, str] = {}
         self.identity: dict[str, Any] = {}
@@ -391,6 +396,15 @@ class BackendProcess:
         request_headers = dict(headers or {})
         if payload is not None:
             request_headers.setdefault("Content-Type", "application/json")
+        condition_deadline = getattr(self._condition_deadline, "value", None)
+        if condition_deadline is not None:
+            remaining = condition_deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"HTTP condition exceeded its shared "
+                    f"{HTTP_WAIT_GUARD_SECONDS:g}s guard"
+                )
+            timeout = min(timeout, remaining)
         try:
             with urlopen(Request(self.origin + path, data=payload, headers=request_headers,
                                  method=method), timeout=timeout) as response:
@@ -403,7 +417,7 @@ class BackendProcess:
                                   {key.lower(): value for key, value in error.headers.items()},
                                   error.read())
         except URLError as error:
-            raise RuntimeError(f"HTTP request failed at {path}: {error}") from error
+            raise HTTPTransportError(f"HTTP request failed at {path}: {error}") from error
 
     def create_codex_replay(self, fixture_name: str) -> Path:
         (self.codex_home / "auth.json").write_text(
@@ -492,13 +506,32 @@ class BackendProcess:
     def wait_until(self, condition: Callable[[], Any], description: str) -> Any:
         """Wait for an observable fixture condition with one shared hang guard."""
         deadline = time.monotonic() + HTTP_WAIT_GUARD_SECONDS
+        last_transport_error: HTTPTransportError | None = None
         while True:
-            value = condition()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"HTTP condition did not settle within the shared "
+                    f"{HTTP_WAIT_GUARD_SECONDS:g}s guard: {description}; "
+                    f"last transport error={last_transport_error}"
+                )
+            self._condition_deadline.value = deadline
+            try:
+                value = condition()
+            except HTTPTransportError as error:
+                last_transport_error = error
+                value = None
+            finally:
+                del self._condition_deadline.value
             if value:
                 return value
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise TimeoutError(f"HTTP condition did not settle: {description}")
+                raise TimeoutError(
+                    f"HTTP condition did not settle within the shared "
+                    f"{HTTP_WAIT_GUARD_SECONDS:g}s guard: {description}; "
+                    f"last transport error={last_transport_error}"
+                )
             time.sleep(min(HTTP_WAIT_POLL_SECONDS, remaining))
 
     def received_provider_frames(self) -> list[dict[str, Any]]:
