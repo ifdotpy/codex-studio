@@ -21,7 +21,6 @@
     "@aws-sdk/client-cloudformation": "3.1149.0",
     "@aws-sdk/client-iam": "3.1149.0",
     "@aws-sdk/client-s3": "3.1149.0",
-    "@aws-sdk/client-sts": "3.1149.0",
     "@aws-sdk/credential-providers": "3.1149.0",
     "@aws-sdk/s3-request-presigner": "3.1149.0",
     "@bokuweb/zstd-wasm": "0.0.27",

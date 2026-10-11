@@ -95,9 +95,14 @@ The browser and `vault-restore` share one implementation (`workspaces/runtime/ap
 raw dictionary). Reading the latest tree fetches the tree objects back to the last full tree;
 reading a file fetches the parts of its delta chain.
 
-## AWS (one stack per project, `vault-cloud/template.yaml`)
+## AWS (`studio-vault/cloud/`: one bootstrap stack per account and region, one stack per project)
 
+- Bootstrap (`bootstrap.yaml`): the artifacts bucket for the function code.
 - Bucket with versioning; public access blocked.
+- The token signing key: a secret that CloudFormation generates in Secrets Manager.
+- What stays out of CloudFormation: the content (function code, site, `vault.json`, paper slot)
+  and the writer's access key, which would otherwise sit in the stack outputs; IAM Roles
+  Anywhere is to replace that key.
 - Writer user: `s3:PutObject` on `<project>/states/*` with `If-None-Match` required,
   `s3:ListBucket` on `<project>/states/`; nothing else.
 - Lambda with a function URL: `GET /slots`, `GET /challenge`, `POST /presign`, `PUT /slot`.

@@ -22,18 +22,13 @@ import {
   ListAccessKeysCommand,
 } from "@aws-sdk/client-iam";
 import {
-  CreateBucketCommand,
-  HeadBucketCommand,
   HeadObjectCommand,
-  PutBucketVersioningCommand,
   PutObjectCommand,
-  PutPublicAccessBlockCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
-import { GetCallerIdentityCommand, STSClient } from "@aws-sdk/client-sts";
 import { fromIni } from "@aws-sdk/credential-providers";
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { extname, join, relative } from "node:path";
@@ -65,42 +60,55 @@ const config = {
 const s3 = new S3Client(config);
 const cfn = new CloudFormationClient(config);
 const iam = new IAMClient(config);
-const account = (
-  await new STSClient(config).send(new GetCallerIdentityCommand({}))
-).Account;
 const stack = `studio-vault-${args.project.replace(/[^A-Za-z0-9-]/g, "-")}`;
 const log = (...parts) => console.error(...parts);
 
-// 1. The function code goes to an artifacts bucket of this account and region.
-const artifacts = `studio-vault-artifacts-${account}-${args.region}`;
-try {
-  await s3.send(new HeadBucketCommand({ Bucket: artifacts }));
-} catch {
-  log(`creating ${artifacts}`);
-  await s3.send(
-    new CreateBucketCommand({
-      Bucket: artifacts,
-      CreateBucketConfiguration: { LocationConstraint: args.region },
-    }),
-  );
-  await s3.send(
-    new PutPublicAccessBlockCommand({
-      Bucket: artifacts,
-      PublicAccessBlockConfiguration: {
-        BlockPublicAcls: true,
-        BlockPublicPolicy: true,
-        IgnorePublicAcls: true,
-        RestrictPublicBuckets: true,
-      },
-    }),
-  );
-  await s3.send(
-    new PutBucketVersioningCommand({
-      Bucket: artifacts,
-      VersioningConfiguration: { Status: "Enabled" },
-    }),
+// 1. The function code goes to the artifacts bucket of the bootstrap stack of this account and region.
+async function deployStack(StackName, TemplateBody, Parameters = []) {
+  const common = {
+    StackName,
+    TemplateBody,
+    Parameters,
+    Capabilities: ["CAPABILITY_IAM"],
+  };
+  let exists = true;
+  try {
+    await cfn.send(new DescribeStacksCommand({ StackName }));
+  } catch {
+    exists = false;
+  }
+  if (exists) {
+    try {
+      await cfn.send(new UpdateStackCommand(common));
+      log(`updating ${StackName}`);
+      await waitUntilStackUpdateComplete(
+        { client: cfn, maxWaitTime: 1800 },
+        { StackName },
+      );
+    } catch (error) {
+      if (!String(error.message).includes("No updates are to be performed"))
+        throw error;
+    }
+  } else {
+    log(`creating ${StackName}`);
+    await cfn.send(new CreateStackCommand({ ...common, OnFailure: "DELETE" }));
+    await waitUntilStackCreateComplete(
+      { client: cfn, maxWaitTime: 3600 },
+      { StackName },
+    );
+  }
+  return Object.fromEntries(
+    (
+      await cfn.send(new DescribeStacksCommand({ StackName }))
+    ).Stacks[0].Outputs.map((o) => [o.OutputKey, o.OutputValue]),
   );
 }
+const artifacts = (
+  await deployStack(
+    "studio-vault-bootstrap",
+    readFileSync(join(here, "cloud/bootstrap.yaml"), "utf8"),
+  )
+).ArtifactsBucket;
 execFileSync(process.execPath, [join(here, "lambda/build.mjs")], {
   stdio: ["ignore", "ignore", "inherit"],
 });
@@ -110,51 +118,18 @@ await s3.send(
   new PutObjectCommand({ Bucket: artifacts, Key: codeKey, Body: zip }),
 );
 
-// 2. The stack. The token secret is new on every deploy; open tokens then expire at once.
+// 2. The vault stack.
 const parameters = Object.entries({
   Prefix: args.project,
   Recipient: recipient,
-  TokenSecret: randomBytes(32).toString("hex"),
   CodeBucket: artifacts,
   CodeKey: codeKey,
 }).map(([ParameterKey, ParameterValue]) => ({ ParameterKey, ParameterValue }));
-const template = readFileSync(join(here, "cloud/template.yaml"), "utf8");
-let exists = true;
-try {
-  await cfn.send(new DescribeStacksCommand({ StackName: stack }));
-} catch {
-  exists = false;
-}
-const common = {
-  StackName: stack,
-  TemplateBody: template,
-  Parameters: parameters,
-  Capabilities: ["CAPABILITY_IAM"],
-};
-if (exists) {
-  try {
-    await cfn.send(new UpdateStackCommand(common));
-    log(`updating ${stack}`);
-    await waitUntilStackUpdateComplete(
-      { client: cfn, maxWaitTime: 1800 },
-      { StackName: stack },
-    );
-  } catch (error) {
-    if (!String(error.message).includes("No updates are to be performed"))
-      throw error;
-  }
-} else {
-  log(`creating ${stack} (CloudFront takes some minutes)`);
-  await cfn.send(new CreateStackCommand({ ...common, OnFailure: "DELETE" }));
-  await waitUntilStackCreateComplete(
-    { client: cfn, maxWaitTime: 3600 },
-    { StackName: stack },
-  );
-}
-const outputs = Object.fromEntries(
-  (
-    await cfn.send(new DescribeStacksCommand({ StackName: stack }))
-  ).Stacks[0].Outputs.map((o) => [o.OutputKey, o.OutputValue]),
+log(`deploying ${stack} (a new CloudFront distribution takes some minutes)`);
+const outputs = await deployStack(
+  stack,
+  readFileSync(join(here, "cloud/template.yaml"), "utf8"),
+  parameters,
 );
 
 // 3. The site, its configuration, the public vault record and the paper slot.

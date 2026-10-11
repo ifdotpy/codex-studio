@@ -8,16 +8,21 @@ Parameters:
   Recipient:
     Type: String
     AllowedPattern: "age1[0-9a-z]{58}"
-  TokenSecret:
-    Type: String
-    NoEcho: true
-    MinLength: 32
   CodeBucket:
     Type: String
   CodeKey:
     Type: String
 
 Resources:
+  # Signs the function's short tokens; generated here, never passed in.
+  TokenSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: !Sub "Studio vault ${Prefix}: token signing key"
+      GenerateSecretString:
+        PasswordLength: 64
+        ExcludePunctuation: true
+
   Bucket:
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
@@ -140,7 +145,7 @@ Resources:
           BUCKET: !Ref Bucket
           PREFIX: !Ref Prefix
           RECIPIENT: !Ref Recipient
-          TOKEN_SECRET: !Ref TokenSecret
+          TOKEN_SECRET: !Sub "{{resolve:secretsmanager:${TokenSecret}:SecretString}}"
 
   FunctionUrl:
     Type: AWS::Lambda::Url
