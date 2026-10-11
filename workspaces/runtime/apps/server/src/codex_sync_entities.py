@@ -930,8 +930,16 @@ def sync_monitor_window(db: sqlite3.Connection) -> int:
     return retired
 
 
-def sync_monitor_write(db: sqlite3.Connection, record: Any) -> None:
-    """Project a monitor write and retire the displaced terminal record."""
+def sync_monitor_write(db: sqlite3.Connection, record: Any, *, output_update: bool = False) -> None:
+    """Project output updates directly; recalculate the window for other writes."""
+    if output_update and record.get("status") in {"running", "starting", "approval"}:
+        owner = db.execute(
+            "SELECT 1 FROM runtime_agents WHERE id=? AND json_extract(record,'$.deletedAt') IS NULL",
+            (record.get("agent"),),
+        ).fetchone()
+        if owner:
+            put(db, "monitor", str(record["id"]), record)
+            return
     sync_monitor_window(db)
 
 
