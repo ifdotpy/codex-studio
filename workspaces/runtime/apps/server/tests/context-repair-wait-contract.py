@@ -26,6 +26,19 @@ from entity_test_support import context_repair_wait
 
 
 class ContextWait(f.NativeActionRepair):
+    def agent_after_context_wait_clears(self):
+        observed = {}
+
+        def cleared():
+            agent = self.runtime.agent(self.a['id'])
+            if not agent.get('contextRepairWait'):
+                observed['agent'] = agent
+                return True
+            return False
+
+        eventually(cleared)
+        return observed['agent']
+
     def test_persistent_native_wait_escalates_once_to_lead(self):
         rt = self.runtime
         worker = rt.create({'name':'Repair wait worker', 'cwd':str(self.root),
@@ -279,8 +292,7 @@ class ContextWait(f.NativeActionRepair):
         self.agent_update(a, status=a['status'], autoWake=False, inFlight=False,
                           nativeFailureHold=True, contextRepairWait=wait, restartRecovery=recovery)
         self.runtime.dispatch()
-        eventually(lambda: not self.runtime.agent(self.a['id']).get('contextRepairWait'))
-        current = self.runtime.agent(self.a['id'])
+        current = self.agent_after_context_wait_clears()
         self.assertTrue(current['autoWake'])
         self.assertEqual(current['turnId'], 'native-turn')
         with self.runtime.db() as db:
@@ -307,11 +319,30 @@ class ContextWait(f.NativeActionRepair):
                     'turnId':None, 'stage':'held', 'autoWake':True, 'startAttempt':attempt}
         self.agent_update(a, status='interrupted', autoWake=False, inFlight=False,
                           contextRepairWait=wait, restartRecovery=recovery)
+        history_checks = []
+        submit = self.runtime.recovery_pool.submit
+
+        def track_history_check(function, *args, **kwargs):
+            future = submit(function, *args, **kwargs)
+            history_checks.append(future)
+            return future
+
+        # This fixture's live scheduler only waits for wakeups; every dispatch
+        # pass below is driven explicitly. Await the asynchronous history check
+        # directly so the queued state is read once, before forcing another pass.
+        self.assertTrue(self.runtime.scheduler.is_alive())
+        with patch.object(self.runtime.recovery_pool, 'submit', side_effect=track_history_check):
+            self.runtime.dispatch()
+        self.assertEqual(len(history_checks), 1)
+        history_checks[0].result(timeout=8)
+        current = self.runtime.agent(self.a['id'])
+        self.assertFalse(current.get('contextRepairWait'))
         self.runtime.dispatch()
-        eventually(lambda: not self.runtime.agent(self.a['id']).get('contextRepairWait'))
-        self.assertEqual(self.runtime.agent(self.a['id'])['status'], 'queued')
-        self.assertTrue(self.runtime.agent(self.a['id'])['autoWake'])
-        self.runtime.dispatch()
+        # The second pass is deliberately before these assertions. A fresh
+        # separate read here may already report "starting".
+        self.assertEqual(self.runtime.agent(self.a['id'])['status'], 'starting')
+        self.assertEqual(current['status'], 'queued')
+        self.assertTrue(current['autoWake'])
         try:
             eventually(lambda: any(method == 'turn/start' for method, _ in self.server.calls))
         except AssertionError:
@@ -371,8 +402,7 @@ class ContextWait(f.NativeActionRepair):
             self.assertEqual(current_wait.get('checks'), 1)
             self.assertIsNone(current_wait.get('lastHistoryCheck'))
         allow_history.set()
-        eventually(lambda: not self.runtime.agent(self.a['id']).get('contextRepairWait'))
-        settled = self.runtime.agent(self.a['id'])
+        settled = self.agent_after_context_wait_clears()
         self.assertEqual(settled['restartRecovery']['stage'], 'finished')
         self.assertEqual(settled['startAttempt']['id'], 'newer-attempt')
         with self.runtime.db() as db:
@@ -424,8 +454,8 @@ class ContextWait(f.NativeActionRepair):
                 'turnId':None, 'stage':'held', 'reason':'Native input submission has no confirmed turn identity.',
                 'autoWake':True, 'startAttempt':None})
         self.runtime.dispatch_all()
-        eventually(lambda: not self.runtime.agent(self.a['id']).get('contextRepairWait'))
-        self.assertEqual(self.runtime.agent(self.a['id'])['restartRecovery']['stage'], 'finished')
+        settled = self.agent_after_context_wait_clears()
+        self.assertEqual(settled['restartRecovery']['stage'], 'finished')
         with patch.object(repair, 'repair_before_start', side_effect=lambda _rt, agent: agent):
             self.runtime.dispatch()
             eventually(lambda: self.runtime.agent(self.a['id']).get('turnId') == 'resumed-turn')
