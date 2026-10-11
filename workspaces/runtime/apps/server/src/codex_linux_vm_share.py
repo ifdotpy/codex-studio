@@ -369,6 +369,25 @@ def import_project(client: Client, project_id: str, source: str | Path, owner: s
         return cast(dict[str, Any], project)
 
 
+# How long a remount waits for the layr admin channel. It restarts once after a boot that built
+# new layr tools, so the first remount after an upgrade can find it unavailable.
+ADMIN_WAIT = 120.0
+
+
+def _ensure_project(client: Client, identity: str) -> dict[str, Any]:
+    """project.ensure, again while the guest says that the layr admin channel is unavailable:
+    such a request has not reached the broker, so a repeat cannot run it twice."""
+    from codex_linux_vm import LinuxVMError
+    deadline = time.monotonic() + ADMIN_WAIT
+    while True:
+        try:
+            return cast(dict[str, Any], client.call('project.ensure', {'projectId': identity}, timeout=30))
+        except LinuxVMError as error:
+            if error.code != 'unavailable' or time.monotonic() > deadline:
+                raise
+        time.sleep(2)
+
+
 def remount_registered(client: Client) -> None:
     records = list((client.state_dir / 'layr-projects').glob('*/mount.json'))
     if not records:
@@ -377,7 +396,7 @@ def remount_registered(client: Client) -> None:
     for record in records:
         saved = json.loads(record.read_text())
         identity = _id(saved['projectId'])
-        project = client.call('project.ensure', {'projectId': identity}, timeout=30)
+        project = _ensure_project(client, identity)
         project['share'] = client.call('share.status', {}, timeout=30)
         source = record.with_name('project.json')
         hint = saved.get('name') or share_hint(json.loads(source.read_text())['source'] if source.exists() else None)
