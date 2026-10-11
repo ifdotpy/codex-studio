@@ -8,8 +8,8 @@ remain separate contracts; known disagreements are checked in
 # Runtime reuses these overloads as its public class attributes under TYPE_CHECKING.
 # Helpers use this narrow Protocol when they need only record-store operations.
 
-from typing import Literal, NotRequired, Protocol, TypedDict, overload
-from typing import TYPE_CHECKING
+from typing import Literal, Protocol, TYPE_CHECKING, overload
+from typing_extensions import NotRequired, TypedDict
 
 if TYPE_CHECKING:
     import sqlite3

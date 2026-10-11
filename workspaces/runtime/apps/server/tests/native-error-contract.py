@@ -623,7 +623,8 @@ class NativeErrorContract(unittest.TestCase):
     def test_provider_version_advisory_uses_existing_account_warning_channel(self):
         warning = {'id': 'provider-version:default', 'accountKey': 'default',
                    'provider': 'codex', 'version': '0.153.3', 'baseline': '0.153.4',
-                   'message': 'Codex CLI 0.153.3 is older than this repository tested baseline. Continue at your own risk.'}
+                   'message': 'Codex CLI 0.153.3 is older than this repository tested baseline. Continue at your own risk.',
+                   'at': 1.0}
         with patch('codex_provider_versions.monitor', return_value=SimpleNamespace(
                 status=lambda: {'warnings': [warning]})):
             notices = read_runtime_state(self.runtime)['nativeNotices']

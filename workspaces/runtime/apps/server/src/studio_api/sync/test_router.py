@@ -24,7 +24,7 @@ from unittest.mock import patch
 from studio_api.context import ApiContext
 from studio_api.models import ErrorResponse
 from studio_api.sync.models import SyncStreamQuery
-from studio_api.responses import install_error_response_docs
+from studio_api.responses import API_BOUNDARY_RESPONSE_HEADERS, install_error_response_docs
 from studio_api.schema import API_SCHEMA_HASH_PARAM, API_SCHEMA_MISMATCH_FIELD
 from studio_api.sync.router import create_router
 from studio_api.sync.resources.hub import ResourceHub
@@ -650,7 +650,9 @@ class SyncRouterTests(unittest.TestCase):
         self.assertIn("resources", event_schema["x-sse-events"])
         self.assertEqual(event_schema["x-sse-events"]["api-schema"], "ApiSchemaEvent")
         self.assertEqual(
-            set(responses["200"]["headers"]), {"Cache-Control", "X-Accel-Buffering"}
+            set(responses["200"]["headers"]),
+            set(API_BOUNDARY_RESPONSE_HEADERS)
+            | {"Cache-Control", "Content-Type", "X-Accel-Buffering"},
         )
         self.assertNotIn("/api/sync/generations", paths)
         self.assertNotIn("/api/transcript/stream", paths)
