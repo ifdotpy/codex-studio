@@ -173,6 +173,10 @@ The harness places state, home directories, Codex and Claude configuration,
 XDG directories, and provider replay files beneath that root. New boundary
 contracts must keep assertions at HTTP/provider/process boundaries and must not
 read SQLite or import server modules.
+Write each contract as a separately named `unittest` method so the runner can
+report, select, and reproduce it by test ID. Share a backend only within a
+class whose methods create independent data; put restart durability in its own
+class, and record readiness timings without asserting on speed.
 
 The backend requires the native lifecycle module. Build the module, then install
 it before server tests or backend startup. For test runs, keep both the managed
