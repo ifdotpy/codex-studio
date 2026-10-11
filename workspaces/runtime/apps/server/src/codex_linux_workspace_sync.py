@@ -141,17 +141,16 @@ def _code_only_skips(root, repositories, excludes):
     """The folders that each repository's Git ignores, as paths below root. A folder that is
     itself a repository stays (a nested project that its parent ignores keeps its own rules);
     repositories inside a skipped folder (copies of other projects in a data folder) go with it.
-    A worktree of a repository in root is skipped too: it is a line of its own."""
+    A worktree of a repository in root is skipped too: it is a line of its own. A root
+    without Git that has a .gitignore uses it as a repository would."""
     skipped = {repo for repo in repositories
                if repo != '.' and _linked_git(root, root / repo) == 'worktree'}
     def inside(relative, folders):
         parts = relative.split('/')
         return any('/'.join(parts[:index]) in folders for index in range(1, len(parts) + 1))
-    for repo in sorted(repositories, key=lambda path: (path != '.', path.count('/'), path)):
-        if repo != '.' and (inside(repo, skipped) or inside(repo, set(excludes))):
-            continue
+    def ignored(repo, *store):
         directory = root if repo == '.' else root / repo
-        listing = _git(directory, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z')
+        listing = _git(directory, *store, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z')
         for item in listing.split(b'\0'):
             if not item.endswith(b'/'):
                 continue
@@ -159,6 +158,14 @@ def _code_only_skips(root, repositories, excludes):
             full = relative if repo == '.' else repo + '/' + relative
             if not (root / full / '.git').exists():
                 skipped.add(full)
+    if '.' not in repositories and (root / '.gitignore').is_file():
+        with tempfile.TemporaryDirectory(prefix='code-only-') as store:
+            _git(root, 'init', '-q', '--bare', store)
+            ignored('.', '--git-dir=' + store, '--work-tree=' + str(root))
+    for repo in sorted(repositories, key=lambda path: (path != '.', path.count('/'), path)):
+        if repo != '.' and (inside(repo, skipped) or inside(repo, set(excludes))):
+            continue
+        ignored(repo)
     return skipped
 
 

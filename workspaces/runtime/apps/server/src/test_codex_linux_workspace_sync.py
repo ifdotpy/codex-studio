@@ -263,6 +263,23 @@ class SourceArchives(unittest.TestCase):
         self.assertEqual(result['mode'], 'full')
         self.assertIn('keep', names)
 
+    def test_a_folder_without_git_uses_its_gitignore(self):
+        (self.repo / '.git').rename(self.root / 'old-git')
+        (self.repo / '.gitignore').write_text('.tmp/\nprofile/\n')
+        for folder in ('.tmp/image', 'profile', 'reports'):
+            (self.repo / folder).mkdir(parents=True)
+            (self.repo / folder / 'file').write_text('data')
+        # An unreadable link in an ignored folder is never opened.
+        (self.repo / '.tmp/image/layer.tar').symlink_to('nowhere')
+        os.lchmod(self.repo / '.tmp/image/layer.tar', 0)
+        subprocess.run(['git', 'init', '-q', '-b', 'main', str(self.repo / 'code')], check=True)
+        (self.repo / 'code/main.py').write_text('code')
+        _, names = self.archive('plain.tar.gz')
+        for kept in ('.gitignore', 'keep', 'reports/file', 'code/main.py', 'code/.git/HEAD'):
+            self.assertIn(kept, names)
+        for skipped in ('.tmp', 'profile'):
+            self.assertNotIn(skipped, names)
+
     def test_disk_floor_stops_archive_before_upload(self):
         with patch('codex_linux_workspace_sync.shutil.disk_usage', return_value=SimpleNamespace(free=0)):
             with self.assertRaisesRegex(RuntimeError, 'insufficient free disk space'):
