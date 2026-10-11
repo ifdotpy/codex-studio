@@ -190,9 +190,10 @@ class Projects:
         except (GuestError, OSError):
             version, daemon = None, False
         usage = shutil.disk_usage(self.root)
-        used = await command(["du", "-s", "-B1", self.root], timeout=30)
+        # The used bytes of the store's file system. du counts each block once per line and
+        # snapshot that shares it, and with hundreds of lines it passed the health deadline.
         return {"version": version, "state": "ready" if daemon else "unavailable", "root": str(self.root),
-                "storeBytes": int(used.split()[0]), "freeBytes": usage.free,
+                "storeBytes": usage.total - usage.free, "freeBytes": usage.free,
                 "totalBytes": usage.total, "share": await self.share.status()}
 
 
