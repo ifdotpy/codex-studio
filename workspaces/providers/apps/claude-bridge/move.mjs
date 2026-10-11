@@ -22,6 +22,49 @@ const normalizeTool = ({ schema, ...entry }) => ({
   input_schema: entry.input_schema ?? schema,
 });
 
+// The paired channel signs canonical JSON and so sorts object keys, while the order of a tool
+// schema's properties is part of the prompt. A move carries the source's tool lists as exact
+// JSON text too; the target reads that text, after checking it against the sorted copy.
+const canonicalJson = (value) =>
+  JSON.stringify(value, (key, entry) =>
+    entry && typeof entry === "object" && !Array.isArray(entry)
+      ? Object.fromEntries(
+          Object.keys(entry)
+            .sort()
+            .map((name) => [name, entry[name]]),
+        )
+      : entry,
+  );
+export function exactList(sorted, text, what) {
+  if (typeof text !== "string") return sorted;
+  const exact = JSON.parse(text);
+  if (sorted !== undefined && canonicalJson(exact) !== canonicalJson(sorted))
+    throw new Error(`The exact ${what} differ from the moved copy`);
+  return exact;
+}
+export function exactSession(session) {
+  if (typeof session?.dynamicToolsJson !== "string") return session;
+  return {
+    ...session,
+    dynamicTools: exactList(
+      session.dynamicTools,
+      session.dynamicToolsJson,
+      "Studio tools",
+    ),
+  };
+}
+export function exactProof(proof) {
+  if (typeof proof?.compiledToolsJson !== "string") return proof;
+  return {
+    ...proof,
+    compiledTools: exactList(
+      proof.compiledTools,
+      proof.compiledToolsJson,
+      "compiled Studio tools",
+    ),
+  };
+}
+
 export async function savedPromptProof(file, session) {
   const bytes = await fs.readFile(file);
   if (bytes.length > 256 * 1024 * 1024 || bytes.at(-1) !== 10)
@@ -112,19 +155,24 @@ export async function savedPromptProof(file, session) {
           ...(deferredOnly ? { surfacedExternal: true } : {}),
         }
       : {}),
-    session: Object.fromEntries(
-      [
-        "model",
-        "dynamicTools",
-        "developerInstructions",
-        "approvalPolicy",
-        "sandbox",
-        "claude",
-        "moveTurnOptions",
-      ]
-        .filter((key) => session[key] !== undefined)
-        .map((key) => [key, structuredClone(session[key])]),
-    ),
+    session: {
+      ...Object.fromEntries(
+        [
+          "model",
+          "dynamicTools",
+          "developerInstructions",
+          "approvalPolicy",
+          "sandbox",
+          "claude",
+          "moveTurnOptions",
+        ]
+          .filter((key) => session[key] !== undefined)
+          .map((key) => [key, structuredClone(session[key])]),
+      ),
+      ...(session.dynamicTools !== undefined
+        ? { dynamicToolsJson: JSON.stringify(session.dynamicTools) }
+        : {}),
+    },
   };
 }
 

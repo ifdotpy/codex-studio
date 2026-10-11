@@ -39,6 +39,8 @@ import {
   moveIdentity,
   moveVersions,
   nativeFile,
+  exactSession,
+  exactProof,
   nativeDestination,
   publishNative,
   savedPromptProof,
@@ -652,7 +654,8 @@ async function proofOptions(s, proof) {
     studioTools(s, () => null),
     (s.dynamicTools || []).length,
   );
-  const baseline = proof.compiledTools || s.moveProof?.compiledTools;
+  const baseline =
+    exactProof(proof).compiledTools || exactProof(s.moveProof)?.compiledTools;
   const tools = verifyToolProof(
     { ...proof, ...(baseline ? { compiledTools: baseline } : {}) },
     compiled,
@@ -689,7 +692,9 @@ async function proofOptions(s, proof) {
   externalConfigs.set(optionsHash + ":" + s.cwd, external.configs);
   return {
     ...proof,
-    ...(proof.inlineTools === false ? { compiledTools: compiled } : {}),
+    ...(proof.inlineTools === false
+      ? { compiledTools: compiled, compiledToolsJson: JSON.stringify(compiled) }
+      : {}),
     ...(external.catalogs.length ? { externalCatalog: external.catalogs } : {}),
     options,
     optionsHash,
@@ -1690,7 +1695,10 @@ async function handle(method, p) {
     const source = p.proof;
     if (source.session.model !== p.model)
       throw new Error("The saved Claude model differs from preflight");
-    const proof = await proofOptions({ ...source.session, cwd: p.cwd }, source);
+    const proof = await proofOptions(
+      exactSession({ ...source.session, cwd: p.cwd }),
+      exactProof(source),
+    );
     if (proof.optionsHash !== source.optionsHash)
       throw new Error(
         "The effective target tool options differ from the source proof",
@@ -1718,7 +1726,12 @@ async function handle(method, p) {
     delete moveProof.session;
     return {
       path: await nativeFile(s.nativeId || s.id, undefined, s.cwd),
-      session: { ...structuredClone(s), turns: [], moveProof },
+      session: {
+        ...structuredClone(s),
+        turns: [],
+        moveProof,
+        dynamicToolsJson: JSON.stringify(s.dynamicTools),
+      },
     };
   }
   if (method === "claude/moveImport") {
@@ -1736,7 +1749,8 @@ async function handle(method, p) {
       throw new Error(
         "The destination Claude session has a different native identity",
       );
-    let s = { ...p.session, cwd: p.cwd };
+    let s = exactSession({ ...p.session, cwd: p.cwd });
+    s.moveProof = exactProof(s.moveProof);
     const saved = await savedPromptProof(p.path, s);
     if (saved.snapshotHash !== s.moveProof?.snapshotHash)
       throw new Error(
