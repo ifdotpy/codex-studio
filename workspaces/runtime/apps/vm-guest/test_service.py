@@ -458,6 +458,17 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
                 await self.upload("link-parent" + str(index), archive(entries))
         self.assertFalse((self.home / "escape").exists())
 
+    async def test_extraction_syncs_the_tree_once_not_each_file(self):
+        from upload import extract_tree
+        destination = self.root / "expanded"
+        destination.mkdir()
+        source = self.root / "archive.tar"
+        source.write_bytes(archive({f"folder/file{index}": b"data" for index in range(50)}))
+        with patch("os.fsync") as each, patch("os.sync") as once:
+            self.assertEqual(extract_tree(source, destination), 200)
+        self.assertEqual((each.call_count, once.call_count), (0, 1))
+        self.assertEqual((destination / "folder/file49").read_bytes(), b"data")
+
     async def test_extraction_rejects_a_link_parent_already_in_the_destination(self):
         from upload import extract_tree
         destination = self.root / "expanded"
