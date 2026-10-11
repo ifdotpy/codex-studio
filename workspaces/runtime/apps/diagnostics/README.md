@@ -7,14 +7,14 @@
 - **Boundaries:** this binary performs one HTTP/1.1 GET to loopback. It has no async runtime, TLS, database, or backend dependency. `serde_json` is the only third-party crate, used to parse JSON while preserving arbitrary-size integers; its `arbitrary_precision` feature supports Python-compatible integer output.
 - **Invariants:** the endpoint path and default port are code-owned; successful output matches `json.dumps(..., indent=2, sort_keys=True)` byte for byte, including ASCII escaping and a trailing newline. Requests have a 30-second connect/read/write timeout and do not follow redirects.
 - **Configuration owner:** `--port` is the only CLI option; the timeout and endpoint are owned by this crate.
-- **Focused check:** `cargo test -p studio-diagnostics tests::formatter_matches_python_json_dump_golden -- --exact`.
+- **Focused check:** `cargo nextest run -p studio-diagnostics -E 'test(~tests::formatter_matches_python_json_dump_golden)'`.
 
 ## Run and verify
 
 ```sh
 cargo build --locked --release -p studio-diagnostics
-cargo test -p studio-diagnostics
-cargo test -p studio-diagnostics tests::formatter_matches_python_json_dump_golden -- --exact
+cargo nextest run -p studio-diagnostics
+cargo nextest run -p studio-diagnostics -E 'test(~tests::formatter_matches_python_json_dump_golden)'
 cargo run --locked -p studio-diagnostics -- --help
 ```
 

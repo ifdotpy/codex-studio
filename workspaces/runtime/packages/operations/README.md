@@ -20,7 +20,7 @@
 - **Dependencies:** Optional `serde` derives support the in-process PyO3
   binding; `serde_json` parses the shared fixture in Rust tests and carries the
   same typed structures through the binding.
-- **Focused check:** `cargo test -p studio-operations --locked`; the Python
+- **Focused check:** `cargo nextest run -p studio-operations --locked`; the Python
   caller contract is `just test server operations-native-contract.py` after the
   native module build/install step in [workspace testing](../../../../docs/testing.md).
 
