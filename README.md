@@ -39,5 +39,7 @@ server/client suites in [docs/testing.md](docs/testing.md) as the pre-PR gate.
   preserving its state directory and active work.
 - [Workspace migration specification](docs/plans/rust-workspaces.md) and
   [tracking issue #37](https://github.com/ifdotpy/codex-studio/issues/37).
+- [Decision records](docs/decisions/README.md): accepted decisions with their
+  alternatives and consequences.
 
 For test ownership and suite selection, see [docs/testing.md](docs/testing.md).
