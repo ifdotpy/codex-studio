@@ -444,8 +444,10 @@ test("Shell ux ui", async ({
         await page.keyboard.press("Escape");
       }
     }
-    const compactPage = await runnerContext.newPage();
-    await compactPage.setViewportSize({ width: 860, height: 960 });
+    const compactContext = await testBrowser.newContext({
+      viewport: { width: 860, height: 960 },
+    });
+    const compactPage = await compactContext.newPage();
     compactPage.setDefaultTimeout(5_000);
     const usageError = {
       codexErrorInfo: "usageLimitExceeded",
@@ -475,11 +477,20 @@ test("Shell ux ui", async ({
       compactSnapshot,
       syncContract,
     );
-    await compactPage.route("**/api/sync/pull?*", (route) => {
+    await compactPage.route("**/api/sync/pull?*", async (route) => {
       const scope = new URL(route.request().url()).searchParams.get("scope");
-      return scope?.startsWith("transcript:")
-        ? route.continue()
-        : route.fallback();
+      if (!scope?.startsWith("transcript:")) return route.fallback();
+      const response = await route.fetch();
+      const projection = await response.json();
+      projection.documents = projection.documents.map((document) => {
+        if (document._deleted || document.id !== scope) return document;
+        const transcript = JSON.parse(document.payload);
+        return {
+          ...document,
+          payload: JSON.stringify({ ...transcript, agent: failedReleaseLead }),
+        };
+      });
+      return route.fulfill({ response, json: projection });
     });
     await compactPage.route("**/api/limits*", (route) =>
       route.fulfill({
