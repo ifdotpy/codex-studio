@@ -1,0 +1,25 @@
+[package]
+name = "desk-core"
+description = "The layr-desk vault format, keys, reader and writer"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+age = "0.11"
+anyhow = "1"
+bech32 = "0.11"
+bip39 = "2"
+hmac = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+hex = "0.4"
+zstd-safe = { version = "7", features = ["std"] }
+
+[target.'cfg(unix)'.dependencies]
+getrandom = "0.2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+base64 = "0.22"

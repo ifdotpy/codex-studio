@@ -3,5 +3,9 @@
   "printWidth": 80,
   "semi": true,
   "singleQuote": false,
-  "trailingComma": "all"
+  "trailingComma": "all",
+  "ignorePatterns": [
+    "workspaces/runtime/apps/layr/",
+    "workspaces/runtime/apps/layr-desk/"
+  ]
 }
