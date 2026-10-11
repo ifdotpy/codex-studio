@@ -191,6 +191,13 @@ def auth_metadata(profile=None, force=False, *, interactive=False):
         if executable:
             try:
                 result = _auth_status(executable, env, interactive=interactive)
+                # The passive reader may not open the Keychain entry without a dialog, which a
+                # Mac without a person at it never answers. The Claude Code CLI reads its own
+                # entry without one, so its status names the account instead.
+                if result.get('_authErrorKind') == 'keychain':
+                    native = _auth_status(executable, env, interactive=True)
+                    if native.get('status') == 'ready':
+                        result = native
             except subprocess.TimeoutExpired:
                 result.update(status='error', error='Cannot read Claude Code sign-in status', _authErrorKind='timeout')
             except OSError:

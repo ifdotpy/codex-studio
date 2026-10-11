@@ -97,6 +97,33 @@ class PassiveAuth(unittest.TestCase):
                     passive.metadata()
                 security.SecKeychainFindGenericPassword.assert_not_called()
 
+    def test_a_keychain_refusal_asks_the_cli_which_reads_its_own_entry(self):
+        refused = {'status': 'error', 'accountId': None, 'email': None, 'plan': None,
+                   'error': 'Cannot read Claude Code sign-in status without Keychain interaction',
+                   '_authErrorKind': 'keychain'}
+        ready = {'status': 'ready', 'accountId': 'claude:fixture@example.test',
+                 'email': 'fixture@example.test', 'plan': 'max',
+                 '_credentialIdentity': 'claude:fixture@example.test'}
+        for native, expected in ((ready, ready), ({**refused, '_authErrorKind': 'timeout'}, refused)):
+            calls = []
+            def status(executable, env, *, interactive=False):
+                calls.append(interactive)
+                return dict(native if interactive else refused)
+            with patch.object(codex_claude.sys, 'platform', 'darwin'), \
+                    patch.object(codex_claude, 'installed', return_value='/usr/local/bin/claude'), \
+                    patch.object(codex_claude, '_auth_status', side_effect=status):
+                self.assertEqual(codex_claude.auth_metadata(force=True), expected)
+            # The passive reader runs first; the CLI only after its Keychain refusal.
+            self.assertEqual(calls, [False, True])
+        calls = []
+        def passive_ready(executable, env, *, interactive=False):
+            calls.append(interactive)
+            return dict(ready)
+        with patch.object(codex_claude, 'installed', return_value='/usr/local/bin/claude'), \
+                patch.object(codex_claude, '_auth_status', side_effect=passive_ready):
+            codex_claude.auth_metadata(force=True)
+        self.assertEqual(calls, [False])
+
     @unittest.skipIf(os.name == 'nt', 'POSIX process groups')
     def test_auth_probe_timeout_reaps_its_credential_reader(self):
         with tempfile.TemporaryDirectory() as scratch:
