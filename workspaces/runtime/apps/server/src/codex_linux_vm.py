@@ -323,17 +323,26 @@ stage system-packages
 printf 'Acquire::Retries "2"; Acquire::http::Timeout "30"; Acquire::https::Timeout "30";\n' > /etc/apt/apt.conf.d/99studio-timeouts
 # The host boots the VM kernel, so kernel packages in the guest only fail to install.
 apt-mark hold linux-generic linux-image-generic linux-virtual linux-image-virtual linux-headers-virtual || true
+# A guest kernel package pulled in flash-kernel, which fails in a VM that the host boots; its
+# failed trigger stopped every later apt run (2026-10-11). Remove it and keep it out.
+printf 'Package: flash-kernel\nPin: release *\nPin-Priority: -1\n' > /etc/apt/preferences.d/studio-no-flash-kernel
+# It fails even when half-configured, and nothing installed depends on it; its initramfs hook
+# leaves with it, so the pending configuration of initramfs-tools then succeeds.
+if dpkg -s flash-kernel >/dev/null 2>&1; then
+  timeout --kill-after=5 300 dpkg --purge flash-kernel || true
+fi
+timeout --kill-after=5 600 dpkg --configure -a || true
 # Unattended upgrades stay on, but needrestart must not restart Studio units: on 2026-10-11 it
 # restarted the guest during an upload commit. They take new libraries at the next Studio update.
 mkdir -p /etc/needrestart/conf.d
 printf '%s\n' '$nrconf{override_rc}{qr(^codex-studio-)} = 0;' > /etc/needrestart/conf.d/50-codex-studio.conf
 missing_tools=0
-for tool in git rsync btrfs python3 curl xz blkid mountpoint lsof smbd smbpasswd testparm cc zstd; do
+for tool in git rsync btrfs python3 curl xz blkid mountpoint lsof smbd smbpasswd testparm cc zstd age; do
   if ! command -v "$tool" >/dev/null; then missing_tools=1; fi
 done
-if [ "$missing_tools" = 1 ] || ! python3 -c 'import ensurepip' >/dev/null 2>&1; then
+if [ "$missing_tools" = 1 ] || ! python3 -c 'import ensurepip, zstandard' >/dev/null 2>&1; then
   timeout --kill-after=5 300 apt-get update
-  timeout --kill-after=5 600 apt-get install -y --no-install-recommends git rsync btrfs-progs python3 python3-venv curl xz-utils ca-certificates util-linux lsof samba build-essential zstd
+  timeout --kill-after=5 600 apt-get install -y --no-install-recommends git rsync btrfs-progs python3 python3-venv curl xz-utils ca-certificates util-linux lsof samba build-essential zstd age python3-zstandard
 fi
 stage data-disk
 if ! blkid /dev/vdb; then mkfs.btrfs -f -L studio-data /dev/vdb; fi
@@ -494,12 +503,13 @@ def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str, *,
     if not any(entry['path'].endswith('/claude-bridge/package.json') for entry in files):
         raise LinuxVMError('The Claude bridge package manifest is unavailable.')
     pnpm_version = _pnpm_version()
-    # The payload generation: a guest that has provisioned exactly these files and versions
-    # skips provisioning; any change provisions again.
-    generation = hashlib.sha256(json.dumps({'files': files, 'codex': codex_version, 'claude': claude_version,
-                                            'pnpm': pnpm_version}, sort_keys=True).encode()).hexdigest()
-    ready_path = '/var/lib/codex-studio/provision-ready-' + generation
     script = _provision_script(codex_version, claude_version, pnpm_version)
+    # The payload generation: a guest that has provisioned exactly these files, versions and
+    # provision script skips provisioning; any change provisions again. (Before 2026-10-11 the
+    # script was not part of it, so a fix in the script alone never ran.)
+    generation = hashlib.sha256(json.dumps({'files': files, 'codex': codex_version, 'claude': claude_version,
+                                            'pnpm': pnpm_version, 'script': script}, sort_keys=True).encode()).hexdigest()
+    ready_path = '/var/lib/codex-studio/provision-ready-' + generation
     script = script.replace('touch /var/lib/codex-studio/provision-ready\n',
                             'touch /var/lib/codex-studio/provision-ready\ntouch ' + ready_path + '\n')
     files.append({'path': '/opt/codex-studio/provision.sh', 'permissions': '0700', 'content': script})

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Vault</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Vault <span id="project"></span></h1>
+      <nav id="actions" hidden>
+        <label
+          >State
+          <select id="state"></select
+        ></label>
+        <button id="passkeys" type="button">Passkeys</button>
+        <button id="lock" type="button">Lock</button>
+      </nav>
+    </header>
+    <main>
+      <p id="status" role="status"></p>
+      <section id="unlock" hidden>
+        <h2>Unlock</h2>
+        <button id="with-passkey" type="button" hidden>
+          Unlock with passkey
+        </button>
+        <form id="paper-form">
+          <label for="paper">Paper key (24 words)</label>
+          <textarea
+            id="paper"
+            rows="3"
+            autocomplete="off"
+            autocapitalize="characters"
+            spellcheck="false"
+            placeholder="24 words, in order"
+          ></textarea>
+          <button type="submit">Unlock with paper key</button>
+        </form>
+        <p class="note">
+          The browser decrypts the files. The key stays in this tab until you
+          lock it.
+        </p>
+      </section>
+      <section id="browse" hidden>
+        <nav id="crumbs" aria-label="Folder"></nav>
+        <ul id="entries"></ul>
+      </section>
+      <section id="passkey-panel" hidden>
+        <h2>Passkeys</h2>
+        <ul id="passkey-list"></ul>
+        <form id="add-form">
+          <label for="label">Name of this device</label>
+          <input id="label" autocomplete="off" />
+          <button type="submit">Add a passkey on this device</button>
+        </form>
+        <button id="close-passkeys" type="button">Back to files</button>
+      </section>
+    </main>
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

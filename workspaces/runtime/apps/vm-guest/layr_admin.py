@@ -71,6 +71,18 @@ class Broker:
             self.methods.update(mac_sync.METHODS)
             self.read_methods.update(mac_sync.READ_METHODS)
             self.handlers.update({method: handler for method in mac_sync.METHODS})
+        # The project vault writes encrypted states to S3 (docs/vault.md).
+        try:
+            import vault_admin
+        except ModuleNotFoundError as exc:
+            if exc.name != "vault_admin":
+                raise
+        else:
+            handler = vault_admin.VaultHandlers(state, root)
+            require(not self.methods.intersection(vault_admin.METHODS), "The admin method is registered twice")
+            self.methods.update(vault_admin.METHODS)
+            self.read_methods.update(vault_admin.READ_METHODS)
+            self.handlers.update({method: handler for method in vault_admin.METHODS})
 
     def close(self):
         self.db.close()
@@ -170,6 +182,9 @@ async def serve():
     broker = Broker()
     # Mounts disappear at reboot. Recreate only exports already registered.
     await broker.share.restore()
+    # The project vault keeps the latest state in S3 without a caller (docs/vault.md).
+    vault = broker.handlers.get("vault.push")
+    vault_task = asyncio.create_task(vault.periodic()) if vault else None
     socket_directory(SOCKET.parent)
     SOCKET.unlink(missing_ok=True)
     server = await asyncio.start_unix_server(broker.client, path=str(SOCKET), limit=MAX_LINE + 1)
@@ -179,6 +194,8 @@ async def serve():
         async with server:
             await server.serve_forever()
     finally:
+        if vault_task:
+            vault_task.cancel()
         broker.close()
 
 
