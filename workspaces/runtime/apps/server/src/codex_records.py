@@ -538,7 +538,7 @@ class RuleRecord(TypedDict):
     rootId: NotRequired[str]
     epoch: NotRequired[int]
     name: NotRequired[str]
-    kind: NotRequired[str]
+    kind: NotRequired[Literal["interval", "once", "file", "event", "low_workers"]]
     status: NotRequired[str]
     at: NotRequired[float]
     intervalSeconds: NotRequired[int]
@@ -547,6 +547,8 @@ class RuleRecord(TypedDict):
     event: NotRequired[str]
     command: NotRequired[str]
     text: NotRequired[str]
+    minimumWorkers: NotRequired[int]
+    durationMinutes: NotRequired[int]
     created: NotRequired[float]
     inFlight: NotRequired[bool]
     checks: NotRequired[int]
@@ -558,16 +560,59 @@ class RuleRecord(TypedDict):
     stallTimeoutSeconds: NotRequired[int]
     livenessCommand: NotRequired[str]
     error: NotRequired[str | None]
+    lowSince: NotRequired[float | None]
     lastAt: NotRequired[float]
     lastExitCode: NotRequired[int | None]
     lastFinished: NotRequired[float]
     lastOutput: NotRequired[str]
     activeWorkers: NotRequired[int]
     alerted: NotRequired[bool]
-    durationMinutes: NotRequired[int]
     eventText: NotRequired[str]
     lastEvent: NotRequired[str]
     lastStallError: NotRequired[str | None]
+    lastStallExitCode: NotRequired[int | None]
+    lastStallFinished: NotRequired[float]
+    restartCheck: NotRequired["RuleRestartCheckRecord"]
+    stall_timeout_seconds: NotRequired[int]
+    stallProbe: NotRequired[bool]
+    stallEventKey: NotRequired[str]
+    stallText: NotRequired[str]
+
+
+class RuleRestartCheckRecord(TypedDict):
+    epoch: int
+    checks: int
+    monitorId: str
+
+
+class MonitorRecord(TypedDict):
+    """Persisted command-monitor record; response models allow stored extensions."""
+
+    id: NotRequired[str]
+    agent: NotRequired[str]
+    epoch: NotRequired[int]
+    turnId: NotRequired[str | None]
+    requestId: NotRequired[str | None]
+    command: NotRequired[str]
+    cwd: NotRequired[str]
+    timeout_ms: NotRequired[int]
+    stallTimeoutSeconds: NotRequired[int]
+    livenessCommand: NotRequired[str]
+    activityAt: NotRequired[int | float]
+    activityGeneration: NotRequired[int]
+    stallWakeGeneration: NotRequired[int]
+    wakeOn: NotRequired[str]
+    successExitCodes: NotRequired[list[int]]
+    status: NotRequired[str]
+    created: NotRequired[int | float]
+    finished: NotRequired[int | float | None]
+    exitCode: NotRequired[int | None]
+    tail: NotRequired[str]
+    bytes: NotRequired[int]
+    interactive: NotRequired[bool]
+    ruleId: NotRequired[str | None]
+    log: NotRequired[str]
+    error: NotRequired[str | None]
     lastStallExitCode: NotRequired[int | None]
     lastStallFinished: NotRequired[float]
     lowSince: NotRequired[float | None]
@@ -609,7 +654,9 @@ class ToolRequestRecord(TypedDict):
     result: NotRequired[JsonObject]
     rpcId: NotRequired[int | str]
     signature: NotRequired[str]
-    stage: NotRequired[str]
+    stage: NotRequired[Literal[
+        "queued", "running", "cancelled", "interrupted", "failed", "unknown", "completed",
+    ]]
     started: NotRequired[float]
     threadId: NotRequired[str]
     timing: NotRequired[ToolRequestTimingRecord]
@@ -1199,6 +1246,36 @@ class AccountHistoryRecord(TypedDict):
     providerOptionsDiscarded: NotRequired[JsonObject]
     portableHistory: NotRequired[PortableHistoryRecord]
     sourceHistoryMissing: NotRequired[JsonObject]
+
+
+# These receipts are runtime results, not persisted tool-request records.
+class AmbiguousToolRequestResult(TypedDict):
+    """Synthetic alias collision response from request_action at :610-614."""
+
+    id: str
+    stage: Literal["ambiguous"]
+    outcome: Literal["unknown"]
+    message: str
+
+
+class MissingToolRequestResult(TypedDict):
+    """Synthetic absent-receipt response from request_action at :621-624."""
+
+    id: str
+    stage: Literal["not_found"]
+    outcome: Literal["unknown", "applied", "not_applied"]
+    message: str
+
+
+class MovedToolRequestResult(TypedDict):
+    """Synthetic completed-move receipt from request_action at :608-611."""
+
+    id: str
+    stage: Literal["complete"]
+    outcome: Literal["applied"]
+    tool: str
+    operationResult: JsonObject
+    move: JsonObject
 
 
 class RemoteWorkerLinkRecord(TypedDict):

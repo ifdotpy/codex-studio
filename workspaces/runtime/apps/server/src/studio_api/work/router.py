@@ -27,11 +27,13 @@ from .models import (
     AnnotationReceipt,
     AnswerBody,
     AnswerResult,
+    AgentRecordResponse,
     ChatRead,
     ChatCreateBody,
     ChatCreated,
     ChatReceipt,
     ComplaintDetailResponse,
+    ComplaintRecordResponse,
     ChangesQuery,
     ChangesResponse,
     ComplaintBody,
@@ -64,13 +66,13 @@ from .models import (
     TaskDetailResponse,
     TaskIdQuery,
     ToolRequestCancelBody,
+    ToolRequestReceipt,
     WorkBody,
     WorkItem,
     WorkList,
     WorkspaceTaskFeed,
     WorkspaceQuery,
     WorkspaceView,
-    VersionedRuntimeRecord,
     PanelLayoutResult,
     QuestionHistory,
     ToolRequestList,
@@ -173,7 +175,7 @@ def _canvas(context: ApiContext) -> CanvasPort:
 def create_router(context: ApiContext) -> APIRouter:
     router = APIRouter()
 
-    @router.get("/api/tool-requests", response_model=ToolRequestList | VersionedRuntimeRecord,
+    @router.get("/api/tool-requests", response_model=ToolRequestList | ToolRequestReceipt,
                 responses=api_read_responses(errors=(400,)))
     def tool_requests(request: Request, documented: RequestIdQuery = Depends()) -> Response:
         query = _query(RequestIdQuery, request)
@@ -182,7 +184,7 @@ def create_router(context: ApiContext) -> APIRouter:
         action: Body = {"action": "get", "request_id": request_id} if request_id else {"action": "list"}
         return context.send(request, _runtime(context).request_action(agent, action))
 
-    @router.post("/api/tool-requests/cancel", response_model=ToolRequestList | VersionedRuntimeRecord,
+    @router.post("/api/tool-requests/cancel", response_model=ToolRequestList | ToolRequestReceipt,
                  responses=api_write_responses(errors=(400,)))
     def cancel_tool_request(request: Request, body: ToolRequestCancelBody) -> Response:
         return context.send(request, _runtime(context).request_action(
@@ -315,7 +317,7 @@ def create_router(context: ApiContext) -> APIRouter:
         values = body_data(body)
         return context.send(request, _runtime(context).annotate(body.agent, values))
 
-    @router.post("/api/organization", response_model=VersionedRuntimeRecord,
+    @router.post("/api/organization", response_model=AgentRecordResponse,
                  responses=api_write_responses(errors=(400,)))
     def organization(request: Request, body: OrganizationBody) -> Response:
         return context.send(request, _runtime(context).chat_organization(body.id, body_data(body)))
@@ -358,7 +360,7 @@ def create_router(context: ApiContext) -> APIRouter:
     def delete_room(request: Request, body: RoomDeleteBody) -> Response:
         return context.send(request, _runtime(context).hide_room(body.id))
 
-    @router.post("/api/complaints", response_model=VersionedRuntimeRecord,
+    @router.post("/api/complaints", response_model=ComplaintRecordResponse,
                  responses=api_write_responses(errors=(400, 409)))
     def complaints(request: Request, body: ComplaintBody) -> Response:
         values = body_data(body)

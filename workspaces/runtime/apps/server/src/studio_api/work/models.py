@@ -2,11 +2,25 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from types import UnionType
+from typing import Annotated, Any, Literal, Union, cast, get_args, get_origin, get_type_hints
+from typing_extensions import NotRequired, Required, TypedDict
 
-from pydantic import ConfigDict, Field, RootModel, StrictBool, StrictFloat, StrictInt, StrictStr, model_validator
+from pydantic import ConfigDict, Field, RootModel, StrictBool, StrictFloat, StrictInt, StrictStr, create_model, model_validator
 
 from codex_records import (
+    AgentRecord as AgentRecordContract,
+    AgentStatusValue,
+    AmbiguousToolRequestResult,
+    MissingToolRequestResult,
+    MonitorRecord as MonitorRecordContract,
+    MovedToolRequestResult,
+    ComplaintRecord as ComplaintRecordContract,
+    ComplaintStatusValue,
+    RequestRecord as RequestRecordContract,
+    RuleRecord as RuleRecordContract,
+    ToolRequestRecord as ToolRequestRecordContract,
+    WorkViewRecord as WorkViewRecordContract,
     WorkArchiveIntentRecord,
     WorkArchiveRecord,
     WorkDecisionRecord,
@@ -18,10 +32,7 @@ from studio_api.sync.models import (
     MonitorEntityDto,
     ComplaintResponseDto,
     ComplaintStatus,
-    RuleKind,
-    RuleStatus,
     RoomEntityDto,
-    TaskEntityDto,
     TaskKind,
     TaskStatus,
     TaskEntityDto,
@@ -520,29 +531,86 @@ class MessageHistory(RootModel[list[MessageRecord]]):
     pass
 
 
-class VersionedRuntimeRecord(ResponseModel):
-    """Shared projection of several versioned record kinds.
+class _OpenRecordResponse(ResponseModel):
+    """Response base for records whose stored extensions pass through."""
 
-    Tool requests, organization records, complaint replies, and workspace inbox
-    entries use distinct persisted record types. This envelope declares their
-    common fields and retains JSON-valued domain fields; OpenAPI cannot yet
-    reuse those TypedDicts here without a discriminated union for the route
-    variants, and ResponseModel supplies the sync envelope for those outputs.
-    """
-
-    model_config = ConfigDict(extra="allow")
-    __pydantic_extra__: dict[str, JsonValue]
-    id: StrictStr | None = None
-    agent: StrictStr | None = None
-    rootId: StrictStr | None = None
-    status: StrictStr | None = None
-    kind: StrictStr | None = None
-    created: StrictInt | StrictFloat | None = None
-    updated: StrictInt | StrictFloat | None = None
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 
-class RuntimeRecords(ResponseModel):
-    items: list[VersionedRuntimeRecord]
+_RECORD_RESPONSE_MODELS: dict[tuple[type[Any], tuple[str, str] | None], Any] = {}
+
+
+def _response_annotation(annotation: object, name: str) -> Any:
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+    if origin in (NotRequired, Required):
+        return origin[_response_annotation(args[0], name)]
+    if isinstance(annotation, type) and hasattr(annotation, "__required_keys__"):
+        record = cast(type[Any], annotation)
+        return _record_response_model(f"{record.__name__}Response", record)
+    if origin is Annotated:
+        return Annotated[_response_annotation(args[0], name), *args[1:]]
+    if origin in (Union, UnionType):
+        return Union[tuple(_response_annotation(arg, name) for arg in args)]
+    if origin is not None and args and origin is not Literal:
+        converted = tuple(_response_annotation(arg, name) for arg in args)
+        parameter = converted[0] if len(converted) == 1 else converted
+        try:
+            return origin[parameter]
+        except TypeError:
+            return annotation
+    return annotation
+
+
+def _record_response_model(
+    name: str,
+    record: type[Any],
+    *,
+    discriminator: tuple[str, str] | None = None,
+    required_fields: frozenset[str] = frozenset(),
+) -> Any:
+    """Build an open response model from a canonical TypedDict record."""
+    cache_key = (record, discriminator)
+    if cache_key in _RECORD_RESPONSE_MODELS:
+        return _RECORD_RESPONSE_MODELS[cache_key]
+    fields: dict[str, tuple[Any, Any]] = {}
+    hints = get_type_hints(record, include_extras=True)
+    required = getattr(record, "__required_keys__")
+    for field_name, annotation in hints.items():
+        origin = get_origin(annotation)
+        if origin in (NotRequired, Required):
+            annotation = get_args(annotation)[0]
+        if discriminator is not None and field_name == discriminator[0]:
+            annotation = Literal[discriminator[1]]
+        annotation = _response_annotation(annotation, f"{name}{field_name.title()}")
+        default = ... if field_name in required or field_name in required_fields or (
+            discriminator is not None and field_name == discriminator[0]
+        ) else None
+        fields[field_name] = (annotation, default)
+    model = create_model(name, __base__=_OpenRecordResponse, **fields)  # type: ignore[call-overload]
+    _RECORD_RESPONSE_MODELS[cache_key] = model
+    return model
+
+
+ToolRequestStageResponse: tuple[Any, ...] = tuple(
+    _record_response_model(
+        f"{stage.title()}ToolRequestResponse", ToolRequestRecordContract,
+        discriminator=("stage", stage), required_fields=frozenset({"id"}),
+    )
+    for stage in ("queued", "running", "cancelled", "interrupted", "failed", "unknown", "completed")
+)
+AmbiguousToolRequestResponse: Any = _record_response_model("AmbiguousToolRequestResponse", AmbiguousToolRequestResult)
+MissingToolRequestResponse: Any = _record_response_model("MissingToolRequestResponse", MissingToolRequestResult)
+MovedToolRequestResponse: Any = _record_response_model("MovedToolRequestResponse", MovedToolRequestResult)
+
+PersistedToolRequest: Any = Annotated[
+    Union[ToolRequestStageResponse], Field(discriminator="stage"),
+]
+ToolRequestReceipt: Any = Annotated[
+    Union[tuple((*ToolRequestStageResponse, AmbiguousToolRequestResponse, MissingToolRequestResponse,
+                 MovedToolRequestResponse))], Field(discriminator="stage"),
+]
 
 
 class AnnotationRecord(ContractModel):
@@ -556,60 +624,37 @@ class AnnotationRecord(ContractModel):
     turnId: StrictStr | None = None
 
 
-class RuleRestartCheck(ContractModel):
-    epoch: StrictInt
-    checks: StrictInt
-    monitorId: StrictStr
-
-
-class RuleRecord(ContractModel):
-    id: StrictStr
-    agent: StrictStr | None = None
-    rootId: StrictStr | None = None
-    name: StrictStr | None = None
-    description: StrictStr | None = None
-    enabled: StrictBool | None = None
-    epoch: StrictInt | None = None
-    kind: RuleKind | None = None
-    intervalSeconds: StrictInt | None = None
-    nextAt: StrictInt | StrictFloat | None = None
-    at: StrictInt | StrictFloat | None = None
-    path: StrictStr | None = None
-    event: StrictStr | None = None
-    command: StrictStr | None = None
-    stallTimeoutSeconds: StrictInt | None = None
-    livenessCommand: StrictStr | None = None
-    fileActivityAt: StrictInt | StrictFloat | None = None
-    fileGeneration: StrictInt | None = None
-    stallWakeGeneration: StrictInt | None = None
-    text: StrictStr | None = None
-    status: RuleStatus | None = None
-    created: StrictInt | StrictFloat | None = None
-    inFlight: StrictBool | None = None
-    checks: StrictInt | None = None
-    wakes: StrictInt | None = None
-    fingerprint: list[StrictInt] | None = None
-    minimumWorkers: StrictInt | None = None
-    durationMinutes: StrictInt | None = None
-    lowSince: StrictInt | StrictFloat | None = None
-    alerted: StrictBool | None = None
-    error: StrictStr | None = None
-    restartCheck: RuleRestartCheck | None = None
-    lastAt: StrictInt | StrictFloat | None = None
-    lastExitCode: StrictInt | None = None
-    lastOutput: StrictStr | None = None
-    lastFinished: StrictInt | StrictFloat | None = None
-    activeWorkers: StrictInt | None = None
-    updated: StrictInt | StrictFloat | None = None
-    stall_timeout_seconds: StrictInt | None = None
-    eventText: StrictStr | None = None
-    stallProbe: StrictBool | None = None
-    stallEventKey: StrictStr | None = None
-    stallText: StrictStr | None = None
-    lastStallFinished: StrictInt | StrictFloat | None = None
-    lastStallExitCode: StrictInt | None = None
-    lastStallError: StrictStr | None = None
-    lastEvent: StrictStr | None = None
+AgentRecordResponse: Any = Annotated[
+    Union[tuple(
+        _record_response_model(
+            f"{status.title()}AgentResponse", AgentRecordContract,
+            discriminator=("status", status),
+        )
+        for status in get_args(AgentStatusValue)
+    )],
+    Field(discriminator="status"),
+]
+ComplaintRecordResponse: Any = Annotated[
+    Union[tuple(
+        _record_response_model(
+            f"{status.title()}ComplaintResponse", ComplaintRecordContract,
+            discriminator=("status", status),
+        )
+        for status in get_args(ComplaintStatusValue)
+    )],
+    Field(discriminator="status"),
+]
+RequestRecordResponse: Any = _record_response_model("RequestRecordResponse", RequestRecordContract)
+MonitorRecordResponse: Any = _record_response_model("MonitorRecordResponse", MonitorRecordContract)
+WorkViewRecordResponse: Any = _record_response_model("WorkViewRecordResponse", WorkViewRecordContract)
+RuleKindResponse: tuple[Any, ...] = tuple(
+    _record_response_model(
+        f"{kind.title()}RuleResponse", RuleRecordContract,
+        discriminator=("kind", kind), required_fields=frozenset({"id"}),
+    )
+    for kind in ("interval", "once", "file", "event", "low_workers")
+)
+RuleRecord: Any = Annotated[Union[RuleKindResponse], Field(discriminator="kind")]
 
 
 class AnnotationReceipt(AnnotationRecord, ResponseModel):
@@ -688,32 +733,77 @@ class WorkspaceTaskRecord(TaskEntityDto):
 
 
 class ToolRequestList(ResponseModel):
-    requests: list[VersionedRuntimeRecord]
+    requests: list[PersistedToolRequest]
 
 
 class RuleList(ResponseModel):
     rules: list[RuleRecord]
 
 
-class RuleMutation(ResponseModel):
-    """Rule summary with extensions.
+class DeletedRuleReceipt(ResponseModel):
+    deleted: StrictStr
 
-    ResponseModel's sync envelope prevents direct TypedDict inheritance.
-    """
 
-    deleted: StrictStr | None = None
-    id: StrictStr | None = None
-    agent: StrictStr | None = None
-    rootId: StrictStr | None = None
-    name: StrictStr | None = None
-    kind: StrictStr | None = None
-    status: StrictStr | None = None
-    created: StrictInt | StrictFloat | None = None
-    updated: StrictInt | StrictFloat | None = None
-    command: StrictStr | None = None
-    error: StrictStr | None = None
-    model_config = ConfigDict(extra="allow")
-    __pydantic_extra__: dict[str, JsonValue]
+RuleMutation = RuleRecord | DeletedRuleReceipt
+
+
+class RequestInboxEntry(ResponseModel):
+    id: StrictStr
+    kind: Literal["request"]
+    agent: StrictStr
+    title: StrictStr
+    text: StrictStr
+    request: RequestRecordResponse
+
+
+class ComplaintInboxEntry(ResponseModel):
+    id: StrictStr
+    kind: Literal["complaint"]
+    agent: StrictStr
+    title: StrictStr
+    text: StrictStr
+    complaint: ComplaintRecordResponse
+
+
+class WorkInboxEntry(ResponseModel):
+    id: StrictStr
+    kind: Literal["work"]
+    agent: StrictStr
+    title: StrictStr
+    text: StrictStr
+    work: WorkViewRecordResponse
+
+
+class AgentInboxEntry(ResponseModel):
+    id: StrictStr
+    kind: Literal["agent"]
+    agent: StrictStr
+    title: StrictStr
+    text: StrictStr
+
+
+class MonitorInboxEntry(ResponseModel):
+    id: StrictStr
+    kind: Literal["monitor"]
+    agent: StrictStr
+    title: StrictStr
+    text: StrictStr
+    monitor: MonitorRecordResponse
+
+
+class RuleInboxEntry(ResponseModel):
+    id: StrictStr
+    kind: Literal["rule"]
+    agent: StrictStr
+    title: StrictStr
+    text: StrictStr
+
+
+WorkspaceInboxEntry = Annotated[
+    RequestInboxEntry | ComplaintInboxEntry | WorkInboxEntry | AgentInboxEntry |
+    MonitorInboxEntry | RuleInboxEntry,
+    Field(discriminator="kind"),
+]
 
 
 class ProfileRecord(ContractModel):
@@ -803,7 +893,7 @@ class WorkspaceView(ResponseModel):
     checkpoints: list[CheckpointSummary] | None = None
     plans: list[PlanView] | None = None
     rules: list[RuleRecord] | None = None
-    inbox: list[VersionedRuntimeRecord] | None = None
+    inbox: list[WorkspaceInboxEntry] | None = None
     tasks: list[WorkspaceTaskRecord] | None = None
     tasksHistoryLimit: StrictInt | None = None
     monitors: list[MonitorEntityDto] | None = None
