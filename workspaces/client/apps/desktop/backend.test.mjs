@@ -10,10 +10,9 @@ import {
   readFileSync,
   rmSync,
   copyFileSync,
-  symlinkSync,
 } from "node:fs";
 import path from "node:path";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
@@ -586,107 +585,85 @@ test("the desktop may attach to a diagnosed fallback generation", async () => {
   );
 });
 
-function sourceFixture(run) {
-  const root = mkdtempSync(path.join(tmpdir(), "studio-backend-identity-"));
-  mkdirSync(path.join(root, "scripts"));
-  writeFileSync(path.join(root, "scripts/codex-canvas"), "# entry point\n");
-  writeFileSync(path.join(root, "scripts/runtime.py"), "VALUE = 1\n");
-  writeFileSync(
-    path.join(root, "scripts/codex_federation_crypto.mjs"),
-    "VALUE = 1\n",
+test("desktop status uses Python identity for match and mismatch decisions", () => {
+  const installed = backendBuild(repositoryRoot);
+  assert.deepEqual(updateStatus(repositoryRoot, { backendBuild: installed }), {
+    availableBackendBuild: installed,
+    updateRequired: false,
+  });
+  assert.deepEqual(
+    updateStatus(repositoryRoot, { backendBuild: "a".repeat(64) }),
+    { availableBackendBuild: installed, updateRequired: true },
   );
+});
+
+test("the installed identity equals Python inventory on the real source tree", () => {
+  const installed = backendBuild(repositoryRoot);
+  const pythonInventory = execFileSync(
+    process.env.CODEX_AGENTS_PYTHON || "python3",
+    [
+      "-B",
+      "-c",
+      "import sys; sys.path.insert(0, sys.argv[1]); from codex_backend_identity import backend_build; print(backend_build(sys.argv[1]))",
+      serverSource,
+    ],
+    { encoding: "utf8" },
+  ).trim();
+  assert.equal(installed, pythonInventory);
+});
+
+test("packaged Resources/workspace/scripts remains an identity source", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "studio-backend-package-"));
+  const scripts = path.join(root, "workspace/scripts");
+  mkdirSync(scripts, { recursive: true });
   try {
-    return run(root);
+    for (const name of [
+      "codex_backend_identity.py",
+      "codex_source_inventory.py",
+      "codex_layout.py",
+    ])
+      copyFileSync(path.join(serverSource, name), path.join(scripts, name));
+    writeFileSync(path.join(scripts, "codex-canvas"), "# entry point\n");
+    writeFileSync(path.join(scripts, "runtime.py"), "VALUE = 1\n");
+    assert.match(backendBuild(path.join(root, "workspace")), /^[a-f0-9]{64}$/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-}
-
-test("the backend build matches the Python source identity", () => {
-  sourceFixture((root) => {
-    const packageRoot = path.join(root, "scripts/analytics");
-    mkdirSync(path.join(packageRoot, "tests"), { recursive: true });
-    mkdirSync(path.join(packageRoot, "benchmarks"));
-    mkdirSync(path.join(packageRoot, "__pycache__"));
-    mkdirSync(path.join(packageRoot, "vendor"));
-    mkdirSync(path.join(packageRoot, "venv"));
-    writeFileSync(path.join(packageRoot, "__init__.py"), "\n");
-    writeFileSync(path.join(packageRoot, "rollout_parser.py"), "VALUE = 1\n");
-    for (const directory of [
-      "tests",
-      "benchmarks",
-      "__pycache__",
-      "vendor",
-      "venv",
-    ])
-      writeFileSync(
-        path.join(packageRoot, directory, "ignored.py"),
-        "VALUE = 1\n",
-      );
-    const scripts = serverSource;
-    const pythonBuild = () =>
-      execFileSync(
-        process.env.CODEX_AGENTS_PYTHON || "python3",
-        [
-          "-c",
-          "import sys; sys.path.insert(0, sys.argv[1]); from codex_backend_identity import backend_build; print(backend_build(sys.argv[2]))",
-          scripts,
-          path.join(root, "scripts"),
-        ],
-        { encoding: "utf8" },
-      ).trim();
-    const initial = backendBuild(root);
-    assert.equal(initial, pythonBuild());
-    writeFileSync(path.join(root, "scripts/ignored.pyc"), "cache");
-    writeFileSync(path.join(packageRoot, "tests/ignored.py"), "VALUE = 2\n");
-    assert.equal(backendBuild(root), initial);
-    assert.equal(pythonBuild(), initial);
-    writeFileSync(path.join(packageRoot, "rollout_parser.py"), "VALUE = 2\n");
-    assert.notEqual(backendBuild(root), initial);
-    assert.equal(backendBuild(root), pythonBuild());
-    const changedPythonBuild = backendBuild(root);
-    writeFileSync(
-      path.join(root, "scripts/codex_federation_crypto.mjs"),
-      "VALUE = 2\n",
-    );
-    assert.notEqual(backendBuild(root), changedPythonBuild);
-    assert.equal(backendBuild(root), pythonBuild());
-  });
 });
 
-test("backend source identity rejects package symlinks in both implementations", () => {
-  sourceFixture((root) => {
-    const packageRoot = path.join(root, "scripts/analytics");
-    mkdirSync(packageRoot);
-    writeFileSync(path.join(packageRoot, "__init__.py"), "\n");
-    writeFileSync(path.join(packageRoot, "source.py"), "VALUE = 1\n");
-    symlinkSync(
-      path.join(packageRoot, "source.py"),
-      path.join(packageRoot, "linked.py"),
+test("identity helper failure leaves the update decision unknown", () => {
+  const root = mkdtempSync(
+    path.join(tmpdir(), "studio-backend-helper-failure-"),
+  );
+  const python = path.join(root, "python");
+  try {
+    writeFileSync(
+      python,
+      '#!/bin/sh\nif [ "$1" = "-c" ]; then exit 0; fi\necho helper failed >&2\nexit 1\n',
+      { mode: 0o755 },
     );
-    assert.throws(() => backendBuild(root), /symlink/i);
-    const scripts = serverSource;
-    const result = spawnSync(
-      process.env.CODEX_AGENTS_PYTHON || "python3",
-      [
-        "-c",
-        "import sys; sys.path.insert(0, sys.argv[1]); from codex_backend_identity import backend_build; backend_build(sys.argv[2])",
-        scripts,
-        path.join(root, "scripts"),
-      ],
-      { encoding: "utf8" },
-    );
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /symlink/i);
-  });
+    const errors = [];
+    const originalError = console.error;
+    console.error = (...values) => errors.push(values);
+    try {
+      assert.deepEqual(
+        updateStatus(repositoryRoot, record, { CODEX_AGENTS_PYTHON: python }),
+        { availableBackendBuild: null, updateRequired: null },
+      );
+    } finally {
+      console.error = originalError;
+    }
+    assert.equal(errors.length, 1);
+    assert.match(errors[0].join(" "), /helper failed/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("an app restart reports a pending backend update and preserves the owner", async () => {
-  const root = mkdtempSync(path.join(tmpdir(), "studio-backend-reuse-"));
-  mkdirSync(path.join(root, "scripts"));
-  writeFileSync(path.join(root, "scripts/codex-canvas"), "# source\n");
-  const canonicalState = realpathSync(tmpdir());
-  const before = backendBuild(root);
+  const stateRoot = mkdtempSync(path.join(tmpdir(), "studio-backend-reuse-"));
+  const canonicalState = realpathSync(stateRoot);
+  const before = backendBuild(repositoryRoot);
   try {
     for (const liveBuild of ["a".repeat(64), before]) {
       const data = {
@@ -698,7 +675,7 @@ test("an app restart reports a pending backend update and preserves the owner", 
         (req, res) => res.end(JSON.stringify(data)),
         async (origin) => {
           const result = await ensureBackend({
-            resources: root,
+            resources: repositoryRoot,
             port: Number(new URL(origin).port),
             // No executable paths or built UI. Spawning would fail the check.
             env: { CODEX_AGENTS_STATE_DIR: canonicalState },
@@ -711,7 +688,7 @@ test("an app restart reports a pending backend update and preserves the owner", 
       );
     }
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(stateRoot, { recursive: true, force: true });
   }
 });
 
@@ -719,54 +696,5 @@ test("unavailable source cannot be reported as a current backend", () => {
   assert.deepEqual(updateStatus("/missing-desktop-source", record), {
     availableBackendBuild: null,
     updateRequired: null,
-  });
-});
-
-test("a source install does not rewrite the identity of an existing Python process", () => {
-  sourceFixture((root) => {
-    copyFileSync(
-      path.resolve(
-        path.dirname(fileURLToPath(import.meta.url)),
-        path.join(serverSource, "codex_backend_identity.py"),
-      ),
-      path.join(root, "scripts/codex_backend_identity.py"),
-    );
-    copyFileSync(
-      path.resolve(
-        path.dirname(fileURLToPath(import.meta.url)),
-        path.join(serverSource, "codex_source_inventory.py"),
-      ),
-      path.join(root, "scripts/codex_source_inventory.py"),
-    );
-    copyFileSync(
-      path.resolve(
-        path.dirname(fileURLToPath(import.meta.url)),
-        path.join(serverSource, "codex_layout.py"),
-      ),
-      path.join(root, "scripts/codex_layout.py"),
-    );
-    const initial = backendBuild(root);
-    const result = JSON.parse(
-      execFileSync(
-        process.env.CODEX_AGENTS_PYTHON || "python3",
-        [
-          "-c",
-          [
-            "import sys, json; from pathlib import Path",
-            "sys.path.insert(0, sys.argv[1])",
-            "import codex_backend_identity as identity",
-            "before = identity.BACKEND_BUILD",
-            "Path(sys.argv[1], 'runtime.py').write_text('VALUE = 3\\n')",
-            "print(json.dumps({'before': before, 'live': identity.BACKEND_BUILD, 'installed': identity.backend_build()}))",
-          ].join("; "),
-          path.join(root, "scripts"),
-        ],
-        { encoding: "utf8" },
-      ),
-    );
-    assert.equal(result.before, initial);
-    assert.equal(result.live, initial);
-    assert.notEqual(result.installed, initial);
-    assert.equal(result.installed, backendBuild(root));
   });
 });
