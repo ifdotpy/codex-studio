@@ -1,4 +1,4 @@
-import { test } from "../playwright.mjs";
+import { apiSchemaHeaders, test } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -66,10 +66,14 @@ test("Peer teams browser", async ({
         return route.fulfill({
           status: 409,
           json: { error: "Project changed" },
+          headers: apiSchemaHeaders(),
         });
       if (applied.has(body.request_id)) {
         assert.deepEqual(body, applied.get(body.request_id));
-        return route.fulfill({ json: { ok: true } });
+        return route.fulfill({
+          json: { ok: true },
+          headers: apiSchemaHeaders(),
+        });
       }
       if (body.action === "move") {
         const target = state.runtime.peerTeams.find(
@@ -99,7 +103,10 @@ test("Peer teams browser", async ({
         mode = "ok";
         return route.abort("failed");
       }
-      return route.fulfill({ json: { ok: true } });
+      return route.fulfill({
+        json: { ok: true },
+        headers: apiSchemaHeaders(),
+      });
     });
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/check`,
@@ -108,6 +115,7 @@ test("Peer teams browser", async ({
     state = await page.evaluate(() => window.fixture);
     const project = page.locator('[data-project-path="/p"]');
     const menu = async () => {
+      await project.locator(":scope > .project-tree-heading").hover();
       await page
         .getByRole("button", {
           name: "Options for project Project",
@@ -128,6 +136,7 @@ test("Peer teams browser", async ({
     await form.waitFor({ state: "detached" });
     assert.deepEqual(requests[0], requests[1]);
     assert.equal(state.runtime.projects[0].peerTeamsRevision, 1);
+    await page.getByRole("button", { name: /^Show old \(/ }).click();
     assert.equal(await project.locator('[data-chat="a"]').count(), 1);
     assert.equal(await project.locator('[data-chat="b"]').count(), 1);
     assert.equal(
@@ -142,6 +151,7 @@ test("Peer teams browser", async ({
     assert.equal(await team.locator('[data-chat="a"]').count(), 1);
     await page.getByLabel("Filter projects and chats").fill("");
     const teamMenu = async () => {
+      await team.locator(":scope > .project-tree-heading").hover();
       await team
         .getByRole("button", {
           name: "Options for team Equal team",
