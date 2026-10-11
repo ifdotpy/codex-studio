@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import tempfile
+from contextlib import ExitStack
 from typing import Any
 import unittest
 from unittest.mock import patch
@@ -34,15 +35,13 @@ class Remount(unittest.TestCase):
         folder.mkdir(parents=True)
         (folder / 'mount.json').write_text(json.dumps({'projectId': 'a' * 64, 'path': '/Volumes/p'}))
         self.mounted: list[Any] = []
-        self.patches = [patch.object(share, '_credential', lambda client: 'pw'),
-                        patch.object(share, '_mount_or_report', lambda *args: self.mounted.append(args)),
-                        patch.object(share.time, 'sleep', lambda seconds: None)]
-        for item in self.patches:
-            item.start()
+        self.patches = ExitStack()
+        self.patches.enter_context(patch.object(share, '_credential', lambda client: 'pw'))
+        self.patches.enter_context(patch.object(share, '_mount_or_report', lambda *args: self.mounted.append(args)))
+        self.patches.enter_context(patch('codex_linux_vm_share.time.sleep', lambda seconds: None))
 
     def tearDown(self) -> None:
-        for item in self.patches:
-            item.stop()
+        self.patches.close()
         self.temp.cleanup()
 
     def test_a_remount_waits_while_the_admin_channel_restarts(self) -> None:
@@ -64,7 +63,7 @@ class Remount(unittest.TestCase):
         unavailable = LinuxVMError('Linux guest project.ensure: unavailable', code='unavailable')
         guest = Guest(self.state, [unavailable] * 1000)
         clock = iter(range(0, 10_000, 10))
-        with patch.object(share.time, 'monotonic', lambda: float(next(clock))):
+        with patch('codex_linux_vm_share.time.monotonic', lambda: float(next(clock))):
             with self.assertRaises(LinuxVMError):
                 share.remount_registered(guest)  # type: ignore[arg-type]
         self.assertLess(guest.calls.count('project.ensure'), 20)
