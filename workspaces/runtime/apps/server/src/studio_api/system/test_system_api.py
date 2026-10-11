@@ -348,8 +348,7 @@ class SystemApiTests(unittest.TestCase):
                 "bytes": 0, "completed": 0, "failed": 0, "overflow": 0,
                 "pendingErrors": 0, "lastError": None,
             },
-            "migrations": {"payloads": {}, "analyticsFile": {"status": "idle"}},
-            "analyticsFileMigration": {"status": "idle"},
+            "migrations": {"payloads": {}},
             "searchMigrationError": None,
         }
         with patch("codex_diagnostics.snapshot", return_value=fixture):
@@ -471,7 +470,6 @@ class SystemApiTests(unittest.TestCase):
             db=lambda: nullcontext(db),
             sample_dispatch_lock_holder=lambda _rows, _waited: None,
             analytics_capture_status=lambda: {"available": False},
-            analytics_migration_status={"status": "idle"},
         )
         with patch("codex_diagnostics.host_resources", return_value={
             "cpuCount": 4,
@@ -650,7 +648,6 @@ class SystemApiTests(unittest.TestCase):
                 "count": 2, "floor": 1,
                 "pruning": {"status": "running", "updated": 1.0, "deleted": 1, "remaining": 1},
             },
-            "analyticsFile": {"status": "copy", "updated": 1.0, "error": None},
         }
         MigrationStatus.model_validate_json(json.dumps(value))
 

@@ -70,8 +70,6 @@ class SessionCostReader:
         db.execute("PRAGMA temp_store=FILE")
         if self._separate_analytics:
             db.execute("ATTACH DATABASE ? AS canvas", (self.db_path.absolute().as_uri() + "?mode=ro",))
-            from codex_analytics_storage import install_legacy_read_views
-            install_legacy_read_views(db)
         return db
 
     def _valid_cached(self, root, value):

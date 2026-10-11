@@ -75,7 +75,7 @@ class TempPreparationContract(unittest.TestCase):
             self.assertEqual(result["pricedSamples"], 4)
 
     def test_model_preparation_allows_checkpoint_and_uses_only_captured_usage(self):
-        for layout in ("single", "attached", "overlay"):
+        for layout in ("single", "attached"):
             with self.subTest(layout=layout), self.fixtures.fixture(layout) as (reader, writers, history_name, _, _):
                 checks = []
                 def before_models(db):
@@ -95,7 +95,7 @@ class TempPreparationContract(unittest.TestCase):
                 reader._connect = lambda: connect().db
                 new = reader._compute("lead", "lead")
                 self.assertEqual(new["generation"], 2)
-                self.assertEqual(new["pricedSamples"], 4 if layout == "overlay" else 3)
+                self.assertEqual(new["pricedSamples"], 3)
 
     def test_retry_replaces_native_receipt_keys(self):
         with self.fixtures.fixture("single", claude_only=True) as (reader, writers, _, _, _):

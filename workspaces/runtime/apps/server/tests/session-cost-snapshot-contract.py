@@ -84,7 +84,7 @@ class SessionCostSnapshotContract(unittest.TestCase):
                     self.assertEqual(db.execute("PRAGMA journal_mode=WAL").fetchone()[0], "wal")
                     db.execute("PRAGMA wal_autocheckpoint=0")
                     db.execute("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT)")
-                    if name == "analytics" or layout in {"single", "overlay"}:
+                    if name == "analytics" or layout == "single":
                         db.executescript("""
                           CREATE TABLE analytics_agents(id TEXT PRIMARY KEY,record TEXT);
                           CREATE TABLE analytics_meta(key TEXT PRIMARY KEY,value TEXT);
@@ -104,7 +104,7 @@ class SessionCostSnapshotContract(unittest.TestCase):
                                             "accountKey": "claude-account" if claude_only else "default",
                                             "threadId": "thread"})
                         db.execute("INSERT INTO runtime_agents VALUES ('lead',?)", (agent,))
-                        if layout in {"single", "overlay"}:
+                        if layout == "single":
                             db.execute("INSERT INTO analytics_agents VALUES ('lead',?)", (agent,))
                     db.commit()
                 history_name = "canvas" if layout == "single" else "analytics"
@@ -113,14 +113,8 @@ class SessionCostSnapshotContract(unittest.TestCase):
                     first = usage(1, 1000)
                     redundant = usage(2, 9000, response=False, turn="turn-1")
                     missing_model = usage(3, 2000, 100, model=None)
-                    if layout == "overlay":
-                        writers["canvas"].executemany("INSERT INTO analytics_usage VALUES (?,?,?,?,?,?,?,?)",
-                                                      (first, redundant))
-                        writers["canvas"].commit()
-                        history.execute("INSERT INTO analytics_usage VALUES (?,?,?,?,?,?,?,?)", missing_model)
-                    else:
-                        history.executemany("INSERT INTO analytics_usage VALUES (?,?,?,?,?,?,?,?)",
-                                            (first, redundant, missing_model))
+                    history.executemany("INSERT INTO analytics_usage VALUES (?,?,?,?,?,?,?,?)",
+                                        (first, redundant, missing_model))
                     history.commit()
                 for db in writers.values():
                     self.assertEqual(db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone(), (0, 0, 0))
@@ -164,13 +158,7 @@ class SessionCostSnapshotContract(unittest.TestCase):
         history.execute("UPDATE analytics_usage_roots SET generation=2 WHERE root='lead'")
         history.execute("UPDATE analytics_meta SET value='2' WHERE key='usageGeneration'")
         history.commit()
-        if layout == "overlay":
-            legacy = writers["canvas"]
-            legacy.execute("INSERT INTO analytics_usage VALUES (?,?,?,?,?,?,?,?)", usage(5, 8000))
-            legacy.execute("UPDATE analytics_usage_roots SET generation=2 WHERE root='lead'")
-            legacy.execute("UPDATE analytics_meta SET value='2' WHERE key='usageGeneration'")
-            legacy.commit()
-        elif layout == "attached":
+        if layout == "attached":
             canvas = writers["canvas"]
             canvas.execute("UPDATE runtime_agents SET record=json_set(record,'$.uiMarker',1) WHERE id='lead'")
             canvas.commit()
@@ -218,10 +206,9 @@ class SessionCostSnapshotContract(unittest.TestCase):
             reader._remember("lead", old, source)
             new = reader._compute("lead", "lead")
             self.assertEqual(new["generation"], 2)
-            self.assertEqual(new["_cacheSource"]["usage"],
-                             {"maxSeq": 5 if layout == "overlay" else 4, "generation": 2})
-            self.assertEqual(new["pricedSamples"], 4 if layout == "overlay" else 3)
-            self.assertAlmostEqual(new["totalUSD"], .00165 if layout == "overlay" else .00085)
+            self.assertEqual(new["_cacheSource"]["usage"], {"maxSeq": 4, "generation": 2})
+            self.assertEqual(new["pricedSamples"], 3)
+            self.assertAlmostEqual(new["totalUSD"], .00085)
             self.assert_closed(connections)
 
     def test_single_database_releases_snapshot_before_prices(self):
@@ -230,13 +217,10 @@ class SessionCostSnapshotContract(unittest.TestCase):
     def test_separate_analytics_releases_attached_canvas_snapshot(self):
         self.check_price_snapshot("attached")
 
-    def test_legacy_overlay_materializes_both_snapshots_before_prices(self):
-        self.check_price_snapshot("overlay")
-
     def test_price_exception_closes_connection_and_releases_snapshot(self):
-        with self.fixture("overlay") as (reader, writers, history_name, connections, _):
+        with self.fixture("attached") as (reader, writers, history_name, connections, _):
             def fail(*args, **kwargs):
-                self.append(writers, history_name, "overlay")
+                self.append(writers, history_name, "attached")
                 raise ValueError("fixture price failure")
 
             with patch.object(codex_session_costs, "price_usage", side_effect=fail):
@@ -247,9 +231,9 @@ class SessionCostSnapshotContract(unittest.TestCase):
             for writer in writers.values():
                 self.assertEqual(writer.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone(), (0, 0, 0))
             result = reader._compute("lead", "lead")
-            self.assertEqual(result["pricedSamples"], 4)
-            self.assertEqual(result["_cacheSource"]["usage"], {"maxSeq": 5, "generation": 2})
-            self.assertAlmostEqual(result["totalUSD"], .00165)
+            self.assertEqual(result["pricedSamples"], 3)
+            self.assertEqual(result["_cacheSource"]["usage"], {"maxSeq": 4, "generation": 2})
+            self.assertAlmostEqual(result["totalUSD"], .00085)
 
     def test_missing_usage_table_returns_empty_estimate_and_closes_snapshot(self):
         with self.fixture(with_usage=False) as (reader, writers, _, connections, _):

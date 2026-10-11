@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Runtime shutdown wakes migration workers paused for disk space."""
+"""Runtime shutdown wakes the search migration worker paused for disk space."""
 
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
@@ -21,7 +21,6 @@ sys_path = str(SERVER_SOURCE_ROOT)
 import sys
 sys.path.insert(0, sys_path)
 
-import codex_analytics_storage
 import codex_work
 from codex_runtime import Runtime
 
@@ -42,11 +41,8 @@ class RuntimeCloseWakeContract(unittest.TestCase):
                     db.execute("UPDATE runtime_search_rollout SET phase='building' WHERE id=1")
                     db.execute("DROP TABLE IF EXISTS runtime_search_next")
 
-                with patch.object(codex_work.shutil, 'disk_usage', return_value=NoFreeSpace()), \
-                        patch.object(codex_analytics_storage, 'copy_step',
-                                     return_value=(False, 'waitingForSpace', 0)):
+                with patch.object(codex_work.shutil, 'disk_usage', return_value=NoFreeSpace()):
                     self.assertTrue(runtime.search_migration_start())
-                    self.assertTrue(codex_analytics_storage.start(runtime))
 
                     deadline = time.monotonic() + 5
                     while time.monotonic() < deadline:
@@ -54,12 +50,10 @@ class RuntimeCloseWakeContract(unittest.TestCase):
                             phase = db.execute(
                                 'SELECT phase FROM runtime_search_rollout WHERE id=1'
                             ).fetchone()[0]
-                        analytics_status = getattr(runtime, 'analytics_migration_status', {}).get('status')
-                        if phase == 'waiting_for_space' and analytics_status == 'waitingForSpace':
+                        if phase == 'waiting_for_space':
                             break
                         threading.Event().wait(.01)
                     self.assertEqual(phase, 'waiting_for_space')
-                    self.assertEqual(analytics_status, 'waitingForSpace')
 
                     close_done = threading.Event()
 
@@ -73,7 +67,6 @@ class RuntimeCloseWakeContract(unittest.TestCase):
                                     'Runtime.close() did not wake waiting migration workers')
                     closer.join()
                     self.assertFalse(runtime.search_migration_thread.is_alive())
-                    self.assertFalse(runtime.analytics_migration_thread.is_alive())
             finally:
                 runtime.close()
 

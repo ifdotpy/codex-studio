@@ -99,7 +99,7 @@ class Contract(unittest.TestCase):
             self.assertFalse(worker.is_alive())
             self.assertEqual(errors, [])
             self.assertEqual(result[0]['generation'], 2)
-            self.assertEqual(result[0]['pricedSamples'], 5 if layout == 'overlay' else 4)
+            self.assertEqual(result[0]['pricedSamples'], 4)
             self.assertFalse(reader.inflight)
             self.case.assert_closed(connections)
 
@@ -108,9 +108,6 @@ class Contract(unittest.TestCase):
 
     def test_account_lock_wait_releases_attached_database_snapshots(self):
         self.check_wait('attached')
-
-    def test_account_lock_wait_releases_legacy_overlay_snapshots(self):
-        self.check_wait('overlay')
 
     def test_claude_filesystem_wait_releases_attached_snapshots(self):
         self.check_wait('attached', filesystem=True)
