@@ -4617,6 +4617,8 @@ export interface components {
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
+      /** Openurl */
+      openUrl?: string | null;
       /** Replayed */
       replayed?: boolean | null;
       /**

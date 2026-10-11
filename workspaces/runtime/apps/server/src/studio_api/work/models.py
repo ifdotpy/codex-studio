@@ -846,3 +846,5 @@ class PanelLayoutResult(ResponseModel):
 class AnswerResult(ResponseModel):
     status: Literal["answered"]
     replayed: StrictBool | None = None
+    # An accepted sign-in link (browser/open) that the window opens in the browser.
+    openUrl: StrictStr | None = None
