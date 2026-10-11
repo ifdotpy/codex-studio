@@ -1,6 +1,8 @@
 import ChatStatus from "../components/agents/ChatStatus";
 import { ProviderMark } from "../components/AccountTiles";
 import type { ChatIndicator } from "../components/chat-status/chatStatusModel";
+import { Badge, Tooltip } from "@mantine/core";
+import { WifiOff } from "lucide-react";
 import { DEFAULT_LOCAL_SERVER_ALIAS } from "./serverAliases";
 import "./sidebar-status.css";
 
@@ -56,9 +58,11 @@ export function shouldShowOldChatsControl(
 export function ChatServerLine({
   provider,
   alias,
+  offline = false,
 }: {
   provider?: string;
   alias: string;
+  offline?: boolean;
 }) {
   return (
     <span
@@ -66,9 +70,35 @@ export function ChatServerLine({
       aria-label={`${provider === "claude" ? "Claude" : "Codex"}, ${alias}`}
     >
       <ProviderMark provider={provider || "codex"} />
-      <span>{alias}</span>
+      <span className="chat-server-alias">{alias}</span>
+      {offline && (
+        <span className="chat-server-offline-wrap">
+          <Tooltip
+            label={offlineServerDescription(alias)}
+            position="right"
+            withinPortal
+            events={{ hover: true, focus: true, touch: false }}
+          >
+            <Badge
+              className="chat-server-offline"
+              size="xs"
+              color="gray"
+              variant="transparent"
+              leftSection={<WifiOff size={11} aria-hidden="true" />}
+              aria-label={offlineServerDescription(alias)}
+              tabIndex={0}
+            >
+              <span className="chat-server-offline-label">Offline</span>
+            </Badge>
+          </Tooltip>
+        </span>
+      )}
     </span>
   );
+}
+
+export function offlineServerDescription(alias: string) {
+  return `${alias} is unreachable. Showing the last known state.`;
 }
 
 export default function ProjectChatRows({

@@ -402,6 +402,18 @@ describe("complete multi-server sidebar projection", () => {
       store.sources(["local", "remote"], new Set()).map((row) => row.id),
     ).toEqual(["local"]);
   });
+
+  it("maps unreachable sources to server identities and clears on reconnect", () => {
+    const local = source("local");
+    const remote = { ...source("remote"), online: false };
+    const offline = mergeSidebar([local, remote], 1, true);
+    expect([...offline.offlineServers]).toEqual(["remote"]);
+    expect(offline.offlineServers.has("local")).toBe(false);
+    expect(
+      mergeSidebar([local, { ...remote, online: true }], 2, true)
+        .offlineServers,
+    ).toEqual(new Set());
+  });
 });
 
 describe("original saved sidebar state", () => {
