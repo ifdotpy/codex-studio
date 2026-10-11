@@ -6350,12 +6350,19 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         decoded = []
         pending_notices = []
         restart_wait_agents = []
+        # Decode the roster without Runtime.lock; current_agents revalidates its key under the lock.
+        with self.read_db() as roster_db:
+            roster_key = self.scheduler_roster_key(roster_db)
+            roster_agents = self.scheduler_agents(roster_db) if roster_key is not None else None
 
         def current_agents(db):
             key = self.scheduler_roster_key(db)
             unchanged = key is not None and decoded and decoded[0] == key
             if unchanged:
                 return decoded[1]
+            if key is not None and key == roster_key and roster_agents is not None:
+                decoded[:] = [key, roster_agents]
+                return roster_agents
             agents = self.scheduler_agents(db)
             if key is not None and not db.in_transaction and self.scheduler_roster_key(db) == key:
                 decoded[:] = [key, agents]
@@ -6368,9 +6375,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             radio_tick(self, db)
             cancel_pending(self, db)
             from codex_context_repair import recover_context_failures
-            recover_context_failures(self, db, current_agents(db))
+            agents = current_agents(db)
+            recover_context_failures(self, db, agents)
             from codex_context_repair import _held_restart_marker
-            restart_wait_agents = [a for a in current_agents(db)
+            restart_wait_agents = [a for a in agents
                                    if a.get("contextRepairWait") and _held_restart_marker(a)]
         from codex_context_repair import tick_restart_input_waits
         tick_restart_input_waits(self, restart_wait_agents)
@@ -6487,8 +6495,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             else:
                 agents = current_agents(db)
             if agent_id is None:
-                transfer_store(self).tick(agents)
-                agents = current_agents(db)
+                # An empty transfer queue has no tick work and needs no nested writer scope.
+                if db.execute("SELECT 1 FROM runtime_account_transfers "
+                              "WHERE json_extract(record,'$.status')='pending' LIMIT 1").fetchone():
+                    transfer_store(self).tick(agents)
+                    agents = current_agents(db)
             for a in agents:
                 if a.get("claudePreInputRetry"):
                     from codex_claude_input_recovery import retire_stopped_retry
