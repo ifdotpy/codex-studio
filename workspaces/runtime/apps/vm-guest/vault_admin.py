@@ -81,15 +81,10 @@ class VaultHandlers:
         require((self.root / "projects" / project / "lines/main").is_dir(), "The layr project does not exist")
         if method == "vault.configure":
             config = check_config(params)
-            self.folder(project).mkdir(mode=0o700, exist_ok=True)
-            path = self.folder(project) / "config.json"
-            old = json.loads(path.read_text()) if path.exists() else {}
-            if any(old.get(k) != config.get(k) for k in VAULT_FIELDS):
-                # Another vault: its first push is full.
-                shutil.rmtree(self.folder(project) / "writer", ignore_errors=True)
-            atomic_json(self.folder(project) / "config.json", config)
-            os.chmod(self.folder(project) / "config.json", 0o600)
-            return {"configured": True, "bucket": config["bucket"], "prefix": config["prefix"]}
+            # Wait for a push that runs with the old configuration: a new signing key must not
+            # meet an unsigned push that lands after the configuration changed.
+            async with self.locks.setdefault(project, asyncio.Lock()):
+                return self.configure(project, config)
         if method == "vault.status":
             config = self.config(project)
             record = self.folder(project) / "writer" / "writer.json"
@@ -99,6 +94,18 @@ class VaultHandlers:
                     "last": json.loads(record.read_text()) if record.exists() else None,
                     **(json.loads(status.read_text()) if status.exists() else {})}
         return await self.run_push(project)
+
+    def configure(self, project, config):
+        """Store the writer configuration; the caller holds the project's push lock."""
+        self.folder(project).mkdir(mode=0o700, exist_ok=True)
+        path = self.folder(project) / "config.json"
+        old = json.loads(path.read_text()) if path.exists() else {}
+        if any(old.get(k) != config.get(k) for k in VAULT_FIELDS):
+            # Another vault or signing key: its first push is full.
+            shutil.rmtree(self.folder(project) / "writer", ignore_errors=True)
+        atomic_json(path, config)
+        os.chmod(path, 0o600)
+        return {"configured": True, "bucket": config["bucket"], "prefix": config["prefix"]}
 
     async def run_push(self, project):
         """One push under the project lock; the outcome goes to status.json."""

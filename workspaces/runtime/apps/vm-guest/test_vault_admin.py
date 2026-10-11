@@ -3,6 +3,7 @@ standard input, status.json records each outcome, and a failure names its cause.
 from __future__ import annotations
 
 import base64
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -106,6 +107,19 @@ class VaultAdminTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["last"]["seq"], 1)
         self.assertNotIn(SECRET, json.dumps(status))
         self.assertNotIn(SIGNING, json.dumps(status))
+
+    async def test_a_new_configuration_waits_for_a_running_push(self):
+        await self.configure()
+        config = self.root / "state/vault/app/config.json"
+        lock = self.handlers.locks.setdefault("app", asyncio.Lock())
+        await lock.acquire()  # A push with the old configuration runs.
+        change = asyncio.ensure_future(self.configure(signingKey=SIGNING))
+        await asyncio.sleep(0.05)
+        self.assertFalse(change.done())
+        self.assertNotIn("signingKey", json.loads(config.read_text()))
+        lock.release()
+        await change
+        self.assertEqual(json.loads(config.read_text())["signingKey"], SIGNING)
 
     async def test_the_signing_key_is_optional_and_a_test_endpoint_is_passed(self):
         await self.configure(endpoint="http://127.0.0.1:9000")
