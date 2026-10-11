@@ -182,4 +182,7 @@ jobs:
         if: failure()
         run: |
           log="$(ls -t "$XDG_CACHE_HOME"/codex-studio/checks/run-*/full.log 2>/dev/null | head -n 1)"
-          if [ -n "$log" ]; then tail -n 400 "$log"; fi
+          if [ -n "$log" ]; then
+            grep -n -E -A 80 '^(ERROR|FAIL): ' "$log" | head -n 800 || true
+            tail -n 100 "$log"
+          fi
