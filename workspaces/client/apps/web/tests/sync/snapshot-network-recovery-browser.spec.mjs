@@ -56,11 +56,34 @@ test("Snapshot Network Recovery Browser", async ({
     const page = testPage;
     let failure = null;
     let requests = 0;
+    let trackingNetworkRecovery = false;
+    let failedNetworkRequests = 0;
+    let networkRecoveryRequests = 0;
+    const activeSessionRequests = new Set();
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname !== "/api/session") return;
+      activeSessionRequests.add(request);
+    });
+    const finishSessionRequest = (request) =>
+      activeSessionRequests.delete(request);
+    page.on("requestfinished", finishSessionRequest);
+    page.on("requestfailed", finishSessionRequest);
+    const waitForSessionRequestsToSettle = () =>
+      expect
+        .poll(() => activeSessionRequests.size, {
+          message:
+            "in-flight session reads settle before measuring the next interval",
+        })
+        .toBe(0);
     await page.route("**/api/session", async (route) => {
       requests++;
-      if (failure === "network") return route.abort("failed");
+      if (trackingNetworkRecovery) networkRecoveryRequests++;
+      if (failure === "network") {
+        failedNetworkRequests++;
+        return route.abort("failed");
+      }
       if (failure === "503")
         return route.fulfill({
           status: 503,
@@ -73,6 +96,8 @@ test("Snapshot Network Recovery Browser", async ({
     await page.goto(`http://127.0.0.1:${port}`);
     await page.getByText("Release lead", { exact: true }).first().waitFor();
     await page.locator("#error").waitFor({ state: "hidden" });
+    await waitForSessionRequestsToSettle();
+    trackingNetworkRecovery = true;
     failure = "network";
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
     await page
@@ -84,12 +109,17 @@ test("Snapshot Network Recovery Browser", async ({
     // No online, visibility or click event helps this recovery.
     await page.locator("#error").waitFor({ state: "hidden", timeout: 5000 });
     assert.ok(Date.now() - failedAt < 5000);
-    const recoveredRequests = requests;
-    await page.waitForTimeout(1500);
+    trackingNetworkRecovery = false;
+    await waitForSessionRequestsToSettle();
     assert.equal(
-      requests,
-      recoveredRequests,
-      "Healthy sessions do not poll faster.",
+      failedNetworkRequests,
+      1,
+      "the fixture fails exactly one session read to initiate recovery",
+    );
+    assert.equal(
+      networkRecoveryRequests,
+      2,
+      "a failed session read gets exactly one retry before recovery succeeds",
     );
     failure = "503";
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
@@ -105,6 +135,7 @@ test("Snapshot Network Recovery Browser", async ({
       .locator("#error")
       .getByText("Access denied", { exact: true })
       .waitFor();
+    await waitForSessionRequestsToSettle();
     const deniedRequests = requests;
     await page.waitForTimeout(1500);
     assert.equal(
