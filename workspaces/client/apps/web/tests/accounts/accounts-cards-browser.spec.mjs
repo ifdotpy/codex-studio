@@ -326,8 +326,14 @@ test("Accounts provider cards preserve menus, confirmations, exact retries and r
       "Disconnect account",
       "Delete account",
     ]);
+    await expect(menu.getByRole("menuitem").nth(0)).toBeFocused();
+    await page.keyboard.press("ArrowDown");
+    await expect(menu.getByRole("menuitem").nth(1)).toBeFocused();
     await page.keyboard.press("Escape");
+    await expect(menu).not.toBeVisible();
     await expect(trigger).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(settings).toBeVisible();
     await actions(work, "work@example.com");
     await page
       .getByRole("menuitem", {
@@ -397,7 +403,7 @@ test("Accounts provider cards preserve menus, confirmations, exact retries and r
       .getByRole("menuitem", { name: "Sign in again", exact: true })
       .click();
     const signIn = page.getByRole("dialog", {
-      name: "Sign in to travel@example.com",
+      name: "Sign in to Codex · travel@example.com",
       exact: true,
     });
     await expect(signIn).toBeVisible();
@@ -407,7 +413,7 @@ test("Accounts provider cards preserve menus, confirmations, exact retries and r
       .getByRole("menuitem", { name: "Sign in again", exact: true })
       .click();
     const claudeSignIn = page.getByRole("dialog", {
-      name: "Sign in to Claude",
+      name: "Sign in to Claude · Claude personal",
       exact: true,
     });
     await expect(claudeSignIn).toBeVisible();

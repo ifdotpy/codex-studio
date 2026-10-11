@@ -481,7 +481,11 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
   });
   await page.keyboard.press("Escape");
   await reopenedSettings.waitFor({ state: "hidden" });
-  assert.match(await mainSettingsTrigger.textContent(), /Work/);
+  assert.match(
+    await mainSettingsTrigger.textContent(),
+    /Astra 6 · Medium/,
+    "the main-agent settings trigger keeps this chat's stored model summary after changing the new-chat default",
+  );
   assert.equal(
     await page.locator("html").getAttribute("data-mantine-color-scheme"),
     "dark",
