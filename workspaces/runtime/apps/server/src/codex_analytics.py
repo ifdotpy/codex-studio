@@ -242,6 +242,18 @@ class _ContextBuckets:
 
 
 class AnalyticsMixin:
+    @staticmethod
+    def require_file_migration_complete(db):
+        legacy = db.execute("SELECT 1 FROM main.sqlite_master WHERE type='table' AND name GLOB 'analytics_*' LIMIT 1").fetchone()
+        meta = db.execute("SELECT 1 FROM analytics.sqlite_master WHERE type='table' AND name='analytics_meta'").fetchone()
+        marker = db.execute("SELECT value FROM analytics.analytics_meta WHERE key='fileMigrationV1'").fetchone() if meta else None
+        try:
+            incomplete = marker is not None and json.loads(marker[0]).get("phase") != "complete"
+        except (TypeError, ValueError, AttributeError):
+            incomplete = True
+        if legacy or incomplete:
+            raise RuntimeError("This state has unfinished analytics fileMigrationV1 data; open it once with Studio 1.0.0 or earlier to finish the migration, then upgrade.")
+
     def analytics_connection(self, fallback=None):
         opener = getattr(self, 'analytics_db', None)
         return opener() if opener else nullcontext(fallback)

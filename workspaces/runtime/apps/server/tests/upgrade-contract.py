@@ -33,7 +33,7 @@ ROOT = REPOSITORY_ROOT
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_canvas import Canvas, make_server
 from codex_runtime import AppServer, Runtime
-import codex_analytics_storage
+import codex_turn_item_links
 import codex_payload_migrate
 import codex_work
 import codex_sync_entities
@@ -101,15 +101,6 @@ def seed_with_revision(revision: str, state: Path) -> None:
                 # Older search indexes retain the complete body for truncated rows.
                 db.execute('UPDATE runtime_search SET body=? WHERE id=?',
                            (body, agent['id'] + ':long-body'))
-                usage = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='analytics_usage'").fetchone()
-                if usage:
-                    cols = {row[1] for row in db.execute('PRAGMA table_info(analytics_usage)')}
-                    values = {'id':'legacy-usage', 'agent':agent['id'], 'root':agent['id'],
-                              'thread':'legacy-thread', 'turn':'legacy-turn', 'at':time.time(),
-                              'record':json.dumps({'inputTokens':17, 'outputTokens':23, 'totalTokens':40})}
-                    selected = [key for key in values if key in cols]
-                    db.execute('INSERT OR REPLACE INTO analytics_usage(' + ','.join(selected) + ') VALUES (' +
-                               ','.join('?' for _ in selected) + ')', [values[key] for key in selected])
                 print(json.dumps({'agent':agent['id'], 'body':body}))
         finally:
             runtime.close()
@@ -117,6 +108,23 @@ def seed_with_revision(revision: str, state: Path) -> None:
     subprocess.run([sys.executable, "-B", "-c", seed, str(source), str(state)],
                    check=True, cwd=ROOT, capture_output=True, text=True,
                    env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
+    # This contract covers the other resumable upgrades. The retired analytics
+    # file copy is tested separately as an explicit startup refusal.
+    with sqlite3.connect(state / "canvas.sqlite3") as db:
+        for (name,) in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'analytics_*'").fetchall():
+            db.execute(f"DROP TABLE {name}")
+        schema = codex_turn_item_links._schema()
+        for statement in schema.values():
+            db.execute(statement)
+        epoch = "upgrade-fixture"
+        rootpage = db.execute(
+            "SELECT rootpage FROM sqlite_master WHERE type='table' AND name='runtime_items'").fetchone()[0]
+        target, scanned = db.execute("SELECT MAX(rowid),COUNT(*) FROM runtime_items").fetchone()
+        db.execute(f"INSERT INTO {codex_turn_item_links.STATE} VALUES (1,?,?,?, ?,1,?,0,?)",
+                   (epoch, rootpage, target, target, scanned, time.time()))
+        db.execute(f"INSERT INTO {codex_turn_item_links.LINKS} "
+                   "SELECT id,agent,json_extract(record,'$.turnId'),created,? FROM runtime_items", (epoch,))
 
 
 class IdleServer:
@@ -152,8 +160,6 @@ class UpgradeContract(unittest.TestCase):
                         "SELECT body FROM runtime_search WHERE id=?", (agent_id + ":long-body",)).fetchone()[0]
                     before_search = {row[0] for row in canvas_db.execute(
                         "SELECT id FROM runtime_search WHERE runtime_search MATCH 'legacymarker'")}
-                    before_usage = canvas_db.execute("SELECT count(*),sum(json_extract(record,'$.totalTokens')) "
-                                                     "FROM analytics_usage").fetchone()
                     before_task = canvas_db.execute("SELECT record FROM runtime_tasks WHERE id='legacy-task'").fetchone()[0]
                     before_rows = {name: canvas_db.execute(f"SELECT count(*) FROM {name}").fetchone()[0]
                                    for name in ("runtime_checkpoints", "runtime_tool_requests", "runtime_tool_results")}
@@ -195,12 +201,9 @@ class UpgradeContract(unittest.TestCase):
                         free = 128 * 1024**3
                     with ExitStack() as stack:
                         stack.enter_context(patch.object(codex_work.shutil, "disk_usage", return_value=Usage()))
-                        stack.enter_context(patch.object(codex_analytics_storage.shutil, "disk_usage", return_value=Usage()))
                         stack.enter_context(patch.object(codex_payload_migrate.shutil, "disk_usage", return_value=Usage()))
                         runtime.search_migration_start()
-                        codex_analytics_storage.start(runtime)
-                        # Exercise payload migration while the other old-state
-                        # migration workers are writing the shared database.
+                        # Exercise payload migration while search writes the database.
                         codex_payload_migrate.run(
                             state, tables=list(codex_payload_migrate.TARGETS), batch_rows=8,
                             batch_bytes=128 * 1024, max_batches=None)
@@ -208,12 +211,10 @@ class UpgradeContract(unittest.TestCase):
                         while time.monotonic() < deadline:
                             with runtime.db() as db:
                                 phase = db.execute("SELECT phase FROM runtime_search_rollout WHERE id=1").fetchone()[0]
-                            analytics_status = getattr(runtime, "analytics_migration_status", {}).get("status")
-                            if phase == "complete" and analytics_status == "complete":
+                            if phase == "complete":
                                 break
                             time.sleep(.02)
                         self.assertEqual(phase, "complete")
-                        self.assertEqual(analytics_status, "complete")
                     with sqlite3.connect(state / "canvas.sqlite3") as db:
                         payload_states = dict(db.execute(
                             "SELECT name,complete FROM runtime_payload_migrations"))
@@ -262,7 +263,6 @@ class UpgradeContract(unittest.TestCase):
                         pruning = diagnostics["migrations"]["entityTombstones"]["pruning"]
                     self.assertEqual(diagnostics["migrations"]["search"]["phase"], "complete")
                     self.assertIsNone(diagnostics["searchMigrationError"])
-                    self.assertEqual(diagnostics["migrations"]["analyticsFile"]["status"], "complete")
                     tombstones = diagnostics["migrations"]["entityTombstones"]
                     self.assertLessEqual(tombstones["count"], ENTITY_TOMBSTONE_LIMIT)
                     self.assertEqual(pruning["status"], "complete", pruning)
@@ -304,10 +304,6 @@ class UpgradeContract(unittest.TestCase):
                     self.assertEqual(len(resolve_record(state, request)["result"]["text"]),
                                      90000 + len("request-"))
                     self.assertEqual(len(resolve_result(state, result)["text"]), 90000 + len("result-"))
-                    with sqlite3.connect(state / "analytics.sqlite3") as analytics:
-                        after_usage = analytics.execute("SELECT count(*),sum(json_extract(record,'$.totalTokens')) "
-                                                        "FROM analytics_usage").fetchone()
-                    self.assertEqual(tuple(after_usage), tuple(before_usage))
                     self.assertIn("entityTombstones", diagnostics["migrations"])
                     with sqlite3.connect(state / "canvas.sqlite3") as db:
                         self.assertEqual({name: db.execute(f"SELECT count(*) FROM {name}").fetchone()[0]

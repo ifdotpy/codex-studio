@@ -104,13 +104,12 @@ path. Do not start another backend against this state.
 ## 3. Observe automatic migrations
 
 The backend starts schema setup, bounded entity-sync initialization, tombstone
-pruning, full-text search migration, and analytics-file migration during
-startup. These run in bounded batches while the backend serves requests.
-Search and analytics can take minutes on a small database and tens of minutes
-or longer on a large one. The measured analytics sample copied at about
-7 MiB/s; 16.5 GB extrapolated to roughly 37 minutes on that host. Actual time
-depends on storage, load, and row sizes. Search time also depends on index
-size. The migrations resume from durable cursors after a restart.
+pruning, and full-text search migration during startup. Search runs in bounded
+batches while the backend serves requests and resumes from its durable cursor
+after a restart. Analytics-file migration is no longer run automatically.
+States with analytics tables still in `canvas.sqlite3` or an unfinished
+`fileMigrationV1` marker must be opened with Studio 1.0.0 or earlier to finish
+that migration before upgrading.
 
 Fetch a fresh check and diagnostics snapshot periodically; compare `cursor`,
 `phase`, and `updated` rather than relying on one observation:
@@ -126,11 +125,6 @@ Use `/api/diagnostics.migrations` to verify:
   `waiting_for_space` means it is preserving the old index and waiting for
   capacity. A non-empty `search.error` is visible failure; stop and preserve
   both indexes and the database for investigation.
-- `analyticsFile.status` reaches `complete`. `insufficientSpace` records the
-  required and measured free bytes and waits for operator capacity. During
-  copying, `copy` and then `retire` progress through durable per-table cursors.
-  Recheck free space before taking action. Stop on `unsupportedTables`,
-  `missingTargetTable`, or `error`.
 - `entityTombstones.count` is at or below the configured limit after pruning;
   `floor` is a monotonic reset boundary for older clients. The backend may
   prune in batches, so allow it to settle. `pruning.status` identifies

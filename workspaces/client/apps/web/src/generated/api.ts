@@ -3636,29 +3636,6 @@ export interface components {
       /** P95 */
       p95: number | null;
     };
-    /** AnalyticsFileMigration */
-    AnalyticsFileMigration: {
-      /** Error */
-      error?: string | null;
-      status: components["schemas"]["AnalyticsFileMigrationState"];
-      /** Updated */
-      updated?: number | null;
-    };
-    /**
-     * AnalyticsFileMigrationState
-     * @enum {string}
-     */
-    AnalyticsFileMigrationState:
-      | "idle"
-      | "checkSpace"
-      | "insufficientSpace"
-      | "unsupportedTables"
-      | "missingTargetTable"
-      | "waitingForSpace"
-      | "copy"
-      | "retire"
-      | "complete"
-      | "error";
     /** AnalyticsFilesystemRemap */
     AnalyticsFilesystemRemap: {
       /** At */
@@ -6071,7 +6048,6 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       analyticsCapture: components["schemas"]["AnalyticsCaptureStatus"];
-      analyticsFileMigration: components["schemas"]["AnalyticsFileMigration"];
       /** At */
       at: string;
       executions: components["schemas"]["ExecutionLedger"];
@@ -7244,7 +7220,6 @@ export interface components {
     };
     /** MigrationStatus */
     MigrationStatus: {
-      analyticsFile: components["schemas"]["AnalyticsFileMigration"];
       entityTombstones?: components["schemas"]["TombstoneMigration"] | null;
       /** Payloads */
       payloads?: {
