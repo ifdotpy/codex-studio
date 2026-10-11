@@ -746,14 +746,14 @@ impl<'a> Repo<'a> {
                 paths.push(k.clone());
             }
         }
-        // These always get a layer, warm or empty. A folder that the line's `.regenerable`
-        // names gets one only warm, from an ancestor that saved it.
+        // These always get a layer, warm or empty. A folder that the line's `.layrattributes`
+        // makes regenerable gets one only warm, from an ancestor that saved it.
         let fixed = paths.len();
-        let (named, ignored) = (Rules::regenerable(w), Rules::new(w));
+        let (regenerable, ignored) = (Rules::attribute(w, "regenerable"), Rules::new(w));
         for k in self.saved_layer_paths(state)? {
             let parent = Path::new(&k).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
             let parent_ok = parent.is_empty() || fsutil::lmeta(w, &parent).map(|m| m.is_dir()).unwrap_or(false);
-            if !paths.contains(&k) && parent_ok && named.ignored(&k, true) && ignored.ignored(&k, true) {
+            if !paths.contains(&k) && parent_ok && regenerable.ignored(&k, true) && ignored.ignored(&k, true) {
                 paths.push(k);
             }
         }
@@ -776,8 +776,8 @@ impl<'a> Repo<'a> {
         Ok(())
     }
 
-    /// The layer paths of the machine setting and of the folders that `.regenerable` files in
-    /// the working folder `w` name.
+    /// The layer paths of the machine setting and of the folders that `.layrattributes` files in
+    /// the working folder `w` make regenerable.
     pub fn layer_paths(&self, w: &Path) -> Vec<String> {
         let mut paths = self.p.config_strings("regenerable");
         for p in regenerable_folders(w) {
@@ -1015,12 +1015,12 @@ fn give_tree(root: &Path, uid: u32, gid: u32) -> Result<()> {
     fsutil::chown_nofollow(root, uid, gid)
 }
 
-/// The folders of the working folder `w` that a `.regenerable` file names (gitignore patterns)
-/// and that the ignore rules ignore. A named folder that is not ignored is no layer: its files
-/// are in history, and a layer must not hide them. The walk does not enter a named folder or
+/// The folders of the working folder `w` that `.layrattributes` files make `regenerable` and
+/// that the ignore rules ignore. A regenerable folder that is not ignored is no layer: its files
+/// are in history, and a layer must not hide them. The walk does not enter a regenerable folder or
 /// another subvolume.
 pub fn regenerable_folders(w: &Path) -> Vec<String> {
-    let (named, ignored) = (Rules::regenerable(w), Rules::new(w));
+    let (regenerable, ignored) = (Rules::attribute(w, "regenerable"), Rules::new(w));
     // Through descriptors: the owner may change the folder while root reads it.
     let Ok(t) = Tree::open(w) else { return Vec::new() };
     let mut found = Vec::new();
@@ -1033,7 +1033,7 @@ pub fn regenerable_folders(w: &Path) -> Vec<String> {
             }
             match t.stat(&rel) {
                 Some(m) if m.is_dir() => {
-                    if named.ignored(&rel, true) {
+                    if regenerable.ignored(&rel, true) {
                         if ignored.ignored(&rel, true) {
                             found.push(rel);
                         }

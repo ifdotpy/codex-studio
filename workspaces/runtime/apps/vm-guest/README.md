@@ -43,7 +43,7 @@ non-optional production dependency set from the frozen lockfile, while
 Install Python 3.11 or later, rsync 3 or later, btrfs-progs, git, util-linux, procps,
 and lsof.
 Mount the btrfs data disk at `/var/lib/codex-studio`. Use the
-`user_subvol_rm_allowed` and `compress=zstd:1` mount options. Run `install.sh` as root.
+`user_subvol_rm_allowed` and `compress=zstd:3` mount options. Run `install.sh` as root.
 
 The installer creates the user and systemd units. The unit expands the data
 filesystem at each boot. The service reports readiness after it binds its socket.

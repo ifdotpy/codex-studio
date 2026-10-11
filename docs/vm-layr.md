@@ -79,10 +79,11 @@ first build and `layr save --layers` ("Warm layers" below):
 
 ### Warm layers
 
-A `.regenerable` file in the project (the form of a `.gitignore`) names the folders that a
-build makes again, such as `node_modules` or `.venv`. layr turns a named folder into a layer
-only if the ignore rules ignore it (layr `docs/design.md`, section 5). The import already
-leaves out every ignored folder, so the file changes only what becomes a layer in the VM:
+A `.layrattributes` file in the project gives paths attributes: a line is a pattern of the
+`.gitignore` form and attributes. `node_modules regenerable` marks the folders that a build
+makes again; `-regenerable` unsets it. layr turns a regenerable folder into a layer only if
+the ignore rules ignore it (layr `docs/design.md`, section 5). The import already leaves out
+every ignored folder, so the attribute changes only what becomes a layer in the VM:
 
 1. The file is part of main; on the Mac it comes with Mac folder sync.
 2. A build in main (the lead's, or the operator's through `codex_layr_exec.py`) makes the
@@ -94,11 +95,13 @@ Studio does not choose the build command or when a build is good enough to save.
 
 ### Compression
 
-The data disk mounts with `compress=zstd:1`; provisioning sets the option on an existing disk
+The data disk mounts with `compress=zstd:3`; provisioning sets the option on an existing disk
 and remounts it. Only new writes are compressed. Do not recompress old data with
 `btrfs filesystem defragment -c`: it unshares the blocks that states, lines and layers share.
-On the codex-agents history (1,087 states of a 37 MB tree) zstd made the state data three times
-smaller (390 to 131 MB) and the writes faster; btrfs metadata (147 MB) does not compress.
+On the codex-agents history (1,090 states of a 37 MB tree, one run each) the state data took
+386 MB plain, 131 MB with zstd:1, 126 MB with zstd:3 and 115 MB with zstd:15, which wrote 40%
+slower; zstd:1 and zstd:3 wrote as fast as plain. btrfs metadata (190 MB) does not compress.
+In a 205 MB SQLite database zstd:1 made random updates 30% slower and reads equal.
 
 ### Sidebar readiness
 

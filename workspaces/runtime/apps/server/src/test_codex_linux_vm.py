@@ -464,8 +464,8 @@ class ProvisionTests(unittest.TestCase):
             subprocess.run(['bash', '-c', lines.replace('/etc/fstab', str(fstab))], check=True, timeout=5)
         self.assertEqual(fstab.read_text(), 'UUID=1 / ext4 defaults 0 1\n'
                          'LABEL=studio-data /var/lib/codex-studio btrfs '
-                         'defaults,nofail,user_subvol_rm_allowed,compress=zstd:1 0 0\n')
-        self.assertIn('mount -o remount,compress=zstd:1 /var/lib/codex-studio', self.script)
+                         'defaults,nofail,user_subvol_rm_allowed,compress=zstd:3 0 0\n')
+        self.assertIn('mount -o remount,compress=zstd:3 /var/lib/codex-studio', self.script)
 
     def test_pnpm_version_follows_root_package_manager_manifest(self):
         root = self.root / 'repository'
