@@ -1581,7 +1581,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         # Project the first restart-recovery writes with the local server
         # identity. Project-location migration below reuses this identity.
         self._project_server_id = self.paired_access().local_server_id
-        with self.db() as db:
+        with self.db(analytics=True) as db:
             try:
                 self.require_file_migration_complete(db)
             except RuntimeError as error:
@@ -2000,7 +2000,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             return service
 
     @contextmanager
-    def db(self, *, busy_timeout=None):
+    def db(self, *, busy_timeout=None, analytics=False):
         local = self.__dict__.setdefault("_callback_db", threading.local())
         reusable = getattr(local, "reuse", False) and not getattr(local, "depth", 0)
         db = getattr(local, "connection", None) if reusable else None
@@ -2008,9 +2008,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             db = sqlite_connect(self.db_path, timeout=15, site="Runtime.db")
             try:
                 db.row_factory = sqlite3.Row
-                # Retain compatibility for internal callers that execute analytics
-                # SQL on the runtime connection; normal writers use analytics_db().
-                db.execute("ATTACH DATABASE ? AS analytics", (str(self.analytics_db_path),))
+                # Explicitly reusable long-lived connections retain their
+                # original attachment state. Fresh scopes attach only on demand.
+                if analytics or reusable:
+                    db.execute("ATTACH DATABASE ? AS analytics", (str(self.analytics_db_path),))
+                db._studio_analytics_attached = bool(analytics or reusable)
             except BaseException:
                 db.close()
                 raise
