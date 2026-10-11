@@ -239,6 +239,11 @@ class InsightsRouterTests(unittest.TestCase):
         openapi = self.client.get("/openapi.json").json()
         response_schema = openapi["paths"]["/api/analytics"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
         self.assertEqual(response_schema["$ref"], "#/components/schemas/AnalyticsResponse")
+        response_headers = openapi["paths"]["/api/analytics"]["get"]["responses"]["200"]["headers"]
+        self.assertEqual(
+            set(response_headers),
+            {"Content-Disposition", "Cache-Control", "X-Content-Type-Options", "Server-Timing"},
+        )
         response_model = openapi["components"]["schemas"]["AnalyticsResponse"]
 
         def item_model(name: str) -> str:
@@ -409,6 +414,10 @@ class InsightsRouterTests(unittest.TestCase):
         self.assertEqual(response.headers["content-type"], "application/json; charset=utf-8")
         self.assertEqual(response.headers["cache-control"], "no-store")
         self.assertEqual(response.headers["x-content-type-options"], "nosniff")
+        self.assertEqual(
+            response.headers["content-disposition"],
+            'attachment; filename="codex-studio-analytics.json"',
+        )
         self.assertTrue(self.context.runtime.export_closed)
 
     def test_export_closes_after_late_error_and_on_async_cancel(self) -> None:

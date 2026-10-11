@@ -4533,6 +4533,20 @@ export interface components {
        */
       status: "answered";
     };
+    /**
+     * ApiSchemaEvent
+     * @description Schema identity emitted before a resource stream when requested.
+     */
+    ApiSchemaEvent: {
+      /** Hash */
+      hash: string;
+      /**
+       * Mismatch
+       * @default true
+       * @constant
+       */
+      mismatch?: true;
+    };
     /** ApprovePeerRequest */
     ApprovePeerRequest: {
       /**
@@ -15538,6 +15552,10 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Cache-Control"?: string;
+          "Content-Disposition"?: string;
+          "Server-Timing"?: string;
+          "X-Content-Type-Options"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -18887,6 +18905,12 @@ export interface operations {
       /** @description Successful Response */
       200: {
         headers: {
+          "Accept-Ranges"?: string;
+          "Cache-Control"?: string;
+          "Content-Disposition"?: string;
+          "Content-Length"?: string;
+          "X-Content-Type-Options"?: string;
+          "X-Log-Truncated"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -18896,6 +18920,13 @@ export interface operations {
       /** @description Partial Content */
       206: {
         headers: {
+          "Accept-Ranges"?: string;
+          "Cache-Control"?: string;
+          "Content-Disposition"?: string;
+          "Content-Length"?: string;
+          "Content-Range"?: string;
+          "X-Content-Type-Options"?: string;
+          "X-Log-Truncated"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -18919,6 +18950,15 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["ErrorResponse"];
         };
+      };
+      /** @description Requested byte range is not satisfiable */
+      416: {
+        headers: {
+          "Content-Length"?: string;
+          "Content-Range"?: string;
+          [name: string]: unknown;
+        };
+        content?: never;
       };
     };
   };
@@ -22670,10 +22710,13 @@ export interface operations {
       /** @description Server-sent sync updates */
       200: {
         headers: {
+          "Cache-Control"?: string;
+          "X-Accel-Buffering"?: string;
           [name: string]: unknown;
         };
         content: {
           "text/event-stream":
+            | components["schemas"]["ApiSchemaEvent"]
             | components["schemas"]["ResourceChangeEvent"]
             | components["schemas"]["ResourceHeartbeatEvent"]
             | components["schemas"]["ResourceTokenRatesEvent"];

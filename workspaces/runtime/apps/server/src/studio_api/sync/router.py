@@ -22,7 +22,6 @@ from studio_api.responses import register_route_components
 from studio_api.schema import (
     API_SCHEMA_HASH_HEADER,
     API_SCHEMA_HASH_PARAM,
-    API_SCHEMA_MISMATCH_FIELD,
 )
 from studio_api.sync.models import (
     DraftPushRequest,
@@ -35,6 +34,7 @@ from studio_api.sync.models import (
     SyncStreamQuery,
 )
 from studio_api.sync.resources.models import (
+    ApiSchemaEvent,
     DraftsResource,
     ResourceChangeEvent,
     ResourceHeartbeatEvent,
@@ -134,10 +134,14 @@ def _resource_event(
     )
 
 
-def _schema_event(payload: dict[str, object]) -> bytes:
+def _schema_event(payload: ApiSchemaEvent) -> bytes:
     return format_sse_event(
         event="api-schema",
-        data_str=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        data_str=json.dumps(
+            payload.model_dump(mode="json", by_alias=True, exclude_unset=True),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
     )
 
 
@@ -257,25 +261,23 @@ def create_router(context: ApiContext) -> APIRouter:
                     "text/event-stream": {
                         "schema": {
                             "oneOf": [
+                                {"$ref": "#/components/schemas/ApiSchemaEvent"},
                                 {"$ref": "#/components/schemas/ResourceChangeEvent"},
                                 {"$ref": "#/components/schemas/ResourceHeartbeatEvent"},
                                 {"$ref": "#/components/schemas/ResourceTokenRatesEvent"},
                             ],
                             "x-sse-events": {
+                                "api-schema": "ApiSchemaEvent",
                                 "resources": "ResourceChangeEvent",
                                 "heartbeat": "ResourceHeartbeatEvent",
                                 "token-rates": "ResourceTokenRatesEvent",
-                                "api-schema": {
-                                    "type": "object",
-                                    "required": ["hash"],
-                                    "properties": {
-                                        "hash": {"type": "string"},
-                                        API_SCHEMA_MISMATCH_FIELD: {"type": "boolean"},
-                                    },
-                                },
                             },
                         }
                     }
+                },
+                "headers": {
+                    "Cache-Control": {"schema": {"type": "string"}},
+                    "X-Accel-Buffering": {"schema": {"type": "string"}},
                 },
             },
             **ERROR_RESPONSES,
@@ -299,10 +301,10 @@ def create_router(context: ApiContext) -> APIRouter:
             server_hash = await context.get_api_schema_hash() if renderer_hash is not None else None
             if renderer_hash is not None and renderer_hash != server_hash:
                 async def schema_mismatch_event() -> AsyncIterator[bytes]:
-                    payload: dict[str, object] = {
-                        "hash": server_hash,
-                        API_SCHEMA_MISMATCH_FIELD: True,
-                    }
+                    payload = ApiSchemaEvent(
+                        hash=cast(str, server_hash),
+                        mismatch=True,
+                    )
                     yield _schema_event(payload)
 
                 return _stream_response(schema_mismatch_event())
@@ -362,7 +364,7 @@ def create_router(context: ApiContext) -> APIRouter:
                 )
                 try:
                     if renderer_hash is not None:
-                        yield _schema_event({"hash": server_hash})
+                        yield _schema_event(ApiSchemaEvent(hash=cast(str, server_hash)))
                     yield _resource_event("resources", subscription.initial)
                     yield _resource_event("token-rates", subscription.initial_token_rates)
                     while not await request.is_disconnected() and not (runtime and runtime.closed):
@@ -418,6 +420,9 @@ def create_router(context: ApiContext) -> APIRouter:
                 ref_template="#/components/schemas/{model}"
             ),
             "ResourceTokenRatesEvent": ResourceTokenRatesEvent.model_json_schema(
+                ref_template="#/components/schemas/{model}"
+            ),
+            "ApiSchemaEvent": ApiSchemaEvent.model_json_schema(
                 ref_template="#/components/schemas/{model}"
             ),
         },

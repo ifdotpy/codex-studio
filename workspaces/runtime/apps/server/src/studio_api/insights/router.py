@@ -137,7 +137,20 @@ def _analytics_export(runtime: AnalyticsRuntime, options: dict[str, str]) -> Res
 def create_router(context: ApiContext) -> APIRouter:
     router = APIRouter()
 
-    @router.get("/api/analytics", response_model=AnalyticsResponse)
+    @router.get(
+        "/api/analytics",
+        response_model=AnalyticsResponse,
+        responses={
+            200: {
+                "headers": {
+                    "Content-Disposition": {"schema": {"type": "string"}},
+                    "Cache-Control": {"schema": {"type": "string"}},
+                    "X-Content-Type-Options": {"schema": {"type": "string"}},
+                    "Server-Timing": {"schema": {"type": "string"}},
+                },
+            },
+        },
+    )
     def analytics(
         request: Request, _query_schema: Annotated[AnalyticsQuery, Query()]
     ) -> Response:

@@ -635,17 +635,23 @@ class SyncRouterTests(unittest.TestCase):
         self.assertEqual(
             event_schema["oneOf"],
             [
+                {"$ref": "#/components/schemas/ApiSchemaEvent"},
                 {"$ref": "#/components/schemas/ResourceChangeEvent"},
                 {"$ref": "#/components/schemas/ResourceHeartbeatEvent"},
                 {"$ref": "#/components/schemas/ResourceTokenRatesEvent"},
             ],
         )
         components = app.openapi()["components"]["schemas"]
+        self.assertIn("ApiSchemaEvent", components)
         self.assertIn("ResourceRef", components)
         self.assertIn("ResourceChangeEvent", components)
         self.assertIn("ResourceHeartbeatEvent", components)
         self.assertIn("ResourceTokenRatesEvent", components)
         self.assertIn("resources", event_schema["x-sse-events"])
+        self.assertEqual(event_schema["x-sse-events"]["api-schema"], "ApiSchemaEvent")
+        self.assertEqual(
+            set(responses["200"]["headers"]), {"Cache-Control", "X-Accel-Buffering"}
+        )
         self.assertNotIn("/api/sync/generations", paths)
         self.assertNotIn("/api/transcript/stream", paths)
 
@@ -777,12 +783,18 @@ class SyncRouterTests(unittest.TestCase):
         for response in responses:
             self.assertEqual(response.status_code, 200)
             self.assertTrue(response.headers["content-type"].startswith("text/event-stream"))
+            self.assertEqual(response.headers["cache-control"], "no-cache, no-transform")
+            self.assertEqual(response.headers["x-accel-buffering"], "no")
             body = response.text
             self.assertEqual(body.count("event:"), 1)
             self.assertIn("event: api-schema", body)
             payload = json.loads(body.split("data: ", 1)[1].split("\n", 1)[0])
             self.assertEqual(payload["hash"], context.api_schema_hash)
             self.assertIs(payload[API_SCHEMA_MISMATCH_FIELD], True)
+            self.assertEqual(
+                body,
+                f"event: api-schema\ndata: {{\"hash\":\"{context.api_schema_hash}\",\"mismatch\":true}}\n\n",
+            )
         subscribe.assert_not_called()
 
     def test_matching_schema_stream_starts_with_handshake(self) -> None:

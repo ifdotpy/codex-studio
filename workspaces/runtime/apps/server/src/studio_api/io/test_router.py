@@ -189,6 +189,11 @@ class IORouterTests(unittest.TestCase):
         self.assertEqual(log_responses["200"]["content"]["text/plain"]["schema"], {"type": "string"})
         self.assertEqual(log_responses["206"]["content"]["text/plain"]["schema"], {"type": "string"})
 
+        self.assertIn("416", log_responses)
+        self.assertIn("Content-Range", log_responses["416"]["headers"])
+        self.assertIn("Content-Length", log_responses["416"]["headers"])
+        self.assertIn("Content-Range", log_responses["206"]["headers"])
+
     def test_typed_terminal_response_uses_actual_api_context_sender(self) -> None:
         app, _context = make_api_context_app(self.runtime)
         with TestClient(app, raise_server_exceptions=False) as client:
@@ -227,13 +232,17 @@ class IORouterTests(unittest.TestCase):
         self.assertEqual(whole.status_code, 200)
         self.assertEqual(whole.content, b"0123456789")
         self.assertEqual(whole.headers["content-disposition"], 'attachment; filename="watch-1.log"')
+        self.assertEqual(whole.headers["accept-ranges"], "bytes")
+        self.assertEqual(whole.headers["content-length"], "10")
         part = self.client.get("/api/monitor/log?id=watch-1", headers={"Range": "bytes=2-5"})
         self.assertEqual(part.status_code, 206)
         self.assertEqual(part.content, b"2345")
         self.assertEqual(part.headers["content-range"], "bytes 2-5/10")
+        self.assertEqual(part.headers["content-length"], "4")
         invalid = self.client.get("/api/monitor/log?id=watch-1", headers={"Range": "bytes=-"})
         self.assertEqual(invalid.status_code, 416)
         self.assertEqual(invalid.headers["content-range"], "bytes */10")
+        self.assertEqual(invalid.headers["content-length"], "0")
 
     def test_monitor_log_uses_retained_tail_when_file_is_missing(self) -> None:
         self.log.unlink()

@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 from pydantic import Field, RootModel, StrictBool, StrictFloat, StrictInt, StrictStr, model_validator
 
 from studio_api.models import ContractModel, SyncEntity
+from studio_api.schema import API_SCHEMA_MISMATCH_FIELD
 
 MAX_SAFE_REVISION = 9_007_199_254_740_991
 MAX_ENTITY_CHANGE_DOCUMENTS = 512
@@ -225,6 +226,13 @@ class ResourceTokenRatesEvent(ContractModel):
     revision: ResourceRevision
     rates: dict[NonEmptyIdentifier, TokenRateValue]
     teams: dict[NonEmptyIdentifier, dict[NonEmptyIdentifier, TokenRateValue]]
+
+
+class ApiSchemaEvent(ContractModel):
+    """Schema identity emitted before a resource stream when requested."""
+
+    hash: str
+    mismatch: Literal[True] = Field(default=True, alias=API_SCHEMA_MISMATCH_FIELD)
 
 
 class TokenRateSnapshot(ContractModel):
