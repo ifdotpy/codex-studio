@@ -994,6 +994,8 @@ class ServerSuiteRunner(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="server-runner-root-race-") as temp:
             mount = Path(temp)
             with (mock.patch.object(RUNNER, "MAX_SHORT_TMP_ROOT_BYTES", 200),
+                  mock.patch.object(RUNNER, "SCRATCH_BYTES_PER_WORKER", 1024 * 1024),
+                  mock.patch.object(RUNNER, "SCRATCH_PROBE_MIN_BYTES", 1024 * 1024),
                   mock.patch.object(RUNNER, "_tmpfs_mounts", side_effect=lambda: iter([mount])),
                   mock.patch.object(RUNNER, "_probe_scratch_capacity", return_value=True),
                   mock.patch.object(RUNNER.shutil, "disk_usage",
