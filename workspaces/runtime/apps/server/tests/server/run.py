@@ -57,6 +57,10 @@ LEGACY_SERVER_JS = {
     f"{TESTS_REL}/state-contract-smoke.mjs": "safe",
     f"{SOURCE_REL}/studio_api/benchmarks/runtime_load/test_http_outcomes.mjs": "expensive",
 }
+EXPLICIT_SUITES = (
+    "runtime-live.py", "time-awareness.py", "tool-parity.py",
+    "workspace-protocol.py", "workspace-races.py", "workspace-native-turn.py",
+)
 OPT_IN = {"automated", "native", "live", "expensive", "browser", "vm"}
 DEFAULT_TIMEOUT_SECONDS = 120
 EXPENSIVE_TIMEOUT_SECONDS = 900
@@ -263,8 +267,7 @@ def inventory():
             relative = path.relative_to(ROOT).as_posix()
             if relative not in NON_TESTS:
                 entries[relative] = category(path)
-    for name in ("runtime-live.py", "time-awareness.py", "tool-parity.py",
-                 "workspace-protocol.py", "workspace-races.py", "workspace-native-turn.py"):
+    for name in EXPLICIT_SUITES:
         path = TESTS / name
         if path.is_file():
             entries[path.relative_to(ROOT).as_posix()] = category(path)
@@ -296,6 +299,81 @@ def inventory():
                     category(path) if relative in EXPENSIVE_SUITES else "component"
                 )
     return sorted(entries.items())
+
+
+def exact_entry(path):
+    """Classify one known suite path without walking or parsing its neighbors."""
+    try:
+        relative = path.relative_to(ROOT).as_posix()
+    except ValueError:
+        return None
+    if relative in NON_TESTS or f"{TESTS_REL}/fixtures/" in relative:
+        return None
+    if relative in LEGACY_SERVER_JS:
+        return relative, LEGACY_SERVER_JS[relative]
+    if relative in AUTOMATED_SUITES:
+        return relative, category(path)
+    if path.parent == TESTS and path.name in EXPLICIT_SUITES:
+        return relative, category(path)
+    if path.suffix == ".py":
+        in_tests = relative.startswith(f"{TESTS_REL}/")
+        in_server_tests = relative.startswith(f"{TESTS_REL}/server/")
+        if in_server_tests and path.name.startswith("test_"):
+            return relative, "component"
+        if in_tests and is_unittest_suite(path):
+            return relative, category(path)
+        if path.parent == TESTS and any(
+            fnmatch.fnmatch(path.name, pattern)
+            for pattern in ("*-contract.py", "*_contract.py", "*-native.py",
+                            "*-integration.py", "*-smoke.py")
+        ):
+            return relative, category(path)
+        if relative.startswith(f"{SOURCE_REL}/") and path.name.startswith("test_"):
+            if relative.startswith(f"{SOURCE_REL}/studio_api/"):
+                return relative, category(path) if relative in EXPENSIVE_SUITES else "component"
+            if any(relative.startswith(f"{directory}/") for directory in COMPONENT_ROOTS):
+                return relative, "component"
+            if any(relative.startswith(f"{directory}/") for directory in SCENARIO_BENCHMARK_ROOTS):
+                return relative, category(path)
+            if path.parent == SERVER_SOURCE_ROOT and path.name.startswith("test_codex_") and is_unittest_suite(path):
+                return relative, "component"
+    return None
+
+
+def select_entries(pattern):
+    """Use the exact path or matching filenames before falling back to full discovery."""
+    if not pattern:
+        return inventory()
+    has_glob = any(character in pattern for character in "*?[")
+    if not has_glob and ("/" in pattern or "\\" in pattern):
+        candidate = Path(pattern)
+        if not candidate.is_absolute():
+            candidate = ROOT / candidate
+        try:
+            candidate = candidate.resolve(strict=True)
+        except OSError:
+            pass
+        else:
+            if candidate.is_file():
+                entry = exact_entry(candidate)
+                if entry:
+                    return [entry]
+
+    query = pattern.lower()
+    matches = {}
+    for root in (TESTS, SERVER_SOURCE_ROOT):
+        for directory, _subdirectories, filenames in os.walk(root):
+            for filename in filenames:
+                path = Path(directory) / filename
+                relative = path.relative_to(ROOT).as_posix()
+                if query not in relative.lower() and not fnmatch.fnmatch(relative.lower(), query):
+                    continue
+                entry = exact_entry(path)
+                if entry:
+                    matches[entry[0]] = entry[1]
+    if matches:
+        return sorted(matches.items())
+    return selected(inventory(), pattern)
 
 
 def selected(entries, pattern):
@@ -1501,7 +1579,7 @@ def main():
         parser.error("--jobs must be greater than zero")
     if not math.isfinite(args.load_sample_seconds) or args.load_sample_seconds < 0:
         parser.error("--load-sample-seconds must be a finite, non-negative number")
-    entries = selected(inventory(), args.filter)
+    entries = select_entries(args.filter)
     if args.only:
         if args.include:
             parser.error("--only cannot be combined with --include")

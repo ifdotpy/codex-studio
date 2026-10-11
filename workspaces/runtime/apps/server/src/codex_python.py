@@ -143,7 +143,10 @@ def resolve_python(
         return candidate
 
     prepared = managed_python(scripts, values)
-    if prepared.is_file() and interpreter_has_api(prepared):
+    # The installer publishes this lock-digest path only after validating its
+    # Python version and API imports. Avoid starting probe interpreters on each
+    # focused check; a damaged environment still fails visibly when launched.
+    if prepared.is_file():
         return prepared
 
     candidates: list[Path] = []
