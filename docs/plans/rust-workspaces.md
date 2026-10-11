@@ -562,5 +562,3 @@ Python extraction and typing rules, old-state migration policy, and the M-05
 direction decision with the maintainer decisions and merged work through PR #80.
 M-02.11 removed the root `scripts/` launchers in PR #57; M-03.6 is recorded in
 PR #78. Test-time installer runs use isolated cache and command-bin directories.
-The lead merges its own PR after hosted CI passes and checks the subsequent push
-run on `main`.

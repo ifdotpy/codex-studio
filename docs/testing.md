@@ -114,15 +114,16 @@ export XDG_CACHE_HOME="$test_install_root/cache"
 test_bin_dir="$test_install_root/bin"
 mkdir -p "$XDG_CACHE_HOME" "$test_bin_dir"
 cargo build --release -p studio-operations-python
-python3 workspaces/runtime/apps/server/src/codex_python.py --prepare
+python3 workspaces/runtime/apps/server/src/install-cli.py --dev --bin-dir "$test_bin_dir"
 test_python="$(python3 workspaces/runtime/apps/server/src/codex_python.py)"
 "$test_python" -c "import sys; print(sys.prefix)"
-CODEX_AGENTS_PYTHON="$test_python" python3 workspaces/runtime/apps/server/src/install-cli.py --bin-dir "$test_bin_dir"
 ```
 
-The installer copies the built library and never builds it implicitly. Check
-that the printed interpreter prefix is under the isolated temporary root before
-installing.
+Use `--dev` when the checks need the isolated development and mypy environment;
+omit it when only the runtime environment is needed. The installer copies the
+built library and never builds it implicitly. Check that the printed interpreter
+prefix is under the isolated temporary root. Both the cache and command-bin
+directory must be isolated from any live backend.
 
 The Python server runner samples runnable processes for five seconds and uses
 their median. CPU jobs are `max(ceil(allowed CPUs / 4), allowed CPUs - competing
