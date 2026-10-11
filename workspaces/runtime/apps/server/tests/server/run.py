@@ -89,6 +89,7 @@ SCRATCH_PROBE_CHUNK_BYTES = 8 * 1024 * 1024
 SCRATCH_OWNER_FILE = ".codex-server-test-owner"
 SCRATCH_LOCK_FILE = ".codex-server-test-owner.lock"
 LEGACY_SCRATCH_MAX_AGE_SECONDS = 6 * 60 * 60
+SCRATCH_MAINTENANCE_LOCK_FILE = ".csst-maintenance.lock"
 OWNED_SCRATCH_LOCKS = {}
 
 try:
@@ -1080,34 +1081,40 @@ def _cleanup_stale_scratch_roots(mounts=None):
 
     for mount in _tmpfs_mounts() if mounts is None else mounts:
         try:
-            candidates = mount.glob("csst-*")
+            maintenance_lock = (mount / SCRATCH_MAINTENANCE_LOCK_FILE).open("a+b")
         except OSError:
             continue
-        for directory in candidates:
-            if not directory.is_dir():
-                continue
-            try:
-                lock_file = (directory / SCRATCH_LOCK_FILE).open("r+b")
-            except FileNotFoundError:
+        try:
+            fcntl.flock(maintenance_lock.fileno(), fcntl.LOCK_EX)
+            for directory in mount.glob("csst-*"):
+                if not directory.is_dir():
+                    continue
                 try:
-                    age = time.time() - directory.stat().st_mtime
+                    lock_file = (directory / SCRATCH_LOCK_FILE).open("r+b")
+                except FileNotFoundError:
+                    try:
+                        age = time.time() - directory.stat().st_mtime
+                    except OSError:
+                        continue
+                    if age > LEGACY_SCRATCH_MAX_AGE_SECONDS:
+                        shutil.rmtree(directory, ignore_errors=True)
+                    continue
                 except OSError:
                     continue
-                if age > LEGACY_SCRATCH_MAX_AGE_SECONDS:
+                try:
+                    try:
+                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        continue
+                    except OSError:
+                        continue
                     shutil.rmtree(directory, ignore_errors=True)
-                continue
-            except OSError:
-                continue
-            try:
-                try:
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    continue
-                except OSError:
-                    continue
-                shutil.rmtree(directory, ignore_errors=True)
-            finally:
-                lock_file.close()
+                finally:
+                    lock_file.close()
+        except OSError:
+            continue
+        finally:
+            maintenance_lock.close()
 
 
 def _remove_owned_scratch_root(directory):
@@ -1191,16 +1198,21 @@ def _memory_scratch_root(workers, *, simultaneous_runs=1):
             probe_bytes = simultaneous_runs * SCRATCH_PROBE_MIN_BYTES
             if shutil.disk_usage(mount).free < required_bytes:
                 continue
-            owned = Path(tempfile.mkdtemp(prefix="csst-", dir=mount))
-            lock_file = (owned / SCRATCH_LOCK_FILE).open("a+b")
+            maintenance_lock = (mount / SCRATCH_MAINTENANCE_LOCK_FILE).open("a+b")
             try:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
-                lock_file.close()
-                raise
-            OWNED_SCRATCH_LOCKS[owned] = lock_file
-            (owned / SCRATCH_OWNER_FILE).write_text(json.dumps({
-                "pid": os.getpid(), "startTime": _process_start_time(os.getpid())}), encoding="ascii")
+                fcntl.flock(maintenance_lock.fileno(), fcntl.LOCK_EX)
+                owned = Path(tempfile.mkdtemp(prefix="csst-", dir=mount))
+                lock_file = (owned / SCRATCH_LOCK_FILE).open("a+b")
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError:
+                    lock_file.close()
+                    raise
+                OWNED_SCRATCH_LOCKS[owned] = lock_file
+                (owned / SCRATCH_OWNER_FILE).write_text(json.dumps({
+                    "pid": os.getpid(), "startTime": _process_start_time(os.getpid())}), encoding="ascii")
+            finally:
+                maintenance_lock.close()
             if len(os.fsencode(owned)) > MAX_SHORT_TMP_ROOT_BYTES:
                 _remove_owned_scratch_root(owned)
                 continue
