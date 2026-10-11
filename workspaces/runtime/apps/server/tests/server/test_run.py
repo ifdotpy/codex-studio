@@ -1004,29 +1004,53 @@ class ServerSuiteRunner(unittest.TestCase):
             self.assertTrue(all(roots))
             self.assertNotEqual(roots[0], roots[1])
             self.assertTrue(all(root.is_dir() for root in roots))
-            RUNNER.shutil.rmtree(roots[0])
+            RUNNER._remove_owned_scratch_root(roots[0])
             self.assertFalse(roots[0].exists())
             self.assertTrue(roots[1].is_dir())
-            RUNNER.shutil.rmtree(roots[1])
+            RUNNER._remove_owned_scratch_root(roots[1])
 
-    def test_stale_tmpfs_cleanup_removes_only_marked_dead_pid_roots(self):
+    def test_tmpfs_reaper_respects_locks_held_by_other_live_owners(self):
+        import fcntl
+
         with tempfile.TemporaryDirectory(prefix="server-stale-tmpfs-") as temp:
             mount = Path(temp)
-            dead = mount / "csst-dead"
-            live = mount / "csst-live"
+            first = mount / "csst-first"
+            second = mount / "csst-second"
+            legacy = mount / "csst-legacy-old"
             unmarked = mount / "csst-unmarked"
-            for directory in (dead, live, unmarked):
+            for directory in (first, second, legacy, unmarked):
                 directory.mkdir()
-            (dead / RUNNER.SCRATCH_OWNER_FILE).write_text(
-                json.dumps({"pid": 222, "startTime": "old"}), encoding="ascii")
-            (live / RUNNER.SCRATCH_OWNER_FILE).write_text(
-                json.dumps({"pid": 111, "startTime": "live"}), encoding="ascii")
-            with mock.patch.object(RUNNER, "_process_start_time",
-                                   side_effect=lambda pid: "live" if int(pid) == 111 else None):
+            with contextlib.ExitStack() as owners:
+                handles = []
+                for owner_root in (first, second):
+                    (owner_root / RUNNER.SCRATCH_OWNER_FILE).write_text(
+                        json.dumps({"pid": 99999999, "startTime": "not-visible"}),
+                        encoding="ascii",
+                    )
+                    handle = (owner_root / RUNNER.SCRATCH_LOCK_FILE).open("a+b")
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    owners.callback(handle.close)
+                    handles.append(handle)
+                (legacy / RUNNER.SCRATCH_OWNER_FILE).write_text(
+                    json.dumps({"pid": 111, "startTime": "old-format"}), encoding="ascii")
+                old_time = time.time() - RUNNER.LEGACY_SCRATCH_MAX_AGE_SECONDS - 1
+                os.utime(legacy, (old_time, old_time))
+                with mock.patch.object(
+                        RUNNER, "_process_start_time",
+                        side_effect=AssertionError("PID checks must not decide liveness")):
+                    RUNNER._cleanup_stale_scratch_roots([mount])
+                    self.assertTrue(first.is_dir())
+                    self.assertTrue(second.is_dir())
+                    self.assertTrue(unmarked.is_dir())
+                    handles[0].close()
+                    RUNNER._cleanup_stale_scratch_roots([mount])
+                self.assertFalse(first.exists())
+                self.assertTrue(second.is_dir())
+                self.assertFalse(legacy.exists())
+                handles[1].close()
                 RUNNER._cleanup_stale_scratch_roots([mount])
-            self.assertFalse(dead.exists())
-            self.assertTrue(live.is_dir())
-            self.assertTrue(unmarked.is_dir())
+                self.assertFalse(second.exists())
+                self.assertTrue(unmarked.is_dir())
 
     def test_macos_available_memory_comes_from_vm_stat(self):
         sample = ("Mach Virtual Memory Statistics: (page size of 16384 bytes)\n"
@@ -1292,7 +1316,7 @@ class ServerSuiteRunner(unittest.TestCase):
             self.assertEqual(owned.parent, mount)
             self.assertLessEqual(len(os.fsencode(owned)), 200)
             probe.assert_called_once_with(owned, RUNNER.SCRATCH_PROBE_MIN_BYTES)
-            RUNNER.shutil.rmtree(owned)
+            RUNNER._remove_owned_scratch_root(owned)
             self.assertFalse(owned.exists())
 
             with (mock.patch.object(RUNNER, "MAX_SHORT_TMP_ROOT_BYTES", 200),
@@ -1306,7 +1330,7 @@ class ServerSuiteRunner(unittest.TestCase):
             concurrent_probe.assert_called_once_with(
                 concurrent, RUNNER.SCRATCH_PROBE_MIN_BYTES * 2,
             )
-            RUNNER.shutil.rmtree(concurrent)
+            RUNNER._remove_owned_scratch_root(concurrent)
 
     def test_scratch_capacity_probe_fsyncs_and_removes_its_file(self):
         with tempfile.TemporaryDirectory(prefix="server-runner-capacity-") as temp:
