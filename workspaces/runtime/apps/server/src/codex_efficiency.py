@@ -457,7 +457,7 @@ class EfficiencyMixin:
                 result = {'success': payload.get('status') == 'completed' and payload.get('exitCode') == 0}
                 receipt = {'outcome': 'unknown'}
             else:
-                if receipt is None or receipt.get('agent') != actor['id'] or receipt.get('stage') == 'ambiguous':
+                if receipt is None or receipt.get('agent') != actor['id'] or str(receipt.get('stage')) == 'ambiguous':
                     raise ValueError('Output reference is not owned by this agent')
                 key = receipt['id']
                 row = db.execute('SELECT result FROM runtime_tool_results WHERE id=?', (key,)).fetchone()

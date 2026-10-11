@@ -636,9 +636,13 @@ class ApiContext:
         if isinstance(candidate, type):
             if candidate in (str, int, float, bool):
                 return True
+            if issubclass(candidate, RootModel):
+                return ApiContext._nested_response_contract(candidate.model_fields["root"].annotation)
             return issubclass(candidate, ContractModel)
         members = get_args(candidate)
         origin = get_origin(candidate)
+        if origin is Annotated:
+            return bool(members) and ApiContext._nested_response_contract(members[0])
         if origin in (list, tuple):
             return len(members) == 1 and ApiContext._nested_response_contract(members[0])
         if origin is dict:

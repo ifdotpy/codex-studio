@@ -297,7 +297,9 @@ class WorkRouterTests(unittest.TestCase):
 
     def test_tool_request_cancel_keeps_exact_identity_and_rejects_extra_fields(self) -> None:
         context = FakeContext()
-        context.runtime.request_action = Mock(return_value={"id": "request-1", "stage": "cancelled"})
+        context.runtime.request_action = Mock(return_value={
+            "id": "request-1", "stage": "cancelled", "extension": {"kept": True},
+        })
         client = make_client(context)
 
         response = client.post("/api/tool-requests/cancel", json={
@@ -308,11 +310,147 @@ class WorkRouterTests(unittest.TestCase):
         })
 
         self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["extension"], {"kept": True})
         context.runtime.request_action.assert_called_once_with(
             "agent-1", {"action": "cancel", "request_id": "request-1"},
         )
         self.assertEqual(rejected.status_code, 400)
         self.assertEqual(context.runtime.request_action.call_count, 1)
+
+    def test_tool_request_list_uses_open_stage_union_and_preserves_rpc_id_types(self) -> None:
+        context = FakeContext()
+        context.runtime.request_action = Mock(return_value={"requests": [
+            {"id": f"request-{stage}", "stage": stage, "rpcId": 7 if index == 0 else "7",
+             **({"extension": "kept"} if index == 0 else {}),
+             **({"timing": {"handlerStartedAt": 1, "extensionTiming": True}} if index == 1 else {})}
+            for index, stage in enumerate((
+                "queued", "running", "cancelled", "interrupted", "failed", "unknown", "completed",
+            ))
+        ]})
+
+        response = make_client(context).get("/api/tool-requests?agent=agent-1")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        requests = response.json()["requests"]
+        self.assertEqual([item["stage"] for item in requests], [
+            "queued", "running", "cancelled", "interrupted", "failed", "unknown", "completed",
+        ])
+        self.assertEqual([item["rpcId"] for item in requests[:2]], [7, "7"])
+        self.assertEqual(requests[0]["extension"], "kept")
+        self.assertEqual(requests[1]["timing"]["extensionTiming"], True)
+        context.runtime.request_action.assert_called_once_with("agent-1", {"action": "list"})
+
+    def test_tool_request_synthetic_receipts_are_stage_discriminated(self) -> None:
+        context = FakeContext()
+        client = make_client(context)
+        receipts = (
+            {"id": "request-ambiguous", "stage": "ambiguous", "outcome": "unknown",
+             "message": "Ambiguous request"},
+            {"id": "request-missing", "stage": "not_found", "outcome": "not_applied",
+             "message": "Request not found"},
+            {"id": "request-moved", "stage": "complete", "outcome": "applied", "tool": "rename",
+             "operationResult": {}, "move": {"server": "local", "move": "fixture"}},
+        )
+
+        for receipt in receipts:
+            context.runtime.request_action = Mock(return_value=receipt)
+            response = client.get(f"/api/tool-requests?agent=agent-1&request_id={receipt['id']}")
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json(), receipt)
+
+    def test_workspace_inbox_uses_kind_union_with_open_canonical_records(self) -> None:
+        context = FakeContext()
+        context.runtime.workspace_part = Mock(return_value={"inbox": [
+            {"id": "request-wrapper", "kind": "request", "agent": "agent-1",
+             "title": "Answer required", "text": "agent/question",
+             "request": {"id": "request-1", "agent": "agent-1", "method": "agent/question",
+                         "status": "pending", "futureRequestField": "kept"}},
+            {"id": "complaint-wrapper", "kind": "complaint", "agent": "agent-1",
+             "title": "Help", "text": "Help", "complaint": {
+                 "id": "complaint-1", "leadId": "agent-1", "author": "user", "text": "Help",
+                 "status": "open", "created": 1.0, "futureComplaintField": True,
+             }},
+            {"id": "work-wrapper", "kind": "work", "agent": "agent-1", "title": "Task",
+             "text": "Result awaits acceptance", "work": {
+                 "id": "work-1", "rootId": "agent-1", "status": "review", "title": "Task",
+                 "description": "Details", "created": 1.0, "updated": 2.0,
+                 "createdBy": "agent-1", "version": 1, "dependencies": [], "decisions": [],
+                 "results": [], "blockedBy": [], "displayStatus": "review",
+                 "futureWorkField": "kept",
+             }},
+            {"id": "agent-1", "kind": "agent", "agent": "agent-1", "title": "Failed",
+             "text": "interrupted"},
+            {"id": "monitor-1", "kind": "monitor", "agent": "agent-1", "title": "command",
+             "text": "Exit 1", "monitor": {"id": "monitor-1", "agent": "agent-1",
+                                               "status": "failed", "command": "command",
+                                               "futureMonitorField": 1}},
+            {"id": "rule-1", "kind": "rule", "agent": "agent-1", "title": "Check",
+             "text": "Rule failed"},
+        ]})
+
+        response = make_client(context).get("/api/workspace?view=inbox")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        inbox = response.json()["inbox"]
+        self.assertEqual([item["kind"] for item in inbox], [
+            "request", "complaint", "work", "agent", "monitor", "rule",
+        ])
+        self.assertEqual(inbox[0]["request"]["futureRequestField"], "kept")
+        self.assertEqual(inbox[1]["complaint"]["futureComplaintField"], True)
+        self.assertEqual(inbox[2]["work"]["futureWorkField"], "kept")
+        self.assertEqual(inbox[4]["monitor"]["futureMonitorField"], 1)
+
+    def test_organization_and_complaint_responses_use_open_canonical_records(self) -> None:
+        context = FakeContext()
+        context.runtime.chat_organization = Mock(return_value={
+            "id": "agent-1", "rootId": "agent-1", "epoch": 2, "status": "running",
+            "legacyAgentField": "kept",
+        })
+        context.runtime.complaint = Mock(return_value={
+            "id": "complaint-1", "leadId": "agent-1", "author": "user", "text": "Help",
+            "status": "open", "created": 1.0, "legacyComplaintField": "kept",
+        })
+        client = make_client(context)
+
+        organization = client.post("/api/organization", json={"id": "agent-1", "pinned": True})
+        complaint = client.post("/api/complaints", json={"id": "complaint-1", "text": "Help"})
+
+        self.assertEqual(organization.status_code, 200, organization.text)
+        self.assertEqual(organization.json()["legacyAgentField"], "kept")
+        self.assertEqual(complaint.status_code, 200, complaint.text)
+        self.assertEqual(complaint.json()["legacyComplaintField"], "kept")
+
+    def test_rule_delete_receipt_is_a_declared_union_variant(self) -> None:
+        context = FakeContext()
+        context.runtime.rules = Mock(return_value={"deleted": "rule-1"})
+
+        response = make_client(context).post("/api/rules", json={
+            "action": "delete", "agent": "agent-1", "id": "rule-1",
+        })
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {"deleted": "rule-1"})
+
+    def test_rule_kind_union_types_low_worker_and_nested_restart_fields(self) -> None:
+        context = FakeContext()
+        rule = {
+            "id": "rule-low-workers", "agent": "agent-1", "rootId": "agent-1", "epoch": 3,
+            "kind": "low_workers", "status": "active", "minimumWorkers": 4,
+            "durationMinutes": 10, "lowSince": None, "activeWorkers": 2,
+            "restartCheck": {"epoch": 3, "checks": 1, "monitorId": "monitor-fixture",
+                             "futureCheckField": "preserved"},
+            "futureRuleField": {"keep": True},
+        }
+        context.runtime.rules = Mock(return_value={"rules": [rule]})
+
+        response = make_client(context).get("/api/rules")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        actual = response.json()["rules"][0]
+        self.assertEqual(actual["minimumWorkers"], 4)
+        self.assertEqual(actual["durationMinutes"], 10)
+        self.assertEqual(actual["restartCheck"]["futureCheckField"], "preserved")
+        self.assertEqual(actual["futureRuleField"], {"keep": True})
 
     def test_work_and_queue_writes_forward_durable_receipt_ids(self) -> None:
         context = FakeContext()
@@ -507,7 +645,9 @@ class WorkRouterTests(unittest.TestCase):
     def test_profile_and_rule_editor_payload_fields_are_preserved(self) -> None:
         context = FakeContext()
         context.runtime.profiles = Mock(return_value={"id": "profile-1", "deleted": None})
-        context.runtime.rules = Mock(return_value={"id": "rule-1", "agent": "agent-1"})
+        context.runtime.rules = Mock(return_value={
+            "id": "rule-1", "agent": "agent-1", "kind": "event", "unknownStoredField": True,
+        })
         client = make_client(context)
 
         profile_response = client.post("/api/profiles", json={
@@ -523,6 +663,7 @@ class WorkRouterTests(unittest.TestCase):
 
         self.assertEqual(profile_response.status_code, 200, profile_response.text)
         self.assertEqual(rule_response.status_code, 200, rule_response.text)
+        self.assertEqual(rule_response.json()["unknownStoredField"], True)
         profile_payload = context.runtime.profiles.call_args.args[0]
         self.assertTrue(profile_payload["isNew"])
         rule_payload = context.runtime.rules.call_args.args[0]
