@@ -23,10 +23,19 @@ import socket
 
 root = REPOSITORY_ROOT
 with tempfile.TemporaryDirectory(prefix="sync-protocol-") as directory:
+    codex_home = Path(directory) / "codex-home"
+    claude_config_dir = Path(directory) / "claude-config"
+    codex_home.mkdir()
+    claude_config_dir.mkdir()
     process = subprocess.Popen(
         ["python3", "-B", str(SERVER_TESTS_ROOT / "simple-ui-fixture.py"), directory],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        env={**os.environ, "CODEX_BOARD_STATE_DIR": directory + "/board"},
+        env={
+            **os.environ,
+            "CODEX_HOME": str(codex_home),
+            "CLAUDE_CONFIG_DIR": str(claude_config_dir),
+            "CODEX_BOARD_STATE_DIR": directory + "/board",
+        },
     )
     try:
         port = process.stdout.readline().strip()
