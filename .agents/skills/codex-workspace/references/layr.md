@@ -30,6 +30,16 @@ It transfers the selected state to a Mac slot and returns the command result.
 Do not treat the Mac native project folder as a copy of the VM main line.
 The read-only Mac share exposes the VM main line and states.
 
+A command that signs in through a browser works in the VM.
+`BROWSER` and `xdg-open` run `studio-browser`.
+Studio shows the person a card with the sign-in host.
+The browser on the Mac opens only after the person approves.
+Run the sign-in command, ask the person to approve the card, and wait for the command.
+Give a printed sign-in link to `studio-browser <link>` when the command does not open it.
+Do not open sign-in links in another way.
+Only the window on the Mac that runs the server can approve a loopback sign-in.
+Use the tool's device-code mode in other windows.
+
 The host owns account sign-in and credential refresh.
 The guest receives private access credentials through the existing account sync.
 Do not copy refresh credentials or create another account store.
