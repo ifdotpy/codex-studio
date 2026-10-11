@@ -719,6 +719,18 @@ for line in sys.stdin:
         await asyncio.wait_for(process.communicate(b"{}"), 5)
         self.assertEqual(process.returncode, 124)
 
+    async def test_helper_keeps_the_error_output_of_a_failed_command(self):
+        # A failed layr command reports its reason on stderr; without it the guest error is empty.
+        source = "import sys; sys.stdout.write('out'); sys.stderr.write('layr: no such command' + 'x' * 70000); sys.exit(1)"
+        process = await asyncio.create_subprocess_exec(sys.executable, str(Path(__file__).with_name("deadline.py")),
+            "5", sys.executable, "-c", source, stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, stderr = await asyncio.wait_for(process.communicate(b""), 10)
+        self.assertEqual(process.returncode, 1)
+        self.assertEqual(stdout, b"out")
+        self.assertTrue(stderr.startswith(b"layr: no such command"))
+        self.assertEqual(len(stderr), 64 * 1024)
+
     async def test_failed_helper_terminates_its_descendants(self):
         marker = self.home / "helper-child"
         source = f"import subprocess,sys,os,json; sys.path.insert(0,{str(Path(__file__).parent)!r}); from common import process_identity; p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); open({str(marker)!r},'w').write(json.dumps({{'pid':p.pid,'start':process_identity(p.pid)}})); os._exit(3)"

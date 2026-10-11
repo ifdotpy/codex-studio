@@ -283,9 +283,9 @@ class AgentHandlers:
             return {"projectId": context["projectId"], "line": context["line"], "stateId": state}
         if method == "line.save":
             turn = identifier(params.get("turnId"))
-            # The end of a turn is a quiet point: layer folders that a build tool made again
-            # become layers, then the line's content is saved.
-            await self.layr(context, "layer", "repair", root=context["readOnly"])
+            # The end of a turn is a quiet point: cache folders that a build tool made again
+            # become caches, then the line's content is saved.
+            await self.layr(context, "cache", "repair", root=context["readOnly"])
             await self.layr(context, "save", "--force", "-m", "Studio turn " + turn, root=context["readOnly"])
             state = await self.layr(context, "rev-parse", "HEAD@{0}", root=True)
             return {"stateId": state, "turnId": turn}
