@@ -2014,7 +2014,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             db = sqlite_connect(self.db_path, timeout=15, site="Runtime.db")
             try:
                 db.row_factory = sqlite3.Row
-                db._studio_busy_timeout = db.execute("PRAGMA busy_timeout").fetchone()[0]
                 # Explicitly reusable long-lived connections retain their
                 # original attachment state. Fresh scopes attach only on demand.
                 if analytics or reusable:
@@ -2170,10 +2169,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
         db.commit = commit_analytics
         db.rollback = rollback_analytics
+        previous_timeout = None
         previous_resource_db = getattr(local, "resource_db", None)
+        failed = False
+        body_failed = False
+        cleanup_error = None
         try:
             local.resource_db = db
             if busy_timeout is not None:
+                previous_timeout = db.execute("PRAGMA busy_timeout").fetchone()[0]
                 db.execute("PRAGMA busy_timeout=" + str(int(busy_timeout)))
             with sqlite_scope(db, "Runtime.db"):
                 yield db
@@ -2193,6 +2197,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 except Exception:
                     self.changed.set()
         except BaseException:
+            failed = True
+            body_failed = True
             pending.pop(db, None)
             analytics.pop(db, None)
             resource_changes.pop(db, None)
@@ -2209,27 +2215,22 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     setattr(db, name, previous)
             from codex_payloads import release_db_writer_lock
             release_db_writer_lock(db)
-            if reusable:
+            if previous_timeout is not None:
                 try:
-                    # Scope-local connection state must not affect the next
-                    # transaction. Runtime TEMP triggers and attached analytics
-                    # intentionally survive; user-created TEMP objects do not.
-                    db.execute("PRAGMA query_only=OFF")
-                    for kind, name in db.execute(
-                            "SELECT type,name FROM temp.sqlite_master WHERE type IN ('table','view') "
-                            "AND name NOT LIKE 'sqlite_%'").fetchall():
-                        db.execute('DROP ' + kind.upper() + ' temp."' + name.replace('"', '""') + '"')
-                    db.execute("PRAGMA busy_timeout=" + str(db._studio_busy_timeout))
-                    db.row_factory = sqlite3.Row
-                except BaseException:
+                    db.execute("PRAGMA busy_timeout=" + str(previous_timeout))
+                except BaseException as error:
+                    cleanup_error = error
+                    failed = True
+            if reusable:
+                if failed:
                     local.connection = None
                     db.close()
-                    raise
-                finally:
-                    local.depth = 0
+                local.depth = 0
             else:
                 db.close()
             local.resource_db = previous_resource_db
+            if cleanup_error is not None and not body_failed:
+                raise cleanup_error
 
     def _stage_resource_change(self, db, resource: ResourceRef) -> None:
         """Associate a typed invalidation with the transaction that made it visible."""

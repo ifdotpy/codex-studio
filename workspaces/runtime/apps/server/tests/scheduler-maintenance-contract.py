@@ -178,6 +178,7 @@ class SchedulerConnection(unittest.TestCase):
 
     def test_reuses_one_owner_connection_with_independent_commit_and_rollback(self):
         connections = []
+        failed_connections = []
         commits = []
 
         def dispatch(**_options):
@@ -191,13 +192,16 @@ class SchedulerConnection(unittest.TestCase):
         def rules():
             with self.rt.db() as db:
                 connections.append(db)
+                failed_connections.append(db)
                 self.assertEqual(db.execute('PRAGMA busy_timeout').fetchone()[0], 15000)
                 db.execute("INSERT INTO runtime_tasks VALUES('rolled-back','{}')")
                 raise sqlite3.OperationalError('fixture transaction failure')
 
         self.drive(dispatch, rules=rules)
         self.assertEqual(len(commits), 2)
-        self.assertEqual(len(set(connections)), 1)
+        self.assertEqual(len(set(connections)), 2)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            failed_connections[0].execute('SELECT 1')
         with self.rt.read_db() as reader:
             self.assertEqual([row[0] for row in reader.execute('SELECT id FROM runtime_tasks')], ['committed'])
         with self.assertRaises(sqlite3.ProgrammingError):

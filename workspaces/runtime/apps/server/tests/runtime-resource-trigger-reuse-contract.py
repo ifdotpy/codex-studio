@@ -145,14 +145,27 @@ class RuntimeResourceTriggerReuseContract(unittest.TestCase):
             db.execute("DELETE FROM runtime_items WHERE id='item'")
         self.assertEqual(self.changes(), {"queue", "receipts", "transcript"})
 
-    def test_reused_scope_resets_connection_local_state(self):
+    def test_reused_scope_resets_api_timeout_and_discards_failed_mutated_connection(self):
         with self.runtime.db() as db:
             baseline_timeout = db.execute("PRAGMA busy_timeout").fetchone()[0]
-            db.execute("CREATE TEMP TABLE scope_private(value TEXT)")
-            db.execute("SAVEPOINT scope_private")
-            db.execute("PRAGMA busy_timeout=321")
-            db.execute("PRAGMA query_only=ON")
-            db.row_factory = lambda _cursor, row: row
+        with self.runtime.db(busy_timeout=321) as db:
+            self.assertEqual(db.execute("PRAGMA busy_timeout").fetchone()[0], 321)
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute("PRAGMA busy_timeout").fetchone()[0], baseline_timeout)
+
+        connection = None
+        with self.assertRaisesRegex(RuntimeError, "discard mutated scope"):
+            with self.runtime.db() as db:
+                connection = db
+                db.execute("CREATE TEMP TABLE scope_private(value TEXT)")
+                db.execute("SAVEPOINT scope_private")
+                db.execute("PRAGMA busy_timeout=321")
+                db.execute("PRAGMA query_only=ON")
+                db.row_factory = lambda _cursor, row: row
+                raise RuntimeError("discard mutated scope")
+        self.assertIsNone(self.runtime._callback_db.connection)
+        with self.assertRaises(sqlite3.ProgrammingError):
+            connection.execute("SELECT 1")
 
         with self.runtime.db() as db:
             self.assertFalse(db.in_transaction)
