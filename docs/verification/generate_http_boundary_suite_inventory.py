@@ -112,7 +112,7 @@ HAND_REVIEW: dict[str, frozenset[str]] = {
     "workspaces/runtime/apps/server/tests/windows-process-supervisor-contract.py": frozenset({"C"}),
     "workspaces/runtime/apps/server/tests/yolo-contract.py": frozenset({"B"}),
 }
-INVENTORY_MAIN_COMMIT = "02599ed5dccc0c524ed69f1fc72a230038031d59"
+INVENTORY_MAIN_COMMIT = "fccac6d3aa2f7af483a501e58b6b8e10ebb9b087"
 HAND_SAMPLE = (
     "workspaces/runtime/apps/server/src/analytics/tests/test_rollout_parser.py",
     "workspaces/runtime/apps/server/src/studio_api/sync/resources/test_entity_commit_publisher.py",
