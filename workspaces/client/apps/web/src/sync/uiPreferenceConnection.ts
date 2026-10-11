@@ -27,6 +27,13 @@ import {
 import type { components } from "../generated/api";
 type Pull = components["schemas"]["SyncPullResponse"];
 type Fetch = (request: Request) => Promise<Response>;
+type PreferenceChangeEvent = components["schemas"]["ResourceChangeEvent"];
+
+function preferenceScopeFromEntityId(id: string): PreferenceScope | undefined {
+  if (id === "entity:uiPreferences:user") return "user";
+  if (id === "entity:uiPreferences:server") return "server";
+  return undefined;
+}
 
 /** Uses the existing entity pull and state resource stream for each paired server. */
 export function connectUiPreferences(
@@ -39,6 +46,7 @@ export function connectUiPreferences(
   let stopped = false;
   let ready = false;
   let cursor = 0;
+  let workspaceId: string | undefined;
   let pulling = false;
   let pullAgain = false;
   let sending = false;
@@ -191,6 +199,7 @@ export function connectUiPreferences(
             `/api/sync/pull?scope=state:entities:v1&after=${cursor}&limit=500`,
           )) as Pull & { reset?: boolean };
           if (stopped) return;
+          workspaceId = response.workspaceId;
           onIdentity?.(response.workspaceId);
           if (response.reset) {
             cursor = 0;
@@ -204,10 +213,10 @@ export function connectUiPreferences(
               entity.collection === "uiPreferences" &&
               ["user", "server"].includes(entity.id)
             ) {
-              receivePreferenceFields(entity.id, entity.value.fields, storage);
               confirmed[entity.id as PreferenceScope] = JSON.stringify(
                 entity.value.fields,
               );
+              receivePreferenceFields(entity.id, entity.value.fields, storage);
             }
           }
           cursor = response.checkpoint.seq;
@@ -248,8 +257,88 @@ export function connectUiPreferences(
       }
       stopForSchemaMismatch();
     });
-    stream.addEventListener("resources", () => {
-      void pull().catch(scheduleRetry);
+    stream.addEventListener("resources", (event) => {
+      let payload: unknown;
+      try {
+        payload = JSON.parse((event as MessageEvent<string>).data);
+      } catch {
+        payload = null;
+      }
+      if (!payload || typeof payload !== "object") {
+        void pull().catch(scheduleRetry);
+        return;
+      }
+      const change = payload as PreferenceChangeEvent;
+      if (change.reason !== "change") {
+        void pull().catch(scheduleRetry);
+        return;
+      }
+      if (
+        !Array.isArray(change.resources) ||
+        !Array.isArray(change.resourceVersions) ||
+        change.resources.length !== change.resourceVersions.length ||
+        change.workspaceId !== workspaceId
+      ) {
+        void pull().catch(scheduleRetry);
+        return;
+      }
+      let nextCursor = cursor;
+      const preferenceRows: {
+        scope: PreferenceScope;
+        fields: PreferenceFields;
+      }[] = [];
+      for (const [index, version] of change.resourceVersions.entries()) {
+        const resource = version.resource ?? change.resources[index];
+        if (!resource) {
+          void pull().catch(scheduleRetry);
+          return;
+        }
+        if (resource.kind !== "state") continue;
+        const batch = version.entityChanges;
+        if (
+          version.entitySequenceReset ||
+          !batch ||
+          batch.after !== nextCursor ||
+          batch.through !== version.revision
+        ) {
+          void pull().catch(scheduleRetry);
+          return;
+        }
+        for (const document of batch.documents) {
+          const scope = preferenceScopeFromEntityId(document.id);
+          if (!scope) continue;
+          if (document._deleted) {
+            void pull().catch(scheduleRetry);
+            return;
+          }
+          try {
+            const entity = JSON.parse(document.payload);
+            if (
+              entity.collection !== "uiPreferences" ||
+              entity.id !== scope ||
+              !entity.value ||
+              typeof entity.value.fields !== "object" ||
+              entity.value.fields === null
+            ) {
+              void pull().catch(scheduleRetry);
+              return;
+            }
+            preferenceRows.push({
+              scope,
+              fields: entity.value.fields as PreferenceFields,
+            });
+          } catch {
+            void pull().catch(scheduleRetry);
+            return;
+          }
+        }
+        nextCursor = batch.through;
+      }
+      for (const { scope, fields } of preferenceRows) {
+        confirmed[scope] = JSON.stringify(fields);
+        receivePreferenceFields(scope, fields, storage);
+      }
+      cursor = nextCursor;
     });
     stream.onerror = () => {
       stream?.close();

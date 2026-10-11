@@ -248,6 +248,173 @@ describe("paired server preference replication", () => {
     }
   });
 
+  it("skips pulls for complete unrelated state changes", async () => {
+    const server = backend("https://unrelated.invalid", {});
+    const stop = connectUiPreferences(
+      "https://unrelated.invalid",
+      server.fetch,
+      localStorage,
+    );
+    try {
+      await vi.waitFor(() =>
+        expect(streams.has("https://unrelated.invalid")).toBe(true),
+      );
+      for (let revision = 2; revision < 14; revision++)
+        emitStateFrame("https://unrelated.invalid", {
+          protocol: 3,
+          workspaceId: "https://unrelated.invalid",
+          epoch: "epoch-one",
+          revision,
+          reason: "change",
+          resources: [{ kind: "state" }],
+          resourceVersions: [
+            {
+              revision,
+              entityChanges: {
+                after: revision - 1,
+                through: revision,
+                documents: [
+                  {
+                    id: `entity:project:project-${revision}`,
+                    seq: revision,
+                    payload: JSON.stringify({
+                      collection: "project",
+                      id: `project-${revision}`,
+                      value: {},
+                    }),
+                    _deleted: false,
+                  },
+                ],
+              },
+            },
+          ],
+        });
+      expect(server.pullReads).toBe(1);
+      expect(server.sessionReads).toBe(0);
+      expect(server.writes).toHaveLength(0);
+    } finally {
+      stop();
+    }
+  });
+
+  it("applies complete preference rows from a state frame without a pull", async () => {
+    const server = backend("https://frame.invalid", {});
+    const stop = connectUiPreferences(
+      "https://frame.invalid",
+      server.fetch,
+      localStorage,
+    );
+    try {
+      await vi.waitFor(() =>
+        expect(streams.has("https://frame.invalid")).toBe(true),
+      );
+      const theme = '["codex-studio-preferences-v1","theme"]';
+      emitStateFrame("https://frame.invalid", {
+        protocol: 3,
+        workspaceId: "https://frame.invalid",
+        epoch: "epoch-one",
+        revision: 2,
+        reason: "change",
+        resources: [{ kind: "state" }],
+        resourceVersions: [
+          {
+            revision: 2,
+            entityChanges: {
+              after: 1,
+              through: 2,
+              documents: [
+                {
+                  id: "entity:uiPreferences:user",
+                  seq: 2,
+                  payload: JSON.stringify({
+                    collection: "uiPreferences",
+                    id: "user",
+                    value: {
+                      fields: {
+                        [theme]: {
+                          value: "dark",
+                          timestamp: 2,
+                          writer: "remote",
+                        },
+                      },
+                    },
+                  }),
+                  _deleted: false,
+                },
+              ],
+            },
+          },
+        ],
+      });
+      expect(server.pullReads).toBe(1);
+      expect(server.sessionReads).toBe(0);
+      expect(server.writes).toHaveLength(0);
+      expect(
+        JSON.parse(
+          localStorage.getItem("studio-ui-preference-fields-v1:user")!,
+        )[theme].value,
+      ).toBe("dark");
+    } finally {
+      stop();
+    }
+  });
+
+  it("pulls once when a state frame omits its bounded entity changes", async () => {
+    const server = backend("https://omitted.invalid", {});
+    const stop = connectUiPreferences(
+      "https://omitted.invalid",
+      server.fetch,
+      localStorage,
+    );
+    try {
+      await vi.waitFor(() =>
+        expect(streams.has("https://omitted.invalid")).toBe(true),
+      );
+      emitStateFrame("https://omitted.invalid", {
+        protocol: 3,
+        workspaceId: "https://omitted.invalid",
+        epoch: "epoch-one",
+        revision: 2,
+        reason: "change",
+        resources: [{ kind: "state" }],
+        resourceVersions: [{ revision: 2, entityChanges: null }],
+      });
+      await vi.waitFor(() => expect(server.pullReads).toBe(2));
+      expect(server.sessionReads).toBe(0);
+      expect(server.writes).toHaveLength(0);
+    } finally {
+      stop();
+    }
+  });
+
+  it("pulls once for an initial state frame", async () => {
+    const server = backend("https://initial.invalid", {});
+    const stop = connectUiPreferences(
+      "https://initial.invalid",
+      server.fetch,
+      localStorage,
+    );
+    try {
+      await vi.waitFor(() =>
+        expect(streams.has("https://initial.invalid")).toBe(true),
+      );
+      emitStateFrame("https://initial.invalid", {
+        protocol: 3,
+        workspaceId: "https://initial.invalid",
+        epoch: "epoch-one",
+        revision: 1,
+        reason: "initial",
+        resources: [{ kind: "state" }],
+        resourceVersions: [{ revision: 1, entityChanges: null }],
+      });
+      await vi.waitFor(() => expect(server.pullReads).toBe(2));
+      expect(server.sessionReads).toBe(0);
+      expect(server.writes).toHaveLength(0);
+    } finally {
+      stop();
+    }
+  });
+
   it("does not request or retry after the API schema gate is raised", async () => {
     vi.useFakeTimers();
     const rawFetch = vi.fn(async () => Response.json({}));
