@@ -23,9 +23,6 @@ def apply_tree(staging, root, expanded, mode):
         tree_space(root, expanded)
         temporary.mkdir(mode=0o700)
         options = ["--delete"] if mode == "full" else []
-        if sys.platform == "linux":
-            # Make btrfs account dirty file extents before the final floor check.
-            options.append("--fsync")
         # Share the deadline worker's process group so its SIGKILL covers rsync.
         # Rsync replaces destination directory links by default. Never enable
         # --keep-dirlinks or --inplace. Link objects are created separately, last.
@@ -39,6 +36,9 @@ def apply_tree(staging, root, expanded, mode):
                 break
             except subprocess.TimeoutExpired:
                 continue
+        # Make btrfs account dirty file extents before the final floor check, with one sync
+        # for the tree (rsync --fsync syncs each file).
+        os.sync()
         tree_space(root)
         if code:
             raise GuestError("outcome_unknown", "The project sync failed after application started")
