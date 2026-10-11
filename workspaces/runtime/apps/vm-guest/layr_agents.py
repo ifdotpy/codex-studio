@@ -95,6 +95,25 @@ class AgentHandlers:
         self.locks = {}
         # The studio user's account profiles, the source of each agent's credential copy.
         self.studio_home = Path("/home/studio")
+        self.join_project_groups()
+
+    def join_project_groups(self):
+        """Users made before project groups existed join them at service start: each project's
+        main owner and each recorded agent. A user whose record is unreadable stays as it is."""
+        members = [(path.name, None) for path in (self.layr_root / "projects").glob("*")
+                   if (path / "lines" / "main").is_dir()]
+        members += [(None, path) for path in sorted(self.associations.glob("*.json"))]
+        for project_id, record in members:
+            try:
+                if record is None:
+                    ensure_project_owner(project_id)
+                else:
+                    value = json.loads(record.read_text())
+                    require(str(value["owner"]).startswith(("studio-a-", "studio-p-")),
+                            "The record owner is not an agent user")
+                    join_project_group({"owner": value["owner"]}, value["projectId"])
+            except Exception as exc:
+                print(f"project group: {project_id or record.name}: {exc}", file=sys.stderr, flush=True)
 
     def record_path(self, agent_id):
         require(str(uuid.UUID(agent_id)) == agent_id, "The agent ID must be a canonical UUID")
