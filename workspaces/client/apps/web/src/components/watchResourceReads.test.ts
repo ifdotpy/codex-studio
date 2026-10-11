@@ -1,19 +1,46 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResourceRef, ResourceVersion } from "../sync/resourceEvents";
 
-const { watchers, resumeListeners } = vi.hoisted(() => ({
+const {
+  watchers,
+  resumeListeners,
+  connectionListeners,
+  connectionState,
+  knownVersions,
+} = vi.hoisted(() => ({
   watchers: new Map<string, (version?: ResourceVersion) => void>(),
   resumeListeners: new Set<() => void>(),
+  connectionListeners: new Set<
+    (status: string, stream: "stopped" | "connecting" | "open") => void
+  >(),
+  connectionState: {
+    status: "connecting" as string,
+    stream: "connecting" as "stopped" | "connecting" | "open",
+  },
+  knownVersions: new Map<string, ResourceVersion>(),
 }));
 
 vi.mock("../sync/resourceEvents", () => ({
   watchResourceChanges: (
     resource: ResourceRef,
     callback: (version?: ResourceVersion) => void,
+    _options?: { waitForBaseline?: boolean },
   ): (() => void) => {
     const key = JSON.stringify(resource);
     watchers.set(key, callback);
+    const known = knownVersions.get(key);
+    if (known) callback(known);
     return () => watchers.delete(key);
+  },
+  watchResourceConnection: (
+    callback: (
+      status: string,
+      stream: "stopped" | "connecting" | "open",
+    ) => void,
+  ) => {
+    connectionListeners.add(callback);
+    callback(connectionState.status, connectionState.stream);
+    return () => connectionListeners.delete(callback);
   },
 }));
 vi.mock("../sync/resume", () => ({
@@ -29,6 +56,7 @@ const terminals: ResourceRef = { kind: "terminals" };
 const limits: ResourceRef = { kind: "limits", accountKey: "default" };
 const output: ResourceRef = { kind: "terminal", terminalId: "terminal-1" };
 const notify = (resource: ResourceRef, version?: ResourceVersion) => {
+  if (version) knownVersions.set(JSON.stringify(resource), version);
   const callback = watchers.get(JSON.stringify(resource));
   if (!callback) throw new Error("Resource watcher is not registered");
   callback(version);
@@ -38,6 +66,10 @@ describe("watchResourceReads", () => {
   beforeEach(() => {
     watchers.clear();
     resumeListeners.clear();
+    connectionListeners.clear();
+    knownVersions.clear();
+    connectionState.status = "connecting";
+    connectionState.stream = "connecting";
   });
 
   afterEach(() => {
@@ -89,6 +121,80 @@ describe("watchResourceReads", () => {
       epoch: "workspace",
       revision: 2,
     });
+    stop();
+  });
+
+  it("reads once for the first baseline and skips a repeated unchanged baseline", async () => {
+    const read = vi.fn(async () => {});
+    const stop = watchResourceReads(limits, read, vi.fn(), {
+      waitForBaseline: true,
+    });
+
+    notify(limits, { epoch: "workspace", revision: 4 });
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    notify(limits, { epoch: "workspace", revision: 4 });
+    await Promise.resolve();
+    expect(read).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  it("reads again when a baseline has a new revision or epoch", async () => {
+    const read = vi.fn(async () => {});
+    const stop = watchResourceReads(limits, read, vi.fn(), {
+      waitForBaseline: true,
+    });
+
+    notify(limits, { epoch: "workspace", revision: 4 });
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    notify(limits, { epoch: "workspace", revision: 5 });
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    notify(limits, { epoch: "new-workspace", revision: 5 });
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(3));
+    stop();
+  });
+
+  it("retries a failed baseline when the same baseline is delivered again", async () => {
+    const read = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error("permanent read failure"))
+      .mockResolvedValue(undefined);
+    const failed = vi.fn();
+    const stop = watchResourceReads(limits, read, failed, {
+      waitForBaseline: true,
+    });
+
+    notify(limits, { epoch: "workspace", revision: 4 });
+    await vi.waitFor(() => expect(failed).toHaveBeenCalledTimes(1));
+    expect(read).toHaveBeenCalledTimes(1);
+    notify(limits, { epoch: "workspace", revision: 4 });
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    stop();
+  });
+
+  it("replays a known baseline to a watcher registered after it", async () => {
+    const version = { epoch: "workspace", revision: 4 };
+    knownVersions.set(JSON.stringify(limits), version);
+    const read = vi.fn(async () => {});
+    const stop = watchResourceReads(limits, read, vi.fn(), {
+      waitForBaseline: true,
+    });
+
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    expect(read).toHaveBeenCalledWith(version);
+    stop();
+  });
+
+  it("uses one fallback read when no stream is available", async () => {
+    vi.useFakeTimers();
+    connectionState.status = "offline";
+    connectionState.stream = "stopped";
+    const read = vi.fn(async () => {});
+    const stop = watchResourceReads(limits, read, vi.fn(), {
+      waitForBaseline: true,
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(1);
     stop();
   });
 

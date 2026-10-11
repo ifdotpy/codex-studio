@@ -10,6 +10,8 @@ const {
   memos,
   cursor,
   watchers,
+  watchOptions,
+  resourceVersions,
   connectionWatchers,
   connectionStream,
   get,
@@ -27,6 +29,8 @@ const {
   }>,
   cursor: { state: 0, ref: 0, memo: 0 },
   watchers: new Map<string, (version?: unknown) => void>(),
+  watchOptions: new Map<string, { waitForBaseline?: boolean }>(),
+  resourceVersions: new Map<string, unknown>(),
   connectionWatchers: new Set<
     (status: string, stream: "stopped" | "connecting" | "open") => void
   >(),
@@ -126,10 +130,17 @@ vi.mock("../sync/resourceEvents", () => ({
   watchResourceChanges: (
     resource: unknown,
     callback: (version?: unknown) => void,
+    options?: { waitForBaseline?: boolean },
   ) => {
     const key = JSON.stringify(resource);
     watchers.set(key, callback);
-    return () => watchers.delete(key);
+    watchOptions.set(key, options || {});
+    const known = resourceVersions.get(key);
+    if (known) callback(known);
+    return () => {
+      watchers.delete(key);
+      watchOptions.delete(key);
+    };
   },
   watchResourceConnection: (
     listener: (
@@ -182,6 +193,8 @@ describe("resource read callers", () => {
     cursor.ref = 0;
     cursor.memo = 0;
     watchers.clear();
+    watchOptions.clear();
+    resourceVersions.clear();
     connectionWatchers.clear();
     connectionStream.value = "connecting";
     const storage = new Map<string, string>();
@@ -251,29 +264,104 @@ describe("resource read callers", () => {
     expect(reconcile).not.toHaveBeenCalled();
   });
 
-  it("refreshes the accounts list after an accounts resource event", async () => {
-    const before = {
+  it("reads accounts once at the baseline and once per invalidation", async () => {
+    const initial = {
       accounts: [{ id: "connected", email: "person@example.test" }],
       archivedAccounts: [],
       defaultAccountKey: "connected",
       logins: [],
     };
-    const after = {
-      ...before,
+    const afterInvalidation = {
+      ...initial,
       accounts: [
         { id: "connected", email: "person@example.test", disconnected: true },
       ],
     };
-    get.mockResolvedValueOnce(before).mockResolvedValueOnce(after);
+    get.mockResolvedValueOnce(initial).mockResolvedValueOnce(afterInvalidation);
     mount(() => useAccounts("workspace"));
+    expect(watchOptions.get(JSON.stringify({ kind: "accounts" }))).toEqual({
+      waitForBaseline: true,
+    });
+    expect(get).not.toHaveBeenCalled();
 
-    notify({ kind: "accounts" });
+    notify({ kind: "accounts" }, { epoch: "accounts", revision: 1 });
     await vi.advanceTimersByTimeAsync(0);
-    expect(states[0]?.value).toEqual(before);
-    notify({ kind: "accounts" });
+    expect(states[0]?.value).toEqual(initial);
+    expect(get).toHaveBeenCalledTimes(1);
+
+    notify({ kind: "accounts" }, { epoch: "accounts", revision: 1 });
     await vi.advanceTimersByTimeAsync(0);
-    expect(states[0]?.value).toEqual(after);
+    expect(get).toHaveBeenCalledTimes(1);
+
+    notify({ kind: "accounts" }, { epoch: "accounts", revision: 2 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(states[0]?.value).toEqual(afterInvalidation);
     expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it("reads a known baseline once when a watcher subscribes late", async () => {
+    resourceVersions.set(JSON.stringify({ kind: "accounts" }), {
+      epoch: "accounts",
+      revision: 1,
+    });
+    get.mockResolvedValueOnce({
+      accounts: [{ id: "connected" }],
+      archivedAccounts: [],
+      defaultAccountKey: "connected",
+      logins: [],
+    });
+
+    mount(() => useAccounts("workspace"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads accounts once through the fallback when no stream is available", async () => {
+    connectionStream.value = "stopped";
+    get.mockResolvedValueOnce({
+      accounts: [{ id: "connected" }],
+      archivedAccounts: [],
+      defaultAccountKey: "connected",
+      logins: [],
+    });
+
+    mount(() => useAccounts("workspace"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(get).toHaveBeenCalledWith("/api/accounts");
+  });
+
+  it("resubscribes and reads once when the accounts state directory changes", async () => {
+    const response = {
+      accounts: [{ id: "connected" }],
+      archivedAccounts: [],
+      defaultAccountKey: "connected",
+      logins: [],
+    };
+    get.mockResolvedValue(response);
+    mount(() => useAccounts("workspace-one"));
+    notify({ kind: "accounts" }, { epoch: "accounts", revision: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get).toHaveBeenCalledTimes(1);
+
+    const stopFirstScope = cleanups.pop();
+    expect(stopFirstScope).toBeTypeOf("function");
+    stopFirstScope!();
+    expect(watchers.size).toBe(0);
+
+    states.length = 0;
+    mount(() => useAccounts("workspace-two"));
+    expect(watchers.size).toBe(1);
+    notify({ kind: "accounts" }, { epoch: "accounts", revision: 2 });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(get.mock.calls.map(([path]) => path)).toEqual([
+      "/api/accounts",
+      "/api/accounts",
+    ]);
   });
 
   it("recovers a deferred queue read without repeating the queue mutation", async () => {

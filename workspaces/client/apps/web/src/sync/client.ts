@@ -1334,6 +1334,7 @@ async function acquireProjection(
       ? scope.slice(11)
       : null;
     let stopInvalidation: (() => void) | undefined;
+    let stopAccountsBaseline: (() => void) | undefined;
     const invalidate = (version?: ResourceVersion) => {
       // A stream hint cannot authorize another read after a permanent rejection.
       // Explicit refresh still uses the normal workspace and HTTP checks.
@@ -1372,6 +1373,11 @@ async function acquireProjection(
             invalidate,
             remoteScope === "state:entities:v1" ? "entities" : "legacy",
           );
+      if (remoteScope === "state:entities:v1")
+        stopAccountsBaseline = watchResourceChanges(
+          { kind: "accounts" },
+          () => {},
+        );
       stopConnection = watchResourceConnection((status) => {
         connectionStatus = status;
         if (status === "live" && readFailed && !invalidationBlocked)
@@ -1393,6 +1399,7 @@ async function acquireProjection(
       stop: async () => {
         stopped = true;
         stopInvalidation?.();
+        stopAccountsBaseline?.();
         stopCoverageFallback?.();
         stopConnection?.();
         stopResume?.();

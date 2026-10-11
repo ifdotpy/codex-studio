@@ -808,9 +808,6 @@ export default function App() {
       setCompletedOpen(true);
   }, [agent?.id, agent?.status]);
   const accounts = useAccounts(data?.stateDir);
-  useEffect(() => {
-    if (data?.stateDir) void accounts.refresh();
-  }, [accounts.refresh, data?.stateDir]);
   const publicAccounts = useMemo(
     () =>
       accounts.data.accounts.map((account) => ({

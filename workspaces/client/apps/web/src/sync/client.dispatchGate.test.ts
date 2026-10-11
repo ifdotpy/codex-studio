@@ -8,6 +8,13 @@ const mocks = vi.hoisted(() => ({
   createRxDatabase: vi.fn(),
   watchResourceChanges: vi.fn(),
   pulls: undefined as number[] | undefined,
+  accountsBaseline: undefined as
+    | ((version?: {
+        epoch: string;
+        entitySequence?: number;
+        entitySequenceReset?: boolean;
+      }) => void)
+    | undefined,
   pullResponse: undefined as
     | ((
         after: number,
@@ -118,8 +125,10 @@ async function setup({ ready = true } = {}) {
       addCollections: vi.fn(async () => ({ projections })),
     });
   mocks.watchResourceChanges.mockImplementation(
-    (_resource: unknown, listener: typeof mocks.invalidate) => {
-      mocks.invalidate = listener;
+    (resource: unknown, listener: typeof mocks.invalidate) => {
+      const kind = (resource as { kind?: string }).kind;
+      if (kind === "state") mocks.invalidate = listener;
+      if (kind === "accounts") mocks.accountsBaseline = listener;
       return () => {};
     },
   );
@@ -208,6 +217,7 @@ describe("entity pull dispatch gate", () => {
     mocks.pullResponse = undefined;
     mocks.mutationResponse = null;
     mocks.invalidate = undefined;
+    mocks.accountsBaseline = undefined;
   });
 
   const installMutationResponse = () => {
@@ -299,6 +309,19 @@ describe("entity pull dispatch gate", () => {
     expect(pulls).toEqual([2123, 0]);
     expect(checkpoint.value).toBe(5);
     expect(rows.get("state:entities:checkpoint")?.seq).toBe(5);
+    stop();
+  });
+
+  it("dispatches a state-frame pull when the frame has no accounts revision", async () => {
+    const { stop, workspaceId } = await setup();
+    const pulls: number[] = [];
+    configurePulls(workspaceId, pulls);
+
+    // The state resource frame has no accounts entry or accounts revision.
+    expect(mocks.accountsBaseline).toBeTypeOf("function");
+    mocks.invalidate?.({ epoch: "state-only-frame", entitySequence: 101 });
+
+    await vi.waitFor(() => expect(pulls).toEqual([100]));
     stop();
   });
 
