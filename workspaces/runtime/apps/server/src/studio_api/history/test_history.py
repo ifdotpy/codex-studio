@@ -391,6 +391,12 @@ class HistoryRouteTests(unittest.TestCase):
                 yield self.connection
 
             @contextmanager
+            def read_db(self) -> Iterator[sqlite3.Connection]:
+                # This in-memory test double cannot open a second connection;
+                # provide Runtime.transcript's read context over its snapshot.
+                yield self.connection
+
+            @contextmanager
             def analytics_read_db(self) -> Iterator[sqlite3.Connection]:
                 yield self.connection
 

@@ -1581,7 +1581,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         # Project the first restart-recovery writes with the local server
         # identity. Project-location migration below reuses this identity.
         self._project_server_id = self.paired_access().local_server_id
-        with self.db() as db:
+        with self.db(analytics=True) as db:
             try:
                 self.require_file_migration_complete(db)
             except RuntimeError as error:
@@ -2000,7 +2000,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             return service
 
     @contextmanager
-    def db(self, *, busy_timeout=None):
+    def db(self, *, busy_timeout=None, analytics=False):
         local = self.__dict__.setdefault("_callback_db", threading.local())
         reusable = getattr(local, "reuse", False) and not getattr(local, "depth", 0)
         db = getattr(local, "connection", None) if reusable else None
@@ -2008,9 +2008,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             db = sqlite_connect(self.db_path, timeout=15, site="Runtime.db")
             try:
                 db.row_factory = sqlite3.Row
-                # Retain compatibility for internal callers that execute analytics
-                # SQL on the runtime connection; normal writers use analytics_db().
-                db.execute("ATTACH DATABASE ? AS analytics", (str(self.analytics_db_path),))
+                # Explicitly reusable long-lived connections retain their
+                # original attachment state. Fresh scopes attach only on demand.
+                if analytics or reusable:
+                    db.execute("ATTACH DATABASE ? AS analytics", (str(self.analytics_db_path),))
+                db._studio_analytics_attached = bool(analytics or reusable)
             except BaseException:
                 db.close()
                 raise
@@ -5336,9 +5338,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 or any(not isinstance(value, str) or not value or len(value) > 200 for value in message_ids)):
             raise ValueError("Supply at most 100 message IDs of 1 to 200 characters")
         identities = list(dict.fromkeys(message_ids))
-        with self.db() as db:
-            db.execute("PRAGMA query_only=ON")
-            db.execute("BEGIN")
+        with self.read_db() as db:
             self.checked_actor(db, agent_id)
             rows = db.execute(
                 "SELECT e.id,e.status,e.error,EXISTS (SELECT 1 FROM runtime_items i "
@@ -10932,10 +10932,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             raise ValueError("Unknown workspace view")
 
     def transcript(self, key, before=None, around=None, limit=120, after=None):
-        with self.db() as db:
+        with self.read_db() as db:
             # Read one committed snapshot without waiting for agent execution.
-            db.execute("PRAGMA query_only=ON")
-            db.execute("BEGIN")
             a = self.agent(key, db)
             if a.get("deletedAt"):
                 raise ValueError("This conversation was deleted")

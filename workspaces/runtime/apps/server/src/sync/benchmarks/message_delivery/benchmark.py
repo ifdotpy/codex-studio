@@ -277,7 +277,7 @@ def _import_history(runtime, agent_id: str, work_started: threading.Event, gate:
             if "startedNs" not in report:
                 report["startedNs"] = time.monotonic_ns()
             runtime.analytics_history_step(max_records=128)
-            with runtime.db() as db:
+            with runtime.db(analytics=True) as db:
                 row = db.execute("SELECT record FROM analytics_history WHERE agent=?", (agent_id,)).fetchone()
                 usage_rows = db.execute("SELECT COUNT(*) FROM analytics_usage WHERE agent=?", (agent_id,)).fetchone()[0]
             if usage_rows > previous_usage_rows:

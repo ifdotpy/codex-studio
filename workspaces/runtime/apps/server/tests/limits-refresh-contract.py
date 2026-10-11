@@ -121,7 +121,7 @@ class LimitsRefreshContracts(unittest.TestCase):
         self.assertIs(self.runtime.rate_limits_for(), cached)
         import json
         def stale_saved():
-            with self.runtime.db() as db:
+            with self.runtime.analytics_db() as db:
                 rows = db.execute("SELECT record FROM analytics_limits ORDER BY rowid DESC LIMIT 2").fetchall()
             return any(json.loads(row[0]).get("ignoredAsStale") for row in rows)
         fixture.f.eventually(stale_saved)

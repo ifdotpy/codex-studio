@@ -47,7 +47,7 @@ class AnalyticsContract(unittest.TestCase):
         self.temp.cleanup()
 
     def event(self, method, p, at=100, source='live'):
-        with self.runtime.lock, self.runtime.db() as db:
+        with self.runtime.lock, self.runtime.db(analytics=True) as db:
             self.runtime.analytics_event(db, self.agent, method, {'threadId': self.agent['threadId'], 'turnId': self.agent['turnId'], **p}, at=at, source=source)
 
     def usage(self, total, last, at=100, **p):
@@ -58,7 +58,7 @@ class AnalyticsContract(unittest.TestCase):
 
     def test_unchanged_rate_limit_snapshot_is_not_stored_again(self):
         snapshot = {'rateLimits': {'primary': {'usedPercent': 10, 'resetsAt': 5}}, 'at': 1.0}
-        with self.runtime.lock, self.runtime.db() as db:
+        with self.runtime.lock, self.runtime.db(analytics=True) as db:
             self.runtime.analytics_limit(db, 'fixture-account', snapshot)
             self.runtime.analytics_limit(db, 'fixture-account', {**snapshot, 'at': 2.0})
             self.runtime.analytics_limit(db, 'fixture-account', {**snapshot, 'rateLimits': {'primary': {'usedPercent': 11, 'resetsAt': 5}}})
@@ -122,19 +122,19 @@ class AnalyticsContract(unittest.TestCase):
         self.assertEqual(summary['cacheHitRateTotalSamples'], 2)
 
     def test_global_importer_errors_visible_for_agent_scope(self):
-        with self.runtime.db() as db:
+        with self.runtime.db(analytics=True) as db:
             db.execute('INSERT INTO analytics_history VALUES (?,?,?)', ('importer', '', json.dumps({'status': 'error', 'error': 'Importer failed'})))
         self.assertEqual(self.data()['coverage']['historyErrors'][0]['status'], 'error')
         self.assertEqual(self.data()['history'][0]['status'], 'error')
 
     def test_current_agent_metadata_overlays_historical_snapshot(self):
-        with self.runtime.db() as db:
+        with self.runtime.db(analytics=True) as db:
             self.runtime.analytics_agent(db, {**self.agent, 'model': 'old-model', 'effort': 'low'})
         self.assertEqual(self.data()['agents'][0]['model'], self.agent['model'])
 
     def test_analytics_agent_keeps_account_history(self):
         history = [{'accountKey': 'claude-old', 'threadId': 'old-thread', 'provider': 'claude'}]
-        with self.runtime.lock, self.runtime.db() as db:
+        with self.runtime.lock, self.runtime.db(analytics=True) as db:
             self.runtime.analytics_agent(db, {**self.agent, 'accountHistory': history})
             saved = json.loads(db.execute('SELECT record FROM analytics_agents WHERE id=?',
                                           (self.agent['id'],)).fetchone()[0])
@@ -173,7 +173,7 @@ class AnalyticsContract(unittest.TestCase):
         self.assertEqual(summary['tokens']['cacheWriteInputTokens'], 150)
         self.assertEqual(summary['tokens']['totalTokens'], 3170)
         self.assertAlmostEqual(summary['cacheHitRate'], 2700 / 3150)
-        with self.runtime.db() as db:
+        with self.runtime.db(analytics=True) as db:
             budget_rows = db.execute("SELECT COUNT(*) FROM runtime_budget_usage WHERE agent=? AND kind='response'",
                                      (self.agent['id'],)).fetchone()[0]
         self.assertEqual(budget_rows, 2)
@@ -209,7 +209,7 @@ class AnalyticsContract(unittest.TestCase):
         self.assertEqual(result['summary']['toolCalls'], 0)
 
     def test_namespace_and_compaction_replacement_are_not_new_tool_calls(self):
-        with self.runtime.db() as db:
+        with self.runtime.db(analytics=True) as db:
             self.runtime.analytics_model_payload(db, self.agent, {'type': 'function_call', 'namespace': 'notes', 'name': 'read', 'call_id': 'model', 'arguments': '{}'}, at=100)
             self.runtime.analytics_model_payload(db, self.agent, {'type': 'function_call', 'name': 'read', 'call_id': 'replacement', 'arguments': '{}', '_analyticsCategory': 'compactionReplacement'}, at=100)
         result = self.data()
@@ -217,10 +217,10 @@ class AnalyticsContract(unittest.TestCase):
         self.assertEqual(result['calls'][0]['name'], 'notes.read')
 
     def test_compaction_replacement_snapshots_preserve_each_measurement(self):
-        with self.runtime.db() as db:
+        with self.runtime.db(analytics=True) as db:
             for at, amount in ((100, 100), (200, 200)):
                 self.runtime.analytics_model_payload(db, self.agent, {'type': 'function_call_output', 'call_id': 'old-call', 'output': 'x' * amount, '_analyticsCategory': 'compactionReplacement', '_analyticsId': 'snapshot-' + str(at)}, at=at)
-        with self.runtime.db() as db:
+        with self.runtime.db(analytics=True) as db:
             rows = [json.loads(r[0]) for r in db.execute("SELECT record FROM analytics_items WHERE type='modelMessage'")]
         self.assertEqual(len(rows), 2)
         self.assertEqual([r['output']['bytes'] for r in sorted(rows, key=lambda r: r['at'])], [100, 200])
@@ -244,14 +244,14 @@ class AnalyticsContract(unittest.TestCase):
         self.assertEqual(call['output']['chars'], len(output))
         self.assertEqual(call['stream']['bytes'], 50000)
         self.assertEqual(call['durationMs'], 1500)
-        with self.runtime.db() as db:
+        with self.runtime.db(analytics=True) as db:
             stored = db.execute('SELECT record FROM analytics_items').fetchone()[0]
         self.assertNotIn('z' * 100, stored)
         self.assertNotIn('я' * 100, stored)
 
     def test_model_payload_and_native_stdout_are_separate(self):
         self.event('item/completed', {'item': {'id': 'native', 'type': 'commandExecution', 'command': 'echo hello', 'aggregatedOutput': 'hello'}})
-        with self.runtime.db() as db:
+        with self.runtime.db(analytics=True) as db:
             for p in ({'type': 'function_call', 'call_id': 'wrapper', 'name': 'functions.exec', 'arguments': 'code'}, {'type': 'function_call_output', 'call_id': 'wrapper', 'output': 'formatted result hello'}):
                 self.runtime.analytics_model_payload(db, self.agent, p, at=100, turn_id=self.agent['turnId'])
         result = self.data()
@@ -308,7 +308,7 @@ class AnalyticsContract(unittest.TestCase):
             if not release.wait(5):
                 raise AssertionError('The test did not release the history batch')
             # The real importer reacquires this lock to commit its checkpoint.
-            with self.runtime.lock, self.runtime.db() as db:
+            with self.runtime.lock, self.runtime.db(analytics=True) as db:
                 db.execute("INSERT INTO analytics_meta VALUES ('lastBatch','done')")
             finished.set()
             return False
@@ -334,7 +334,7 @@ class AnalyticsContract(unittest.TestCase):
             self.assertFalse(self.runtime.analytics_history_thread.is_alive())
             self.assertTrue(finished.is_set())
             self.assertEqual(errors, [])
-        with self.runtime.db() as db:
+        with self.runtime.db(analytics=True) as db:
             self.assertEqual(db.execute("SELECT value FROM analytics_meta WHERE key='lastBatch'").fetchone()[0], 'done')
         # A new owner is admitted only after the old batch has committed.
         self.runtime = Runtime(Path(self.temp.name), fixture.FakeServer)
@@ -360,7 +360,7 @@ class AnalyticsContract(unittest.TestCase):
         self.assertEqual(self.data(**{'from': 190, 'to': 210})['calls'], [])
 
     def test_model_call_output_before_input_uses_input_start_for_filters(self):
-        with self.runtime.db() as db:
+        with self.runtime.db(analytics=True) as db:
             self.runtime.analytics_model_payload(db, self.agent,
                 {'type': 'function_call_output', 'call_id': 'unordered', 'output': 'done'}, at=200)
             self.runtime.analytics_model_payload(db, self.agent,
@@ -382,7 +382,7 @@ class AnalyticsContract(unittest.TestCase):
         self.assertEqual(self.data()['pagination']['total'], 3)
 
     def test_sql_call_page_matches_legacy_filter_and_totals(self):
-        with self.runtime.db() as db:
+        with self.runtime.db(analytics=True) as db:
             for index, name in enumerate(("one", "two", "one", "three")):
                 record = {"id": f"page-{index}", "agentId": self.agent["id"],
                           "threadId": self.agent["threadId"], "turnId": "page-turn",
@@ -393,7 +393,7 @@ class AnalyticsContract(unittest.TestCase):
                            (record["id"], self.agent["id"], self.agent["rootId"],
                             self.agent["threadId"], "page-turn", record["at"],
                             record["type"], name, 1, json.dumps(record)))
-        with self.runtime.db() as db:
+        with self.runtime.db(analytics=True) as db:
             legacy = [json.loads(row[0]) for row in db.execute(
                 "SELECT record FROM analytics_items WHERE agent=? ORDER BY at DESC,id",
                 (self.agent["id"],))]
@@ -416,7 +416,7 @@ class AnalyticsContract(unittest.TestCase):
                     'SELECT 1 FROM analytics_turns WHERE id=?', (turn_key,)).fetchone() is not None
 
         fixture.eventually(initial_turn_captured)
-        with self.runtime.db() as db:
+        with self.runtime.db(analytics=True) as db:
             previous_turns = db.execute('SELECT COUNT(*) FROM analytics_turns WHERE agent=?',
                                         (self.agent['id'],)).fetchone()[0]
             for i in range(125):
@@ -452,7 +452,7 @@ class AnalyticsContract(unittest.TestCase):
 
     def test_streamed_export_matches_full_json_across_pages(self):
         agent = self.agent
-        with self.runtime.db() as db:
+        with self.runtime.db(analytics=True) as db:
             for index in range(105):
                 at = 1000 + index
                 tool = index % 2 == 0

@@ -36,7 +36,7 @@ with tempfile.TemporaryDirectory() as folder:
         agent = runtime.create({'name': 'Usage memory', 'cwd': folder, 'prompt': 'Wait'})
         fixture.eventually(lambda: runtime.agent(agent['id'])['status'] == 'running')
         agent = runtime.agent(agent['id'])
-        with runtime.db() as db:
+        with runtime.db(analytics=True) as db:
             for index in range(COUNT):
                 turn = 'turn:' + str(index // 100)
                 record = {'agentId': agent['id'], 'threadId': agent['threadId'],

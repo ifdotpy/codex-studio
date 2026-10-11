@@ -11,12 +11,14 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 import json
+import gc
 from pathlib import Path
 import sqlite3
 import sys
 import tempfile
 import threading
 import unittest
+import weakref
 from unittest.mock import patch
 
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
@@ -88,6 +90,24 @@ class RuntimeResourceTriggerReuseContract(unittest.TestCase):
         with self.runtime.db() as second:
             self.assertIs(second, first)
         self.assertEqual(self.trigger_ddl(), [])
+
+    def test_short_lived_thread_closes_fresh_connection_without_retaining_callback_cycle(self):
+        connection_ref = []
+        finished = threading.Event()
+        def use_database():
+            with self.runtime.db() as db:
+                connection_ref.append(weakref.ref(db))
+            with self.assertRaises(sqlite3.ProgrammingError):
+                db.execute("SELECT 1")
+            finished.set()
+
+        worker = threading.Thread(target=use_database)
+        worker.start()
+        self.assertTrue(finished.wait(5))
+        worker.join(5)
+        self.assertFalse(worker.is_alive())
+        gc.collect()
+        self.assertIsNone(connection_ref[0]())
 
     def test_reused_triggers_stage_each_transaction_and_discard_rollback(self):
         with self.runtime.db() as db:

@@ -151,7 +151,8 @@ def budget_capture(db: sqlite3.Connection, a: "AgentRecord", p: dict[str, Any], 
     return _save(db, a, state)['spent']
 
 
-def _coverage(db: sqlite3.Connection, a: "AgentRecord", state: "BudgetStateRecord") -> str | None:
+def _coverage(runtime: "Runtime", db: sqlite3.Connection, a: "AgentRecord",
+              state: "BudgetStateRecord") -> str | None:
     if state['faults']:
         return ', '.join(state['faults'])
     if state['ambiguousNotices']:
@@ -160,6 +161,15 @@ def _coverage(db: sqlite3.Connection, a: "AgentRecord", state: "BudgetStateRecor
         return None if not state['spent'] else 'Native usage history is unavailable'
     if not state['spent'] and not a.get('turnId') and not a.get('lastCompletedTurn'):
         return None
+    if not getattr(db, "_studio_analytics_attached", False):
+        # Keep the lookup in the caller's canvas transaction. WAL does not
+        # synchronize snapshots across attached database files.
+        # Plain SQLite fixtures may already have attached analytics themselves.
+        attached = any(row[1] == "analytics" for row in db.execute("PRAGMA database_list"))
+        if not attached:
+            analytics_path = getattr(runtime, "analytics_db_path", None)
+            if analytics_path is not None:
+                db.execute("ATTACH DATABASE ? AS analytics", (str(analytics_path),))
     schema = None
     for candidate in ('main', 'analytics'):
         try:
@@ -221,7 +231,7 @@ def budget_status(runtime: "Runtime", db: sqlite3.Connection, agent: "AgentRecor
             agent['tokensUsed'] = member['tokensUsed']
             agent['tokenUsageAccounting'] = member['tokenUsageAccounting']
         if check_coverage and root.get('tokenBudget') is not None:
-            reason = _coverage(db, member, state)
+            reason = _coverage(runtime, db, member, state)
             if reason:
                 incomplete.append({'agentId': member['id'], 'reason': reason})
     return {'rootId': root['id'], 'tokenBudget': root.get('tokenBudget'), 'tokensUsed': spent,

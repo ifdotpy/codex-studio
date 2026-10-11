@@ -1428,7 +1428,7 @@ def main():
 
             (chat_rows, event_rows, event_kinds, analytics,
              consumed_runtime_events, pending_runtime_events, delivered_ids) = read_accounting_snapshot(
-                runtime.db, "runtime_load.final.read_only_accounting_snapshot",
+                lambda: runtime.db(analytics=True), "runtime_load.final.read_only_accounting_snapshot",
                 collect_accounting, accounting_schema_retries)
             analytics_rows, analytics_payload_bytes = analytics[0], analytics[1]
             expected_delivered_ids = set(expected_runtime_event_ids)

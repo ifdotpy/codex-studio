@@ -246,7 +246,7 @@ class RuntimeContract(unittest.TestCase):
         with patch.object(self.runtime.accounts, 'home', return_value=profile), \
                 patch.object(self.runtime, '_analytics_rollout_path', return_value=(rollout, None)):
             self.assertTrue(self.runtime.analytics_history_step())
-        with self.runtime.db() as db:
+        with self.runtime.db(analytics=True) as db:
             after = db.execute('PRAGMA schema_version').fetchone()[0]
             imported = db.execute('SELECT COUNT(*) FROM analytics_usage WHERE agent=?', (agent['id'],)).fetchone()[0]
             charged = db.execute('SELECT COUNT(*) FROM runtime_budget_usage WHERE agent=?', (agent['id'],)).fetchone()[0]
@@ -799,6 +799,27 @@ class RuntimeContract(unittest.TestCase):
             del self.runtime._callback_db.connection
             cached.close()
 
+    def test_runtime_db_attaches_analytics_only_when_requested(self):
+        from unittest.mock import patch
+        import codex_runtime
+
+        statements = []
+        connect = codex_runtime.sqlite_connect
+
+        def traced_connect(*args, **kwargs):
+            db = connect(*args, **kwargs)
+            db.set_trace_callback(statements.append)
+            return db
+
+        self.runtime._callback_db.reuse = False
+        with patch.object(codex_runtime, "sqlite_connect", side_effect=traced_connect):
+            with self.runtime.db():
+                pass
+            self.assertFalse(any(sql.lstrip().upper().startswith("ATTACH") for sql in statements))
+            with self.runtime.db(analytics=True) as db:
+                self.assertTrue(any(row[1] == "analytics" for row in db.execute("PRAGMA database_list")))
+        self.assertEqual(sum(sql.lstrip().upper().startswith("ATTACH") for sql in statements), 1)
+
     def test_sidebar_rename_and_room_hide_preserve_agent_history(self):
         a = self.lead()
         b = self.runtime.create({'name': 'Reviewer', 'prompt': 'Review', 'role': 'reviewer'}, a['id'], defer=True)
@@ -1041,6 +1062,11 @@ class RuntimeContract(unittest.TestCase):
         self.assertEqual(self.snapshot()['requests'], [])
         self.assertIn('One file', self.runtime.transcript(a['id'])['items'][-1]['text'])
 
+    def test_transcript_uses_read_only_snapshot_connection(self):
+        a = self.lead()
+        with patch.object(self.runtime, "db", side_effect=AssertionError("writer connection used")):
+            self.assertEqual(self.runtime.transcript(a["id"])["agent"]["id"], a["id"])
+
     def test_role_identity_survives_restart(self):
         a = self.lead()
         self.complete(a)
@@ -1103,7 +1129,7 @@ class RuntimeContract(unittest.TestCase):
                    for text in ['Первый ', 'абзац.\n\n', 'Second paragraph.']]
         method = 'item/agentMessage/delta'
         def counters():
-            with self.runtime.db() as db:
+            with self.runtime.db(analytics=True) as db:
                 return tuple(db.execute('SELECT coalesce(sum(count),0),coalesce(sum(bytes),0) FROM analytics_notifications WHERE agent=? AND method=?', (a['id'], method)).fetchone())
         before = counters()
         count = self.runtime.agent(a['id'])['events']
@@ -1125,7 +1151,7 @@ class RuntimeContract(unittest.TestCase):
                    for text in ['Первый ', 'абзац.\n\n', 'Second paragraph.']]
         method = 'item/commandExecution/outputDelta'
         def counters():
-            with self.runtime.db() as db:
+            with self.runtime.db(analytics=True) as db:
                 return tuple(db.execute('SELECT coalesce(sum(count),0),coalesce(sum(bytes),0) FROM analytics_notifications WHERE agent=? AND method=?', (a['id'], method)).fetchone())
         self.runtime.notification({'method': 'item/started', 'params': {
             'threadId': a['threadId'], 'turnId': a['turnId'],
@@ -1431,7 +1457,7 @@ class RuntimeContract(unittest.TestCase):
         with patch.object(self.runtime.accounts, 'home', return_value=home), \
                 patch.object(self.runtime, '_analytics_rollout_path', return_value=(path, None)):
             self.assertTrue(self.runtime.analytics_history_step())
-        with self.runtime.db() as db:
+        with self.runtime.db(analytics=True) as db:
             history = json.loads(db.execute('SELECT record FROM analytics_history WHERE agent=?', (lead['id'],)).fetchone()[0])
         self.assertEqual(history['status'], 'current')
         self.assertTrue(history['context']['requestUsageAvailable'])
