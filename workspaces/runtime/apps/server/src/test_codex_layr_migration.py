@@ -120,5 +120,18 @@ class Migration(unittest.TestCase):
             self.assertEqual((failed['moved'], failed['failed']), (0, 3))
 
 
+    def test_an_inner_worktree_is_a_line_and_a_prunable_one_is_skipped(self) -> None:
+        git(self.root, 'worktree', 'add', '-q', '-b', 'rehearsal', str(self.root / 'rehearsal'))
+        git(self.root, 'worktree', 'add', '-q', '-b', 'gone', str(self.base / 'gone'))
+        (self.base / 'gone' / '.git').unlink()
+        self.assertNotIn('rehearsal', migration.repositories(self.root))
+        found = {Path(item['path']).name: item for item in migration.worktrees(self.root)}
+        self.assertEqual(sorted(found), ['elsewhere', 'fix', 'gone', 'rehearsal', 'topic'])
+        self.assertEqual((found['rehearsal']['repo'], 'prunable' in found['gone']), ('.', True))
+        client = Client(self.base / 'state')
+        with patch('codex_linux_vm_share.upload_archive'):
+            result = migration.migrate_project(client, self.root, log=lambda _: None)
+        self.assertEqual((result['moved'], result['failed'], result['skipped']), (4, 0, 1))
+
 if __name__ == '__main__':
     unittest.main()

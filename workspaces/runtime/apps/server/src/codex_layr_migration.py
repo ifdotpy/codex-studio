@@ -56,7 +56,8 @@ def repositories(root: Path) -> list[str]:
 
 
 def worktrees(root: Path) -> list[dict[str, str]]:
-    """Every Git worktree of the project's repositories, other than the repository folder itself."""
+    """Every Git worktree of the project's repositories, other than the repository folder itself.
+    A worktree that Git marks prunable (its .git file is gone) has 'prunable' set."""
     result = []
     for repo in repositories(root):
         directory = root if repo == '.' else root / repo
@@ -72,6 +73,8 @@ def worktrees(root: Path) -> list[dict[str, str]]:
                 entry['head'] = line[5:]
             elif line.startswith('branch '):
                 entry['branch'] = line[7:].removeprefix('refs/heads/')
+            elif line.startswith('prunable'):
+                entry['prunable'] = line[9:] or 'prunable'
             elif not line and entry:
                 path = Path(entry['path'])
                 if path.resolve() != directory.resolve() and path.is_dir():
@@ -163,9 +166,14 @@ def migrate_project(client: Any, root: Path, *, dry_run: bool = False, log: Any 
     journal: dict[str, Any] = json.loads(journal_path.read_text()) if journal_path.exists() else {}
     used = {value['line'] for value in journal.values()}
     from codex_linux_vm_share import upload_archive
-    moved = failed = 0
+    moved = failed = skipped = 0
     for item in found:
         if item['path'] in journal:
+            continue
+        if 'prunable' in item:
+            # Without its .git file the folder is no longer a worktree; its commits stay in Git.
+            log(f'  SKIPPED {item["path"]}: {item["prunable"]}')
+            skipped += 1
             continue
         name = line_name(item, used)
         try:
@@ -194,7 +202,7 @@ def migrate_project(client: Any, root: Path, *, dry_run: bool = False, log: Any 
         _save(journal_path, journal)
         moved += 1
         log(f'  {item["path"]} -> line {result["line"]} ({count} files)')
-    return {'projectId': project, 'worktrees': len(found), 'moved': moved, 'failed': failed,
+    return {'projectId': project, 'worktrees': len(found), 'moved': moved, 'failed': failed, 'skipped': skipped,
             'total': len(journal)}
 
 
