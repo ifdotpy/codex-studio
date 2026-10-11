@@ -20,7 +20,7 @@ var permission: SFSpeechRecognizerAuthorizationStatus?
 SFSpeechRecognizer.requestAuthorization { permission = $0 }
 let permissionDeadline = Date().addingTimeInterval(120)
 while permission == nil && Date() < permissionDeadline { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
-guard permission == .authorized else { emit(["error": "Speech recognition permission was not granted. Allow Codex Studio in macOS Privacy & Security, then retry."], code: 1) }
+guard permission == .authorized else { emit(["error": "Speech recognition permission was not granted. Allow LAYR Studio in macOS Privacy & Security, then retry."], code: 1) }
 do {
     let source = try AVAudioFile(forReading: fileURL)
     let segmentFrames = AVAudioFrameCount(source.processingFormat.sampleRate * 50)

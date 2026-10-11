@@ -1,5 +1,6 @@
 import { buildLinuxVM } from "./native/linux-vm/build.mjs";
 import { signingIdentity, signApplication, signCode } from "./signing.mjs";
+import { setBundleDisplayName } from "./bundle-name.mjs";
 import { execFileSync } from "node:child_process";
 import { packager } from "@electron/packager";
 import { cp, mkdir, mkdtemp, rm, access, writeFile } from "node:fs/promises";
@@ -271,6 +272,7 @@ try {
   });
   for (const directory of output) {
     const application = path.join(directory, "Codex Studio.app");
+    setBundleDisplayName(application, "LAYR Studio");
     signApplication(application, identity);
   }
   console.log(output.join("\n"));

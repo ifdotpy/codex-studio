@@ -70,7 +70,12 @@ app.setPath(
   process.env.CODEX_DESKTOP_PROFILE ||
     path.join(app.getPath("appData"), "Codex Agents"),
 );
+// "Codex Studio" is the runtime identity. Electron names the macOS Keychain item
+// "<app name> Safe Storage" from this value; that item encrypts saved server
+// credentials. Electron reads the name once, before the ready event, so keep
+// this call at load time and keep its value. People see productName.
 app.setName("Codex Studio");
+const productName = "LAYR Studio";
 app.enableSandbox();
 let win;
 let backend;
@@ -609,7 +614,7 @@ async function nativeAction(event, request) {
         !(await systemPreferences.askForMediaAccess("microphone"))
       )
         throw new Error(
-          "Microphone access was denied. Allow Codex Studio in macOS Privacy & Security.",
+          `Microphone access was denied. Allow ${productName} in macOS Privacy & Security.`,
         );
       trusted(event);
       microphoneUntil = Date.now() + 15000;
@@ -842,7 +847,7 @@ async function nativeAction(event, request) {
           reject(
             new Error(
               /not allowed/i.test(error || "")
-                ? "STUDIO_NOTIFICATIONS_DENIED: Enable Allow notifications for Codex Studio in macOS System Settings > Notifications."
+                ? `STUDIO_NOTIFICATIONS_DENIED: Enable Allow notifications for ${productName} in macOS System Settings > Notifications.`
                 : error || "macOS could not show the notification.",
             ),
           );
@@ -921,7 +926,7 @@ async function start() {
     minWidth: restoredWindow.minWidth,
     minHeight: restoredWindow.minHeight,
     show: false,
-    title: "Codex Studio",
+    title: productName,
     ...(process.platform === "darwin"
       ? { titleBarStyle: "hidden", trafficLightPosition: { x: 20, y: 12 } }
       : {}),
@@ -1021,9 +1026,9 @@ async function start() {
   app.once("before-quit", () => void frameHost.close());
   const applicationMenu = Menu.buildFromTemplate([
     {
-      label: "Codex Studio",
+      label: productName,
       submenu: [
-        { role: "about" },
+        { role: "about", label: `About ${productName}` },
         ...(recoverySupported
           ? [
               {
@@ -1052,7 +1057,7 @@ async function start() {
           : []),
         { type: "separator" },
         {
-          label: "Quit Codex Studio",
+          label: `Quit ${productName}`,
           accelerator: "CommandOrControl+Q",
           click: () => {
             desktopRecovery?.closeExplicitly();
@@ -1111,7 +1116,7 @@ else
     .catch((error) => {
       console.error(error.stack || error);
       if (!hidden && !backgroundRecovery)
-        dialog.showErrorBox("Codex Studio cannot start", error.message);
+        dialog.showErrorBox(`${productName} cannot start`, error.message);
       app.exit(1);
     });
 app.on("window-all-closed", () => app.quit());
