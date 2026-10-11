@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import time
 
 from common import GuestError, atomic_json, require
 from layr_share import project_id
@@ -90,14 +91,53 @@ class VaultHandlers:
         if method == "vault.status":
             config = self.config(project)
             record = self.folder(project) / "writer" / "writer.json"
+            status = self.folder(project) / "status.json"
             return {"bucket": config["bucket"], "region": config["region"], "prefix": config["prefix"],
                     "recipient": config["recipient"],
-                    "last": json.loads(record.read_text()) if record.exists() else None}
+                    "last": json.loads(record.read_text()) if record.exists() else None,
+                    **(json.loads(status.read_text()) if status.exists() else {})}
+        return await self.run_push(project)
+
+    async def run_push(self, project):
+        """One push under the project lock; the outcome goes to status.json."""
         lock = self.locks.setdefault(project, asyncio.Lock())
         if lock.locked():
             raise GuestError("busy", "A vault push of this project is running")
         async with lock:
-            return await asyncio.to_thread(self.push, project)
+            status_path = self.folder(project) / "status.json"
+            status = json.loads(status_path.read_text()) if status_path.exists() else {}
+            status["lastAttempt"] = int(time.time())
+            try:
+                result = await asyncio.to_thread(self.push, project)
+            except Exception as error:
+                # The broker hides unexpected errors; a failed push names its cause (S3 replies and
+                # layr or age messages carry no secrets).
+                message = error.message if isinstance(error, GuestError) else f"{type(error).__name__}: {str(error)[:400]}"
+                status["lastError"] = message
+                atomic_json(status_path, status)
+                if isinstance(error, GuestError):
+                    raise
+                raise GuestError("operation_failed", "vault push: " + message) from error
+            status["lastError"] = None
+            if result.get("pushed"):
+                status["lastPush"] = status["lastAttempt"]
+            atomic_json(status_path, status)
+            return result
+
+    async def tick(self):
+        """Push every configured project once; one failure does not stop the others."""
+        for config in sorted(self.state.glob("*/config.json")):
+            try:
+                await self.run_push(config.parent.name)
+            except GuestError:
+                pass
+
+    async def periodic(self, interval=600, first=60):
+        """The vault keeps the latest state: push every `interval` seconds, from boot."""
+        await asyncio.sleep(first)
+        while True:
+            await self.tick()
+            await asyncio.sleep(interval)
 
     def push(self, project):
         config = self.config(project)

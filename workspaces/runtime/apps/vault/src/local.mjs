@@ -54,18 +54,37 @@ export function store(prefix) {
   };
 }
 
+/** Read a line without echo when stdin is a terminal (the paper key). */
 function ask(question) {
-  const terminal = createInterface({
-    input: process.stdin,
-    output: process.stderr,
-    terminal: true,
+  process.stderr.write(question);
+  if (!process.stdin.isTTY) {
+    const terminal = createInterface({ input: process.stdin, terminal: false });
+    return new Promise((resolve) =>
+      terminal.once(
+        "line",
+        (line) => (terminal.close(), process.stderr.write("\n"), resolve(line)),
+      ),
+    );
+  }
+  return new Promise((resolve) => {
+    let answer = "";
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    const onData = (chunk) => {
+      for (const char of chunk.toString()) {
+        if (char === "\r" || char === "\n") {
+          process.stdin.setRawMode(false);
+          process.stdin.pause();
+          process.stdin.off("data", onData);
+          process.stderr.write("\n");
+          return resolve(answer);
+        }
+        if (char === "\u0003") process.exit(130);
+        answer = char === "\u007f" ? answer.slice(0, -1) : answer + char;
+      }
+    };
+    process.stdin.on("data", onData);
   });
-  return new Promise((resolve) =>
-    terminal.question(
-      question,
-      (answer) => (terminal.close(), resolve(answer)),
-    ),
-  );
 }
 
 /** The vault identity: from the Keychain, else from the paper key (then kept if `keep`). */

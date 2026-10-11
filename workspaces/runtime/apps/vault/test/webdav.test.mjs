@@ -68,6 +68,18 @@ test("Finder's requests get the latest state, read only", async () => {
       Buffer.from(await (await fetch(base + "/link")).arrayBuffer()),
       app,
     );
+    const linkProps = await (
+      await fetch(base + "/link", {
+        method: "PROPFIND",
+        headers: { depth: "0" },
+      })
+    ).text();
+    assert.ok(
+      linkProps.includes(
+        `<D:getcontentlength>${app.length}</D:getcontentlength>`,
+      ),
+      "a link lists its target's size",
+    );
     assert.equal(
       (await fetch(base + "/src/app.py", { method: "PUT", body: "x" })).status,
       405,
