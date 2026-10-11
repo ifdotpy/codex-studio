@@ -369,14 +369,14 @@ class RuntimeContract(unittest.TestCase):
         lead = self.lead()
         self.runtime.send(lead['id'], 'Queued for later', 'after-turn-1', delivery='after_turn')
         self.runtime.dispatch()
-        time.sleep(.3)
+        self.runtime.dispatch()
         def carried():
             return [m for m, p in self.runtime.server.calls if m in ('turn/start', 'turn/steer')
                     and 'Queued for later' in json.dumps(p)]
         self.assertEqual(carried(), [], 'after_turn input is not steered into the active turn')
         self.complete(lead)
         eventually(lambda: carried() == ['turn/start'])
-        time.sleep(.3)
+        self.runtime.dispatch()
         self.assertEqual(carried(), ['turn/start'], 'delivered once, as a new turn')
 
     def test_budget_save_keeps_the_chat_visible_in_entity_sync(self):
@@ -1312,7 +1312,7 @@ class RuntimeContract(unittest.TestCase):
                     self.complete(a)
             if all(a['status'] == 'completed' for a in self.snapshot()['agents']):
                 break
-            time.sleep(.01)
+            self.runtime.changed.wait(.01)
         else:
             self.fail('Team did not finish')
         self.assertGreaterEqual(peak, 2)
@@ -1377,7 +1377,7 @@ class RuntimeContract(unittest.TestCase):
         self.runtime.stop(lead['id'])
         before = len([m for m,p in self.runtime.server.calls if m == 'turn/start'])
         self.complete(child)
-        time.sleep(.15)
+        self.runtime.dispatch()
         self.assertEqual(before, len([m for m,p in self.runtime.server.calls if m == 'turn/start']))
         self.assertTrue(all(not self.runtime.agent(a['id'])['autoWake']
                             for a in read_runtime_state(self.runtime)['agents']))
@@ -1551,8 +1551,7 @@ class RuntimeContract(unittest.TestCase):
         m = self.runtime.monitor(lead['id'], {'command': 'example-command'}, approved=True)
         eventually(lambda: read_runtime_state(self.runtime)['monitors'][0]['status'] == 'running')
         self.runtime.cancel_monitor(m['id'])
-        time.sleep(.1)
-        self.assertEqual(read_runtime_state(self.runtime)['monitors'][0]['status'], 'cancelled')
+        eventually(lambda: read_runtime_state(self.runtime)['monitors'][0]['status'] == 'cancelled')
         exits = [e for e in self.snapshot()['events'] if e['kind'] == 'monitor_exit']
         self.assertEqual(len(exits), 1)
 
