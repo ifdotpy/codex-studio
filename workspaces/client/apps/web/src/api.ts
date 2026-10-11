@@ -16,6 +16,7 @@ import type { components, paths } from "./generated/api";
 import {
   API_SCHEMA_HASH,
   API_SCHEMA_HASH_HEADER,
+  API_SCHEMA_MISMATCH_FIELD,
   API_SCHEMA_MISMATCH_HEADER,
 } from "./generated/apiSchema";
 import type {
@@ -178,6 +179,33 @@ export function markApiSchemaMismatch(serverHash?: unknown) {
   for (const listener of schemaMismatchListeners) listener();
 }
 
+export function isApiSchemaHashMismatch(serverHash: unknown) {
+  return serverHash !== API_SCHEMA_HASH;
+}
+
+export function isApiSchemaMismatchHandshake(payload: unknown) {
+  if (!payload || typeof payload !== "object") return true;
+  const handshake = payload as Record<string, unknown>;
+  return (
+    isApiSchemaHashMismatch(handshake.hash) ||
+    handshake[API_SCHEMA_MISMATCH_FIELD] === true
+  );
+}
+
+export function isApiSchemaMismatchResponse(
+  response: Response,
+  request: Request,
+) {
+  const serverHash = response.headers.get(API_SCHEMA_HASH_HEADER);
+  return (
+    response.headers.get(API_SCHEMA_MISMATCH_HEADER) === "1" ||
+    (!!serverHash && isApiSchemaHashMismatch(serverHash)) ||
+    (response.ok &&
+      new URL(request.url).pathname === "/api/sync/identity" &&
+      !serverHash)
+  );
+}
+
 export function schemaUpdateFailedAfterReload() {
   try {
     const attempt = sessionStorage.getItem(SCHEMA_UPDATE_ATTEMPT_KEY);
@@ -296,19 +324,13 @@ export async function automaticallyUpdateRenderer(
   return updateRendererAndReload(attempt, () => !signal.aborted && canReload());
 }
 
-const fetchApiRequest = async (request: Request) => {
+export const fetchApiRequest = async (request: Request) => {
   if (schemaMismatch) throw new ApiSchemaMismatchError();
   const headers = new Headers(request.headers);
   headers.set(API_SCHEMA_HASH_HEADER, API_SCHEMA_HASH);
   const response = await serverFetch(new Request(request, { headers }));
   const serverHash = response.headers.get(API_SCHEMA_HASH_HEADER);
-  if (
-    response.headers.get(API_SCHEMA_MISMATCH_HEADER) === "1" ||
-    (serverHash && serverHash !== API_SCHEMA_HASH) ||
-    (response.ok &&
-      new URL(request.url).pathname === "/api/sync/identity" &&
-      !serverHash)
-  ) {
+  if (isApiSchemaMismatchResponse(response, request)) {
     markApiSchemaMismatch(serverHash);
     // Do not let a response from another contract reach a projection or
     // mutation persister. The update gate is still raised before rejection.

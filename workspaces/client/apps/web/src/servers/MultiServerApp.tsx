@@ -84,7 +84,6 @@ export default function MultiServerApp() {
     () => orderPreferenceServers(uiOnly ? paired : [localServer(), ...paired]),
     [paired],
   );
-  useUiPreferenceSync(servers);
   const [selected, setSelected] = useState(
     () =>
       localStorage.getItem("studio-selected-server") || servers[0]?.id || "",
@@ -122,6 +121,7 @@ export default function MultiServerApp() {
     Record<string, ServerAccount[]>
   >({});
   const [lastSeen, setLastSeen] = useState<Record<string, number>>({});
+  useUiPreferenceSync(servers, lastSeen);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   type SearchRow = GetResult<"/api/search">["results"][number];

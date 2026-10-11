@@ -191,4 +191,86 @@ describe("paired server preference replication", () => {
       stop();
     }
   });
+
+  it("does not request or retry after the API schema gate is raised", async () => {
+    vi.useFakeTimers();
+    const rawFetch = vi.fn(async () => Response.json({}));
+    vi.stubGlobal("fetch", rawFetch);
+    vi.stubGlobal("location", { origin: "https://gated.invalid" });
+    const { fetchApiRequest, markApiSchemaMismatch } = await import("../api");
+    markApiSchemaMismatch();
+    const stop = connectUiPreferences(
+      "https://gated.invalid",
+      fetchApiRequest,
+      storage(),
+    );
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(rawFetch).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(rawFetch).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      stop();
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("stops and does not retry when a server response has another schema", async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn(
+      async () =>
+        new Response("{}", {
+          headers: { [API_SCHEMA_HASH_HEADER]: "foreign-schema" },
+        }),
+    );
+    const stop = connectUiPreferences(
+      "https://mismatch.invalid",
+      fetch,
+      storage(),
+    );
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a healthy server connected when another server mismatches", async () => {
+    const healthy = backend("https://healthy.invalid", {});
+    const mismatchedFetch = vi.fn(
+      async () =>
+        new Response("{}", {
+          headers: { [API_SCHEMA_HASH_HEADER]: "foreign-schema" },
+        }),
+    );
+    const stopHealthy = connectUiPreferences(
+      "https://healthy.invalid",
+      healthy.fetch,
+      storage(),
+    );
+    const stopMismatched = connectUiPreferences(
+      "https://mismatch.invalid",
+      mismatchedFetch,
+      storage(),
+    );
+    try {
+      await vi.waitFor(() =>
+        expect(streams.has("https://healthy.invalid")).toBe(true),
+      );
+      expect(mismatchedFetch).toHaveBeenCalledOnce();
+      expect(streams.has("https://mismatch.invalid")).toBe(false);
+    } finally {
+      stopHealthy();
+      stopMismatched();
+    }
+  });
 });

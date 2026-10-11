@@ -4,15 +4,12 @@ import {
 } from "../servers/eventSource";
 import { serverStorageName } from "../servers/environment";
 import type { components } from "../generated/api";
-import {
-  API_SCHEMA_HASH,
-  API_SCHEMA_HASH_PARAM,
-  API_SCHEMA_MISMATCH_FIELD,
-} from "../generated/apiSchema";
+import { API_SCHEMA_HASH, API_SCHEMA_HASH_PARAM } from "../generated/apiSchema";
 import {
   clearSchemaUpdateAttemptAfterMatch,
   get,
   isApiSchemaMismatch,
+  isApiSchemaMismatchHandshake,
   matchingApiSchemaResponseGeneration,
   markApiSchemaMismatch,
   onApiSchemaMismatch,
@@ -876,13 +873,7 @@ function openSource() {
         const payload: unknown = JSON.parse(
           (message as MessageEvent<string>).data,
         );
-        if (
-          !payload ||
-          typeof payload !== "object" ||
-          (payload as { hash?: unknown }).hash !== API_SCHEMA_HASH ||
-          (payload as Record<string, unknown>)[API_SCHEMA_MISMATCH_FIELD] ===
-            true
-        ) {
+        if (isApiSchemaMismatchHandshake(payload)) {
           markApiSchemaMismatch((payload as { hash?: unknown } | null)?.hash);
           return;
         }

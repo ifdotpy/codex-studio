@@ -5,6 +5,14 @@ import {
   API_SCHEMA_HASH_PARAM,
 } from "../generated/apiSchema";
 import {
+  ApiSchemaMismatchError,
+  isApiSchemaMismatchHandshake,
+  isApiSchemaMismatchResponse,
+  markApiSchemaMismatch,
+  onApiSchemaMismatch,
+} from "../api";
+import { apiOrigin } from "../servers/transport";
+import {
   initializePreferenceMigration,
   acknowledgePreferenceFields,
   readPreferenceFields,
@@ -26,6 +34,7 @@ export function connectUiPreferences(
   fetchRequest: Fetch,
   storage: Storage,
   onIdentity?: (workspaceId: string) => void,
+  onSchemaMismatch?: () => void,
 ) {
   let stopped = false;
   let ready = false;
@@ -37,6 +46,42 @@ export function connectUiPreferences(
   let stream: SignedEventSource | undefined;
   let retry: ReturnType<typeof setTimeout> | undefined;
   const controller = new AbortController();
+  let stopWrites = () => {};
+  let stopGateListener = () => {};
+  let resume = () => {};
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    controller.abort();
+    stream?.close();
+    stream = undefined;
+    if (retry) clearTimeout(retry);
+    retry = undefined;
+    stopWrites();
+    stopGateListener();
+    window.removeEventListener("online", resume);
+    window.removeEventListener("focus", resume);
+  };
+  const stopForSchemaMismatch = () => {
+    if (stopped) return;
+    stop();
+    onSchemaMismatch?.();
+  };
+  const fetchWithSchemaGate = async (request: Request) => {
+    if (stopped) throw new ApiSchemaMismatchError();
+    let response: Response;
+    try {
+      response = await fetchRequest(request);
+    } catch (error) {
+      if (error instanceof ApiSchemaMismatchError) stopForSchemaMismatch();
+      throw error;
+    }
+    if (isApiSchemaMismatchResponse(response, request)) {
+      stopForSchemaMismatch();
+      throw new ApiSchemaMismatchError(true);
+    }
+    return response;
+  };
   const confirmed: Partial<Record<PreferenceScope, string>> = {};
   initializePreferenceMigration("user", storage);
   initializePreferenceMigration("server", storage);
@@ -54,30 +99,26 @@ export function connectUiPreferences(
           byte.toString(16).padStart(2, "0"),
         ).join("");
     }
-    const response = await fetchRequest(
-      new Request(origin + path, {
-        headers: {
-          [API_SCHEMA_HASH_HEADER]: API_SCHEMA_HASH,
-          ...(body
-            ? {
-                "Content-Type": "application/json",
-                "X-Canvas-Token": token,
-                "X-Studio-Request-Id": requestId,
-              }
-            : {}),
-        },
-        method: body ? "POST" : "GET",
-        ...(body ? { body: JSON.stringify(body) } : {}),
-        signal: controller.signal,
-        redirect: "error",
-        cache: "no-store",
-      }),
-    );
-    if (
-      !response.ok ||
-      response.headers.get(API_SCHEMA_HASH_HEADER) !== API_SCHEMA_HASH
-    )
-      throw new Error("Preferences are unavailable.");
+    const outgoing = new Request(origin + path, {
+      headers: {
+        [API_SCHEMA_HASH_HEADER]: API_SCHEMA_HASH,
+        ...(body
+          ? {
+              "Content-Type": "application/json",
+              "X-Canvas-Token": token,
+              "X-Studio-Request-Id": requestId,
+            }
+          : {}),
+      },
+      method: body ? "POST" : "GET",
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      signal: controller.signal,
+      redirect: "error",
+      cache: "no-store",
+    });
+    if (stopped) throw new ApiSchemaMismatchError();
+    const response = await fetchWithSchemaGate(outgoing);
+    if (!response.ok) throw new Error("Preferences are unavailable.");
     return response.json();
   };
   const scheduleRetry = () => {
@@ -177,8 +218,25 @@ export function connectUiPreferences(
     });
     stream = new SignedEventSource(
       origin + `/api/sync/stream?${query}`,
-      fetchRequest,
+      fetchWithSchemaGate,
     );
+    stream.addEventListener("api-schema", (event) => {
+      let payload: unknown;
+      try {
+        payload = JSON.parse((event as MessageEvent<string>).data);
+      } catch {
+        payload = null;
+      }
+      if (!isApiSchemaMismatchHandshake(payload)) return;
+      if (new URL(origin).origin === apiOrigin()) {
+        const serverHash =
+          payload && typeof payload === "object"
+            ? (payload as { hash?: unknown }).hash
+            : undefined;
+        markApiSchemaMismatch(serverHash);
+      }
+      stopForSchemaMismatch();
+    });
     stream.addEventListener("resources", () => {
       void pull().catch(scheduleRetry);
     });
@@ -188,22 +246,18 @@ export function connectUiPreferences(
       scheduleRetry();
     };
   };
-  const stopWrites = watchPreferenceWrites(() => {
+  stopWrites = watchPreferenceWrites(() => {
     void send();
   });
-  const resume = () => {
+  resume = () => {
     void pull().then(openStream).catch(scheduleRetry);
   };
   window.addEventListener("online", resume);
   window.addEventListener("focus", resume);
-  void pull().then(openStream).catch(scheduleRetry);
-  return () => {
-    stopped = true;
-    controller.abort();
-    stream?.close();
-    clearTimeout(retry);
-    stopWrites();
-    window.removeEventListener("online", resume);
-    window.removeEventListener("focus", resume);
-  };
+  if (new URL(origin).origin === apiOrigin()) {
+    stopGateListener = onApiSchemaMismatch(stopForSchemaMismatch);
+    if (stopped) stopGateListener();
+  }
+  if (!stopped) void pull().then(openStream).catch(scheduleRetry);
+  return stop;
 }
