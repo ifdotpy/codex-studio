@@ -894,22 +894,24 @@ def _focused_run_slot(profile=None, slots=None):
         raise RuntimeError("focused run has no memory-safe admission slot")
     RUNNER_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
     import fcntl
-    for index in range(slots):
-        lock_file = (RUNNER_LOCK_PATH.parent / f"runner-focused-{index}.lock").open("a+b")
-        try:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            lock_file.close()
-            continue
-        try:
-            yield
-        finally:
-            lock_file.close()
-        return
-    print("waiting for a focused-run admission slot", flush=True)
-    with (RUNNER_LOCK_PATH.parent / "runner-focused-0.lock").open("a+b") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        yield
+    waiting = False
+    while True:
+        for index in range(slots):
+            lock_file = (RUNNER_LOCK_PATH.parent / f"runner-focused-{index}.lock").open("a+b")
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                lock_file.close()
+                continue
+            try:
+                yield
+            finally:
+                lock_file.close()
+            return
+        if not waiting:
+            print("waiting for a focused-run admission slot", flush=True)
+            waiting = True
+        time.sleep(0.05)
 
 
 

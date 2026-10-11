@@ -87,13 +87,20 @@ def _start_focused_process(context, root, observe_wait=False, suite_name="same-s
               suite_name),
     )
     process.start()
+    started_send.close()
+    release_recv.close()
+    finished_send.close()
+    waiting_send.close()
     return process, started_recv, release_send, finished_recv, waiting_recv
 
 
 def _receive(connection):
-    if not connection.poll(10):
-        raise AssertionError("focused-run fixture did not reach its pipe checkpoint")
-    return connection.recv()
+    # Wait for the fixture's pipe event; full server runs can delay subprocess
+    # scheduling beyond a short polling deadline.
+    try:
+        return connection.recv()
+    except EOFError as error:
+        raise AssertionError("focused-run fixture exited before sending its pipe checkpoint") from error
 
 
 class ServerSuiteRunner(unittest.TestCase):
@@ -469,19 +476,20 @@ class ServerSuiteRunner(unittest.TestCase):
             root = Path(directory)
             with mock.patch.object(RUNNER, "FOCUSED_SLOT_CAP", 2):
                 first = _start_focused_process(context, root, suite_name="unrelated-one.py")
-                second = _start_focused_process(context, root, suite_name="unrelated-two.py")
                 self.assertEqual(_receive(first[1]), "started")
+                second = _start_focused_process(context, root, suite_name="unrelated-two.py")
                 self.assertEqual(_receive(second[1]), "started")
                 third = _start_focused_process(context, root, observe_wait=True,
                                                suite_name="third-suite.py")
                 self.assertEqual(_receive(third[4]), "waiting")
                 self.assertFalse(third[1].poll(), "third fake suite started above the two-slot limit")
-                first[2].send("finish")
-                self.assertEqual(_receive(first[3]), (1, []))
-                self.assertEqual(_receive(third[1]), "started")
+                # Slot 0 remains held. Releasing slot 1 must admit the waiter.
                 second[2].send("finish")
-                third[2].send("finish")
                 self.assertEqual(_receive(second[3]), (1, []))
+                self.assertEqual(_receive(third[1]), "started")
+                first[2].send("finish")
+                third[2].send("finish")
+                self.assertEqual(_receive(first[3]), (1, []))
                 self.assertEqual(_receive(third[3]), (1, []))
                 for run in (first, second, third):
                     run[0].join(timeout=10)

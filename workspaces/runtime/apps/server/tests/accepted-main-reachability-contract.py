@@ -6,7 +6,9 @@ isolate_supervisor_environment()
 import importlib.util
 import json
 import os
+import select
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import threading
@@ -245,20 +247,64 @@ class MainReachability(unittest.TestCase):
         from codex_worktree_creation import _run_checkout
 
         child_file = self.root / 'checkout-child.pid'
+        ready_read, ready_write = os.pipe()
         child = 'import time; time.sleep(60)'
         parent = (
-            'import pathlib,subprocess,sys,time; '
+            'import os,pathlib,subprocess,sys,time; '
             f'p=subprocess.Popen([sys.executable,"-c",{child!r}]); '
-            f'pathlib.Path({str(child_file)!r}).write_text(str(p.pid)); time.sleep(60)'
+            f'pathlib.Path({str(child_file)!r}).write_text(str(p.pid)); '
+            f'os.write({ready_write},b"ready"); time.sleep(60)'
         )
-        started = time.monotonic()
-        with self.assertRaises(subprocess.TimeoutExpired):
-            _run_checkout([sys.executable, '-c', parent], timeout=.5,
-                          check=False, capture_output=True, text=True)
-        self.assertLess(time.monotonic() - started, 3)
+        original_popen = subprocess.Popen
+        ready_at = 0.0
+        ready_write_open = True
+
+        def start_after_child_is_ready(*args, **kwargs):
+            nonlocal ready_at, ready_write_open
+            kwargs['pass_fds'] = (*kwargs.get('pass_fds', ()), ready_write)
+            process = original_popen(*args, **kwargs)
+            os.close(ready_write)
+            ready_write_open = False
+            with os.fdopen(ready_read, 'rb') as ready:
+                ready_signal = ready.read(5)
+            if ready_signal != b'ready':
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.communicate(timeout=1)
+                raise AssertionError('checkout fixture exited before child readiness')
+            ready_at = time.monotonic()
+            return process
+
+        try:
+            with patch('codex_worktree_creation.subprocess.Popen', side_effect=start_after_child_is_ready):
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    _run_checkout([sys.executable, '-c', parent], timeout=.5,
+                                  check=False, capture_output=True, text=True)
+        finally:
+            if ready_write_open:
+                os.close(ready_write)
+        self.assertLess(time.monotonic() - ready_at, 3)
         pid = int(child_file.read_text(encoding='ascii'))
-        with self.assertRaises(ProcessLookupError):
-            os.kill(pid, 0)
+        if hasattr(os, 'pidfd_open'):
+            try:
+                pidfd = os.pidfd_open(pid)
+            except ProcessLookupError:
+                pass
+            else:
+                try:
+                    poller = select.poll()
+                    poller.register(pidfd, select.POLLIN)
+                    self.assertTrue(poller.poll(3000), 'checkout child remained alive after group kill')
+                finally:
+                    os.close(pidfd)
+        else:
+            status = subprocess.run(
+                ['ps', '-o', 'stat=', '-p', str(pid)], capture_output=True, text=True, check=False
+            ).stdout.strip()
+            self.assertTrue(not status or status.startswith('Z'),
+                            'checkout child remained alive after group kill')
 
     def test_changed_origin_or_fetched_ref_blocks_archive(self):
         for change in ('origin', 'ref'):
