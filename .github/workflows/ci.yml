@@ -13,6 +13,54 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  server-opt-in:
+    name: Audited offline server suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+      - name: Read the pinned Rust toolchain
+        id: rust-toolchain
+        run: |
+          channel="$(sed -n 's/^channel = \"\(.*\)\"/\1/p' rust-toolchain.toml)"
+          components="$(sed -n 's/^components = \[\(.*\)\]/\1/p' rust-toolchain.toml | tr -d ' \"')"
+          test -n "$channel"
+          test -n "$components"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "components=$components" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+          components: ${{ steps.rust-toolchain.outputs.components }}
+      - name: Install locked JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Prepare isolated Python runtime and native module
+        run: |
+          echo "XDG_CACHE_HOME=/var/tmp/codex-studio-opt-in-cache" >> "$GITHUB_ENV"
+          python3 -m venv /var/tmp/codex-studio-opt-in-setup
+          setup_python=/var/tmp/codex-studio-opt-in-setup/bin/python
+          "$setup_python" -c 'import sys; print(sys.prefix); assert sys.prefix.startswith("/var/tmp/")'
+          cargo build --locked --release -p studio-operations-python
+          XDG_CACHE_HOME=/var/tmp/codex-studio-opt-in-cache \
+            "$setup_python" workspaces/runtime/apps/server/src/install-cli.py \
+              --dev --bin-dir /var/tmp/codex-studio-opt-in-bin
+          managed_python="$(XDG_CACHE_HOME=/var/tmp/codex-studio-opt-in-cache \
+            "$setup_python" workspaces/runtime/apps/server/src/codex_python.py)"
+          "$managed_python" -c 'import sys; print(sys.prefix); assert sys.prefix.startswith("/var/tmp/")'
+      - name: Confirm hosted runner has no Codex executable
+        run: if command -v codex >/dev/null 2>&1; then echo "Codex must not be installed for this offline suite" >&2; exit 1; fi
+      - name: Run audited offline server suites without Codex
+        run: pnpm run test:server:opt-in
+
   javascript:
     name: JavaScript checks
     runs-on: ubuntu-latest

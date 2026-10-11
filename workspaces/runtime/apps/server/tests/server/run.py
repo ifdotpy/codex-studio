@@ -55,10 +55,9 @@ STUDIO_API_COMPONENT_ROOT = SERVER_SOURCE_ROOT / "studio_api"
 LEGACY_SERVER_JS = {
     f"{TESTS_REL}/portable-smoke.mjs": "safe",
     f"{TESTS_REL}/state-contract-smoke.mjs": "safe",
-    f"{TESTS_REL}/swarm-retry-contract.mjs": "expensive",
     f"{SOURCE_REL}/studio_api/benchmarks/runtime_load/test_http_outcomes.mjs": "expensive",
 }
-OPT_IN = {"native", "live", "expensive", "browser", "vm"}
+OPT_IN = {"automated", "native", "live", "expensive", "browser", "vm"}
 DEFAULT_TIMEOUT_SECONDS = 120
 EXPENSIVE_TIMEOUT_SECONDS = 900
 TEST_TMP_ROOT = Path(os.environ.get(
@@ -122,14 +121,6 @@ NATIVE_SUITES = frozenset({
     f"{TESTS_REL}/native-safety-integration.py", f"{TESTS_REL}/native-tools-native.py",
     f"{TESTS_REL}/portable-history-native.py", f"{TESTS_REL}/session-names-native.py",
     f"{TESTS_REL}/spawn-recovery-native.py", f"{TESTS_REL}/time-awareness-native.py",
-    f"{TESTS_REL}/native-action-context-repair-contract.py",
-    f"{TESTS_REL}/native-action-receipts-contract.py", f"{TESTS_REL}/native-action-settings-contract.py",
-    f"{TESTS_REL}/native-binary-contract.py", f"{TESTS_REL}/native-command-controls-contract.py",
-    f"{TESTS_REL}/native-error-contract.py", f"{TESTS_REL}/native-notification-lookup-contract.py",
-    f"{TESTS_REL}/native-release-contract.py", f"{TESTS_REL}/native-runtime-updates-contract.py",
-    f"{TESTS_REL}/native-safety-contract.py", f"{TESTS_REL}/native-tools-contract.py",
-    f"{TESTS_REL}/native-tools-shutdown-contract.py", f"{TESTS_REL}/native-voice-admission-contract.py",
-    f"{TESTS_REL}/native-voice-contract.py",
     f"{TESTS_REL}/tool-parity.py", f"{TESTS_REL}/workspace-native-turn.py",
     f"{TESTS_REL}/workspace-protocol.py",
 })
@@ -145,22 +136,46 @@ EXPENSIVE_SUITES = frozenset({
     # Real APFS images: about 118 s alone, so any parallel load passes the 120 s deadline.
     f"{TESTS_REL}/workspace-images-macos.py",
     f"{TESTS_REL}/account-costs-contract.py", f"{TESTS_REL}/analytics-memory-contract.py",
-    f"{TESTS_REL}/analytics-usage-memory-contract.py", f"{TESTS_REL}/cost-scanner-contract.py",
-    f"{TESTS_REL}/costs-contract.py", f"{TESTS_REL}/limit-payloads-contract.py",
+    f"{TESTS_REL}/analytics-usage-memory-contract.py",
     f"{TESTS_REL}/notification-load-contract.py",
-    f"{TESTS_REL}/payload-storage-contract.py", f"{TESTS_REL}/peer-conversion-scale-contract.py",
-    f"{TESTS_REL}/preparation-unload-contract.py",
-    f"{TESTS_REL}/pricing-session-cost-contract.py", f"{TESTS_REL}/provider-replay-runner.py",
-    f"{TESTS_REL}/scheduler-disk-full-contract.py",
-    f"{TESTS_REL}/session-cost-memory-contract.py", f"{TESTS_REL}/session-cost-refresh-contract.py",
-    f"{TESTS_REL}/session-cost-scan-contract.py",
+    f"{TESTS_REL}/peer-conversion-scale-contract.py",
+    f"{TESTS_REL}/session-cost-memory-contract.py",
     f"{TESTS_REL}/supervisor-stream-phase-load-contract.py",
     f"{TESTS_REL}/sync-read-latency-contract.py",
-    f"{TESTS_REL}/transcript-latency-contract.py", f"{TESTS_REL}/transcript-streaming-write-volume-contract.py",
-    f"{TESTS_REL}/swarm-retry-contract.mjs",
+    f"{TESTS_REL}/transcript-latency-contract.py",
     f"{SOURCE_REL}/sync/benchmarks/message_delivery/test_benchmark.py",
     f"{SOURCE_REL}/studio_api/benchmarks/runtime_load/test_runtime_load.py",
 })
+AUTOMATED_SUITES = {
+    # These short fixture-only suites add under two seconds apiece to defaults.
+    f"{TESTS_REL}/payload-storage-contract.py": "safe",
+    f"{TESTS_REL}/preparation-unload-contract.py": "safe",
+    f"{TESTS_REL}/scheduler-disk-full-contract.py": "safe",
+    f"{TESTS_REL}/session-cost-refresh-contract.py": "safe",
+    f"{TESTS_REL}/session-cost-scan-contract.py": "safe",
+    f"{TESTS_REL}/transcript-streaming-write-volume-contract.py": "safe",
+    f"{TESTS_REL}/native-action-context-repair-contract.py": "safe",
+    f"{TESTS_REL}/native-action-settings-contract.py": "safe",
+    f"{TESTS_REL}/native-binary-contract.py": "safe",
+    f"{TESTS_REL}/native-command-controls-contract.py": "safe",
+    f"{TESTS_REL}/native-notification-lookup-contract.py": "safe",
+    f"{TESTS_REL}/native-runtime-updates-contract.py": "safe",
+    f"{TESTS_REL}/native-tools-contract.py": "safe",
+    f"{TESTS_REL}/native-tools-shutdown-contract.py": "safe",
+    f"{TESTS_REL}/native-voice-admission-contract.py": "safe",
+    f"{TESTS_REL}/native-voice-contract.py": "safe",
+    # The remaining opt-in suites are selected by CI without duplicating names.
+    f"{TESTS_REL}/cost-scanner-contract.py": "automated",
+    f"{TESTS_REL}/costs-contract.py": "automated",
+    f"{TESTS_REL}/limit-payloads-contract.py": "automated",
+    f"{TESTS_REL}/pricing-session-cost-contract.py": "automated",
+    f"{TESTS_REL}/provider-replay-runner.py": "automated",
+    f"{TESTS_REL}/native-action-receipts-contract.py": "automated",
+    f"{TESTS_REL}/native-error-contract.py": "automated",
+    f"{TESTS_REL}/native-release-contract.py": "automated",
+    f"{TESTS_REL}/native-safety-contract.py": "automated",
+    f"{TESTS_REL}/swarm-retry-contract.mjs": "automated",
+}
 NON_TESTS = {
     f"{TESTS_REL}/test_isolation.py": "shared fixture helper",
     f"{TESTS_REL}/vm-native-fixture.py": "shared VM provider fixture helper",
@@ -195,6 +210,8 @@ def category(path):
         return "native"
     if relative in LIVE_SUITES:
         return "live"
+    if relative in AUTOMATED_SUITES:
+        return AUTOMATED_SUITES[relative]
     if relative in EXPENSIVE_SUITES:
         return "expensive"
     return "safe"
@@ -247,8 +264,7 @@ def inventory():
             if relative not in NON_TESTS:
                 entries[relative] = category(path)
     for name in ("runtime-live.py", "time-awareness.py", "tool-parity.py",
-                 "workspace-protocol.py", "workspace-races.py", "workspace-native-turn.py",
-                 "provider-replay-runner.py"):
+                 "workspace-protocol.py", "workspace-races.py", "workspace-native-turn.py"):
         path = TESTS / name
         if path.is_file():
             entries[path.relative_to(ROOT).as_posix()] = category(path)
@@ -260,6 +276,9 @@ def inventory():
     for path, kind in LEGACY_SERVER_JS.items():
         if (ROOT / path).is_file():
             entries[path] = kind
+    for path in AUTOMATED_SUITES:
+        if (ROOT / path).is_file():
+            entries[path] = category(ROOT / path)
     for directory in COMPONENT_ROOTS:
         for path in (ROOT / directory).glob("test_*.py"):
             entries[path.relative_to(ROOT).as_posix()] = "component"
@@ -285,6 +304,13 @@ def selected(entries, pattern):
     query = pattern.lower()
     return [(path, kind) for path, kind in entries
             if query in path.lower() or fnmatch.fnmatch(path.lower(), query)]
+
+
+def only_category(entries, kind):
+    """Select only suites assigned to one reviewed execution class."""
+    if kind == "automated":
+        return [(path, category) for path, category in entries if path in AUTOMATED_SUITES]
+    return [(path, category) for path, category in entries if category == kind]
 
 
 def run_process(command, cwd, timeout, environment):
@@ -1453,6 +1479,8 @@ def main():
     parser.add_argument("--filter", metavar="TEXT_OR_GLOB", help="select paths by substring or glob")
     parser.add_argument("--include", action="append", choices=sorted(OPT_IN), default=[],
                         help="also run this opt-in group (repeatable)")
+    parser.add_argument("--only", choices=sorted(OPT_IN),
+                        help="run only suites in this execution class")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS,
                         help="deadline per normal test process (default: 120s)")
     parser.add_argument("--expensive-timeout", type=float, default=EXPENSIVE_TIMEOUT_SECONDS,
@@ -1474,6 +1502,10 @@ def main():
     if not math.isfinite(args.load_sample_seconds) or args.load_sample_seconds < 0:
         parser.error("--load-sample-seconds must be a finite, non-negative number")
     entries = selected(inventory(), args.filter)
+    if args.only:
+        if args.include:
+            parser.error("--only cannot be combined with --include")
+        entries = only_category(entries, args.only)
     load_sample_seconds = args.load_sample_seconds
     if args.filter:
         selected_runnable = sum(
@@ -1483,7 +1515,7 @@ def main():
         if selected_runnable < available_cpu_count():
             load_sample_seconds = 0.0
     if args.show_jobs:
-        opted_in = set(args.include)
+        opted_in = set(args.include) | ({args.only} if args.only else set())
         runnable, _skipped = _runnable_entries(entries, opted_in)
         profile = _load_profile()
         focused_slots = (_focused_slot_count(profile)
@@ -1522,7 +1554,7 @@ def main():
         else:
             print("No server tests matched the filter.", file=sys.stderr)
         return 2
-    opted_in = set(args.include)
+    opted_in = set(args.include) | ({args.only} if args.only else set())
     runnable, skipped, failures, elapsed = run_suites(
         entries, opted_in, args.timeout, args.expensive_timeout,
         workers=args.jobs, load_sample_seconds=load_sample_seconds,

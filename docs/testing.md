@@ -93,6 +93,14 @@ The server listing displays discovered suites;
 use the server runner's `--help` for filters and optional categories. The root
 server script also runs the colocated JavaScript bridge tests. For a focused
 Python contract, use `pnpm run test:server:python -- --filter <name>`.
+`pnpm run test:server:opt-in` selects the runner's audited automation set of 26
+contracts. Sixteen fixture-only suites now run by default after each measured
+under two seconds; ten remain opt-in. `just test-server-opt-in` is the matching
+facade recipe. CI runs all 26 on every pull request and push to `main`; the
+suite list is owned by the server runner, not the workflow. Load-class suites
+remain opt-in for manual runs and are never included in automation. Do not use
+`--include expensive` in automation because that class also contains load,
+scale, latency, and contention suites.
 The backend requires the native lifecycle module. Build and install it into the
 managed Python environment with this one setup command before server tests or
 backend startup; installation copies the built library and never builds it:
