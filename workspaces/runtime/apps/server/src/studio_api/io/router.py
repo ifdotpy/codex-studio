@@ -194,8 +194,36 @@ def create_router(context: ApiContext) -> APIRouter:
         "/api/monitor/log",
         response_class=Response,
         responses={
-            200: {"content": {"text/plain": {"schema": {"type": "string"}}}},
-            206: {"content": {"text/plain": {"schema": {"type": "string"}}}},
+            200: {
+                "content": {"text/plain": {"schema": {"type": "string"}}},
+                "headers": {
+                    "Content-Length": {"schema": {"type": "string"}},
+                    "Content-Disposition": {"schema": {"type": "string"}},
+                    "Accept-Ranges": {"schema": {"type": "string"}},
+                    "Cache-Control": {"schema": {"type": "string"}},
+                    "X-Content-Type-Options": {"schema": {"type": "string"}},
+                    "X-Log-Truncated": {"schema": {"type": "string"}},
+                },
+            },
+            206: {
+                "content": {"text/plain": {"schema": {"type": "string"}}},
+                "headers": {
+                    "Content-Length": {"schema": {"type": "string"}},
+                    "Content-Disposition": {"schema": {"type": "string"}},
+                    "Accept-Ranges": {"schema": {"type": "string"}},
+                    "Cache-Control": {"schema": {"type": "string"}},
+                    "Content-Range": {"schema": {"type": "string"}},
+                    "X-Content-Type-Options": {"schema": {"type": "string"}},
+                    "X-Log-Truncated": {"schema": {"type": "string"}},
+                },
+            },
+            416: {
+                "description": "Requested byte range is not satisfiable",
+                "headers": {
+                    "Content-Length": {"schema": {"type": "string"}},
+                    "Content-Range": {"schema": {"type": "string"}},
+                },
+            },
             400: {"model": ErrorResponse},
         },
     )

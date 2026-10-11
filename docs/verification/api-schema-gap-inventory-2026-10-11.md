@@ -17,6 +17,23 @@ Route table: 163 method/path entries (156 under `/api/`), including 14 hidden en
 
 Before changes, two public API routes had `response_model=None`: SSE and ranged text; four FastAPI documentation endpoints also have no response model. The API response bodies were partly described as event-stream and text/plain.
 
+## Gap counts after schema changes
+
+| Gap kind                                                  | Remaining route entries | Result                                                                                                                                        |
+| --------------------------------------------------------- | ----------------------: | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| SSE event schema and response headers                     |                       0 | Added the named `ApiSchemaEvent` model, listed all four event names in `x-sse-events`, and documented the two headers emitted by the stream.  |
+| Monitor-log range status and headers                      |                       0 | Added the existing 416 empty response and its `Content-Length`/`Content-Range` headers, plus headers already emitted for 200/206.             |
+| Analytics export headers                                  |                       0 | Documented the existing attachment/cache/nosniff and optional timing headers; the existing `AnalyticsResponse` still describes the JSON body. |
+| Flexible nested response models                           |                      18 | Still open. The 23 `extra=allow` declarations were not tightened because the producer fields and extension intent were not established.       |
+| Handler comparison open or hidden route not audited       |                     142 | Still open: 128 visible route entries and 14 hidden entries.                                                                                  |
+| Top-level `dict[str, Any]` or `JsonObject` response model |                       0 | No such response model found.                                                                                                                 |
+
+The three implemented schema corrections do not change the route handler's status, body bytes, or response headers. Existing route tests compare the analytics export bytes, monitor-log full/ranged bytes, and SSE handshake frame bytes with fixed expected values; the same tests also check the actual emitted headers against the new declarations. No stricter response model was added to JSON response handlers. The SSE handshake model validates only the frame that the handler already constructs.
+
+The schema hash changed from `b823a565627cc6d64cdfbbaabe2d503e7cfbf9b986ca1b114ecb50fda63e1623` to `19bca65689fede19184839765c1c9ca2528b402a3012a96522f5d4ec1a688c63`. The existing mismatch behavior remains: writes from clients sending the old hash receive HTTP 426 until rebuilt. The release must announce this schema-hash compatibility break.
+
+No wire-change proposal is made because this pass did not establish a producer shape that requires one. The open flexible models and unaudited handlers remain listed as gaps rather than receiving guessed schemas.
+
 ## Route-by-route inventory
 
 Declared status codes are pre-change OpenAPI response keys, including default success and shared error-envelope responses. Request models list the body model and registered path/query fields. `—` means no declared response model.
