@@ -1,6 +1,6 @@
 """The project vault from the Mac (docs/vault.md): configure the VM writer, push, read the status.
 
-    python3 codex_vault.py configure PROJECT_FOLDER < config.json   (vault-deploy pipes it)
+    python3 codex_vault.py configure PROJECT_FOLDER < config.json   (layr-desk vault-deploy --writer pipes it)
     python3 codex_vault.py push PROJECT_FOLDER
     python3 codex_vault.py status PROJECT_FOLDER
 

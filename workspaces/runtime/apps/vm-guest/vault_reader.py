@@ -1,5 +1,5 @@
 """The reference reader of the vault format (docs/vault.md): the tests and the VM checks use it;
-the browser and vault-restore have the same logic in JavaScript."""
+layr-desk has the same logic for the browser and the Mac."""
 from __future__ import annotations
 
 import json
