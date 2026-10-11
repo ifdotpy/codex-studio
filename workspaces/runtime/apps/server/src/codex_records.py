@@ -406,6 +406,7 @@ class RateLimitSnapshotRecord(TypedDict):
 
 
 class AccountDataRecord(TypedDict):
+    """Persisted profile row; other provider metadata is represented by projections."""
     home: str
     provider: NotRequired[str]
 
@@ -1621,28 +1622,59 @@ class ProjectLocationRecord(TypedDict):
     serverId: str
     path: str
     projectId: str
+    requestedPath: NotRequired[str]
     gitOrigin: NotRequired[str | None]
 
 
+class ProjectAliasRecord(TypedDict):
+    serverId: str
+    projectId: str
+    name: str
+
+
+class ProjectFolderRecord(TypedDict):
+    id: str
+    name: str
+    parentId: NotRequired[str | None]
+
+
+class ProjectPeerTeamRecord(TypedDict):
+    id: str
+    name: str
+    members: list[str]
+
+
+class ProjectRegistrationRecord(TypedDict):
+    action: Literal["register"]
+    project: str
+    server: str
+    path: str
+
+
 class ProjectRecord(TypedDict):
+    """Persisted project fields; account metadata is absent on environment-only projects."""
+
     id: str
     path: str
     name: str
-    accountKey: str
-    accountRevision: int
     created: float
+    accountKey: NotRequired[str]
+    accountRevision: NotRequired[int]
     homeServerId: NotRequired[str]
     locations: NotRequired[list[ProjectLocationRecord]]
     locationsRevision: NotRequired[int]
-    projectAliases: NotRequired[list[JsonObject]]
+    projectAliases: NotRequired[list[ProjectAliasRecord]]
     updated: NotRequired[float]
     accountKeys: NotRequired[list[str]]
-    folders: NotRequired[list[JsonValue]]
+    folders: NotRequired[list[ProjectFolderRecord]]
     organizationRevision: NotRequired[int]
-    peerTeams: NotRequired[list["PeerTeamRecord"]]
+    peerTeams: NotRequired[list[ProjectPeerTeamRecord]]
     peerTeamsRevision: NotRequired[int]
     workerBaseRef: NotRequired[str]
     workerBaseRevision: NotRequired[int]
+    workerEnvironment: NotRequired[Literal["host", "linux"]]
+    workerEnvironmentRevision: NotRequired[int]
+    registration: NotRequired[ProjectRegistrationRecord]
 
 
 class PeerTeamRecord(TypedDict):

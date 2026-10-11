@@ -91,6 +91,8 @@ export function useAccounts(stateDir?: string) {
     archivedAccounts: [],
     defaultAccountKey: "default",
     logins: [],
+    supportsDelete: true,
+    supportsDisconnect: true,
   });
   const [error, setError] = useState("");
   const latestRead = useRef(0);

@@ -63,7 +63,7 @@ class TerminalInputResult(ResponseModel):
 
 class MonitorActionResult(ResponseModel):
     id: str
-    status: MonitorState | None = None
+    status: MonitorState
     cancelRequested: bool | None = None
     error: str | None = None
 

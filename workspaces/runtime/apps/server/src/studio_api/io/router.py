@@ -32,9 +32,16 @@ from studio_api.io.models import (
     TerminalResize,
     TerminalOutputQuery,
 )
-from studio_api.models import ErrorResponse, JsonValue
+from studio_api.models import JsonValue
 from studio_api.request_helpers import body_data, first_nonempty_query
-from studio_api.responses import API_BOUNDARY_RESPONSE_HEADERS, error_responses, response_headers
+from studio_api.responses import (
+    API_BOUNDARY_RESPONSE_HEADERS,
+    API_CONTEXT_RESPONSE_HEADERS,
+    api_read_responses,
+    api_write_responses,
+    error_responses,
+    response_headers,
+)
 
 if TYPE_CHECKING:
     from studio_api.context import ApiContext
@@ -42,6 +49,15 @@ if TYPE_CHECKING:
 LOG_CHUNK_BYTES = 65536
 MONITOR_LOG_NAME = re.compile(r"[^A-Za-z0-9._-]")
 BYTE_RANGE = re.compile(r"bytes=(\d*)-(\d*)\Z")
+_MONITOR_LOG_HEADERS = {
+    **API_CONTEXT_RESPONSE_HEADERS,
+    **API_BOUNDARY_RESPONSE_HEADERS,
+    **response_headers(
+        "Content-Length", "Content-Disposition", "Accept-Ranges", "Cache-Control",
+        "X-Content-Type-Options", "X-Log-Truncated",
+    ),
+}
+_MONITOR_LOG_ERRORS = error_responses((400, 401, 403, 404, 429, 500, 503))
 
 
 class MonitorLogData(TypedDict):
@@ -176,11 +192,11 @@ def create_router(context: ApiContext) -> APIRouter:
     io_context = cast(IOContext, context)
     router = APIRouter()
 
-    @router.get("/api/terminals", response_model=TerminalList, responses={400: {"model": ErrorResponse}})
+    @router.get("/api/terminals", response_model=TerminalList, responses=api_read_responses(errors=(400,)))
     def list_terminals(request: Request) -> Response:
         return io_context.send(request, io_context.terminals().listing())
 
-    @router.get("/api/terminals/output", response_model=TerminalOutput, responses={400: {"model": ErrorResponse}})
+    @router.get("/api/terminals/output", response_model=TerminalOutput, responses=api_read_responses(errors=(400,)))
     def terminal_output(request: Request, _query: Annotated[TerminalOutputQuery, Query()]) -> Response:
         manager = io_context.terminals()
         key = first_nonempty_query(request, "id")
@@ -197,33 +213,21 @@ def create_router(context: ApiContext) -> APIRouter:
         responses={
             200: {
                 "content": {"text/plain": {"schema": {"type": "string"}}},
-                "headers": {
-                    **API_BOUNDARY_RESPONSE_HEADERS,
-                    **response_headers(
-                        "Content-Length", "Content-Disposition", "Accept-Ranges",
-                        "Cache-Control", "X-Content-Type-Options", "X-Log-Truncated",
-                    ),
-                },
+                "headers": _MONITOR_LOG_HEADERS,
             },
             206: {
                 "content": {"text/plain": {"schema": {"type": "string"}}},
-                "headers": {
-                    **API_BOUNDARY_RESPONSE_HEADERS,
-                    **response_headers(
-                        "Content-Length", "Content-Disposition", "Accept-Ranges",
-                        "Cache-Control", "Content-Range", "X-Content-Type-Options",
-                        "X-Log-Truncated",
-                    ),
-                },
+                "headers": {**_MONITOR_LOG_HEADERS, **response_headers("Content-Range")},
             },
             416: {
                 "description": "Requested byte range is not satisfiable",
                 "headers": {
+                    **API_CONTEXT_RESPONSE_HEADERS,
                     **API_BOUNDARY_RESPONSE_HEADERS,
                     **response_headers("Content-Length", "Content-Range"),
                 },
             },
-            **error_responses((400, 403, 404, 500, 503)),
+            **_MONITOR_LOG_ERRORS,
         },
     )
     def monitor_log(request: Request, query: Annotated[MonitorLogQuery, Query()]) -> Response:
@@ -232,7 +236,7 @@ def create_router(context: ApiContext) -> APIRouter:
             raise ValueError("Unknown monitor")
         return _monitor_log_response(io_context, request, monitor_id)
 
-    @router.get("/api/file-info", response_model=FileInfo, responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}})
+    @router.get("/api/file-info", response_model=FileInfo, responses=api_read_responses(errors=(400, 404)))
     def file_info(request: Request, _query: Annotated[FileQuery, Query()]) -> Response:
         query = FileQuery.model_validate({
             "agent": first_nonempty_query(request, "agent"),
@@ -241,7 +245,7 @@ def create_router(context: ApiContext) -> APIRouter:
         })
         return io_context.send(request, _runtime(io_context.runtime).file_info(query.agent, query.path, query.asset))
 
-    @router.get("/api/file", response_model=FileContent, responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}})
+    @router.get("/api/file", response_model=FileContent, responses=api_read_responses(errors=(400, 404)))
     def file_content(request: Request, _query: Annotated[FileQuery, Query()]) -> Response:
         query = FileQuery.model_validate({
             "agent": first_nonempty_query(request, "agent"),
@@ -251,7 +255,7 @@ def create_router(context: ApiContext) -> APIRouter:
         content, mime, name = _runtime(io_context.runtime).file_content(query.agent, query.path, query.asset)
         return io_context.send(request, {"name": name, "mime": mime, "base64": base64.b64encode(content).decode()})
 
-    @router.post("/api/terminals/create", response_model=TerminalRecord, responses={400: {"model": ErrorResponse}})
+    @router.post("/api/terminals/create", response_model=TerminalRecord, responses=api_write_responses(errors=(400,)))
     def create_terminal(request: Request, body: TerminalCreate) -> Response:
         manager = io_context.terminals()
         runtime = io_context.runtime
@@ -260,31 +264,31 @@ def create_router(context: ApiContext) -> APIRouter:
         result = manager.create(runtime, body_data(body))
         return io_context.send(request, result)
 
-    @router.post("/api/terminals/input", response_model=TerminalInputResult, responses={400: {"model": ErrorResponse}})
+    @router.post("/api/terminals/input", response_model=TerminalInputResult, responses=api_write_responses(errors=(400,)))
     def terminal_input(request: Request, body: TerminalInput) -> Response:
         return io_context.send(request, io_context.terminals().action("input", body_data(body)))
 
-    @router.post("/api/terminals/resize", response_model=TerminalRecord, responses={400: {"model": ErrorResponse}})
+    @router.post("/api/terminals/resize", response_model=TerminalRecord, responses=api_write_responses(errors=(400,)))
     def resize_terminal(request: Request, body: TerminalResize) -> Response:
         return io_context.send(request, io_context.terminals().action("resize", body_data(body)))
 
-    @router.post("/api/terminals/rename", response_model=TerminalRecord, responses={400: {"model": ErrorResponse}})
+    @router.post("/api/terminals/rename", response_model=TerminalRecord, responses=api_write_responses(errors=(400,)))
     def rename_terminal(request: Request, body: TerminalRename) -> Response:
         return io_context.send(request, io_context.terminals().action("rename", body_data(body)))
 
-    @router.post("/api/terminals/close", response_model=TerminalRecord, responses={400: {"model": ErrorResponse}})
+    @router.post("/api/terminals/close", response_model=TerminalRecord, responses=api_write_responses(errors=(400,)))
     def close_terminal(request: Request, body: TerminalClose) -> Response:
         return io_context.send(request, io_context.terminals().action("close", body_data(body)))
 
-    @router.post("/api/monitor/input", response_model=JsonValue, responses={400: {"model": ErrorResponse}})
+    @router.post("/api/monitor/input", response_model=JsonValue, responses=api_write_responses(errors=(400,)))
     def monitor_input(request: Request, body: MonitorInput) -> Response:
         return io_context.send(request, _runtime(io_context.runtime).monitor_input(body.id, body_data(body)))
 
-    @router.post("/api/monitor/cancel", response_model=MonitorActionResult, responses={400: {"model": ErrorResponse}})
+    @router.post("/api/monitor/cancel", response_model=MonitorActionResult, responses=api_write_responses(errors=(400,)))
     def cancel_monitor(request: Request, body: MonitorId) -> Response:
         return io_context.send(request, _runtime(io_context.runtime).cancel_monitor(body.id))
 
-    @router.post("/api/assets", response_model=AssetRecord, responses={400: {"model": ErrorResponse}})
+    @router.post("/api/assets", response_model=AssetRecord, responses=api_write_responses(errors=(400,)))
     def upload_asset(request: Request, body: AssetUpload) -> Response:
         return io_context.send(request, _runtime(io_context.runtime).upload_asset(body_data(body)))
 

@@ -53,7 +53,9 @@ from .models import (
     ResetRequest,
     UsageLimitsResponse,
     RateLimitBucket,
+    Project,
 )
+from codex_records import ProjectRecord
 
 
 class AccountsModelTests(unittest.TestCase):
@@ -129,6 +131,13 @@ class AccountsModelTests(unittest.TestCase):
         self.assertIn("base_ref", request.model_dump(mode="json", exclude_unset=True))
         with self.assertRaises(ValidationError):
             ProjectWriteRequest.model_validate({"action": "unknown", "path": "/project"})
+
+    def test_project_dto_fields_match_the_persisted_record_contract(self) -> None:
+        self.assertEqual(set(Project.model_fields), set(ProjectRecord.__annotations__))
+        self.assertEqual(
+            {name for name, field in Project.model_fields.items() if field.is_required()},
+            ProjectRecord.__required_keys__,
+        )
 
     def test_reset_requires_durable_uuid_before_dispatch(self) -> None:
         request = ResetRequest.model_validate({
@@ -793,9 +802,12 @@ class AccountsRouterTests(unittest.TestCase):
         operation = self.app.openapi()["paths"]["/api/limits"]["get"]
         self.assertEqual({param["name"] for param in operation["parameters"]}, {"account_key", "cached"})
         self.assertIn("400", operation["responses"])
-        self.assertIn("ErrorResponse", json.dumps(operation["responses"]["400"]))
-        self.assertNotIn("content", operation["responses"]["422"])
-        self.assertNotIn("HTTPValidationError", json.dumps(operation["responses"]))
+        self.assertEqual(
+            operation["responses"]["400"]["$ref"],
+            "#/components/responses/ApiError400",
+        )
+        # A plain FastAPI test app adds its own 422 component. Production's
+        # OpenAPI document removes request-validation responses centrally.
         models_operation = self.app.openapi()["paths"]["/api/models"]["get"]
         retry_parameter = next(
             param for param in models_operation["parameters"] if param["name"] == "retry"
@@ -961,6 +973,18 @@ class AccountsRouterTests(unittest.TestCase):
                 self.assertEqual(organized.status_code, 200, organized.text)
                 self.assertEqual(organized.json()["name"], "Renamed")
                 self.assertEqual(organized.json()["organizationRevision"], 1)
+
+                environment_only_path = isolated.root / "environment-only"
+                environment_only_path.mkdir()
+                environment_only = client.post("/api/projects", json={
+                    "action": "set_worker_base", "path": str(environment_only_path),
+                    "base_ref": None, "expected_revision": 0,
+                })
+                self.assertEqual(environment_only.status_code, 200, environment_only.text)
+                self.assertEqual(environment_only.json()["id"], str(environment_only_path.resolve()))
+                self.assertNotIn("accountKey", environment_only.json())
+                Project.model_validate(environment_only.json())
+
                 removed = client.post("/api/projects", json={"action": "remove", "path": str(project_path)})
                 self.assertEqual(removed.status_code, 200, removed.text)
                 self.assertEqual(removed.json(), {"id": str(project_path.resolve()), "removed": True})

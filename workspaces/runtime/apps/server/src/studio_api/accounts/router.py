@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated, Any, TYPE_CHECKING, Protocol, cast
+from typing import Annotated, TYPE_CHECKING, Protocol, cast
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from starlette.responses import Response
 
-from studio_api.models import ErrorResponse, JsonValue
+from studio_api.models import JsonValue
 from studio_api.request_helpers import body_data, first_nonempty_query
+from studio_api.responses import api_read_responses, api_write_responses
 from .events import publish_account_change
 from .models import (
     AccountsResponse,
@@ -113,11 +114,8 @@ class ClaudeLoginService(Protocol):
     def cancel(self, request_id: str) -> JsonValue: ...
 
 
-_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
-    400: {"model": ErrorResponse, "description": "Invalid request or operation failed"},
-    403: {"model": ErrorResponse, "description": "Local origin and session token required"},
-    422: {"description": "Input validation errors are returned as HTTP 400"},
-}
+_READ_RESPONSES = api_read_responses(errors=(400, 404))
+_WRITE_RESPONSES = api_write_responses(errors=(400, 404))
 
 
 def _runtime(context: ApiContext) -> RuntimePort:
@@ -166,16 +164,15 @@ def _codex_login_response(value: JsonValue) -> JsonValue:
 def create_router(context: ApiContext) -> APIRouter:
     router = APIRouter()
 
-    @router.get("/api/accounts", response_model=AccountsResponse, responses=_ERROR_RESPONSES)
+    @router.get("/api/accounts", response_model=AccountsResponse, responses=_READ_RESPONSES)
     def accounts(request: Request) -> Response:
         return context.send(request, _runtime(context).accounts_snapshot())
 
-    @router.get("/api/projects", response_model=ProjectReadResponse, responses=_ERROR_RESPONSES)
+    @router.get("/api/projects", response_model=ProjectReadResponse, responses=_READ_RESPONSES)
     def projects(request: Request) -> Response:
         return context.send(request, _runtime(context).projects())
 
-    @router.get("/api/models", response_model=ModelCatalogResponse,
-                responses={**_ERROR_RESPONSES, 400: {"model": ErrorResponse, "description": "Catalog pending or unavailable"}})
+    @router.get("/api/models", response_model=ModelCatalogResponse, responses=_READ_RESPONSES)
     def models(
         request: Request,
         query: Annotated[ModelsQuery, Query()],
@@ -214,7 +211,7 @@ def create_router(context: ApiContext) -> APIRouter:
             DISPLAY_RETRY.reset(retry)
             DISPLAY_READ.reset(display)
 
-    @router.get("/api/limits", response_model=UsageLimitsResponse, responses=_ERROR_RESPONSES)
+    @router.get("/api/limits", response_model=UsageLimitsResponse, responses=_READ_RESPONSES)
     def limits(
         request: Request,
         query: Annotated[LimitsQuery, Query()],
@@ -230,7 +227,7 @@ def create_router(context: ApiContext) -> APIRouter:
             return context.send(request, current)
         return context.send(request, runtime.limits(account_key))
 
-    @router.get("/api/accounts/claude/login", response_model=ClaudeLoginResponse, responses=_ERROR_RESPONSES)
+    @router.get("/api/accounts/claude/login", response_model=ClaudeLoginResponse, responses=_READ_RESPONSES)
     def claude_login_status(
         request: Request,
         query: Annotated[ClaudeLoginQuery, Query()],
@@ -238,7 +235,7 @@ def create_router(context: ApiContext) -> APIRouter:
         selected = first_nonempty_query(request, "request_id", query.request_id)
         return context.send(request, _claude_login(_runtime(context)).status(selected))
 
-    @router.post("/api/accounts/claude/login", response_model=ClaudeLoginResponse, responses=_ERROR_RESPONSES)
+    @router.post("/api/accounts/claude/login", response_model=ClaudeLoginResponse, responses=_WRITE_RESPONSES)
     def claude_login_start(request: Request, body: Annotated[ClaudeStartRequest, Body()]) -> Response:
         runtime = _runtime(context)
         service = _claude_login(runtime)
@@ -250,7 +247,7 @@ def create_router(context: ApiContext) -> APIRouter:
         _publish_login_if_changed(runtime, before, result)
         return context.send(request, result)
 
-    @router.post("/api/accounts/claude/add", response_model=ClaudeLoginResponse, responses=_ERROR_RESPONSES)
+    @router.post("/api/accounts/claude/add", response_model=ClaudeLoginResponse, responses=_WRITE_RESPONSES)
     def claude_add_start(request: Request, body: Annotated[ClaudeAddStartRequest, Body()]) -> Response:
         runtime = _runtime(context)
         service = _claude_login(runtime)
@@ -262,7 +259,7 @@ def create_router(context: ApiContext) -> APIRouter:
         _publish_login_if_changed(runtime, before, result)
         return context.send(request, result)
 
-    @router.post("/api/accounts/claude/login/code", response_model=ClaudeLoginResponse, responses=_ERROR_RESPONSES)
+    @router.post("/api/accounts/claude/login/code", response_model=ClaudeLoginResponse, responses=_WRITE_RESPONSES)
     def claude_login_code(request: Request, body: Annotated[ClaudeCodeRequest, Body()]) -> Response:
         runtime = _runtime(context)
         service = _claude_login(runtime)
@@ -271,7 +268,7 @@ def create_router(context: ApiContext) -> APIRouter:
         _publish_login_if_changed(runtime, before, result)
         return context.send(request, result)
 
-    @router.post("/api/accounts/claude/login/cancel", response_model=ClaudeLoginResponse, responses=_ERROR_RESPONSES)
+    @router.post("/api/accounts/claude/login/cancel", response_model=ClaudeLoginResponse, responses=_WRITE_RESPONSES)
     def claude_login_cancel(request: Request, body: Annotated[ClaudeCancelRequest, Body()]) -> Response:
         runtime = _runtime(context)
         service = _claude_login(runtime)
@@ -280,7 +277,7 @@ def create_router(context: ApiContext) -> APIRouter:
         _publish_login_if_changed(runtime, before, result)
         return context.send(request, result)
 
-    @router.post("/api/accounts/discover", response_model=AccountsResponse, responses=_ERROR_RESPONSES)
+    @router.post("/api/accounts/discover", response_model=AccountsResponse, responses=_WRITE_RESPONSES)
     def account_discover(
         request: Request,
         body: Annotated[AccountDiscoverRequest, Body()] = AccountDiscoverRequest(),
@@ -292,7 +289,7 @@ def create_router(context: ApiContext) -> APIRouter:
         _publish_accounts_if_changed(runtime, before)
         return context.send(request, result)
 
-    @router.post("/api/accounts/register", response_model=AccountsResponse, responses=_ERROR_RESPONSES)
+    @router.post("/api/accounts/register", response_model=AccountsResponse, responses=_WRITE_RESPONSES)
     def account_register(request: Request, body: Annotated[RegisterAccountRequest, Body()]) -> Response:
         runtime = _runtime(context)
         before = _accounts_before(runtime)
@@ -301,7 +298,7 @@ def create_router(context: ApiContext) -> APIRouter:
         _publish_accounts_if_changed(runtime, before)
         return context.send(request, result)
 
-    @router.post("/api/accounts/default", response_model=AccountsResponse, responses=_ERROR_RESPONSES)
+    @router.post("/api/accounts/default", response_model=AccountsResponse, responses=_WRITE_RESPONSES)
     def account_default(request: Request, body: Annotated[AccountKeyRequest, Body()]) -> Response:
         runtime = _runtime(context)
         before = _accounts_before(runtime)
@@ -310,7 +307,7 @@ def create_router(context: ApiContext) -> APIRouter:
         _publish_accounts_if_changed(runtime, before)
         return context.send(request, result)
 
-    @router.post("/api/accounts/login/cancel", response_model=AccountLoginResponse, responses=_ERROR_RESPONSES)
+    @router.post("/api/accounts/login/cancel", response_model=AccountLoginResponse, responses=_WRITE_RESPONSES)
     def account_login_cancel(request: Request, body: Annotated[ClaudeCancelRequest, Body()]) -> Response:
         runtime = _runtime(context)
         before = _accounts_before(runtime)
@@ -318,7 +315,7 @@ def create_router(context: ApiContext) -> APIRouter:
         _publish_accounts_if_changed(runtime, before)
         return context.send(request, result)
 
-    @router.post("/api/accounts/delete", response_model=AccountsResponse, responses=_ERROR_RESPONSES)
+    @router.post("/api/accounts/delete", response_model=AccountsResponse, responses=_WRITE_RESPONSES)
     def account_delete(request: Request, body: Annotated[DeleteAccountRequest, Body()]) -> Response:
         runtime = _runtime(context)
         before = _accounts_before(runtime)
@@ -327,7 +324,7 @@ def create_router(context: ApiContext) -> APIRouter:
         _publish_accounts_if_changed(runtime, before)
         return context.send(request, result)
 
-    @router.post("/api/accounts/name", response_model=AccountsResponse, responses=_ERROR_RESPONSES)
+    @router.post("/api/accounts/name", response_model=AccountsResponse, responses=_WRITE_RESPONSES)
     def account_name(request: Request, body: Annotated[AccountNameRequest, Body()]) -> Response:
         runtime = _runtime(context)
         before = _accounts_before(runtime)
@@ -335,7 +332,7 @@ def create_router(context: ApiContext) -> APIRouter:
         _publish_accounts_if_changed(runtime, before)
         return context.send(request, result)
 
-    @router.post("/api/accounts/disconnect", response_model=AccountsResponse, responses=_ERROR_RESPONSES)
+    @router.post("/api/accounts/disconnect", response_model=AccountsResponse, responses=_WRITE_RESPONSES)
     def account_disconnect(request: Request, body: Annotated[RequiredAccountKeyRequest, Body()]) -> Response:
         runtime = _runtime(context)
         before = _accounts_before(runtime)
@@ -343,7 +340,7 @@ def create_router(context: ApiContext) -> APIRouter:
         _publish_accounts_if_changed(runtime, before)
         return context.send(request, result)
 
-    @router.post("/api/accounts/reconnect", response_model=AccountsResponse, responses=_ERROR_RESPONSES)
+    @router.post("/api/accounts/reconnect", response_model=AccountsResponse, responses=_WRITE_RESPONSES)
     def account_reconnect(request: Request, body: Annotated[RequiredAccountKeyRequest, Body()]) -> Response:
         runtime = _runtime(context)
         before = _accounts_before(runtime)
@@ -351,7 +348,7 @@ def create_router(context: ApiContext) -> APIRouter:
         _publish_accounts_if_changed(runtime, before)
         return context.send(request, result)
 
-    @router.post("/api/accounts/login", response_model=AccountLoginResponse, responses=_ERROR_RESPONSES)
+    @router.post("/api/accounts/login", response_model=AccountLoginResponse, responses=_WRITE_RESPONSES)
     def account_login(request: Request, body: Annotated[LoginRequest, Body()]) -> Response:
         runtime = _runtime(context)
         before = _accounts_before(runtime)
@@ -361,7 +358,7 @@ def create_router(context: ApiContext) -> APIRouter:
         _publish_accounts_if_changed(runtime, before)
         return context.send(request, result)
 
-    @router.post("/api/claude/profiles", response_model=AccountsResponse, responses=_ERROR_RESPONSES)
+    @router.post("/api/claude/profiles", response_model=AccountsResponse, responses=_WRITE_RESPONSES)
     def claude_profile(request: Request, body: Annotated[ClaudeProfileRequest, Body()]) -> Response:
         from codex_claude_controls import profile
 
@@ -372,7 +369,7 @@ def create_router(context: ApiContext) -> APIRouter:
         _publish_accounts_if_changed(runtime, before)
         return context.send(request, result)
 
-    @router.post("/api/claude/session", response_model=ClaudeSessionResponse, responses=_ERROR_RESPONSES)
+    @router.post("/api/claude/session", response_model=ClaudeSessionResponse, responses=_WRITE_RESPONSES)
     def claude_session(
         request: Request,
         body: Annotated[
@@ -389,21 +386,21 @@ def create_router(context: ApiContext) -> APIRouter:
         session_action = cast(Callable[[RuntimePort, dict[str, JsonValue]], JsonValue], action)
         return context.send(request, session_action(_runtime(context), body_data(body)))
 
-    @router.post("/api/peer-teams", response_model=PeerTeamsResponse, responses=_ERROR_RESPONSES)
+    @router.post("/api/peer-teams", response_model=PeerTeamsResponse, responses=_WRITE_RESPONSES)
     def peer_teams(request: Request, body: Annotated[PeerTeamRequest, Body()]) -> Response:
         from codex_peer_teams import manage
 
         peer_team_service = cast(Callable[[RuntimePort, dict[str, JsonValue]], JsonValue], manage)
         return context.send(request, peer_team_service(_runtime(context), body_data(body)))
 
-    @router.post("/api/limits/reset", response_model=LimitResetResponse, responses=_ERROR_RESPONSES)
+    @router.post("/api/limits/reset", response_model=LimitResetResponse, responses=_WRITE_RESPONSES)
     def reset_limits(request: Request, body: Annotated[ResetRequest, Body()]) -> Response:
         from codex_limit_resets import consume_reset
 
         reset_service = cast(Callable[[RuntimePort, dict[str, JsonValue]], JsonValue], consume_reset)
         return context.send(request, reset_service(_runtime(context), body_data(body)))
 
-    @router.get("/api/project-locations", response_model=ProjectLocationQueryResponse, responses=_ERROR_RESPONSES)
+    @router.get("/api/project-locations", response_model=ProjectLocationQueryResponse, responses=_READ_RESPONSES)
     def project_location_query(request: Request, query: ProjectLocationQuery = Depends()) -> Response:
         from codex_project_locations import query as read_location
         try:
@@ -414,7 +411,7 @@ def create_router(context: ApiContext) -> APIRouter:
             return context.send(request, {"error": str(error)}, status=400)
         return context.send(request, result)
 
-    @router.post("/api/projects", response_model=ProjectMutationResponse, responses=_ERROR_RESPONSES)
+    @router.post("/api/projects", response_model=ProjectMutationResponse, responses=_WRITE_RESPONSES)
     def project_write(request: Request, body: Annotated[ProjectWriteRequest | SidebarReorderRequest | ProjectLocationRequest, Body()]) -> Response:
         from codex_project_folders import SidebarOrderConflict
 

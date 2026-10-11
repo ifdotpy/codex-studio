@@ -66,19 +66,24 @@ class Account(ContractModel):
 
 
 class CodexLoginReceipt(ContractModel):
+    """Persisted login receipt fields exposed by AccountStore.login_receipts()."""
+
     requestId: str
     accountKey: str
     status: Literal["starting", "pending", "ready", "duplicate", "cancelled", "error", "uncertain"]
+    createdAt: float | None = None
     loginId: str | None = None
     verificationUrl: str | None = None
     userCode: str | None = None
     error: str | None = None
     email: str | None = None
     resolvedAccountKey: str | None = None
-    createdAt: float | None = None
     reauthAccountKey: str | None = None
-    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
     expiresAt: float | None = None
+    expectedAccountId: str | None = None
+    emailHint: str | None = None
+    requestedLabel: str | None = None
+    nativeCompleted: bool | None = None
 
 
 class AccountLoginResponse(ResponseModel):
@@ -93,7 +98,6 @@ class AccountLoginResponse(ResponseModel):
     email: str | None = None
     createdAt: float | None = None
     expiresAt: float | None = None
-    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 
 class ClaudeLoginReceipt(ContractModel):
@@ -110,11 +114,11 @@ class ClaudeLoginReceipt(ContractModel):
 
 class AccountsResponse(ResponseModel):
     accounts: list[Account]
-    archivedAccounts: list[Account] = Field(default_factory=list)
+    archivedAccounts: list[Account]
     defaultAccountKey: str
-    logins: list[CodexLoginReceipt] = Field(default_factory=list)
-    supportsDisconnect: bool | None = None
-    supportsDelete: bool | None = None
+    logins: list[CodexLoginReceipt]
+    supportsDisconnect: bool
+    supportsDelete: bool
 
 
 class ClaudeLoginResponse(ResponseModel):
@@ -155,6 +159,13 @@ class ProjectAlias(ContractModel):
     name: str
 
 
+class ProjectRegistration(ContractModel):
+    action: Literal["register"]
+    project: str
+    server: str
+    path: str
+
+
 class Project(ContractModel):
     homeServerId: str | None = None
     locations: list[ProjectLocation] | None = None
@@ -176,7 +187,7 @@ class Project(ContractModel):
     peerTeamsRevision: int | None = None
     folders: list[ProjectFolder] | None = None
     peerTeams: list[PeerTeam] | None = None
-    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    registration: ProjectRegistration | None = None
 
 
 class ProjectMutationRecord(Project, ResponseModel):
@@ -254,6 +265,8 @@ class RateLimitIndividualLimit(ContractModel):
 
 
 class RateLimitBucket(ContractModel):
+    """Known rate-limit fields plus provider-owned fields passed through unchanged."""
+
     limitId: str | None = None
     limitName: str | None = None
     primary: RateLimitWindow | None = None
@@ -266,6 +279,8 @@ class RateLimitBucket(ContractModel):
 
 
 class RateLimitResetCredit(ContractModel):
+    """A provider reset-credit record; native service fields remain extensible."""
+
     id: str
     status: str
     resetType: str
@@ -276,6 +291,8 @@ class RateLimitResetCredit(ContractModel):
 
 
 class RateLimitResetCredits(ContractModel):
+    """Provider-owned reset-credit summary with the known count and credit fields."""
+
     availableCount: int | None = None
     credits: list[RateLimitResetCredit] = Field(default_factory=list)
     model_config = ConfigDict(extra="allow", strict=True)
@@ -283,6 +300,8 @@ class RateLimitResetCredits(ContractModel):
 
 
 class UsageLimitsData(ContractModel):
+    """Known usage projection plus account-service fields passed through unchanged."""
+
     accountId: str | None = None
     rateLimits: RateLimitBucket | None = None
     rateLimitsByLimitId: dict[str, RateLimitBucket] | None = None
