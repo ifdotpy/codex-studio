@@ -226,6 +226,118 @@ class RequestContract(unittest.TestCase):
         self.assertIn('Skipping invalid stored tool request lifecycle during restart for request', logs.output[0])
         self.assertEqual(self.runtime.tool_request(unsupported['id']), unsupported)
 
+    def test_restart_after_claim_commit_before_handler_never_claims_or_dispatches_again(self):
+        record = self.reserve(call='claim-before-handler')
+        # The claim commit is durable, but the handler has not run at this fault point.
+        self.assertTrue(self.runtime.begin_tool_request(record['id']))
+        self.runtime = Ledger(self.runtime.path)
+        recovered = self.runtime.tool_request(record['id'])
+        self.assertEqual((recovered['stage'], recovered['outcome']), ('interrupted', 'unknown'))
+        self.assertFalse(self.runtime.begin_tool_request(record['id']))
+
+    def test_restart_after_nested_handler_commit_preserves_evidence_and_outer_uncertainty(self):
+        record = self.reserve(call='nested-before-outer')
+        self.assertTrue(self.runtime.begin_tool_request(record['id']))
+        nested_result = {'success': True, 'contentItems': [{'type': 'inputText', 'text': 'committed'}]}
+        with self.runtime.db() as db:
+            db.execute('CREATE TABLE runtime_operation_receipts (id TEXT PRIMARY KEY, result TEXT NOT NULL)')
+            db.execute('INSERT INTO runtime_operation_receipts VALUES (?,?)',
+                       (record['id'], json.dumps(nested_result)))
+        self.runtime = Ledger(self.runtime.path)
+        recovered = self.runtime.tool_request(record['id'])
+        self.assertEqual((recovered['stage'], recovered['outcome']), ('interrupted', 'unknown'))
+        with self.runtime.db() as db:
+            self.assertIsNone(self.runtime.tool_result(db, record['id']))
+            saved = json.loads(db.execute('SELECT result FROM runtime_operation_receipts WHERE id=?',
+                                          (record['id'],)).fetchone()[0])
+        self.assertEqual(saved, nested_result)
+        self.assertFalse(self.runtime.begin_tool_request(record['id']))
+
+    def test_restart_reconciles_saved_result_to_live_settlement_without_outer_receipt_update(self):
+        live = self.reserve(call='live-settlement')
+        recovering = self.reserve(call='restart-settlement')
+        self.assertTrue(self.runtime.begin_tool_request(live['id']))
+        self.assertTrue(self.runtime.begin_tool_request(recovering['id']))
+        result = self.result()
+        with self.runtime.db() as db:
+            for record in (live, recovering):
+                db.execute('INSERT INTO runtime_tool_results VALUES (?,?)',
+                           (record['id'], json.dumps(result)))
+        with self.runtime.db() as db:
+            expected = self.runtime.finish_tool_request(
+                live['id'], self.runtime.tool_result(db, live['id']), db=db)
+        self.runtime = Ledger(self.runtime.path)
+        recovered = self.runtime.tool_request(recovering['id'])
+        self.assertEqual(
+            (recovered['stage'], recovered['outcome'], recovered['result']),
+            (expected['stage'], expected['outcome'], expected['result']),
+        )
+
+    def test_restart_recovery_twice_does_not_write_a_second_time(self):
+        record = self.reserve(call='recovery-twice')
+        self.assertTrue(self.runtime.begin_tool_request(record['id']))
+        self.runtime = Ledger(self.runtime.path)
+        after_first = self.runtime.tool_request(record['id'])
+        with patch.object(self.runtime, 'put', wraps=self.runtime.put) as put:
+            with self.runtime.db() as db:
+                self.runtime.setup_tool_requests(db)
+        self.assertEqual(put.call_count, 0)
+        self.assertEqual(self.runtime.tool_request(record['id']), after_first)
+
+    def test_nested_receipt_alone_does_not_settle_outer_request_at_startup(self):
+        record = self.reserve(call='nested-only')
+        self.assertTrue(self.runtime.begin_tool_request(record['id']))
+        nested_result = {'success': True, 'contentItems': []}
+        with self.runtime.db() as db:
+            db.execute('CREATE TABLE runtime_operation_receipts (id TEXT PRIMARY KEY, result TEXT NOT NULL)')
+            db.execute('INSERT INTO runtime_operation_receipts VALUES (?,?)',
+                       (record['id'], json.dumps(nested_result)))
+        # A caller still observes unknown until the outer tool result is saved.
+        self.runtime = Ledger(self.runtime.path)
+        recovered = self.runtime.tool_request(record['id'])
+        self.assertEqual((recovered['stage'], recovered['outcome']), ('interrupted', 'unknown'))
+        with self.runtime.db() as db:
+            self.assertIsNone(self.runtime.tool_result(db, record['id']))
+            self.assertEqual(json.loads(db.execute(
+                'SELECT result FROM runtime_operation_receipts WHERE id=?', (record['id'],)
+            ).fetchone()[0]), nested_result)
+
+    def test_restart_recovers_running_request_even_after_its_agent_is_deleted(self):
+        record = self.reserve(call='deleted-agent')
+        self.assertTrue(self.runtime.begin_tool_request(record['id']))
+        with self.runtime.db() as db:
+            db.execute('DELETE FROM runtime_agents WHERE id=?', ('lead',))
+        # A caller can still observe an interrupted receipt after the owning agent is gone.
+        self.runtime = Ledger(self.runtime.path)
+        recovered = self.runtime.tool_request(record['id'])
+        self.assertEqual((recovered['stage'], recovered['outcome']), ('interrupted', 'unknown'))
+
+    def test_restart_rewrites_pending_label_with_unknown_lifecycle_to_interrupted(self):
+        record = self.reserve(call='pending-unknown')
+        self.assertTrue(self.runtime.begin_tool_request(record['id']))
+        failed = self.runtime.finish_tool_request(record['id'], self.result(False))
+        self.assertEqual((failed['stage'], failed['outcome']), ('failed', 'unknown'))
+        failed['stage'] = 'queued'
+        with self.runtime.db() as db:
+            self.runtime.put(db, 'tool_requests', failed)
+        # A caller sees the pending label rewritten even though the outcome stays unknown.
+        self.runtime = Ledger(self.runtime.path)
+        recovered = self.runtime.tool_request(record['id'])
+        self.assertEqual((recovered['stage'], recovered['outcome']), ('interrupted', 'unknown'))
+
+    def test_restart_skips_malformed_stored_generation_with_warning(self):
+        record = self.reserve(call='malformed-generation')
+        self.assertTrue(self.runtime.begin_tool_request(record['id']))
+        record = self.runtime.tool_request(record['id'])
+        record['supervisor'] = {'generation': 'not-an-integer'}
+        with self.runtime.db() as db:
+            self.runtime.put(db, 'tool_requests', record)
+        # Callers keep seeing running/pending because startup skips malformed generation metadata.
+        with self.assertLogs('codex_tool_requests', level='WARNING') as logs:
+            self.runtime = Ledger(self.runtime.path)
+        self.assertIn('Skipping invalid stored tool request lifecycle during restart for request', logs.output[0])
+        self.assertEqual(self.runtime.tool_request(record['id']), record)
+
     def test_atomic_receipt_obeys_transaction_rollback(self):
         record = self.reserve()
         self.runtime.begin_tool_request(record['id'])
