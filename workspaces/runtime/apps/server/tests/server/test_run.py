@@ -389,13 +389,20 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertEqual(RUNNER._focused_suite_slice_count("suite.py", 72, 2), 2)
         runner_suite = f"{RUNNER.TESTS_REL}/server/test_run.py"
         self.assertEqual(RUNNER._focused_suite_slice_count(runner_suite, 59, 4), 1)
-        boundary_suite = RUNNER.HTTP_BOUNDARY_CONTRACT_SUITE
-        self.assertEqual(RUNNER._focused_suite_slice_count(boundary_suite, 6, 4), 1)
+        for boundary_suite in (
+                f"{RUNNER.TESTS_REL}/http-boundary-contract.py",
+                f"{RUNNER.TESTS_REL}/sync-http-contract.py",
+                f"{RUNNER.TESTS_REL}/tool-request-http-contract.py",
+                f"{RUNNER.TESTS_REL}/future-http-contract.py"):
+            self.assertTrue(RUNNER.is_http_boundary_suite(boundary_suite))
+            self.assertEqual(RUNNER._focused_suite_slice_count(boundary_suite, 72, 4), 1)
 
     def test_runner_suite_is_explicitly_excluded_from_test_slicing(self):
         relatives = (
             f"{RUNNER.TESTS_REL}/server/test_run.py",
-            RUNNER.HTTP_BOUNDARY_CONTRACT_SUITE,
+            f"{RUNNER.TESTS_REL}/http-boundary-contract.py",
+            f"{RUNNER.TESTS_REL}/sync-http-contract.py",
+            f"{RUNNER.TESTS_REL}/tool-request-http-contract.py",
         )
         commands = []
 

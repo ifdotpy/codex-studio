@@ -1,117 +1,172 @@
-"""Exercise the real HTTP adapter in an isolated runtime fixture."""
-
-# Support direct execution without runner-provided PYTHONPATH.
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
-
-from test_isolation import isolate_supervisor_environment
-isolate_supervisor_environment()
+#!/usr/bin/env python3
+"""Sync projection, draft validation and voice receipts at the HTTP boundary."""
 
 import json
-import os
-from pathlib import Path
-import subprocess
-import sys
-import tempfile
-import time
-import urllib.error
-import urllib.request
-sys.path.insert(0, str(SERVER_SOURCE_ROOT))
-from studio_api.testing import read_test_state
+import unittest
+from urllib.parse import urlencode
 
-root = REPOSITORY_ROOT
-with tempfile.TemporaryDirectory() as directory:
-    process = subprocess.Popen(
-        ['python3', '-B', str(SERVER_TESTS_ROOT / 'simple-ui-fixture.py'), directory],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        env={**os.environ, 'CODEX_BOARD_STATE_DIR': directory + '/board'},
-    )
-    try:
-        port = process.stdout.readline().strip()
-        assert port.isdigit(), process.stderr.read()
-        origin = 'http://127.0.0.1:' + port
-        def get(path):
-            # Native startup can defer read-only snapshots; the browser retries
-            # this same documented response. Never retry mutation requests here.
-            deadline = time.monotonic() + 10
-            while True:
-                try:
-                    with urllib.request.urlopen(origin + path, timeout=10) as response:
-                        return json.load(response)
-                except urllib.error.HTTPError as error:
-                    error.close()
-                    if error.code != 503 or time.monotonic() >= deadline:
-                        raise
-                    time.sleep(.1)
-        identity = get('/api/sync/identity')
-        state = read_test_state(get)
-        protocol = get('/api/sync/protocol')
-        assert protocol['protocolVersion'] == 3
-        assert protocol['supportedVersions'] == [3]
-        for removed in ('/api/sync/generations', '/api/transcript/stream'):
-            try:
-                get(removed)
-                raise AssertionError(f'removed route still exists: {removed}')
-            except urllib.error.HTTPError as error:
-                assert error.code in (404, 405)
-        # Status-file changes after initial seed are not entity-store writes.
-        entities = get('/api/sync/pull?scope=state%3Aentities%3Av1&after=0&limit=100')
-        assert entities['workspaceId'] == identity['workspaceId']
-        assert entities['documents'] and all(row['id'].startswith('entity:') for row in entities['documents'])
-        rows = list(entities['documents'])
-        checkpoint = entities['checkpoint']['seq']
-        while not any(row['id'].startswith('entity:agent:') for row in rows) and checkpoint < entities['maxSeq']:
-            entities = get(f'/api/sync/pull?scope=state%3Aentities%3Av1&after={checkpoint}&limit=100')
-            rows.extend(entities['documents'])
-            checkpoint = entities['checkpoint']['seq']
-        agent = next(json.loads(row['payload'])['value'] for row in rows
-                     if row['id'].startswith('entity:agent:'))
-        assert {'id', 'name', 'status'} <= agent.keys()
-        assert 'nativeToolCatalog' not in agent and 'accountHistory' not in agent
-        row = {'newDocumentState': {'id': 'phone:lead', 'seq': 0, '_deleted': False,
-               'payload': json.dumps({'text': 'draft', 'session': 'lead', 'device': 'phone', 'updated': 1})}}
-        def push(rows, workspace):
-            request = urllib.request.Request(
-                origin + '/api/sync/drafts', data=json.dumps({'rows': rows}).encode(),
-                headers={'Content-Type': 'application/json', 'Origin': origin,
-                         'X-Canvas-Token': state.token, 'X-Canvas-Workspace': workspace},
+from test_isolation import isolate_supervisor_environment
+
+isolate_supervisor_environment()
+
+from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+
+
+class SyncHTTPContract(TimedHTTPContractTest, unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.backend = start_contract_backend(cls)
+        session = cls.backend.request("GET", "/api/session")
+        if session.status != 200:
+            raise AssertionError((session.status, session.body[:1000]))
+        cls.session = session.json()
+        identity = cls.backend.request("GET", "/api/sync/identity")
+        if identity.status != 200:
+            raise AssertionError((identity.status, identity.body[:1000]))
+        cls.identity = identity.json()
+        schema = cls.backend.request(
+            "GET", "/api/sync/identity", headers={"X-Studio-API-Schema": "probe"},
+        )
+        if schema.status != 200:
+            raise AssertionError((schema.status, schema.body[:1000]))
+        cls.schema_hash = schema.headers["x-studio-api-schema"]
+        lead = cls.backend.request(
+            "POST", "/api/leads",
+            body={"cwd": str(cls.backend.cwd), "workspaceMode": "worktree"},
+            headers=cls.write_headers(),
+        )
+        if lead.status != 200:
+            raise AssertionError((lead.status, lead.body[:1000]))
+        cls.lead_id = lead.json()["id"]
+
+    @classmethod
+    def write_headers(cls) -> dict[str, str]:
+        return {
+            "Origin": cls.backend.origin or "",
+            "X-Canvas-Token": cls.session["token"],
+            "X-Canvas-Workspace": cls.identity["workspaceId"],
+            "X-Studio-API-Schema": cls.schema_hash,
+        }
+
+    def test_entity_pull_projects_the_public_agent_fields(self) -> None:
+        backend = self.backend
+        rows: list[dict[str, object]] = []
+        after = 0
+        maximum = 0
+        while True:
+            pulled = backend.request(
+                "GET", f"/api/sync/pull?scope=state%3Aentities%3Av1&after={after}&limit=100",
             )
-            return json.load(urllib.request.urlopen(request, timeout=10))
-        assert push([row], identity['workspaceId']) == []
-        drafts = get('/api/sync/pull?scope=drafts')
-        assert len(drafts['documents']) == 1
-        for rows, workspace, status in [([row], 'wrong', 409), ([{}], identity['workspaceId'], 400)]:
-            try:
-                push(rows, workspace)
-                raise AssertionError('Invalid push accepted')
-            except urllib.error.HTTPError as error:
-                assert error.code == status, error.read()
-        lead_id = next(item['id'] for item in state.values('agent') if item.get('isLead'))
-        lead = lead_id
-        def voice(action, **body):
-            request = urllib.request.Request(origin + '/api/voice/' + action,
-                data=json.dumps({'agent': lead, **body}).encode(),
-                headers={'Content-Type': 'application/json', 'X-Canvas-Token': state.token,
-                         'X-Canvas-Workspace': identity['workspaceId']})
-            with urllib.request.urlopen(request, timeout=10) as response:
-                return json.load(response)
-        assert isinstance(voice('status')['configured'], bool)
-        voice('record', session_id='', event_id='http-voice-one', kind='user', text='Raw recognized words')
-        sent = voice('submit', message_id='http-voice-send', record_ids=['http-voice-one'], edited_text='Edited user request')
-        assert voice('submit', message_id='http-voice-send', record_ids=['http-voice-one'], edited_text='Edited user request')['id'] == sent['id']
-        for action, body in [('speak', {'text': 'spoof'}),
-                             ('record', {'session_id': '', 'event_id': 'spoof', 'kind': 'orchestrator', 'text': 'spoof', '_internal': True}),
-                             ('submit', {'message_id': 'http-voice-send', 'record_ids': ['http-voice-one'], 'edited_text': 'Changed retry'}),
-                             ('start', {})]:
-            try:
-                voice(action, **body)
-                raise AssertionError('Invalid voice request accepted')
-            except urllib.error.HTTPError as error:
-                with error:
-                    assert error.code == 400, error.read()
-        print('sync and voice HTTP contracts passed')
-    finally:
-        process.terminate()
-        process.wait(timeout=10)
+            self.assertEqual(pulled.status, 200, pulled.body[:1000])
+            page = pulled.json()
+            self.assertEqual(page["workspaceId"], self.identity["workspaceId"])
+            self.assertTrue(page["documents"])
+            self.assertTrue(all(row["id"].startswith("entity:") for row in page["documents"]))
+            rows.extend(page["documents"])
+            after = page["checkpoint"]["seq"]
+            maximum = page["maxSeq"]
+            if after >= maximum:
+                break
+
+        encoded = next((row["payload"] for row in rows
+                        if row["id"].startswith("entity:agent:")), None)
+        self.assertIsNotNone(encoded, "the entity pull omitted the seeded lead")
+        agent = json.loads(encoded)["value"]
+        self.assertTrue({"id", "name", "status"} <= agent.keys())
+        self.assertNotIn("nativeToolCatalog", agent)
+        self.assertNotIn("accountHistory", agent)
+
+    def test_removed_sync_and_transcript_routes_stay_unavailable(self) -> None:
+        for path in ("/api/sync/generations", "/api/transcript/stream"):
+            with self.subTest(path=path):
+                response = self.backend.request("GET", path)
+                self.assertIn(response.status, (404, 405), response.body[:1000])
+
+    def test_draft_push_rejects_a_foreign_workspace_and_malformed_row(self) -> None:
+        body = {"rows": [{"newDocumentState": {
+            "id": "phone:lead", "seq": 0, "_deleted": False,
+            "payload": json.dumps({"text": "draft", "session": "lead", "device": "phone"}),
+        }}]}
+        foreign = self.backend.request(
+            "POST", "/api/sync/drafts", body=body,
+            headers={**self.write_headers(), "X-Canvas-Workspace": "wrong-workspace"},
+        )
+        self.assertEqual(foreign.status, 409, foreign.body[:1000])
+        malformed = self.backend.request(
+            "POST", "/api/sync/drafts", body={"rows": [{}]}, headers=self.write_headers(),
+        )
+        self.assertEqual(malformed.status, 400, malformed.body[:1000])
+
+    def test_voice_submit_replays_its_stable_message_id_once(self) -> None:
+        self.voice(
+            "record", session_id="", event_id="sync-http-voice-one", kind="user",
+            text="Raw recognized words",
+        )
+        body = {
+            "agent": self.lead_id,
+            "message_id": "sync-http-voice-message",
+            "record_ids": ["sync-http-voice-one"],
+            "edited_text": "Edited user request",
+        }
+        first = self.backend.request("POST", "/api/voice/submit", body=body,
+                                     headers=self.write_headers())
+        self.assertEqual(first.status, 200, first.body[:1000])
+        replay = self.backend.request("POST", "/api/voice/submit", body=body,
+                                      headers=self.write_headers())
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertEqual(replay.json()["id"], first.json()["id"])
+        receipts = self.backend.request(
+            "GET", "/api/messages/receipts?" + urlencode({
+                "agent": self.lead_id,
+                "ids": json.dumps(["sync-http-voice-message"]),
+            }),
+        )
+        self.assertEqual(receipts.status, 200, receipts.body[:1000])
+        self.assertEqual(
+            [item["id"] for item in receipts.json()["items"]],
+            ["sync-http-voice-message"],
+        )
+
+    def test_voice_rejects_spoofed_or_changed_actions(self) -> None:
+        status = self.backend.request(
+            "POST", "/api/voice/status", body={"agent": self.lead_id},
+            headers=self.write_headers(),
+        )
+        self.assertEqual(status.status, 200, status.body[:1000])
+        self.assertIsInstance(status.json()["configured"], bool)
+        self.voice("record", session_id="", event_id="sync-http-change-record",
+                   kind="user", text="Original voice text")
+        original = self.backend.request(
+            "POST", "/api/voice/submit",
+            body={"agent": self.lead_id, "message_id": "sync-http-change-message",
+                  "record_ids": ["sync-http-change-record"], "edited_text": "Original edit"},
+            headers=self.write_headers(),
+        )
+        self.assertEqual(original.status, 200, original.body[:1000])
+        invalid = (
+            ("speak", {"text": "spoof"}),
+            ("record", {"session_id": "", "event_id": "sync-http-spoof", "kind": "orchestrator",
+                        "text": "spoof", "_internal": True}),
+            ("submit", {"message_id": "sync-http-change-message", "record_ids": ["sync-http-change-record"],
+                         "edited_text": "Changed retry"}),
+            ("start", {}),
+        )
+        for action, body in invalid:
+            with self.subTest(action=action):
+                response = self.backend.request(
+                    "POST", f"/api/voice/{action}",
+                    body={"agent": self.lead_id, **body}, headers=self.write_headers(),
+                )
+                self.assertEqual(response.status, 400, response.body[:1000])
+
+    def voice(self, action: str, **body: object) -> dict[str, object]:
+        response = self.backend.request(
+            "POST", f"/api/voice/{action}",
+            body={"agent": self.lead_id, **body}, headers=self.write_headers(),
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        return response.json()
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

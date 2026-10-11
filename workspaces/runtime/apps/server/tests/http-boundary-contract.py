@@ -83,10 +83,8 @@ def record_ready_times(backend: BackendProcess) -> None:
 
 
 def record_process_import_time() -> None:
-    parent_started = os.environ.get("CODEX_HTTP_BOUNDARY_PROCESS_STARTED_AT")
-    process_started = float(parent_started) if parent_started else _module_import_started
-    print(json.dumps({"pythonProcessAndImportsSeconds": round(
-        _module_import_finished - process_started, 4)}, sort_keys=True), flush=True)
+    print(json.dumps({"pythonImportsSeconds": round(
+        _module_import_finished - _module_import_started, 4)}, sort_keys=True), flush=True)
 
 
 class TimedBoundaryTest(unittest.TestCase):

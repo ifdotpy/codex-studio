@@ -10,6 +10,7 @@ import queue
 import shlex
 import signal
 import shutil
+import statistics
 import subprocess
 import sys
 import threading
@@ -395,3 +396,52 @@ class BackendProcess:
             raise RuntimeError("Refusing to remove state outside the runner scratch root")
         shutil.rmtree(resolved)
         self.cleanup_seconds = time.monotonic() - cleanup_started
+
+
+def start_contract_backend(test_case: type[Any], fixture_name: str = "restart-mid-turn-supervisor-replay.json") -> BackendProcess:
+    """Start one isolated backend owned by a unittest class cleanup."""
+    scratch_value = os.environ.get("TMPDIR")
+    if not scratch_value:
+        raise RuntimeError("The server runner must provide a memory-backed TMPDIR")
+    construction_started = time.monotonic()
+    backend = BackendProcess(Path(scratch_value))
+    backend.class_setup_phases["harnessConstructionSeconds"] = round(
+        time.monotonic() - construction_started, 4,
+    )
+    test_case.addClassCleanup(_report_contract_backend_timing, backend)
+    test_case.addClassCleanup(backend.close)
+    provider_started = time.monotonic()
+    backend.create_codex_replay(fixture_name)
+    backend.class_setup_phases["fakeProviderSetupSeconds"] = round(
+        time.monotonic() - provider_started, 4,
+    )
+    ready = backend.start()
+    backend.ready_samples.append(ready)
+    backend.class_setup_seconds = time.monotonic() - construction_started
+    return backend
+
+
+def _report_contract_backend_timing(backend: BackendProcess) -> None:
+    print(json.dumps({
+        "classSetupSeconds": round(backend.class_setup_seconds or 0, 4),
+        "classSetupPhases": backend.class_setup_phases,
+        "backendReadyMedianSeconds": round(statistics.median(backend.ready_samples), 4)
+        if backend.ready_samples else None,
+        "backendReadyWorstSeconds": round(max(backend.ready_samples), 4)
+        if backend.ready_samples else None,
+        "backendStarts": len(backend.ready_samples),
+        "backendStartPhases": backend.start_phases,
+        "backendStopPhases": backend.stop_phases,
+        "stateCleanupSeconds": round(backend.cleanup_seconds or 0, 4),
+    }, sort_keys=True), flush=True)
+
+
+class TimedHTTPContractTest:
+    """Print focused per-contract timings for the process-boundary suite."""
+
+    def setUp(self) -> None:
+        self._contract_started = time.monotonic()
+
+    def tearDown(self) -> None:
+        print(json.dumps({"contract": self.id(), "seconds": round(
+            time.monotonic() - self._contract_started, 4)}, sort_keys=True), flush=True)

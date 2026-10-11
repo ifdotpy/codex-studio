@@ -76,10 +76,8 @@ PROFILE_PATH = RUNNER_LOCK_PATH.parent / f"runner-profile-{REPOSITORY_KEY}.json"
 MEMORY_RESERVE_BYTES = 4 * 1024**3
 FOCUSED_SUITE_LIMIT = 1
 FOCUSED_SLOT_CAP = 4
-HTTP_BOUNDARY_CONTRACT_SUITE = f"{TESTS_REL}/http-boundary-contract.py"
 NEVER_SLICE_SUITES = frozenset({
     f"{TESTS_REL}/server/test_run.py",
-    HTTP_BOUNDARY_CONTRACT_SUITE,
 })
 BASELINE_PATH = Path(__file__).with_name("timing-baseline.json")
 TMP_ROOT_OVERRIDE = os.environ.get("CODEX_SERVER_TEST_TMP_ROOT")
@@ -890,9 +888,16 @@ def _slice_test_ids(test_ids, count):
 
 def _focused_suite_slice_count(relative, test_count, workers):
     """Bound focused test slices by the selected suite and focused worker plan."""
-    if relative in NEVER_SLICE_SUITES or test_count < FOCUSED_MIN_TESTS_FOR_SLICING or workers <= 1:
+    if (relative in NEVER_SLICE_SUITES or is_http_boundary_suite(relative)
+            or test_count < FOCUSED_MIN_TESTS_FOR_SLICING or workers <= 1):
         return 1
     return min(FOCUSED_SUITE_TEST_SLICES, workers, test_count)
+
+
+def is_http_boundary_suite(relative):
+    """Keep backend-process contracts together without a maintained suite list."""
+    name = Path(relative).name
+    return name == "http-boundary-contract.py" or name.endswith("-http-contract.py")
 
 
 def _suite_environment(root, temp_root, audit_home=False, relative=None):
@@ -1549,8 +1554,6 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
                         or is_unittest_suite(root / relative)):
                     environment["CODEX_SERVER_TEST_RESULT_FILE"] = str(
                         _runner_artifact_root(temp_root) / "unittest-outcomes.jsonl")
-                if relative == HTTP_BOUNDARY_CONTRACT_SUITE:
-                    environment["CODEX_HTTP_BOUNDARY_PROCESS_STARTED_AT"] = str(time.monotonic())
                 command = _suite_command(relative, root)
                 if selectors:
                     command.extend(selectors)
@@ -1660,6 +1663,7 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
             slices = None
             if (focused
                     and relative not in NEVER_SLICE_SUITES
+                    and not is_http_boundary_suite(relative)
                     and is_unittest_suite(root / relative)
                     and not has_module_level_mutable_state(root / relative)
                     and not has_custom_unittest_suite(root / relative)):

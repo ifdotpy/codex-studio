@@ -18,6 +18,7 @@ thread_count = 0
 turn_number = 0
 lock = threading.Lock()
 child_finished = threading.Event()
+tool_responses = {}
 
 def send(message):
     with lock:
@@ -28,7 +29,10 @@ def send(message):
 def event_frame(frame, thread_id, turn_id):
     value = json.loads(json.dumps(frame))
     value = json.dumps(value).replace("$threadId", thread_id).replace("$turnId", turn_id)
-    send(json.loads(value))
+    message = json.loads(value)
+    if message.get("method") == "item/tool/call" and message.get("id") is not None:
+        tool_responses[str(message["id"])] = threading.Event()
+    send(message)
 
 
 def recorded_reply(method, request, thread_id=None, turn_id=None):
@@ -47,6 +51,13 @@ def handle(line):
     global thread, thread_count, turn_number
     request = json.loads(line)
     method = request.get("method")
+    if method is None and ("result" in request or "error" in request):
+        # The app-server replies to fixture-injected JSON-RPC requests on this
+        # same stdio stream; those replies are observations, not new RPC calls.
+        response = tool_responses.get(str(request.get("id")))
+        if response is not None:
+            response.set()
+        return
     if method == "initialized":
         return
     if "id" not in request:
@@ -80,10 +91,17 @@ def handle(line):
                 time.sleep(.01)
         if fixture.get("parentChildOrder") and thread_id.endswith("-1"):
             child_finished.wait(8)
-        selected_events = fixture.get("events", [])
+        selected_events = fixture.get("eventsByThread", {}).get(
+            thread_id, fixture.get("events", []),
+        )
         if fixture.get("parentChildOrder") and thread_id.endswith("-2"):
             selected_events = fixture.get("childEvents", selected_events)
+        deferred_completion = []
         for frame in selected_events:
+            if (fixture.get("waitForToolResponse")
+                    and frame.get("method") == "turn/completed"):
+                deferred_completion.append(frame)
+                continue
             event_frame(frame, thread_id, turn_id)
         if fixture.get("parentChildOrder") and thread_id.endswith("-2"):
             child_finished.set()
@@ -91,6 +109,14 @@ def handle(line):
             selected_parent_events = fixture.get("parentEvents", [])
             for frame in selected_parent_events:
                 event_frame(frame, thread_id, turn_id)
+        if fixture.get("waitForToolResponse"):
+            for frame in selected_events:
+                if frame.get("method") == "item/tool/call" and frame.get("id") is not None:
+                    response = tool_responses[str(frame["id"])]
+                    if not response.wait(3):
+                        raise AssertionError(f"App-server did not answer fixture tool call {frame['id']}")
+        for frame in deferred_completion:
+            event_frame(frame, thread_id, turn_id)
         if fixture.get("lostStartReply"):
             return
         send(recorded_reply(method, request, thread, turn_id))
