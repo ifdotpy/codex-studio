@@ -80,6 +80,24 @@ class SchemaContractTests(unittest.TestCase):
         validate_contract_schemas(document)
         validate_error_responses(document)
 
+    def test_accepts_shared_error_response_component_reference(self) -> None:
+        document = sample_document({"type": "object"})
+        responses = _responses(document)
+        responses["400"] = {"$ref": "#/components/responses/ApiError400"}
+        components = document["components"]
+        assert isinstance(components, dict)
+        components["responses"] = {
+            "ApiError400": {
+                "description": "Invalid request",
+                "content": {
+                    "application/json": {
+                        "schema": {"$ref": "#/components/schemas/ErrorResponse"}
+                    }
+                },
+            }
+        }
+        validate_error_responses(document)
+
     def test_rejects_missing_common_error_model(self) -> None:
         document = sample_document({"type": "string"})
         responses = _responses(document)

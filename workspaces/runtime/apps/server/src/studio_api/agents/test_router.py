@@ -21,6 +21,7 @@ import unittest
 
 from studio_api.context import ApiContext
 from studio_api.models import ErrorResponse
+from studio_api.responses import install_error_response_docs
 from .router import create_router
 
 
@@ -194,6 +195,7 @@ def _app(*, include_sync_envelope: bool = False) -> tuple[FastAPI, _RuntimeFixtu
         setattr(context, "sync", lambda: _SyncFixture())
     app = FastAPI()
     app.include_router(create_router(context))
+    install_error_response_docs(app)
     if include_sync_envelope:
         @app.middleware("http")
         async def add_sync_cursor(request: Request, call_next: RequestResponseEndpoint) -> Response:
@@ -424,6 +426,19 @@ def test_agent_routes_register_response_dto_with_sync_envelope() -> None:
 
     assert response_name == "AgentResponse"
     assert "_syncEntities" in schema["components"]["schemas"][response_name]["properties"]
+
+
+def test_agent_routes_reference_shared_boundary_responses() -> None:
+    app, _runtime, _context = _app()
+    schema = app.openapi()
+    responses = schema["paths"]["/api/leads"]["post"]["responses"]
+    assert responses["400"]["$ref"] == "#/components/responses/ApiError400"
+    assert responses["426"]["$ref"] == "#/components/responses/ApiError426"
+    not_found = schema["paths"]["/api/skills"]["get"]["responses"]["404"]
+    assert not_found["$ref"] == "#/components/responses/ApiError404"
+    conditional = schema["paths"]["/api/capabilities"]["get"]["responses"]
+    assert "ETag" in conditional["200"]["headers"]
+    assert "ETag" in conditional["304"]["headers"]
 
 
 def test_retry_routes_publish_closed_producer_backed_response_models() -> None:
@@ -767,6 +782,9 @@ class AgentRouterTests(unittest.TestCase):
 
     def test_agent_route_schema_includes_sync_envelope(self) -> None:
         test_agent_routes_register_response_dto_with_sync_envelope()
+
+    def test_agent_routes_reference_shared_boundary_responses(self) -> None:
+        test_agent_routes_reference_shared_boundary_responses()
 
     def test_retry_route_schema_uses_closed_response_types(self) -> None:
         test_retry_routes_publish_closed_producer_backed_response_models()

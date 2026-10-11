@@ -60,6 +60,7 @@ class MobileStateContract(unittest.TestCase):
                         "checks": "Exact test evidence. " * 30,
                         "revision": "exact-source-revision",
                         "files": ["src/retained.py"], "created": number,
+                        "resultFile": f"result-{number}.md",
                     }],
                     "decisions": [{
                         "resultId": f"evidence-{number}", "decision": "reject",

@@ -12,8 +12,9 @@ from starlette.responses import Response
 
 from codex_project_secrets import GuestClient
 from codex_records import AgentRecord
-from studio_api.models import ErrorResponse, JsonValue
+from studio_api.models import JsonValue
 from studio_api.context import ApiContext
+from studio_api.responses import api_read_responses, api_write_responses
 from studio_api.request_helpers import body_data, first_nonempty_query
 from codex_sync_entities import project
 
@@ -154,7 +155,7 @@ def create_router(context: ApiContext) -> APIRouter:
             record = runtime.agent(agent_id, db)
             return project("agent", cast(JsonValue, runtime.agent_entity_view(db, record)))
 
-    @router.post("/api/leads", response_model=AgentResponse)
+    @router.post("/api/leads", response_model=AgentResponse, responses=api_write_responses(errors=(404,)))
     def create_lead(http_request: Request, body: CreateLeadRequest) -> Response:
         runtime = current_runtime()
         request = body_data(body)
@@ -164,7 +165,7 @@ def create_router(context: ApiContext) -> APIRouter:
         created = runtime.new_lead(request)
         return context.send(http_request, agent_entity(runtime, created["id"]))
 
-    @router.post("/api/agents", response_model=AgentResponse)
+    @router.post("/api/agents", response_model=AgentResponse, responses=api_write_responses(errors=(404,)))
     def create_agent(http_request: Request, body: CreateAgentRequest) -> Response:
         runtime = current_runtime()
         request = body_data(body)
@@ -174,7 +175,7 @@ def create_router(context: ApiContext) -> APIRouter:
         created = runtime.create(request, parent=body.parent)
         return context.send(http_request, agent_entity(runtime, created["id"]))
 
-    @router.post("/api/conversation", response_model=AgentResponse)
+    @router.post("/api/conversation", response_model=AgentResponse, responses=api_write_responses(errors=(404,)))
     def conversation_settings(http_request: Request, body: ConversationRequest) -> Response:
         runtime = current_runtime()
         request = body_data(body)
@@ -186,20 +187,20 @@ def create_router(context: ApiContext) -> APIRouter:
             raise
         return context.send(http_request, agent_entity(runtime, body.id))
 
-    @router.post("/api/configure", response_model=ConfigureResponse)
+    @router.post("/api/configure", response_model=ConfigureResponse, responses=api_write_responses(errors=(404,)))
     def configure(http_request: Request, body: ConfigureRequest) -> Response:
         runtime = current_runtime()
         request = body_data(body)
         return context.send(http_request, runtime.configure(body.id, request))
 
-    @router.post("/api/agents/account", response_model=AgentResponse)
+    @router.post("/api/agents/account", response_model=AgentResponse, responses=api_write_responses(errors=(404,)))
     def select_account(http_request: Request, body: AccountSelectionRequest) -> Response:
         runtime = current_runtime()
         request = body_data(body)
         selected = runtime.set_account(body.id, body.account_key, body.cwd)
         return context.send(http_request, agent_entity(runtime, cast(str, selected["id"])))
 
-    @router.post("/api/agents/account-transfer", response_model=TransferResponse)
+    @router.post("/api/agents/account-transfer", response_model=TransferResponse, responses=api_write_responses(errors=(404,)))
     def account_transfer(http_request: Request, body: AccountTransferRequest) -> Response:
         runtime = current_runtime()
         from codex_account_transfer import transfer_store
@@ -217,7 +218,7 @@ def create_router(context: ApiContext) -> APIRouter:
             )
         return context.send(http_request, _public_transfer(operation))
 
-    @router.post("/api/action", response_model=NativeActionResponse)
+    @router.post("/api/action", response_model=NativeActionResponse, responses=api_write_responses(errors=(404,)))
     def native_action(http_request: Request, body: NativeActionRequest) -> Response:
         runtime = current_runtime()
         request = body_data(body)
@@ -244,25 +245,25 @@ def create_router(context: ApiContext) -> APIRouter:
             return context.send(http_request, {"error": str(error), "outcome": "not_applied"}, status=400)
         return context.send(http_request, result)
 
-    @router.post("/api/native-command", response_model=NativeCommandResponse | None)
+    @router.post("/api/native-command", response_model=NativeCommandResponse | None, responses=api_write_responses(errors=(404,)))
     def native_command(http_request: Request, body: NativeCommandRequest) -> Response:
         runtime = current_runtime()
         request = body_data(body)
         return context.send(http_request, runtime.native_command_action(request))
 
-    @router.post("/api/import", response_model=AgentResponse)
+    @router.post("/api/import", response_model=AgentResponse, responses=api_write_responses(errors=(404,)))
     def import_thread(http_request: Request, body: ImportRequest) -> Response:
         runtime = current_runtime()
         request = body_data(body)
         imported = runtime.import_thread(request)
         return context.send(http_request, agent_entity(runtime, cast(str, imported["id"])))
 
-    @router.post("/api/stop", response_model=StopResponse)
+    @router.post("/api/stop", response_model=StopResponse, responses=api_write_responses(errors=(404,)))
     def stop(http_request: Request, body: StopRequest) -> Response:
         runtime = current_runtime()
         return context.send(http_request, runtime.stop(body.id, body.descendants))
 
-    @router.post("/api/connection-recovery", response_model=RecoveryResponse)
+    @router.post("/api/connection-recovery", response_model=RecoveryResponse, responses=api_write_responses(errors=(404,)))
     def connection_recovery(http_request: Request, body: IdRequest) -> Response:
         runtime = current_runtime()
         from codex_connection_recovery import recover
@@ -270,7 +271,7 @@ def create_router(context: ApiContext) -> APIRouter:
         recovery = cast(Callable[[AgentRuntime, str], dict[str, JsonValue]], recover)
         return context.send(http_request, recovery(runtime, body.id))
 
-    @router.post("/api/context-repair", response_model=ContextRepairResponse)
+    @router.post("/api/context-repair", response_model=ContextRepairResponse, responses=api_write_responses(errors=(404,)))
     def context_repair(http_request: Request, body: IdRequest) -> Response:
         runtime = current_runtime()
         from codex_context_repair import repair_idle
@@ -279,42 +280,43 @@ def create_router(context: ApiContext) -> APIRouter:
         repaired = repair(runtime, body.id)
         return context.send(http_request, {"id": repaired["id"], "repair": repaired.get("contextRepair")})
 
-    @router.post("/api/capacity-retry", response_model=RetryResponse)
+    @router.post("/api/capacity-retry", response_model=RetryResponse, responses=api_write_responses(errors=(404,)))
     def capacity_retry(http_request: Request, body: CapacityRetryRequest) -> Response:
         runtime = current_runtime()
         return context.send(http_request, runtime.capacity_retry(body.id, body.retry_id, body.action.value))
 
-    @router.post("/api/usage-resume", response_model=UsageResumeResponse | None)
+    @router.post("/api/usage-resume", response_model=UsageResumeResponse | None, responses=api_write_responses(errors=(404,)))
     def usage_resume(http_request: Request, body: UsageResumeRequest) -> Response:
         runtime = current_runtime()
         resumed = runtime.usage_resume_action(body.id, body.resume_id, body.enabled)
         return context.send(http_request, resumed)
 
-    @router.post("/api/conversation/delete", response_model=DeletedResponse)
+    @router.post("/api/conversation/delete", response_model=DeletedResponse, responses=api_write_responses(errors=(404,)))
     def delete_conversation(http_request: Request, body: IdRequest) -> Response:
         runtime = current_runtime()
         return context.send(http_request, runtime.delete_conversation(body.id))
 
-    @router.post("/api/rename", response_model=RenameResponse)
+    @router.post("/api/rename", response_model=RenameResponse, responses=api_write_responses(errors=(404,)))
     def rename(http_request: Request, body: RenameRequest) -> Response:
         runtime = current_runtime()
         return context.send(http_request, runtime.rename(body.id, body.name, body.request_id))
 
-    @router.get("/api/import", response_model=ImportListResponse)
+    @router.get("/api/import", response_model=ImportListResponse, responses=api_read_responses(errors=(404,)))
     def import_list(request: Request, query: ImportListQuery = Depends()) -> Response:
         runtime = current_runtime()
         cursor = first_nonempty_query(request, "cursor")
         account_key = first_nonempty_query(request, "account_key") or "default"
         return context.send(request, runtime.import_list(cursor, account_key=account_key))
 
-    @router.get("/api/capabilities", response_model=CapabilitiesResponse)
+    @router.get("/api/capabilities", response_model=CapabilitiesResponse,
+                responses=api_read_responses(errors=(404,), etag=True))
     def capabilities(request: Request, query: CapabilitiesQuery = Depends()) -> Response:
         runtime = current_runtime()
         agent = first_nonempty_query(request, "agent")
         return context.send(request, runtime.capabilities(agent), etag=True, weak_etag_fields=("at",))
 
     @router.get("/api/agents/finder-view", response_model=FinderViewResponse,
-                responses={404: {"model": ErrorResponse}})
+                responses=api_read_responses(errors=(404,)))
     def finder_view(request: Request, query: FinderViewQuery = Depends()) -> Response:
         """Where Finder shows the chat's files. Reads saved records only; never mounts or calls the VM."""
         runtime = current_runtime()
@@ -328,7 +330,7 @@ def create_router(context: ApiContext) -> APIRouter:
         return context.send(request, view(runtime, record))
 
     @router.post("/api/mac-sync/resolve", response_model=MacSyncResolveResponse,
-                 responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}})
+                 responses=api_write_responses(errors=(400, 404, 409)))
     def mac_sync_resolve(request: Request, body: MacSyncResolveRequest) -> Response:
         """Settle one conflicting path of a project's Mac folder sync."""
         from codex_vm_mac_sync import resolve
@@ -342,7 +344,7 @@ def create_router(context: ApiContext) -> APIRouter:
         return context.send(request, result)
 
     @router.post("/api/mac-sync/config", response_model=MacSyncStatusResponse,
-                 responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}})
+                 responses=api_write_responses(errors=(400, 404, 409)))
     def mac_sync_config(request: Request, body: MacSyncConfigRequest) -> Response:
         """Pause or resume a project's Mac folder sync, or confirm the Mac deletions that paused it."""
         from codex_vm_mac_sync import configure
@@ -359,7 +361,7 @@ def create_router(context: ApiContext) -> APIRouter:
         return context.send(request, status)
 
     @router.post("/api/vault/pull", response_model=VaultPullResponse,
-                 responses={400: {"model": ErrorResponse}})
+                 responses=api_write_responses(errors=(400, 404)))
     def vault_pull(request: Request, body: VaultPullRequest) -> Response:
         """Start a pull of the project's latest vault state into a new Mac folder, or report
         the pull that this requestId started."""
@@ -389,7 +391,7 @@ def create_router(context: ApiContext) -> APIRouter:
             return context.send(request, {"error": str(error)[:500]}, status=503)
 
     @router.post("/api/project-secrets/list", response_model=ProjectSecretsResponse,
-                 responses={400: {"model": ErrorResponse}, 503: {"model": ErrorResponse}})
+                 responses=api_write_responses(errors=(400, 404, 503)))
     def project_secrets_list(request: Request, body: ProjectSecretsListRequest) -> Response:
         """The names of the project's secrets."""
         from codex_project_secrets import list_names
@@ -397,7 +399,7 @@ def create_router(context: ApiContext) -> APIRouter:
         return project_secrets(request, lambda client: list_names(client, body.projectId))
 
     @router.post("/api/project-secrets/set", response_model=ProjectSecretsResponse,
-                 responses={400: {"model": ErrorResponse}, 503: {"model": ErrorResponse}})
+                 responses=api_write_responses(errors=(400, 404, 503)))
     def project_secrets_set(request: Request, body: ProjectSecretSetRequest) -> Response:
         """Set one secret of the project; agent processes that start later get it."""
         from codex_project_secrets import set_secret
@@ -406,7 +408,7 @@ def create_router(context: ApiContext) -> APIRouter:
             client, body.projectId, body.name, body.value, body.requestId))
 
     @router.post("/api/project-secrets/remove", response_model=ProjectSecretsResponse,
-                 responses={400: {"model": ErrorResponse}, 503: {"model": ErrorResponse}})
+                 responses=api_write_responses(errors=(400, 404, 503)))
     def project_secrets_remove(request: Request, body: ProjectSecretRemoveRequest) -> Response:
         """Remove one secret of the project."""
         from codex_project_secrets import remove_secret
@@ -414,7 +416,7 @@ def create_router(context: ApiContext) -> APIRouter:
         return project_secrets(request, lambda client: remove_secret(
             client, body.projectId, body.name, body.requestId))
 
-    @router.get("/api/skills", response_model=SkillsResponse)
+    @router.get("/api/skills", response_model=SkillsResponse, responses=api_read_responses(errors=(404,)))
     def skills(request: Request, query: SkillsQuery = Depends()) -> Response:
         runtime = current_runtime()
         agent = first_nonempty_query(request, "agent")

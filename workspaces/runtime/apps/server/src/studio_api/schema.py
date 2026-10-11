@@ -556,6 +556,19 @@ def validate_error_responses(document: dict[str, JsonValue]) -> None:
             operation = _object(raw_operation)
             responses = _object(operation.get("responses")) if operation else None
             error_response = _object(responses.get("400")) if responses else None
+            response_ref = error_response.get("$ref") if error_response else None
+            if (
+                isinstance(response_ref, str)
+                and response_ref.startswith("#/components/responses/")
+            ):
+                document_components = _object(document.get("components"))
+                response_components = (
+                    _object(document_components.get("responses"))
+                    if document_components
+                    else None
+                )
+                component_name = response_ref.rsplit("/", 1)[-1]
+                error_response = _object(response_components.get(component_name)) if response_components else None
             content = _object(error_response.get("content")) if error_response else None
             media = _object(content.get("application/json")) if content else None
             schema = _object(media.get("schema")) if media else None

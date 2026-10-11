@@ -1154,8 +1154,9 @@ class WorkMixin:
                 submitter = w.get("owner") or a["id"]
                 for path in files:
                     self.workspace_path(submitter, path)
+                result_id = str(uuid.uuid4())
                 result: WorkResultRecord = {
-                    "id": str(uuid.uuid4()),
+                    "id": result_id,
                     "agent": submitter,
                     "text": text_field(data.get("result"), "a result"),
                     "checks": text_field(data.get("checks"), "test evidence"),
@@ -1164,6 +1165,12 @@ class WorkMixin:
                     ),
                     "files": files,
                     "created": time.time(),
+                    "resultFile": str(
+                        Path(self.root).absolute()
+                        / "results"
+                        / w["id"]
+                        / (result_id + ".md")
+                    ),
                 }
                 owner = self.agent(submitter, db)
                 if owner.get('executionMode') == 'vm':
@@ -1174,7 +1181,6 @@ class WorkMixin:
                     result['layrStateId'] = evidence['layrStateId']
                 from codex_execution import safe_record, submission_identity
                 result.update(safe_record(db, submission_identity, db, self.agent(submitter, db)) or {})  # type: ignore[typeddict-item]  # typed-narrowing: callback adds typed run metadata
-                result['resultFile'] = str(Path(self.root).absolute() / 'results' / w['id'] / (result['id'] + '.md'))
                 w["results"].append(result)
                 w["status"] = "review"
                 if actor != a["rootId"]:

@@ -234,7 +234,9 @@ class LateCallback(f.ContextRepair):
             self.runtime.put(db, 'work', work)
         current = self.fork()
         current = self.agent_update(current, status='running', inFlight=True, turnId='new-turn', error=None)
-        changed = {**work, 'status':'review', 'results':[{'id':'new-result', 'agent':self.a['id']}]}
+        changed = {**work, 'status':'review', 'results':[{
+            'id':'new-result', 'agent':self.a['id'], 'text':'Result', 'checks':'Passed',
+            'revision':'revision-1', 'files':[], 'created':2, 'resultFile':'new-result.md'}]}
         with self.runtime.db() as db:
             self.runtime.put(db, 'work', changed)
         self.callback(status='failed')

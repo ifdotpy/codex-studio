@@ -327,9 +327,12 @@ class FederationRouterTests(unittest.TestCase):
         pull = schema["paths"]["/api/federation/v1/pull"]["post"]["requestBody"]
         self.assertEqual(pull["content"]["application/json"]["schema"]["$ref"], "#/components/schemas/PullRequest")
 
-        components = schema["components"]["schemas"]
-        self.assertIn("PairRequest", components)
-        self.assertIn("SignedEnvelope", components)
+        components = schema["components"]
+        schemas = components["schemas"]
+        responses = components["responses"]
+        headers = components["headers"]
+        self.assertIn("PairRequest", schemas)
+        self.assertIn("SignedEnvelope", schemas)
         self.assertNotIn("$defs", str(schema))
         references: list[str] = []
 
@@ -346,8 +349,13 @@ class FederationRouterTests(unittest.TestCase):
 
         collect_references(schema)
         for reference in references:
-            self.assertTrue(reference.startswith("#/components/schemas/"), reference)
-            self.assertIn(reference.removeprefix("#/components/schemas/"), components)
+            if reference.startswith("#/components/schemas/"):
+                self.assertIn(reference.removeprefix("#/components/schemas/"), schemas)
+            elif reference.startswith("#/components/responses/"):
+                self.assertIn(reference.removeprefix("#/components/responses/"), responses)
+            else:
+                self.assertTrue(reference.startswith("#/components/headers/"), reference)
+                self.assertIn(reference.removeprefix("#/components/headers/"), headers)
 
     def test_management_response_union_accepts_both_legacy_shapes(self) -> None:
         response: TypeAdapter[FederationSnapshot | CreateInviteResponse] = TypeAdapter(

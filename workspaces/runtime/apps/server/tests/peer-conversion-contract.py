@@ -76,7 +76,10 @@ class Conversion(unittest.TestCase):
             self.rt.item(db, self.a['id'], 'history', 'assistant', 'The original report', 'Lead')
             before = {a['id']: a for a in self.rt.records(db, 'agents')}
             work = {'id': 'board', 'rootId': self.a['id'], 'owner': worker['id'], 'status': 'review',
-                    'title': 'Original board', 'dependencies': ['dependency'], 'version': 4, 'results': [{'text': 'Saved evidence'}]}
+                    'title': 'Original board', 'dependencies': ['dependency'], 'version': 4,
+                    'results': [{'id': 'result-1', 'agent': worker['id'], 'text': 'Saved evidence',
+                                 'checks': 'Passed', 'revision': 'revision-1', 'files': [],
+                                 'created': 1, 'resultFile': 'result-1.md'}]}
             self.rt.put(db, 'work', work)
             self.rt.put(db, 'rooms', {'id': 'broadcast:' + self.a['id'], 'rootId': self.a['id'], 'kind': 'broadcast', 'updated': 1, 'members': []})
             self.rt.put(db, 'rooms', {'id': 'peer-history', 'kind': 'private', 'updated': 1, 'members': [self.a['id'], self.b['id']]})

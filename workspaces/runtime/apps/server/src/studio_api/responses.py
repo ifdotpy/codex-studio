@@ -21,6 +21,17 @@ ERROR_STATUS_DESCRIPTIONS = {
     413: "Invalid request size",
     415: "JSON required",
 }
+_API_ERROR_RESPONSE_DESCRIPTIONS = {
+    **ERROR_STATUS_DESCRIPTIONS,
+    404: "Not found",
+    401: "Unauthorized",
+    410: "Gone",
+    426: "API schema mismatch",
+    500: "Internal server error",
+    502: "Bad gateway",
+    503: "Service unavailable",
+    429: "Too many requests",
+}
 WRITE_METHODS = frozenset({"POST", "PUT", "PATCH"})
 OPENAPI_COMPONENTS_EXTENSION = "x-studio-components"
 OPENAPI_413_DESCRIPTION = "Content Too Large"
@@ -28,6 +39,8 @@ PYTHON_413_DESCRIPTIONS = frozenset({"Request Entity Too Large", OPENAPI_413_DES
 
 _HEADER_SCHEMA = {"schema": {"type": "string"}}
 _HEADER_COMPONENT_NAMES = {
+    "Access-Control-Allow-Origin": "AccessControlAllowOrigin",
+    "Access-Control-Expose-Headers": "AccessControlExposeHeaders",
     "Cache-Control": "CacheControl",
     "Content-Length": "ContentLength",
     "Content-Type": "ContentType",
@@ -45,6 +58,7 @@ _HEADER_COMPONENT_NAMES = {
     "Content-Range": "ContentRange",
     "X-Log-Truncated": "LogTruncated",
     "X-Accel-Buffering": "AccelBuffering",
+    "ETag": "ETag",
 }
 _HEADER_COMPONENTS = {
     name: {"schema": dict(_HEADER_SCHEMA["schema"])}
@@ -75,23 +89,59 @@ API_CONTEXT_RESPONSE_HEADERS = response_headers(
 API_BOUNDARY_RESPONSE_HEADERS = response_headers(
     "X-Studio-API-Schema",
     "X-Studio-Server",
+    "Access-Control-Allow-Origin",
+    "Access-Control-Expose-Headers",
 )
 
 
 def error_responses(
     statuses: Sequence[int], *, schema_mismatch: bool = False
 ) -> dict[int | str, dict[str, Any]]:
-    """Reference the shared error envelope for route-specific error statuses."""
-    headers = {**API_CONTEXT_RESPONSE_HEADERS, **API_BOUNDARY_RESPONSE_HEADERS}
-    responses: dict[int | str, dict[str, Any]] = {
-        status: {"model": ErrorResponse, "headers": dict(headers)} for status in statuses
+    """Reference shared error responses; ApiError426 carries the mismatch header."""
+    if schema_mismatch and 426 not in statuses:
+        statuses = (*statuses, 426)
+    return {
+        status: {"$ref": f"#/components/responses/ApiError{status}"}
+        for status in statuses
     }
-    if schema_mismatch and 426 in responses:
-        responses[426]["headers"] = {
-            **headers,
-            **response_headers("X-Studio-API-Schema-Mismatch"),
+
+
+def api_read_responses(
+    *, errors: Sequence[int] = (), headers: Sequence[str] = (), etag: bool = False
+) -> dict[int | str, dict[str, Any]]:
+    """Document a JSON read's common boundary errors and emitted headers."""
+    success_headers = {**API_CONTEXT_RESPONSE_HEADERS, **API_BOUNDARY_RESPONSE_HEADERS}
+    success_headers.update(response_headers(*headers))
+    error_statuses = tuple(dict.fromkeys((400, 401, 403, 429, 500, 503, *errors)))
+    responses: dict[int | str, dict[str, Any]] = {
+        200: {"headers": success_headers},
+        **error_responses(error_statuses),
+    }
+    if etag:
+        responses[200]["headers"] = {**success_headers, **response_headers("ETag")}
+        responses[304] = {
+            "description": "Not Modified",
+            "headers": {
+                **API_CONTEXT_RESPONSE_HEADERS,
+                **API_BOUNDARY_RESPONSE_HEADERS,
+                **response_headers("ETag"),
+            },
         }
     return responses
+
+
+def api_write_responses(
+    *, errors: Sequence[int] = (), headers: Sequence[str] = ()
+) -> dict[int | str, dict[str, Any]]:
+    """Document a JSON write's common boundary errors and emitted headers."""
+    success_headers = {**API_CONTEXT_RESPONSE_HEADERS, **API_BOUNDARY_RESPONSE_HEADERS}
+    success_headers.update(response_headers(*headers))
+    return {
+        200: {"headers": success_headers},
+        **error_responses(
+            tuple(dict.fromkeys((400, 401, 403, 408, 409, 410, 413, 415, 426, 429, 500, 502, 503, *errors)))
+        ),
+    }
 
 
 def error_response(
@@ -132,6 +182,23 @@ def install_error_response_docs(app: FastAPI) -> None:
         if not isinstance(header_schemas, dict):
             raise TypeError("OpenAPI headers must be an object")
         header_schemas.update(_HEADER_COMPONENTS)
+        response_components = components.setdefault("responses", {})
+        if not isinstance(response_components, dict):
+            raise TypeError("OpenAPI responses must be an object")
+        error_headers = {**API_CONTEXT_RESPONSE_HEADERS, **API_BOUNDARY_RESPONSE_HEADERS}
+        for status, description in _API_ERROR_RESPONSE_DESCRIPTIONS.items():
+            headers = dict(error_headers)
+            if status == 426:
+                headers.update(response_headers("X-Studio-API-Schema-Mismatch"))
+            response_components[f"ApiError{status}"] = {
+                "description": description,
+                "headers": headers,
+                "content": {
+                    "application/json": {
+                        "schema": {"$ref": "#/components/schemas/ErrorResponse"}
+                    }
+                },
+            }
 
         def normalize_refs(value: JsonValue) -> None:
             if isinstance(value, dict):
@@ -153,8 +220,6 @@ def install_error_response_docs(app: FastAPI) -> None:
                     normalize_refs(entry)
 
         normalize_refs(cast(JsonValue, schema))
-        response_schema: JsonValue = {"$ref": "#/components/schemas/ErrorResponse"}
-        content: JsonValue = {"application/json": {"schema": response_schema}}
         for path_item in schema.get("paths", {}).values():
             if not isinstance(path_item, dict):
                 continue
@@ -173,15 +238,23 @@ def install_error_response_docs(app: FastAPI) -> None:
                 if not isinstance(responses, dict):
                     continue
                 response_413 = responses.get("413")
-                if (
-                    isinstance(response_413, dict)
-                    and response_413.get("description") in PYTHON_413_DESCRIPTIONS
+                if isinstance(response_413, dict) and (
+                    method.upper() in WRITE_METHODS
+                    or response_413.get("description") in PYTHON_413_DESCRIPTIONS
                 ):
                     response_413["description"] = OPENAPI_413_DESCRIPTION
-                for status, description in ERROR_STATUS_DESCRIPTIONS.items():
+                for status in ERROR_STATUS_DESCRIPTIONS:
                     if status in {408, 409, 413, 415} and method.upper() not in WRITE_METHODS:
                         continue
-                    responses.setdefault(str(status), {"description": description, "content": content})
+                    documented_response: dict[str, JsonValue] = {
+                        "$ref": f"#/components/responses/ApiError{status}"
+                    }
+                    if status == 413 and method.upper() in WRITE_METHODS:
+                        documented_response["description"] = OPENAPI_413_DESCRIPTION
+                    responses.setdefault(
+                        str(status),
+                        documented_response,
+                    )
                 generated_validation = responses.get("422")
                 if isinstance(generated_validation, dict) and "model" not in operation.get("responses", {}).get("422", {}):
                     schema_value = generated_validation.get("content", {})
