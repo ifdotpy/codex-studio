@@ -1,5 +1,7 @@
 //! `.gitignore` rules, read from one snapshot root. A path below an ignored folder is ignored.
-//! `.regenerable` files have the same form: they name the folders that a build makes again.
+//! `.layrattributes` files give paths attributes with the same patterns: a line is a pattern and
+//! its attributes, such as `node_modules regenerable`; `-regenerable` unsets one, and the last
+//! matching line wins.
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::cell::RefCell;
@@ -9,17 +11,29 @@ use std::path::{Path, PathBuf};
 pub struct Rules {
     root: PathBuf,
     files: &'static [&'static str],
+    /// For `.layrattributes`: the attribute whose patterns this matcher holds.
+    attribute: Option<&'static str>,
     cache: RefCell<HashMap<String, Option<Gitignore>>>,
 }
 
 impl Rules {
     pub fn new(root: &Path) -> Rules {
-        Rules { root: root.to_path_buf(), files: &[".gitignore", ".layrignore"], cache: RefCell::new(HashMap::new()) }
+        Rules {
+            root: root.to_path_buf(),
+            files: &[".gitignore", ".layrignore"],
+            attribute: None,
+            cache: RefCell::new(HashMap::new()),
+        }
     }
 
-    /// The rules of `.regenerable` files: `ignored` is true for a folder they name.
-    pub fn regenerable(root: &Path) -> Rules {
-        Rules { root: root.to_path_buf(), files: &[".regenerable"], cache: RefCell::new(HashMap::new()) }
+    /// The paths that `.layrattributes` files give the attribute `name`: `ignored` is true for them.
+    pub fn attribute(root: &Path, name: &'static str) -> Rules {
+        Rules {
+            root: root.to_path_buf(),
+            files: &[".layrattributes"],
+            attribute: Some(name),
+            cache: RefCell::new(HashMap::new()),
+        }
     }
 
     fn matcher(&self, dir: &str) -> Option<Gitignore> {
@@ -32,7 +46,28 @@ impl Rules {
         for name in self.files {
             let rel = if dir.is_empty() { name.to_string() } else { format!("{dir}/{name}") };
             if crate::fsutil::lmeta(&self.root, &rel).map(|m| m.is_file()).unwrap_or(false) {
-                b.add(base.join(name));
+                match self.attribute {
+                    None => {
+                        b.add(base.join(name));
+                    }
+                    Some(attribute) => {
+                        let unset = format!("-{attribute}");
+                        for line in std::fs::read_to_string(base.join(name)).unwrap_or_default().lines() {
+                            let mut words = line.split_whitespace();
+                            let pattern = match words.next() {
+                                Some(p) if !p.starts_with('#') => p,
+                                _ => continue,
+                            };
+                            for word in words {
+                                if word == attribute {
+                                    let _ = b.add_line(None, pattern);
+                                } else if word == unset {
+                                    let _ = b.add_line(None, &format!("!{pattern}"));
+                                }
+                            }
+                        }
+                    }
+                }
                 any = true;
             }
         }

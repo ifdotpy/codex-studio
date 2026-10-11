@@ -1339,7 +1339,7 @@ pub fn layer(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let sub = args.first().map(|s| s.as_str()).unwrap_or("list");
     match sub {
         "list" => {
-            // The machine setting, and in a line also the folders that `.regenerable` names.
+            // The machine setting, and in a line also the regenerable folders of `.layrattributes`.
             let paths = match &h.line {
                 Some(l) => repo.layer_paths(&repo.working(l)),
                 None => repo.p.config_strings("regenerable"),
