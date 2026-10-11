@@ -2555,7 +2555,10 @@ export interface components {
       servers: components["schemas"]["AccessClient"][];
       settings: components["schemas"]["AccessSettings"];
     };
-    /** Account */
+    /**
+     * Account
+     * @description Known profile fields; AccountStore._public passes public stored fields through.
+     */
     Account: {
       /** Accountid */
       accountId?: string | null;
@@ -2587,6 +2590,8 @@ export interface components {
       /** Source */
       source: string;
       status: components["schemas"]["AccountStatus"];
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** AccountCostData */
     AccountCostData: {
@@ -4607,7 +4612,10 @@ export interface components {
        */
       share_status?: boolean;
     };
-    /** AssetRecord */
+    /**
+     * AssetRecord
+     * @description Known fields; asset_view removes path and passes every other stored field.
+     */
     AssetRecord: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -4629,6 +4637,8 @@ export interface components {
       name: string;
       /** Size */
       size: number;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** AssetUpload */
     AssetUpload: {
@@ -5361,12 +5371,17 @@ export interface components {
       /** Turnid */
       turnId?: string | null;
     };
-    /** ClaudeCustomModel */
+    /**
+     * ClaudeCustomModel
+     * @description Custom model records are nested in the stored account passthrough.
+     */
     ClaudeCustomModel: {
       /** Id */
       id: string;
       /** Label */
       label: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** ClaudeDeliveryResponse */
     ClaudeDeliveryResponse: {
@@ -5393,7 +5408,10 @@ export interface components {
         | "cancelled"
         | "failed";
     };
-    /** ClaudeLoginResponse */
+    /**
+     * ClaudeLoginResponse
+     * @description Known receipt fields; LoginManager returns its saved receipt directly.
+     */
     ClaudeLoginResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -5420,8 +5438,13 @@ export interface components {
       status: "starting" | "pending" | "ready" | "cancelled" | "error";
       /** Verificationurl */
       verificationUrl?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
-    /** ClaudeOptions */
+    /**
+     * ClaudeOptions
+     * @description Stored account options are returned through AccountStore._public.
+     */
     ClaudeOptions: {
       /** Autocompactwindow */
       autoCompactWindow?: number | null;
@@ -5433,6 +5456,8 @@ export interface components {
       customModels?: components["schemas"]["ClaudeCustomModel"][] | null;
       /** Launchargs */
       launchArgs?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** ClaudeProfileRequest */
     ClaudeProfileRequest: {
@@ -5605,7 +5630,7 @@ export interface components {
     };
     /**
      * CodexLoginReceipt
-     * @description Persisted login receipt fields exposed by AccountStore.login_receipts().
+     * @description Known fields; AccountStore.login_receipts() passes persisted receipts through.
      */
     CodexLoginReceipt: {
       /** Accountkey */
@@ -5650,6 +5675,8 @@ export interface components {
       userCode?: string | null;
       /** Verificationurl */
       verificationUrl?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** ComplaintBody */
     ComplaintBody: {
@@ -7540,7 +7567,10 @@ export interface components {
      * @enum {string}
      */
     NativeAction: "compact" | "review";
-    /** NativeActionOutcome */
+    /**
+     * NativeActionOutcome
+     * @description Persisted execution outcome returned directly on native-action replay.
+     */
     NativeActionOutcome: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -7549,6 +7579,8 @@ export interface components {
       /** Error */
       error?: string | null;
       status: components["schemas"]["NativeActionOutcomeStatus"];
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /**
      * NativeActionOutcomeStatus
@@ -7559,7 +7591,10 @@ export interface components {
       | "acknowledged"
       | "unknown"
       | "failed";
-    /** NativeActionReceipt */
+    /**
+     * NativeActionReceipt
+     * @description Persisted admission receipt returned directly on native-action replay.
+     */
     NativeActionReceipt: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -7581,6 +7616,8 @@ export interface components {
       status: components["schemas"]["NativeActionReceiptStatus"];
       /** Threadid */
       threadId: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /**
      * NativeActionReceiptStatus
@@ -8248,6 +8285,8 @@ export interface components {
       workerEnvironment?: ("host" | "linux") | null;
       /** Workerenvironmentrevision */
       workerEnvironmentRevision?: number | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** PeerRadioActive */
     PeerRadioActive: {
@@ -8336,7 +8375,10 @@ export interface components {
      * @enum {string}
      */
     PeerStatus: "pending" | "approved" | "revoked";
-    /** PeerTeam */
+    /**
+     * PeerTeam
+     * @description Peer-team records are nested in the stored project passthrough.
+     */
     PeerTeam: {
       /** Id */
       id: string;
@@ -8344,6 +8386,8 @@ export interface components {
       members: string[];
       /** Name */
       name: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** PeerTeamConvertRequest */
     PeerTeamConvertRequest: {
@@ -8567,7 +8611,10 @@ export interface components {
       /** Version */
       version: number;
     };
-    /** PlanView */
+    /**
+     * PlanView
+     * @description Known fields; runtime_plans records are returned without projection.
+     */
     PlanView: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -8586,6 +8633,8 @@ export interface components {
       updated: number | null;
       /** Version */
       version: number;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** PreferenceField */
     PreferenceField: {
@@ -8775,7 +8824,10 @@ export interface components {
       /** Updated */
       updated: number | null;
     };
-    /** Project */
+    /**
+     * Project
+     * @description Known project fields; records(db, "projects") passes stored records through.
+     */
     Project: {
       /** Accountkey */
       accountKey?: string | null;
@@ -8818,8 +8870,13 @@ export interface components {
       workerEnvironment?: ("host" | "linux") | null;
       /** Workerenvironmentrevision */
       workerEnvironmentRevision?: number | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
-    /** ProjectAlias */
+    /**
+     * ProjectAlias
+     * @description Alias records are nested in the stored project passthrough.
+     */
     ProjectAlias: {
       /** Name */
       name: string;
@@ -8827,6 +8884,8 @@ export interface components {
       projectId: string;
       /** Serverid */
       serverId: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** ProjectAliasDto */
     ProjectAliasDto: {
@@ -8883,7 +8942,10 @@ export interface components {
       /** Workerenvironmentrevision */
       workerEnvironmentRevision?: number | null;
     };
-    /** ProjectFolder */
+    /**
+     * ProjectFolder
+     * @description Folder records are nested in the stored project passthrough.
+     */
     ProjectFolder: {
       /** Id */
       id: string;
@@ -8891,6 +8953,8 @@ export interface components {
       name: string;
       /** Parentid */
       parentId?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /**
      * ProjectLayrReadinessDto
@@ -8934,7 +8998,10 @@ export interface components {
       /** Withagent */
       withAgent: string[];
     };
-    /** ProjectLocation */
+    /**
+     * ProjectLocation
+     * @description Location records are nested in the stored project passthrough.
+     */
     ProjectLocation: {
       /** Gitorigin */
       gitOrigin?: string | null;
@@ -8946,6 +9013,8 @@ export interface components {
       requestedPath?: string | null;
       /** Serverid */
       serverId: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** ProjectLocationDto */
     ProjectLocationDto: {
@@ -9048,6 +9117,8 @@ export interface components {
       workerEnvironment?: ("host" | "linux") | null;
       /** Workerenvironmentrevision */
       workerEnvironmentRevision?: number | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** ProjectPeerTeamDto */
     ProjectPeerTeamDto: {
@@ -9067,7 +9138,10 @@ export interface components {
       /** Items */
       items: components["schemas"]["Project"][];
     };
-    /** ProjectRegistration */
+    /**
+     * ProjectRegistration
+     * @description Registration records are nested in the stored project passthrough.
+     */
     ProjectRegistration: {
       /**
        * Action
@@ -9080,6 +9154,8 @@ export interface components {
       project: string;
       /** Server */
       server: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** ProjectRemovalResponse */
     ProjectRemovalResponse: {
@@ -12443,7 +12519,10 @@ export interface components {
       /** Truncated */
       truncated: boolean;
     };
-    /** TerminalRecord */
+    /**
+     * TerminalRecord
+     * @description Known fields; terminal actions return the persisted user_terminal record.
+     */
     TerminalRecord: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -12466,6 +12545,8 @@ export interface components {
       title: string;
       /** Updated */
       updated?: number | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** TerminalRename */
     TerminalRename: {
@@ -13758,6 +13839,16 @@ export interface components {
       status: "pending" | "complete" | "terminal";
       /** Updated */
       updated?: number;
+    } & {
+      [key: string]:
+        | string
+        | number
+        | boolean
+        | components["schemas"]["JsonValue"][]
+        | {
+            [key: string]: components["schemas"]["JsonValue"];
+          }
+        | null;
     };
     /** WorkArchiveRecord */
     WorkArchiveRecord: {
@@ -13794,6 +13885,16 @@ export interface components {
             }
           | null;
       };
+    } & {
+      [key: string]:
+        | string
+        | number
+        | boolean
+        | components["schemas"]["JsonValue"][]
+        | {
+            [key: string]: components["schemas"]["JsonValue"];
+          }
+        | null;
     };
     /** WorkBody */
     WorkBody: {
@@ -13874,6 +13975,16 @@ export interface components {
       reason: string;
       /** Resultid */
       resultId?: string;
+    } & {
+      [key: string]:
+        | string
+        | number
+        | boolean
+        | components["schemas"]["JsonValue"][]
+        | {
+            [key: string]: components["schemas"]["JsonValue"];
+          }
+        | null;
     };
     /** WorkEntityDto */
     WorkEntityDto: {
@@ -13931,7 +14042,7 @@ export interface components {
     };
     /**
      * WorkItem
-     * @description Work response projection; nested persisted records use codex_records as authority.
+     * @description work_view spreads stored records; retain their unknown top-level and nested fields.
      */
     WorkItem: {
       /** Syncentities */
@@ -13986,6 +14097,8 @@ export interface components {
       updated: number;
       /** Version */
       version: number;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** WorkList */
     WorkList: {
@@ -14049,6 +14162,16 @@ export interface components {
       runId?: string;
       /** Text */
       text: string;
+    } & {
+      [key: string]:
+        | string
+        | number
+        | boolean
+        | components["schemas"]["JsonValue"][]
+        | {
+            [key: string]: components["schemas"]["JsonValue"];
+          }
+        | null;
     };
     /** WorkspaceEntityDto */
     WorkspaceEntityDto: {

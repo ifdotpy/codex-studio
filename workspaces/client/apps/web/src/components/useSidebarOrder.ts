@@ -17,10 +17,26 @@ import type { components } from "../generated/api";
 type Order = Record<string, string[]>;
 type Drag = { group: string; id: string };
 type ServerOrder = components["schemas"]["SidebarOrderDto"];
+type SidebarOrderResponse = components["schemas"]["SidebarOrderResponse"];
 type Pending = {
   ownerId?: string;
   body: Extract<PostBody<"/api/projects">, { action: "reorder" }>;
 };
+
+function isSidebarOrderResponse(value: unknown): value is SidebarOrderResponse {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return false;
+  const record = value as Record<string, unknown>;
+  if (typeof record.revision !== "number" || !Number.isFinite(record.revision))
+    return false;
+  if (record.groups === null) return true;
+  if (typeof record.groups !== "object" || Array.isArray(record.groups))
+    return false;
+  return Object.values(record.groups).every(
+    (items) =>
+      Array.isArray(items) && items.every((item) => typeof item === "string"),
+  );
+}
 
 export function sidebarOrderCanWrite(
   sessionToken: string | undefined,
@@ -106,7 +122,7 @@ export function useSidebarOrder(
       const result = await backend.post("/api/projects", request.body, {
         timeoutMs: 15000,
       });
-      if (!("revision" in result))
+      if (!isSidebarOrderResponse(result))
         throw new Error("Invalid sidebar order response");
       if (result.revision >= revision.current) {
         revision.current = result.revision;

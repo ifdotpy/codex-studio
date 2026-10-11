@@ -1497,7 +1497,10 @@ export default function App() {
                 setModal(null);
                 await refresh();
                 if (server === "local") await newChat(path);
-                else if ("projectId" in registered) {
+                else if (
+                  "projectId" in registered &&
+                  typeof registered.projectId === "string"
+                ) {
                   await openProjectFolders(registered.projectId);
                 }
               }}

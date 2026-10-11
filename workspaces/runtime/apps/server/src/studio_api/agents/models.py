@@ -5,7 +5,7 @@ from __future__ import annotations
 from uuid import UUID
 from typing import Literal, TypeAlias
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel
 from studio_api.sync.models import (
@@ -564,6 +564,12 @@ class ContextRepairResponse(ResponseModel):
 
 
 class NativeActionReceipt(ResponseModel):
+    """Persisted admission receipt returned directly on native-action replay."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
     requestId: str
     agentId: str
     action: NativeAction
@@ -576,6 +582,12 @@ class NativeActionReceipt(ResponseModel):
 
 
 class NativeActionOutcome(ResponseModel):
+    """Persisted execution outcome returned directly on native-action replay."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
     status: NativeActionOutcomeStatus
     error: str | None = None
 

@@ -5,6 +5,7 @@ import asyncio
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
 
@@ -216,6 +217,37 @@ class IORouterTests(unittest.TestCase):
         self.assertEqual(cancel.json(), {"id": "watch-1", "status": "lost"})
         self.assertEqual(monitor_input.status_code, 200)
         self.assertEqual(monitor_input.json(), {"processId": "watch-1"})
+
+    def test_terminal_and_asset_responses_preserve_stored_extensions(self) -> None:
+        app, context = make_api_context_app(self.runtime)
+        terminals = cast(TerminalFixture, getattr(context, "_terminal"))
+
+        def legacy_terminal(_action: str, data: dict[str, JsonValue]) -> dict[str, JsonValue]:
+            return {
+                "id": data["id"], "agent": "agent-1", "title": "Terminal",
+                "cwd": "/workspace", "status": "running", "created": 1.0,
+                "legacyTerminalMetadata": {"source": "prior-version"},
+            }
+
+        def legacy_asset(data: dict[str, JsonValue]) -> dict[str, JsonValue]:
+            return {
+                "id": "asset-placeholder", "agent": data["agent"], "name": data["name"],
+                "mime": "text/plain", "image": False, "size": 3, "hash": "digest",
+                "created": 1.0, "legacyAssetMetadata": "preserved",
+            }
+
+        with (
+            patch.object(terminals, "action", side_effect=legacy_terminal),
+            patch.object(self.runtime, "upload_asset", side_effect=legacy_asset),
+            TestClient(app) as client,
+        ):
+            terminal = client.post("/api/terminals/rename", json={"id": "terminal-placeholder", "title": "Renamed"})
+            asset = client.post("/api/assets", json={"agent": "agent-1", "name": "sample.txt", "data": "YWJj"})
+
+        self.assertEqual(terminal.status_code, 200, terminal.text)
+        self.assertEqual(terminal.json()["legacyTerminalMetadata"], {"source": "prior-version"})
+        self.assertEqual(asset.status_code, 200, asset.text)
+        self.assertEqual(asset.json()["legacyAssetMetadata"], "preserved")
 
     def test_terminal_input_keeps_durable_request_identity(self) -> None:
         response = self.client.post("/api/terminals/input", json={"id": "term", "text": "go", "request_id": "durable-1"})

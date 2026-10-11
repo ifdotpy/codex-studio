@@ -34,19 +34,29 @@ class AccountStatus(ContractStrEnum):
 
 
 class ClaudeOptions(ContractModel):
+    """Stored account options are returned through AccountStore._public."""
+
     binaryPath: str | None = None
     configDir: str | None = None
     launchArgs: str | None = None
     autoCompactWindow: int | None = None
     customModels: list[ClaudeCustomModel] | None = None
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 
 class ClaudeCustomModel(ContractModel):
+    """Custom model records are nested in the stored account passthrough."""
+
     id: str
     label: str
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 
 class Account(ContractModel):
+    """Known profile fields; AccountStore._public passes public stored fields through."""
+
     id: str
     home: str
     label: str
@@ -63,10 +73,12 @@ class Account(ContractModel):
     claudeOptions: ClaudeOptions | None = None
     authenticationRecovery: str | None = None
     canAttemptNativeProof: bool | None = None
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 
 class CodexLoginReceipt(ContractModel):
-    """Persisted login receipt fields exposed by AccountStore.login_receipts()."""
+    """Known fields; AccountStore.login_receipts() passes persisted receipts through."""
 
     requestId: str
     accountKey: str
@@ -84,6 +96,8 @@ class CodexLoginReceipt(ContractModel):
     emailHint: str | None = None
     requestedLabel: str | None = None
     nativeCompleted: bool | None = None
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 
 class AccountLoginResponse(ResponseModel):
@@ -122,6 +136,8 @@ class AccountsResponse(ResponseModel):
 
 
 class ClaudeLoginResponse(ResponseModel):
+    """Known receipt fields; LoginManager returns its saved receipt directly."""
+
     requestId: str
     accountKey: str
     status: Literal["starting", "pending", "ready", "cancelled", "error"]
@@ -131,42 +147,66 @@ class ClaudeLoginResponse(ResponseModel):
     verificationUrl: str | None = None
     error: str | None = None
     chatsRefreshed: bool | None = None
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 
 class ProjectFolder(ContractModel):
+    """Folder records are nested in the stored project passthrough."""
+
     id: str
     name: str
     parentId: str | None = None
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 
 class PeerTeam(ContractModel):
+    """Peer-team records are nested in the stored project passthrough."""
+
     id: str
     name: str
     members: list[str]
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 
 class ProjectLocation(ContractModel):
+    """Location records are nested in the stored project passthrough."""
+
     serverId: str
     path: str
     requestedPath: str | None = None
     projectId: str
     gitOrigin: str | None = None
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 
 class ProjectAlias(ContractModel):
+    """Alias records are nested in the stored project passthrough."""
+
     serverId: str
     projectId: str
     name: str
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 
 class ProjectRegistration(ContractModel):
+    """Registration records are nested in the stored project passthrough."""
+
     action: Literal["register"]
     project: str
     server: str
     path: str
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 
 class Project(ContractModel):
+    """Known project fields; records(db, \"projects\") passes stored records through."""
+
     homeServerId: str | None = None
     locations: list[ProjectLocation] | None = None
     locationsRevision: int | None = None
@@ -188,10 +228,15 @@ class Project(ContractModel):
     folders: list[ProjectFolder] | None = None
     peerTeams: list[PeerTeam] | None = None
     registration: ProjectRegistration | None = None
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 
 class ProjectMutationRecord(Project, ResponseModel):
     """A project record returned directly by successful project writes."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue]
 
 
 class ProjectRemovalResponse(ResponseModel):
@@ -343,6 +388,9 @@ class ResetRequest(ContractModel):
 
 class PeerProjectResponse(Project, ResponseModel):
     """Project record returned by peer team save/delete/move operations."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue]
 
 
 class PeerConversionResponse(ResponseModel):

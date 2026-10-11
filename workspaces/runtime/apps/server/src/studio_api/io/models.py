@@ -1,7 +1,7 @@
 """Typed HTTP contracts for terminals, monitors, attachments, and file reads."""
 from __future__ import annotations
 
-from pydantic import Field, field_validator
+from pydantic import ConfigDict, Field, field_validator
 
 from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel
 
@@ -28,6 +28,8 @@ class TerminalInputDelivery(ContractStrEnum):
 
 
 class TerminalRecord(ResponseModel):
+    """Known fields; terminal actions return the persisted user_terminal record."""
+
     id: str
     agent: str
     title: str
@@ -37,6 +39,8 @@ class TerminalRecord(ResponseModel):
     updated: float | None = None
     exitCode: int | None = None
     error: str | None = None
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 
 class TerminalList(ResponseModel):
@@ -123,6 +127,8 @@ class AssetUpload(ContractModel):
 
 
 class AssetRecord(ResponseModel):
+    """Known fields; asset_view removes path and passes every other stored field."""
+
     id: str
     agent: str
     name: str
@@ -131,6 +137,8 @@ class AssetRecord(ResponseModel):
     size: int
     hash: str
     created: float
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 
 class FileInfo(ResponseModel):

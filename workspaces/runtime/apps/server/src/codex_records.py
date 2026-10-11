@@ -1458,13 +1458,13 @@ class AgentRecord(TypedDict):
     draft: NotRequired[AgentDraftRecord]
 
 
-class WorkArchiveRecord(TypedDict):
+class WorkArchiveRecord(TypedDict, extra_items=JsonValue):  # type: ignore[call-arg]  # typing_extensions exposes PEP 728 at runtime; mypy's TypedDict stub has no extra_items yet
     reason: NotRequired[str]
     status: NotRequired[str]
     worktree: NotRequired[JsonObject]
 
 
-class WorkArchiveIntentRecord(TypedDict):
+class WorkArchiveIntentRecord(TypedDict, extra_items=JsonValue):  # type: ignore[call-arg]  # typing_extensions exposes PEP 728 at runtime; mypy's TypedDict stub has no extra_items yet
     id: str
     status: Literal["pending", "complete", "terminal"]
     owner: NotRequired[str | None]
@@ -1478,7 +1478,7 @@ class WorkArchiveIntentRecord(TypedDict):
     outcome: NotRequired[WorkArchiveRecord]
 
 
-class WorkResultRecord(TypedDict):
+class WorkResultRecord(TypedDict, extra_items=JsonValue):  # type: ignore[call-arg]  # typing_extensions exposes PEP 728 at runtime; mypy's TypedDict stub has no extra_items yet
     # Read-only runtime_work audit: these eight keys occurred in all 862 results;
     # runId and attemptId were both absent from 30 of those results.
     layrProjectId: NotRequired[str]
@@ -1496,7 +1496,7 @@ class WorkResultRecord(TypedDict):
     attemptId: NotRequired[str | None]
 
 
-class WorkDecisionRecord(TypedDict):
+class WorkDecisionRecord(TypedDict, extra_items=JsonValue):  # type: ignore[call-arg]  # typing_extensions exposes PEP 728 at runtime; mypy's TypedDict stub has no extra_items yet
     decision: Literal["cancel", "accept", "reject"]
     reason: str
     by: str
