@@ -7,7 +7,7 @@ import { fixture } from "./multi-server-fixture.mjs";
 test("accounts settings show per-server state and provider choices", async ({
   page,
   context,
-}) => {
+}, testInfo) => {
   const localAccounts = [
     {
       id: "local-codex",
@@ -231,9 +231,13 @@ test("accounts settings show per-server state and provider choices", async ({
   await expect(remoteClaude).toBeVisible();
   await expect(remoteActions).toBeFocused();
 
-  const screenshots = fileURLToPath(
-    new URL("../../../../../../docs/screenshots/", import.meta.url),
-  );
+  const updateDocumentationScreenshots =
+    process.env.CODEX_UPDATE_DOC_SCREENSHOTS === "1";
+  const screenshots = updateDocumentationScreenshots
+    ? fileURLToPath(
+        new URL("../../../../../../docs/screenshots/", import.meta.url),
+      )
+    : testInfo.outputPath("screenshots");
   mkdirSync(screenshots, { recursive: true });
   await settings.screenshot({
     path: resolve(screenshots, "accounts-light.png"),

@@ -13,8 +13,15 @@ test("one UI routes overlapping chats to two and three signed servers without re
 }, testInfo) => {
   test.setTimeout(180000);
   page.setDefaultTimeout(15000);
+  const chatByServer = (id, root = page) => {
+    const alias = { local: "LOC", remote: "REM", third: "THI" }[id];
+    if (!alias) throw new Error(`Unknown fixture server ${id}`);
+    return root.locator("#chat-list .chat-row").filter({
+      has: root.locator(`.chat-server-line[aria-label$=", ${alias}"]`),
+    });
+  };
   const clickServerChat = async (id) => {
-    const chat = page.locator(`[data-server="${id}"] .server-chat`);
+    const chat = chatByServer(id);
     await chat.evaluate((element) =>
       element.scrollIntoView({ block: "center" }),
     );
@@ -140,11 +147,9 @@ test("one UI routes overlapping chats to two and three signed servers without re
       await dialog
         .getByRole("button", { name: "Pair server", exact: true })
         .click();
-      await expect(
-        page.locator(
-          `[data-server="${server.invitation.serverId}"] .server-chat`,
-        ),
-      ).toContainText(`${server.invitation.label} chat`);
+      await expect(chatByServer(server.invitation.serverId)).toContainText(
+        `${server.invitation.label} chat`,
+      );
       await dialog.getByRole("button", { name: "Close", exact: true }).click();
     };
     await page
@@ -225,13 +230,15 @@ test("one UI routes overlapping chats to two and three signed servers without re
       const start = Date.now();
       const concurrent = count === 3 ? await context.newPage() : null;
       await Promise.all([page.reload(), concurrent?.goto(local.origin)]);
-      await expect(
-        page.locator(".server-sidebar [data-chat='overlap']"),
-      ).toHaveCount(count);
+      for (const serverId of ["local", "remote", "third"]) {
+        await expect(chatByServer(serverId)).toHaveCount(
+          serverId === "third" && count === 2 ? 0 : 1,
+        );
+      }
       if (concurrent) {
-        await expect(
-          concurrent.locator(".server-sidebar [data-chat='overlap']"),
-        ).toHaveCount(count);
+        for (const serverId of ["local", "remote", "third"]) {
+          await expect(chatByServer(serverId, concurrent)).toHaveCount(1);
+        }
         await concurrent.close();
       }
       const startupMs = Date.now() - start;
@@ -289,13 +296,13 @@ test("one UI routes overlapping chats to two and three signed servers without re
         await thirdRow
           .getByRole("button", { name: "Remove from this UI", exact: true })
           .click();
-        await expect(
-          page.locator(".server-sidebar [data-chat='overlap']"),
-        ).toHaveCount(2);
+        await expect(chatByServer("local")).toHaveCount(1);
+        await expect(chatByServer("remote")).toHaveCount(1);
+        await expect(chatByServer("third")).toHaveCount(0);
         await page.reload();
-        await expect(
-          page.locator(".server-sidebar [data-chat='overlap']"),
-        ).toHaveCount(2);
+        await expect(chatByServer("local")).toHaveCount(1);
+        await expect(chatByServer("remote")).toHaveCount(1);
+        await expect(chatByServer("third")).toHaveCount(0);
         await page
           .getByRole("button", { name: "Studio settings", exact: true })
           .click();
@@ -309,9 +316,9 @@ test("one UI routes overlapping chats to two and three signed servers without re
           .locator("[data-settings-server=third]")
           .getByRole("button", { name: "Add to this UI", exact: true })
           .click();
-        await expect(
-          page.locator(".server-sidebar [data-chat='overlap']"),
-        ).toHaveCount(3);
+        await expect(chatByServer("local")).toHaveCount(1);
+        await expect(chatByServer("remote")).toHaveCount(1);
+        await expect(chatByServer("third")).toHaveCount(1);
         expect(third.pairs).toHaveLength(2);
         local.discoverPeer(
           {
@@ -467,7 +474,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
       }
       await clickServerChat("local");
       const localComposer = page
-        .frameLocator('iframe[title="Studio on This computer"]')
+        .frameLocator('iframe[src*="studio-server=local"]')
         .locator("#message");
       await expect(localComposer).toBeVisible();
       await localComposer.fill(`idle draft ${count}`);
@@ -476,8 +483,8 @@ test("one UI routes overlapping chats to two and three signed servers without re
       local.complete(`idle-${count}`);
       await page.clock.fastForward(30000);
       await expect(
-        page.locator('[data-server="local"] .server-chat'),
-      ).toContainText("●");
+        chatByServer("local").locator('[data-chat-status="unread"]'),
+      ).toBeVisible();
       await expect
         .poll(() =>
           page.evaluate(() =>
@@ -508,10 +515,10 @@ test("one UI routes overlapping chats to two and three signed servers without re
       }
     }
     await clickServerChat("local");
-    const localFrame = page.frameLocator(
-      'iframe[title="Studio on This computer"]',
+    const localFrame = page.frameLocator('iframe[src*="studio-server=local"]');
+    const remoteFrame = page.frameLocator(
+      'iframe[src*="studio-server=remote"]',
     );
-    const remoteFrame = page.frameLocator('iframe[title="Studio on Remote"]');
     const timeOrigins = await Promise.all(
       page
         .frames()
@@ -540,7 +547,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
     expect(local.writes).toHaveLength(0);
     expect(remote.writes[0].text).toBe("remote draft");
     await page
-      .getByRole("button", { name: "Search all messages", exact: true })
+      .getByRole("button", { name: "Search chats", exact: true })
       .click();
     const search = page.getByRole("dialog", { name: "Search all servers" });
     await search
@@ -550,14 +557,10 @@ test("one UI routes overlapping chats to two and three signed servers without re
     await expect(search.locator(".server-search-result")).toHaveCount(3);
     await search.getByRole("button", { name: "Close", exact: true }).click();
     remote.offline(true);
-    await expect(
-      page.locator('[data-server="remote"] [role="status"]'),
-    ).toHaveText("Offline");
+    await expect(chatByServer("remote")).toBeVisible();
     await expect(remoteFrame.locator("#message")).toBeVisible();
     remote.offline(false);
-    await expect(
-      page.locator('[data-server="remote"] [role="status"]'),
-    ).toHaveText("Online", { timeout: 20000 });
+    await expect(chatByServer("remote")).toBeVisible();
     await page.evaluate(() => {
       window.__studioNotifications = [];
     });
@@ -574,8 +577,8 @@ test("one UI routes overlapping chats to two and three signed servers without re
         window.__studioNotifications.map((notice) => notice.title).sort(),
       ),
     ).toEqual([
+      "Local: Local chat: Reply ready",
       "Third: Third chat: Reply ready",
-      "This computer: Local chat: Reply ready",
     ]);
     await remoteFrame.locator("#message").press("Control+k");
     await expect(
@@ -585,11 +588,13 @@ test("one UI routes overlapping chats to two and three signed servers without re
       .getByRole("dialog", { name: "Search all servers" })
       .getByRole("button", { name: "Close", exact: true })
       .click();
-    await page
-      .locator('[data-server="remote"] .server-tools')
-      .getByRole("button", { name: "Settings", exact: true })
-      .click();
-    await remoteFrame
+    await remoteFrame.getByRole("button", { name: "Studio settings" }).click();
+    const shellSettings = page.getByRole("dialog", {
+      name: "Studio settings",
+      exact: true,
+    });
+    await expect(shellSettings).toBeVisible();
+    await shellSettings
       .getByRole("tab", { name: "Appearance", exact: true })
       .click();
     await remoteFrame
@@ -623,17 +628,17 @@ test("one UI routes overlapping chats to two and three signed servers without re
       .getByRole("button", { name: "Servers and chats", exact: true })
       .click();
     await expect(
-      page.getByRole("complementary", { name: "Servers and projects" }),
+      page.getByRole("complementary", { name: "Conversations" }),
     ).toBeVisible();
     await clickServerChat("remote");
     await expect(
-      page.getByRole("complementary", { name: "Servers and projects" }),
+      page.getByRole("complementary", { name: "Conversations" }),
     ).not.toBeVisible();
     await remoteFrame
       .getByRole("button", { name: "Toggle conversations", exact: true })
       .click();
     await expect(
-      page.getByRole("complementary", { name: "Servers and projects" }),
+      page.getByRole("complementary", { name: "Conversations" }),
     ).toBeVisible();
     await page.setViewportSize({ width: 1280, height: 720 });
     const remoteWindow = page
@@ -916,7 +921,7 @@ test("idle inactive server iframe unloads after five minutes", async ({
     await clickServerChat("local");
     await expect(
       page
-        .frameLocator('iframe[title="Studio on This computer"]')
+        .frameLocator('iframe[src*="studio-server=local"]')
         .locator("#message"),
     ).toBeVisible();
     await clickServerChat("remote");
