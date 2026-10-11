@@ -469,7 +469,7 @@ describe("owner sidebar services", () => {
       { local: "LOC", remote: "REM" },
     );
     expect(services.layrReadiness(path)).toEqual([
-      { server: "LOC", readiness: { state: "ready" } },
+      { server: "LOC", ownerId: "local", readiness: { state: "ready" } },
     ]);
     sources[1].sidebar.projects[0].layrReadiness = {
       state: "failed",
@@ -478,8 +478,12 @@ describe("owner sidebar services", () => {
     expect(
       sidebarLayrReadiness(mergeSidebar(sources, 11, true), {}, path),
     ).toEqual([
-      { server: "local", readiness: { state: "ready" } },
-      { server: "remote", readiness: { state: "failed", error: "VM stopped" } },
+      { server: "local", ownerId: "local", readiness: { state: "ready" } },
+      {
+        server: "remote",
+        ownerId: "remote",
+        readiness: { state: "failed", error: "VM stopped" },
+      },
     ]);
     sources[0].sidebar.projects[0].layrReadiness = null;
     expect(
@@ -488,7 +492,7 @@ describe("owner sidebar services", () => {
     sources[0].sidebar.projects[0].layrReadiness = { state: "importing" };
     expect(
       sidebarLayrReadiness(mergeSidebar([sources[0]], 13, true), {}, path),
-    ).toEqual([{ readiness: { state: "importing" } }]);
+    ).toEqual([{ ownerId: "local", readiness: { state: "importing" } }]);
     expect(services.layrReadiness("unknown-project")).toEqual([]);
   });
 
@@ -518,5 +522,14 @@ describe("owner sidebar services", () => {
     expect(
       sidebarWireRequest(model, "remote", "/api/mac-sync/resolve", body),
     ).toEqual(body);
+    const secret = {
+      projectId: "p1",
+      name: "TOKEN",
+      value: "v",
+      requestId: "r",
+    };
+    expect(
+      sidebarWireRequest(model, "remote", "/api/project-secrets/set", secret),
+    ).toEqual(secret);
   });
 });

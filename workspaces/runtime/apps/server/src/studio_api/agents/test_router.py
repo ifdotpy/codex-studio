@@ -658,6 +658,85 @@ def test_vault_pull_route_starts_once_and_refuses_a_project_without_a_vault() ->
     assert escape.status_code == 400
 
 
+class _SecretsGuest:
+    """The VM side of project secrets: it keeps values and replies with names only."""
+
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+        self.calls: list[tuple[str, dict[str, object], str | None]] = []
+
+    def call(self, method: str, params: dict[str, object] | None = None, *,
+             request_id: str | None = None, timeout: float = 60) -> dict[str, object]:
+        from codex_linux_vm import LinuxVMError
+        params = params or {}
+        self.calls.append((method, params, request_id))
+        name = str(params.get("name"))
+        if name == "PATH":
+            raise LinuxVMError("Linux guest secrets.set: {...}", code="invalid_params",
+                               detail="The name PATH is reserved: Studio or the provider sets it")
+        if name == "LOST":
+            raise LinuxVMError("The Linux VM connection closed before its response.", uncertain=True)
+        if method == "secrets.set":
+            self.values[name] = str(params["value"])
+        elif method == "secrets.remove":
+            self.values.pop(name, None)
+        return {"projectId": params["projectId"], "names": sorted(self.values)}
+
+
+def test_project_secret_routes_never_return_or_log_a_value() -> None:
+    import logging
+    app, _runtime, _context = _app()
+    guest = _SecretsGuest()
+    value = "zulip-key-route-5b1e"
+    records: list[logging.LogRecord] = []
+
+    class Collect(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = Collect(logging.DEBUG)
+    root = logging.getLogger()
+    previous = root.level
+    root.addHandler(handler)
+    root.setLevel(logging.DEBUG)
+    try:
+        with patch("codex_linux_workspaces.client", return_value=guest):
+            client = TestClient(app)
+            body = {"projectId": "p1", "name": "ZULIP_APEIRO_SHOWROOM_API_KEY", "value": value, "requestId": "r-1"}
+            added = client.post("/api/project-secrets/set", json=body)
+            listed = client.post("/api/project-secrets/list", json={"projectId": "p1"})
+            bad = [client.post("/api/project-secrets/set", json={**body, "name": name})
+                   for name in ("lower", "1ABC", "A-B", "A" * 65, "")]
+            long = client.post("/api/project-secrets/set", json={**body, "value": value * 2000})
+            no_id = client.post("/api/project-secrets/set", json={k: v for k, v in body.items() if k != "requestId"})
+            escape = client.post("/api/project-secrets/list", json={"projectId": "../p1"})
+            calls_before_guest_errors = len(guest.calls)
+            reserved = client.post("/api/project-secrets/set", json={**body, "name": "PATH"})
+            lost = client.post("/api/project-secrets/set", json={**body, "name": "LOST"})
+            removed = client.post("/api/project-secrets/remove",
+                                  json={"projectId": "p1", "name": "ZULIP_APEIRO_SHOWROOM_API_KEY", "requestId": "r-2"})
+    finally:
+        root.removeHandler(handler)
+        root.setLevel(previous)
+
+    assert added.status_code == 200, added.text
+    assert added.json() == {"projectId": "p1", "names": ["ZULIP_APEIRO_SHOWROOM_API_KEY"]}
+    assert guest.calls[0] == ("secrets.set", {"projectId": "p1", "name": "ZULIP_APEIRO_SHOWROOM_API_KEY",
+                                              "value": value}, "secrets-set:r-1")
+    assert listed.json()["names"] == ["ZULIP_APEIRO_SHOWROOM_API_KEY"]
+    # The server refuses a bad name, a long value or a missing request ID before the VM call.
+    assert [response.status_code for response in (*bad, long, no_id, escape)] == [400] * 8
+    assert calls_before_guest_errors == 2
+    assert reserved.status_code == 400 and reserved.json()["error"].startswith("The name PATH is reserved")
+    assert lost.status_code == 503 and "may have applied" in lost.json()["error"]
+    assert removed.json() == {"projectId": "p1", "names": []}
+    assert guest.calls[-1][2] == "secrets-remove:r-2"
+    for response in (added, listed, *bad, long, no_id, reserved, lost, removed):
+        assert value not in response.text
+    for record in records:
+        assert value not in record.getMessage() and value not in str(record.args)
+
+
 class AgentRouterTests(unittest.TestCase):
     def test_durable_action_rejection_happens_before_runtime_call(self) -> None:
         test_durable_action_rejection_happens_before_runtime_call()
@@ -715,3 +794,6 @@ class AgentRouterTests(unittest.TestCase):
 
     def test_vault_pull_route(self) -> None:
         test_vault_pull_route_starts_once_and_refuses_a_project_without_a_vault()
+
+    def test_project_secret_routes(self) -> None:
+        test_project_secret_routes_never_return_or_log_a_value()

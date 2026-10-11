@@ -3,8 +3,13 @@ import { forwardRef, type ButtonHTMLAttributes } from "react";
 import type { components } from "../../generated/api";
 
 export type LayrReadiness = components["schemas"]["ProjectLayrReadinessDto"];
-/** One server's report; `server` is its alias when the sidebar combines servers. */
-export type LayrReadinessEntry = { server?: string; readiness: LayrReadiness };
+/** One server's report; `server` is its alias when the sidebar combines servers, and the
+ * project's layr actions (its secrets) go to `ownerId`. */
+export type LayrReadinessEntry = {
+  server?: string;
+  ownerId?: string;
+  readiness: LayrReadiness;
+};
 export type LayrReadinessSummary = {
   state: LayrReadiness["state"];
   title: string;

@@ -112,7 +112,8 @@ input of `project_id`). The state comes from the host records in
 `linux-vm/layr-projects/<id>/` (`import_readiness`); Studio does not call the VM
 or read the mount table:
 
-- `ready`: `project.json` exists, so a layr chat starts without an import.
+- `ready`: `project.json` exists, so a layr chat starts without an import. The state also
+  has `projectId`, the layr project that the layr menu acts on.
 - `importing`: another holder has `import.lock`, and `project.json` is missing.
 - `failed`: `import-error.json` has the reason of the last attempt, or an import
   receipt has no result after its attempt ended.
@@ -124,6 +125,15 @@ Each import attempt removes `import-error.json` when it gets the project lock an
 writes it again if the attempt fails. The project entity changes when an attempt
 gets the lock, when it ends, at backend start, and with each project write.
 Linux servers send no `layrReadiness`.
+
+## Project secrets
+
+Each layr project can have secrets: named values that every agent process of the project gets
+as environment variables when it starts. The root broker keeps them outside every layr line.
+An agent can read the variables it gets, so a secret stays out of the repository, its history,
+backups and other projects, not out of reach of its own agents. A secret that you set reaches
+the processes that start later. Set them with **Secrets…** in the LAYR menu or with
+`codex_project_secrets.py`; see [project-secrets.md](project-secrets.md).
 
 ## Mac share
 
@@ -188,6 +198,7 @@ Run each command separately:
 
 ```sh
 python3 -B -m unittest discover -s workspaces/runtime/apps/vm-guest -p test_layr_admin.py -v
+python3 -B -m unittest discover -s workspaces/runtime/apps/vm-guest -p test_project_secrets.py -v
 python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/src/test_codex_linux_vm.py
 python3 -B workspaces/runtime/apps/server/tests/linux-vm-layr-host-contract.py -q
 npm run typecheck:runtime

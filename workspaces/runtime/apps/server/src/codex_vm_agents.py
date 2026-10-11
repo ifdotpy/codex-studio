@@ -71,7 +71,12 @@ def project_readiness(runtime: Any, project: Mapping[str, Any]) -> dict[str, str
         state_dir = getattr(client(runtime), "state_dir", None)
     except (RuntimeError, OSError, ValueError):
         return None  # Without a VM client no layr chat starts; /api/desktop reports the error.
-    return import_readiness(Path(state_dir), project_layr_id(project)) if state_dir else None
+    if not state_dir:
+        return None
+    layr_id = project_layr_id(project)
+    readiness = import_readiness(Path(state_dir), layr_id)
+    # A ready project names its layr project: the layr menu acts on it (project secrets).
+    return {**readiness, "projectId": layr_id} if readiness["state"] == "ready" else readiness
 
 
 def project_sync(runtime: Any, project: Mapping[str, Any]) -> dict[str, Any] | None:

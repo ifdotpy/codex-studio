@@ -925,9 +925,11 @@ class ProjectAliasDto(ContractModel):
 
 
 class ProjectLayrReadinessDto(ContractModel):
-    """Whether a new layr chat of the project starts without an import (docs/vm-layr.md)."""
+    """Whether a new layr chat of the project starts without an import (docs/vm-layr.md).
+    A ready project has the ID of its layr project."""
     state: Literal["ready", "importing", "not_imported", "failed"]
     error: str | None = None
+    projectId: str | None = None
 
 
 class ProjectLayrSyncDto(ContractModel):

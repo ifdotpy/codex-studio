@@ -287,7 +287,9 @@ class ProjectExecTests(unittest.IsolatedAsyncioTestCase):
             await self.projects.exec("op-1", {"projectId": "app", "argv": ["pnpm", "install"], "subpath": "web"})
         directory, config, association, wait = run.await_args.args
         owner = pwd.getpwuid(os.getuid()).pw_name
-        self.assertEqual(config["argv"], ["/usr/sbin/runuser", "-u", owner, "--", "pnpm", "install"])
+        # runuser runs it as the owner, inside the wrapper that adds the project's secrets.
+        self.assertEqual(config["argv"][6:10], ["/usr/sbin/runuser", "-u", owner, "--"])
+        self.assertEqual(config["argv"][-3:], ["--", "pnpm", "install"])
         self.assertEqual(config["cwd"], str((self.main / "web").resolve()))
         self.assertEqual(config["env"]["USER"], owner)
         self.assertEqual((config["timeoutSeconds"], wait), (300, 305))

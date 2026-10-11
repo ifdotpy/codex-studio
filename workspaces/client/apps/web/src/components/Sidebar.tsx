@@ -68,6 +68,7 @@ import {
   type LayrSyncEntry,
 } from "./sidebar/MacSync";
 import LayrMenu from "./sidebar/LayrMenu";
+import ProjectSecretsDialog from "./sidebar/ProjectSecretsDialog";
 import {
   chipWithVault,
   deskLink,
@@ -263,6 +264,11 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
   } | null>(null);
   // The project and server whose Mac sync conflicts are open.
   const [syncDialog, setSyncDialog] = useState<{
+    path: string;
+    ownerId?: string;
+  } | null>(null);
+  // The project and server whose secrets dialog is open.
+  const [secretsDialog, setSecretsDialog] = useState<{
     path: string;
     ownerId?: string;
   } | null>(null);
@@ -1306,14 +1312,25 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
             filtered.filter((agent) => agent.cwd === group.path).length -
               group.chats.length,
           );
-          const layr = layrReadinessSummary(
-            activeLayrReadiness(
-              services.layrReadiness?.(group.path) ??
-                (group.layrReadiness
-                  ? [{ readiness: group.layrReadiness }]
-                  : []),
-            ),
+          const readinessEntries = activeLayrReadiness(
+            services.layrReadiness?.(group.path) ??
+              (group.layrReadiness ? [{ readiness: group.layrReadiness }] : []),
           );
+          const layr = layrReadinessSummary(readinessEntries);
+          // Each ready layr project of the row has its secrets, on the server that holds it.
+          const secretEntries = readinessEntries.filter(
+            (entry) => !!entry.readiness.projectId,
+          );
+          const secretsBackend = (entry: { ownerId?: string }) =>
+            entry.ownerId
+              ? services.byOwner(entry.ownerId)
+              : services.owner(projectTarget(group.path));
+          const secretsEntry =
+            secretsDialog?.path === group.path
+              ? secretEntries.find(
+                  (entry) => entry.ownerId === secretsDialog.ownerId,
+                ) || null
+              : null;
           const syncEntries: LayrSyncEntry[] =
             services.layrSync?.(group.path) ??
             (group.layrSync ? [{ sync: group.layrSync }] : []);
@@ -1609,9 +1626,34 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                         ),
                       ];
                     })}
+                    {secretEntries.length > 0 && <Menu.Divider />}
+                    {secretEntries.map((entry) => (
+                      <Menu.Item
+                        key={`secrets:${entry.ownerId || "local"}`}
+                        onClick={() =>
+                          setSecretsDialog({
+                            path: group.path,
+                            ...(entry.ownerId
+                              ? { ownerId: entry.ownerId }
+                              : {}),
+                          })
+                        }
+                      >
+                        {`Secrets…${entry.server ? ` (${entry.server})` : ""}`}
+                      </Menu.Item>
+                    ))}
                   </LayrMenu>
                 )}
               </div>
+              {secretsEntry?.readiness.projectId && (
+                <ProjectSecretsDialog
+                  key={`${secretsEntry.ownerId || "local"}:${secretsEntry.readiness.projectId}`}
+                  projectId={secretsEntry.readiness.projectId}
+                  backend={secretsBackend(secretsEntry)}
+                  title={`Secrets: ${group.name}${secretsEntry.server ? ` (${secretsEntry.server})` : ""}`}
+                  onClose={() => setSecretsDialog(null)}
+                />
+              )}
               {syncDialogEntry && (
                 <MacSyncConflicts
                   entry={syncDialogEntry}

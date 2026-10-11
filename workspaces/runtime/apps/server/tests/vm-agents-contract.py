@@ -195,7 +195,9 @@ class VmAgents(unittest.TestCase):
         self.guest.fail_import = False
         prepare(self.runtime, self.runtime.agent(lead['id']))
         self.assertEqual(self.guest.during_import[-1], {'state': 'importing'})
-        self.assertEqual(self.sidebar_readiness(), {'state': 'ready'})
+        from codex_vm_agents import project_layr_id
+        key = project_layr_id({'id': str(self.project), 'path': str(self.project)})
+        self.assertEqual(self.sidebar_readiness(), {'state': 'ready', 'projectId': key})
 
     def test_restart_replaces_the_importing_state_of_the_previous_process(self):
         from codex_vm_agents import project_layr_id, refresh_readiness

@@ -14,6 +14,9 @@ const sidebarPaths = [
   "/api/rename",
   "/api/mac-sync/resolve",
   "/api/mac-sync/config",
+  "/api/project-secrets/list",
+  "/api/project-secrets/set",
+  "/api/project-secrets/remove",
 ] as const;
 export type SidebarPostPath = (typeof sidebarPaths)[number];
 type PostRequest = {

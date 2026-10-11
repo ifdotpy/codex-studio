@@ -18,6 +18,8 @@ for (const [theme, viewport] of [
     });
     const calls = { local: [], remote: [] };
     const syncCalls = [];
+    const secretCalls = [];
+    const secretNames = new Set(["EXISTING_KEY"]);
     const handler =
       (owner) =>
       ({ url, body, json, snapshot }) => {
@@ -47,6 +49,15 @@ for (const [theme, viewport] of [
             mainStateId: "m1",
             status: null,
           });
+          return true;
+        }
+        if (url.pathname.startsWith("/api/project-secrets/")) {
+          expect(owner).toBe("remote");
+          secretCalls.push({ path: url.pathname, body });
+          if (url.pathname.endsWith("/set")) secretNames.add(body.name);
+          if (url.pathname.endsWith("/remove")) secretNames.delete(body.name);
+          // The server answers with names only.
+          json({ projectId: body.projectId, names: [...secretNames].sort() });
           return true;
         }
         if (url.pathname === "/api/rename") {
@@ -376,7 +387,7 @@ for (const [theme, viewport] of [
       // The remote server now syncs its Mac folder: one chip tells that the project is
       // ready and that one file waits for a choice, and the remote server takes it.
       Object.assign(remote.snapshot.runtime.projects[0], {
-        layrReadiness: { state: "ready" },
+        layrReadiness: { state: "ready", projectId: "remote-layr" },
         layrSync: {
           projectId: "remote-layr",
           state: "conflict",
@@ -541,6 +552,72 @@ for (const [theme, viewport] of [
         path: testInfo.outputPath(`vault-menu-${theme}.png`),
       });
       await page.keyboard.press("Escape");
+
+      // The project's secrets: the dialog lists names, adds one with a hidden value, and
+      // removes one; the remote server that holds the layr project takes each change.
+      await layrChip.click();
+      await page
+        .getByRole("menuitem", { name: "Secrets… (REM)", exact: true })
+        .click();
+      const secretsDialog = page.getByRole("dialog", {
+        name: "Secrets: Home project (REM)",
+      });
+      await expect(
+        secretsDialog.getByText("EXISTING_KEY", { exact: true }),
+      ).toBeVisible();
+      const nameField = secretsDialog.getByLabel("Name", { exact: true });
+      const valueField = secretsDialog.getByLabel("Value", { exact: true });
+      const add = secretsDialog.getByRole("button", {
+        name: "Add",
+        exact: true,
+      });
+      await expect(valueField).toHaveAttribute("type", "password");
+      await nameField.fill("lower-case");
+      await expect(
+        secretsDialog.getByText("Use only A to Z, 0 to 9 and _"),
+      ).toBeVisible();
+      await expect(add).toBeDisabled();
+      const secretValue = "zulip-value-from-the-browser";
+      await nameField.fill("ZULIP_APEIRO_SHOWROOM_API_KEY");
+      await valueField.fill(secretValue);
+      await add.click();
+      await expect(
+        secretsDialog.getByText("ZULIP_APEIRO_SHOWROOM_API_KEY"),
+      ).toBeVisible();
+      await expect(nameField).toHaveValue("");
+      await expect(valueField).toHaveValue("");
+      await expect(secretsDialog).not.toContainText(secretValue);
+      await page.screenshot({
+        path: testInfo.outputPath(`project-secrets-${theme}.png`),
+      });
+      await secretsDialog
+        .getByRole("button", { name: "Remove EXISTING_KEY", exact: true })
+        .click();
+      await expect(
+        secretsDialog.getByText("EXISTING_KEY", { exact: true }),
+      ).toHaveCount(0);
+      expect(secretCalls.map((call) => call.path)).toEqual([
+        "/api/project-secrets/list",
+        "/api/project-secrets/set",
+        "/api/project-secrets/remove",
+      ]);
+      expect(secretCalls[1].body).toEqual({
+        projectId: "remote-layr",
+        name: "ZULIP_APEIRO_SHOWROOM_API_KEY",
+        value: secretValue,
+        requestId: expect.any(String),
+      });
+      expect(secretCalls[2].body).toEqual({
+        projectId: "remote-layr",
+        name: "EXISTING_KEY",
+        requestId: expect.any(String),
+      });
+      expect(secretCalls[2].body.requestId).not.toBe(
+        secretCalls[1].body.requestId,
+      );
+      // Escape would also close the mobile sidebar drawer.
+      await secretsDialog.getByRole("button", { name: "Close" }).click();
+      await expect(secretsDialog).toHaveCount(0);
       expect(calls.local).toEqual([]);
       expect(errors).toEqual([]);
       await testInfo.attach("owner-requests", {
