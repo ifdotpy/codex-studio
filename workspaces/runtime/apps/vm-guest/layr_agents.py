@@ -16,6 +16,7 @@ import uuid
 
 from common import GuestError, atomic_json, identifier, require
 from native import Native
+from project_env import wrap
 
 READ_METHODS = {"agent.context", "line.status", "line.evidence", "layr.provider.list",
                 "layr.provider.rpc", "agent.progress", "layr.file.stat", "layr.file.read"}
@@ -26,6 +27,14 @@ METHODS = READ_METHODS | {"line.bind", "line.branch", "line.save", "line.merge",
 # Every agent user is in this group: the project's layr deny rules for it keep agents away
 # from roles, replication, remotes, records and backups whatever role an agent gets.
 AGENTS_GROUP = "studio-agents"
+
+# The names that the launch of an agent process sets (AgentHandlers.agent_env; runuser adds
+# SHELL), and the names that each provider adds. A project secret never takes one of them
+# (project_secrets.py).
+LAUNCH_ENV_NAMES = frozenset({"PATH", "LANG", "HOME", "USER", "LOGNAME", "SHELL", "LAYR_ROOT", "LAYR_SESSION"})
+PROVIDER_ENV = {"codex": frozenset({"CODEX_HOME"}),
+                "claude": frozenset({"CLAUDE_CONFIG_DIR", "STUDIO_CLAUDE_BIN", "STUDIO_CLAUDE_OPTIONS",
+                                     "STUDIO_CLAUDE_ACCOUNT"})}
 
 
 def ensure_agents_group():
@@ -65,6 +74,8 @@ class AgentHandlers:
         self.associations.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.native = Native(state)
         self.locks = {}
+        # The studio user's account profiles, the source of each agent's credential copy.
+        self.studio_home = Path("/home/studio")
 
     def record_path(self, agent_id):
         require(str(uuid.UUID(agent_id)) == agent_id, "The agent ID must be a canonical UUID")
@@ -119,6 +130,17 @@ class AgentHandlers:
         if process.returncode:
             raise GuestError("operation_failed", "The layr command failed: " + stderr.decode(errors="replace")[:1000])
         return stdout.decode(errors="replace").strip()
+
+    def agent_env(self, context, extra=None):
+        """The environment of an agent process. Its project's secrets come at the start of the
+        process from the wrapper (project_env.py), never from this launch record."""
+        return {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": context["home"],
+                "USER": context["owner"], "LOGNAME": context["owner"], "LAYR_ROOT": str(self.layr_root),
+                "LAYR_SESSION": context["agentId"], **(extra or {})}
+
+    def agent_argv(self, context, command):
+        """The command as the line owner, with the project's secrets (project_env.py)."""
+        return wrap(self.state, context["projectId"], context["owner"], command)
 
     async def layr(self, context, *args, root=False):
         return await self.command(context["path"], ["layr", *args], user=None if root else context)
@@ -256,7 +278,7 @@ class AgentHandlers:
             require(isinstance(profile, str) and profile.startswith(prefix)
                     and len(profile[len(prefix):]) == 32
                     and all(c in "0123456789abcdef" for c in profile[len(prefix):]), "The profile path is invalid")
-            source = Path("/home/studio") / profile / (".credentials.json" if provider == "claude" else "auth.json")
+            source = self.studio_home / profile / (".credentials.json" if provider == "claude" else "auth.json")
             require(source.resolve() == source and stat.S_ISREG(source.stat().st_mode), "The credential profile is invalid")
             fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
             with os.fdopen(fd, "rb") as stream:
@@ -281,18 +303,13 @@ class AgentHandlers:
                 await self.command(str(home), ["mkdir", "-p", str(home / ".codex/studio-bridges")], user=context)
             require(argv == expected, "The provider launch command is invalid")
             env = params.get("env", {})
-            allowed = {"CODEX_HOME"} if provider == "codex" else {
-                "CLAUDE_CONFIG_DIR", "STUDIO_CLAUDE_BIN", "STUDIO_CLAUDE_OPTIONS", "STUDIO_CLAUDE_ACCOUNT"}
-            require(isinstance(env, dict) and set(env) <= allowed
+            require(isinstance(env, dict) and set(env) <= PROVIDER_ENV[provider]
                     and all(isinstance(v, str) and "\0" not in v for v in env.values()), "The provider environment is invalid")
             require(env.get("CODEX_HOME" if provider == "codex" else "CLAUDE_CONFIG_DIR") == str(home / profile),
                     "The provider home differs from the agent profile")
             require(params.get("cwd") == context["cwd"], "The provider cwd differs from its line")
-            launch = {"argv": ["/usr/sbin/runuser", "-u", context["owner"], "--", *argv],
-                      "cwd": context["cwd"], "env": {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8",
-                      "HOME": str(home), "USER": context["owner"], "LOGNAME": context["owner"],
-                      "LAYR_ROOT": str(self.layr_root), "LAYR_SESSION": context["agentId"], **env},
-                      "agentId": context["agentId"]}
+            launch = {"argv": self.agent_argv(context, argv), "cwd": context["cwd"],
+                      "env": self.agent_env(context, env), "agentId": context["agentId"]}
             context["providerHandle"] = handle
             atomic_json(self.record_path(context["agentId"]), {k: v for k, v in context.items() if k not in {"cwd", "path"}})
             directory = self.state / "providers" / uuid.uuid5(uuid.NAMESPACE_URL, handle).hex
@@ -306,10 +323,7 @@ class AgentHandlers:
             data = base64.b64decode(params.get("stdin", ""), validate=True)
             require(len(data) <= 1024 * 1024, "The command input exceeds its limit")
             # Its command runs as the line owner after runuser drops privilege.
-            config = {"argv": ["/usr/sbin/runuser", "-u", context["owner"], "--", *args],
-                      "cwd": str(cwd), "env": {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": context["home"],
-                      "USER": context["owner"], "LOGNAME": context["owner"], "LANG": "C.UTF-8",
-                      "LAYR_ROOT": str(self.layr_root), "LAYR_SESSION": context["agentId"]},
+            config = {"argv": self.agent_argv(context, args), "cwd": str(cwd), "env": self.agent_env(context),
                       "agentId": context["agentId"],
                       "stdin": params.get("stdin", ""), "timeoutSeconds": 300,
                       "outputLimitBytes": 512 * 1024}

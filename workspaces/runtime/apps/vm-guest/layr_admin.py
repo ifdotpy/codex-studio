@@ -83,6 +83,18 @@ class Broker:
             self.methods.update(vault_admin.METHODS)
             self.read_methods.update(vault_admin.READ_METHODS)
             self.handlers.update({method: handler for method in vault_admin.METHODS})
+        # Project secrets reach each agent process of the project (docs/project-secrets.md).
+        try:
+            import project_secrets
+        except ModuleNotFoundError as exc:
+            if exc.name != "project_secrets":
+                raise
+        else:
+            handler = project_secrets.SecretHandlers(state, root)
+            require(not self.methods.intersection(project_secrets.METHODS), "The admin method is registered twice")
+            self.methods.update(project_secrets.METHODS)
+            self.read_methods.update(project_secrets.READ_METHODS)
+            self.handlers.update({method: handler for method in project_secrets.METHODS})
 
     def close(self):
         self.db.close()

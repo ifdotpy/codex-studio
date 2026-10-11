@@ -143,10 +143,12 @@ export function sidebarWireRequest(
       ),
     };
   }
-  // Mac folder sync names its layr project, which the owning server keeps as is.
+  // Mac folder sync and project secrets name their layr project, which the owning server
+  // keeps as is.
   if (
     endpoint === "/api/mac-sync/resolve" ||
-    endpoint === "/api/mac-sync/config"
+    endpoint === "/api/mac-sync/config" ||
+    endpoint.startsWith("/api/project-secrets/")
   )
     return value;
   if (endpoint !== "/api/projects" && endpoint !== "/api/peer-teams")
@@ -362,7 +364,8 @@ export function createMergedSidebarServices(
   };
 }
 
-/** Each server reports layr readiness for its own folder of the project; Linux servers report none. */
+/** Each server reports layr readiness for its own folder of the project; Linux servers report
+ * none. Actions on the layr project go to that server. */
 export function sidebarLayrReadiness(
   model: MergedSidebar,
   aliases: Record<string, string>,
@@ -378,6 +381,7 @@ export function sidebarLayrReadiness(
       ...(model.sources.length > 1
         ? { server: aliases[member.source.id] || member.source.id }
         : {}),
+      ownerId: member.source.id,
       readiness,
     });
   }

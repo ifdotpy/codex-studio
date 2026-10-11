@@ -450,6 +450,27 @@ class VaultPullRequest(MacSyncProjectRequest):
     to: str | None = Field(default=None, max_length=4096)
 
 
+_SECRET_NAME = r"^[A-Z_][A-Z0-9_]{0,63}$"
+
+
+class ProjectSecretsListRequest(MacSyncProjectRequest):
+    """The names of a layr project's secrets (docs/project-secrets.md)."""
+
+
+class ProjectSecretRemoveRequest(MacSyncProjectRequest):
+    """Remove one secret. A repeated requestId returns the saved reply and changes nothing."""
+
+    name: str = Field(pattern=_SECRET_NAME)
+    requestId: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,99}$")
+
+
+class ProjectSecretSetRequest(ProjectSecretRemoveRequest):
+    """Set one secret. The VM keeps the value; no response returns it. A repeated requestId
+    returns the saved reply and sets nothing."""
+
+    value: str = Field(min_length=1, max_length=16384)
+
+
 class MacSyncResolveRequest(MacSyncProjectRequest):
     """Keep the Mac version, keep the VM version, or ask the lead to combine them."""
 
@@ -688,6 +709,13 @@ class VaultPullResponse(ResponseModel):
     files: int | None = None
     bytes: int | None = None
     error: str | None = None
+
+
+class ProjectSecretsResponse(ResponseModel):
+    """The secret names of a layr project, never a value."""
+
+    projectId: str
+    names: list[str]
 
 
 class MacSyncResolveResponse(ResponseModel):

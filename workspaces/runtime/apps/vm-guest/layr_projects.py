@@ -14,6 +14,7 @@ import uuid
 
 from common import GuestError, atomic_json, bounded_lock, decode, number, require, supervised
 from layr_share import command, project_id
+from project_env import wrap
 
 
 def expect(condition, message, code):
@@ -103,7 +104,8 @@ class Projects:
         stdin = params.get("stdin", "")
         decode(stdin)
         user = pwd.getpwuid(main.stat().st_uid)
-        config = {"argv": ["/usr/sbin/runuser", "-u", user.pw_name, "--", *argv], "cwd": str(cwd),
+        # Like the lead, the command gets the project's secrets (project_env.py).
+        config = {"argv": wrap(self.state, project, user.pw_name, argv), "cwd": str(cwd),
                   "env": {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": user.pw_dir, "USER": user.pw_name,
                           "LOGNAME": user.pw_name, "LANG": "C.UTF-8", "LAYR_ROOT": str(self.root)},
                   "stdin": stdin, "timeoutSeconds": timeout, "outputLimitBytes": 512 * 1024}

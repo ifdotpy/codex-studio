@@ -11,6 +11,7 @@ from typing import ContextManager, Protocol, cast
 from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.responses import Response
 
+from codex_project_secrets import GuestClient
 from codex_records import AgentRecord
 from studio_api.models import ErrorResponse, JsonValue
 from studio_api.context import ApiContext
@@ -40,6 +41,10 @@ from .models import (
     VaultPullResponse,
     VaultUnlockRequest,
     VaultUnlockResponse,
+    ProjectSecretRemoveRequest,
+    ProjectSecretSetRequest,
+    ProjectSecretsListRequest,
+    ProjectSecretsResponse,
     IdRequest,
     ImportListResponse,
     ImportRequest,
@@ -380,6 +385,49 @@ def create_router(context: ApiContext) -> APIRouter:
         except (ValueError, OSError, RuntimeError) as error:
             return context.send(request, {"error": str(error)[:500]}, status=400)
         return context.send(request, job)
+
+    def project_secrets(request: Request, action: Callable[[GuestClient], dict[str, object]]) -> Response:
+        """Run one call of the VM's project secrets (docs/project-secrets.md). No reply and no
+        error carries a value: the guest never puts one in a message."""
+        from codex_linux_vm import LinuxVMError
+        from codex_linux_workspaces import client as vm_client
+
+        try:
+            return context.send(request, action(vm_client(current_runtime())))
+        except LinuxVMError as error:
+            message = error.detail or str(error)
+            if error.uncertain:
+                message += " The change may have applied; list the names to check."
+            status = 400 if error.code in {"invalid_params", "not_found", "id_conflict"} else 503
+            return context.send(request, {"error": message[:500]}, status=status)
+        except (OSError, RuntimeError, ValueError) as error:
+            return context.send(request, {"error": str(error)[:500]}, status=503)
+
+    @router.post("/api/project-secrets/list", response_model=ProjectSecretsResponse,
+                 responses={400: {"model": ErrorResponse}, 503: {"model": ErrorResponse}})
+    def project_secrets_list(request: Request, body: ProjectSecretsListRequest) -> Response:
+        """The names of the project's secrets."""
+        from codex_project_secrets import list_names
+
+        return project_secrets(request, lambda client: list_names(client, body.projectId))
+
+    @router.post("/api/project-secrets/set", response_model=ProjectSecretsResponse,
+                 responses={400: {"model": ErrorResponse}, 503: {"model": ErrorResponse}})
+    def project_secrets_set(request: Request, body: ProjectSecretSetRequest) -> Response:
+        """Set one secret of the project; agent processes that start later get it."""
+        from codex_project_secrets import set_secret
+
+        return project_secrets(request, lambda client: set_secret(
+            client, body.projectId, body.name, body.value, body.requestId))
+
+    @router.post("/api/project-secrets/remove", response_model=ProjectSecretsResponse,
+                 responses={400: {"model": ErrorResponse}, 503: {"model": ErrorResponse}})
+    def project_secrets_remove(request: Request, body: ProjectSecretRemoveRequest) -> Response:
+        """Remove one secret of the project."""
+        from codex_project_secrets import remove_secret
+
+        return project_secrets(request, lambda client: remove_secret(
+            client, body.projectId, body.name, body.requestId))
 
     @router.get("/api/skills", response_model=SkillsResponse)
     def skills(request: Request, query: SkillsQuery = Depends()) -> Response:

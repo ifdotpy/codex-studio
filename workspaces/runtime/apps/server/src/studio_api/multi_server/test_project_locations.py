@@ -384,12 +384,13 @@ class LayrReadinessTests(unittest.TestCase):
         (directory / 'project.json').write_text(json.dumps({'projectId': key, 'source': self.project['path']}))
         refresh_readiness(self.home)
         ready, value = self.entity(self.home, self.project['id'])
-        self.assertEqual(value['layrReadiness'], {'state': 'ready'})
+        self.assertEqual(value['layrReadiness'], {'state': 'ready', 'projectId': key})
         refresh_readiness(self.home)
         self.assertEqual(self.entity(self.home, self.project['id'])[0], ready)
         # Each project write carries the current state as well.
         self.home.projects({'action': 'rename', 'path': self.project['id'], 'name': 'Renamed', 'expected_revision': 0})
-        self.assertEqual(self.entity(self.home, self.project['id'])[1]['layrReadiness'], {'state': 'ready'})
+        self.assertEqual(self.entity(self.home, self.project['id'])[1]['layrReadiness'],
+                         {'state': 'ready', 'projectId': key})
 
     def test_project_entity_carries_the_mac_sync_report(self) -> None:
         from codex_vm_agents import project_layr_id, refresh_readiness

@@ -42,10 +42,13 @@ _MAX_FRAME = 2 * 1024 * 1024
 
 
 class LinuxVMError(RuntimeError):
-    def __init__(self, message: str, *, uncertain: bool = False, code: str | None = None):
+    def __init__(self, message: str, *, uncertain: bool = False, code: str | None = None,
+                 detail: str | None = None):
         super().__init__(message)
         self.uncertain = uncertain
         self.code = code
+        # The guest's own message, without the method and code around it.
+        self.detail = detail
 
 
 @dataclass(frozen=True)
@@ -923,7 +926,9 @@ class Client:
                     if 'error' in response:
                         error = response['error']
                         code = error.get('code') if isinstance(error, dict) else None
-                        raise LinuxVMError(f"Linux guest {method}: {error}", uncertain=code == 'outcome_unknown', code=code)
+                        detail = error.get('message') if isinstance(error, dict) else None
+                        raise LinuxVMError(f"Linux guest {method}: {error}", uncertain=code == 'outcome_unknown', code=code,
+                                           detail=detail if isinstance(detail, str) else None)
                     yield response
                     if 'result' in response:
                         return
