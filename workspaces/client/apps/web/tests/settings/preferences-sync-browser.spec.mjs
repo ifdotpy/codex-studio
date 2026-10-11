@@ -82,11 +82,14 @@ test("visual preferences update across contexts and seed a fresh first render", 
     const projectA = a
       .locator(".project-tree-toggle")
       .filter({ hasText: "Project A" });
-    const projectB = b
+    const folderB = a
       .locator(".project-tree-toggle")
-      .filter({ hasText: "Project A" });
-    await projectA.click();
-    await expect(projectB).toHaveAttribute("aria-expanded", "false");
+      .filter({ hasText: "Folder B" });
+    const folderBPeer = b
+      .locator(".project-tree-toggle")
+      .filter({ hasText: "Folder B" });
+    await folderB.click();
+    await expect(folderBPeer).toHaveAttribute("aria-expanded", "false");
     const initialOrder = await a
       .locator('.project-tree-toggle[data-sidebar-group="projects"]')
       .evaluateAll((rows) =>
@@ -161,7 +164,7 @@ test("visual preferences update across contexts and seed a fresh first render", 
       .getByRole("button", { name: "Toggle conversations", exact: true })
       .click();
     await expect(
-      c.locator(".project-tree-toggle").filter({ hasText: "Project A" }),
+      c.locator(".project-tree-toggle").filter({ hasText: "Folder B" }),
     ).toHaveAttribute("aria-expanded", "false");
     const finalOrder = await b
       .locator('.project-tree-toggle[data-sidebar-group="projects"]')

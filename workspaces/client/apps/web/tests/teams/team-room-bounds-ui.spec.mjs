@@ -3,7 +3,15 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { test, expect } from "../playwright.mjs";
+import {
+  apiSchemaHeaders,
+  apiSchemaHandshakeSse,
+  protocol3SseEvent,
+  syncIdentityFixture,
+  syncProtocolFixture,
+  test,
+  expect,
+} from "../playwright.mjs";
 
 test("team room bounds ui", async ({ page: runnerPage }) => {
   const root = resolve(import.meta.dirname, "../../");
@@ -11,6 +19,8 @@ test("team room bounds ui", async ({ page: runnerPage }) => {
   const { createServer } = await import(require.resolve("vite"));
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-room-bounds-"));
   const entry = join(root, "team-room-bounds-fixture.tsx");
+  const workspaceId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const identity = syncIdentityFixture(workspaceId);
   const room = {
     id: "private:lead:worker",
     kind: "private",
@@ -61,6 +71,39 @@ test("team room bounds ui", async ({ page: runnerPage }) => {
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     const requests = [];
+    await page.route("**/api/sync/identity", (route) =>
+      route.fulfill({
+        json: identity,
+        headers: apiSchemaHeaders(),
+      }),
+    );
+    await page.route("**/api/sync/protocol", (route) =>
+      route.fulfill({
+        json: syncProtocolFixture(),
+        headers: apiSchemaHeaders(),
+      }),
+    );
+    await page.route("**/api/sync/stream?*", (route) => {
+      const resources = JSON.parse(
+        new URL(route.request().url()).searchParams.get("resources") || "[]",
+      );
+      return route.fulfill({
+        contentType: "text/event-stream",
+        headers: apiSchemaHeaders(),
+        body: apiSchemaHandshakeSse(
+          protocol3SseEvent("resources", {
+            protocol: 3,
+            workspaceId,
+            epoch: "room-bounds",
+            revision: 1,
+            reason: "initial",
+            resources,
+            // Force the mounted room query to pull its first message page.
+            resourceVersions: [],
+          }),
+        ),
+      });
+    });
     await page.route("**/api/agent-chat?*", async (route) => {
       const url = new URL(route.request().url());
       const before = Number(url.searchParams.get("before"));
@@ -88,6 +131,7 @@ test("team room bounds ui", async ({ page: runnerPage }) => {
           deliveries: {},
         });
       return route.fulfill({
+        headers: apiSchemaHeaders(),
         json: {
           room,
           messages,

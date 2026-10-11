@@ -210,7 +210,7 @@ async function runWorkspaceLayout(
           },
           title: box("#conversation-title"),
           heading: box(".conversation-heading"),
-          account: box(".setup-account[data-selected], .account-picker"),
+          account: box(".setup-account[data-selected]"),
           project: box("#project"),
           settings: box(".chat-settings-panel"),
           settingsModal: box(".mantine-Modal-content"),
@@ -281,14 +281,20 @@ async function runWorkspaceLayout(
         2,
         `${prefix}: composer keeps the intended two-row textarea`,
       );
-      // PromptInput fixes the textarea at two rows: 2 × line-height, plus
-      // vertical padding and borders (the textarea itself has zero padding).
+      // Textarea line boxes are laid out in whole CSS pixels even though the
+      // computed line-height can be fractional. Derive the two-row box from
+      // the browser's computed style instead of duplicating font breakpoints.
+      const lineBox = Math.floor(Number.parseFloat(current.message.lineHeight));
       const designedTextareaHeight =
-        2 * (viewport.width <= 760 ? 16 : 14) * 1.65 + 2;
+        2 * lineBox +
+        current.message.paddingTop +
+        current.message.paddingBottom +
+        current.message.borderTop +
+        current.message.borderBottom;
       assert.ok(
         Number.parseFloat(current.message.minHeight) <= 36 &&
           Math.abs(current.message.height - designedTextareaHeight) <= 0.5,
-        `${prefix}: two-row textarea height ${current.message.height}; design computes to ${designedTextareaHeight}px (${current.message.minHeight})`,
+        `${prefix}: two-row textarea height ${current.message.height}; computed style resolves to ${designedTextareaHeight}px (${current.message.lineHeight}, ${current.message.minHeight})`,
       );
       // The established one-row body caps grow by exactly one prompt line
       // because 9ff09e46 fixed the textarea at two rows: 90 + 14×1.65 =
