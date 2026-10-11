@@ -1,4 +1,7 @@
 """Host import contracts use the actual caller with a guest fixture."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import json
 from pathlib import Path
 import subprocess
