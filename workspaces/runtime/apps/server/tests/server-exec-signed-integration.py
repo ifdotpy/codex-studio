@@ -36,6 +36,12 @@ class Commands(unittest.TestCase):
     drive = fixture.SignedIntegration.drive
     exchange = fixture.SignedIntegration.exchange
     events = fixture.SignedIntegration.events
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.addClassCleanup(fixture.install_shared_crypto_process())
+
     def setUp(self):
         if os.name != 'nt':
             short_root = patch('tempfile.tempdir', '/tmp')
@@ -146,19 +152,19 @@ class Commands(unittest.TestCase):
 
     def test_timeout_kills_the_command_group(self):
         response = self.start([sys.executable, '-u', '-c',
-            'import subprocess,sys,time;p=subprocess.Popen([sys.executable,"-c","import time;time.sleep(60)"]);print(p.pid,flush=True);time.sleep(60)'], timeout=15)
+            'import subprocess,sys,time;p=subprocess.Popen([sys.executable,"-c","import time;time.sleep(60)"]);print(p.pid,flush=True);time.sleep(60)'], timeout=3)
         value = response['value']
         handle = value['handle']
-        deadline = time.monotonic() + 12
+        deadline = time.monotonic() + 6
         while value['status'] in {'starting', 'running'} and not value.get('stdout'):
             self.assertLess(time.monotonic(), deadline, value)
             time.sleep(.1)
             value = self.read(handle)
         if value['status'] in {'starting', 'running'}:
-            value = self.finish(handle, timeout=20)
+            value = self.finish(handle, timeout=8)
         self.assertTrue(value['timedOut'], value)
         self.assertEqual(value['signal'], signal.SIGKILL)
-        self.assertLess(value['duration'], 20)
+        self.assertLess(value['duration'], 8)
         pid = int(value['stdout'].strip())
         deadline = time.monotonic() + 2
         while True:
@@ -552,11 +558,19 @@ class Commands(unittest.TestCase):
                 self.assertEqual(value['timedOut'], mode == 'timeout')
 
     def test_second_review_detached_completion_retires_the_unread_journal(self):
-        response = self.start([sys.executable, '-u', '-c', 'import time;print("before");time.sleep(1);print("after")'],
+        release = self.b.folder / 'release-detached-completion'
+        script = ('import time\nfrom pathlib import Path\n'
+                  'print("before", flush=True)\n'
+                  'while not Path("release-detached-completion").exists(): time.sleep(.01)\n'
+                  'print("after", flush=True)')
+        response = self.start([sys.executable, '-u', '-c', script],
                               'detached-completion', timeout=120)
         handle = response['value']['handle']
+        eventually(lambda: 'before\n' in self.read(handle)['stdout'])
+        self.addCleanup(release.touch, exist_ok=True)
         manager = self.b.runtime.multi_server().commands()
         manager.close()
+        release.touch()
         output = job_path(manager.folder, handle, '.output.json')
         eventually(lambda: output.exists() and json.loads(output.read_text())['record']['status'] == 'completed')
         self.b.runtime.multi_server()._command_service = None

@@ -33,9 +33,11 @@ from unittest.mock import patch
 from urllib.parse import urlsplit
 
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
+import codex_multi_server
 from fastapi.testclient import TestClient
 from codex_canvas import Canvas
 from codex_federation import _crypto, _sign
+from codex_multi_server_crypto import CryptoProcess
 from codex_multi_server import request_bytes, AccessError
 from studio_api.app import create_app
 from studio_api.context import ApiContext
@@ -47,6 +49,27 @@ spec.loader.exec_module(fixture)
 
 OWNER = "owner@example.test"
 ROUTE = "/api/servers/orchestration"
+
+
+def install_shared_crypto_process():
+    """Share only the serialized crypto worker; each runtime keeps its own keys and state."""
+    crypto = CryptoProcess()
+
+    class SharedCrypto:
+        def call(self, operation, *, timeout=8, **fields):
+            return crypto.call(operation, timeout=timeout, **fields)
+
+        def shutdown(self):
+            pass
+
+    crypto_patch = patch.object(codex_multi_server, "CryptoProcess", SharedCrypto)
+    crypto_patch.start()
+
+    def cleanup():
+        crypto_patch.stop()
+        crypto.shutdown()
+
+    return cleanup
 
 
 class Endpoint:
