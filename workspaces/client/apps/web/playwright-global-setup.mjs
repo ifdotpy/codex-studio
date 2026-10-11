@@ -6,7 +6,10 @@ const repositoryRoot = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../../../..",
 );
-const resolver = join(repositoryRoot, "scripts", "codex_python.py");
+const resolver = join(
+  repositoryRoot,
+  "workspaces/runtime/apps/server/src/codex_python.py",
+);
 
 export default function globalSetup() {
   const environment = { ...process.env };

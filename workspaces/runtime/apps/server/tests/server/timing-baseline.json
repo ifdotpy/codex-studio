@@ -50,7 +50,6 @@
     "workspaces/runtime/apps/server/src/test_codex_terminals_events.py": 0.937,
     "workspaces/runtime/apps/server/src/test_codex_token_rate_events.py": 0.244,
     "workspaces/runtime/apps/server/src/test_codex_voice_producers.py": 0.368,
-    "workspaces/runtime/apps/server/src/transcript_storage/tests/test_storage.py": 0.406,
     "workspaces/runtime/apps/server/tests/accepted-archive-scheduler-contract.py": 2.461,
     "workspaces/runtime/apps/server/tests/accepted-main-reachability-contract.py": 4.392,
     "workspaces/runtime/apps/server/tests/account-disconnect-contract.py": 1.479,

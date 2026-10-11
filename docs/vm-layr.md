@@ -145,7 +145,7 @@ Run each command separately:
 
 ```sh
 python3 -B -m unittest discover -s workspaces/runtime/apps/vm-guest -p test_layr_admin.py -v
-python3 scripts/codex_python.py --exec workspaces/runtime/apps/server/src/test_codex_linux_vm.py
+python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/src/test_codex_linux_vm.py
 python3 -B workspaces/runtime/apps/server/tests/linux-vm-layr-host-contract.py -q
 npm run typecheck:runtime
 ```

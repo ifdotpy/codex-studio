@@ -326,6 +326,27 @@ class LockMetricSummary(ContractModel):
     samples: int
 
 
+class HttpMetricSummary(ContractModel):
+    p50: float
+    p95: float
+    p99: float
+    max: float
+    samples: int
+
+
+class HttpRouteMetric(ContractModel):
+    method: str
+    route: str
+    count: int
+    latencyMs: HttpMetricSummary
+    responseBytes: HttpMetricSummary
+
+
+class HttpRequestMetrics(ContractModel):
+    routes: list[HttpRouteMetric]
+    untrackedRoutes: int
+
+
 class SqliteMetric(ContractModel):
     transactions: int
     longTransactions: int
@@ -829,11 +850,12 @@ class DiagnosticsResponse(ResponseModel):
     runtimeLockSamples: list[RuntimeLockSample]
     executions: ExecutionLedger
     sqliteContention: SqliteContention
+    httpRequestMetrics: HttpRequestMetrics
     analyticsCapture: AnalyticsCaptureStatus
     migrations: MigrationStatus
     analyticsFileMigration: AnalyticsFileMigration
     searchMigrationError: str | None
-    runtimeLockOperations: list[RuntimeLockOperation] | None = None
+    runtimeLockOperations: list[RuntimeLockOperation]
     supervisor: SupervisorDiagnostics
 
 

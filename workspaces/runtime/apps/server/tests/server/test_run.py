@@ -198,8 +198,6 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertEqual(categories[f"{RUNNER.SOURCE_REL}/sync/benchmarks/message_delivery/test_benchmark.py"], "expensive")
         self.assertEqual(categories[f"{RUNNER.SOURCE_REL}/studio_api/benchmarks/runtime_load/test_runtime_load.py"], "expensive")
         self.assertEqual(categories[f"{RUNNER.SOURCE_REL}/studio_api/benchmarks/runtime_load/test_http_outcomes.mjs"], "expensive")
-        self.assertNotIn(f"{RUNNER.TESTS_REL}/sync-live-patch-http-contract.py", paths)
-        self.assertIn(f"{RUNNER.TESTS_REL}/sync-live-patch-http-contract.py", RUNNER.NON_TESTS)
         self.assertEqual(categories[f"{RUNNER.TESTS_REL}/workspace-native-turn.py"], "native")
         self.assertEqual(categories[f"{RUNNER.TESTS_REL}/workspace-protocol.py"], "native")
         self.assertEqual(categories[f"{RUNNER.TESTS_REL}/tool-parity.py"], "native")

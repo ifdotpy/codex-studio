@@ -24,8 +24,8 @@ from collections import defaultdict, deque
 from unittest.mock import patch
 
 
-ROOT = Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else Path(__file__).resolve().parents[4]
-sys.path.insert(0, str(ROOT / "scripts"))
+ROOT = Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else Path(__file__).resolve().parents[8]
+sys.path.insert(0, str(ROOT / "workspaces/runtime/apps/server/src"))
 FRONTEND_DIST = Path(sys.argv[3]).resolve() if len(sys.argv) > 3 and sys.argv[3] else None
 
 

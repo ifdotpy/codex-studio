@@ -25,8 +25,8 @@ class PythonResolutionTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.project = Path(self.temporary.name)
-        self.scripts = self.project / "scripts"
-        self.scripts.mkdir()
+        self.scripts = self.project / "workspaces/runtime/apps/server/src"
+        self.scripts.mkdir(parents=True)
         (self.project / "requirements.txt").write_text("fastapi==1\n")
 
     def test_managed_environment_path_uses_lock_digest_and_user_cache(self) -> None:
@@ -111,7 +111,7 @@ class PythonResolutionTests(unittest.TestCase):
         self.assertEqual(result, expected)
 
     def test_cli_reexecs_into_venv_even_when_python_is_a_symlink(self) -> None:
-        scripts = self.project / "scripts"
+        scripts = self.scripts
         python = self.project / "venv/bin/python"
         subprocess.run(
             [sys.executable, "-m", "venv", "--without-pip", str(python.parent.parent)],
