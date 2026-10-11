@@ -14,6 +14,8 @@ import {
   savedPromptProof,
   verifyToolProof,
   studioToolCatalog,
+  exactSession,
+  exactProof,
 } from "./move.mjs";
 import { externalAliases } from "./move-external.mjs";
 
@@ -525,5 +527,72 @@ test("a catalog that crossed the paired channel with sorted keys still matches",
         current,
       ),
     /tool definitions differ/,
+  );
+});
+
+test("a move restores the exact tool order that the paired channel sorted", () => {
+  const original = [
+    {
+      name: "orchestration_teleport",
+      description: "Move",
+      inputSchema: {
+        type: "object",
+        properties: { server: { type: "string" }, cwd: { type: "string" } },
+        required: ["server", "cwd"],
+      },
+    },
+  ];
+  // What the canonical JSON of the channel delivers.
+  const sorted = (value) =>
+    JSON.parse(
+      JSON.stringify(value, (key, entry) =>
+        entry && typeof entry === "object" && !Array.isArray(entry)
+          ? Object.fromEntries(
+              Object.keys(entry)
+                .sort()
+                .map((k) => [k, entry[k]]),
+            )
+          : entry,
+      ),
+    );
+  const moved = sorted({
+    id: "s",
+    dynamicTools: original,
+    dynamicToolsJson: JSON.stringify(original),
+  });
+  assert.notEqual(JSON.stringify(moved.dynamicTools), JSON.stringify(original));
+  assert.equal(
+    JSON.stringify(exactSession(moved).dynamicTools),
+    JSON.stringify(original),
+  );
+  const compiled = [
+    {
+      name: "mcp__studio__orchestration_teleport",
+      description: "Move",
+      input_schema: original[0].inputSchema,
+    },
+  ];
+  const proof = sorted({
+    compiledTools: compiled,
+    compiledToolsJson: JSON.stringify(compiled),
+  });
+  assert.equal(
+    JSON.stringify(exactProof(proof).compiledTools),
+    JSON.stringify(compiled),
+  );
+  // Text that does not match its sorted copy is refused, and old peers keep their copy.
+  assert.throws(
+    () =>
+      exactSession({
+        ...moved,
+        dynamicToolsJson: JSON.stringify([
+          { ...original[0], description: "Other" },
+        ]),
+      }),
+    /exact Studio tools differ/,
+  );
+  assert.equal(
+    exactSession({ dynamicTools: moved.dynamicTools }).dynamicTools,
+    moved.dynamicTools,
   );
 });
