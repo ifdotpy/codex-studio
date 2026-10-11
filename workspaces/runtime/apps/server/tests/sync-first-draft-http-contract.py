@@ -15,14 +15,8 @@ class FirstDraftHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.backend = start_contract_backend(cls)
-        session = cls.backend.request("GET", "/api/session")
-        if session.status != 200:
-            raise AssertionError((session.status, session.body[:1000]))
-        cls.session = session.json()
-        identity = cls.backend.request("GET", "/api/sync/identity")
-        if identity.status != 200:
-            raise AssertionError((identity.status, identity.body[:1000]))
-        cls.workspace_id = identity.json()["workspaceId"]
+        cls.session = cls.backend.session
+        cls.workspace_id = cls.backend.identity["workspaceId"]
 
     def test_first_draft_push_is_served_without_an_initial_pull(self) -> None:
         backend = self.backend

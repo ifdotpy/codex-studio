@@ -16,20 +16,9 @@ class SyncHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.backend = start_contract_backend(cls)
-        session = cls.backend.request("GET", "/api/session")
-        if session.status != 200:
-            raise AssertionError((session.status, session.body[:1000]))
-        cls.session = session.json()
-        identity = cls.backend.request("GET", "/api/sync/identity")
-        if identity.status != 200:
-            raise AssertionError((identity.status, identity.body[:1000]))
-        cls.identity = identity.json()
-        schema = cls.backend.request(
-            "GET", "/api/sync/identity", headers={"X-Studio-API-Schema": "probe"},
-        )
-        if schema.status != 200:
-            raise AssertionError((schema.status, schema.body[:1000]))
-        cls.schema_hash = schema.headers["x-studio-api-schema"]
+        cls.session = cls.backend.session
+        cls.identity = cls.backend.identity
+        cls.schema_hash = cls.backend.schema_hash
         lead = cls.backend.request(
             "POST", "/api/leads",
             body={"cwd": str(cls.backend.cwd), "workspaceMode": "worktree"},

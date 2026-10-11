@@ -72,6 +72,7 @@ class BackendProcess:
         self._stderr_lock = threading.Lock()
         self._codex_log: Path | None = None
         self.session: dict[str, str] = {}
+        self.identity: dict[str, Any] = {}
         self.schema_hash = ""
         self.ready_samples: list[float] = []
         self.start_phases: list[dict[str, float]] = []
@@ -200,6 +201,7 @@ class BackendProcess:
             try:
                 health = self.request("GET", "/api/session", timeout=max(0.1, deadline-time.monotonic()))
                 if health.status == 200:
+                    self.session = health.json()
                     break
                 last_health_error = RuntimeError(f"health returned HTTP {health.status}")
             except (RuntimeError, URLError, OSError) as error:
@@ -207,10 +209,36 @@ class BackendProcess:
         else:
             self.stop()
             raise RuntimeError(f"Backend health request exceeded its bound: {last_health_error}; {self.stderr}")
-        self.ready_seconds = time.monotonic() - started
+        health_ready_at = time.monotonic()
+        last_identity_error: Exception | None = None
+        while time.monotonic() < deadline:
+            try:
+                identity = self.request(
+                    "GET", "/api/sync/identity",
+                    headers={"X-Studio-API-Schema": "probe"},
+                    timeout=max(0.1, deadline-time.monotonic()),
+                )
+                if identity.status == 200:
+                    self.identity = identity.json()
+                    self.schema_hash = identity.headers["x-studio-api-schema"]
+                    break
+                last_identity_error = RuntimeError(
+                    f"contract identity returned HTTP {identity.status}"
+                )
+            except (RuntimeError, URLError, OSError) as error:
+                last_identity_error = error
+        else:
+            self.stop()
+            raise RuntimeError(
+                f"Backend contract identity exceeded its readiness bound: "
+                f"{last_identity_error}; {self.stderr}"
+            )
+        identity_ready_at = time.monotonic()
+        self.ready_seconds = identity_ready_at - started
         self.start_phases.append({
             "spawnToReadyAnnouncementSeconds": round(ready_line_at - started, 4),
-            "healthRequestSeconds": round(self.ready_seconds - (health_started - started), 4),
+            "healthRequestSeconds": round(health_ready_at - health_started, 4),
+            "identityRequestSeconds": round(identity_ready_at - health_ready_at, 4),
             "totalReadySeconds": round(self.ready_seconds, 4),
         })
         return self.ready_seconds
