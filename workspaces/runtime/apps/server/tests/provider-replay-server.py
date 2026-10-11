@@ -6,9 +6,10 @@ from pathlib import Path
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "server"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from provider_replay_dispatch import dispatch_rpc_lines
 from rpc_replay_contract import EMPTY_RESULT_METHODS
 
 fixture = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -129,14 +130,16 @@ def handle(line):
     raise AssertionError(message)
 
 
-with ThreadPoolExecutor(max_workers=16) as pool:
-    futures = []
-    for rpc_line in sys.stdin:
-        received = os.environ.get("CODEX_FAKE_RECEIVED")
-        if received:
-            with Path(received).open("a", encoding="utf-8") as capture:
-                capture.write(rpc_line)
-                capture.flush()
-        futures.append(pool.submit(handle, rpc_line))
-    for future in futures:
-        future.result()
+def capture_received(line):
+    received = os.environ.get("CODEX_FAKE_RECEIVED")
+    if received:
+        with Path(received).open("a", encoding="utf-8") as capture:
+            capture.write(line)
+            capture.flush()
+
+
+# turn/start handlers emit fixture notifications while other requests arrive:
+# the parent/child replay completes the child first, the supervisor replay
+# keeps a turn pending across reattach, and tool-call fixtures wait for the
+# app-server's reply. Ordinary provider RPCs keep stdin order.
+dispatch_rpc_lines(sys.stdin, handle, {"turn/start"}, capture_received)

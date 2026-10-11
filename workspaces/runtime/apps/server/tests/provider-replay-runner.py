@@ -40,7 +40,28 @@ def eventually(check, timeout=8):
     raise AssertionError("Replay did not reach its expected durable state")
 
 
+def app_server_stderr(root):
+    """Return bounded stderr tails retained in AppServer logs for failed child startup."""
+    logs = sorted(root.rglob("app-server.log"))
+    excerpts = []
+    for path in logs:
+        try:
+            excerpts.append(f"{path.name}:\n{path.read_bytes()[-4000:].decode('utf-8', errors='replace')}")
+        except OSError as error:
+            excerpts.append(f"{path.name}: could not read stderr log: {error}")
+    return "\n".join(excerpts) or "<no AppServer stderr log was created>"
+
+
 class ProviderReplay(unittest.TestCase):
+    def capture_is_settled(self, frames, recorded_replies, fixture):
+        try:
+            missing, orphaned = self.assert_replay_rpc_contract(
+                frames, recorded_replies, fixture, allow_pending=True)
+        except AssertionError:
+            return False
+        return (missing == fixture.get("expectedMissingReplies", [])
+                and orphaned == fixture.get("allowedOrphanResponses", []))
+
     def claude_transport(self, root, fixture_path):
         source = CLAUDE_BRIDGE_ROOT
         bridge_root = root / "claude-bridge"
@@ -122,6 +143,7 @@ class ProviderReplay(unittest.TestCase):
                 second = Runtime(state, AppServer)
                 second.connect()
                 eventually(lambda: second.agent(agent["id"])["status"] == "completed", timeout=15)
+                latest_capture = []
                 def provider_capture_settled():
                     if not transcript_path.exists():
                         return False
@@ -129,13 +151,21 @@ class ProviderReplay(unittest.TestCase):
                     complete_lines = [line for line in raw_frames.splitlines(keepends=True)
                                       if line.endswith("\n")]
                     frames = [json.loads(line) for line in complete_lines]
-                    missing, orphaned = self.assert_replay_rpc_contract(
-                        frames, json.loads((fixture_path.parent / "codex-rpc-replies.json").read_text()),
-                        fixture, allow_pending=True)
-                    expected_missing = fixture.get("expectedMissingReplies", [])
-                    expected_orphans = fixture.get("allowedOrphanResponses", [])
-                    return (missing == expected_missing and orphaned == expected_orphans)
-                eventually(provider_capture_settled, timeout=15)
+                    latest_capture[:] = frames
+                    return self.capture_is_settled(
+                        frames,
+                        json.loads((fixture_path.parent / "codex-rpc-replies.json").read_text()),
+                        fixture,
+                    )
+                try:
+                    eventually(provider_capture_settled, timeout=15)
+                except AssertionError:
+                    self.assert_replay_rpc_contract(
+                        latest_capture,
+                        json.loads((fixture_path.parent / "codex-rpc-replies.json").read_text()),
+                        fixture,
+                    )
+                    raise
                 with second.db() as db:
                     saved = second.agent(agent["id"], db)
                     events = [dict(row) for row in db.execute(
@@ -225,7 +255,15 @@ class ProviderReplay(unittest.TestCase):
                         if fixture.get("provider") == "claude":
                             payload.update(account_key="claude-replay", model="default")
                         child = None
-                        agent = runtime.create(payload)
+                        try:
+                            agent = runtime.create(payload)
+                        except Exception as error:
+                            if fixture.get("provider") != "claude":
+                                raise
+                            raise RuntimeError(
+                                f"Claude bridge failed during AppServer startup: {error}; "
+                                f"child stderr:\n{app_server_stderr(root)}"
+                            ) from error
                         if fixture.get("parentChildOrder"):
                             runtime.dispatch()
                             def parent_start_sent():
