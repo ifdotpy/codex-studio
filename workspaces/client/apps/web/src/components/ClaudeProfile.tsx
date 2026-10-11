@@ -9,9 +9,11 @@ type ClaudeProfileResult = PostResult<"/api/claude/profiles">;
 export default function ClaudeProfile({
   account,
   onSaved,
+  expanded = false,
 }: {
   account?: Account;
   onSaved: (state: ClaudeProfileResult) => void;
+  expanded?: boolean;
 }) {
   const initial = account?.claudeOptions || {};
   const [label, setLabel] = useState(account?.label || "Claude Code");
@@ -69,8 +71,14 @@ export default function ClaudeProfile({
     }
   };
   return (
-    <details className="account-register claude-profile">
-      <summary>{account ? "Configure Claude" : "Claude"}</summary>
+    <details className="account-register claude-profile" open={expanded}>
+      <summary>
+        {expanded
+          ? "Profile settings"
+          : account
+            ? "Configure Claude"
+            : "Claude"}
+      </summary>
       <form
         onChange={() => setSaved(false)}
         onSubmit={(event) => {

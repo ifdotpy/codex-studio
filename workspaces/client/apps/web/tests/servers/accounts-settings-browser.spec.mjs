@@ -8,7 +8,6 @@ test("accounts settings show per-server state and provider choices", async ({
   page,
   context,
 }) => {
-  test.setTimeout(120000);
   const localAccounts = [
     {
       id: "local-codex",
@@ -83,7 +82,7 @@ test("accounts settings show per-server state and provider choices", async ({
   const pair = async (server) => {
     const settingsButton = pairedOneServer
       ? page
-          .getByRole("complementary", { name: "Servers and projects" })
+          .getByRole("complementary", { name: "Conversations" })
           .getByRole("button", { name: "Studio settings", exact: true })
       : page.getByRole("button", { name: "Studio settings", exact: true });
     await settingsButton.click();
@@ -120,7 +119,7 @@ test("accounts settings show per-server state and provider choices", async ({
     )
     .toBe(true);
   await page
-    .getByRole("complementary", { name: "Servers and projects" })
+    .getByRole("complementary", { name: "Conversations" })
     .getByRole("button", { name: "Studio settings", exact: true })
     .click();
   const settings = page.getByRole("dialog", { name: "Studio settings" });
@@ -145,6 +144,92 @@ test("accounts settings show per-server state and provider choices", async ({
       .locator('[data-account-identity="claude:claude@example.test"]')
       .getByText("Default · Remote"),
   ).toBeVisible();
+
+  const profilePosts = [];
+  await page.route("**/api/claude/profiles", async (route) => {
+    const body = route.request().postDataJSON();
+    profilePosts.push({
+      port: new URL(route.request().url()).port,
+      body,
+    });
+    remoteAccounts[1].claudeOptions = body.options;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        accounts: remoteAccounts.map((account) => ({
+          home: "/fixture/accounts/" + account.id,
+          source: "fixture",
+          ...account,
+        })),
+        defaultAccountKey: "remote-claude",
+        archivedAccounts: [],
+        logins: [],
+      }),
+    });
+  });
+  const remoteClaude = accounts.locator(
+    '[data-account-identity="claude:claude@example.test"]',
+  );
+  await remoteClaude
+    .getByRole("button", { name: "Actions for claude@example.test" })
+    .click();
+  await page.getByRole("menuitem", { name: "Configure", exact: true }).click();
+  await expect(settings).toBeHidden();
+  const profileFrame = page.frameLocator('iframe[title="Studio on Remote"]');
+  const profile = profileFrame.getByRole("dialog", {
+    name: "Configure Claude",
+    exact: true,
+  });
+  await expect(profile).toBeVisible();
+  await expect(page.locator('iframe[title="Studio on Remote"]')).toBeVisible();
+  await profile
+    .getByLabel("Custom models", { exact: true })
+    .fill("remote-model | Remote Model");
+  await profile
+    .getByLabel("Automatic compaction threshold (tokens)", { exact: true })
+    .fill("225000");
+  await profile
+    .getByRole("button", { name: "Save Claude profile", exact: true })
+    .click();
+  await expect.poll(() => profilePosts.length).toBe(1);
+  await expect(profile).toBeVisible();
+  expect(profilePosts).toHaveLength(1);
+  expect(profilePosts[0].port).toBe(new URL(remote.origin).port);
+  expect(profilePosts[0].body.account_key).toBe("remote-claude");
+  expect(profilePosts[0].body.options.autoCompactWindow).toBe(225000);
+  expect(profilePosts[0].body.options.customModels).toEqual([
+    { id: "remote-model", label: "Remote Model" },
+  ]);
+  await profile.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(profile).toBeHidden();
+  await expect(settings).toBeVisible();
+  await expect(remoteClaude).toBeVisible();
+  const remoteActions = remoteClaude.getByRole("button", {
+    name: "Actions for claude@example.test",
+  });
+  await expect(remoteActions).toBeFocused();
+  await remoteActions.click();
+  await page.getByRole("menuitem", { name: "Configure", exact: true }).click();
+  await expect(settings).toBeHidden();
+  const reopenedProfile = profileFrame.getByRole("dialog", {
+    name: "Configure Claude",
+    exact: true,
+  });
+  await expect(
+    reopenedProfile.getByLabel("Custom models", { exact: true }),
+  ).toHaveValue("remote-model | Remote Model");
+  await expect(
+    reopenedProfile.getByLabel("Automatic compaction threshold (tokens)", {
+      exact: true,
+    }),
+  ).toHaveValue("225000");
+  await reopenedProfile
+    .getByRole("button", { name: "Close", exact: true })
+    .click();
+  await expect(settings).toBeVisible();
+  await expect(remoteClaude).toBeVisible();
+  await expect(remoteActions).toBeFocused();
 
   const screenshots = fileURLToPath(
     new URL("../../../../../../docs/screenshots/", import.meta.url),
@@ -380,4 +465,7 @@ test("accounts settings show per-server state and provider choices", async ({
     .toBe(false);
   await reconnect.getByLabel("Close").click();
   await expect(settings).toBeVisible();
+  await expect(
+    work.getByRole("button", { name: "Actions for person@example.test" }),
+  ).toBeFocused();
 });

@@ -156,6 +156,9 @@ export default function ServerAccountsPanel({
                             <Menu.Label>{server.label}</Menu.Label>
                             {(
                               [
+                                ...(row.provider === "claude"
+                                  ? (["configure-profile"] as const)
+                                  : []),
                                 "rename",
                                 "default",
                                 "disconnect",
@@ -182,11 +185,13 @@ export default function ServerAccountsPanel({
                               >
                                 {operation === "rename"
                                   ? "Rename"
-                                  : operation === "default"
-                                    ? "Make default"
-                                    : operation === "disconnect"
-                                      ? "Sign out"
-                                      : "Remove"}
+                                  : operation === "configure-profile"
+                                    ? "Configure"
+                                    : operation === "default"
+                                      ? "Make default"
+                                      : operation === "disconnect"
+                                        ? "Sign out"
+                                        : "Remove"}
                               </Menu.Item>
                             ))}
                           </div>

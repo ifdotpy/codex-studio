@@ -629,6 +629,8 @@ export default function Accounts({
   const [addIntent, setAddIntent] = useState<AddAccountIntent | null>(null);
   const [externalServerLabel, setExternalServerLabel] = useState("");
   const [renameChoice, setRenameChoice] = useState<Account | null>(null);
+  const [claudeProfileChoice, setClaudeProfileChoice] =
+    useState<Account | null>(null);
   const [renameLabel, setRenameLabel] = useState("");
   const handledCommand = useRef<ServerCommand | null>(null);
   const actionLock = useRef(false);
@@ -636,6 +638,7 @@ export default function Accounts({
     (!managerOnly && opened) ||
     addOpen ||
     !!renameChoice ||
+    !!claudeProfileChoice ||
     !!transferChoice ||
     !!disconnectChoice ||
     !!deleteChoice ||
@@ -646,6 +649,7 @@ export default function Accounts({
       managerOnly
         ? !!addOpen ||
             !!renameChoice ||
+            !!claudeProfileChoice ||
             !!disconnectChoice ||
             !!deleteChoice ||
             !!claudeLogin ||
@@ -662,6 +666,7 @@ export default function Accounts({
     codexLogin,
     addOpen,
     renameChoice,
+    claudeProfileChoice,
     onModalOpenChange,
   ]);
   const accounts = state.data.accounts || [];
@@ -724,6 +729,23 @@ export default function Accounts({
         serverLabel: command.serverLabel,
       });
       setAddOpen(true);
+      onExternalCommandHandled?.();
+      return;
+    }
+    if (
+      command.action === "account-action" &&
+      command.operation === "configure-profile"
+    ) {
+      const account = state.data.accounts.find(
+        (candidate) =>
+          candidate.provider === "claude" &&
+          (command.email
+            ? candidate.email?.toLocaleLowerCase() ===
+              command.email.toLocaleLowerCase()
+            : candidate.label === command.label),
+      );
+      if (account) setClaudeProfileChoice(account);
+      else setError("This Claude account is no longer saved on this server.");
       onExternalCommandHandled?.();
       return;
     }
@@ -1362,6 +1384,22 @@ export default function Accounts({
             </Group>
           </Stack>
         </form>
+      </Modal>
+      <Modal
+        opened={!!claudeProfileChoice}
+        onClose={() => setClaudeProfileChoice(null)}
+        title="Configure Claude"
+        centered
+      >
+        {claudeProfileChoice && (
+          <ClaudeProfile
+            account={claudeProfileChoice}
+            expanded
+            onSaved={(value) => {
+              state.setData(value);
+            }}
+          />
+        )}
       </Modal>
       <AccountTransferConfirmation
         opened={!!transferChoice}
