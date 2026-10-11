@@ -163,5 +163,29 @@ class WriterTests(unittest.TestCase):
         self.assertEqual(self.files(self.reader())["a.txt"][0], SOURCE)
 
 
+class ConfigureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_another_vault_or_key_starts_the_writer_again(self):
+        from vault_admin import VaultHandlers
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / "store/projects/app/lines/main").mkdir(parents=True)
+            handlers = VaultHandlers(root / "state", root / "store")
+            params = {"projectId": "app", "recipient": "age1" + "q" * 58, "bucket": "bucket-one", "region": "eu-central-1",
+                      "prefix": "app", "accessKeyId": "AKIAIOSFODNN7EXAMPLE", "secretAccessKey": "s" * 40}
+            await handlers.dispatch("1", "vault.configure", params, None)
+            record = root / "state/vault/app/writer/writer.json"
+            record.parent.mkdir(parents=True)
+            record.write_text("{}")
+            await handlers.dispatch("2", "vault.configure", {**params, "accessKeyId": "AKIAIOSFODNN7OTHERX"}, None)
+            self.assertTrue(record.exists(), "a new writer key keeps the chain")
+            await handlers.dispatch("3", "vault.configure", {**params, "recipient": "age1" + "p" * 58}, None)
+            self.assertFalse(record.exists(), "a new vault key starts again")
+            status = await handlers.dispatch("4", "vault.status", {"projectId": "app"}, None)
+            self.assertNotIn("secretAccessKey", json.dumps(status))
+            with self.assertRaises(Exception):
+                await handlers.dispatch("5", "vault.configure", {**params, "endpoint": "https://evil.example/"}, None)
+
+
 if __name__ == "__main__":
     unittest.main()
+
