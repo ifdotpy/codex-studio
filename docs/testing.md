@@ -47,9 +47,9 @@ The heavy server suites and the reason for each classification are owned by
 
 | Suite                               | Measured duration | Reason                                                |
 | ----------------------------------- | ----------------: | ----------------------------------------------------- |
-| `agent-move-signed-integration.py`  |              70 s | Signed-in multi-server lifecycle flow                 |
-| `server-exec-signed-integration.py` |              61 s | Signed-in server execution flow                       |
-| `process-supervisor-contract.py`    |              45 s | Contract requires a replay wait of about 10.4 seconds |
+| `agent-move-signed-integration.py`  |           44.13 s | Signed-in multi-server lifecycle flow                 |
+| `server-exec-signed-integration.py` |           38.16 s | Signed-in server execution flow                       |
+| `process-supervisor-contract.py`    |           36.05 s | Contract requires a replay wait of about 10.4 seconds |
 
 Measure a suite by running it alone through `just test server <exact-suite-path>`.
 If it exceeds 10 seconds, speed it up first; the maintainer decides whether it
@@ -364,11 +364,10 @@ stay under the runner temporary directory. The facade job downloads the Just
 version before invoking it.
 
 Current hosted checks run on pull requests and pushes to `main`. The server
-workflow explicitly selects the runner's automated category with
-`just test-server-opt-in`; that step is separate from the default server run.
-Heavy and load-class suites are excluded from hosted CI. The audited automation
-step was restored after its timing-sensitive suites were made deterministic in
-PR #80.
+workflow runs the 26 audited automated suites, the bridge suite, and one focused
+Python suite; it does not run the whole default server run. Heavy and load-class
+suites are excluded from hosted CI. The audited automation step was restored
+after its timing-sensitive suites were made deterministic in PR #80.
 
 - `pnpm run lint:all` and `pnpm run format:check:all` currently exit 1 on
   `main` because of existing findings. M-03.5 will add conservative affected

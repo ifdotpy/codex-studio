@@ -184,11 +184,11 @@ AUTOMATED_SUITES = {
 }
 HEAVY_SUITES = {
     f"{TESTS_REL}/agent-move-signed-integration.py":
-        ("signed-in multi-server lifecycle; measured 70 s", 70.0),
+        ("signed-in multi-server lifecycle; measured 44.13 s", 44.13),
     f"{TESTS_REL}/server-exec-signed-integration.py":
-        ("signed-in server execution flow; measured 61 s", 61.0),
+        ("signed-in server execution flow; measured 38.16 s", 38.16),
     f"{TESTS_REL}/process-supervisor-contract.py":
-        ("supervisor replay wait required by contract; measured 45 s", 45.0),
+        ("supervisor replay wait required by contract; measured 36.05 s", 36.05),
 }
 if set(HEAVY_SUITES).intersection(AUTOMATED_SUITES):
     raise AssertionError("heavy suites must not also be in AUTOMATED_SUITES")

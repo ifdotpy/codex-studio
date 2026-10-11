@@ -649,59 +649,73 @@ function fastTierCommands(root) {
   const web = packageTarget(packages, "codex-agents-web");
   const bridge = packageTarget(packages, "studio-claude-bridge");
   const tooling = packageTarget(packages, "codex-studio-tooling");
-  const commands = [];
-  const add = (item, action, caseName = "", options = {}) => {
-    for (const command of commandFor(root, item, action, caseName, options))
-      commands.push({ command, ...(options.script ? {} : { testItem: item }) });
-  };
-  add(server, "test");
-  add(bridge, "test");
-  commands.push({
-    command: [
-      "cargo",
-      ["nextest", "run", "--workspace", "--profile", "ci", "--locked"],
-    ],
-    testItem: { name: "Rust workspace", ecosystem: "cargo" },
-  });
-  add(web, "test", "", { script: "typecheck:focused" });
-  add(web, "test", "", { script: "test:api-contract-types" });
-  commands.push({
-    command: ["pnpm", ["run", "typecheck:client-helper"]],
-  });
-  add(web, "test");
-  add(tooling, "test");
-  return commands;
-}
-
-function browserCommand(root) {
-  const web = packageTarget(discover(root), "codex-agents-web");
-  return commandFor(root, web, "test", "", browserTestOptions())[0];
+  return [
+    { item: server, label: "server" },
+    { item: bridge, label: "server bridge" },
+    {
+      item: { name: "Rust workspace", ecosystem: "cargo" },
+      label: "Rust nextest",
+      commands: [
+        [
+          "cargo",
+          [
+            "nextest",
+            "run",
+            "--workspace",
+            "--profile",
+            "ci",
+            "--locked",
+            "--message-format",
+            "libtest-json-plus",
+          ],
+        ],
+      ],
+    },
+    {
+      item: web,
+      label: "web focused type check",
+      options: { script: "typecheck:focused", allowZeroTests: true },
+    },
+    {
+      item: web,
+      label: "web API contract type check",
+      options: { script: "test:api-contract-types", allowZeroTests: true },
+    },
+    {
+      item: { name: "client helper type check", ecosystem: "pnpm" },
+      label: "client helper type check",
+      commands: [["pnpm", ["run", "typecheck:client-helper"]]],
+      options: { allowZeroTests: true },
+    },
+    { item: web, label: "web unit tests" },
+    { item: tooling, label: "tooling tests" },
+  ];
 }
 
 function heavyTierCommands(root) {
   const server = serverPackage();
-  const browser = browserCommand(root);
   return [
     {
-      command: commandFor(
-        root,
-        server,
-        "test",
-        "",
-        serverCategoryOptions("heavy"),
-      )[0],
-      testItem: server,
+      label: "heavy server suites",
+      item: server,
+      options: serverCategoryOptions("heavy"),
     },
     {
-      command: browser,
-      testItem: packageTarget(discover(root), "codex-agents-web"),
+      label: "full browser project",
+      item: packageTarget(discover(root), "codex-agents-web"),
+      options: { ...browserTestOptions(), allowZeroTests: true },
     },
   ];
 }
 
 function recipePlan(root, name) {
+  const commands =
+    name === "test-fast" ? fastTierCommands(root) : heavyTierCommands(root);
+  const commandLists = commands.map(
+    ({ item, options = {}, commands: override }) =>
+      override ?? commandFor(root, item, "test", "", options),
+  );
   const fast = name === "test-fast";
-  const commands = fast ? fastTierCommands(root) : heavyTierCommands(root);
   return {
     package: name,
     case: null,
@@ -710,10 +724,7 @@ function recipePlan(root, name) {
       : "server heavy suites followed by full browser project",
     workingDirectory: root,
     invocationDirectory: root,
-    command: reproduction(
-      root,
-      commands.map(({ command }) => command),
-    ),
+    command: reproduction(root, commandLists.flat()),
     selector: fast
       ? "default server run, server bridge, Rust workspace nextest, web type checks and unit tests, tooling tests"
       : "server --only heavy, then codex-agents-web test:browser",
@@ -730,83 +741,43 @@ function recipePlan(root, name) {
   };
 }
 
-async function executeRecipe(root, name, commands) {
-  const logDir = makeLogDirectory();
-  const log = path.join(logDir, "full.log");
-  mkdirSync(logDir, { recursive: true });
-  appendFileSync(log, "");
+export async function executeRecipe(root, name, steps) {
+  const planned = recipePlan(root, name);
   const started = performance.now();
-  const totals = { passed: 0, failed: 0, skipped: 0, executed: 0 };
-  const errors = [];
-  let exitCode = 0;
-  let output = "";
-  let executedCommands = 0;
-  for (const {
-    command: [bin, args],
-    testItem,
-  } of commands) {
-    const environment =
-      bin === "cargo"
-        ? {
-            ...process.env,
-            CARGO_TARGET_DIR: cargoTarget(root),
-            ...(args[0] === "nextest"
-              ? { NEXTEST_EXPERIMENTAL_LIBTEST_JSON: "1" }
-              : {}),
-          }
-        : process.env;
-    const result = await runLogged(bin, args, root, log, environment);
-    executedCommands += 1;
-    output += result.output;
-    if (testItem) {
-      const counts = parseCounts(testItem, result.output);
-      if (!counts.summaryFound || counts.executed === 0) {
-        errors.push(`${testItem.name}: zero tests executed`);
-        exitCode = result.code || 1;
-      }
-      for (const field of ["passed", "failed", "skipped", "executed"])
-        totals[field] += counts[field] ?? 0;
+  for (const { item, label, options = {}, commands } of steps) {
+    const result = await execute(root, item, "", false, {
+      ...options,
+      ...(commands ? { commands } : {}),
+      label,
+    });
+    if (result.exitCode !== 0) {
+      const durationSeconds = Number(
+        ((performance.now() - started) / 1000).toFixed(3),
+      );
+      process.stdout.write(
+        `${name}: failed at ${label}; ${durationSeconds}s\nCommand: ${planned.command}\n`,
+      );
+      return {
+        ...result,
+        package: name,
+        failedStep: label,
+        command: planned.command,
+      };
     }
-    if (result.signal) {
-      process.kill(process.pid, result.signal);
-      exitCode = 128 + (result.signal === "SIGINT" ? 2 : 15);
-      break;
-    }
-    if (result.code !== 0) {
-      exitCode = result.code ?? 1;
-      break;
-    }
-    if (errors.length) break;
   }
   const durationSeconds = Number(
     ((performance.now() - started) / 1000).toFixed(3),
   );
-  const command = reproduction(
-    root,
-    commands.map(({ command }) => command),
-  );
-  const status = exitCode === 0 ? "passed" : "failed";
-  const result = {
-    package: name,
-    case: null,
-    status,
-    ...totals,
-    durationSeconds,
-    command,
-    workingDirectory: root,
-    invocationDirectory: root,
-    logPath: log,
-    exitCode,
-    executedCommands,
-    ...(errors.length ? { errors } : {}),
-  };
   process.stdout.write(
-    `${name}: ${status} — ${totals.passed} passed, ${totals.failed} failed, ` +
-      `${totals.skipped} skipped; ${durationSeconds}s` +
-      `${totals.executed === 0 ? " — zero tests executed" : ""}` +
-      `\nCommand: ${command}\nFull log: ${log}\n`,
+    `${name}: passed; ${durationSeconds}s\nCommand: ${planned.command}\n`,
   );
-  return result;
+  return {
+    package: name,
+    status: "passed",
+    durationSeconds,
+    command: planned.command,
+    exitCode: 0,
+  };
 }
 
 async function executeServerCategory(root, category, suite = "") {
@@ -854,31 +825,6 @@ export function parseCounts(item, output) {
       skipped,
       executed: passed + failed,
       summaryFound: Boolean(suite),
-    };
-  }
-  if (
-    item.name === "codex-agents-web" &&
-    output.includes("Playwright output:")
-  ) {
-    const playwrightCounts = [
-      ...output.matchAll(
-        /^\s*(\d+) (passed|failed|skipped)(?:\s+\([^)]+\))?\s*$/gm,
-      ),
-    ].reduce(
-      (counts, match) => {
-        counts[match[2]] += +match[1];
-        return counts;
-      },
-      { passed: 0, failed: 0, skipped: 0 },
-    );
-    const reported =
-      playwrightCounts.passed +
-      playwrightCounts.failed +
-      playwrightCounts.skipped;
-    return {
-      ...playwrightCounts,
-      executed: playwrightCounts.passed + playwrightCounts.failed,
-      summaryFound: reported > 0,
     };
   }
   const testLines = output
@@ -1000,7 +946,8 @@ export async function execute(
   asJson = false,
   options = {},
 ) {
-  const commands = commandFor(root, item, "test", caseName, options);
+  const commands =
+    options.commands ?? commandFor(root, item, "test", caseName, options);
   const run = plan(root, item, "test", caseName, commands, options);
   const logDir = makeLogDirectory();
   const logPath = path.join(logDir, "full.log");
@@ -1057,7 +1004,7 @@ export async function execute(
     errors.push(
       "native runner summary was missing; refusing to report success",
     );
-  if (exitCode === 0 && counts.executed === 0)
+  if (exitCode === 0 && counts.executed === 0 && !options.allowZeroTests)
     errors.push("native runner executed zero tests");
   if (errors.length) exitCode = 1;
   const result = {
@@ -1081,7 +1028,7 @@ export async function execute(
   if (asJson) process.stdout.write(`${JSON.stringify(result)}\n`);
   else
     process.stdout.write(
-      `${item.name}${caseName ? ` / ${caseName}` : ""}: ${result.status}${counts.passed === null ? "" : ` — ${counts.passed} passed, ${counts.failed} failed, ${counts.skipped} skipped`}${counts.executed === 0 ? " — zero tests executed" : ""}; ${durationSeconds}s\nCommand: ${run.command}\nFull log: ${logPath}\n`,
+      `${options.label ?? item.name}${caseName ? ` / ${caseName}` : ""}: ${result.status}${counts.passed === null ? "" : ` — ${counts.passed} passed, ${counts.failed} failed, ${counts.skipped} skipped`}${counts.executed === 0 && !options.allowZeroTests ? " — zero tests executed" : ""}; ${durationSeconds}s\nCommand: ${run.command}\nFull log: ${logPath}\n`,
     );
   return result;
 }

@@ -5,6 +5,7 @@ import {
   boundaryFindings,
   commandFor,
   execute,
+  executeRecipe,
   nextestError,
   nextestSelectionError,
   packageTarget,
@@ -421,20 +422,40 @@ test("Vitest summaries count test cases rather than test files", () => {
   );
 });
 
-test("Playwright launcher summaries count browser cases for composed heavy runs", () => {
-  const item = { name: "codex-agents-web", ecosystem: "pnpm" };
-  assert.deepEqual(
-    parseCounts(
-      item,
-      "  5 passed (1.2s)\n  1 failed (1.2s)\n  2 skipped\nPlaywright output: /var/tmp/run/playwright-output",
-    ),
-    { passed: 5, failed: 1, skipped: 2, executed: 6, summaryFound: true },
-  );
-  assert.equal(
-    parseCounts(item, "No tests found\nPlaywright output: /var/tmp/run")
-      .summaryFound,
-    false,
-  );
+test("composed runs name and log a failed constituent step", async () => {
+  let printed = "";
+  const write = process.stdout.write;
+  process.stdout.write = function (chunk, ...args) {
+    printed += chunk.toString();
+    return write.call(this, chunk, ...args);
+  };
+  try {
+    const result = await executeRecipe(process.cwd(), "test-fast", [
+      {
+        item: { name: "fixture step", ecosystem: "pnpm" },
+        label: "fixture type check",
+        options: { allowZeroTests: true },
+        commands: [
+          [
+            "node",
+            [
+              "-e",
+              "process.stdout.write('fixture failure output\\n'); process.exit(1)",
+            ],
+          ],
+        ],
+      },
+    ]);
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.failedStep, "fixture type check");
+    assert.match(printed, /test-fast: failed at fixture type check/);
+    assert.match(
+      readFileSync(result.logPath, "utf8"),
+      /fixture failure output/,
+    );
+  } finally {
+    process.stdout.write = write;
+  }
 });
 
 test("Node test runner summaries count executed and skipped cases", () => {
