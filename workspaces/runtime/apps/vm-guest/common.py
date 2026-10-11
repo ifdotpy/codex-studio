@@ -146,6 +146,45 @@ def process_identity(pid):
         return None
 
 
+async def supervised(directory: Path, config, association, wait):
+    """Run one command through the detached supervisor (supervisor.py) and return its output.
+
+    The supervisor owns the journal in `directory` and the command deadline. A folder that
+    already has a launch is refused: that launch has no proven result.
+    """
+    import subprocess
+    import sys
+    private_dir(directory)
+    require(not (directory / "association.json").exists(), "The command already has an uncertain launch")
+    atomic_json(directory / "association.json", association)
+    atomic_json(directory / "launch.json", config)
+    process = subprocess.Popen([sys.executable, str(Path(__file__).with_name("supervisor.py")), str(directory)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True, close_fds=True)
+    asyncio.create_task(asyncio.to_thread(process.wait))
+    status_path = directory / "status.json"
+    deadline = asyncio.get_running_loop().time() + wait
+    while True:
+        status = json.loads(status_path.read_text()) if status_path.exists() else None
+        if status and status["state"] == "exited":
+            break
+        if process.poll() is not None or asyncio.get_running_loop().time() > deadline:
+            raise GuestError("outcome_unknown", "The command has no proven exit result")
+        await asyncio.sleep(0.05)
+    stdout, stderr = bytearray(), bytearray()
+    database = sqlite3.connect(directory / "journal.sqlite3")
+    try:
+        rows = database.execute("SELECT event,data FROM events ORDER BY seq").fetchall()
+    finally:
+        database.close()
+    for event, data in rows:
+        if event == "output":
+            output = json.loads(data)
+            (stdout if output["stream"] == "stdout" else stderr).extend(base64.b64decode(output["data"]))
+    return {"stdout": base64.b64encode(stdout).decode(), "stderr": base64.b64encode(stderr).decode(),
+            "exitCode": status["exitCode"], "reason": status["reason"]}
+
+
 @asynccontextmanager
 async def bounded_lock(locks, key):
     entry = locks.setdefault(key, [asyncio.Lock(), 0])

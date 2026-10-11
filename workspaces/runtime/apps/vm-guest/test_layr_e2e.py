@@ -14,6 +14,7 @@ import asyncio
 import base64
 import os
 from pathlib import Path
+import pwd
 import shutil
 import sys
 import unittest
@@ -69,11 +70,24 @@ class LayrEndToEnd(unittest.IsolatedAsyncioTestCase):
         denied = await self.projects.layr(["--project", self.project, "access"])
         self.assertIn("@studio-agents\tdeny access sync remote records backup", denied)
 
+        # The operator's command runs as the owner of main, in main, never as root; the owner
+        # may change the project's layers.
+        main = self.root / "projects" / self.project / "lines/main"
+        owner = pwd.getpwuid(main.stat().st_uid).pw_name
+        ran = await self.projects.exec(uuid.uuid4().hex, {"projectId": self.project, "argv": ["sh", "-c",
+            "id -un; pwd; touch made; stat -c %U made; rm made; layr layer add node_modules && layr layer remove node_modules"]})
+        self.assertEqual(ran["exitCode"], 0, base64.b64decode(ran["stderr"]))
+        self.assertEqual(base64.b64decode(ran["stdout"]).decode().split(), [owner, str(main), owner])
+        failed = await self.projects.exec(uuid.uuid4().hex, {"projectId": self.project, "argv": ["sh", "-c", "exit 3"]})
+        self.assertEqual(failed["exitCode"], 3)
+
         lead_id, worker_id = str(uuid.uuid4()), str(uuid.uuid4())
         lead = await self.call(self.agents, "line.bind", {"projectId": self.project, "agentId": lead_id, "line": "main"})
         worker = await self.call(self.agents, "line.branch", {"projectId": self.project, "agentId": worker_id,
                                                               "parentAgentId": lead_id})
         self.assertNotEqual(worker["owner"], lead["owner"])
+        whoami = await self.call(self.agents, "layr.exec", {"agentId": worker_id, "argv": ["id", "-un"]})
+        self.assertEqual(base64.b64decode(whoami["stdout"]).decode().strip(), worker["owner"])
 
         # The worker changes its own line and saves its turn.
         await self.agents.command(worker["cwd"], ["sh", "-c", "echo four >> app.txt"], user=worker)

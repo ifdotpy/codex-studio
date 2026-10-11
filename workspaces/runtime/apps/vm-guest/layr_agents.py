@@ -305,11 +305,7 @@ class AgentHandlers:
             require(cwd.resolve().is_relative_to(Path(context["path"])), "The command cwd is outside its line")
             data = base64.b64decode(params.get("stdin", ""), validate=True)
             require(len(data) <= 1024 * 1024, "The command input exceeds its limit")
-            # The detached supervisor owns the journal and deadline.
             # Its command runs as the line owner after runuser drops privilege.
-            directory = self.state / "commands" / uuid.uuid5(uuid.NAMESPACE_URL, request_id).hex
-            from common import private_dir
-            private_dir(directory)
             config = {"argv": ["/usr/sbin/runuser", "-u", context["owner"], "--", *args],
                       "cwd": str(cwd), "env": {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": context["home"],
                       "USER": context["owner"], "LOGNAME": context["owner"], "LANG": "C.UTF-8",
@@ -317,36 +313,9 @@ class AgentHandlers:
                       "agentId": context["agentId"],
                       "stdin": params.get("stdin", ""), "timeoutSeconds": 300,
                       "outputLimitBytes": 512 * 1024}
-            require(not (directory / "association.json").exists(), "The command already has an uncertain launch")
-            atomic_json(directory / "association.json", {"agentId": context["agentId"], "requestId": request_id})
-            atomic_json(directory / "launch.json", config)
-            process = subprocess.Popen([sys.executable, str(Path(__file__).with_name("supervisor.py")), str(directory)],
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                start_new_session=True, close_fds=True)
-            async def reap():
-                await asyncio.to_thread(process.wait)
-            asyncio.create_task(reap())
-            status_path = directory / "status.json"
-            deadline = asyncio.get_running_loop().time() + 310
-            while True:
-                status = json.loads(status_path.read_text()) if status_path.exists() else None
-                if status and status["state"] == "exited":
-                    break
-                if process.poll() is not None or asyncio.get_running_loop().time() > deadline:
-                    raise GuestError("outcome_unknown", "The command has no proven exit result")
-                await asyncio.sleep(0.05)
-            stdout, stderr = bytearray(), bytearray()
-            from contextlib import closing
-            import sqlite3
-            with closing(sqlite3.connect(directory / "journal.sqlite3")) as db:
-                rows = db.execute("SELECT event,data FROM events ORDER BY seq").fetchall()
-            for row in rows:
-                if row[0] == "output":
-                    event = json.loads(row[1])
-                    (stdout if event["stream"] == "stdout" else stderr).extend(base64.b64decode(event["data"]))
-            result = {"stdout": base64.b64encode(stdout).decode(), "stderr": base64.b64encode(stderr).decode(),
-                      "exitCode": status["exitCode"], "reason": status["reason"]}
-            return result
+            from common import supervised
+            return await supervised(self.state / "commands" / uuid.uuid5(uuid.NAMESPACE_URL, request_id).hex, config,
+                                    {"agentId": context["agentId"], "requestId": request_id}, 310)
         if method.startswith("layr.file."):
             path = Path(params["path"])
             root = Path(context["path"])

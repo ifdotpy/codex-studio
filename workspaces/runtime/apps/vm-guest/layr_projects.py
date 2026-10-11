@@ -10,8 +10,9 @@ import pwd
 import shutil
 import stat
 import fcntl
+import uuid
 
-from common import GuestError, atomic_json, bounded_lock, require
+from common import GuestError, atomic_json, bounded_lock, decode, number, require, supervised
 from layr_share import command, project_id
 
 
@@ -84,6 +85,32 @@ class Projects:
         return {"projectId": project, "mainLine": "main", "cwd": str(cwd),
                 "owner": user.pw_name, "ownerUid": user.pw_uid, "home": user.pw_dir,
                 "stateId": state, "share": await self.share.status()}
+
+    async def exec(self, request_id, params):
+        """Run a command as the owner of main, in main: the operator's way to set up a project
+        (docs/vm-layr.md, "Operator commands"). Never root; the owner is read from main."""
+        project = project_id(params.get("projectId"))
+        main = self.folder(project) / "lines/main"
+        expect(main.is_dir(), "The layr project does not exist", "not_found")
+        argv = params.get("argv")
+        require(isinstance(argv, list) and argv and all(isinstance(a, str) and a and "\0" not in a for a in argv),
+                "The command argv is invalid")
+        subpath = params.get("subpath", ".")
+        require(isinstance(subpath, str) and "\0" not in subpath, "The command folder is invalid")
+        cwd = (main / subpath).resolve()
+        require(cwd.is_relative_to(main.resolve()) and cwd.is_dir(), "The command folder is outside main")
+        timeout = number(params.get("timeoutSeconds"), 300, 1, 1800)
+        stdin = params.get("stdin", "")
+        decode(stdin)
+        user = pwd.getpwuid(main.stat().st_uid)
+        config = {"argv": ["/usr/sbin/runuser", "-u", user.pw_name, "--", *argv], "cwd": str(cwd),
+                  "env": {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": user.pw_dir, "USER": user.pw_name,
+                          "LOGNAME": user.pw_name, "LANG": "C.UTF-8", "LAYR_ROOT": str(self.root)},
+                  "stdin": stdin, "timeoutSeconds": timeout, "outputLimitBytes": 512 * 1024}
+        # The command folder keeps the argv and the output: the record of what the operator ran.
+        # It shares `commands` with layr.exec; a short path keeps the control socket under 108 bytes.
+        directory = self.state / "commands" / uuid.uuid5(uuid.NAMESPACE_URL, request_id).hex
+        return await supervised(directory, config, {"projectId": project, "requestId": request_id}, timeout + 5)
 
     async def dispatch(self, request_id, method, params):
         project = project_id(params.get("projectId"))

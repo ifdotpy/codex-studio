@@ -458,6 +458,19 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
                 await self.upload("link-parent" + str(index), archive(entries))
         self.assertFalse((self.home / "escape").exists())
 
+    async def test_project_exec_goes_to_the_root_broker_and_is_not_run_here(self):
+        forwarded = []
+
+        async def admin_request(request_id, method, params, emit=None):
+            forwarded.append((request_id, method, params))
+            return {"exitCode": 0, "stdout": "", "stderr": "", "reason": "exited"}
+
+        params = {"projectId": "app", "argv": ["id"]}
+        with patch("layr_admin_client.admin_request", admin_request):
+            result = await self.call("project.exec", params, "op-exec")
+            self.assertEqual(await self.call("project.exec", params, "op-exec"), result)
+        self.assertEqual(forwarded, [("op-exec", "project.exec", params)])
+
     async def test_extraction_syncs_the_tree_once_not_each_file(self):
         from upload import extract_tree
         destination = self.root / "expanded"
