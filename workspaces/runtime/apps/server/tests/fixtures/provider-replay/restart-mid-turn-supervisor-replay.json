@@ -1,6 +1,28 @@
 {
   "source": "hand-authored supervisor event frames based on workspaces/runtime/apps/server/tests/process-supervisor-contract.py",
   "supervisorReplay": true,
+  "rpcReplies": {
+    "thread/settings/update": {
+      "direction": "in",
+      "responseFor": "thread/settings/update",
+      "timestamp": 0,
+      "message": { "result": {} }
+    },
+    "thread/compact/start": {
+      "direction": "in",
+      "responseFor": "thread/compact/start",
+      "timestamp": 0,
+      "message": { "result": {} }
+    },
+    "review/start": {
+      "direction": "in",
+      "responseFor": "review/start",
+      "timestamp": 0,
+      "message": {
+        "result": { "turn": { "id": "$turnId", "status": "inProgress" } }
+      }
+    }
+  },
   "events": [
     {
       "method": "item/agentMessage/delta",

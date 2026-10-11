@@ -41,6 +41,9 @@ def recorded_reply(method, request, thread_id=None, turn_id=None):
     if not recorded or recorded.get("direction") != "in" or recorded.get("responseFor") != method:
         raise AssertionError(f"Missing recorded provider reply for {method}")
     value = json.dumps(recorded["message"])
+    requested_thread = (request.get("params") or {}).get("threadId")
+    if method in {"thread/read", "thread/resume"} and isinstance(requested_thread, str):
+        thread_id = requested_thread
     value = value.replace("$threadId", thread_id or "replay-thread-1")
     value = value.replace("$turnId", turn_id or "replay-turn-1")
     value = value.replace("$model", request.get("params", {}).get("model", "fixture-model"))
@@ -66,7 +69,7 @@ def handle(line):
     params = request.get("params") or {}
     if method in {"initialize", "config/read", "skills/extraRoots/set", "model/list",
               "account/rateLimits/read", "thread/loaded/list", "thread/resume", "thread/read",
-                  "thread/turns/list"}:
+                  "thread/turns/list"} or method in fixture.get("rpcReplies", {}):
         send(recorded_reply(method, request, thread))
         return
     if method == "thread/start":

@@ -1,94 +1,104 @@
 #!/usr/bin/env python3
-"""Native actions use the exact repaired thread through the real repair helper."""
+"""Native action receipts and provider targets observed through HTTP."""
+
+from __future__ import annotations
+
+import json
+import time
+import unittest
+from urllib.parse import urlencode
+
 from test_isolation import isolate_supervisor_environment
+
 isolate_supervisor_environment()
 
-import concurrent.futures
-import copy
-import importlib.util
-from pathlib import Path
-import unittest
-
-spec = importlib.util.spec_from_file_location('context_fixture', Path(__file__).with_name('context-repair-contract.py'))
-f = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(f)
+from http_backend_harness import TimedHTTPContractTest, start_contract_backend
 
 
-class NativeActionRepair(f.ContextRepair):
-    def setUp(self):
-        super().setUp()
-        self.a = self.agent_update(self.a, autoWake=True)
-        self.original_servers = dict(self.runtime.servers)
-        self.runtime.servers['default'] = self.server
-        self.runtime.connection_ids.setdefault('default', 'fixture-connection')
-        original_call, original_submit = self.server.call, self.server.submit
+class NativeActionHTTPContract(TimedHTTPContractTest, unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.backend = start_contract_backend(cls)
+        cls.headers = {
+            "Origin": cls.backend.origin or "",
+            "X-Canvas-Token": cls.backend.session["token"],
+            "X-Canvas-Workspace": cls.backend.identity["workspaceId"],
+            "X-Studio-API-Schema": cls.backend.schema_hash,
+        }
 
-        def call(method, params, timeout=60):
-            if method == 'model/list':
-                return f.f.fixture.FakeServer.call(self.server, method, params, timeout)
-            if method == 'thread/resume':
-                self.server.calls.append((method, copy.deepcopy(params)))
-                return {'thread': {'id': params['threadId']}, 'model': params.get('model'),
-                        'sandbox': {'type': 'readOnly'}, 'approvalPolicy': 'on-request'}
-            if method in {'thread/settings/update', 'thread/compact/start', 'review/start'}:
-                self.server.calls.append((method, copy.deepcopy(params)))
-                return {'turn': {'id': 'review-turn', 'status': 'inProgress'}} if method == 'review/start' else {}
-            return original_call(method, params, timeout)
+    def create_lead(self, identifier: str) -> dict[str, object]:
+        response = self.backend.request(
+            "POST", "/api/leads",
+            body={"id": identifier, "cwd": str(self.backend.cwd), "workspaceMode": "worktree"},
+            headers=self.headers,
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        return response.json()
 
-        def submit(method, params):
-            if method == 'thread/fork':
-                return original_submit(method, params)
-            future = concurrent.futures.Future()
-            try:
-                future.set_result(call(method, params))
-            except Exception as error:
-                future.set_exception(error)
-            self.server.futures.append(future)
-            return len(self.server.futures), method, future
+    def entity(self, identifier: str) -> dict[str, object]:
+        response = self.backend.request("GET", "/api/sync/pull?" + urlencode({
+            "scope": "state:entities:v1", "after": 0, "limit": 500,
+        }))
+        self.assertEqual(response.status, 200, response.body[:1000])
+        for document in response.json()["documents"]:
+            if document["id"] == f"entity:agent:{identifier}":
+                return json.loads(document["payload"])["value"]
+        self.fail(f"The entity feed omitted agent {identifier}")
 
-        self.server.call, self.server.submit = call, submit
-        self.server.wait = lambda ticket, timeout=60: ticket[2].result(timeout)
+    def send_instruction_and_wait_for_completion(self, identifier: str) -> None:
+        message_id = f"http-native-instruction-{identifier}"
+        sent = self.backend.request(
+            "POST", "/api/messages",
+            body={"id": message_id, "room": identifier,
+                  "text": "Reply with the fixture result.", "delivery": "queue", "assets": []},
+            headers=self.headers,
+        )
+        self.assertEqual(sent.status, 200, sent.body[:1000])
+        deadline = time.monotonic() + 3.0
+        transcript_path = "/api/transcript?" + urlencode({"id": identifier})
+        transcript: object = None
+        while time.monotonic() < deadline:
+            frames = self.backend.received_provider_frames()
+            response = self.backend.request("GET", transcript_path, timeout=1.0)
+            self.assertEqual(response.status, 200, response.body[:1000])
+            transcript = response.json()
+            if (any(frame.get("method") == "turn/start" for frame in frames)
+                    and "Recovered output." in json.dumps(transcript)):
+                return
+        self.fail(f"The provider turn did not complete through HTTP: {transcript!r}")
 
-    def tearDown(self):
-        self.runtime.servers.clear()
-        self.runtime.servers.update(self.original_servers)
-        super().tearDown()
+    def action_once(self, action: str, identifier: str) -> None:
+        lead = self.create_lead(identifier)
+        self.send_instruction_and_wait_for_completion(lead["id"])
+        request_id = f"http-native-{action}-{identifier}"
+        body = {"id": lead["id"], "action": action, "request_id": request_id}
+        first = self.backend.request("POST", "/api/action", body=body, headers=self.headers)
+        self.assertEqual(first.status, 200, first.body[:1000])
+        result = first.json()
+        self.assertEqual(result["outcome"]["status"], "acknowledged", result)
 
-    def action_flow(self, action):
-        source = self.path.read_bytes()
-        method = 'review/start' if action == 'review' else 'thread/compact/start'
-        result = self.runtime.native_action(self.a['id'], action, 'repaired-action')
-        self.assertEqual(result['outcome']['status'], 'acknowledged', result)
-        current = self.runtime.agent(self.a['id'])
-        repair = current['contextRepair']
-        self.assertEqual(repair['phase'], 'completed')
-        self.assertNotEqual(current['threadId'], self.tid)
-        self.assertEqual(current['threadId'], repair['newThreadId'])
-        self.assertEqual(result['receipt']['threadId'], self.tid)
-        self.assertEqual(current['startAttempt']['actionIdentity']['threadId'], self.tid)
-        self.assertEqual(current['startAttempt']['threadId'], current['threadId'])
-        self.assertEqual(current['startAttempt']['id'], result['receipt']['attemptId'])
-        self.assertEqual(repair['source']['attemptId'], result['receipt']['attemptId'])
-        for expected in ('thread/resume', 'thread/settings/update', method):
-            calls = [params for name, params in self.server.calls if name == expected]
-            self.assertEqual(len(calls), 1, (expected, self.server.calls))
-            self.assertEqual(calls[0]['threadId'], current['threadId'])
-        self.assertEqual(len(self.forks()), 1)
-        self.assertEqual(source, self.path.read_bytes())
-        replay = self.runtime.native_action(self.a['id'], action, 'repaired-action')
-        self.assertEqual(replay['receipt'], result['receipt'])
-        self.assertEqual(replay['outcome'], result['outcome'])
-        self.assertTrue(replay['replayed'])
-        self.assertEqual(len([name for name, _ in self.server.calls if name == method]), 1)
-        self.assertEqual(len(self.forks()), 1)
+        method = "review/start" if action == "review" else "thread/compact/start"
+        frames = self.backend.received_provider_frames()
+        calls = [frame for frame in frames if frame.get("method") == method]
+        self.assertEqual(len(calls), 1, calls)
+        current = self.entity(lead["id"])
+        self.assertEqual(calls[0]["params"]["threadId"], current["threadId"])
+        self.assertEqual(result["receipt"]["requestId"], request_id)
 
-    def test_review_uses_repaired_thread_once(self):
-        self.action_flow('review')
+        replay = self.backend.request("POST", "/api/action", body=body, headers=self.headers)
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertEqual(replay.json()["receipt"], result["receipt"])
+        self.assertEqual(replay.json()["outcome"], result["outcome"])
+        self.assertTrue(replay.json()["replayed"])
+        frames = self.backend.received_provider_frames()
+        self.assertEqual(sum(frame.get("method") == method for frame in frames), 1)
 
-    def test_compact_uses_repaired_thread_once(self):
-        self.action_flow('compact')
+    def test_review_request_receipt_replay_targets_one_provider_thread(self) -> None:
+        self.action_once("review", "10000000-0000-4000-8000-000000000101")
+
+    def test_compact_request_receipt_replay_targets_one_provider_thread(self) -> None:
+        self.action_once("compact", "10000000-0000-4000-8000-000000000102")
 
 
-if __name__ == '__main__':
-    suite = unittest.TestSuite(NativeActionRepair(name) for name in NativeActionRepair.__dict__ if name.startswith('test_'))
-    raise SystemExit(not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful())
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

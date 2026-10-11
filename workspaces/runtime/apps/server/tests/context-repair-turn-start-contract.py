@@ -10,7 +10,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-spec = importlib.util.spec_from_file_location('action_fixture', Path(__file__).with_name('native-action-context-repair-contract.py'))
+spec = importlib.util.spec_from_file_location('action_fixture', Path(__file__).with_name('native-action-context-repair-runtime-remainder.py'))
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
 repair, eventually = f.f.repair, f.f.f.eventually

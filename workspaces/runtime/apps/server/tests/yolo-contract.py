@@ -1,157 +1,271 @@
 #!/usr/bin/env python3
-"""Team permission choices and native request parameters. No model calls."""
+"""Conversation YOLO settings observed through HTTP and provider protocol."""
 
-# Support direct execution without runner-provided PYTHONPATH.
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from __future__ import annotations
+
+import json
+import time
+import unittest
+from urllib.parse import urlencode
+
 from test_isolation import isolate_supervisor_environment
+
 isolate_supervisor_environment()
 
-import importlib.util
-from pathlib import Path
-import unittest
-
-spec = importlib.util.spec_from_file_location('defaults', Path(__file__).with_name('worker-defaults-contract.py'))
-f = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(f)
-from studio_api.testing import read_runtime_state
+from http_backend_harness import start_contract_backend
 
 
-class Yolo(f.WorkerDefaults):
-    # Run only this class's cases, not the imported defaults cases.
-    def test_turn_overrides_loaded_native_policy_and_monitor_policy(self):
-        lead = self.runtime.prepare(self.lead)
-        # Fake resume retains the old policy, like a subscribed native thread.
-        self.assertEqual(lead['approvalPolicy'], 'on-request')
-        self.assertTrue(self.runtime.monitor_auto_approved(lead))
-        self.runtime.send(lead['id'], 'Run with the selected permissions')
-        self.runtime.dispatch()
-        f.f.eventually(lambda: any(m == 'turn/start' for m, p in self.runtime.server.calls))
-        turn = [p for m, p in self.runtime.server.calls if m == 'turn/start'][-1]
-        self.assertEqual(turn['approvalPolicy'], 'never')
-        self.assertEqual(turn['sandboxPolicy'], {'type': 'dangerFullAccess'})
-        f.f.eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
-        active = self.runtime.agent(lead['id'])
-        self.runtime.server.complete(active['threadId'], active['turnId'])
-        f.f.eventually(lambda: not self.runtime.agent(lead['id'])['inFlight'])
-        self.settings(yolo_mode=False)
-        self.runtime.send(lead['id'], 'Now use workspace permissions')
-        self.runtime.dispatch()
-        f.f.eventually(lambda: len([p for m,p in self.runtime.server.calls if m == 'turn/start']) == 2)
-        turn = [p for m,p in self.runtime.server.calls if m == 'turn/start'][-1]
-        self.assertEqual(turn['approvalPolicy'], 'on-request')
-        self.assertEqual(turn['sandboxPolicy']['type'], 'workspaceWrite')
-        self.assertFalse(self.runtime.monitor_auto_approved(self.runtime.agent(lead['id'])))
+class YoloHTTPContract(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.backend = start_contract_backend(cls)
 
-    def test_monitor_uses_selected_policy_instead_of_stale_profile(self):
-        lead = self.runtime.prepare(self.lead)
-        with self.runtime.lock, self.runtime.db() as db:
-            lead['profile'] = {'id':'stale-read-only'}
-            self.runtime.put(db, 'agents', lead)
-        monitor = self.runtime.monitor(lead['id'], {'command':'echo test'}, approved=True)
-        f.f.eventually(lambda: any(m == 'command/exec' for m,p in self.runtime.server.calls))
-        command = [p for m,p in self.runtime.server.calls if m == 'command/exec'][-1]
-        self.assertEqual(command['sandboxPolicy'], {'type':'dangerFullAccess'})
-        self.assertNotIn('permissionProfile', command)
-        self.runtime.server.gate.set()
-        f.f.eventually(lambda: read_runtime_state(self.runtime)['monitors'][0]['status'] not in {'running','starting'})
+    def headers(self) -> dict[str, str]:
+        return {
+            "Origin": self.backend.origin or "",
+            "X-Canvas-Token": self.backend.session["token"],
+            "X-Canvas-Workspace": self.backend.identity["workspaceId"],
+            "X-Studio-API-Schema": self.backend.schema_hash,
+        }
 
-    def test_rule_rechecks_permission_after_mode_change(self):
-        rule = self.runtime.rules({'agent':self.lead['id'], 'name':'Check', 'command':'echo ready'})
-        with self.runtime.lock, self.runtime.db() as db:
-            rule.update(inFlight=True, checks=1)
-            self.runtime.put(db, 'rules', rule)
-        self.settings(yolo_mode=False)
-        monitor = self.runtime.monitor(self.lead['id'], {'command':'echo ready'},
-                                       approved=True, rule=rule)
-        self.assertEqual(monitor['status'], 'approval')
-        self.assertTrue(read_runtime_state(self.runtime)['requests'])
+    def create_lead(self, identifier: str, *, yolo_mode: bool = True) -> dict[str, object]:
+        response = self.backend.request(
+            "POST", "/api/leads",
+            body={"id": identifier, "cwd": str(self.backend.cwd),
+                  "workspaceMode": "worktree", "yolo_mode": yolo_mode},
+            headers=self.headers(),
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        return response.json()
 
-    def test_restore_blocks_permission_changes(self):
-        worker = self.worker()
-        with self.runtime.lock, self.runtime.db() as db:
-            worker['workspaceOperation'] = 'restore'
-            self.runtime.put(db, 'agents', worker)
-        with self.assertRaisesRegex(ValueError, 'workspace operations'):
-            self.settings(yolo_mode=False)
-        self.assertIs(self.runtime.agent(self.lead['id'])['yoloMode'], True)
+    def create_worker(self, lead_id: str, identifier: str) -> dict[str, object]:
+        response = self.backend.request(
+            "POST", "/api/agents",
+            body={"id": identifier, "parent": lead_id, "prompt": "Complete the fixture task.",
+                  "name": "HTTP contract worker", "role": "reviewer"},
+            headers=self.headers(),
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        return response.json()
 
-    def test_yolo_defaults_and_worker_inheritance(self):
-        self.assertIs(self.lead['yoloMode'], True)
-        worker = self.worker()
-        self.assertIs(worker['yoloMode'], True)
-        for agent in [self.lead, worker]:
-            params = self.runtime.new_thread_params(agent)
-            self.assertEqual(params['approvalPolicy'], 'never')
-            self.assertEqual(params['sandbox'], 'danger-full-access')
-        with self.assertRaisesRegex(ValueError, 'Only the user'):
-            self.worker(yolo_mode=True)
-        with self.assertRaisesRegex(ValueError, 'Only a lead'):
-            self.runtime.conversation_settings(worker['id'], {'yolo_mode': True})
+    def entity(self, identifier: str) -> dict[str, object] | None:
+        for document in self.state_documents():
+            if document["id"] == f"entity:agent:{identifier}":
+                return json.loads(document["payload"])["value"]
+        return None
 
-    def test_off_changes_existing_workers_and_resumes_explicit_policy(self):
-        worker = self.runtime.prepare(self.worker())
-        self.runtime.loaded.add(self.lead['id'])
-        self.settings(yolo_mode=False)
-        self.assertNotIn(worker['id'], self.runtime.loaded)
-        self.assertNotIn(self.lead['id'], self.runtime.loaded)
-        lead = self.runtime.agent(self.lead['id'])
-        self.assertEqual(self.runtime.new_thread_params(lead)['sandbox'], 'workspace-write')
-        self.assertEqual(self.runtime.new_thread_params(lead)['approvalPolicy'], 'on-request')
-        resumed = self.runtime.prepare(worker)
-        calls = [p for m, p in self.runtime.server.calls if m == 'thread/resume']
-        self.assertEqual(calls[-1]['threadId'], worker['threadId'])
-        self.assertEqual(calls[-1]['sandbox'], 'read-only')
-        self.assertEqual(calls[-1]['approvalPolicy'], 'on-request')
-        self.assertIs(resumed['yoloMode'], False)
-        self.assertIs(self.worker()['yoloMode'], False)
+    def state_documents(self) -> list[dict[str, object]]:
+        response = self.backend.request(
+            "GET", "/api/sync/pull?" + urlencode({
+                "scope": "state:entities:v1", "after": 0, "limit": 500,
+            }),
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        return response.json()["documents"]
 
-    def test_invalid_and_busy_changes_are_atomic(self):
-        for value in ['true', 1, None]:
-            with self.assertRaisesRegex(ValueError, 'boolean'):
-                self.settings(yolo_mode=value)
-            with self.assertRaisesRegex(ValueError, 'boolean'):
-                self.runtime.new_lead({'yolo_mode': value})
-        worker = self.worker()
-        with self.runtime.lock, self.runtime.db() as db:
-            worker.update(inFlight=True, status='running')
-            self.runtime.put(db, 'agents', worker)
-        with self.assertRaisesRegex(ValueError, 'every team turn'):
-            self.settings(yolo_mode=False)
-        self.assertIs(self.runtime.agent(self.lead['id'])['yoloMode'], True)
-        with self.runtime.lock, self.runtime.db() as db:
-            worker.update(inFlight=False, status='waiting')
-            self.runtime.put(db, 'agents', worker)
-            self.runtime.put(db, 'monitors', {'id':'watch', 'agent':worker['id'], 'status':'running'})
-        with self.assertRaisesRegex(ValueError, 'monitors'):
-            self.settings(yolo_mode=False)
-        self.assertIs(self.runtime.agent(worker['id'])['yoloMode'], True)
+    def wait_for_idle_entities(self, *identifiers: str) -> None:
+        deadline = time.monotonic() + 3.0
+        last_state: object = None
+        while time.monotonic() < deadline:
+            documents = self.state_documents()
+            agents = {
+                document["id"].removeprefix("entity:agent:"): json.loads(document["payload"])["value"]
+                for document in documents if document["id"].startswith("entity:agent:")
+            }
+            states = {identifier: agents.get(identifier) for identifier in identifiers}
+            root = states[identifiers[0]] if identifiers else None
+            root_id = root.get("rootId") if isinstance(root, dict) else None
+            team_ids = {
+                identifier for identifier, state in agents.items()
+                if isinstance(state, dict) and state.get("rootId") == root_id
+            }
+            busy_agents = {
+                identifier: state for identifier, state in agents.items()
+                if identifier in team_ids and isinstance(state, dict)
+                and (state.get("inFlight") or state.get("workspaceOperation")
+                     or state.get("status") in {"running", "starting", "approval"})
+            }
+            busy_events = [
+                document["id"] for document in documents
+                if document["id"].startswith("entity:event:")
+                and (event := json.loads(document["payload"])["value"]).get("agent") in team_ids
+                and event.get("status") in {"pending", "reserved", "dispatching"}
+            ]
+            last_state = {"states": states, "busyAgents": busy_agents, "busyEvents": busy_events}
+            if (all(state is not None for state in states.values())
+                    and not busy_agents and not busy_events):
+                return
+        self.fail(f"Team records did not settle through HTTP: {last_state!r}")
 
-    def test_legacy_permissions_unchanged_and_mode_survives_restart(self):
-        legacy = dict(self.lead)
-        legacy.pop('yoloMode')
-        params = self.runtime.new_thread_params(legacy)
-        self.assertNotIn('approvalPolicy', params)
-        self.assertNotIn('sandbox', params)
-        self.settings(yolo_mode=False)
-        self.runtime.close()
-        self.runtime = f.ControlledRuntime(self.root, f.f.FakeServer)
-        self.assertIs(self.runtime.agent(self.lead['id'])['yoloMode'], False)
+    def send_message(self, agent_id: str, message_id: str, text: str) -> list[dict[str, object]]:
+        frames_before = self.backend.received_provider_frames()
+        response = self.backend.request(
+            "POST", "/api/messages",
+            body={"id": message_id, "room": agent_id, "text": text,
+                  "delivery": "queue", "assets": []},
+            headers=self.headers(),
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        deadline = time.monotonic() + 3.0
+        transcript_path = "/api/transcript?" + urlencode({"id": agent_id})
+        transcript: object = None
+        while time.monotonic() < deadline:
+            frames = self.backend.received_provider_frames()
+            transcript_response = self.backend.request("GET", transcript_path, timeout=1.0)
+            self.assertEqual(transcript_response.status, 200, transcript_response.body[:1000])
+            transcript = transcript_response.json()
+            current = self.entity(agent_id)
+            starts = [frame for frame in frames[len(frames_before):]
+                      if frame.get("method") == "turn/start"
+                      and frame.get("params", {}).get("clientUserMessageId") == message_id]
+            if (starts and current is not None and not current.get("inFlight")
+                    and "Recovered output." in json.dumps(transcript)):
+                return starts
+        self.fail(f"The provider turn did not settle through HTTP: {transcript!r}")
 
-    def test_new_lead_reuse_and_request_identity(self):
-        lead = self.runtime.new_lead({'cwd': str(self.root), 'yolo_mode': False})
-        reused = self.runtime.new_lead({'previous': lead['id'], 'yolo_mode': True})
-        self.assertEqual(lead['id'], reused['id'])
-        self.assertIs(reused['yoloMode'], True)
-        request = {'id': f.uuid.uuid4().hex, 'cwd':str(self.root), 'yolo_mode': False}
-        made = self.runtime.new_lead(request)
-        self.assertIs(made['yoloMode'], False)
-        with self.assertRaisesRegex(ValueError, 'different settings'):
-            self.runtime.new_lead({**request, 'yolo_mode': True})
+    def test_lead_creation_replay_and_invalid_mode_are_http_contracts(self) -> None:
+        identifier = "10000000-0000-4000-8000-000000000201"
+        first = self.create_lead(identifier, yolo_mode=False)
+        replay = self.create_lead(identifier, yolo_mode=False)
+        self.assertEqual(replay["id"], first["id"])
+        self.assertIs(first["yoloMode"], False)
+
+        changed = self.backend.request(
+            "POST", "/api/leads",
+            body={"id": identifier, "cwd": str(self.backend.cwd),
+                  "workspaceMode": "worktree", "yolo_mode": True},
+            headers=self.headers(),
+        )
+        self.assertEqual(changed.status, 400, changed.body[:1000])
+        invalid = self.backend.request(
+            "POST", "/api/conversation",
+            body={"id": identifier, "yolo_mode": "false"}, headers=self.headers(),
+        )
+        self.assertEqual(invalid.status, 400, invalid.body[:1000])
+        self.assertIs(self.entity(identifier)["yoloMode"], False)
+
+    def test_yolo_default_inherits_to_worker_and_selects_provider_permissions(self) -> None:
+        lead_id = "10000000-0000-4000-8000-000000000202"
+        worker_id = "10000000-0000-4000-8000-000000000203"
+        lead = self.create_lead(lead_id)
+        self.assertIs(lead["yoloMode"], True)
+        self.assertIs(self.entity(lead_id)["yoloMode"], True)
+        lead_starts = self.send_message(
+            lead_id, "10000000-0000-4000-8000-000000000212",
+            "Use the default lead permissions.",
+        )
+        self.assertEqual(len(lead_starts), 1, lead_starts)
+        lead_turn = lead_starts[0]
+        self.assertEqual(lead_turn["params"]["approvalPolicy"], "never", lead_turn)
+        self.assertEqual(lead_turn["params"]["sandboxPolicy"], {"type": "dangerFullAccess"}, lead_turn)
+        worker = self.create_worker(lead_id, worker_id)
+        self.assertIs(worker["yoloMode"], True)
+        self.assertIs(self.entity(worker_id)["yoloMode"], True)
+        starts = self.send_message(
+            worker_id, "10000000-0000-4000-8000-000000000211",
+            "Use the inherited team permissions.",
+        )
+        self.assertEqual(len(starts), 1, starts)
+        turn = starts[0]
+        self.assertEqual(turn["params"]["approvalPolicy"], "never", turn)
+        self.assertEqual(turn["params"]["sandboxPolicy"], {"type": "dangerFullAccess"}, turn)
+
+        rejected_id = "10000000-0000-4000-8000-000000000204"
+        rejected = self.backend.request(
+            "POST", "/api/agents",
+            body={"id": rejected_id, "parent": lead_id, "prompt": "Invalid override",
+                  "yolo_mode": False}, headers=self.headers(),
+        )
+        self.assertEqual(rejected.status, 400, rejected.body[:1000])
+        self.assertIsNone(self.entity(rejected_id))
+
+    def test_turns_after_yolo_is_disabled_use_restricted_provider_permissions(self) -> None:
+        lead_id = "10000000-0000-4000-8000-000000000205"
+        worker_id = "10000000-0000-4000-8000-000000000206"
+        self.create_lead(lead_id)
+        self.create_worker(lead_id, worker_id)
+        self.send_message(worker_id, "10000000-0000-4000-8000-000000000207",
+                          "Finish the worker's initial turn.")
+        self.wait_for_idle_entities(lead_id, worker_id)
+
+        changed = self.backend.request(
+            "POST", "/api/conversation", body={"id": lead_id, "yolo_mode": False},
+            headers=self.headers(),
+        )
+        self.assertEqual(changed.status, 200, changed.body[:1000])
+        self.assertIs(changed.json()["yoloMode"], False)
+        self.assertIs(self.entity(worker_id)["yoloMode"], False)
+
+        starts = self.send_message(worker_id, "10000000-0000-4000-8000-000000000208",
+                                   "Use the changed team permissions.")
+        turn = next(frame for frame in starts if frame.get("params", {}).get("input"))
+        self.assertEqual(turn["params"]["approvalPolicy"], "on-request", turn)
+        self.assertEqual(turn["params"]["sandboxPolicy"]["type"], "readOnly", turn)
 
 
-if __name__ == '__main__':
-    suite = unittest.TestSuite(Yolo(name) for name in Yolo.__dict__ if name.startswith('test_'))
-    result = unittest.TextTestRunner(verbosity=2).run(suite)
-    raise SystemExit(not result.wasSuccessful())
+class YoloRestartHTTPContract(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.backend = start_contract_backend(cls)
+
+    def headers(self) -> dict[str, str]:
+        return {
+            "Origin": self.backend.origin or "",
+            "X-Canvas-Token": self.backend.session["token"],
+            "X-Canvas-Workspace": self.backend.identity["workspaceId"],
+            "X-Studio-API-Schema": self.backend.schema_hash,
+        }
+
+    def test_disabled_yolo_mode_is_served_after_backend_restart(self) -> None:
+        identifier = "10000000-0000-4000-8000-000000000209"
+        created = self.backend.request(
+            "POST", "/api/leads", body={"id": identifier, "cwd": str(self.backend.cwd),
+            "workspaceMode": "worktree", "yolo_mode": False}, headers=self.headers(),
+        )
+        self.assertEqual(created.status, 200, created.body[:1000])
+        self.backend.stop()
+        self.backend.start()
+
+        state = self.backend.request(
+            "GET", "/api/sync/pull?" + urlencode({
+                "scope": "state:entities:v1", "after": 0, "limit": 500,
+            }),
+        )
+        self.assertEqual(state.status, 200, state.body[:1000])
+        entity = next(json.loads(document["payload"])["value"]
+                      for document in state.json()["documents"]
+                      if document["id"] == f"entity:agent:{identifier}")
+        self.assertIs(entity["yoloMode"], False)
+
+        before = self.backend.received_provider_frames()
+        message_id = "10000000-0000-4000-8000-000000000210"
+        sent = self.backend.request(
+            "POST", "/api/messages",
+            body={"id": message_id, "room": identifier,
+                  "text": "Use the persisted permission setting.",
+                  "delivery": "queue", "assets": []},
+            headers=self.headers(),
+        )
+        self.assertEqual(sent.status, 200, sent.body[:1000])
+        deadline = time.monotonic() + 3.0
+        starts: list[dict[str, object]] = []
+        while time.monotonic() < deadline:
+            frames = self.backend.received_provider_frames()
+            starts = [frame for frame in frames[len(before):]
+                      if frame.get("method") == "turn/start"
+                      and frame.get("params", {}).get("clientUserMessageId") == message_id]
+            transcript = self.backend.request(
+                "GET", "/api/transcript?" + urlencode({"id": identifier}), timeout=1.0,
+            )
+            self.assertEqual(transcript.status, 200, transcript.body[:1000])
+            if starts and "Recovered output." in json.dumps(transcript.json()):
+                break
+        else:
+            self.fail("The post-restart provider turn did not complete")
+        turn = next(frame for frame in starts if frame.get("params", {}).get("input"))
+        self.assertEqual(turn["params"]["approvalPolicy"], "on-request", turn)
+        self.assertEqual(turn["params"]["sandboxPolicy"]["type"], "workspaceWrite", turn)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
