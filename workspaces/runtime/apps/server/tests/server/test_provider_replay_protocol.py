@@ -67,6 +67,20 @@ class ReplayProtocol(unittest.TestCase):
         if not errors.empty():
             raise errors.get()
 
+        first_started.clear()
+        second_started.clear()
+        turns = [json.dumps({"id": value, "method": "turn/start"}) for value in (3, 4)]
+        worker = threading.Thread(target=run, args=(turns, turn_handler, {"turn/start"}))
+        worker.start()
+        self.assertTrue(first_started.wait(1), "first turn did not start")
+        self.assertTrue(second_started.wait(1), "second turn did not overlap the first")
+        release_turns.set()
+        worker.join(2)
+        self.assertFalse(worker.is_alive(), "turn dispatcher did not finish")
+        self.assertCountEqual(turn_seen, [3, 4])
+        if not errors.empty():
+            raise errors.get()
+
     def test_ordinary_rpc_error_is_propagated_only_after_stdin_exhaustion(self):
         requesting_next_line = threading.Event()
         release_eof = threading.Event()
@@ -99,20 +113,6 @@ class ReplayProtocol(unittest.TestCase):
         worker.join(2)
         self.assertFalse(worker.is_alive(), "dispatcher did not finish after stdin EOF")
         self.assertIsInstance(errors.get_nowait(), RuntimeError)
-
-        first_started.clear()
-        second_started.clear()
-        turns = [json.dumps({"id": value, "method": "turn/start"}) for value in (3, 4)]
-        worker = threading.Thread(target=run, args=(turns, turn_handler, {"turn/start"}))
-        worker.start()
-        self.assertTrue(first_started.wait(1), "first turn did not start")
-        self.assertTrue(second_started.wait(1), "second turn did not overlap the first")
-        release_turns.set()
-        worker.join(2)
-        self.assertFalse(worker.is_alive(), "turn dispatcher did not finish")
-        self.assertCountEqual(turn_seen, [3, 4])
-        if not errors.empty():
-            raise errors.get()
 
     def test_supervisor_capture_prefix_waits_for_recorded_orphan_response(self):
         contract = PROVIDER_RUNNER.ProviderReplay()
