@@ -7,19 +7,24 @@ import sys
 import time
 
 LIMIT = 2 * 1024 * 1024
+# The start of the child's error output, so that a failure keeps its reason.
+ERROR_LIMIT = 64 * 1024
 input_data = sys.stdin.buffer.read(LIMIT + 1)
 if len(input_data) > LIMIT:
     sys.exit(125)
 process = subprocess.Popen(sys.argv[2:], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                           stderr=subprocess.DEVNULL, start_new_session=True)
+                           stderr=subprocess.PIPE, start_new_session=True)
 selector = selectors.DefaultSelector()
 os.set_blocking(process.stdin.fileno(), False)
 os.set_blocking(process.stdout.fileno(), False)
+os.set_blocking(process.stderr.fileno(), False)
 selector.register(process.stdin, selectors.EVENT_WRITE, "input")
 selector.register(process.stdout, selectors.EVENT_READ, "output")
+selector.register(process.stderr, selectors.EVENT_READ, "error")
 deadline = time.monotonic() + float(sys.argv[1])
 offset = 0
 output = bytearray()
+error = bytearray()
 code = None
 try:
     while selector.get_map():
@@ -35,6 +40,13 @@ try:
                 if offset == len(input_data):
                     selector.unregister(key.fileobj)
                     key.fileobj.close()
+            elif key.data == "error":
+                block = os.read(key.fd, 65536)
+                if not block:
+                    selector.unregister(key.fileobj)
+                    key.fileobj.close()
+                else:
+                    error.extend(block[:max(0, ERROR_LIMIT - len(error))])
             else:
                 block = os.read(key.fd, 65536)
                 if not block:
@@ -61,4 +73,5 @@ finally:
         process.wait(timeout=5)
 if code not in {124, 125}:
     sys.stdout.buffer.write(output)
+sys.stderr.buffer.write(error)
 sys.exit(code)
