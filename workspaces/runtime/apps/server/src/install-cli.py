@@ -65,11 +65,12 @@ def install_operations_extension(extension, installed_name, python):
     finally:
         temporary.unlink(missing_ok=True)
     check = subprocess.run(
-        [str(python), "-c", "import studio_operations_native as m; assert m.PROTOCOL_VERSION == 1"],
+        [str(python), "-c", "import codex_operations_adapter"],
         check=False,
         capture_output=True,
         text=True,
         timeout=10,
+        cwd=SERVER_SOURCE_ROOT,
     )
     if check.returncode:
         raise RuntimeError(
