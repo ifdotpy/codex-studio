@@ -20,6 +20,7 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -27,6 +28,7 @@ from unittest.mock import patch
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_agent_management import manage_agent
+import codex_native_release
 from codex_native_release import IDLE_SECONDS, _retry_reset, reconcile_unknown, release_agent, tick
 from codex_native_sweep import sweep
 from codex_runtime import PreparationPending, ResponseTimeout, Runtime
@@ -367,6 +369,132 @@ class NativeReleaseContract(unittest.TestCase):
                                         if method == "thread/unsubscribe"]) == 2)
         fixture.eventually(lambda: len([lead for lead in leads if lead["id"] in self.rt.loaded]) == 1)
         self.assertEqual(len([lead for lead in leads if lead["id"] in self.rt.loaded]), 1)
+
+    def test_reset_pending_candidates_use_partial_index(self):
+        with self.rt.read_db() as db:
+            plan = db.execute(
+                "EXPLAIN QUERY PLAN SELECT id FROM runtime_agents WHERE "
+                "json_extract(record,'$.nativeRelease.resetPending')=1 ORDER BY id LIMIT ? OFFSET ?",
+                (32, 0),
+            ).fetchall()
+        self.assertIn(
+            "runtime_agent_native_reset_pending",
+            " ".join(str(row[3]) for row in plan),
+        )
+
+    def test_idle_tick_has_no_database_writes_or_commits(self):
+        self.rt.loaded.clear()
+        self.rt._native_release_pending = set()
+        statements = []
+        original_read_db = self.rt.read_db
+
+        @contextmanager
+        def traced_read_db():
+            with original_read_db() as db:
+                db.set_trace_callback(statements.append)
+                yield db
+
+        self.rt.read_db = traced_read_db
+        with patch("codex_native_sweep.tick", lambda *_: None):
+            tick(self.rt, now=time.time() + 31)
+        writes = [statement for statement in statements
+                  if statement.lstrip().split(None, 1)[0].upper() in {
+                      "INSERT", "UPDATE", "DELETE", "REPLACE", "CREATE", "DROP", "ALTER"
+                  }]
+        commits = [statement for statement in statements
+                   if statement.lstrip().upper().startswith(("COMMIT", "END"))]
+        self.assertEqual(writes, [])
+        self.assertEqual(commits, [])
+
+    def test_runtime_writer_cannot_interleave_with_tick_discovery(self):
+        lead = self.lead()
+        self.age(lead, IDLE_SECONDS + 60)
+        discovering = threading.Event()
+        continue_discovery = threading.Event()
+        writer_finished = threading.Event()
+        original = codex_native_release._local_blocker
+
+        def pause_after_blocker_check(runtime, db, agent):
+            result = original(runtime, db, agent)
+            discovering.set()
+            if not continue_discovery.wait(5):
+                raise TimeoutError("test did not resume tick discovery")
+            return result
+
+        def complete_submit(*_args, **_kwargs):
+            future = concurrent.futures.Future()
+            future.set_result(None)
+            return future
+
+        def insert_blocker():
+            writer_started.set()
+            with self.rt.lock, self.rt.db() as db:
+                db.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
+                           ("interleaved-release-blocker", lead["id"], "user", "x", "uncertain",
+                            time.time(), lead["epoch"], None, None))
+            writer_finished.set()
+
+        writer_started = threading.Event()
+        with (patch.object(codex_native_release, "_local_blocker", pause_after_blocker_check),
+              patch("codex_native_sweep.tick", lambda *_: None),
+              patch.object(self.rt.recovery_pool, "submit", complete_submit)):
+            worker = threading.Thread(target=tick, args=(self.rt, time.time() + 31))
+            worker.start()
+            self.assertTrue(discovering.wait(5), "tick did not reach blocker discovery")
+            writer = threading.Thread(target=insert_blocker)
+            writer.start()
+            try:
+                self.assertTrue(writer_started.wait(5), "runtime writer did not start")
+                acquired = self.rt.lock.acquire(blocking=False)
+                if acquired:
+                    self.rt.lock.release()
+                self.assertFalse(acquired, "candidate discovery released Runtime.lock")
+                self.assertFalse(writer_finished.wait(.1), "runtime writer interleaved with discovery")
+            finally:
+                continue_discovery.set()
+                worker.join(5)
+                writer.join(5)
+        self.assertFalse(worker.is_alive(), "tick did not finish after discovery resumed")
+        self.assertFalse(writer.is_alive(), "writer did not finish after tick released the lock")
+        self.assertTrue(writer_finished.is_set())
+        self.assertFalse(any(method == "thread/unsubscribe" for method, _ in self.rt.server.calls))
+
+    def test_release_rechecks_blocker_after_candidate_selection(self):
+        lead = self.lead()
+        self.age(lead, IDLE_SECONDS + 60)
+        discovered_clear = threading.Event()
+        original = codex_native_release._local_blocker
+        original_calls = len(self.rt.server.calls)
+
+        def record_clear(runtime, db, agent):
+            blocker = original(runtime, db, agent)
+            if agent["id"] == lead["id"] and blocker is None:
+                discovered_clear.set()
+            return blocker
+
+        def block_before_action(function, *args, **kwargs):
+            self.assertIs(function, release_agent)
+            self.assertTrue(discovered_clear.is_set(), "candidate was not discovered as unblocked")
+            with self.rt.lock, self.rt.db() as db:
+                db.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
+                           ("late-release-blocker", lead["id"], "user", "x", "uncertain",
+                            time.time(), lead["epoch"], None, None))
+            result = function(*args, **kwargs)
+            self.assertEqual(result["status"], "blocked")
+            future = concurrent.futures.Future()
+            future.set_result(result)
+            return future
+
+        with (patch.object(codex_native_release, "_local_blocker", record_clear),
+              patch("codex_native_sweep.tick", lambda *_: None),
+              patch.object(self.rt.recovery_pool, "submit", block_before_action)):
+            tick(self.rt, now=time.time() + 31)
+
+        self.assertTrue(discovered_clear.is_set())
+        self.assertFalse(any(method in {"thread/read", "thread/backgroundTerminals/list",
+                                       "thread/queue/list", "thread/unsubscribe"}
+                             for method, _ in self.rt.server.calls[original_calls:]))
+        self.assertFalse(self.rt._native_release_pending)
 
     def test_busy_and_unknown_work_excludes_release(self):
         lead = self.lead()

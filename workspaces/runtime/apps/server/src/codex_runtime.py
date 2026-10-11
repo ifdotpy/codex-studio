@@ -1612,6 +1612,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     json_extract(record,'$.threadId'),
                     CASE WHEN json_type(record,'$.accountKey') IS NULL THEN 'default'
                          ELSE json_extract(record,'$.accountKey') END);
+                CREATE INDEX IF NOT EXISTS runtime_agent_native_reset_pending ON runtime_agents(id)
+                    WHERE json_extract(record,'$.nativeRelease.resetPending')=1;
                 CREATE INDEX IF NOT EXISTS runtime_agent_account_scope ON runtime_agents(
                     CASE WHEN json_type(record,'$.accountKey') IS NULL THEN 'default'
                          ELSE json_extract(record,'$.accountKey') END);
