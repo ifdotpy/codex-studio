@@ -1,11 +1,9 @@
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
-import ProjectLayrSync, {
-  describeWithLayrSync,
+import {
   layrSyncSummary,
   layrSyncText,
   macSyncOpen,
+  projectChip,
   type LayrSync,
 } from "./MacSync";
 
@@ -44,34 +42,42 @@ test.each([
   ],
 ] as const)("states %j in plain words", (value, text) => {
   expect(layrSyncText(value)).toBe(text);
-  const markup = renderToStaticMarkup(
-    createElement(ProjectLayrSync, {
-      summary: layrSyncSummary([{ sync: value }]),
-    }),
-  );
-  expect(markup).toContain(`data-state="${value.state}"`);
-  expect(markup).toContain(`title="${text}"`);
-  expect(markup).toContain('aria-hidden="true"');
+  expect(layrSyncSummary([{ sync: value }])?.title).toBe(text);
 });
 
-test("the chip counts the files that wait for a choice", () => {
-  const value = sync({
-    state: "conflict",
-    conflicts: ["a"],
-    choices: ["a", "b"],
+test("the LAYR chip marks a sync that needs the user and hides a quiet one", () => {
+  const layr = { state: "ready" as const, title: "Ready for layr chats" };
+  const chip = (value: LayrSync) =>
+    projectChip(layr, layrSyncSummary([{ sync: value }]));
+  for (const quiet of [
+    sync({}),
+    sync({ state: "syncing" }),
+    sync({ state: "paused", enabled: false }),
+  ])
+    expect(chip(quiet)).toEqual({ summary: layr, attention: false });
+  const conflict = chip(
+    sync({ state: "conflict", conflicts: ["a"], choices: ["a", "b"] }),
+  );
+  expect(macSyncOpen(sync({ conflicts: ["a"], choices: ["a", "b"] }))).toEqual([
+    "a",
+    "b",
+  ]);
+  expect(conflict).toEqual({
+    summary: {
+      state: "ready",
+      title:
+        "Ready for layr chats\nMac folder sync: 2 files changed on both sides",
+    },
+    attention: true,
   });
-  expect(macSyncOpen(value)).toEqual(["a", "b"]);
-  const markup = renderToStaticMarkup(
-    createElement(ProjectLayrSync, {
-      summary: layrSyncSummary([{ sync: value }]),
-    }),
-  );
-  expect(markup).toMatch(
-    /^<small class="project-layr-sync"[^>]*>SYNC 2<\/small>$/,
-  );
+  expect(chip(sync({ state: "paused", deletes: 3 }))?.attention).toBe(true);
+  expect(
+    chip(sync({ state: "error", reason: "The VM stopped" }))?.attention,
+  ).toBe(true);
+  expect(projectChip(null, layrSyncSummary([{ sync: sync({}) }]))).toBeNull();
 });
 
-test("the row shows the server that needs attention first", () => {
+test("the summary shows the server that needs attention first", () => {
   const summary = layrSyncSummary([
     { server: "MAC", sync: sync({}) },
     { server: "MINI", sync: sync({ state: "error", reason: "VM stopped" }) },
@@ -80,9 +86,5 @@ test("the row shows the server that needs attention first", () => {
   expect(summary?.title).toBe(
     "MAC: Mac folder synced with the VM\nMINI: Mac folder sync failed: VM stopped",
   );
-  expect(describeWithLayrSync(summary, "Drag.")).toBe(
-    "MAC: Mac folder synced with the VM; MINI: Mac folder sync failed: VM stopped. Drag.",
-  );
   expect(layrSyncSummary([])).toBeNull();
-  expect(describeWithLayrSync(null, "Drag.")).toBe("Drag.");
 });

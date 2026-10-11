@@ -60,8 +60,7 @@ import ProjectLayrReadiness, {
   describeWithLayrReadiness,
   layrReadinessSummary,
 } from "./sidebar/LayrReadiness";
-import ProjectLayrSync, {
-  describeWithLayrSync,
+import {
   layrSyncSummary,
   macSyncOpen,
   MacSyncConflicts,
@@ -1388,22 +1387,19 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                     allProjectGroups.map((item) => item.path),
                   )}
                   aria-description={describeWithLayrReadiness(
-                    layr,
-                    describeWithLayrSync(
-                      sync,
-                      "Drag to reorder. Alt + Up or Down also works.",
-                    ),
+                    chip?.summary ?? null,
+                    "Drag to reorder. Alt + Up or Down also works.",
                   )}
                   className="project-tree-toggle"
                   title={services.displayPath?.(group.path) || group.path}
                 >
                   <FolderOpen size={18} />
                   <span title={group.name}>{group.name}</span>
-                  {chip?.kind === "layr" && (
-                    <ProjectLayrReadiness summary={chip.summary} />
-                  )}
-                  {chip?.kind === "sync" && (
-                    <ProjectLayrSync summary={chip.summary} />
+                  {chip && (
+                    <ProjectLayrReadiness
+                      summary={chip.summary}
+                      attention={chip.attention}
+                    />
                   )}
                 </UnstyledButton>
                 {!archive && (!compact || !!group.path) && (
