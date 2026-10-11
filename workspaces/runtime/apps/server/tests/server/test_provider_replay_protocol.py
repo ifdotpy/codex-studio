@@ -67,6 +67,39 @@ class ReplayProtocol(unittest.TestCase):
         if not errors.empty():
             raise errors.get()
 
+    def test_ordinary_rpc_error_is_propagated_only_after_stdin_exhaustion(self):
+        requesting_next_line = threading.Event()
+        release_eof = threading.Event()
+        finished = threading.Event()
+        errors = queue.Queue()
+
+        def lines():
+            yield json.dumps({"id": 1, "method": "unknown/method"})
+            requesting_next_line.set()
+            if not release_eof.wait(2):
+                raise AssertionError("test did not release the simulated stdin EOF")
+
+        def handler(_line):
+            raise RuntimeError("unknown RPC")
+
+        def dispatch():
+            try:
+                dispatch_rpc_lines(lines(), handler, set())
+            except Exception as error:
+                errors.put(error)
+            finally:
+                finished.set()
+
+        worker = threading.Thread(target=dispatch)
+        worker.start()
+        self.assertTrue(requesting_next_line.wait(1), "dispatcher did not continue reading stdin")
+        self.assertFalse(finished.is_set(), "handler error ended the process before stdin EOF")
+        self.assertTrue(errors.empty(), "handler error escaped before stdin EOF")
+        release_eof.set()
+        worker.join(2)
+        self.assertFalse(worker.is_alive(), "dispatcher did not finish after stdin EOF")
+        self.assertIsInstance(errors.get_nowait(), RuntimeError)
+
         first_started.clear()
         second_started.clear()
         turns = [json.dumps({"id": value, "method": "turn/start"}) for value in (3, 4)]

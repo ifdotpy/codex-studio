@@ -15,6 +15,7 @@ def dispatch_rpc_lines(
 ) -> None:
     """Handle ordinary requests in wire order; run declared concurrent RPCs separately."""
     futures = []
+    first_error: Exception | None = None
     with ThreadPoolExecutor(max_workers=16) as pool:
         for line in lines:
             if on_line is not None:
@@ -23,6 +24,16 @@ def dispatch_rpc_lines(
             if message.get("method") in concurrent_methods:
                 futures.append(pool.submit(handler, line))
             else:
-                handler(line)
+                try:
+                    handler(line)
+                except Exception as error:
+                    if first_error is None:
+                        first_error = error
         for future in futures:
-            future.result()
+            try:
+                future.result()
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+    if first_error is not None:
+        raise first_error
