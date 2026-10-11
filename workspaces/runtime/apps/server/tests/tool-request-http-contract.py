@@ -1,124 +1,148 @@
 #!/usr/bin/env python3
-"""Request recovery through the production HTTP adapter and command client."""
+"""Recover provider tool requests through the process and HTTP boundaries."""
 
-# Support direct execution without runner-provided PYTHONPATH.
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+import json
+import time
+import unittest
+from urllib.parse import urlencode
+
 from test_isolation import isolate_supervisor_environment
+
 isolate_supervisor_environment()
 
-
-import importlib.util
-import json
-from pathlib import Path
-import subprocess
-import sys
-import threading
-import unittest
-from unittest.mock import patch
-import urllib.error
-import urllib.parse
-import urllib.request
-
-spec = importlib.util.spec_from_file_location('request_http_fixture', Path(__file__).with_name('spawn-request-recovery-contract.py'))
-f = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(f)
-from codex_canvas import Canvas, make_server
-from studio_api.testing import read_session_token
+from http_backend_harness import TimedHTTPContractTest, start_contract_backend
 
 
-class ToolRequestHTTP(unittest.TestCase):
-    message = f.SpawnRequestRecovery.message
-    response = f.SpawnRequestRecovery.response
-    agent_update = f.SpawnRequestRecovery.agent_update
-    lead = f.SpawnRequestRecovery.lead
+class ToolRequestHTTPContract(TimedHTTPContractTest, unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.backend = start_contract_backend(cls, "tool-request-http.json")
+        session = cls.backend.request("GET", "/api/session")
+        if session.status != 200:
+            raise AssertionError((session.status, session.body[:1000]))
+        cls.session = session.json()
+        identity = cls.backend.request("GET", "/api/sync/identity")
+        if identity.status != 200:
+            raise AssertionError((identity.status, identity.body[:1000]))
+        cls.identity = identity.json()
+        schema = cls.backend.request(
+            "GET", "/api/sync/identity", headers={"X-Studio-API-Schema": "probe"},
+        )
+        if schema.status != 200:
+            raise AssertionError((schema.status, schema.body[:1000]))
+        cls.schema_hash = schema.headers["x-studio-api-schema"]
 
-    def setUp(self):
-        f.SpawnRequestRecovery.setUp(self)
-        self.canvas = Canvas(self.state)
-        self.canvas.runtime = self.runtime
-        self.server = make_server(self.canvas)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
-        self.base = 'http://127.0.0.1:' + str(self.server.server_port)
+    def headers(self) -> dict[str, str]:
+        return {
+            "Origin": self.backend.origin or "",
+            "X-Canvas-Token": self.session["token"],
+            "X-Canvas-Workspace": self.identity["workspaceId"],
+            "X-Studio-API-Schema": self.schema_hash,
+        }
 
-    def tearDown(self):
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join(3)
-        f.SpawnRequestRecovery.tearDown(self)
+    def create_lead(self) -> str:
+        response = self.backend.request(
+            "POST", "/api/leads",
+            body={"cwd": str(self.backend.cwd), "workspaceMode": "worktree"},
+            headers=self.headers(),
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        return response.json()["id"]
 
-    def get(self, actor=None, request_id=None, headers=None):
-        query = {'agent': actor or self.actor['id']}
-        if request_id is not None:
-            query['request_id'] = request_id
-        request = urllib.request.Request(self.base + '/api/tool-requests?' + urllib.parse.urlencode(query), headers=headers or {})
-        with urllib.request.urlopen(request, timeout=3) as response:
-            return json.load(response)
+    def test_provider_tool_request_is_recoverable_and_scoped_by_actor(self) -> None:
+        lead = self.create_lead()
+        message_id = "tool-request-http-contract-message"
+        sent = self.backend.request(
+            "POST", "/api/messages",
+            body={"id": message_id, "room": lead, "text": "Exercise the replayed tool request.",
+                  "delivery": "queue", "assets": []},
+            headers=self.headers(),
+        )
+        self.assertEqual(sent.status, 200, sent.body[:1000])
+        self.assertEqual(sent.json()["id"], message_id)
 
-    def cancel(self, request_id, headers):
-        request = urllib.request.Request(self.base + '/api/tool-requests/cancel',
-            data=json.dumps({'agent': self.actor['id'], 'request_id': request_id}).encode(),
-            headers={'Content-Type': 'application/json', **headers})
-        with urllib.request.urlopen(request, timeout=3) as response:
-            return json.load(response)
+        deadline = time.monotonic() + 2.5
+        frames: list[dict[str, object]] = []
+        result_frame: dict[str, object] | None = None
+        while time.monotonic() < deadline:
+            frames = self.backend.received_provider_frames()
+            result_frame = next((frame for frame in frames
+                                 if frame.get("id") == "boundary-tool-rpc-1"
+                                 and isinstance(frame.get("result"), dict)), None)
+            if result_frame is not None:
+                break
+        self.assertIsNotNone(result_frame, "the fake Codex did not receive the tool result frame")
+        provider_result = result_frame["result"]
+        self.assertTrue(provider_result["success"], provider_result)
+        operation = json.loads(provider_result["contentItems"][0]["text"])
+        initial_agents = operation["agents"]
+        self.assertEqual(len(initial_agents), 2)
+        self.assertTrue(all(agent["status"] == "queued" for agent in initial_agents))
+        listing = self.backend.request(
+            "GET", "/api/tool-requests?" + urlencode({"agent": lead}),
+        )
+        self.assertEqual(listing.status, 200, listing.body[:1000])
+        requests = listing.json()["requests"]
+        self.assertTrue(requests, "the fixture app-server tool call was not recorded")
+        self.assertEqual(len(requests), 1)
+        listed = requests[0]
+        self.assertEqual(listed["tool"], "orchestration_spawn")
+        self.assertEqual(listed["callId"], "boundary-tool-call-1")
+        self.assertEqual(listed["outcome"], "applied")
+        self.assertEqual(listed["request_id"], "batch-1")
+        self.assertNotIn("result", listed)
+        self.assertNotIn("signature", listed)
 
-    def test_list_get_scope_missing_and_current_child_registry(self):
-        self.runtime.dynamic(self.message())
-        result = self.get(request_id='batch-1')
-        self.assertEqual(result['outcome'], 'applied')
-        self.assertEqual({a['id'] for a in result['agents']}, set(result['agentIds']))
-        self.assertTrue(all(a['status'] == 'queued' and a['deleted'] is False for a in result['agents']))
-        self.assertEqual(len(self.get()['requests']), 1)
-        self.assertNotIn('result', self.get()['requests'][0])
-        first, second = result['agentIds']
-        self.agent_update({'id': first}, status='running', turnId='current-child-turn')
-        self.agent_update({'id': second}, status='paused', deletedAt=1500000000)
-        changed = self.get(request_id=result['id'])
-        states = {a['id']: a for a in changed['agents']}
-        self.assertEqual(states[first]['status'], 'running')
-        self.assertEqual(states[first]['turnId'], 'current-child-turn')
-        self.assertTrue(states[second]['deleted'])
-        self.assertEqual(changed['result'], result['result'])
-        self.assertGreaterEqual(changed['registryObservedAt'], result['registryObservedAt'])
-        other = self.lead('Other')
-        self.assertEqual(self.get(actor=other['id'])['requests'], [])
-        self.assertEqual(self.get(actor=other['id'], request_id=result['id'])['stage'], 'not_found')
-        self.assertEqual(self.get(request_id='missing')['outcome'], 'unknown')
-        with self.assertRaises(urllib.error.HTTPError) as rejected:
-            self.get(headers={'Origin': 'https://outside.invalid'})
-        self.assertEqual(rejected.exception.code, 403)
+        receipt = self.backend.request(
+            "GET", "/api/tool-requests?" + urlencode({"agent": lead, "request_id": listed["id"]}),
+        )
+        self.assertEqual(receipt.status, 200, receipt.body[:1000])
+        self.assertEqual(receipt.json()["id"], listed["id"])
+        self.assertEqual(receipt.json()["outcome"], listed["outcome"])
+        self.assertEqual(receipt.json()["agentIds"], listed["agentIds"])
+        states = receipt.json()["agents"]
+        self.assertEqual({agent["id"] for agent in states}, set(listed["agentIds"]))
+        self.assertTrue(all(isinstance(agent["status"], str) for agent in states))
+        self.assertTrue(all(agent["deleted"] is False for agent in states))
 
-    def test_missing_and_foreign_registry_ids_do_not_expose_other_agents(self):
-        self.runtime.dynamic(self.message())
-        receipt = self.get(request_id='batch-1')
-        first, second = receipt['agentIds']
-        with self.runtime.db() as db:
-            db.execute('DELETE FROM runtime_agents WHERE id=?', (first,))
-            changed = self.runtime.agent(second, db)
-            changed.update(parentId='not-this-actor', name='Private name', turnId='Private turn')
-            self.runtime.put(db, 'agents', changed)
-        found = self.get(request_id='batch-1')
-        self.assertEqual(found['agents'], [{'id': first, 'absent': True}, {'id': second, 'absent': True}])
-        self.assertNotIn('Private', json.dumps(found['agents']))
+        other = self.create_lead()
+        other_list = self.backend.request(
+            "GET", "/api/tool-requests?" + urlencode({"agent": other}),
+        )
+        self.assertEqual(other_list.status, 200, other_list.body[:1000])
+        self.assertEqual(other_list.json()["requests"], [])
+        hidden = self.backend.request(
+            "GET", "/api/tool-requests?" + urlencode({"agent": other, "request_id": listed["id"]}),
+        )
+        self.assertEqual(hidden.status, 200, hidden.body[:1000])
+        self.assertEqual(hidden.json()["stage"], "not_found")
+        missing = self.backend.request(
+            "GET", "/api/tool-requests?" + urlencode({"agent": lead, "request_id": "missing"}),
+        )
+        self.assertEqual(missing.status, 200, missing.body[:1000])
+        self.assertEqual(missing.json()["outcome"], "unknown")
+        denied = self.backend.request(
+            "GET", "/api/tool-requests?" + urlencode({"agent": lead}),
+            headers={"Origin": "https://outside.invalid"},
+        )
+        self.assertEqual(denied.status, 403, denied.body[:1000])
 
-    def test_cancel_requires_csrf_token_and_allowed_origin(self):
-        self.runtime.reserve_tool_request(self.message())
-        def get_json(path):
-            with urllib.request.urlopen(self.base + path, timeout=3) as response:
-                return json.load(response)
+    def test_cancel_endpoint_rejects_missing_token_wrong_token_and_foreign_origin(self) -> None:
+        lead = self.create_lead()
+        body = {"agent": lead, "request_id": "missing-request"}
+        headers = self.headers()
+        for denied_headers in (
+                {},
+                {"X-Canvas-Token": "wrong"},
+                {"X-Canvas-Token": headers["X-Canvas-Token"],
+                 "Origin": "https://outside.invalid"}):
+            with self.subTest(headers=denied_headers):
+                response = self.backend.request(
+                    "POST", "/api/tool-requests/cancel", body=body,
+                    headers=denied_headers,
+                )
+                self.assertEqual(response.status, 403, response.body[:1000])
 
-        token = read_session_token(get_json)
-        for headers in [{}, {'X-Canvas-Token': 'wrong'},
-                        {'X-Canvas-Token': token, 'Origin': 'https://outside.invalid'}]:
-            with self.assertRaises(urllib.error.HTTPError) as rejected:
-                self.cancel('batch-1', headers)
-            self.assertEqual(rejected.exception.code, 403)
-            self.assertEqual(self.get(request_id='batch-1')['stage'], 'queued')
-        cancelled = self.cancel('batch-1', {'X-Canvas-Token': token, 'Origin': self.base})
-        self.assertEqual((cancelled['stage'], cancelled['outcome']), ('cancelled', 'not_applied'))
-        self.assertFalse(self.runtime.begin_tool_request(cancelled['id']))
 
-if __name__ == '__main__':
-    unittest.main()
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

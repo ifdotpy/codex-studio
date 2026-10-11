@@ -365,6 +365,12 @@ class ProviderReplay(unittest.TestCase):
 
     def assert_replay_rpc_contract(self, frames, recorded_replies, fixture, allow_pending=False):
         recorded_replies = {**recorded_replies, **fixture.get("rpcReplies", {})}
+        injected_request_ids = {
+            str(frame["id"])
+            for event_list in [fixture.get("events", []), *fixture.get("eventsByThread", {}).values()]
+            for frame in event_list
+            if frame.get("method") == "item/tool/call" and frame.get("id") is not None
+        }
         def matches_template(actual, template):
             if isinstance(template, dict):
                 return (isinstance(actual, dict) and actual.keys() == template.keys()
@@ -382,6 +388,13 @@ class ProviderReplay(unittest.TestCase):
         epochs.append(current)
         for frame in frames:
             message = frame["message"]
+            injected_tool_frame = (
+                str(message.get("id")) in injected_request_ids
+                and (message.get("method") == "item/tool/call"
+                     or ("method" not in message and ("result" in message or "error" in message)))
+            )
+            if injected_tool_frame:
+                continue
             if frame["direction"] == "out":
                 method = message.get("method")
                 self.assertTrue(
@@ -405,6 +418,11 @@ class ProviderReplay(unittest.TestCase):
         for frame in frames:
             message = frame["message"]
             if frame["direction"] != "in" or "id" not in message:
+                continue
+            if (str(message["id"]) in injected_request_ids
+                    and (message.get("method") == "item/tool/call"
+                         or ("method" not in message
+                             and ("result" in message or "error" in message)))):
                 continue
             candidates = [epoch for epoch in epochs
                           if message["id"] in epoch["requests"]
@@ -502,7 +520,8 @@ class ProviderReplay(unittest.TestCase):
     def test_all_recorded_fixtures(self):
         fixture_dir = SERVER_TESTS_ROOT / "fixtures" / "provider-replay"
         names = sorted(path.stem for path in fixture_dir.glob("*.json")
-                       if path.name != "codex-rpc-replies.json")
+                       if path.name != "codex-rpc-replies.json"
+                       and not json.loads(path.read_text(encoding="utf-8")).get("boundaryOnly"))
         self.assertGreaterEqual(len(names), 6)
         if os.environ.get("PROVIDER_REPLAY_FILTER"):
             names = [os.environ["PROVIDER_REPLAY_FILTER"]]

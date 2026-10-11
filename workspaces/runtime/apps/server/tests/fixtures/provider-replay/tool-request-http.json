@@ -1,0 +1,50 @@
+{
+  "source": "hand-authored app-server tool frame based on the public item/tool/call protocol",
+  "boundaryOnly": true,
+  "waitForToolResponse": true,
+  "eventsByThread": {
+    "replay-thread-1": [
+      {
+        "id": "boundary-tool-rpc-1",
+        "method": "item/tool/call",
+        "params": {
+          "threadId": "$threadId",
+          "turnId": "$turnId",
+          "callId": "boundary-tool-call-1",
+          "tool": "orchestration_spawn",
+          "arguments": {
+            "request_id": "batch-1",
+            "agents": [
+              {
+                "name": "first",
+                "prompt": "Inspect first",
+                "role": "reviewer"
+              },
+              {
+                "name": "second",
+                "prompt": "Inspect second",
+                "role": "reviewer"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "method": "turn/completed",
+        "params": {
+          "threadId": "$threadId",
+          "turn": { "id": "$turnId", "status": "completed" }
+        }
+      }
+    ]
+  },
+  "events": [
+    {
+      "method": "turn/completed",
+      "params": {
+        "threadId": "$threadId",
+        "turn": { "id": "$turnId", "status": "completed" }
+      }
+    }
+  ]
+}
