@@ -39,6 +39,7 @@ test("mutation projections propagate between pages sharing one browser context @
   const pages = [await context.newPage(), await context.newPage()];
   const pulls = [[], []];
   const countPulls = [0, 0];
+  const pullByRequest = [new WeakMap(), new WeakMap()];
   const waitFor = async (predicate, message, timeoutMs = 10000) => {
     const end = Date.now() + timeoutMs;
     while (Date.now() < end) {
@@ -57,10 +58,14 @@ test("mutation projections propagate between pages sharing one browser context @
           url.searchParams.get("scope") === "state:entities:v1"
         ) {
           countPulls[index]++;
-          pulls[index].push({
+          const pull = {
             after: url.searchParams.get("after"),
+            reset: url.searchParams.has("reset"),
+            fresh: url.searchParams.has("fresh"),
             startedAt: Date.now(),
-          });
+          };
+          pulls[index].push(pull);
+          pullByRequest[index].set(request, pull);
         }
       });
       page.on("response", async (response) => {
@@ -72,8 +77,12 @@ test("mutation projections propagate between pages sharing one browser context @
           return;
         try {
           const body = await response.json();
-          const pull = pulls[index].at(-1);
-          if (pull) pull.documents = body.documents || [];
+          const pull = pullByRequest[index].get(response.request());
+          if (pull) {
+            pull.documents = body.documents || [];
+            pull.checkpoint = body.checkpoint?.seq;
+            pull.maxSeq = body.maxSeq;
+          }
         } catch {}
       });
       await page.addInitScript(() => {
@@ -384,9 +393,18 @@ test("mutation projections propagate between pages sharing one browser context @
     );
     assert.ok(
       pulls.every((tabPulls) =>
-        tabPulls.every((pull) => pull.documents?.length > 0),
+        tabPulls
+          .filter((pull) => pull.checkpoint !== undefined)
+          .every((pull) => {
+            const bootstrap =
+              Number(pull.after) === 0 || pull.reset || pull.fresh;
+            return (
+              (pull.documents?.length || 0) > 0 ||
+              (!bootstrap && pull.checkpoint === Number(pull.after))
+            );
+          }),
       ),
-      "every state pull returns rows",
+      `every bootstrap pull returns rows, and an empty incremental pull is already caught up: ${JSON.stringify(pulls)}`,
     );
   } finally {
     await context.close();
