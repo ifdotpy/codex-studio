@@ -645,7 +645,7 @@ class ToolRequestRecord(TypedDict):
     agent: NotRequired[str]
     accountKey: NotRequired[str]
     callId: NotRequired[str]
-    connectionId: NotRequired[str]
+    connectionId: NotRequired[str | None]
     created: NotRequired[float]
     epoch: NotRequired[int]
     outcome: NotRequired[str]

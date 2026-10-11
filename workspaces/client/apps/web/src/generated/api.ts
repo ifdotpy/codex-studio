@@ -2727,6 +2727,43 @@ export interface components {
      * @description The legacy discover operation accepts an empty JSON object or no body.
      */
     AccountDiscoverRequest: Record<string, never>;
+    /** AccountHistoryRecordResponse */
+    AccountHistoryRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Accountkey */
+      accountKey?: string;
+      /** At */
+      at?: number;
+      /** Contextrepairid */
+      contextRepairId?: string;
+      portableHistory?: components["schemas"]["PortableHistoryRecordResponse"];
+      /** Provider */
+      provider?: string | null;
+      providerOptionsDiscarded?: components["schemas"]["JsonObjectResponse"];
+      /** Reason */
+      reason?: string;
+      /** Recoveryid */
+      recoveryId?: string;
+      settingsDiscarded?: components["schemas"]["JsonObjectResponse"];
+      sourceHistoryMissing?: components["schemas"]["JsonObjectResponse"];
+      /** Targetaccountkey */
+      targetAccountKey?: string;
+      /** Targetprovider */
+      targetProvider?: string | null;
+      /** Targetthreadid */
+      targetThreadId?: string;
+      /** Threadid */
+      threadId?: string | null;
+      /** Toolrefreshid */
+      toolRefreshId?: string;
+      /** Transferid */
+      transferId?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** AccountKeyRequest */
     AccountKeyRequest: {
       /** Account Key */
@@ -2856,6 +2893,21 @@ export interface components {
       /** Reason */
       reason?: string | null;
     };
+    /** AccountTransferBlockedRecordResponse */
+    AccountTransferBlockedRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Id */
+      id: string;
+      /** Name */
+      name?: string | null;
+      /** Reason */
+      reason?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** AccountTransferInterruptedDto */
     AccountTransferInterruptedDto: {
       /** Id */
@@ -2864,6 +2916,21 @@ export interface components {
       name?: string | null;
       /** Reason */
       reason?: string | null;
+    };
+    /** AccountTransferInterruptedRecordResponse */
+    AccountTransferInterruptedRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Id */
+      id: string;
+      /** Name */
+      name?: string | null;
+      /** Reason */
+      reason?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** AccountTransferLeftOnSourceDto */
     AccountTransferLeftOnSourceDto: {
@@ -2874,6 +2941,23 @@ export interface components {
       provider?: components["schemas"]["AgentProvider"] | null;
       /** Reason */
       reason?: string | null;
+    };
+    /** AccountTransferLeftOnSourceRecordResponse */
+    AccountTransferLeftOnSourceRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Id */
+      id: string;
+      /** Name */
+      name?: string | null;
+      /** Provider */
+      provider?: ("codex" | "claude") | null;
+      /** Reason */
+      reason?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /**
      * AccountTransferScope
@@ -2931,6 +3015,59 @@ export interface components {
       /** Waitingcount */
       waitingCount?: number | null;
     };
+    /** AccountTransferSummaryRecordResponse */
+    AccountTransferSummaryRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Blocked */
+      blocked?:
+        | components["schemas"]["AccountTransferBlockedRecordResponse"][]
+        | null;
+      /** Canfinishhistory */
+      canFinishHistory?: boolean | null;
+      /** Canretry */
+      canRetry?: boolean | null;
+      /** Completed */
+      completed?: number | null;
+      /** Finishhistory */
+      finishHistory?: boolean | null;
+      /** Id */
+      id?: string | null;
+      /** Interrupted */
+      interrupted?:
+        | components["schemas"]["AccountTransferInterruptedRecordResponse"][]
+        | null;
+      /** Leftonsource */
+      leftOnSource?:
+        | components["schemas"]["AccountTransferLeftOnSourceRecordResponse"][]
+        | null;
+      /** Moved */
+      moved?: number | null;
+      /** Movingnow */
+      movingNow?: number | null;
+      /** Nativehistorypending */
+      nativeHistoryPending?: number | null;
+      /** Needsattention */
+      needsAttention?: boolean | null;
+      /** Scope */
+      scope?: ("team" | "subagents") | null;
+      /** Status */
+      status?: ("pending" | "completed" | "cancelled") | null;
+      /** Targetaccountkey */
+      targetAccountKey?: string | null;
+      /** Total */
+      total?: number | null;
+      /** Updated */
+      updated?: number | null;
+      /** Waiting */
+      waiting?: string | null;
+      /** Waitingcount */
+      waitingCount?: number | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** ActionContext */
     ActionContext: {
       /** Accountkey */
@@ -2949,6 +3086,21 @@ export interface components {
       /** Type */
       type: string;
     };
+    /** ActiveToolRecordResponse */
+    ActiveToolRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Id */
+      id: string;
+      /** Name */
+      name: string;
+      /** Type */
+      type: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** AgentActivity */
     AgentActivity: {
       /** At */
@@ -2957,6 +3109,137 @@ export interface components {
       phase?: string | null;
       /** Tools */
       tools?: components["schemas"]["ActiveToolDto"][] | null;
+    };
+    /** AgentActivityRecordResponse */
+    AgentActivityRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** At */
+      at?: number;
+      /** Phase */
+      phase?: string;
+      /** Tools */
+      tools?: components["schemas"]["ActiveToolRecordResponse"][];
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** AgentArchiveRecordResponse */
+    AgentArchiveRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** At */
+      at?: number;
+      /** By */
+      by?: string;
+      /** Cleanuppending */
+      cleanupPending?: boolean;
+      /** Epoch */
+      epoch?: number;
+      /** Reason */
+      reason?: string;
+      /** Unassignedwork */
+      unassignedWork?: (
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null
+      )[];
+      /** Unknowntoolrequests */
+      unknownToolRequests?: (
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null
+      )[];
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** AgentDraftRecordResponse */
+    AgentDraftRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Assets */
+      assets?: (
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null
+      )[];
+      /** Prefixtext */
+      prefixText?: string;
+      /** Text */
+      text?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /**
      * AgentEntityCapacityRetryDto
@@ -3244,6 +3527,26 @@ export interface components {
       /** Updatedat */
       updatedAt: number;
     };
+    /** AgentInboxEntry */
+    AgentInboxEntry: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Agent */
+      agent: string;
+      /** Id */
+      id: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "agent";
+      /** Text */
+      text: string;
+      /** Title */
+      title: string;
+    };
     /**
      * AgentMode
      * @enum {string}
@@ -3267,6 +3570,28 @@ export interface components {
       phase?: ("safety" | "retrying" | "auth") | null;
       /** Turnid */
       turnId?: string | null;
+    };
+    /** AgentNativeStatusRecordResponse */
+    AgentNativeStatusRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** At */
+      at?: number;
+      /** Error */
+      error?: string | components["schemas"]["JsonObjectResponse"] | null;
+      /** Message */
+      message?: string;
+      /**
+       * Phase
+       * @enum {string}
+       */
+      phase?: "safety" | "retrying" | "auth";
+      /** Turnid */
+      turnId?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /**
      * AgentNativeStatusValue
@@ -3297,6 +3622,564 @@ export interface components {
      * @enum {string}
      */
     AgentProvider: "codex" | "claude";
+    /** AgentRecordResponse */
+    AgentRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Accounthistory */
+      accountHistory?: components["schemas"]["AccountHistoryRecordResponse"][];
+      /** Accountid */
+      accountId?: string;
+      /** Accountkey */
+      accountKey?: string;
+      accountTransfer?:
+        | components["schemas"]["AccountTransferSummaryRecordResponse"]
+        | null;
+      /** Accounttransferid */
+      accountTransferId?: string;
+      /** Accounttransferstate */
+      accountTransferState?:
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null;
+      /** Activetools */
+      activeTools?: components["schemas"]["ActiveToolRecordResponse"][];
+      activity?: components["schemas"]["AgentActivityRecordResponse"] | null;
+      /** Activityphase */
+      activityPhase?: string;
+      agentArchive?: components["schemas"]["AgentArchiveRecordResponse"];
+      /**
+       * Agentmode
+       * @enum {string}
+       */
+      agentMode?: "multi" | "single";
+      /** Agentmodechangedat */
+      agentModeChangedAt?: number;
+      /** Agentmodechangedby */
+      agentModeChangedBy?: string;
+      /** Agentmoderevision */
+      agentModeRevision?: number;
+      /** Agentmodesupported */
+      agentModeSupported?: boolean;
+      /** Approvalpolicy */
+      approvalPolicy?: string;
+      /** Archived */
+      archived?: boolean;
+      /** Authresumeattempt */
+      authResumeAttempt?: number;
+      /** Autowake */
+      autoWake?: boolean;
+      /** Branch */
+      branch?: string;
+      browserRecovery?: components["schemas"]["BrowserRecoveryRecordResponse"];
+      budgetActionWait?: components["schemas"]["BudgetWaitRecordResponse"];
+      /** Budgetblocked */
+      budgetBlocked?: string;
+      budgetStartWait?: components["schemas"]["BudgetWaitRecordResponse"];
+      cancelledPark?: components["schemas"]["ParkReceiptRecordResponse"];
+      capacityRetry?: components["schemas"]["CapacityRetryRecordResponse"];
+      /** Capacityretrycount */
+      capacityRetryCount?: number;
+      /** Checkpointerror */
+      checkpointError?: string | null;
+      /** Checkpointhistoryhead */
+      checkpointHistoryHead?: string;
+      claudeInputRequest?: components["schemas"]["JsonObjectResponse"];
+      claudeOptions?: components["schemas"]["JsonObjectResponse"];
+      claudePreInputRetry?: components["schemas"]["ClaudePreInputRetryRecordResponse"];
+      cleanedImageWorkspace?: components["schemas"]["CleanedImageWorkspaceRecordResponse"];
+      cleanedWorktree?: components["schemas"]["WorktreeCleanupRecordResponse"];
+      /** Compactions */
+      compactions?: number;
+      /** Compactionsobservedonly */
+      compactionsObservedOnly?: boolean;
+      /** Complaintmisses */
+      complaintMisses?: number;
+      /** Complaintspresented */
+      complaintsPresented?: string[];
+      /** Concurrency */
+      concurrency?: number;
+      connectionCheck?: components["schemas"]["ConnectionCheckRecordResponse"];
+      connectionRecovery?: components["schemas"]["ConnectionRecoveryRecordResponse"];
+      contextRepair?: components["schemas"]["ContextRepairRecordResponse"];
+      /** Contextrepairhistory */
+      contextRepairHistory?: (
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null
+      )[];
+      contextRepairWait?: components["schemas"]["ContextRepairWaitRecordResponse"];
+      contextUsage?: components["schemas"]["ContextUsageRecordResponse"] | null;
+      convertedFromLead?: components["schemas"]["ConvertedFromLeadRecordResponse"];
+      /** Created */
+      created?: number;
+      /** Cwd */
+      cwd?: string;
+      /** Cyberaccessprogram */
+      cyberAccessProgram?: string | null;
+      /** Daybreakenabled */
+      daybreakEnabled?: boolean | null;
+      /** Deletedat */
+      deletedAt?: number;
+      deliveredMode?: components["schemas"]["DeliveredModeRecordResponse"];
+      /** Deliveredmodeversion */
+      deliveredModeVersion?: number;
+      disconnectRecovery?: components["schemas"]["DisconnectRecoveryRecordResponse"];
+      draft?: components["schemas"]["AgentDraftRecordResponse"];
+      /** Effort */
+      effort?: string | null;
+      emptyTransferRecovery?: components["schemas"]["EmptyTransferRecoveryRecordResponse"];
+      /** Environment */
+      environment?: ("host" | "linux") | null;
+      /** Epoch */
+      epoch: number;
+      /** Error */
+      error?: string | components["schemas"]["JsonObjectResponse"] | null;
+      /** Events */
+      events?: number;
+      /** Executionarchives */
+      executionArchives?: components["schemas"]["JsonObjectResponse"][];
+      /**
+       * Executionmode
+       * @enum {string}
+       */
+      executionMode?: "vm" | "native";
+      executionMove?: components["schemas"]["JsonObjectResponse"];
+      /** Executionroutealiases */
+      executionRouteAliases?: components["schemas"]["JsonObjectResponse"][];
+      /** Executionsettingsaccountkey */
+      executionSettingsAccountKey?: string;
+      /** Fastmode */
+      fastMode?: boolean | null;
+      /** Forkedfrom */
+      forkedFrom?: string;
+      frozenNativeParams?: components["schemas"]["JsonObjectResponse"];
+      /** Hostprojectpath */
+      hostProjectPath?: string;
+      /** Id */
+      id: string;
+      /** Imageworkspace */
+      imageWorkspace?: boolean;
+      /** Imageworkspacebaseerror */
+      imageWorkspaceBaseError?: string;
+      /** Imageworkspacebaseref */
+      imageWorkspaceBaseRef?: string | null;
+      /** Imageworkspacebaserepo */
+      imageWorkspaceBaseRepo?: string | null;
+      imageWorkspaceCleanupResult?: components["schemas"]["ImageWorkspaceCleanupResultRecordResponse"];
+      imageWorkspaceCollect?: components["schemas"]["ImageWorkspaceCollectResultRecordResponse"];
+      /** Imageworkspacecreatedat */
+      imageWorkspaceCreatedAt?: number | null;
+      /** Imageworkspaceerror */
+      imageWorkspaceError?: string | null;
+      /** Imageworkspacehandofftext */
+      imageWorkspaceHandoffText?: string | null;
+      /** Imageworkspacehasgit */
+      imageWorkspaceHasGit?: boolean;
+      /** Imageworkspacemount */
+      imageWorkspaceMount?: string | null;
+      /** Imageworkspacenoticeerror */
+      imageWorkspaceNoticeError?: string | null;
+      /** Imageworkspacenoticeid */
+      imageWorkspaceNoticeId?: string | null;
+      /** Imageworkspacenoticesent */
+      imageWorkspaceNoticeSent?: string | null;
+      /** Imageworkspacenoticetext */
+      imageWorkspaceNoticeText?: string | null;
+      /** Imageworkspacephase */
+      imageWorkspacePhase?:
+        | ("read_only" | "ready" | "fallback" | "archived")
+        | null;
+      /** Imageworkspaceready */
+      imageWorkspaceReady?: boolean;
+      /** Imageworkspacerepo */
+      imageWorkspaceRepo?: string | null;
+      /** Imageworkspacesnapshotcommit */
+      imageWorkspaceSnapshotCommit?: string | null;
+      /** Imageworkspacesubpath */
+      imageWorkspaceSubpath?: string | null;
+      /** Importedfrom */
+      importedFrom?: string;
+      /** Inflight */
+      inFlight?: boolean;
+      /** Islead */
+      isLead?: boolean;
+      /** Lastanswer */
+      lastAnswer?: string;
+      lastBudgetWait?: components["schemas"]["BudgetWaitRecordResponse"];
+      /** Lastcompletedturn */
+      lastCompletedTurn?: string;
+      /** Lastcompletedturnerror */
+      lastCompletedTurnError?:
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null;
+      /** Lastcompletedturnstatus */
+      lastCompletedTurnStatus?:
+        | (
+            | "unknown"
+            | "idle"
+            | "queued"
+            | "starting"
+            | "running"
+            | "waiting"
+            | "approval"
+            | "completed"
+            | "interrupted"
+            | "failed"
+            | "blocked"
+            | "paused"
+            | "parked"
+            | "abandoned"
+            | "capacity-retry"
+          )
+        | null;
+      lastContextRepairCheck?: components["schemas"]["JsonObjectResponse"];
+      lastContextRepairWait?: components["schemas"]["JsonObjectResponse"];
+      /** Lastevent */
+      lastEvent?: string;
+      /** Lastupdated */
+      lastUpdated?: number;
+      lastWorkspaceWait?: components["schemas"]["WorkspaceWaitRecordResponse"];
+      /** Layrbasestate */
+      layrBaseState?: string;
+      /** Layrerror */
+      layrError?: string;
+      /** Layrhome */
+      layrHome?: string;
+      /** Layrline */
+      layrLine?: string;
+      /** Layrowner */
+      layrOwner?: string;
+      /** Layrprojectid */
+      layrProjectId?: string;
+      /** Layrready */
+      layrReady?: boolean;
+      /** Layrstateid */
+      layrStateId?: string;
+      /** Layrsubpath */
+      layrSubpath?: string;
+      /** Layrturnretryat */
+      layrTurnRetryAt?: number;
+      /** Layrturnsaves */
+      layrTurnSaves?: {
+        [key: string]: components["schemas"]["JsonObjectResponse"];
+      };
+      lazyAccountTransfer?: components["schemas"]["LazyAccountTransferRecordResponse"];
+      liveSteerAttempt?: components["schemas"]["JsonObjectResponse"];
+      /** Livesteerrejectedturnid */
+      liveSteerRejectedTurnId?: string;
+      /** Manualname */
+      manualName?: boolean;
+      /** Maxagents */
+      maxAgents?: number;
+      /** Maxagentsexplicit */
+      maxAgentsExplicit?: boolean;
+      /** Model */
+      model?: string | null;
+      movedFrom?: components["schemas"]["MovePointerRecordResponse"] | null;
+      movedTo?: components["schemas"]["MovePointerRecordResponse"] | null;
+      /** Moveimportpending */
+      moveImportPending?: boolean;
+      /** Movereviewpending */
+      moveReviewPending?: boolean;
+      /** Name */
+      name?: string;
+      /** Nativeeffort */
+      nativeEffort?: string | null;
+      /** Nativefailurehold */
+      nativeFailureHold?: boolean | components["schemas"]["JsonObjectResponse"];
+      /** Nativelimiterrorat */
+      nativeLimitErrorAt?: number;
+      /** Nativename */
+      nativeName?: string;
+      nativeNameFailure?: components["schemas"]["NativeNameFailureRecordResponse"];
+      nativeNameSynced?:
+        | components["schemas"]["NativeNameSyncedRecordResponse"]
+        | null;
+      /** Nativenamesyncerror */
+      nativeNameSyncError?: string;
+      nativeOperation?: components["schemas"]["JsonObjectResponse"];
+      nativeRelease?: components["schemas"]["NativeReleaseRecordResponse"];
+      /** Nativeresponseturn */
+      nativeResponseTurn?: string;
+      nativeReview?: components["schemas"]["NativeReviewRecordResponse"];
+      /** Nativeroleguidance */
+      nativeRoleGuidance?: string;
+      nativeSafetyBuffering?: components["schemas"]["NativeSafetyBufferingRecordResponse"];
+      nativeSafetyRetry?: components["schemas"]["NativeSafetyRetryViewRecordResponse"];
+      /** Nativestatus */
+      nativeStatus?:
+        | components["schemas"]["AgentNativeStatusRecordResponse"]
+        | ("idle" | "notLoaded" | "unsubscribed" | "notSubscribed")
+        | null;
+      /** Nativeteleporttool */
+      nativeTeleportTool?: string;
+      nativeThreadBlock?: components["schemas"]["NativeThreadBlockRecordResponse"];
+      nativeToolCatalog?: components["schemas"]["JsonObjectResponse"];
+      /** Nativetoolrefreshid */
+      nativeToolRefreshId?: string;
+      /**
+       * Nativetoolsource
+       * @enum {string}
+       */
+      nativeToolSource?: "legacy" | "current";
+      nativeToolUpdate?: components["schemas"]["NativeToolUpdateRecordResponse"];
+      nativeTurnError?: components["schemas"]["NativeTurnErrorRecordResponse"];
+      /** Needsattention */
+      needsAttention?: boolean;
+      /** Needstitle */
+      needsTitle?: boolean;
+      /** Parentid */
+      parentId?: string | null;
+      /** Parkafterturn */
+      parkAfterTurn?: boolean;
+      /** Parkedevent */
+      parkedEvent?: string;
+      parkReceipt?: components["schemas"]["ParkReceiptRecordResponse"];
+      /** Parksequence */
+      parkSequence?: number;
+      pendingSettings?: components["schemas"]["PendingSettingsRecordResponse"];
+      /** Pendingsettingsaccountkey */
+      pendingSettingsAccountKey?: string | null;
+      /** Pinned */
+      pinned?: boolean;
+      portableHistory?: components["schemas"]["PortableHistoryRecordResponse"];
+      /** Prepareattempt */
+      prepareAttempt?: string;
+      preparedContext?: components["schemas"]["PreparedContextRecordResponse"];
+      profile?: components["schemas"]["JsonObjectResponse"] | null;
+      /** Profileid */
+      profileId?: string | null;
+      /** Profileinstructions */
+      profileInstructions?: string;
+      /** Project */
+      project?: string;
+      /** Projectfolder */
+      projectFolder?: string;
+      /** Projectfolderrevision */
+      projectFolderRevision?: number;
+      /** Projectid */
+      projectId?: string | null;
+      /** Projectserverid */
+      projectServerId?: string | null;
+      /** Prompt */
+      prompt?: string;
+      /**
+       * Provider
+       * @enum {string}
+       */
+      provider?: "codex" | "claude";
+      /** Queuemutationrevision */
+      queueMutationRevision?: number;
+      queueNotice?: components["schemas"]["JsonObjectResponse"];
+      /** Quickcreate */
+      quickCreate?: boolean;
+      /** Quickcreaterequest */
+      quickCreateRequest?: string | null;
+      readState?: components["schemas"]["ReadStateRecordResponse"];
+      remoteAdmission?: components["schemas"]["JsonObjectResponse"];
+      /** Remoteadmissionrequest */
+      remoteAdmissionRequest?: string;
+      remoteAnchor?: components["schemas"]["RemoteParentLinkRecordResponse"];
+      /** Remotecontrolepoch */
+      remoteControlEpoch?: number;
+      /** Remoteepoch */
+      remoteEpoch?: number;
+      /** Remotelastadmission */
+      remoteLastAdmission?: string;
+      remoteOrigin?: components["schemas"]["RemoteParentLinkRecordResponse"];
+      /** Remotereservation */
+      remoteReservation?: boolean;
+      /** Remotestatesequence */
+      remoteStateSequence?: number;
+      /** Remotestoprequest */
+      remoteStopRequest?: string;
+      remoteWorker?: components["schemas"]["RemoteWorkerLinkRecordResponse"];
+      restartRecovery?: components["schemas"]["RestartRecoveryRecordResponse"];
+      /** Restoredcheckpoint */
+      restoredCheckpoint?: string;
+      /** Reviewarchiveattempts */
+      reviewArchiveAttempts?: number;
+      /** Reviewarchiveerror */
+      reviewArchiveError?: string | null;
+      /** Reviewarchivenextat */
+      reviewArchiveNextAt?: number;
+      /** Reviewarchivescheduled */
+      reviewArchiveScheduled?: string;
+      reviewDefaults?: components["schemas"]["ReviewDefaultsRecordResponse"];
+      /**
+       * Role
+       * @enum {string}
+       */
+      role?:
+        | "lead"
+        | "worker"
+        | "orchestrator"
+        | "agent"
+        | "implementer"
+        | "reviewer";
+      /** Rootid */
+      rootId: string;
+      sandbox?: components["schemas"]["JsonObjectResponse"] | null;
+      /** Serverid */
+      serverId?: string | null;
+      /** Sharedroomid */
+      sharedRoomId?: string;
+      /** Sourcemessage */
+      sourceMessage?: string;
+      startAttempt?: components["schemas"]["StartAttemptRecordResponse"];
+      startOutcomeHold?: components["schemas"]["JsonObjectResponse"];
+      /**
+       * Status
+       * @enum {string}
+       */
+      status:
+        | "unknown"
+        | "idle"
+        | "queued"
+        | "starting"
+        | "running"
+        | "waiting"
+        | "approval"
+        | "completed"
+        | "interrupted"
+        | "failed"
+        | "blocked"
+        | "paused"
+        | "parked"
+        | "abandoned"
+        | "capacity-retry";
+      /** Steerrejectedturnid */
+      steerRejectedTurnId?: string;
+      /** Subagentconcurrencyversion */
+      subagentConcurrencyVersion?: number;
+      supervisorRestore?: components["schemas"]["JsonObjectResponse"];
+      /** Tail */
+      tail?: string;
+      /** Threadid */
+      threadId?: string | null;
+      /** Tokenbudget */
+      tokenBudget?: number | null;
+      /** Tokensused */
+      tokensUsed?: number;
+      /** Tokenusageaccounting */
+      tokenUsageAccounting?: string;
+      /** Turnepoch */
+      turnEpoch?: number;
+      /** Turnid */
+      turnId?: string | null;
+      turnRecovery?: components["schemas"]["TurnRecoveryRecordResponse"];
+      /** Updated */
+      updated?: number;
+      usageResume?: components["schemas"]["UsageResumeRecordResponse"];
+      /** Usageresumeenabled */
+      usageResumeEnabled?: boolean;
+      /** Workerbasebehindmain */
+      workerBaseBehindMain?: number | null;
+      /** Workerbasecommit */
+      workerBaseCommit?: string | null;
+      /** Workerbasemainref */
+      workerBaseMainRef?: string | null;
+      /** Workerbaseref */
+      workerBaseRef?: string | null;
+      /** Workerbasestatus */
+      workerBaseStatus?: string;
+      workerDefaults?: components["schemas"]["WorkerDefaultsRecordResponse"];
+      /** Workspacebackend */
+      workspaceBackend?: ("asif" | "vm") | null;
+      /** Workspaceingit */
+      workspaceInGit?: boolean;
+      /** Workspacemode */
+      workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
+      /** Workspacemodeexplicit */
+      workspaceModeExplicit?: boolean;
+      /** Workspaceoperation */
+      workspaceOperation?: string | null;
+      /** Workspacereservationid */
+      workspaceReservationId?: string;
+      /** Worktree */
+      worktree?: boolean;
+      worktreeCleanup?: components["schemas"]["WorktreeCleanupRecordResponse"];
+      /** Worktreepreparation */
+      worktreePreparation?: ("waiting" | "preparing") | null;
+      /** Worktreeready */
+      worktreeReady?: boolean;
+      /** Worktreewarning */
+      worktreeWarning?: string | null;
+      /** Yolomode */
+      yoloMode?: boolean;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** AgentRequest */
     AgentRequest: {
       /** Syncentities */
@@ -3642,6 +4525,29 @@ export interface components {
       | "parked"
       | "abandoned"
       | "capacity-retry";
+    /** AmbiguousToolRequestResponse */
+    AmbiguousToolRequestResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Id */
+      id: string;
+      /** Message */
+      message: string;
+      /**
+       * Outcome
+       * @constant
+       */
+      outcome: "unknown";
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      stage: "ambiguous";
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** AnalyticsAgentRecord */
     AnalyticsAgentRecord: {
       /** Accounthistory */
@@ -5112,6 +6018,97 @@ export interface components {
       /** Yolomode */
       yoloMode?: boolean | null;
     };
+    /** BrowserRecoveryRecordResponse */
+    BrowserRecoveryRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Accountkey */
+      accountKey?: string;
+      /** At */
+      at?: number;
+      /** Connectionid */
+      connectionId?: string | null;
+      /** Createdat */
+      createdAt?: number;
+      /** Epoch */
+      epoch?: number;
+      /** Error */
+      error?:
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null;
+      /** Failedat */
+      failedAt?: number;
+      /** Id */
+      id?: string;
+      /** Itemid */
+      itemId?: string;
+      nativeRequest?: components["schemas"]["BrowserRecoveryRequestRecordResponse"];
+      /** Outcome */
+      outcome?: string;
+      /** Reason */
+      reason?: string;
+      /** Requestid */
+      requestId?: string;
+      /** Resumedat */
+      resumedAt?: number;
+      /** Stage */
+      stage?: string;
+      /** Startedat */
+      startedAt?: number;
+      /** Threadid */
+      threadId?: string | null;
+      /** Turnid */
+      turnId?: string;
+      /** Verificationitem */
+      verificationItem?: string;
+      /** Verifiedat */
+      verifiedAt?: number;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** BrowserRecoveryRequestRecordResponse */
+    BrowserRecoveryRequestRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Id */
+      id?: string;
+      /** Method */
+      method?: string;
+      params?: components["schemas"]["JsonObjectResponse"];
+      /** Receivedat */
+      receivedAt?: number;
+      /** Submittedat */
+      submittedAt?: number;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** BrowserStatus */
     BrowserStatus: {
       /** Enabled */
@@ -5120,6 +6117,93 @@ export interface components {
       reason?: string | null;
       /** Skillroot */
       skillRoot?: string | null;
+    };
+    /** BudgetWaitRecordResponse */
+    BudgetWaitRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Accountkey */
+      accountKey?: string;
+      /** Action */
+      action?: boolean | string | null;
+      actionIdentity?: components["schemas"]["StartActionIdentityRecordResponse"];
+      /** Actionrequestid */
+      actionRequestId?: string;
+      /** Admission */
+      admission?:
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null;
+      /** Agentid */
+      agentId?: string;
+      /** At */
+      at?: number;
+      /** Attemptid */
+      attemptId?: string;
+      /** Epoch */
+      epoch?: number;
+      /** Error */
+      error?: string;
+      /** Events */
+      events?: (
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null
+      )[];
+      /** Finishedat */
+      finishedAt?: number;
+      /** Status */
+      status?: string;
+      /** Threadid */
+      threadId?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** CapabilitiesResponse */
     CapabilitiesResponse: {
@@ -5168,6 +6252,50 @@ export interface components {
       | "responseStreamConnectionFailed"
       | "responseStreamDisconnected"
       | "responseTooManyFailedAttempts";
+    /** CapacityRetryRecordResponse */
+    CapacityRetryRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Acceptedturnid */
+      acceptedTurnId?: string;
+      /** Accountkey */
+      accountKey?: string;
+      /** Attempt */
+      attempt?: number;
+      /** Cause */
+      cause?: string;
+      /** Claimedat */
+      claimedAt?: number;
+      /** Cwd */
+      cwd?: string;
+      /** Dueat */
+      dueAt?: number | null;
+      /** Epoch */
+      epoch?: number;
+      /** Id */
+      id?: string;
+      /** Maxattempts */
+      maxAttempts?: number;
+      /** Reason */
+      reason?: string | null;
+      settings?: components["schemas"]["JsonObjectResponse"];
+      /** Status */
+      status?: string;
+      /** Taskclaims */
+      taskClaims?: string[];
+      /** Threadid */
+      threadId?: string;
+      /** Turnid */
+      turnId?: string;
+      /** Updatedat */
+      updatedAt?: number;
+      /** Waits */
+      waits?: number;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** CapacityRetryRequest */
     CapacityRetryRequest: {
       action: components["schemas"]["RetryAction"];
@@ -5654,6 +6782,43 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
+    /** ClaudePreInputRetryRecordResponse */
+    ClaudePreInputRetryRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Accountkey */
+      accountKey?: string;
+      /** Connectionid */
+      connectionId?: string | null;
+      /** Epoch */
+      epoch?: number;
+      /** Events */
+      events?: string[];
+      /** Id */
+      id?: string;
+      /** Nativeoperationid */
+      nativeOperationId?: string;
+      /**
+       * Outcome
+       * @constant
+       */
+      outcome?: "not_applied";
+      /** Retry */
+      retry?: boolean;
+      /** Submitted */
+      submitted?: boolean;
+      supervisorIdentity?:
+        | components["schemas"]["SupervisorIdentityRecordResponse"]
+        | null;
+      /** Threadid */
+      threadId?: string;
+      /** Turnid */
+      turnId?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** ClaudeProfileRequest */
     ClaudeProfileRequest: {
       /** Account Key */
@@ -5823,6 +6988,42 @@ export interface components {
       /** Text */
       text: string;
     };
+    /** CleanedImageWorkspaceRecordResponse */
+    CleanedImageWorkspaceRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Branch */
+      branch?: string;
+      /** Bytes */
+      bytes?: number | null;
+      collect?: components["schemas"]["ImageWorkspaceCollectResultRecordResponse"];
+      /** Createdat */
+      createdAt?: number | null;
+      /** Freedbytes */
+      freedBytes?: number;
+      /** Head */
+      head?: string;
+      /** Mount */
+      mount?: string | null;
+      /** Path */
+      path?: string | null;
+      /** Phase */
+      phase?: string;
+      /** Relative */
+      relative?: string;
+      /** Repo */
+      repo?: string;
+      /** Restoreheads */
+      restoreHeads?: {
+        [key: string]: string;
+      };
+      /** Source */
+      source?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /**
      * CodexLoginReceipt
      * @description Known fields; AccountStore.login_receipts() passes persisted receipts through.
@@ -5960,6 +7161,95 @@ export interface components {
       /** Version */
       version?: number | null;
     };
+    /** ComplaintInboxEntry */
+    ComplaintInboxEntry: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Agent */
+      agent: string;
+      complaint: components["schemas"]["ComplaintRecordResponse"];
+      /** Id */
+      id: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "complaint";
+      /** Text */
+      text: string;
+      /** Title */
+      title: string;
+    };
+    /** ComplaintRecordResponse */
+    ComplaintRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Author */
+      author: string;
+      /** Created */
+      created: number;
+      /** Id */
+      id: string;
+      /** Leadid */
+      leadId: string;
+      /** Readat */
+      readAt?: number | null;
+      /** Recipient */
+      recipient?: string;
+      /** Respondedat */
+      respondedAt?: number;
+      /** Respondedby */
+      respondedBy?: string;
+      /** Response */
+      response?: string;
+      /** Responses */
+      responses?: (
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null
+      )[];
+      /** Sourcetype */
+      sourceType?: string;
+      /**
+       * Status
+       * @enum {string}
+       */
+      status: "open" | "in_progress" | "resolved" | "declined";
+      /** Text */
+      text: string;
+      /** Updated */
+      updated?: number;
+      /** Version */
+      version?: number;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** ComplaintResponseDto */
     ComplaintResponseDto: {
       /** At */
@@ -6049,6 +7339,213 @@ export interface components {
       /** Turnid */
       turnId?: string | null;
     };
+    /** ConnectionCheckRecordResponse */
+    ConnectionCheckRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Accountkey */
+      accountKey?: string;
+      /** At */
+      at: number;
+      /** Epoch */
+      epoch?: number;
+      /** Nativestate */
+      nativeState?: string;
+      /** Previouserror */
+      previousError?: string | null;
+      /** Readerror */
+      readError?: string | null;
+      /** Restartturnstatus */
+      restartTurnStatus?: string;
+      /** Threadid */
+      threadId?: string;
+      /** Turnid */
+      turnId?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** ConnectionRecoveryRecordResponse */
+    ConnectionRecoveryRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** At */
+      at?: number;
+      /** Attemptid */
+      attemptId?: string | null;
+      /** Automatic */
+      automatic?: boolean;
+      /** Completiondelivered */
+      completionDelivered?: boolean;
+      /** Eventids */
+      eventIds?: string[];
+      /** Holdoperations */
+      holdOperations?: string[];
+      /** Outcome */
+      outcome?: string;
+      /** Previouserror */
+      previousError?:
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null;
+      /** Queuedinputpreserved */
+      queuedInputPreserved?: boolean;
+      /** Source */
+      source?: string;
+      supervisor?: components["schemas"]["JsonObjectResponse"];
+      /** Turnid */
+      turnId?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** ContextRepairRecordResponse */
+    ContextRepairRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Agent */
+      agent?: string;
+      /** Checkedeventids */
+      checkedEventIds?: string[];
+      /** Compactions */
+      compactions?: number;
+      /** Connectionid */
+      connectionId?: string;
+      copyCleanup?: components["schemas"]["JsonObjectResponse"];
+      /** Created */
+      created?: number;
+      /** Error */
+      error?:
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null;
+      historicalInputProof?: components["schemas"]["HistoricalInputProofRecordResponse"];
+      /** Historicalinputs */
+      historicalInputs?: (
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null
+      )[];
+      /** Id */
+      id?: string;
+      /** Newthreadid */
+      newThreadId?: string;
+      /** Phase */
+      phase?: string;
+      /** Previousrepairedeventids */
+      previousRepairedEventIds?: string[];
+      /** Repairedeventids */
+      repairedEventIds?: string[];
+      /** Result */
+      result?:
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null;
+      /** Rpcid */
+      rpcId?: string | number;
+      /** Rpcmethod */
+      rpcMethod?: string;
+      settings?: components["schemas"]["JsonObjectResponse"];
+      snapshot?: components["schemas"]["ContextRepairSnapshotRecordResponse"];
+      source?: components["schemas"]["ContextRepairSourceRecordResponse"];
+      sourceCleanup?: components["schemas"]["ContextRepairSourceCleanupRecordResponse"];
+      /** Updated */
+      updated?: number;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** ContextRepairResponse */
     ContextRepairResponse: {
       /** Syncentities */
@@ -6059,6 +7556,258 @@ export interface components {
       id: string;
       repair?: components["schemas"]["JsonValue"] | null;
     };
+    /** ContextRepairSnapshotRecordResponse */
+    ContextRepairSnapshotRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Ancestry */
+      ancestry?: (
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null
+      )[];
+      /** Copybytes */
+      copyBytes?: number;
+      /** Copypath */
+      copyPath?: string;
+      /** Copysha256 */
+      copySha256?: string;
+      /** Eventids */
+      eventIds?: string[];
+      /** Importthreadid */
+      importThreadId?: string;
+      /** Savedbytes */
+      savedBytes?: number;
+      /** Sourcebytes */
+      sourceBytes?: number;
+      /** Sourcefileidentity */
+      sourceFileIdentity?: (
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null
+      )[];
+      /** Sourcepath */
+      sourcePath?: string;
+      /** Sourcesha256 */
+      sourceSha256?: string;
+      /** Terminalcompletedat */
+      terminalCompletedAt?: number | null;
+      /** Terminalturnid */
+      terminalTurnId?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** ContextRepairSourceCleanupRecordResponse */
+    ContextRepairSourceCleanupRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Accountkey */
+      accountKey?: string;
+      /** Connectionid */
+      connectionId?: string;
+      /** Phase */
+      phase?: string;
+      /** Submittedat */
+      submittedAt?: number;
+      /** Threadid */
+      threadId?: string;
+      /** Updatedat */
+      updatedAt?: number;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** ContextRepairSourceRecordResponse */
+    ContextRepairSourceRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Accountkey */
+      accountKey?: string;
+      /** Attemptid */
+      attemptId?: string;
+      /** Epoch */
+      epoch?: number;
+      /** Id */
+      id?: string;
+      /** Threadid */
+      threadId?: string;
+      /** Turnid */
+      turnId?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** ContextRepairWaitRecordResponse */
+    ContextRepairWaitRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Action */
+      action?: string;
+      /** Actionat */
+      actionAt?: number;
+      /** Actionid */
+      actionId?: string;
+      /** At */
+      at?: number;
+      /** Checks */
+      checks?: number;
+      /** Error */
+      error?:
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null;
+      /** Events */
+      events?: (
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null
+      )[];
+      /** Firstat */
+      firstAt?: number;
+      /** Historycheckat */
+      historyCheckAt?: number;
+      /** Historycheckid */
+      historyCheckId?: string;
+      /** Historycheckowner */
+      historyCheckOwner?: string;
+      lastHistoryCheck?: components["schemas"]["JsonObjectResponse"];
+      /** Lasttaskcheckat */
+      lastTaskCheckAt?: number;
+      /** Lasttaskcheckerror */
+      lastTaskCheckError?:
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null;
+      /** Nextcheckat */
+      nextCheckAt?: number;
+      /** Scope */
+      scope?: string;
+      source?: components["schemas"]["ContextRepairSourceRecordResponse"];
+      /** Taskcheckat */
+      taskCheckAt?: number;
+      /** Taskcheckid */
+      taskCheckId?: string;
+      /** Taskcheckowner */
+      taskCheckOwner?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** ContextUsageDto */
     ContextUsageDto: {
       /** At */
@@ -6067,6 +7816,21 @@ export interface components {
       tokens: number | null;
       /** Window */
       window: number | null;
+    };
+    /** ContextUsageRecordResponse */
+    ContextUsageRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** At */
+      at?: number;
+      /** Tokens */
+      tokens: number;
+      /** Window */
+      window: number;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** ConversationRequest */
     ConversationRequest: {
@@ -6116,6 +7880,28 @@ export interface components {
       requestId: string;
       /** Rootid */
       rootId: string;
+    };
+    /** ConvertedFromLeadRecordResponse */
+    ConvertedFromLeadRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** At */
+      at: number;
+      /**
+       * By
+       * @constant
+       */
+      by: "user";
+      /** Oldrootid */
+      oldRootId: string;
+      /** Requestid */
+      requestId: string;
+      /** Rootid */
+      rootId: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** CostBreakdown */
     CostBreakdown: {
@@ -6279,6 +8065,32 @@ export interface components {
       _syncEntitiesAfter?: number | null;
       /** Deleted */
       deleted: string[];
+    };
+    /** DeletedRuleReceipt */
+    DeletedRuleReceipt: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Deleted */
+      deleted: string;
+    };
+    /** DeliveredModeRecordResponse */
+    DeliveredModeRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Epoch */
+      epoch?: (string | number | null)[];
+      /** Revision */
+      revision?: number;
+      /** Text */
+      text?: string | null;
+      /** Version */
+      version?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** DesktopResource */
     DesktopResource: {
@@ -6446,6 +8258,33 @@ export interface components {
       /** Path */
       path: string;
     };
+    /** DisconnectRecoveryRecordResponse */
+    DisconnectRecoveryRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Accountkey */
+      accountKey?: string;
+      /** At */
+      at?: number;
+      /** Autowake */
+      autoWake?: boolean;
+      /** Connectionid */
+      connectionId?: string;
+      /** Epoch */
+      epoch?: number;
+      /** Source */
+      source?: string;
+      startAttempt?: components["schemas"]["StartAttemptRecordResponse"];
+      supervisor?: components["schemas"]["JsonObjectResponse"];
+      /** Threadid */
+      threadId?: string;
+      /** Turnid */
+      turnId?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /**
      * DiscoveredServer
      * @description Stored discovery record; ``ServerDiscovery.servers`` passes it through.
@@ -6568,6 +8407,114 @@ export interface components {
       source?: string | null;
       /** Target */
       target?: string | null;
+    };
+    /** EmptyTransferRecoveryRecordResponse */
+    EmptyTransferRecoveryRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Accountkey */
+      accountKey?: string;
+      /** Agentid */
+      agentId?: string;
+      /** Completedat */
+      completedAt?: number;
+      /** Connectionid */
+      connectionId?: string;
+      /** Created */
+      created?: number;
+      /** Destinationaccountkey */
+      destinationAccountKey?: string;
+      /** Destinationthreadid */
+      destinationThreadId?: string;
+      /** Epoch */
+      epoch?: number;
+      /** Error */
+      error?:
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null;
+      /** Failedinputids */
+      failedInputIds?: string[];
+      /** Id */
+      id?: string;
+      nativeParams?: components["schemas"]["JsonObjectResponse"];
+      /** Phase */
+      phase?: string;
+      report?: components["schemas"]["JsonObjectResponse"];
+      /** Requestid */
+      requestId?: string;
+      settings?: components["schemas"]["JsonObjectResponse"];
+      /** Sourceaccountkey */
+      sourceAccountKey?: string;
+      /** Sourcehistorymissing */
+      sourceHistoryMissing?:
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null;
+      sourceState?: components["schemas"]["LazyAccountTransferSourceRecordResponse"];
+      /** Sourcethreadid */
+      sourceThreadId?: string;
+      /** Startedat */
+      startedAt?: number;
+      /** Submittedat */
+      submittedAt?: number;
+      targetSettings?: components["schemas"]["JsonObjectResponse"];
+      /** Threadid */
+      threadId?: string;
+      /** Transferid */
+      transferId?: string;
+      /** Turnid */
+      turnId?: string;
+      /** Updated */
+      updated?: number;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /**
      * EntityChangeBatch
@@ -7222,6 +9169,26 @@ export interface components {
       /** Size */
       size: number;
     };
+    /** HistoricalInputProofRecordResponse */
+    HistoricalInputProofRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Deliveryoutcome */
+      deliveryOutcome?: string;
+      /** Events */
+      events?: string[];
+      source?: components["schemas"]["ContextRepairSourceRecordResponse"];
+      /** Sourcesha256 */
+      sourceSha256?: string;
+      /** Terminalcompletedat */
+      terminalCompletedAt?: number;
+      /** Terminalturnid */
+      terminalTurnId?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** HostResources */
     HostResources: {
       /** Availablememorybytes */
@@ -7266,6 +9233,100 @@ export interface components {
     IdRequest: {
       /** Id */
       id: string;
+    };
+    /** ImageWorkspaceCleanupResultRecordResponse */
+    ImageWorkspaceCleanupResultRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Bytes */
+      bytes?: number;
+      collect?: components["schemas"]["ImageWorkspaceCollectResultRecordResponse"];
+      /** Freedbytes */
+      freedBytes?: number;
+      /** Reason */
+      reason?: string;
+      /** Restoreheads */
+      restoreHeads?: {
+        [key: string]: string;
+      };
+      /** State */
+      state?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** ImageWorkspaceCollectRepositoryRecordResponse */
+    ImageWorkspaceCollectRepositoryRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Branch */
+      branch?: string;
+      /** Commit */
+      commit?: string;
+      /** Head */
+      head?: string;
+      /** Path */
+      path: string;
+      /** Rawref */
+      rawRef?: string;
+      /** State */
+      state?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** ImageWorkspaceCollectResultRecordResponse */
+    ImageWorkspaceCollectResultRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Branch */
+      branch?: string;
+      /** Commit */
+      commit?: string;
+      /** Conflict */
+      conflict?: string;
+      /** Conflicts */
+      conflicts?: (
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null
+      )[];
+      /** Path */
+      path?: string;
+      /** Rawref */
+      rawRef?: string;
+      /** Repositories */
+      repositories?: components["schemas"]["ImageWorkspaceCollectRepositoryRecordResponse"][];
+      /** State */
+      state?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** ImportListResponse */
     ImportListResponse: {
@@ -7325,8 +9386,143 @@ export interface components {
        */
       status: "open" | "used";
     };
+    JsonObjectResponse: {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** JsonValue */
     JsonValue: JsonValue;
+    /** LazyAccountTransferRecordResponse */
+    LazyAccountTransferRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Id */
+      id?: string;
+      /** Sourceaccountkey */
+      sourceAccountKey?: string;
+      sourceState?: components["schemas"]["LazyAccountTransferSourceRecordResponse"];
+      /** Sourcethreadid */
+      sourceThreadId?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** LazyAccountTransferSourceRecordResponse */
+    LazyAccountTransferSourceRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      claudeOptions?: components["schemas"]["JsonObjectResponse"] | null;
+      /** Cyberaccessprogram */
+      cyberAccessProgram?:
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null;
+      /** Daybreakenabled */
+      daybreakEnabled?: boolean | null;
+      /** Effort */
+      effort?: string | null;
+      /** Error */
+      error?:
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null;
+      /** Executionsettingsaccountkey */
+      executionSettingsAccountKey?: string;
+      /** Fastmode */
+      fastMode?: boolean | null;
+      /** Model */
+      model?: string | null;
+      /** Nativeeffort */
+      nativeEffort?: string | null;
+      /** Nativefailurehold */
+      nativeFailureHold?:
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null;
+      pendingSettings?:
+        | components["schemas"]["PendingSettingsRecordResponse"]
+        | null;
+      /** Pendingsettingsaccountkey */
+      pendingSettingsAccountKey?: string | null;
+      /**
+       * Provider
+       * @enum {string}
+       */
+      provider?: "codex" | "claude";
+      /** Status */
+      status?: string;
+      workerDefaults?: components["schemas"]["WorkerDefaultsRecordResponse"];
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** LimitResetResponse */
     LimitResetResponse: {
       /** Syncentities */
@@ -7684,6 +9880,29 @@ export interface components {
       /** Statereaderror */
       stateReadError?: string | null;
     };
+    /** MissingToolRequestResponse */
+    MissingToolRequestResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Id */
+      id: string;
+      /** Message */
+      message: string;
+      /**
+       * Outcome
+       * @enum {string}
+       */
+      outcome: "unknown" | "applied" | "not_applied";
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      stage: "not_found";
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** ModelCatalogResponse */
     ModelCatalogResponse: {
       /** Syncentities */
@@ -7778,6 +9997,27 @@ export interface components {
       /** Id */
       id: string;
     };
+    /** MonitorInboxEntry */
+    MonitorInboxEntry: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Agent */
+      agent: string;
+      /** Id */
+      id: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "monitor";
+      monitor: components["schemas"]["MonitorRecordResponse"];
+      /** Text */
+      text: string;
+      /** Title */
+      title: string;
+    };
     /** MonitorInput */
     MonitorInput: {
       /**
@@ -7803,6 +10043,83 @@ export interface components {
        */
       text?: string;
     };
+    /** MonitorRecordResponse */
+    MonitorRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Activityat */
+      activityAt?: number;
+      /** Activitygeneration */
+      activityGeneration?: number;
+      /** Agent */
+      agent?: string;
+      /** Bytes */
+      bytes?: number;
+      /** Command */
+      command?: string;
+      /** Created */
+      created?: number;
+      /** Cwd */
+      cwd?: string;
+      /** Epoch */
+      epoch?: number;
+      /** Error */
+      error?: string | null;
+      /** Exitcode */
+      exitCode?: number | null;
+      /** Finished */
+      finished?: number | null;
+      /** Id */
+      id?: string;
+      /** Interactive */
+      interactive?: boolean;
+      /** Laststallexitcode */
+      lastStallExitCode?: number | null;
+      /** Laststallfinished */
+      lastStallFinished?: number;
+      /** Livenesscommand */
+      livenessCommand?: string;
+      /** Log */
+      log?: string;
+      /** Lowsince */
+      lowSince?: number | null;
+      /** Minimumworkers */
+      minimumWorkers?: number;
+      /** Requestid */
+      requestId?: string | null;
+      restartCheck?: components["schemas"]["JsonObjectResponse"];
+      /** Restartholdnotified */
+      restartHoldNotified?: boolean;
+      /** Ruleid */
+      ruleId?: string | null;
+      /** Stalleventkey */
+      stallEventKey?: string;
+      stallProbe?: components["schemas"]["JsonObjectResponse"];
+      /** Stalltext */
+      stallText?: string;
+      /** Stalltimeoutseconds */
+      stallTimeoutSeconds?: number;
+      /** Stallwakegeneration */
+      stallWakeGeneration?: number;
+      /** Status */
+      status?: string;
+      /** Successexitcodes */
+      successExitCodes?: number[];
+      /** Tail */
+      tail?: string;
+      /** Timeout Ms */
+      timeout_ms?: number;
+      /** Turnid */
+      turnId?: string | null;
+      /** Userhidden */
+      userHidden?: boolean;
+      /** Wakeon */
+      wakeOn?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /**
      * MonitorState
      * @enum {string}
@@ -7815,6 +10132,31 @@ export interface components {
       | "failed"
       | "cancelled"
       | "lost";
+    /** MovedToolRequestResponse */
+    MovedToolRequestResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Id */
+      id: string;
+      move: components["schemas"]["JsonObjectResponse"];
+      operationResult: components["schemas"]["JsonObjectResponse"];
+      /**
+       * Outcome
+       * @constant
+       */
+      outcome: "applied";
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      stage: "complete";
+      /** Tool */
+      tool: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** MovePointerDto */
     MovePointerDto: {
       /** Agentid */
@@ -7823,6 +10165,21 @@ export interface components {
       move: string;
       /** Server */
       server: string;
+    };
+    /** MovePointerRecordResponse */
+    MovePointerRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Agentid */
+      agentId?: string | null;
+      /** Move */
+      move: string;
+      /** Server */
+      server: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** MutationReceipt */
     MutationReceipt: {
@@ -8120,6 +10477,77 @@ export interface components {
       /** Path */
       path: string | null;
     };
+    /** NativeNameFailureRecordResponse */
+    NativeNameFailureRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Attempts */
+      attempts?: number;
+      /** Error */
+      error?:
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null;
+      identity?: components["schemas"]["NativeNameIdentityRecordResponse"];
+      /** Retryat */
+      retryAt?: number;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** NativeNameIdentityRecordResponse */
+    NativeNameIdentityRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Accountkey */
+      accountKey: string;
+      /** Name */
+      name: string;
+      /** Threadid */
+      threadId: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** NativeNameSyncedRecordResponse */
+    NativeNameSyncedRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Accountkey */
+      accountKey?: string;
+      /** Name */
+      name?: string;
+      /** Threadid */
+      threadId?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** NativeNoticeRecord */
     NativeNoticeRecord: {
       /** Accountkey */
@@ -8223,6 +10651,232 @@ export interface components {
       | "unknown"
       | "blocked"
       | "resumed";
+    /** NativeReleaseRecordResponse */
+    NativeReleaseRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Accountkey */
+      accountKey?: string;
+      /** At */
+      at?: number;
+      /** Closedat */
+      closedAt?: number;
+      /** Connectionid */
+      connectionId?: string;
+      /** Error */
+      error?:
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null;
+      /** Id */
+      id?: string;
+      /** Inspectionerror */
+      inspectionError?:
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null;
+      /** Inspectionfailures */
+      inspectionFailures?: number;
+      /** Inspectionphase */
+      inspectionPhase?: string;
+      /** Nativestatus */
+      nativeStatus?: string;
+      /** Nextattemptat */
+      nextAttemptAt?: number;
+      /** Phase */
+      phase?:
+        | (
+            | "checking"
+            | "unsubscribing"
+            | "released"
+            | "unknown"
+            | "blocked"
+            | "resumed"
+          )
+        | null;
+      /** Releasedat */
+      releasedAt?: number;
+      /** Resetactorepoch */
+      resetActorEpoch?: number | null;
+      resetActorScope?: components["schemas"]["JsonObjectResponse"] | null;
+      /** Resetby */
+      resetBy?: string | null;
+      /** Resetpending */
+      resetPending?: boolean;
+      /** Resetreason */
+      resetReason?: string;
+      /** Resumedat */
+      resumedAt?: number;
+      /** Submittedat */
+      submittedAt?: number;
+      /** Supersededat */
+      supersededAt?: number;
+      supervisorIdentity?:
+        | components["schemas"]["SupervisorIdentityRecordResponse"]
+        | null;
+      /** Targetepoch */
+      targetEpoch?: number;
+      /** Targetparentid */
+      targetParentId?: string | null;
+      /** Targetrootid */
+      targetRootId?: string;
+      /** Threadid */
+      threadId?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** NativeReviewRecordResponse */
+    NativeReviewRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Actorid */
+      actorId?: string;
+      args?: components["schemas"]["JsonObjectResponse"];
+      /** Created */
+      created?: number;
+      /** Error */
+      error?:
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null;
+      /** Id */
+      id?: string;
+      /** Requestid */
+      requestId?: string;
+      /** Response */
+      response?:
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null;
+      /** Result */
+      result?:
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null;
+      /** Startedat */
+      startedAt?: number;
+      /** Status */
+      status?: string;
+      target?: components["schemas"]["JsonObjectResponse"];
+      /** Updated */
+      updated?: number;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /**
      * NativeRuntimeState
      * @enum {string}
@@ -8264,6 +10918,33 @@ export interface components {
       /** Turnid */
       turnId?: string;
     };
+    /** NativeSafetyBufferingRecordResponse */
+    NativeSafetyBufferingRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Accountkey */
+      accountKey?: string;
+      /** At */
+      at?: number;
+      /** Connectionid */
+      connectionId?: string;
+      /** Dismissed */
+      dismissed?: boolean;
+      /** Fastermodel */
+      fasterModel?: string;
+      /** Responsestarted */
+      responseStarted?: boolean;
+      /** Showbufferingui */
+      showBufferingUi?: boolean;
+      /** Threadid */
+      threadId?: string;
+      /** Turnid */
+      turnId?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** NativeSafetyRetryDto */
     NativeSafetyRetryDto: {
       /** Acceptedturnid */
@@ -8292,6 +10973,55 @@ export interface components {
       /** Updated */
       updated?: number | null;
     };
+    /** NativeSafetyRetryViewRecordResponse */
+    NativeSafetyRetryViewRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Acceptedturnid */
+      acceptedTurnId?: string | null;
+      /** Accountkey */
+      accountKey?: string | null;
+      /** Created */
+      created?: number | null;
+      /** Epoch */
+      epoch?: number | null;
+      /** Error */
+      error?: string | null;
+      /** Id */
+      id?: string | null;
+      /** Model */
+      model?: string | null;
+      /** Newthreadid */
+      newThreadId?: string | null;
+      /** Requestid */
+      requestId?: string | null;
+      /** Rpcmethod */
+      rpcMethod?: string | null;
+      /** Stage */
+      stage?:
+        | (
+            | "turns"
+            | "items"
+            | "interrupt"
+            | "verify_turns"
+            | "verify_items"
+            | "fork"
+            | "start"
+            | "unknown"
+            | "running"
+            | "failed"
+            | "cancelled"
+          )
+        | null;
+      /** Turnid */
+      turnId?: string | null;
+      /** Updated */
+      updated?: number | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /**
      * NativeSafetyStage
      * @enum {string}
@@ -8314,11 +11044,64 @@ export interface components {
       /** Threadid */
       threadId?: string | null;
     };
+    /** NativeThreadBlockRecordResponse */
+    NativeThreadBlockRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      error?: components["schemas"]["JsonObjectResponse"];
+      /** Threadid */
+      threadId?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** NativeToolSourceRecordResponse */
+    NativeToolSourceRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Digest */
+      digest?: string;
+      /** Epoch */
+      epoch?: number;
+      /** Threadid */
+      threadId?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** NativeToolUpdateRecordResponse */
+    NativeToolUpdateRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Message */
+      message?: string;
+      source?: components["schemas"]["NativeToolSourceRecordResponse"];
+      /** Status */
+      status?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** NativeTurnErrorDto */
     NativeTurnErrorDto: {
       error?: components["schemas"]["NativeProviderError"] | null;
       /** Turnid */
       turnId?: string | null;
+    };
+    /** NativeTurnErrorRecordResponse */
+    NativeTurnErrorRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      error?: components["schemas"]["JsonObjectResponse"] | null;
+      /** Turnid */
+      turnId?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** OrganizationBody */
     OrganizationBody: {
@@ -8480,6 +11263,23 @@ export interface components {
        * @enum {string}
        */
       kind: "panel";
+    };
+    /** ParkReceiptRecordResponse */
+    ParkReceiptRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Cancelledatepoch */
+      cancelledAtEpoch?: number;
+      /** Epoch */
+      epoch?: number;
+      /** Event */
+      event?: string;
+      /** Sequence */
+      sequence?: number;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /**
      * ParticipantRole
@@ -8899,6 +11699,23 @@ export interface components {
       /** Team Id */
       team_id?: string | null;
     };
+    /** PendingSettingsRecordResponse */
+    PendingSettingsRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Daybreakenabled */
+      daybreakEnabled?: boolean | null;
+      /** Effort */
+      effort?: string | null;
+      /** Fastmode */
+      fastMode?: boolean | null;
+      /** Model */
+      model?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** PlanBody */
     PlanBody: {
       /** Agent */
@@ -8935,6 +11752,47 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
+    /** PortableHistoryRecordResponse */
+    PortableHistoryRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Bytes */
+      bytes?: number;
+      /** Counts */
+      counts?: {
+        [key: string]: number;
+      };
+      /** Path */
+      path?: string;
+      /** Sha256 */
+      sha256?: string;
+      source?: components["schemas"]["PortableHistorySourceRecordResponse"];
+      /** Transferid */
+      transferId?: string;
+      /** Version */
+      version?: number;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** PortableHistorySourceRecordResponse */
+    PortableHistorySourceRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Accountkey */
+      accountKey?: string;
+      /** Agentid */
+      agentId?: string;
+      /** Epoch */
+      epoch?: number;
+      /** Threadid */
+      threadId?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** PreferenceField */
     PreferenceField: {
       /** Timestamp */
@@ -8965,6 +11823,21 @@ export interface components {
       fields: {
         [key: string]: components["schemas"]["PreferenceField"];
       };
+    };
+    /** PreparedContextRecordResponse */
+    PreparedContextRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Epoch */
+      epoch?: (string | number | null)[];
+      /** Versions */
+      versions?: {
+        [key: string]: string;
+      };
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /**
      * ProcessKind
@@ -10032,6 +12905,23 @@ export interface components {
       /** Turnid */
       turnId: string;
     };
+    /** ReadStateRecordResponse */
+    ReadStateRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Read */
+      read: boolean;
+      /** Revision */
+      revision: number;
+      /** Threadid */
+      threadId: string;
+      /** Turnid */
+      turnId: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** ReceiptsResource */
     ReceiptsResource: {
       /** Agentid */
@@ -10103,6 +12993,19 @@ export interface components {
       /** Link */
       link: string;
     };
+    /** RemoteParentLinkRecordResponse */
+    RemoteParentLinkRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Home */
+      home: string;
+      /** Link */
+      link: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** RemoteProjectRegistrationResponse */
     RemoteProjectRegistrationResponse: {
       /** Syncentities */
@@ -10138,6 +13041,19 @@ export interface components {
       /** Server */
       server: string;
     };
+    /** RemoteWorkerLinkRecordResponse */
+    RemoteWorkerLinkRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Link */
+      link: string;
+      /** Server */
+      server: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** RenameRequest */
     RenameRequest: {
       /** Id */
@@ -10170,6 +13086,48 @@ export interface components {
       label: string;
       /** Requestid */
       requestId: string;
+    };
+    /** RequestAnswerRecordResponse */
+    RequestAnswerRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Answer */
+      answer?:
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null;
+      /** Id */
+      id?: string;
+      /** Issecret */
+      isSecret?: boolean;
+      /** Question */
+      question?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** RequestEntityDto */
     RequestEntityDto: {
@@ -10209,6 +13167,27 @@ export interface components {
       updated?: number | null;
       /** Updatedat */
       updatedAt?: number | null;
+    };
+    /** RequestInboxEntry */
+    RequestInboxEntry: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Agent */
+      agent: string;
+      /** Id */
+      id: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "request";
+      request: components["schemas"]["RequestRecordResponse"];
+      /** Text */
+      text: string;
+      /** Title */
+      title: string;
     };
     /**
      * RequestParamsDto
@@ -10287,6 +13266,138 @@ export interface components {
       /** Label */
       label?: string | null;
       value?: components["schemas"]["JsonValue"] | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** RequestRecordResponse */
+    RequestRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Accountkey */
+      accountKey?: string;
+      /** Action */
+      action?: string;
+      /** Agent */
+      agent?: string | null;
+      /** Answeredat */
+      answeredAt?: number;
+      /** Answeredby */
+      answeredBy?: string;
+      /** Answererror */
+      answerError?:
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null;
+      /** Answerhistory */
+      answerHistory?: components["schemas"]["RequestAnswerRecordResponse"][];
+      /** Answersignature */
+      answerSignature?: string;
+      /** Command */
+      command?: string;
+      /** Connectionid */
+      connectionId?: string;
+      /** Createdat */
+      createdAt?: number;
+      /** Cursor */
+      cursor?: string;
+      /** Cwd */
+      cwd?: string;
+      /** Decision */
+      decision?: string;
+      /** Deferred */
+      deferred?: boolean;
+      /** Deferredat */
+      deferredAt?: number;
+      /** Deferredby */
+      deferredBy?: string;
+      /** Deletedat */
+      deletedAt?: number;
+      /** Deletedby */
+      deletedBy?: string;
+      env?: components["schemas"]["JsonObjectResponse"];
+      /** Epoch */
+      epoch?: number;
+      /** Expectedpid */
+      expectedPid?: number;
+      /** Expectedsignature */
+      expectedSignature?: string;
+      /** Expectedstarttime */
+      expectedStartTime?: number;
+      /** Handle */
+      handle?: string;
+      /** Id */
+      id?: string;
+      /** Message */
+      message?: string;
+      /** Method */
+      method?: string;
+      /** Nativeid */
+      nativeId?: string;
+      /** Operationid */
+      operationId?: string;
+      params?: components["schemas"]["JsonObjectResponse"];
+      /** Preview */
+      preview?:
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null;
+      /** Resolvedat */
+      resolvedAt?: number;
+      /** Rpcid */
+      rpcId?: string | number;
+      /** Sequence */
+      sequence?: number;
+      /** Status */
+      status?: string;
+      supervisor?: components["schemas"]["JsonObjectResponse"] | null;
+      /** Turnid */
+      turnId?: string | null;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -10518,6 +13629,44 @@ export interface components {
       | "LANG"
       | "LC_ALL"
       | "CODEX_AGENTS_SUPERVISOR_MODE";
+    /** RestartRecoveryRecordResponse */
+    RestartRecoveryRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Accountkey */
+      accountKey?: string;
+      /** At */
+      at?: number;
+      /** Autowake */
+      autoWake?: boolean;
+      /** Epoch */
+      epoch?: number;
+      /** Eventid */
+      eventId?: string;
+      /** Observedat */
+      observedAt?: number;
+      /** Outcome */
+      outcome?: string;
+      /** Reason */
+      reason?: string;
+      /** Reattachedat */
+      reattachedAt?: number;
+      /** Reconciledat */
+      reconciledAt?: number;
+      /** Stage */
+      stage?: string;
+      startAttempt?: components["schemas"]["StartAttemptRecordResponse"];
+      /** Supersededat */
+      supersededAt?: number;
+      /** Threadid */
+      threadId?: string;
+      /** Turnid */
+      turnId?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /**
      * RetryAction
      * @enum {string}
@@ -10613,6 +13762,19 @@ export interface components {
       effort: string | null;
       /** Model */
       model: string | null;
+    };
+    /** ReviewDefaultsRecordResponse */
+    ReviewDefaultsRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Effort */
+      effort: string | null;
+      /** Model */
+      model: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** ReviewUncommittedTargetDto */
     ReviewUncommittedTargetDto: {
@@ -10818,6 +13980,12 @@ export interface components {
      * @enum {string}
      */
     RoomStatus: "pending" | "approved" | "revoked";
+    /** RootModel[Annotated[Union[ToolRequestRecordResponse, AmbiguousToolRequestResponse, MissingToolRequestResponse, MovedToolRequestResponse], FieldInfo(annotation=NoneType, required=True, discriminator='stage')]] */
+    RootModel_Annotated_Union_ToolRequestRecordResponse__AmbiguousToolRequestResponse__MissingToolRequestResponse__MovedToolRequestResponse___FieldInfo_annotation_NoneType__required_True__discriminator__stage____:
+      | components["schemas"]["ToolRequestRecordResponse"]
+      | components["schemas"]["AmbiguousToolRequestResponse"]
+      | components["schemas"]["MissingToolRequestResponse"]
+      | components["schemas"]["MovedToolRequestResponse"];
     /** RootModel[ResourceNotifyAck] */
     RootModel_ResourceNotifyAck_: components["schemas"]["ResourceNotifyAck"];
     /** RuleBody */
@@ -10959,11 +14127,26 @@ export interface components {
       /** Name */
       name?: string | null;
     };
-    /**
-     * RuleKind
-     * @enum {string}
-     */
-    RuleKind: "interval" | "once" | "file" | "event" | "low_workers";
+    /** RuleInboxEntry */
+    RuleInboxEntry: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Agent */
+      agent: string;
+      /** Id */
+      id: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "rule";
+      /** Text */
+      text: string;
+      /** Title */
+      title: string;
+    };
     /** RuleList */
     RuleList: {
       /** Syncentities */
@@ -10971,152 +14154,150 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Rules */
-      rules: components["schemas"]["RuleRecord"][];
+      rules: components["schemas"]["RuleRecordResponse"][];
     };
-    /**
-     * RuleMutation
-     * @description Rule summary with extensions.
-     *
-     *     ResponseModel's sync envelope prevents direct TypedDict inheritance.
-     */
-    RuleMutation: {
+    /** RuleRecordResponse */
+    RuleRecordResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
-      /** Agent */
-      agent?: string | null;
-      /** Command */
-      command?: string | null;
-      /** Created */
-      created?: number | null;
-      /** Deleted */
-      deleted?: string | null;
-      /** Error */
-      error?: string | null;
-      /** Id */
-      id?: string | null;
-      /** Kind */
-      kind?: string | null;
-      /** Name */
-      name?: string | null;
-      /** Rootid */
-      rootId?: string | null;
-      /** Status */
-      status?: string | null;
-      /** Updated */
-      updated?: number | null;
-    } & {
-      [key: string]: components["schemas"]["JsonValue"];
-    };
-    /** RuleRecord */
-    RuleRecord: {
       /** Activeworkers */
-      activeWorkers?: number | null;
+      activeWorkers?: number;
       /** Agent */
-      agent?: string | null;
+      agent?: string;
       /** Alerted */
-      alerted?: boolean | null;
+      alerted?: boolean;
       /** At */
-      at?: number | null;
+      at?: number;
       /** Checks */
-      checks?: number | null;
+      checks?: number;
       /** Command */
-      command?: string | null;
+      command?: string;
       /** Created */
-      created?: number | null;
-      /** Description */
-      description?: string | null;
+      created?: number;
       /** Durationminutes */
-      durationMinutes?: number | null;
-      /** Enabled */
-      enabled?: boolean | null;
+      durationMinutes?: number;
       /** Epoch */
-      epoch?: number | null;
+      epoch?: number;
       /** Error */
       error?: string | null;
       /** Event */
-      event?: string | null;
+      event?: string;
       /** Eventtext */
-      eventText?: string | null;
+      eventText?: string;
       /** Fileactivityat */
-      fileActivityAt?: number | null;
+      fileActivityAt?: number;
       /** Filegeneration */
-      fileGeneration?: number | null;
+      fileGeneration?: number;
       /** Fingerprint */
-      fingerprint?: number[] | null;
+      fingerprint?:
+        | (
+            | string
+            | number
+            | boolean
+            | (
+                | string
+                | number
+                | boolean
+                | components["schemas"]["JsonValue"][]
+                | {
+                    [key: string]: components["schemas"]["JsonValue"];
+                  }
+                | null
+              )[]
+            | {
+                [key: string]:
+                  | string
+                  | number
+                  | boolean
+                  | components["schemas"]["JsonValue"][]
+                  | {
+                      [key: string]: components["schemas"]["JsonValue"];
+                    }
+                  | null;
+              }
+            | null
+          )[]
+        | null;
       /** Id */
       id: string;
       /** Inflight */
-      inFlight?: boolean | null;
+      inFlight?: boolean;
       /** Intervalseconds */
-      intervalSeconds?: number | null;
-      kind?: components["schemas"]["RuleKind"] | null;
+      intervalSeconds?: number;
+      /**
+       * Kind
+       * @enum {string}
+       */
+      kind: "interval" | "once" | "file" | "event" | "low_workers";
       /** Lastat */
-      lastAt?: number | null;
+      lastAt?: number;
       /** Lastevent */
-      lastEvent?: string | null;
+      lastEvent?: string;
       /** Lastexitcode */
       lastExitCode?: number | null;
       /** Lastfinished */
-      lastFinished?: number | null;
+      lastFinished?: number;
       /** Lastoutput */
-      lastOutput?: string | null;
+      lastOutput?: string;
       /** Laststallerror */
       lastStallError?: string | null;
       /** Laststallexitcode */
       lastStallExitCode?: number | null;
       /** Laststallfinished */
-      lastStallFinished?: number | null;
+      lastStallFinished?: number;
       /** Livenesscommand */
-      livenessCommand?: string | null;
+      livenessCommand?: string;
       /** Lowsince */
       lowSince?: number | null;
       /** Minimumworkers */
-      minimumWorkers?: number | null;
+      minimumWorkers?: number;
       /** Name */
-      name?: string | null;
+      name?: string;
       /** Nextat */
-      nextAt?: number | null;
+      nextAt?: number;
       /** Path */
       path?: string | null;
-      restartCheck?: components["schemas"]["RuleRestartCheck"] | null;
+      restartCheck?: components["schemas"]["RuleRestartCheckRecordResponse"];
       /** Rootid */
-      rootId?: string | null;
+      rootId?: string;
       /** Stall Timeout Seconds */
-      stall_timeout_seconds?: number | null;
+      stall_timeout_seconds?: number;
       /** Stalleventkey */
-      stallEventKey?: string | null;
+      stallEventKey?: string;
       /** Stallprobe */
-      stallProbe?: boolean | null;
+      stallProbe?: boolean;
       /** Stalltext */
-      stallText?: string | null;
+      stallText?: string;
       /** Stalltimeoutseconds */
-      stallTimeoutSeconds?: number | null;
+      stallTimeoutSeconds?: number;
       /** Stallwakegeneration */
-      stallWakeGeneration?: number | null;
-      status?: components["schemas"]["RuleStatus"] | null;
+      stallWakeGeneration?: number;
+      /** Status */
+      status?: string;
       /** Text */
-      text?: string | null;
-      /** Updated */
-      updated?: number | null;
+      text?: string;
       /** Wakes */
-      wakes?: number | null;
+      wakes?: number;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
-    /** RuleRestartCheck */
-    RuleRestartCheck: {
+    /** RuleRestartCheckRecordResponse */
+    RuleRestartCheckRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Checks */
       checks: number;
       /** Epoch */
       epoch: number;
       /** Monitorid */
       monitorId: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
-    /**
-     * RuleStatus
-     * @enum {string}
-     */
-    RuleStatus: "active" | "paused" | "completed";
     /** RuntimeLockOperation */
     RuntimeLockOperation: {
       /** Callsite */
@@ -11963,6 +15144,182 @@ export interface components {
      * @enum {string}
      */
     SqliteTransactionState: "active" | "committed" | "rolledBack" | "ended";
+    /** StartActionIdentityRecordResponse */
+    StartActionIdentityRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Accountkey */
+      accountKey: string;
+      /** Epoch */
+      epoch: number;
+      /** Threadid */
+      threadId: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** StartAttemptRecordResponse */
+    StartAttemptRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Accountkey */
+      accountKey?: string;
+      /** Action */
+      action?: string;
+      actionIdentity?: components["schemas"]["StartActionIdentityRecordResponse"];
+      /** Actionrequestid */
+      actionRequestId?: string;
+      /** Activeatreservation */
+      activeAtReservation?: boolean;
+      /** Capacityretryid */
+      capacityRetryId?: string;
+      claudeInputRequest?: components["schemas"]["JsonObjectResponse"];
+      /** Clauderetryof */
+      claudeRetryOf?: string;
+      /** Connectionid */
+      connectionId?: string;
+      /** Created */
+      created?: number;
+      /** Epoch */
+      epoch?: number;
+      /** Events */
+      events?: string[];
+      /**
+       * Executionoutcome
+       * @enum {string}
+       */
+      executionOutcome?: "unknown" | "unsent" | "rejected";
+      /** Id */
+      id?: string;
+      modelSettings?: components["schemas"]["StartModelSettingsRecordResponse"];
+      /** Nativeoperationid */
+      nativeOperationId?: string;
+      /** Notsubmittedreason */
+      notSubmittedReason?: string;
+      /** Observedturnid */
+      observedTurnId?: string;
+      /** Prepareerror */
+      prepareError?:
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null;
+      /** Responseerror */
+      responseError?:
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null;
+      /** Retiredevents */
+      retiredEvents?: (
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null
+      )[];
+      reviewTarget?: components["schemas"]["JsonObjectResponse"];
+      /** Settingsfixed */
+      settingsFixed?: boolean;
+      /** Submitted */
+      submitted?: boolean;
+      supervisorIdentity?:
+        | components["schemas"]["SupervisorIdentityRecordResponse"]
+        | null;
+      /** Threadid */
+      threadId?: string;
+      /** Turnid */
+      turnId?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** StartModelSettingsRecordResponse */
+    StartModelSettingsRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Accountkey */
+      accountKey?: string;
+      /** Connectionid */
+      connectionId?: string;
+      /** Epoch */
+      epoch?: number;
+      /** Id */
+      id?: string;
+      settings?: components["schemas"]["JsonObjectResponse"];
+      /** Status */
+      status?: string;
+      /** Threadid */
+      threadId?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** StateResource */
     StateResource: {
       /**
@@ -12261,6 +15618,21 @@ export interface components {
       handle: string;
       /** Statedir */
       stateDir: string;
+    };
+    /** SupervisorIdentityRecordResponse */
+    SupervisorIdentityRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Generation */
+      generation?: number;
+      /** Handle */
+      handle?: string;
+      /** Statedir */
+      stateDir?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** SupervisorRecovery */
     SupervisorRecovery: {
@@ -12963,7 +16335,122 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Requests */
-      requests: components["schemas"]["VersionedRuntimeRecord"][];
+      requests: components["schemas"]["ToolRequestRecordResponse"][];
+    };
+    /** ToolRequestRecordResponse */
+    ToolRequestRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Accountkey */
+      accountKey?: string;
+      /** Admissiondelayms */
+      admissionDelayMs?: number;
+      /** Agent */
+      agent?: string;
+      /** Agentids */
+      agentIds?: string[];
+      /** Callbackqueuedelayms */
+      callbackQueueDelayMs?: number;
+      /** Callbackstartedat */
+      callbackStartedAt?: number;
+      /** Callid */
+      callId?: string;
+      /** Cancelrequested */
+      cancelRequested?: boolean;
+      /** Connectionid */
+      connectionId?: string | null;
+      /** Created */
+      created?: number;
+      /** Epoch */
+      epoch?: number;
+      /** Error */
+      error?: string;
+      /** Executionqueuedelayms */
+      executionQueueDelayMs?: number;
+      /** Finished */
+      finished?: number;
+      /** Id */
+      id: string;
+      nativeDelivery?: components["schemas"]["JsonObjectResponse"];
+      operationResult?: components["schemas"]["JsonObjectResponse"];
+      /** Outcome */
+      outcome?: string;
+      /** Queuedelayms */
+      queueDelayMs?: number;
+      /** Readonly */
+      readOnly?: boolean;
+      /** Request Id */
+      request_id?: string;
+      /** Reservationdelayms */
+      reservationDelayMs?: number;
+      result?: components["schemas"]["JsonObjectResponse"];
+      /** Rpcid */
+      rpcId?: string | number;
+      /** Signature */
+      signature?: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      stage:
+        | "cancelled"
+        | "completed"
+        | "failed"
+        | "interrupted"
+        | "queued"
+        | "running"
+        | "unknown";
+      /** Started */
+      started?: number;
+      supervisor?: components["schemas"]["JsonObjectResponse"];
+      /** Threadid */
+      threadId?: string;
+      timing?: components["schemas"]["ToolRequestTimingRecordResponse"];
+      /** Tool */
+      tool?: string;
+      /** Turnid */
+      turnId?: string;
+      /** Updated */
+      updated?: number;
+      /** Wirereceivedat */
+      wireReceivedAt?: number;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** ToolRequestTimingRecordResponse */
+    ToolRequestTimingRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Admissiondelayms */
+      admissionDelayMs?: number;
+      /** Callbackqueuedelayms */
+      callbackQueueDelayMs?: number;
+      /** Callbackstartedat */
+      callbackStartedAt?: number;
+      /** Executionqueuedelayms */
+      executionQueueDelayMs?: number;
+      /** Handlerendedat */
+      handlerEndedAt?: number;
+      /** Handlerstartedat */
+      handlerStartedAt?: number;
+      /** Queuedelayms */
+      queueDelayMs?: number;
+      /** Reservationbeganat */
+      reservationBeganAt?: number;
+      /** Reservationdelayms */
+      reservationDelayMs?: number;
+      /** Reservationendedat */
+      reservationEndedAt?: number;
+      /** Reservationlockedat */
+      reservationLockedAt?: number;
+      /** Wirereceivedat */
+      wireReceivedAt?: number;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** TranscriptAgent */
     TranscriptAgent: {
@@ -13530,6 +17017,27 @@ export interface components {
      * @enum {string}
      */
     TransferStatus: "pending" | "completed" | "cancelled";
+    /** TurnRecoveryRecordResponse */
+    TurnRecoveryRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** At */
+      at?: number;
+      /** Attemptid */
+      attemptId?: string;
+      /** Latestturnid */
+      latestTurnId?: string | null;
+      /** Outcome */
+      outcome?: string;
+      /** Source */
+      source?: string;
+      /** Turnid */
+      turnId?: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** UiInvite */
     UiInvite: {
       /**
@@ -13644,6 +17152,61 @@ export interface components {
      * @enum {string}
      */
     UsageResumeCause: "usage_limit" | "rate_limit" | "auth";
+    /** UsageResumeRecordResponse */
+    UsageResumeRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Accountkey */
+      accountKey?: string;
+      /** Authattempt */
+      authAttempt?: number;
+      /** Authrefreshmarker */
+      authRefreshMarker?: string | null;
+      /**
+       * Cause
+       * @enum {string}
+       */
+      cause?: "usage_limit" | "rate_limit" | "auth";
+      /** Dueat */
+      dueAt?: number | null;
+      /** Epoch */
+      epoch?: number;
+      /** Failedat */
+      failedAt?: number;
+      /** Id */
+      id?: string;
+      /** Lastcheckedat */
+      lastCheckedAt?: number | null;
+      /** Plannedat */
+      plannedAt?: number | null;
+      /** Proofat */
+      proofAt?: number;
+      /** Reason */
+      reason?: string | null;
+      /** Resetat */
+      resetAt?: number | null;
+      /** Startedat */
+      startedAt?: number;
+      /**
+       * Status
+       * @enum {string}
+       */
+      status?: "scheduled" | "started" | "cancelled" | "unknown";
+      /** Taskclaims */
+      taskClaims?: string[];
+      /** Threadid */
+      threadId?: string;
+      /** Turnid */
+      turnId?: string;
+      /** Updatedat */
+      updatedAt?: number;
+      /** Waitingforauth */
+      waitingForAuth?: boolean;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** UsageResumeRequest */
     UsageResumeRequest: {
       /** Enabled */
@@ -13893,38 +17456,6 @@ export interface components {
       _syncEntitiesAfter?: number | null;
       /** Unlocked */
       unlocked: boolean;
-    };
-    /**
-     * VersionedRuntimeRecord
-     * @description Shared projection of several versioned record kinds.
-     *
-     *     Tool requests, organization records, complaint replies, and workspace inbox
-     *     entries use distinct persisted record types. This envelope declares their
-     *     common fields and retains JSON-valued domain fields; OpenAPI cannot yet
-     *     reuse those TypedDicts here without a discriminated union for the route
-     *     variants, and ResponseModel supplies the sync envelope for those outputs.
-     */
-    VersionedRuntimeRecord: {
-      /** Syncentities */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /** Syncentitiesafter */
-      _syncEntitiesAfter?: number | null;
-      /** Agent */
-      agent?: string | null;
-      /** Created */
-      created?: number | null;
-      /** Id */
-      id?: string | null;
-      /** Kind */
-      kind?: string | null;
-      /** Rootid */
-      rootId?: string | null;
-      /** Status */
-      status?: string | null;
-      /** Updated */
-      updated?: number | null;
-    } & {
-      [key: string]: components["schemas"]["JsonValue"];
     };
     /**
      * VmFinderViewResponse
@@ -14305,6 +17836,38 @@ export interface components {
           }
         | null;
     };
+    /** WorkArchiveIntentRecordResponse */
+    WorkArchiveIntentRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Attempts */
+      attempts?: number;
+      /** Created */
+      created?: number;
+      /** Id */
+      id: string;
+      lastOutcome?: components["schemas"]["WorkArchiveRecordResponse"];
+      /** Nextattemptat */
+      nextAttemptAt?: number;
+      outcome?: components["schemas"]["WorkArchiveRecordResponse"];
+      /** Owner */
+      owner?: string | null;
+      /** Previousid */
+      previousId?: string;
+      /** Schedulerversion */
+      schedulerVersion?: number;
+      /**
+       * Status
+       * @enum {string}
+       */
+      status: "pending" | "complete" | "terminal";
+      /** Updated */
+      updated?: number;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** WorkArchiveRecord */
     WorkArchiveRecord: {
       /** Reason */
@@ -14350,6 +17913,20 @@ export interface components {
             [key: string]: components["schemas"]["JsonValue"];
           }
         | null;
+    };
+    /** WorkArchiveRecordResponse */
+    WorkArchiveRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Reason */
+      reason?: string;
+      /** Status */
+      status?: string;
+      worktree?: components["schemas"]["JsonObjectResponse"];
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
     /** WorkBody */
     WorkBody: {
@@ -14441,6 +18018,30 @@ export interface components {
           }
         | null;
     };
+    /** WorkDecisionRecordResponse */
+    WorkDecisionRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** By */
+      by: string;
+      /** Created */
+      created: number;
+      /**
+       * Decision
+       * @enum {string}
+       */
+      decision: "cancel" | "accept" | "reject";
+      /** Owner */
+      owner?: string | null;
+      /** Reason */
+      reason: string;
+      /** Resultid */
+      resultId?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** WorkEntityDto */
     WorkEntityDto: {
       /** Agent */
@@ -14494,6 +18095,48 @@ export interface components {
       fastMode: boolean;
       /** Model */
       model: string | null;
+    };
+    /** WorkerDefaultsRecordResponse */
+    WorkerDefaultsRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Accountkey */
+      accountKey?: string | null;
+      /** Cyberaccessprogram */
+      cyberAccessProgram?: string | null;
+      /** Daybreakenabled */
+      daybreakEnabled?: boolean;
+      /** Effort */
+      effort: string | null;
+      /** Fastmode */
+      fastMode: boolean;
+      /** Model */
+      model: string | null;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** WorkInboxEntry */
+    WorkInboxEntry: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Agent */
+      agent: string;
+      /** Id */
+      id: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "work";
+      /** Text */
+      text: string;
+      /** Title */
+      title: string;
+      work: components["schemas"]["WorkViewRecordResponse"];
     };
     /**
      * WorkItem
@@ -14628,6 +18271,41 @@ export interface components {
           }
         | null;
     };
+    /** WorkResultRecordResponse */
+    WorkResultRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Agent */
+      agent: string;
+      /** Attemptid */
+      attemptId?: string | null;
+      /** Checks */
+      checks: string;
+      /** Created */
+      created: number;
+      /** Files */
+      files: string[];
+      /** Id */
+      id: string;
+      /** Layrline */
+      layrLine?: string;
+      /** Layrprojectid */
+      layrProjectId?: string;
+      /** Layrstateid */
+      layrStateId?: string;
+      /** Resultfile */
+      resultFile: string;
+      /** Revision */
+      revision: string;
+      /** Runid */
+      runId?: string;
+      /** Text */
+      text: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
     /** WorkspaceEntityDto */
     WorkspaceEntityDto: {
       /** Connected */
@@ -14749,19 +18427,262 @@ export interface components {
       /** Checkpoints */
       checkpoints?: components["schemas"]["CheckpointSummary"][] | null;
       /** Inbox */
-      inbox?: components["schemas"]["VersionedRuntimeRecord"][] | null;
+      inbox?:
+        | (
+            | components["schemas"]["RequestInboxEntry"]
+            | components["schemas"]["ComplaintInboxEntry"]
+            | components["schemas"]["WorkInboxEntry"]
+            | components["schemas"]["AgentInboxEntry"]
+            | components["schemas"]["MonitorInboxEntry"]
+            | components["schemas"]["RuleInboxEntry"]
+          )[]
+        | null;
       /** Monitors */
       monitors?: components["schemas"]["MonitorEntityDto"][] | null;
       /** Plans */
       plans?: components["schemas"]["PlanView"][] | null;
       /** Rules */
-      rules?: components["schemas"]["RuleRecord"][] | null;
+      rules?: components["schemas"]["RuleRecordResponse"][] | null;
       /** Tasks */
       tasks?: components["schemas"]["WorkspaceTaskRecord"][] | null;
       /** Taskshistorylimit */
       tasksHistoryLimit?: number | null;
       /** Work */
       work?: components["schemas"]["WorkItem"][] | null;
+    };
+    /** WorkspaceWaitRecordResponse */
+    WorkspaceWaitRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** At */
+      at?: number;
+      /** Attemptid */
+      attemptId?: string;
+      /** Blockers */
+      blockers?: (
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null
+      )[];
+      /** Events */
+      events?: (
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null
+      )[];
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** WorktreeCleanupErrorRecordResponse */
+    WorktreeCleanupErrorRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** At */
+      at: number;
+      /** By */
+      by: string;
+      /** Errno */
+      errno?: number;
+      /** Message */
+      message: string;
+      /** Returncode */
+      returncode?: number;
+      /** Stderr */
+      stderr?: string;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** WorktreeCleanupRecordResponse */
+    WorktreeCleanupRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** At */
+      at?: number;
+      /** Branch */
+      branch?: string | null;
+      /** Bytes */
+      bytes?: number | null;
+      /** Error */
+      error?:
+        | string
+        | components["schemas"]["WorktreeCleanupErrorRecordResponse"];
+      /** Gitfile */
+      gitFile?: number[];
+      /** Head */
+      head?: string | null;
+      /** Identity */
+      identity: (number | string | null)[];
+      /** Missing */
+      missing?: boolean;
+      /** Note */
+      note?: string;
+      /** Path */
+      path?: string;
+      /** Phase */
+      phase?: string;
+      registrationRepair?: components["schemas"]["WorktreeRegistrationRepairRecordResponse"];
+      /** Relative */
+      relative: string;
+      /** Repo */
+      repo: string;
+      /** Root */
+      root: string;
+      /** Rootfile */
+      rootFile?: number[];
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** WorktreeRegistrationRepairRecordResponse */
+    WorktreeRegistrationRepairRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Gitdir */
+      gitdir: string;
+      /** Gitfile */
+      gitFile: number[];
+      /** Rootfile */
+      rootFile: number[];
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
+    };
+    /** WorkViewRecordResponse */
+    WorkViewRecordResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      archive?: components["schemas"]["WorkArchiveRecordResponse"];
+      archiveIntent?: components["schemas"]["WorkArchiveIntentRecordResponse"];
+      /** Blockedby */
+      blockedBy: string[];
+      /** Created */
+      created: number;
+      /** Createdby */
+      createdBy: string;
+      /** Decisions */
+      decisions: components["schemas"]["WorkDecisionRecordResponse"][];
+      /** Dependencies */
+      dependencies: string[];
+      /** Description */
+      description: string;
+      /** Displaystatus */
+      displayStatus:
+        | (
+            | "ready"
+            | "running"
+            | "blocked"
+            | "review"
+            | "accepted"
+            | "cancelled"
+          )
+        | "blocked";
+      /** Id */
+      id: string;
+      /** Owner */
+      owner?: string | null;
+      /** Releases */
+      releases?: (
+        | string
+        | number
+        | boolean
+        | (
+            | string
+            | number
+            | boolean
+            | components["schemas"]["JsonValue"][]
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | null
+          )[]
+        | {
+            [key: string]:
+              | string
+              | number
+              | boolean
+              | components["schemas"]["JsonValue"][]
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | null;
+          }
+        | null
+      )[];
+      /** Results */
+      results: components["schemas"]["WorkResultRecordResponse"][];
+      /** Rootid */
+      rootId: string;
+      /**
+       * Status
+       * @enum {string}
+       */
+      status:
+        | "ready"
+        | "running"
+        | "blocked"
+        | "review"
+        | "accepted"
+        | "cancelled";
+      /** Title */
+      title: string;
+      /** Updated */
+      updated: number;
+      /** Version */
+      version: number;
+    } & {
+      [key: string]: components["schemas"]["JsonValue"];
     };
   };
   responses: {
@@ -17382,7 +21303,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["VersionedRuntimeRecord"];
+          "application/json": components["schemas"]["ComplaintRecordResponse"];
         };
       };
       /** @description Bad Request */
@@ -20624,7 +24545,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["VersionedRuntimeRecord"];
+          "application/json": components["schemas"]["AgentRecordResponse"];
         };
       };
       /** @description Bad Request */
@@ -21968,7 +25889,9 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["RuleMutation"];
+          "application/json":
+            | components["schemas"]["RuleRecordResponse"]
+            | components["schemas"]["DeletedRuleReceipt"];
         };
       };
       /** @description Bad Request */
@@ -23248,7 +27171,7 @@ export interface operations {
         content: {
           "application/json":
             | components["schemas"]["ToolRequestList"]
-            | components["schemas"]["VersionedRuntimeRecord"];
+            | components["schemas"]["RootModel_Annotated_Union_ToolRequestRecordResponse__AmbiguousToolRequestResponse__MissingToolRequestResponse__MovedToolRequestResponse___FieldInfo_annotation_NoneType__required_True__discriminator__stage____"];
         };
       };
       /** @description Bad Request */
@@ -23299,7 +27222,7 @@ export interface operations {
         content: {
           "application/json":
             | components["schemas"]["ToolRequestList"]
-            | components["schemas"]["VersionedRuntimeRecord"];
+            | components["schemas"]["RootModel_Annotated_Union_ToolRequestRecordResponse__AmbiguousToolRequestResponse__MissingToolRequestResponse__MovedToolRequestResponse___FieldInfo_annotation_NoneType__required_True__discriminator__stage____"];
         };
       };
       /** @description Bad Request */

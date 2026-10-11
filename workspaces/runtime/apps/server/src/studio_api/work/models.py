@@ -3,20 +3,18 @@
 from __future__ import annotations
 
 from types import UnionType
-from typing import Annotated, Any, Literal, Union, cast, get_args, get_origin, get_type_hints
-from typing_extensions import NotRequired, Required, TypedDict
+from typing import Annotated, Any, Callable, Literal, Union, cast, get_args, get_origin, get_type_hints
+from typing_extensions import NotRequired, Required, TypedDict, TypeAliasType
 
 from pydantic import ConfigDict, Field, RootModel, StrictBool, StrictFloat, StrictInt, StrictStr, create_model, model_validator
 
 from codex_records import (
     AgentRecord as AgentRecordContract,
-    AgentStatusValue,
     AmbiguousToolRequestResult,
     MissingToolRequestResult,
     MonitorRecord as MonitorRecordContract,
     MovedToolRequestResult,
     ComplaintRecord as ComplaintRecordContract,
-    ComplaintStatusValue,
     RequestRecord as RequestRecordContract,
     RuleRecord as RuleRecordContract,
     ToolRequestRecord as ToolRequestRecordContract,
@@ -37,6 +35,13 @@ from studio_api.sync.models import (
     TaskStatus,
     TaskEntityDto,
 )
+
+JsonObjectResponse = TypeAliasType("JsonObjectResponse", dict[str, JsonValue])
+
+
+_JSON_OBJECT_CONTRACT = get_args(
+    get_type_hints(AgentRecordContract, include_extras=True)["frozenNativeParams"]
+)[0]
 
 
 class AgentQuery(ContractModel):
@@ -538,10 +543,12 @@ class _OpenRecordResponse(ResponseModel):
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 
-_RECORD_RESPONSE_MODELS: dict[tuple[type[Any], tuple[str, str] | None], Any] = {}
+_RECORD_RESPONSE_MODELS: dict[tuple[type[Any], frozenset[str]], Any] = {}
 
 
 def _response_annotation(annotation: object, name: str) -> Any:
+    if annotation == _JSON_OBJECT_CONTRACT:
+        return JsonObjectResponse
     origin = get_origin(annotation)
     args = get_args(annotation)
     if origin in (NotRequired, Required):
@@ -567,11 +574,10 @@ def _record_response_model(
     name: str,
     record: type[Any],
     *,
-    discriminator: tuple[str, str] | None = None,
     required_fields: frozenset[str] = frozenset(),
 ) -> Any:
     """Build an open response model from a canonical TypedDict record."""
-    cache_key = (record, discriminator)
+    cache_key = (record, required_fields)
     if cache_key in _RECORD_RESPONSE_MODELS:
         return _RECORD_RESPONSE_MODELS[cache_key]
     fields: dict[str, tuple[Any, Any]] = {}
@@ -581,35 +587,29 @@ def _record_response_model(
         origin = get_origin(annotation)
         if origin in (NotRequired, Required):
             annotation = get_args(annotation)[0]
-        if discriminator is not None and field_name == discriminator[0]:
-            annotation = Literal[discriminator[1]]
         annotation = _response_annotation(annotation, f"{name}{field_name.title()}")
-        default = ... if field_name in required or field_name in required_fields or (
-            discriminator is not None and field_name == discriminator[0]
-        ) else None
+        default = ... if field_name in required or field_name in required_fields else None
         fields[field_name] = (annotation, default)
-    model = create_model(name, __base__=_OpenRecordResponse, **fields)  # type: ignore[call-overload]
-    _RECORD_RESPONSE_MODELS[cache_key] = model
-    return model
+    create_response_model = cast(Callable[..., Any], create_model)
+    response_model = create_response_model(name, __base__=_OpenRecordResponse, **fields)
+    _RECORD_RESPONSE_MODELS[cache_key] = response_model
+    return response_model
 
 
-ToolRequestStageResponse: tuple[Any, ...] = tuple(
-    _record_response_model(
-        f"{stage.title()}ToolRequestResponse", ToolRequestRecordContract,
-        discriminator=("stage", stage), required_fields=frozenset({"id"}),
-    )
-    for stage in ("queued", "running", "cancelled", "interrupted", "failed", "unknown", "completed")
+PersistedToolRequest: Any = _record_response_model(
+    "ToolRequestRecordResponse", ToolRequestRecordContract,
+    required_fields=frozenset({"id", "stage"}),
 )
 AmbiguousToolRequestResponse: Any = _record_response_model("AmbiguousToolRequestResponse", AmbiguousToolRequestResult)
 MissingToolRequestResponse: Any = _record_response_model("MissingToolRequestResponse", MissingToolRequestResult)
 MovedToolRequestResponse: Any = _record_response_model("MovedToolRequestResponse", MovedToolRequestResult)
 
-PersistedToolRequest: Any = Annotated[
-    Union[ToolRequestStageResponse], Field(discriminator="stage"),
-]
-ToolRequestReceipt: Any = Annotated[
-    Union[tuple((*ToolRequestStageResponse, AmbiguousToolRequestResponse, MissingToolRequestResponse,
-                 MovedToolRequestResponse))], Field(discriminator="stage"),
+ToolRequestReceipt: Any = RootModel[  # type: ignore[misc]
+    Annotated[
+        Union[tuple((PersistedToolRequest, AmbiguousToolRequestResponse, MissingToolRequestResponse,
+                     MovedToolRequestResponse))],
+        Field(discriminator="stage"),
+    ]
 ]
 
 
@@ -624,37 +624,14 @@ class AnnotationRecord(ContractModel):
     turnId: StrictStr | None = None
 
 
-AgentRecordResponse: Any = Annotated[
-    Union[tuple(
-        _record_response_model(
-            f"{status.title()}AgentResponse", AgentRecordContract,
-            discriminator=("status", status),
-        )
-        for status in get_args(AgentStatusValue)
-    )],
-    Field(discriminator="status"),
-]
-ComplaintRecordResponse: Any = Annotated[
-    Union[tuple(
-        _record_response_model(
-            f"{status.title()}ComplaintResponse", ComplaintRecordContract,
-            discriminator=("status", status),
-        )
-        for status in get_args(ComplaintStatusValue)
-    )],
-    Field(discriminator="status"),
-]
+AgentRecordResponse: Any = _record_response_model("AgentRecordResponse", AgentRecordContract)
+ComplaintRecordResponse: Any = _record_response_model("ComplaintRecordResponse", ComplaintRecordContract)
 RequestRecordResponse: Any = _record_response_model("RequestRecordResponse", RequestRecordContract)
 MonitorRecordResponse: Any = _record_response_model("MonitorRecordResponse", MonitorRecordContract)
 WorkViewRecordResponse: Any = _record_response_model("WorkViewRecordResponse", WorkViewRecordContract)
-RuleKindResponse: tuple[Any, ...] = tuple(
-    _record_response_model(
-        f"{kind.title()}RuleResponse", RuleRecordContract,
-        discriminator=("kind", kind), required_fields=frozenset({"id"}),
-    )
-    for kind in ("interval", "once", "file", "event", "low_workers")
+RuleRecord: Any = _record_response_model(
+    "RuleRecordResponse", RuleRecordContract, required_fields=frozenset({"id", "kind"}),
 )
-RuleRecord: Any = Annotated[Union[RuleKindResponse], Field(discriminator="kind")]
 
 
 class AnnotationReceipt(AnnotationRecord, ResponseModel):
