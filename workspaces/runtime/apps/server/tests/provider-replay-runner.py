@@ -32,6 +32,12 @@ from codex_claude_controls import bridge_build
 OUTBOUND_NOTIFICATION_METHODS = frozenset({"initialized"})
 
 
+def recorded_frames(path):
+    """Parse the provider transcript; the writer may still be appending its last line."""
+    text = path.read_text()
+    return [json.loads(line) for line in text[:text.rfind("\n") + 1].splitlines()]
+
+
 def eventually(check, timeout=8):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -204,7 +210,7 @@ class ProviderReplay(unittest.TestCase):
                 transcript_path = root / "captured.jsonl"
                 _saved, _events, answer_items = self.run_supervisor_fixture(
                     root, executable, fixture_path, transcript_path, fixture)
-                frames = [json.loads(line) for line in transcript_path.read_text().splitlines()]
+                frames = recorded_frames(transcript_path)
                 self.assertTrue(any(row["direction"] == "out" for row in frames))
                 self.assertTrue(any(row["direction"] == "in" for row in frames))
                 self.assert_replay_rpc_contract(frames, json.loads(replies_path.read_text()), fixture)
@@ -270,9 +276,9 @@ class ProviderReplay(unittest.TestCase):
                             def parent_start_sent():
                                 if not transcript_path.exists():
                                     return False
-                                outbound = any(json.loads(line)["direction"] == "out" and
-                                    json.loads(line)["message"].get("method") == "thread/start"
-                                    for line in transcript_path.read_text().splitlines())
+                                outbound = any(frame["direction"] == "out" and
+                                    frame["message"].get("method") == "thread/start"
+                                    for frame in recorded_frames(transcript_path))
                                 return outbound and runtime.agent(agent["id"]).get("threadId") is not None
                             try:
                                 eventually(parent_start_sent)
@@ -287,7 +293,7 @@ class ProviderReplay(unittest.TestCase):
                             def lost_reply_replayed():
                                 if not transcript_path.exists():
                                     return False
-                                frames = [json.loads(line) for line in transcript_path.read_text().splitlines()]
+                                frames = recorded_frames(transcript_path)
                                 sent = any(row["direction"] == "out" and
                                            row["message"].get("method") == "turn/start" for row in frames)
                                 observed = any(row["direction"] == "in" and
@@ -363,7 +369,7 @@ class ProviderReplay(unittest.TestCase):
                     encoded = json.dumps(usage_rows)
                     for token in fixture["assert"]["usage"]:
                         self.assertIn(token, encoded)
-                frames = [json.loads(line) for line in transcript_path.read_text().splitlines()]
+                frames = recorded_frames(transcript_path)
                 self.assertTrue(any(row["direction"] == "out" for row in frames))
                 self.assertTrue(any(row["direction"] == "in" for row in frames))
                 self.assertTrue(all(row["provider"] == fixture.get("provider", "codex") for row in frames))
