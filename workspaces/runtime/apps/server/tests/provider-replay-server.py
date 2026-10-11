@@ -12,6 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from provider_replay_dispatch import dispatch_rpc_lines
 from rpc_replay_contract import EMPTY_RESULT_METHODS
 
+DEFAULT_WAIT_GUARD_SECONDS = 60.0
+
 fixture = json.load(open(sys.argv[1], encoding="utf-8"))
 reply_frames = {**json.load(open(sys.argv[2], encoding="utf-8")), **fixture.get("rpcReplies", {})}
 thread = None
@@ -62,9 +64,9 @@ def hold_configured_rpc(method):
     phase = Path(os.environ["PROVIDER_REPLAY_GATE_PHASE"])
     release = Path(os.environ["PROVIDER_REPLAY_GATE_RELEASE"])
     phase.touch()
-    deadline = time.monotonic() + float(
-        os.environ["PROVIDER_REPLAY_WAIT_GUARD_SECONDS"]
-    )
+    deadline = time.monotonic() + float(os.environ.get(
+        "PROVIDER_REPLAY_WAIT_GUARD_SECONDS", str(DEFAULT_WAIT_GUARD_SECONDS)
+    ))
     while not release.exists() and time.monotonic() < deadline:
         time.sleep(.01)
     if not release.exists():
@@ -111,9 +113,9 @@ def handle(line):
             from pathlib import Path
             Path(os.environ["PROVIDER_REPLAY_PHASE"]).touch()
             release = Path(os.environ["PROVIDER_REPLAY_RELEASE"])
-            deadline = time.monotonic() + float(
-                os.environ["PROVIDER_REPLAY_WAIT_GUARD_SECONDS"]
-            )
+            deadline = time.monotonic() + float(os.environ.get(
+                "PROVIDER_REPLAY_WAIT_GUARD_SECONDS", str(DEFAULT_WAIT_GUARD_SECONDS)
+            ))
             while not release.exists() and time.monotonic() < deadline:
                 time.sleep(.01)
         if fixture.get("parentChildOrder") and thread_id.endswith("-1"):
