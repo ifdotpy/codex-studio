@@ -45,6 +45,8 @@ class Server(f.FakeServer):
         self.before_reply = None
 
     def call(self, method, params, timeout=60):
+        if method == 'claude/activity':
+            return {'busy': getattr(self, 'busy', False)}
         if method == 'claude/state':
             return copy.deepcopy(self.state)
         if method == 'thread/queue/list':
@@ -414,6 +416,18 @@ class Controls(unittest.TestCase):
             self.server.provider_options = {}
             self.assertTrue(retire_idle_bridge(self.rt, 'default', {'claudeOptions': {}}, self.server))
             self.assertNotIn('default', self.rt.servers)
+
+    def test_an_updated_bridge_says_itself_whether_it_runs_a_turn(self):
+        # A turn that a stopped bridge left behind stays in progress in the saved state.
+        self.server.state['turns'] = [{'id': 'old', 'status': 'inProgress'}]
+        self.server.provider_options = {}
+        self.server.initialize_result = {'capabilities': {'claudeVersion': 23, 'claudeBuild': 'older',
+                                                          'activityRead': True}}
+        self.server.busy = True
+        self.assertFalse(retire_idle_bridge(self.rt, 'default', {'claudeOptions': {}}, self.server))
+        self.server.busy = False
+        self.assertTrue(retire_idle_bridge(self.rt, 'default', {'claudeOptions': {}}, self.server))
+        self.assertNotIn('default', self.rt.servers)
 
     def test_current_bridge_version_stays_and_checks_native_tasks(self):
         self.server.initialize_result = {'capabilities': {'claudeVersion': 23, 'claudeBuild': bridge_build()}}

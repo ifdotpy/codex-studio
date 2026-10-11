@@ -1614,6 +1614,7 @@ async function handle(method, p) {
         claudeVersion: 23,
         claudeBuild: await bridgeBuild,
         passiveAccountRead: true,
+        activityRead: true,
       },
     };
   if (method === "initialized") return {};
@@ -1655,6 +1656,15 @@ async function handle(method, p) {
       nextCursor: null,
     };
   }
+  // Whether this process runs a Claude turn or a background task now. The server retires an
+  // idle bridge after an update; saved turn records cannot say this, as a turn that a stopped
+  // bridge left behind stays in progress there.
+  if (method === "claude/activity")
+    return {
+      busy: [...queries.values()].some(
+        (active) => !!active.turn || active.tasks?.size > 0,
+      ),
+    };
   if (method === "account/read") {
     const { account } =
       p.passive === true ? await catalogCache.readPassive() : await catalog();

@@ -276,7 +276,14 @@ def retire_idle_bridge(rt, key, account, server):
         agents = eligible(db)
         if agents is False:
             return False
-    if isinstance(version, int) and version >= 2:
+    if capabilities.get('activityRead') is True and not current:
+        # A bridge that an update replaced says itself whether it runs a turn.
+        try:
+            if server.call('claude/activity', {}, timeout=5).get('busy') is not False:
+                return False
+        except Exception:
+            return False
+    elif isinstance(version, int) and version >= 2:
         try:
             for agent in agents:
                 if agent.get('threadId'):
