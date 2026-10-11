@@ -1,6 +1,7 @@
 """Per-chat VM execution and layr lifecycle. Native chats keep their old path."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
@@ -234,18 +235,63 @@ def queue_turn(runtime: Any, db: Any, agent: Any, turn_id: str | None) -> None:
     pending.setdefault(turn_id, {"status": "pending"})
 
 
+def _save_turn(runtime: Any, agent: Mapping[str, Any], turn: str, key: str) -> str:
+    """Save the line state after one turn; its state ID."""
+    from codex_linux_vm import LinuxVMError
+    try:
+        return str(request(runtime, "line.save", {"agentId": agent["id"], "turnId": turn}, key)["stateId"])
+    except LinuxVMError as error:
+        if error.uncertain or error.code != "operation_failed":
+            raise
+    # A guest from before 2026-10-12 runs `layr layer repair`, which layr renamed to `cache`,
+    # so its line.save always fails. The same steps run as the line owner until the VM boots
+    # the new guest. A read-only line saves as root, which layr.exec cannot do.
+    line = context(runtime, agent)
+    if line.get("readOnly"):
+        raise ValueError("The guest cannot save this read-only line")
+    output = ""
+    for step, argv in (("repair", ["layr", "cache", "repair"]),
+                       ("save", ["layr", "save", "--force", "-m", "Studio turn " + turn]),
+                       ("state", ["layr", "rev-parse", "HEAD@{0}"])):
+        result = request(runtime, "layr.exec", {"agentId": agent["id"], "argv": argv, "cwd": line["path"]},
+                         key + ":" + step)
+        if result.get("exitCode") != 0:
+            raise ValueError("The layr " + step + " step of the turn save failed")
+        output = base64.b64decode(result.get("stdout", "")).decode().strip()
+    if not output:
+        raise ValueError("The guest gave no state for the turn save")
+    return output
+
+
 def flush_turns(runtime: Any, agent: Mapping[str, Any]) -> None:
+    from codex_linux_vm import LinuxVMError
     for turn, saved in list(agent.get("layrTurnSaves", {}).items()):
         if saved.get("status") == "saved":
             continue
-        result = request(runtime, "line.save", {"agentId": agent["id"], "turnId": turn},
-                         "layr-turn:" + agent["id"] + ":" + turn)
+        # The guest keeps the answer of each request ID, failures too. A retry after a lost
+        # answer reuses the ID; a retry after a definite failure takes the next attempt, or
+        # it would get the same failure from the receipt again.
+        attempt = int(saved.get("attempt", 0))
+        key = "layr-turn:" + agent["id"] + ":" + turn + (":" + str(attempt) if attempt else "")
+        try:
+            state = _save_turn(runtime, agent, turn, key)
+        except Exception as error:
+            if not isinstance(error, ValueError) and not (
+                    isinstance(error, LinuxVMError) and not error.uncertain and error.code):
+                raise
+            with runtime.lock, runtime.db() as db:
+                latest = runtime.agent(agent["id"], db)
+                row = latest.setdefault("layrTurnSaves", {}).setdefault(turn, {"status": "pending"})
+                if row.get("status") != "saved":
+                    row["attempt"] = attempt + 1
+                    runtime.put(db, "agents", latest)
+            raise
         with runtime.lock, runtime.db() as db:
             latest = runtime.agent(agent["id"], db)
             latest.setdefault("layrTurnSaves", {})[turn] = {
-                "status": "saved", "stateId": result["stateId"],
+                "status": "saved", "stateId": state,
             }
-            latest["layrStateId"] = result["stateId"]
+            latest["layrStateId"] = state
             latest.pop("layrError", None)
             latest.pop("layrTurnRetryAt", None)
             runtime.put(db, "agents", latest)
