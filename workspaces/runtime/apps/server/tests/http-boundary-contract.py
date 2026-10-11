@@ -19,7 +19,11 @@ from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
 
-from http_backend_harness import BackendProcess, HttpResult
+from http_backend_harness import (
+    HTTP_WAIT_GUARD_SECONDS,
+    BackendProcess,
+    HttpResult,
+)
 
 _module_import_finished = time.monotonic()
 
@@ -161,14 +165,15 @@ class BoundaryContractTests(TimedBoundaryTest):
             "resources": json.dumps([{"kind": "drafts"}], separators=(",", ":")),
         })
         started = time.monotonic()
-        with urlopen(Request(backend.origin + "/api/sync/stream?" + query), timeout=2.0) as response:
+        with urlopen(Request(backend.origin + "/api/sync/stream?" + query),
+                     timeout=HTTP_WAIT_GUARD_SECONDS) as response:
             self.assertEqual(response.status, 200)
             raw_socket = response.fp.raw._sock
             frames: list[dict[str, object]] = []
             current: dict[str, object] = {}
             data_lines: list[str] = []
-            deadline = started + 2.0
-            while len(frames) < 3 and time.monotonic() < deadline:
+            deadline = started + HTTP_WAIT_GUARD_SECONDS
+            while len(frames) < 3:
                 raw_socket.settimeout(max(0.01, deadline - time.monotonic()))
                 line = response.readline().decode("utf-8").rstrip("\r\n")
                 if line.startswith("event: "):
@@ -225,17 +230,22 @@ class BoundaryContractTests(TimedBoundaryTest):
         assert_status(sent, 200)
         self.assertEqual(sent.json()["id"], body["id"])
         transcript_path = "/api/transcript?" + urlencode({"id": lead_id})
-        deadline = time.monotonic() + 2.5
         frames: list[dict[str, object]] = []
         transcript: dict[str, object] = {}
-        while time.monotonic() < deadline:
+        def turn_completed() -> bool:
+            nonlocal frames, transcript
             frames = backend.received_provider_frames()
-            transcript_response = backend.request("GET", transcript_path, timeout=1.0)
+            transcript_response = backend.request(
+                "GET", transcript_path, timeout=HTTP_WAIT_GUARD_SECONDS,
+            )
             assert_status(transcript_response, 200)
             transcript = transcript_response.json()
             methods = [frame.get("method") for frame in frames]
-            if "turn/start" in methods and "Recovered output." in json.dumps(transcript):
-                break
+            return "turn/start" in methods and "Recovered output." in json.dumps(transcript)
+        try:
+            backend.wait_until(turn_completed, "provider turn output through HTTP")
+        except TimeoutError:
+            pass
         history = backend.request("GET", "/api/messages?room=" + lead_id)
         assert_status(history, 200)
         self.assertTrue(any(item["id"] == body["id"] and item["text"] == body["text"]
@@ -318,12 +328,18 @@ class RestartContractTests(TimedBoundaryTest):
         sent = backend.request("POST", "/api/messages", body=provider_message, headers=headers)
         assert_status(sent, 200)
         transcript_path = "/api/transcript?" + urlencode({"id": lead_id})
-        deadline = time.monotonic() + 2.5
-        while time.monotonic() < deadline:
-            transcript = backend.request("GET", transcript_path, timeout=1.0)
+        transcript: dict[str, object] = {}
+        def restarted_turn_completed() -> bool:
+            nonlocal transcript
+            transcript = backend.request(
+                "GET", transcript_path, timeout=HTTP_WAIT_GUARD_SECONDS,
+            )
             assert_status(transcript, 200)
-            if "Recovered output." in json.dumps(transcript.json()):
-                break
+            return "Recovered output." in json.dumps(transcript.json())
+        try:
+            backend.wait_until(restarted_turn_completed, "restart provider output through HTTP")
+        except TimeoutError:
+            pass
         transcript_text = json.dumps(transcript.json())
         if "Recovered output." not in transcript_text:
             native_status = backend.request("GET", "/api/desktop").json().get("nativeRuntime")

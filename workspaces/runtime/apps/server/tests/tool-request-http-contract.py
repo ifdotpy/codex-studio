@@ -2,7 +2,6 @@
 """Recover provider tool requests through the process and HTTP boundaries."""
 
 import json
-import time
 import unittest
 from urllib.parse import urlencode
 
@@ -50,16 +49,18 @@ class ToolRequestHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(sent.status, 200, sent.body[:1000])
         self.assertEqual(sent.json()["id"], message_id)
 
-        deadline = time.monotonic() + 2.5
-        frames: list[dict[str, object]] = []
         result_frame: dict[str, object] | None = None
-        while time.monotonic() < deadline:
+        def received_result() -> dict[str, object] | None:
+            nonlocal result_frame
             frames = self.backend.received_provider_frames()
             result_frame = next((frame for frame in frames
                                  if frame.get("id") == "boundary-tool-rpc-1"
                                  and isinstance(frame.get("result"), dict)), None)
-            if result_frame is not None:
-                break
+            return result_frame
+        try:
+            self.backend.wait_until(received_result, "provider tool result frame")
+        except TimeoutError:
+            self.fail("The fake Codex did not receive the tool result frame")
         self.assertIsNotNone(result_frame, "the fake Codex did not receive the tool result frame")
         provider_result = result_frame["result"]
         self.assertTrue(provider_result["success"], provider_result)

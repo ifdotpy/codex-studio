@@ -20,6 +20,7 @@ turn_number = 0
 lock = threading.Lock()
 child_finished = threading.Event()
 tool_responses = {}
+held_rpc_counts = {}
 
 def send(message):
     with lock:
@@ -51,6 +52,25 @@ def recorded_reply(method, request, thread_id=None, turn_id=None):
     return {"id": request["id"], **message}
 
 
+def hold_configured_rpc(method):
+    if method != os.environ.get("PROVIDER_REPLAY_HOLD_METHOD"):
+        return
+    occurrence = held_rpc_counts.get(method, 0) + 1
+    held_rpc_counts[method] = occurrence
+    if occurrence != int(os.environ.get("PROVIDER_REPLAY_HOLD_OCCURRENCE", "1")):
+        return
+    phase = Path(os.environ["PROVIDER_REPLAY_GATE_PHASE"])
+    release = Path(os.environ["PROVIDER_REPLAY_GATE_RELEASE"])
+    phase.touch()
+    deadline = time.monotonic() + float(
+        os.environ["PROVIDER_REPLAY_WAIT_GUARD_SECONDS"]
+    )
+    while not release.exists() and time.monotonic() < deadline:
+        time.sleep(.01)
+    if not release.exists():
+        raise AssertionError(f"Provider replay gate for {method} was not released")
+
+
 def handle(line):
     global thread, thread_count, turn_number
     request = json.loads(line)
@@ -77,6 +97,7 @@ def handle(line):
             thread_count += 1
             thread_id = f"replay-thread-{thread_count}"
             thread = thread_id
+        hold_configured_rpc(method)
         send(recorded_reply(method, request, thread_id))
         return
     if method == "turn/start":
@@ -90,7 +111,9 @@ def handle(line):
             from pathlib import Path
             Path(os.environ["PROVIDER_REPLAY_PHASE"]).touch()
             release = Path(os.environ["PROVIDER_REPLAY_RELEASE"])
-            deadline = time.monotonic() + 30
+            deadline = time.monotonic() + float(
+                os.environ["PROVIDER_REPLAY_WAIT_GUARD_SECONDS"]
+            )
             while not release.exists() and time.monotonic() < deadline:
                 time.sleep(.01)
         if fixture.get("parentChildOrder") and thread_id.endswith("-1"):

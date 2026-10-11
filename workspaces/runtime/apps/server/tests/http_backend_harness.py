@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 import tempfile
-from typing import Any
+from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -29,6 +29,7 @@ PROVIDER_FIXTURES = Path(__file__).parent / "fixtures/provider-replay"
 STARTUP_TIMEOUT_SECONDS = 60.0
 HTTP_WAIT_POLL_SECONDS = 0.05
 STOP_TIMEOUT_SECONDS = 4.0
+HTTP_WAIT_GUARD_SECONDS = STARTUP_TIMEOUT_SECONDS
 PROVIDER_SELECTION_ENVIRONMENT = frozenset({
     "CODEX_BIN",
     "CODEX_AGENTS_NATIVE_RUNTIME_PIN",
@@ -103,6 +104,8 @@ class BackendProcess:
         self.stop_phases: list[dict[str, float]] = []
         self.cleanup_seconds: float | None = None
         self._provider_start_log: Path | None = None
+        self._provider_hold_method: str | None = None
+        self._provider_hold_occurrence = 1
         self.lead_id = ""
         self.room_id = ""
         self.workspace_id = ""
@@ -188,6 +191,16 @@ class BackendProcess:
             environment["CODEX_AGENTS_NATIVE_RUNTIME_PIN"] = str(executable)
             environment["PROVIDER_REPLAY_PHASE"] = str(self.root / "provider-phase")
             environment["PROVIDER_REPLAY_RELEASE"] = str(self.root / "provider-release")
+            environment["PROVIDER_REPLAY_GATE_PHASE"] = str(self.root / "provider-gate-phase")
+            environment["PROVIDER_REPLAY_GATE_RELEASE"] = str(self.root / "provider-gate-release")
+            environment["PROVIDER_REPLAY_WAIT_GUARD_SECONDS"] = str(
+                HTTP_WAIT_GUARD_SECONDS
+            )
+            if self._provider_hold_method is not None:
+                environment["PROVIDER_REPLAY_HOLD_METHOD"] = self._provider_hold_method
+                environment["PROVIDER_REPLAY_HOLD_OCCURRENCE"] = str(
+                    self._provider_hold_occurrence
+                )
         return environment
 
     def start(self) -> float:
@@ -254,8 +267,10 @@ class BackendProcess:
                     self.session = health.json()
                     break
                 last_health_error = RuntimeError(f"health returned HTTP {health.status}")
+                time.sleep(min(HTTP_WAIT_POLL_SECONDS, max(0.0, deadline-time.monotonic())))
             except (RuntimeError, URLError, OSError) as error:
                 last_health_error = error
+                time.sleep(min(HTTP_WAIT_POLL_SECONDS, max(0.0, deadline-time.monotonic())))
         else:
             self.stop()
             raise RuntimeError(f"Backend health request exceeded its bound: {last_health_error}; {self.stderr}")
@@ -275,8 +290,10 @@ class BackendProcess:
                 last_identity_error = RuntimeError(
                     f"contract identity returned HTTP {identity.status}"
                 )
+                time.sleep(min(HTTP_WAIT_POLL_SECONDS, max(0.0, deadline-time.monotonic())))
             except (RuntimeError, URLError, OSError) as error:
                 last_identity_error = error
+                time.sleep(min(HTTP_WAIT_POLL_SECONDS, max(0.0, deadline-time.monotonic())))
         else:
             self.stop()
             raise RuntimeError(
@@ -364,7 +381,7 @@ class BackendProcess:
         *,
         body: Any = None,
         headers: dict[str, str] | None = None,
-        timeout: float = 5.0,
+        timeout: float = HTTP_WAIT_GUARD_SECONDS,
     ) -> HttpResult:
         if self.origin is None:
             raise RuntimeError("Backend is not ready")
@@ -456,6 +473,34 @@ class BackendProcess:
         self._provider_executable = executable
         return self._codex_log
 
+    def hold_provider(self, method: str, occurrence: int = 1) -> None:
+        """Hold one replay RPC until release_provider_gate is called."""
+        if self._process is not None:
+            raise RuntimeError("Provider gates must be configured before backend start")
+        if not method or occurrence < 1:
+            raise ValueError("Provider gate needs a method and positive occurrence")
+        self._provider_hold_method = method
+        self._provider_hold_occurrence = occurrence
+        (self.root / "provider-gate-release").unlink(missing_ok=True)
+
+    def provider_gate_started(self) -> bool:
+        return (self.root / "provider-gate-phase").exists()
+
+    def release_provider_gate(self) -> None:
+        (self.root / "provider-gate-release").touch()
+
+    def wait_until(self, condition: Callable[[], Any], description: str) -> Any:
+        """Wait for an observable fixture condition with one shared hang guard."""
+        deadline = time.monotonic() + HTTP_WAIT_GUARD_SECONDS
+        while True:
+            value = condition()
+            if value:
+                return value
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"HTTP condition did not settle: {description}")
+            time.sleep(min(HTTP_WAIT_POLL_SECONDS, remaining))
+
     def received_provider_frames(self) -> list[dict[str, Any]]:
         if self._codex_log is None or not self._codex_log.exists():
             return []
@@ -529,13 +574,21 @@ class BackendProcess:
         self.cleanup_seconds = time.monotonic() - cleanup_started
 
 
-def start_contract_backend(test_case: type[Any], fixture_name: str = "restart-mid-turn-supervisor-replay.json") -> BackendProcess:
+def start_contract_backend(
+    test_case: type[Any],
+    fixture_name: str = "restart-mid-turn-supervisor-replay.json",
+    *,
+    hold_provider_method: str | None = None,
+    hold_provider_occurrence: int = 1,
+) -> BackendProcess:
     """Start one isolated backend owned by a unittest class cleanup."""
     scratch_value = os.environ.get("TMPDIR")
     if not scratch_value:
         raise RuntimeError("The server runner must provide a memory-backed TMPDIR")
     construction_started = time.monotonic()
     backend = BackendProcess(Path(scratch_value))
+    if hold_provider_method is not None:
+        backend.hold_provider(hold_provider_method, hold_provider_occurrence)
     backend.class_setup_phases["harnessConstructionSeconds"] = round(
         time.monotonic() - construction_started, 4,
     )

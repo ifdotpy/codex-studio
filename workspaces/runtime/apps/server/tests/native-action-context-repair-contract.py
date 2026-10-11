@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import time
 import unittest
 from urllib.parse import urlencode
 from unittest.mock import patch
@@ -13,7 +12,11 @@ from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
 
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import (
+    HTTP_WAIT_GUARD_SECONDS,
+    TimedHTTPContractTest,
+    start_contract_backend,
+)
 
 
 class NativeActionHTTPContract(TimedHTTPContractTest, unittest.TestCase):
@@ -69,18 +72,25 @@ class NativeActionHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             headers=self.headers,
         )
         self.assertEqual(sent.status, 200, sent.body[:1000])
-        deadline = time.monotonic() + 3.0
         transcript_path = "/api/transcript?" + urlencode({"id": identifier})
         transcript: object = None
-        while time.monotonic() < deadline:
+        def settled_turn() -> bool:
+            nonlocal transcript
             frames = self.backend.received_provider_frames()
-            response = self.backend.request("GET", transcript_path, timeout=1.0)
+            response = self.backend.request(
+                "GET", transcript_path, timeout=HTTP_WAIT_GUARD_SECONDS,
+            )
             self.assertEqual(response.status, 200, response.body[:1000])
             transcript = response.json()
-            if (any(frame.get("method") == "turn/start" for frame in frames)
-                    and "Recovered output." in json.dumps(transcript)):
-                return
-        self.fail(f"The provider turn did not complete through HTTP: {transcript!r}")
+            current = self.entity(identifier)
+            return (any(frame.get("method") == "turn/start" for frame in frames)
+                    and "Recovered output." in json.dumps(transcript)
+                    and not current.get("inFlight")
+                    and current.get("status") not in {"starting", "running"})
+        try:
+            self.backend.wait_until(settled_turn, "provider turn completion and idle state")
+        except TimeoutError:
+            self.fail(f"The provider turn did not complete through HTTP: {transcript!r}")
 
     def action_once(self, action: str, identifier: str) -> None:
         lead = self.create_lead(identifier)
