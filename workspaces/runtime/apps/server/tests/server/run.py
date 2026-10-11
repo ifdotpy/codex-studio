@@ -1019,15 +1019,17 @@ def _focused_run_slot(profile=None, slots=None):
 
 
 
-def _memory_scratch_root(workers):
-    """Use tmpfs only with 256 MiB of measured headroom per planned worker."""
+def _memory_scratch_root(workers, *, simultaneous_runs=1):
+    """Use tmpfs only with measured headroom for workers across active runs."""
     mounts = list(_tmpfs_mounts())
     _cleanup_stale_scratch_roots(mounts)
     candidates = []
     for mount in mounts:
         owned = None
         try:
-            if shutil.disk_usage(mount).free < workers * SCRATCH_BYTES_PER_WORKER:
+            required_bytes = workers * simultaneous_runs * SCRATCH_BYTES_PER_WORKER
+            probe_bytes = simultaneous_runs * SCRATCH_PROBE_MIN_BYTES
+            if shutil.disk_usage(mount).free < required_bytes:
                 continue
             owned = Path(tempfile.mkdtemp(prefix="csst-", dir=mount))
             (owned / SCRATCH_OWNER_FILE).write_text(json.dumps({
@@ -1035,7 +1037,7 @@ def _memory_scratch_root(workers):
             if len(os.fsencode(owned)) > MAX_SHORT_TMP_ROOT_BYTES:
                 shutil.rmtree(owned)
                 continue
-            if not _probe_scratch_capacity(owned, SCRATCH_PROBE_MIN_BYTES):
+            if not _probe_scratch_capacity(owned, probe_bytes):
                 shutil.rmtree(owned)
                 continue
             candidates.append((shutil.disk_usage(mount).free, owned))
@@ -1457,8 +1459,11 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
     TEST_TMP_ROOT.mkdir(parents=True, exist_ok=True)
     if TMP_ROOT_OVERRIDE:
         print(f"Scratch root: configured {TEST_TMP_ROOT}", flush=True)
-    elif save_measurements and not focused:
-        owned_tmp_root = _memory_scratch_root(workers)
+    elif save_measurements:
+        simultaneous_runs = focused_slots if focused else 1
+        owned_tmp_root = _memory_scratch_root(
+            workers, simultaneous_runs=simultaneous_runs,
+        )
         if owned_tmp_root is not None:
             suite_tmp_root = owned_tmp_root
             print(f"Scratch root: tmpfs {owned_tmp_root}", flush=True)
