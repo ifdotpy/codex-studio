@@ -270,16 +270,24 @@ usability test also starts WebKit directly. Live or installed-environment checks
 and performance measurements are explicitly selected separately from the
 default browser suite. The current CI workflow runs the client unit tests but
 does not run the Playwright browser suite.
-The fixture backend uses the repository-managed Python runtime. Resolve it
-before launching the isolated browser command and put it first on `PATH`:
+Browser runs need a prepared Python environment and the native operations module
+that matches this checkout. Set a fresh scratch root, build the native module,
+then install the CLI into an isolated cache and bin directory. The installer
+must not inherit `CODEX_AGENTS_PYTHON`; resolve the resulting interpreter only
+after installation:
 
 ```sh
-export CODEX_AGENTS_PYTHON="$(python3 workspaces/runtime/apps/server/src/codex_python.py)"
+BROWSER_TEST_ROOT=/var/tmp/codex-browser-test
+CARGO_TARGET_DIR="$BROWSER_TEST_ROOT/cargo-target" cargo build --release -p studio-operations-python
+XDG_CACHE_HOME="$BROWSER_TEST_ROOT/python-cache" env -u CODEX_AGENTS_PYTHON CARGO_TARGET_DIR="$BROWSER_TEST_ROOT/cargo-target" python3 workspaces/runtime/apps/server/src/install-cli.py --dev --bin-dir "$BROWSER_TEST_ROOT/bin"
+export CODEX_AGENTS_PYTHON="$(XDG_CACHE_HOME="$BROWSER_TEST_ROOT/python-cache" python3 workspaces/runtime/apps/server/src/codex_python.py)"
 export PATH="$(dirname "$CODEX_AGENTS_PYTHON"):$PATH"
 ```
 
-This selects an existing equipped interpreter; it does not install or modify
-the managed runtime.
+The launcher checks the Python dependencies and imports the server's native
+operations adapter before discovery, which reports the build instruction for a
+missing or mismatched native module. It keeps run state private.
+
 Use `pnpm --filter codex-agents-web run test:performance` for the browser performance group.
 To inspect the optional installed-environment group, enable
 `PLAYWRIGHT_INCLUDE_SPECIAL=1` and select the `installed-only` project explicitly.
