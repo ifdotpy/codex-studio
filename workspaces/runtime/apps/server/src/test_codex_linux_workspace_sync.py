@@ -81,6 +81,31 @@ class SourceArchives(unittest.TestCase):
             self.assertNotIn(skipped, names)
         self.assertEqual(sorted(repo['path'] for repo in result['repositories']), ['.', 'nested'])
 
+    def test_an_inner_worktree_is_skipped_and_a_submodule_keeps_its_store(self):
+        # A worktree inside the project is a line of its own, not code here.
+        self.git('worktree', 'add', '-q', '-b', 'rehearsal', str(self.repo / 'rehearsal'))
+        library = self.root / 'library'
+        subprocess.run(['git', 'init', '-q', '-b', 'main', str(library)], check=True)
+        (library / 'lib.txt').write_text('library')
+        subprocess.run(['git', '-C', str(library), 'add', '.'], check=True)
+        subprocess.run(['git', '-C', str(library), '-c', 'user.name=F', '-c', 'user.email=f@example.test',
+                        'commit', '-qm', 'Library'], check=True)
+        self.git('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', str(library), 'vendor/lib')
+        self.git('commit', '-qm', 'Submodule')
+        result, names = self.archive('linked.tar.gz')
+        self.assertNotIn('rehearsal', names)
+        for kept in ('vendor/lib/.git', 'vendor/lib/lib.txt', '.git/modules/vendor/lib/HEAD',
+                     '.git/modules/vendor/lib/objects'):
+            self.assertIn(kept, names)
+        self.assertEqual(sorted(repo['path'] for repo in result['repositories']), ['.', 'vendor/lib'])
+        # A delta pack holds no submodule objects, and a store outside the project is not copied.
+        with self.assertRaisesRegex(ValueError, 'self-contained'):
+            archive_source(self.repo, self.root / 'delta.tar.gz', result)
+        subprocess.run(['git', '-C', str(library), 'worktree', 'add', '-q', '-b', 'x', str(self.repo / 'external')],
+                       check=True, capture_output=True)
+        with self.assertRaisesRegex(ValueError, 'self-contained'):
+            archive_source(self.repo, self.root / 'external.tar.gz')
+
     def test_delta_uses_head_changes_dirty_paths_and_deletions(self):
         baseline, _ = self.archive('first.tar.gz')
         (self.repo / 'one').unlink()

@@ -46,10 +46,41 @@ def _git_metadata_paths(root):
     return sorted(result)
 
 
+def _linked_git(root, directory):
+    """What the `.git` file of a folder below root links it to: 'worktree' for a worktree of
+    a repository in root, 'submodule' for a submodule whose store is in its parent's .git
+    below root (a full copy of root holds it), else None."""
+    marker = directory / '.git'
+    if marker.is_symlink() or not marker.is_file():
+        return None
+    text = marker.read_text(errors='replace').strip()
+    if not text.startswith('gitdir: '):
+        return None
+    store = Path(os.path.normpath(directory / text[8:]))
+    if os.path.realpath(store) != str(store) or not store.is_dir():
+        return None
+    try:
+        parts = store.relative_to(root).parts
+    except ValueError:
+        return None
+    if '.git' not in parts:
+        return None
+    rest = parts[parts.index('.git') + 1:]
+    if len(rest) == 2 and rest[0] == 'worktrees':
+        return 'worktree'
+    if len(rest) >= 2 and rest[0] == 'modules' and not (store / 'objects').is_symlink() \
+            and not (store / 'objects/info/alternates').exists():
+        return 'submodule'
+    return None
+
+
 def _validate_object_store(root):
     # Git follows links in its object store. Check metadata before Git can read
     # an object into a pack, including loose objects and existing pack files.
-    objects = root / '.git/objects'
+    marker = root / '.git'
+    objects = marker / 'objects'
+    if marker.is_file() and not marker.is_symlink():
+        objects = Path(os.path.normpath(root / marker.read_text(errors='replace').strip()[8:])) / 'objects'
     for directory, children, files in os.walk(objects, followlinks=False):
         for name in [*children, *files]:
             if (Path(directory) / name).is_symlink():
@@ -109,8 +140,10 @@ REGENERABLE = {'node_modules', '.venv', 'venv', '__pycache__', '.pytest_cache', 
 def _code_only_skips(root, repositories, excludes):
     """The folders that each repository's Git ignores, as paths below root. A folder that is
     itself a repository stays (a nested project that its parent ignores keeps its own rules);
-    repositories inside a skipped folder (copies of other projects in a data folder) go with it."""
-    skipped = set()
+    repositories inside a skipped folder (copies of other projects in a data folder) go with it.
+    A worktree of a repository in root is skipped too: it is a line of its own."""
+    skipped = {repo for repo in repositories
+               if repo != '.' and _linked_git(root, root / repo) == 'worktree'}
     def inside(relative, folders):
         parts = relative.split('/')
         return any('/'.join(parts[:index]) in folders for index in range(1, len(parts) + 1))
@@ -180,9 +213,12 @@ def archive_source(root, archive_path, baseline=None):
                 deleted.update(set(prior.get('gitMetadataPaths', [])) - set(_git_metadata_paths(root if repo['path'] == '.' else root/repo['path'])))
 
     # A source linked to an external Git store needs a separate object import.
-    # Refuse an incomplete copy; the runtime can choose the host workspace.
+    # Refuse an incomplete copy; the runtime can choose the host workspace. A full copy
+    # holds a submodule's store with its parent's .git; a delta pack does not.
     for repo in current:
         directory = root if repo['path'] == '.' else root / repo['path']
+        if full and repo['path'] != '.' and _linked_git(root, directory) == 'submodule':
+            continue
         if (not (directory / '.git').is_dir() or (directory / '.git').is_symlink()
                 or (directory / '.git/objects').is_symlink()
                 or (directory / '.git/objects/info/alternates').exists()):
