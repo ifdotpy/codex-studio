@@ -388,7 +388,7 @@ class Relay(unittest.TestCase):
         status, _, body = browser_get(forward.bound_port, "/cb?code=1")
         self.assertEqual(status, 502)
         self.assertIn(b"unknown", body)
-        self.assertEqual(reasons, ["unknown"])
+        wait_until(lambda: reasons == ["unknown"])
 
     def test_cleaned_results(self) -> None:
         self.assertEqual(cleaned({"status": 302, "body": ""})[0], 200)
