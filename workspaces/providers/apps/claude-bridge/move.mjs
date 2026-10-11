@@ -57,6 +57,17 @@ export async function savedPromptProof(file, session) {
       row.type === "attachment" &&
       row.attachment?.type === "deferred_tools_delta"
     ) {
+      // Newer CLIs put the definitions that a delta surfaces into the delta itself; an
+      // entry with sameAs repeats a definition that an earlier delta gave.
+      const surfaced = row.attachment.surfacedDefinitions;
+      if (surfaced !== undefined && !Array.isArray(surfaced))
+        throw new Error("The saved deferred tool schemas are incomplete");
+      for (const entry of surfaced || []) {
+        if (entry?.definition === undefined) continue;
+        if (!completeTool(entry.definition))
+          throw new Error("The saved deferred tool schemas are incomplete");
+        deferred.set(entry.definition.name, entry.definition);
+      }
       for (const key of ["removedNames", "addedNames"])
         if (
           row.attachment[key] !== undefined &&
@@ -81,16 +92,24 @@ export async function savedPromptProof(file, session) {
     throw new Error(
       "The session has no verified saved prompt snapshot with complete ordered tool schemas",
     );
+  // Newer CLIs mark inlineTools true, yet keep every MCP tool out of the snapshot and deliver
+  // it through deferred records and deltas, as inlineTools false does. Such a snapshot gets the
+  // deferred proof; its external servers are those whose definitions the history holds.
+  const deferredOnly =
+    snapshot.inlineTools !== false &&
+    !snapshot.tools.some((entry) => entry.name.startsWith("mcp__")) &&
+    (deferred.size > 0 || [...activeNames].some((n) => n.startsWith("mcp__")));
   return {
     snapshotHash: createHash("sha256")
       .update(JSON.stringify(snapshot))
       .digest("hex"),
     tools: snapshot.tools.map(normalizeTool),
-    ...(snapshot.inlineTools === false
+    ...(snapshot.inlineTools === false || deferredOnly
       ? {
           deferredTools: [...deferred.values()],
           activeDeferredNames: [...activeNames],
           inlineTools: false,
+          ...(deferredOnly ? { surfacedExternal: true } : {}),
         }
       : {}),
     session: Object.fromEntries(

@@ -15,6 +15,7 @@ import {
   verifyToolProof,
   studioToolCatalog,
 } from "./move.mjs";
+import { externalAliases } from "./move-external.mjs";
 
 test("move exports only its native session, preserves bytes and refuses conflicts", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-move-"));
@@ -380,4 +381,95 @@ test("deferred schemas stay historical while the current ordered catalog is froz
       ]),
     /does not offer.*Monitor/,
   );
+});
+
+test("an inline snapshot whose MCP tools are all deferred gets the deferred proof", async () => {
+  const root = await fs.mkdtemp(
+    path.join(os.tmpdir(), "claude-deferred-only-"),
+  );
+  const file = path.join(root, "native.jsonl");
+  const session = { id: randomUUID(), model: "default", dynamicTools: [] };
+  const row = (attachment) =>
+    JSON.stringify({ type: "attachment", sessionId: session.id, attachment }) +
+    "\n";
+  const schema = { type: "object", properties: {} };
+  const studio = {
+    name: "mcp__studio__orchestration_teleport",
+    description: "Move",
+    input_schema: schema,
+    defer_loading: true,
+  };
+  const docs = {
+    name: "mcp__claude_ai_Docs__guide",
+    description: "Guide",
+    input_schema: schema,
+  };
+  const bytes =
+    row({
+      type: "prompt_snapshot",
+      systemPrompt: ["[redacted]"],
+      tools: [{ name: "Bash", input_schema: schema }],
+      inlineTools: true,
+    }) +
+    row({
+      type: "deferred_tools_delta",
+      addedNames: [
+        "Monitor",
+        "mcp__anarlog__get_meeting",
+        "mcp__claude_ai_Docs__guide",
+        "mcp__studio__orchestration_teleport",
+      ],
+      surfacedDefinitions: [
+        { name: docs.name, listing: "a1", definition: docs },
+      ],
+    }) +
+    row({
+      type: "deferred_tools_delta",
+      surfacedDefinitions: [
+        { name: docs.name, listing: "a1", sameAs: "earlier" },
+      ],
+    }) +
+    row({ type: "deferred_tools_record", entries: [studio] });
+  try {
+    await fs.writeFile(file, bytes);
+    const proof = await savedPromptProof(file, session);
+    assert.equal(proof.inlineTools, false);
+    assert.equal(proof.surfacedExternal, true);
+    assert.deepEqual(
+      proof.deferredTools.map((t) => t.name).sort(),
+      [docs.name, studio.name].sort(),
+    );
+    // Only servers whose definitions the history holds need a catalog on the target.
+    assert.deepEqual(externalAliases(proof), ["claude_ai_Docs"]);
+    // Deferred builtins stay available; the Studio catalog is compared as a whole.
+    const current = [
+      { name: studio.name, description: "Move", input_schema: schema },
+    ];
+    assert.deepEqual(verifyToolProof(proof, current, ["Bash", "Monitor"]), [
+      "Bash",
+      "Monitor",
+    ]);
+    assert.throws(
+      () => verifyToolProof({ ...proof, compiledTools: current }, []),
+      /tool definitions differ/,
+    );
+    // A snapshot with an inline MCP tool keeps the inline proof.
+    await fs.writeFile(
+      file,
+      row({
+        type: "prompt_snapshot",
+        systemPrompt: ["[redacted]"],
+        inlineTools: true,
+        tools: [
+          { name: "Bash", input_schema: schema },
+          { name: studio.name, input_schema: schema },
+        ],
+      }) + row({ type: "deferred_tools_record", entries: [studio] }),
+    );
+    const inline = await savedPromptProof(file, session);
+    assert.equal(inline.inlineTools, undefined);
+    assert.equal(inline.deferredTools, undefined);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });

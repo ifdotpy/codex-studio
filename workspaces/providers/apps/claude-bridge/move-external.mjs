@@ -40,7 +40,9 @@ export function externalRefusal(source, target = [], changed = []) {
 export function externalAliases(proof) {
   const names =
     proof.inlineTools === false
-      ? proof.activeDeferredNames || []
+      ? proof.surfacedExternal
+        ? (proof.deferredTools || []).map((tool) => tool.name)
+        : proof.activeDeferredNames || []
       : proof.tools.map((tool) => tool.name);
   return [
     ...new Set(
