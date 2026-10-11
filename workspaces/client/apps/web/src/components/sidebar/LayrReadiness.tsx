@@ -1,3 +1,4 @@
+import { Cloud } from "lucide-react";
 import { forwardRef, type ButtonHTMLAttributes } from "react";
 import type { components } from "../../generated/api";
 
@@ -77,8 +78,13 @@ const ProjectLayrReadiness = forwardRef<
     summary: LayrReadinessSummary | null;
     /** A report in the tooltip needs the user, for example a Mac folder sync conflict. */
     attention?: boolean;
+    /** The project's vault: a cloud replaces the dot. */
+    vault?: "ok" | "error" | null;
   } & Omit<ButtonHTMLAttributes<HTMLButtonElement>, "children">
->(function ProjectLayrReadiness({ summary, attention = false, ...props }, ref) {
+>(function ProjectLayrReadiness(
+  { summary, attention = false, vault = null, ...props },
+  ref,
+) {
   if (!summary) return null;
   return (
     <button
@@ -88,9 +94,11 @@ const ProjectLayrReadiness = forwardRef<
       className="project-layr-readiness"
       data-state={summary.state}
       data-attention={attention ? "true" : undefined}
+      data-vault={vault ?? undefined}
       title={summary.title}
       aria-label={`layr: ${summary.title.split("\n").join("; ")}`}
     >
+      {vault && <Cloud size={11} strokeWidth={2.4} aria-hidden="true" />}
       LAYR
     </button>
   );

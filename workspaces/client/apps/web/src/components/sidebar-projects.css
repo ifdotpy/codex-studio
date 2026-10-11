@@ -74,7 +74,7 @@
 .project-tree-layr {
   flex: 1 0 100%;
   margin-top: -5px;
-  padding: 0 0 4px 35px;
+  padding: 0 0 4px 31px;
 }
 .project-tree-layr .project-layr-readiness {
   cursor: pointer;
@@ -123,6 +123,18 @@
   box-shadow: inset 0 0 0 1px currentColor;
 }
 .project-layr-readiness[data-state="failed"]::before {
+  color: light-dark(#956000, #f0bb60);
+}
+/* A project with a vault shows a cloud instead of the dot. */
+.project-layr-readiness[data-vault]::before {
+  display: none;
+}
+.project-layr-readiness[data-vault] svg {
+  flex: 0 0 auto;
+  color: light-dark(#18713a, #6ed491);
+}
+.project-layr-readiness[data-vault="error"] svg,
+.project-layr-readiness[data-attention="true"] svg {
   color: light-dark(#956000, #f0bb60);
 }
 /* A Mac folder sync that needs the user: a conflict, a failure or deletions to confirm. */
