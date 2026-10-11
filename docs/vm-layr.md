@@ -19,8 +19,10 @@ tracks or would track, the files that Git ignores (such as `.env`), and the Git 
 It leaves on the Mac the folders that Git ignores (data, downloads, copies of other
 projects), except a folder that is itself a nested repository, which keeps its own rules,
 and regenerable folders (`REGENERABLE`, and `target` next to a `Cargo.toml`): in the VM a
-build makes them again, or they come from a layr layer. `.worktrees` and the Studio store
-stay too. A folder without Git is taken whole, without regenerable folders.
+build makes them again, or they come from a layr layer. `.worktrees`, a worktree of a project
+repository in any other folder, and the Studio store stay too. A submodule whose store is in
+its parent's `.git` comes with it; a Git store outside the project is refused. A folder
+without Git is taken whole, without regenerable folders.
 The project ID determines a Linux user for all leads of that project.
 `project.ensure` returns the project ID, main path, user, home, and current state ID.
 Later chats use the existing VM main line.
@@ -51,6 +53,8 @@ running) moves a project and its Git worktrees into layr:
   the line takes the worktree's files: committed and uncommitted work, and files that Git
   ignores such as `.env`, without `.git` and regenerable folders (guest method
   `sync.mac.worktree`).
+- A worktree that Git marks prunable (its `.git` file is gone) is skipped and reported;
+  its commits stay in Git.
 - The Mac worktrees stay. `layr-projects/<id>/worktrees.json` records each moved
   worktree with its line and state; a repeated run skips them. `--dry-run` lists what
   would move.
