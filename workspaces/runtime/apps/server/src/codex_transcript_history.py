@@ -43,7 +43,7 @@ def search_history(runtime, agent, query, limit=100):
         raise ValueError('Enter a search query of 1 to 500 characters')
     limit = max(1, min(500, int(limit)))
     results = []
-    with runtime.lock, runtime.db() as db:
+    with runtime.read_db() as db:
         runtime.checked_actor(db, agent)
         rows = db.execute("SELECT i.id,i.record FROM runtime_items i WHERE i.agent=? AND json_extract(i.record,'$.afterRestore') IS NULL ORDER BY i.created DESC,i.id DESC", (agent,)).fetchall()
         from codex_search_text import search_texts
