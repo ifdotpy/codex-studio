@@ -202,6 +202,14 @@ class RequestRuntime(RecordStore, Protocol):
     def _list_tool_requests(self, actor_id: str) -> "JsonObject": ...
 
 
+# A request list is scoped to an agent, not to its current thread or turn.
+# Keep identity and authorization changes guarded while allowing turn progress.
+_REQUEST_LIST_ACTOR_FIELDS = (
+    "id", "epoch", "accountKey", "autoWake", "deletedAt", "approvalPolicy",
+    "sandbox", "profile", "role",
+)
+
+
 class RequestMixin:
     def tool_request_actor(self: "RequestRuntime", db: "sqlite3.Connection", thread_id: str | None, account_key: str) -> "AgentRecord | None":
         if not thread_id:
@@ -536,14 +544,12 @@ class RequestMixin:
         from codex_payloads import resolve_record, resolve_result, state_root
         if self.lock._is_owned():
             raise RuntimeError("Request lists must run outside the runtime lock")
-        actor_fields = ("id", "epoch", "accountKey", "threadId", "turnId", "autoWake",
-                        "deletedAt", "approvalPolicy", "sandbox", "profile", "role")
         query = ("SELECT record FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? "
                  "ORDER BY json_extract(record,'$.updated') DESC LIMIT 50")
         pending = []
         with self.lock, self.db() as db:
             actor = self.checked_actor(db, actor_id)
-            identity = {field: actor.get(field) for field in actor_fields}
+            identity = {field: actor.get(field) for field in _REQUEST_LIST_ACTOR_FIELDS}
             account = actor.get("accountKey", "default")
             connection = self.connection_ids.get(account)
             offline = account in self.offline_accounts
@@ -562,7 +568,8 @@ class RequestMixin:
                 prepared[record["id"]] = ((raw, record, saved), result)
         with self.lock, self.db() as db:
             current_actor = self.checked_actor(db, actor_id)
-            if (self.closed or any(current_actor.get(field) != identity[field] for field in actor_fields)
+            if (self.closed or any(current_actor.get(field) != identity[field]
+                                   for field in _REQUEST_LIST_ACTOR_FIELDS)
                     or self.connection_ids.get(account) != connection
                     or (account in self.offline_accounts) != offline):
                 raise ValueError("The caller changed while reading request receipts")

@@ -220,6 +220,31 @@ class ToolRequestListLockContract(unittest.TestCase):
                 self.assertEqual(self.raw(receipt), before)
                 self.assertIsNone(self.runtime.server)
 
+    def test_thread_and_turn_progress_does_not_reject_agent_scoped_receipt_list(self):
+        body = self.result('saved receipt ' * 10_000)
+        receipt, saved = self.receipt('turn-transition', 100, body)
+        with self.gated_read(saved['_payloadBlobs']['contentItems']['sha256']) as (entered, release, _):
+            listing = self.worker(self.listing)
+            self.assertTrue(entered.wait(2))
+            self.actor = self.agent_update(self.actor, threadId='next-thread', turnId='next-turn')
+            release.set()
+            rows = self.finished(listing)[0]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['id'], receipt['id'])
+        self.assertEqual(rows[0]['outcome'], 'applied')
+        self.assertEqual(self.runtime.tool_request(receipt['id'])['result'], body)
+
+    def test_epoch_identity_change_still_rejects_stale_receipt_list(self):
+        receipt, saved = self.receipt('epoch-transition', 100, self.result('saved receipt ' * 10_000))
+        before = self.raw(receipt)
+        with self.gated_read(saved['_payloadBlobs']['contentItems']['sha256']) as (entered, release, _):
+            listing = self.worker(self.listing)
+            self.assertTrue(entered.wait(2))
+            self.actor = self.agent_update(self.actor, epoch=self.actor['epoch'] + 1)
+            release.set()
+            self.finished(listing, failure=ValueError)
+        self.assertEqual(self.raw(receipt), before)
+
     def test_a_changed_receipt_cannot_receive_the_sampled_result(self):
         _, receipt, digest, _ = self.pending_pair()
         with self.gated_read(digest) as (entered, release, _):
