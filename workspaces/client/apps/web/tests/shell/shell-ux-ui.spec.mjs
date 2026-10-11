@@ -1,5 +1,6 @@
 import {
   API_SCHEMA_HASH_HEADER,
+  apiSchemaHeaders,
   entityPullFixture,
   entityMutationFixtureResponse,
   expect,
@@ -265,6 +266,13 @@ test("Shell ux ui", async ({
     });
     const origin = `http://127.0.0.1:${port}`;
     const snapshot = await readTestState(origin);
+    const releaseLead = snapshot.runtime.agents.find(
+      (agent) => agent.name === "Release lead",
+    );
+    assert.ok(releaseLead, "the fixture includes the Release lead agent");
+    const releaseLeadTranscript = await fetch(
+      `${origin}/api/transcript?id=${encodeURIComponent(releaseLead.id)}`,
+    ).then((response) => response.json());
     const syncContract = await readFixtureSyncContract(origin);
     const page = runnerPage;
     await page.setViewportSize({ width: 1440, height: 960 });
@@ -436,24 +444,28 @@ test("Shell ux ui", async ({
         await page.keyboard.press("Escape");
       }
     }
-    const compactContext = await testBrowser.newContext({
-      viewport: { width: 860, height: 960 },
-    });
-    const compactPage = await compactContext.newPage();
+    const compactPage = await runnerContext.newPage();
+    await compactPage.setViewportSize({ width: 860, height: 960 });
     compactPage.setDefaultTimeout(5_000);
     const usageError = {
       codexErrorInfo: "usageLimitExceeded",
       message: "Usage limit reached",
     };
-    const compactAgents = snapshot.threads.map((agent) =>
-      agent.name === "Release lead" ? { ...agent, error: usageError } : agent,
-    );
-    const compactSnapshot = {
+    const failedReleaseLead = {
+      ...releaseLead,
+      ...releaseLeadTranscript.agent,
+      name: releaseLead.name,
+      status: "failed",
+      inFlight: false,
+      turnId: null,
+      lastCompletedTurn: "compact-usage-limit",
+      lastCompletedTurnStatus: "failed",
+      error: usageError,
+    };
+    let compactSnapshot = {
       ...snapshot,
-      threads: compactAgents,
       runtime: {
         ...snapshot.runtime,
-        agents: compactAgents,
         nativeNotices: [],
       },
     };
@@ -471,6 +483,7 @@ test("Shell ux ui", async ({
     });
     await compactPage.route("**/api/limits*", (route) =>
       route.fulfill({
+        headers: apiSchemaHeaders(),
         json: {
           at: Date.now() / 1000,
           data: {
@@ -499,6 +512,22 @@ test("Shell ux ui", async ({
       .filter({ hasText: "Release lead" });
     await releaseLeadRow.click();
     await expect(releaseLeadRow).toHaveAttribute("aria-current", "true");
+    const compactAgents = compactSnapshot.runtime.agents.map((agent) =>
+      agent.id === failedReleaseLead.id ? failedReleaseLead : agent,
+    );
+    compactSnapshot = {
+      ...compactSnapshot,
+      threads: compactSnapshot.threads.map((agent) =>
+        agent.id === failedReleaseLead.id ? failedReleaseLead : agent,
+      ),
+      runtime: { ...compactSnapshot.runtime, agents: compactAgents },
+    };
+    await compactStub.update(compactSnapshot, {
+      origin,
+      token: snapshot.token,
+      resources: [{ kind: "state" }],
+    });
+    await compactPage.locator(".native-error").waitFor();
     const compactToolsSummary = compactPage.locator(
       '.conversation-header-tools-summary[aria-label="Conversation tools"]',
     );
@@ -668,11 +697,6 @@ test("Shell ux ui", async ({
         document.querySelector("#conversation-title").textContent ===
         "Release lead",
     );
-    await expect(
-      compactPage.locator(
-        ".conversation-prompt-navigation-slot .prompt-navigation-compact",
-      ),
-    ).toHaveCount(1);
     await compactPage.waitForFunction(
       () =>
         document.querySelector(".workspace").clientWidth < 900 &&
@@ -685,6 +709,11 @@ test("Shell ux ui", async ({
         .querySelector(".conversation-header-tools-menu")
         ?.hasAttribute("open"),
     );
+    await expect(
+      compactPage.locator(
+        ".conversation-prompt-navigation-slot .prompt-navigation-compact",
+      ),
+    ).toHaveCount(1);
     assert.equal(
       await compactPage
         .locator("#conversation-header-tools .usage-footer")
@@ -811,6 +840,7 @@ test("Shell ux ui", async ({
     );
     await firstUse.route("**/api/directories*", (route) =>
       route.fulfill({
+        headers: apiSchemaHeaders(),
         json: { path: "/workspace/phone-first", directories: [] },
       }),
     );
@@ -821,19 +851,23 @@ test("Shell ux ui", async ({
       createdResolve = resolve;
     });
     await firstUse.route("**/api/projects", (route) => {
+      if (route.request().method() !== "POST") return route.fallback();
       const body = route.request().postDataJSON();
-      if (body.path) projects.push(body);
+      if (body?.path) projects.push(body);
+      if (!body?.migration) return route.fallback();
       return route.fulfill({
-        json: body.migration
-          ? { revision: body.expected_revision, groups: body.groups }
-          : {},
+        headers: apiSchemaHeaders(),
+        json: { revision: body.expected_revision, groups: body.groups },
       });
     });
     await firstUse.route("**/api/leads", (route) => {
       const body = route.request().postDataJSON();
       creations.push(body);
       createdResolve();
-      return route.fulfill({ json: { id: body.id } });
+      return route.fulfill({
+        headers: apiSchemaHeaders(),
+        json: { id: body.id },
+      });
     });
     await firstUse.goto(origin);
     await firstUse.locator("#sidebar-toggle").click();

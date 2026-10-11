@@ -6,11 +6,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { test, expect } from "../playwright.mjs";
+import {
+  apiSchemaHeaders,
+  apiSchemaHandshakeSse,
+  protocol3SseEvent,
+  syncIdentityFixture,
+  syncProtocolFixture,
+  test,
+  expect,
+} from "../playwright.mjs";
 
 test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
   test.setTimeout(120_000);
   const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const workspaceId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const identity = syncIdentityFixture(workspaceId);
   const require = createRequire(
     join(root, "workspaces/client/apps/web/package.json"),
   );
@@ -91,6 +101,41 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
       holdTexts = new Set();
     const failOutput = new Set();
     page.on("pageerror", (error) => errors.push(error.message));
+    await page.route("**/api/sync/identity", (route) =>
+      route.fulfill({
+        json: identity,
+        headers: apiSchemaHeaders(),
+      }),
+    );
+    await page.route("**/api/sync/protocol", (route) =>
+      route.fulfill({
+        json: syncProtocolFixture(),
+        headers: apiSchemaHeaders(),
+      }),
+    );
+    await page.route("**/api/sync/stream?*", (route) => {
+      const resources = JSON.parse(
+        new URL(route.request().url()).searchParams.get("resources") || "[]",
+      );
+      return route.fulfill({
+        contentType: "text/event-stream",
+        headers: apiSchemaHeaders(),
+        body: apiSchemaHandshakeSse(
+          protocol3SseEvent("resources", {
+            protocol: 3,
+            workspaceId,
+            epoch: "terminal-input",
+            revision: 1,
+            reason: "initial",
+            resources,
+            resourceVersions: resources.map((resource) => ({
+              resource,
+              revision: 1,
+            })),
+          }),
+        ),
+      });
+    });
     await page.route("**/check", (route) =>
       route.fulfill({
         contentType: "text/html",
@@ -109,6 +154,7 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
             created: 1,
           })),
         },
+        headers: apiSchemaHeaders(),
       }),
     );
     await page.route(/\/api\/terminals\/output(?:\?.*)?$/, (route) => {
@@ -117,13 +163,15 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
         return route.fulfill({
           status: 503,
           json: { error: "Output connection lost" },
+          headers: apiSchemaHeaders(),
         });
       return route.fulfill({
         json: { text: "", offset: 0, truncated: false, status: "running" },
+        headers: apiSchemaHeaders(),
       });
     });
     await page.route("**/api/terminals/resize", (route) =>
-      route.fulfill({ json: { ok: true } }),
+      route.fulfill({ json: { ok: true }, headers: apiSchemaHeaders() }),
     );
     await page.route("**/api/terminals/input", (route) => {
       const body = route.request().postDataJSON();
@@ -136,7 +184,10 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
       const previous = receipts.get(body.request_id);
       if (previous) {
         assert.deepEqual(body, previous.body);
-        return route.fulfill({ json: previous.reply });
+        return route.fulfill({
+          json: previous.reply,
+          headers: apiSchemaHeaders(),
+        });
       }
       // One native effect happens before the fixture can lose its HTTP response.
       receipts.set(body.request_id, {
@@ -147,7 +198,10 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
         held.set(body.text, route);
         return;
       }
-      return route.fulfill({ json: { ok: true, delivery: "sent" } });
+      return route.fulfill({
+        json: { ok: true, delivery: "sent" },
+        headers: apiSchemaHeaders(),
+      });
     });
     await page.goto(server.resolvedUrls.local[0] + "check");
     await page.evaluate(async () => {
@@ -207,8 +261,12 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
       receipts.get(body.request_id).reply = response;
       await route.fulfill(
         outcome === "error"
-          ? { status: 503, json: { error: "Late old input error" } }
-          : { json: response },
+          ? {
+              status: 503,
+              json: { error: "Late old input error" },
+              headers: apiSchemaHeaders(),
+            }
+          : { json: response, headers: apiSchemaHeaders() },
       );
       held.delete(text);
       await page.waitForTimeout(50);
