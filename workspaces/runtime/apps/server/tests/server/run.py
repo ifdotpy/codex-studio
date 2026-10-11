@@ -87,6 +87,9 @@ SCRATCH_PROBE_MIN_BYTES = 64 * 1024 * 1024
 SCRATCH_BYTES_PER_WORKER = 256 * 1024 * 1024
 SCRATCH_PROBE_CHUNK_BYTES = 8 * 1024 * 1024
 SCRATCH_OWNER_FILE = ".codex-server-test-owner"
+SCRATCH_LOCK_FILE = ".codex-server-test-owner.lock"
+LEGACY_SCRATCH_MAX_AGE_SECONDS = 6 * 60 * 60
+OWNED_SCRATCH_LOCKS = {}
 
 try:
     import resource
@@ -1072,7 +1075,9 @@ def _process_start_time(process_id):
 
 
 def _cleanup_stale_scratch_roots(mounts=None):
-    """Remove only runner scratch directories whose PID/start identity is gone."""
+    """Remove roots only when their owner-held kernel lock is available."""
+    import fcntl
+
     for mount in _tmpfs_mounts() if mounts is None else mounts:
         try:
             candidates = mount.glob("csst-*")
@@ -1082,12 +1087,35 @@ def _cleanup_stale_scratch_roots(mounts=None):
             if not directory.is_dir():
                 continue
             try:
-                owner = json.loads((directory / SCRATCH_OWNER_FILE).read_text(encoding="ascii"))
-                pid, started = int(owner["pid"]), str(owner["startTime"])
-            except (OSError, ValueError, KeyError, TypeError):
+                lock_file = (directory / SCRATCH_LOCK_FILE).open("r+b")
+            except FileNotFoundError:
+                try:
+                    age = time.time() - directory.stat().st_mtime
+                except OSError:
+                    continue
+                if age > LEGACY_SCRATCH_MAX_AGE_SECONDS:
+                    shutil.rmtree(directory, ignore_errors=True)
                 continue
-            if _process_start_time(pid) != started:
+            except OSError:
+                continue
+            try:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    continue
+                except OSError:
+                    continue
                 shutil.rmtree(directory, ignore_errors=True)
+            finally:
+                lock_file.close()
+
+
+def _remove_owned_scratch_root(directory):
+    """Remove this process's scratch root before releasing its ownership lock."""
+    lock_file = OWNED_SCRATCH_LOCKS.pop(Path(directory), None)
+    shutil.rmtree(directory, ignore_errors=True)
+    if lock_file is not None:
+        lock_file.close()
 
 
 @contextmanager
@@ -1151,6 +1179,8 @@ def _focused_run_slot(profile=None, slots=None):
 
 def _memory_scratch_root(workers, *, simultaneous_runs=1):
     """Use tmpfs only with measured headroom for workers across active runs."""
+    import fcntl
+
     mounts = list(_tmpfs_mounts())
     _cleanup_stale_scratch_roots(mounts)
     candidates = []
@@ -1162,24 +1192,31 @@ def _memory_scratch_root(workers, *, simultaneous_runs=1):
             if shutil.disk_usage(mount).free < required_bytes:
                 continue
             owned = Path(tempfile.mkdtemp(prefix="csst-", dir=mount))
+            lock_file = (owned / SCRATCH_LOCK_FILE).open("a+b")
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                lock_file.close()
+                raise
+            OWNED_SCRATCH_LOCKS[owned] = lock_file
             (owned / SCRATCH_OWNER_FILE).write_text(json.dumps({
                 "pid": os.getpid(), "startTime": _process_start_time(os.getpid())}), encoding="ascii")
             if len(os.fsencode(owned)) > MAX_SHORT_TMP_ROOT_BYTES:
-                shutil.rmtree(owned)
+                _remove_owned_scratch_root(owned)
                 continue
             if not _probe_scratch_capacity(owned, probe_bytes):
-                shutil.rmtree(owned)
+                _remove_owned_scratch_root(owned)
                 continue
             candidates.append((shutil.disk_usage(mount).free, owned))
         except OSError:
             if owned is not None:
-                shutil.rmtree(owned, ignore_errors=True)
+                _remove_owned_scratch_root(owned)
     if not candidates:
         return None
     candidates.sort(key=lambda candidate: candidate[0], reverse=True)
     selected = candidates[0][1]
     for _free, unused in candidates[1:]:
-        shutil.rmtree(unused)
+        _remove_owned_scratch_root(unused)
     return selected
 
 
@@ -1725,7 +1762,7 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
         pool.shutdown(wait=True)
     finally:
         if owned_tmp_root is not None:
-            shutil.rmtree(owned_tmp_root)
+            _remove_owned_scratch_root(owned_tmp_root)
     order = {relative: index for index, (relative, _kind) in enumerate(runnable)}
     failures.sort(key=lambda failure: order[failure[0]])
     if execute is run_process:
