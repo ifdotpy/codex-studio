@@ -238,8 +238,9 @@ describe("entity pull reset wiring", () => {
       },
     );
     mocks.watchResourceChanges.mockImplementation(
-      (_resource: unknown, listener: typeof mocks.invalidation) => {
-        mocks.invalidation = listener;
+      (resource: unknown, listener: typeof mocks.invalidation) => {
+        if ((resource as { kind?: string }).kind === "state")
+          mocks.invalidation = listener;
         return () => {};
       },
     );
