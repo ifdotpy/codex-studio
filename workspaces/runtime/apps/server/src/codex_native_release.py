@@ -451,7 +451,9 @@ def tick(rt: "Runtime", now: float | None = None) -> None:
     rt._native_release_last_scan = now  # type: ignore[attr-defined]  # typed-narrowing: Module owns scan cursor state
     from codex_native_sweep import tick as native_sweep_tick
     native_sweep_tick(rt, now)
-    with rt.lock, rt.db() as db:
+    # Keep discovery serialized with runtime writers, but use a read-only
+    # scope so an idle scan cannot commit unrelated state.
+    with rt.lock, rt.read_db() as db:
         pending: set[str] = getattr(rt, "_native_release_pending", set())
         rt._native_release_pending = pending  # type: ignore[attr-defined]  # typed-narrowing: Module owns scan cursor state
         candidates = []
