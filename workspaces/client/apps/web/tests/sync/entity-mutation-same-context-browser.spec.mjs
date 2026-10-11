@@ -393,18 +393,9 @@ test("mutation projections propagate between pages sharing one browser context @
     );
     assert.ok(
       pulls.every((tabPulls) =>
-        tabPulls
-          .filter((pull) => pull.checkpoint !== undefined)
-          .every((pull) => {
-            const bootstrap =
-              Number(pull.after) === 0 || pull.reset || pull.fresh;
-            return (
-              (pull.documents?.length || 0) > 0 ||
-              (!bootstrap && pull.checkpoint === Number(pull.after))
-            );
-          }),
+        tabPulls.every((pull) => (pull.documents?.length || 0) > 0),
       ),
-      `every bootstrap pull returns rows, and an empty incremental pull is already caught up: ${JSON.stringify(pulls)}`,
+      `every state pull returns rows: ${JSON.stringify(pulls)}`,
     );
   } finally {
     await context.close();

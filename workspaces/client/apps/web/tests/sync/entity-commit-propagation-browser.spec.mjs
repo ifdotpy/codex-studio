@@ -783,9 +783,8 @@ test("committed entities propagate between renderer tabs @sync", async ({
       for (const pull of pulls[tab]) {
         const bootstrap = Number(pull.after) === 0 || pull.reset || pull.fresh;
         assert.ok(
-          pull.documents.length > 0 ||
-            (!bootstrap && pull.checkpoint === Number(pull.after)),
-          `state pull in tab ${tab} must return rows unless an incremental pull is already caught up: ${JSON.stringify(pull)}`,
+          pull.documents.length > 0,
+          `every state pull in tab ${tab} must contain changed entity rows${bootstrap ? " (bootstrap)" : ""}: ${JSON.stringify(pull)}`,
         );
       }
     }
