@@ -392,9 +392,25 @@ async function repeatedReadCountsScenario(
       const loadAccounting = streamAccounting(loadStreams);
       const otherAccounting = streamAccounting(otherStreams);
       const backAccounting = streamAccounting(backStreams);
+      const loadConfigurations = loadAccounting.logical.map(({ url }) => {
+        const resources = JSON.parse(
+          new URL(url, "http://studio.test").searchParams.get("resources"),
+        );
+        return resources.map((resource) => resource.kind).sort();
+      });
+      const stateOnlyConfigurations = loadConfigurations.filter(
+        (kinds) => kinds.length === 1 && kinds[0] === "state",
+      );
+      const mainClientConfigurations = loadConfigurations.filter(
+        (kinds) => !(kinds.length === 1 && kinds[0] === "state"),
+      );
       assert.ok(
-        loadAccounting.logical.length <= 3,
-        "startup should use at most three logical stream configurations",
+        stateOnlyConfigurations.length === 1,
+        `shell startup should use exactly one state-only stream and no second connector; configurations: ${JSON.stringify(loadConfigurations)}`,
+      );
+      assert.ok(
+        mainClientConfigurations.length <= 3,
+        `shell startup should use at most three main-client staged configurations; configurations: ${JSON.stringify(loadConfigurations)}`,
       );
       assert.equal(
         new Set(loadAccounting.logical.map(({ url }) => url)).size,
