@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from unittest.mock import patch, Mock
 
 from codex_layout import REPOSITORY_ROOT, VM_GUEST_ROOT
@@ -379,7 +380,15 @@ class ClientTests(unittest.TestCase):
         same = dict(runtime_source=scripts, bridge_source=bridge)
         self.assertEqual(config, vm._cloud_config(guest, '1.2.3', '4.5.6', **same))
         (guest / 'install.sh').write_text('# new installation payload')
-        self.assertNotEqual(config, vm._cloud_config(guest, '1.2.3', '4.5.6', **same))
+        changed = vm._cloud_config(guest, '1.2.3', '4.5.6', **same)
+        self.assertNotEqual(config, changed)
+        # A change of the provision script alone is a new generation too.
+        def ready_of(c):
+            unit = next(row['content'] for row in c['write_files'] if row['path'].endswith('/codex-studio-provision.service'))
+            return next(line for line in unit.splitlines() if line.startswith('ConditionPathExists='))
+        original = vm._provision_script
+        with mock.patch.object(vm, '_provision_script', lambda *a: original(*a) + '# fixed\n'):
+            self.assertNotEqual(ready_of(changed), ready_of(vm._cloud_config(guest, '1.2.3', '4.5.6', **same)))
 
 
 
