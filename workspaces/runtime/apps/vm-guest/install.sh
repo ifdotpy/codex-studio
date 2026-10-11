@@ -37,6 +37,10 @@ for file in "$script_dir"/*.py "$script_dir"/*.service "$repo_dir/scripts/codex_
     chmod 0644 "$file"
 done
 id studio >/dev/null 2>&1 || useradd --create-home --home-dir /home/studio --shell /bin/bash studio
+# The browser bridge shim (docs/vm-browser-bridge.md): BROWSER of every agent, and xdg-open,
+# which comes before /usr/bin in the agent PATH.
+install -m 0755 -o root -g root "$script_dir/studio_browser.py" /usr/local/bin/studio-browser
+ln -sfn /usr/local/bin/studio-browser /usr/local/bin/xdg-open
 install -d -m 0700 -o studio -g studio /var/lib/codex-studio/guest /var/lib/codex-studio/projects
 sed "s|@REPO@|$repo_dir|g" "$script_dir/codex-studio-guest.service" >/etc/systemd/system/codex-studio-guest.service
 install -m 0644 "$script_dir/codex-studio-grow.service" /etc/systemd/system/codex-studio-grow.service

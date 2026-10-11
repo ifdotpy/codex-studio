@@ -38,11 +38,17 @@ METHODS |= {"secrets.set", "secrets.remove"}
 METHODS |= {"project.import", "project.exec", "share.configure", "share.name", "sync.mac.apply", "sync.mac.handoff",
             "sync.mac.worktree"}
 METHODS |= {"host.exec", "host.configure"}
+# The VM browser bridge (browser_bridge.py, docs/vm-browser-bridge.md). The long poll keeps no
+# receipt; the answer, the callback relay and the close keep one, so a retry with the same
+# request ID replays the saved result and never delivers a sign-in code twice.
+READ_METHODS |= {"browser.wait"}
+METHODS |= READ_METHODS | {"browser.answer", "browser.callback", "browser.close"}
 CLIENT_IDLE_SECONDS = 60
 
 
 class Service:
-    def __init__(self, state: Path, store: Path, projects: Path, home: Path):
+    def __init__(self, state: Path, store: Path, projects: Path, home: Path, *,
+                 http_providers: frozenset[str] = frozenset()):
         self.state, self.store, self.projects, self.home = map(Path.resolve, (state, store, projects, home))
         for path in (self.state, self.store, self.projects):
             private_dir(path)
@@ -60,6 +66,8 @@ class Service:
         self.layr_agents = json.loads(self.layr_path.read_text()) if self.layr_path.exists() else {}
         from host_exec import HostExec
         self.host_exec = HostExec(self)
+        from browser_bridge import BrowserBridge
+        self.browser = BrowserBridge(self.state, self.host_context, http_providers=http_providers)
         self.active = {}
         self.operations = set()
         self.root_locks = {}
@@ -419,6 +427,12 @@ class Service:
                 return await self.host_exec.handle(request_id, params, emit)
             except HostExecError as exc:
                 raise GuestError(exc.code, str(exc)) from exc
+        if method.startswith("browser."):
+            from browser_bridge import BridgeError
+            try:
+                return await self.browser.call(method, params)
+            except BridgeError as error:
+                raise GuestError(error.code, str(error)) from error
         if method == "health":
             process = await asyncio.create_subprocess_exec("stat", "-f", "-c", "%T", str(self.store), stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL)
@@ -636,7 +650,17 @@ async def serve(args):
     if os.getuid() == 0:
         raise RuntimeError("The guest service must run as a non-root user")
     os.umask(0o077)
-    service = Service(args.state, args.store, args.projects, Path.home())
+    service = Service(args.state, args.store, args.projects, Path.home(),
+                      http_providers=frozenset(args.test_http_provider))
+    # The unit's RuntimeDirectory makes the socket folder. Without it (an old unit) agents
+    # get no browser bridge, and the rest of the service works.
+    # A browser bridge failure never stops the guest service.
+    try:
+        if not args.browser_socket.parent.is_dir():
+            raise FileNotFoundError(str(args.browser_socket.parent) + " does not exist")
+        await service.browser.listen(args.browser_socket)
+    except OSError as error:
+        print("browser bridge disabled: " + str(error), file=sys.stderr)
     if args.unix_socket:
         # Explicit test transport. Production always uses vsock.
         args.unix_socket.unlink(missing_ok=True)
@@ -657,6 +681,7 @@ async def serve(args):
         async with server:
             await server.serve_forever()
     finally:
+        await service.browser.close()
         service.close()
 
 
@@ -666,6 +691,10 @@ def main():
     parser.add_argument("--store", type=Path, default=Path("/var/lib/codex-studio/guest"))
     parser.add_argument("--projects", type=Path, default=Path("/var/lib/codex-studio/projects"))
     parser.add_argument("--unix-socket", type=Path, help="Use a private Unix socket for integration tests")
+    parser.add_argument("--browser-socket", type=Path, default=Path("/run/codex-studio-browser/open.sock"),
+                        help="The socket of the browser bridge for agents")
+    parser.add_argument("--test-http-provider", action="append", default=[], metavar="HOST:PORT",
+                        help="For tests only: a fake sign-in provider that may use http")
     asyncio.run(serve(parser.parse_args()))
 
 
