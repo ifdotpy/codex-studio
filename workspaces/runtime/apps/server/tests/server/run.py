@@ -46,7 +46,6 @@ COMPONENT_ROOTS = (
     f"{SOURCE_REL}/analytics/tests",
     f"{SOURCE_REL}/sync/tests",
     f"{SOURCE_REL}/native_notifications/tests",
-    f"{SOURCE_REL}/transcript_storage/tests",
 )
 SCENARIO_BENCHMARK_ROOTS = (
     f"{SOURCE_REL}/sync/benchmarks/message_delivery",
