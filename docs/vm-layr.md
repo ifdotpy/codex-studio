@@ -60,6 +60,23 @@ running) moves a project and its Git worktrees into layr:
   worktree with its line and state; a repeated run skips them. `--dry-run` lists what
   would move.
 
+### Operator commands
+
+`codex_layr_exec.py PROJECT_FOLDER -- COMMAND...` (installed app scripts, Studio Python,
+VM running) runs one command in the project's VM main line as the owner of main, the user of
+the lead. It is how the user or a Mac agent sets up a project, for example layers
+(`layr layer add`) and a first `layr save --layers`, without a chat:
+
+- Guest method `project.exec` (root broker): it reads the owner from the main folder, runs
+  the command with `runuser`, never as root, in main or `--subpath` below it, and returns the
+  output (at most 512 KiB) and the exit code. The deadline is 300 seconds, at most 1800.
+- Only the guest service reaches the broker, so the method comes only from the Mac. It gives
+  no right that the lead does not have.
+- The request ID makes a retry safe: the broker returns the saved result and does not run
+  the command again. The command prints the ID first; after a lost reply, run it again with
+  `--operation-id`.
+- The broker keeps each command's argv and output in `layr-admin/commands/<id>/`.
+
 ### Sidebar readiness
 
 On macOS, each project with a folder on this server has `layrReadiness` in its

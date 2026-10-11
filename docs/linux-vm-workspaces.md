@@ -35,7 +35,8 @@ The guest service stays non-root with `NoNewPrivileges=true`.
 `AgentHandlers` exports `METHODS` and `READ_METHODS`.
 Its constructor accepts the private broker state path and the layr root.
 Its `dispatch(request_id, method, params, emit)` handles line and provider operations.
-The broker exposes no generic root shell command.
+The broker exposes no generic root shell command. `project.exec` runs a command from the Mac
+as the project owner in main ([vm-layr.md](vm-layr.md), "Operator commands").
 
 The project owner is `studio-p-<sha256(projectId)[:16]>`.
 Each worker has a separate Linux user and a private home.

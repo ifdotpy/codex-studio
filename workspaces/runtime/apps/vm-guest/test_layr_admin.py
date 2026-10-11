@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import pwd
 import socket
 from pathlib import Path
 import sys
@@ -12,6 +13,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent))
+from common import GuestError
 from layr_admin import Broker
 from layr_projects import Projects, copy_source
 from layr_share import Share, project_id
@@ -249,6 +251,54 @@ class PolicyTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([call.args[0] for call in projects.layr.await_args_list], [
                 ["--project", "app", "protect", "main", "--direct"],
                 ["--project", "app", "access", "deny", "@studio-agents", "access", "sync", "remote", "records", "backup"]])
+
+
+class ProjectExecTests(unittest.IsolatedAsyncioTestCase):
+    """project.exec: an operator command as the owner of main, in main, once per request ID."""
+
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.main = self.root / "store/projects/app/lines/main"
+        (self.main / "web").mkdir(parents=True)
+        self.projects = Projects(self.root / "state", self.root / "store", AsyncMock(), None)
+
+    async def asyncTearDown(self):
+        self.temp.cleanup()
+
+    async def test_the_command_runs_as_the_owner_of_main_in_main(self):
+        with patch("layr_projects.supervised", AsyncMock(return_value={"exitCode": 0})) as run:
+            await self.projects.exec("op-1", {"projectId": "app", "argv": ["pnpm", "install"], "subpath": "web"})
+        directory, config, association, wait = run.await_args.args
+        owner = pwd.getpwuid(os.getuid()).pw_name
+        self.assertEqual(config["argv"], ["/usr/sbin/runuser", "-u", owner, "--", "pnpm", "install"])
+        self.assertEqual(config["cwd"], str((self.main / "web").resolve()))
+        self.assertEqual(config["env"]["USER"], owner)
+        self.assertEqual((config["timeoutSeconds"], wait), (300, 305))
+        self.assertEqual(association, {"projectId": "app", "requestId": "op-1"})
+        self.assertTrue(directory.is_relative_to(self.root / "state/commands"))
+
+    async def test_a_folder_outside_main_and_a_bad_command_are_refused(self):
+        (self.main / "out").symlink_to(self.root)
+        with patch("layr_projects.supervised", AsyncMock()) as run:
+            for params in ({"subpath": ".."}, {"subpath": "/etc"}, {"subpath": "out"}, {"subpath": "missing"},
+                           {"argv": []}, {"argv": "id"}, {"argv": ["id", ""]}, {"timeoutSeconds": 3600},
+                           {"projectId": "other"}, {"projectId": "../app"}):
+                with self.subTest(params=params), self.assertRaises(GuestError):
+                    await self.projects.exec("op", {"projectId": "app", "argv": ["id"], **params})
+            run.assert_not_awaited()
+
+    async def test_a_repeated_request_returns_its_result_without_a_second_run(self):
+        broker = Broker(self.root / "broker", self.root / "store", modules=())
+        self.addCleanup(broker.close)
+        broker.projects.exec = AsyncMock(return_value={"exitCode": 0, "stdout": "", "stderr": "", "reason": "exited"})
+        request = {"id": "op-2", "method": "project.exec", "params": {"projectId": "app", "argv": ["id"]}}
+        first = await broker.request(request, None)
+        self.assertEqual(first["result"]["exitCode"], 0)
+        self.assertEqual(await broker.request(request, None), first)
+        broker.projects.exec.assert_awaited_once()
+        changed = await broker.request({**request, "params": {"projectId": "app", "argv": ["true"]}}, None)
+        self.assertEqual(changed["error"]["code"], "id_conflict")
 
 
 class ServiceUmaskTests(unittest.TestCase):

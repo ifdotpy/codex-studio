@@ -32,7 +32,7 @@ LAYR_READ_METHODS = {"agent.context", "line.status", "line.evidence", "agent.pro
 LAYR_METHODS = LAYR_READ_METHODS | {"line.bind", "line.branch", "line.save", "line.merge", "line.remove", "agent.release", "layr.provider.start", "layr.provider.stop", "layr.credentials.sync", "layr.exec"}
 READ_METHODS |= LAYR_READ_METHODS
 METHODS |= LAYR_METHODS
-METHODS |= {"project.import", "share.configure", "share.name", "sync.mac.apply", "sync.mac.handoff",
+METHODS |= {"project.import", "project.exec", "share.configure", "share.name", "sync.mac.apply", "sync.mac.handoff",
             "sync.mac.worktree"}
 METHODS |= {"host.exec", "host.configure"}
 CLIENT_IDLE_SECONDS = 60
@@ -391,7 +391,7 @@ class Service:
             return await admin_request(request_id, "layr.exec", params, emit=emit)
         if method in {"file.stat", "file.read"} and layr_agent:
             return await admin_request(request_id, "layr." + method, params, emit=emit)
-        if method in {"project.ensure", "project.import", "share.configure", "share.name", "share.status", "layr.health",
+        if method in {"project.ensure", "project.import", "project.exec", "share.configure", "share.name", "share.status", "layr.health",
                       "sync.mac.apply", "sync.mac.read", "sync.mac.hashes", "sync.mac.head",
                       "sync.mac.handoff", "sync.mac.worktree"}:
             return await admin_request(request_id, method, params, emit=emit)
