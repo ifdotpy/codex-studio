@@ -31,7 +31,11 @@ AGENTS_GROUP = "studio-agents"
 # The names that the launch of an agent process sets (AgentHandlers.agent_env; runuser adds
 # SHELL), and the names that each provider adds. A project secret never takes one of them
 # (project_secrets.py).
-LAUNCH_ENV_NAMES = frozenset({"PATH", "LANG", "HOME", "USER", "LOGNAME", "SHELL", "LAYR_ROOT", "LAYR_SESSION"})
+LAUNCH_ENV_NAMES = frozenset({"PATH", "LANG", "HOME", "USER", "LOGNAME", "SHELL", "LAYR_ROOT", "LAYR_SESSION",
+                              "BROWSER"})
+# A sign-in command opens its link with this shim: Studio asks the person to approve the link
+# and opens it in the browser of the Mac (browser_bridge.py, docs/vm-browser-bridge.md).
+BROWSER = "/usr/local/bin/studio-browser"
 PROVIDER_ENV = {"codex": frozenset({"CODEX_HOME"}),
                 "claude": frozenset({"CLAUDE_CONFIG_DIR", "STUDIO_CLAUDE_BIN", "STUDIO_CLAUDE_OPTIONS",
                                      "STUDIO_CLAUDE_ACCOUNT"})}
@@ -174,7 +178,7 @@ class AgentHandlers:
         process from the wrapper (project_env.py), never from this launch record."""
         return {"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": context["home"],
                 "USER": context["owner"], "LOGNAME": context["owner"], "LAYR_ROOT": str(self.layr_root),
-                "LAYR_SESSION": context["agentId"], **(extra or {})}
+                "LAYR_SESSION": context["agentId"], "BROWSER": BROWSER, **(extra or {})}
 
     def agent_argv(self, context, command):
         """The command as the line owner, with the project's secrets (project_env.py)."""

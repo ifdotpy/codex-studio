@@ -27,6 +27,13 @@ fake `layr-desk`, and `test_vault_e2e.py` is the opt-in run with real layr and l
 The service runs as `studio`. It listens on vsock port 4050. The protocol is in
 [linux-vm-workspaces.md](../../../../docs/linux-vm-workspaces.md).
 
+The service also owns the browser bridge (`browser_bridge.py`, `browser_policy.py`, the shim
+`studio_browser.py`; [vm-browser-bridge.md](../../../../docs/vm-browser-bridge.md)). Agents
+send sign-in links on `/run/codex-studio-browser/open.sock`, which the unit's
+`RuntimeDirectory` creates; the kernel peer UID names the chat. The installer puts the shim
+at `/usr/local/bin/studio-browser` and links `/usr/local/bin/xdg-open` to it. Focused check:
+`python3 -B -m unittest discover -s workspaces/runtime/apps/vm-guest -p test_browser_bridge.py -v`.
+
 The host sources are `workspaces/runtime/apps/vm-guest` and
 `workspaces/runtime/apps/server/src`. Provisioning copies the guest files to
 `/opt/codex-studio/vm/guest` and the selected runtime files to

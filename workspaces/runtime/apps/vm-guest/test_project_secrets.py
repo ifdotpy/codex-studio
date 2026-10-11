@@ -75,7 +75,7 @@ class SecretBrokerTests(unittest.IsolatedAsyncioTestCase):
     async def test_names_and_values_are_checked_and_errors_never_contain_the_value(self):
         too_long = "A" * 65
         for name in ("lower", "1ABC", "A-B", "", too_long, "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG",
-                     "LAYR_ROOT", "LAYR_SESSION", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "STUDIO_CLAUDE_OPTIONS",
+                     "LAYR_ROOT", "LAYR_SESSION", "BROWSER", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "STUDIO_CLAUDE_OPTIONS",
                      "STUDIO_PROJECT_SECRETS_FD", "STUDIO_ANY", "CODEX_SANDBOX", "CLAUDECODE", 7, None):
             with self.subTest(name=name):
                 response = await self.call("secrets.set", {"name": name, "value": VALUE})
