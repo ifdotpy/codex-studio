@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import studio_operations_native as native
 
-from codex_operations_adapter import PROTOCOL_VERSION, check_protocol, check_settlement_api
+from codex_operations_adapter import PROTOCOL_VERSION, check_protocol
 from codex_tool_requests import (
     RequestMixin, _apply_decision, _content_fingerprint, _lifecycle, _prefix,
 )
@@ -170,9 +170,10 @@ class OperationsNativeContract(unittest.TestCase):
                 self.assertEqual(record.get("outcome", "unknown"), case["python_outcome"])
 
     def test_protocol_mismatch_fails_clearly(self):
+        self.assertEqual(PROTOCOL_VERSION, 4)
         self.assertEqual(native.PROTOCOL_VERSION, PROTOCOL_VERSION)
         with self.assertRaisesRegex(RuntimeError, "protocol mismatch"):
-            check_protocol(SimpleNamespace(PROTOCOL_VERSION=native.PROTOCOL_VERSION + 1))
+            check_protocol(SimpleNamespace(PROTOCOL_VERSION=3))
 
     def test_supported_persisted_pairs_replay_without_a_transition(self):
         records = [
@@ -235,18 +236,6 @@ class OperationsNativeContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "This request id has different content"):
             native.reserve_tool_request(json.dumps(snapshot), "thread-a:")
         self.assertEqual(native.missing_tool_request_outcome(), "unknown")
-
-    def test_installed_protocol_requires_additive_settlement_functions(self):
-        module = SimpleNamespace(
-            settle_tool_request=lambda snapshot: snapshot,
-            missing_tool_request_outcome=lambda: "unknown",
-        )
-        check_protocol(SimpleNamespace(PROTOCOL_VERSION=native.PROTOCOL_VERSION))
-        check_settlement_api(module)
-        with self.assertRaisesRegex(RuntimeError, "missing settle_tool_request"):
-            check_settlement_api(SimpleNamespace(missing_tool_request_outcome=lambda: "unknown"))
-        with self.assertRaisesRegex(RuntimeError, "missing missing_tool_request_outcome"):
-            check_settlement_api(SimpleNamespace(settle_tool_request=lambda snapshot: snapshot))
 
     def test_settlement_adapter_reads_nested_server_outcomes_and_read_tools(self):
         for nested, expected in (("applied", "applied"), ("not_applied", "not_applied"),

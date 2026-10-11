@@ -5,15 +5,14 @@
 - **Responsibility:** Minimal in-process Python binding for `studio-operations`.
 - **Public interface:** `studio_operations_native.transition_record(record_json,
 event, ...) -> TransitionResult`, `studio_operations_native.reserve_tool_request(snapshot_json,
-alias_prefix) -> ReservationResult`, additive `settle_tool_request(snapshot_json)
--> SettlementResult` and `missing_tool_request_outcome()`, and protocol version 3
-  checked with required-function capability checks by the server adapter.
+alias_prefix) -> ReservationResult`, `settle_tool_request(snapshot_json)
+-> TransitionResult` and `missing_tool_request_outcome()`, and protocol version 4
+  checked by the server adapter.
 - **Boundaries:** The binding deserializes a typed persisted-record view, adapts
   it to the pure Rust lifecycle core, and returns typed persistence fields and
   aliases. It performs no I/O, subprocess work, or fallback.
 - **Invariants:** Malformed inputs and Rust panics become Python exceptions;
-  backend import fails clearly if the module, protocol version, or settlement
-  functions are unavailable.
+  backend import fails clearly if the module or protocol version is unavailable.
 - **Configuration owner:** The root Cargo workspace owns PyO3 and native build
   configuration. `install-cli.py` copies an already built platform library to
   the managed Python environment; it never builds implicitly.
@@ -24,8 +23,8 @@ alias_prefix) -> ReservationResult`, additive `settle_tool_request(snapshot_json
 Python passes fixed stored-record/result snapshots as JSON while event and proof
 names use closed type-stub literals. Rust owns the persisted-record conversion,
 lifecycle state, transition, reservation and settlement decisions, and
-result-to-storage mapping. The settlement API is additive, so protocol version
-3 stays unchanged; startup verifies that both new functions exist. The Rust crate is built with
+result-to-storage mapping. The settlement API requires protocol version 4; older
+installed modules must be rebuilt. The Rust crate is built with
 PyO3 0.29, `abi3-py311`, and `extension-module`; no maturin or second runtime
 schema is used.
 

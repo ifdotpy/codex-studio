@@ -5,7 +5,7 @@ use pyo3::prelude::*;
 
 mod record_adapter;
 
-const PROTOCOL_VERSION: u32 = 3;
+const PROTOCOL_VERSION: u32 = 4;
 
 fn catch_panic<T, F>(operation: F) -> Result<T, ()>
 where
