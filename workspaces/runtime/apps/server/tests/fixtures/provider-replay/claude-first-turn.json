@@ -26,7 +26,11 @@
         "result": {
           "userAgent": "studio-claude-bridge",
           "platform": "$platform",
-          "capabilities": { "claudeVersion": 23, "passiveAccountRead": true }
+          "capabilities": {
+            "claudeVersion": 23,
+            "claudeBuild": "$bridgeBuild",
+            "passiveAccountRead": true
+          }
         }
       }
     },
