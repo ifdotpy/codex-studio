@@ -12,7 +12,7 @@ event_json) -> decision_json` and integer `PROTOCOL_VERSION`.
 - **Configuration owner:** The root Cargo workspace owns PyO3 and native build
   configuration. `install-cli.py` copies an already built platform library to
   the managed Python environment; it never builds implicitly.
-- **Focused check:** `cargo build --release -p studio-operations-python`; Python
+- **Focused check:** `cargo nextest run -p studio-operations-python --locked` and `cargo build --release -p studio-operations-python`; Python
   contract replay runs in the `server` suite after `install-cli.py` installs it.
 
 The binding uses serde JSON strings to pass the core's own Rust types through

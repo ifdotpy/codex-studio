@@ -48,13 +48,19 @@ for reproductions.
 For Vitest packages, the positional case is always a substring of the test
 file path, so `just test codex-agents-web errorPresentation` loads the matching
 file. Add `--name <pattern>` to pass a test-name filter (`-t`) as well, which
-lets a named case stay within one file. Cargo uses the positional case as its
-test-name filter and forwards runner options after `--` (for example,
-`just test studio-diagnostics tests::formatter_matches_python_json_dump_golden -- --exact`).
+lets a named case stay within one file. Cargo uses the positional case as a
+nextest test-name filter; `--name <pattern>` intersects another nextest
+test-name substring filter. Runner options after `--` remain available (for
+example, `just test studio-diagnostics tests::formatter_matches_python_json_dump_golden -- --exact`).
 Cargo target selectors such as `--test compatibility` are routed to Cargo, for
 example `just test studio-diagnostics '' -- --test compatibility`. The server
 uses its runner's `--filter` suite selector. `just test-plan` prints the
 selector and the exact native command without execution.
+
+Install the required runner version in the [nextest configuration](../.config/nextest.toml) locally with
+`cargo install cargo-nextest --version 0.9.146 --locked`. Nextest runs each
+test in its own process and does not run doctests; `just check` and CI run
+`cargo test --doc` separately.
 
 Each pnpm package declares its focused recipe mapping in its manifest under
 `codexStudioChecks`: `test` names the focused test script, and `check` lists

@@ -199,6 +199,7 @@ export function discover(root = rootFrom()) {
         ecosystem: "cargo",
         dir,
         manifest: item.manifest_path,
+        docTests: item.targets?.some((target) => target.doctest) ?? false,
       });
     }
   }
@@ -329,29 +330,56 @@ export function commandFor(root, item, action, caseName = "", options = {}) {
     });
   }
   if (item.ecosystem === "cargo") {
-    if (action === "test")
+    if (action === "test") {
+      const filters = [caseName, options.name].filter(Boolean);
+      const filterset = filters
+        .map((filter) => `test(~${escapeFilterMatcher(filter)})`)
+        .join(" and ");
       return [
         [
           "cargo",
           [
-            "test",
+            "nextest",
+            "run",
+            "--locked",
+            "--no-tests",
+            "fail",
+            "--message-format",
+            "libtest-json-plus",
             "-p",
             item.name,
             ...(options.cargoTargets ?? []),
-            ...(caseName ? [caseName] : []),
+            ...(filterset ? ["--filterset", filterset] : []),
             ...(options.passthrough?.length
               ? ["--", ...options.passthrough]
               : []),
           ],
         ],
       ];
+    }
     return [
       ["cargo", ["fmt", "--check", "-p", item.name]],
       [
         "cargo",
         ["clippy", "-p", item.name, "--all-targets", "--", "-D", "warnings"],
       ],
-      ["cargo", ["test", "-p", item.name]],
+      [
+        "cargo",
+        [
+          "nextest",
+          "run",
+          "--locked",
+          "--no-tests",
+          "fail",
+          "--message-format",
+          "libtest-json-plus",
+          "-p",
+          item.name,
+        ],
+      ],
+      ...(item.docTests
+        ? [["cargo", ["test", "--doc", "--locked", "-p", item.name]]]
+        : []),
     ];
   }
   if (item.name === "server") {
@@ -377,6 +405,16 @@ export function commandFor(root, item, action, caseName = "", options = {}) {
     return [["python3", [python, "--mypy"]]];
   }
   fail(`Unsupported package ecosystem: ${item.ecosystem}`);
+}
+
+function escapeFilterMatcher(value) {
+  return value
+    .replaceAll("\\", "\\\\")
+    .replaceAll("\n", "\\n")
+    .replaceAll("\r", "\\r")
+    .replaceAll("\t", "\\t")
+    .replaceAll(")", "\\)")
+    .replaceAll(",", "\\,");
 }
 
 function shellQuote(value) {
@@ -510,34 +548,25 @@ function reportPlan(value, json) {
 
 export function parseCounts(item, output) {
   if (item.ecosystem === "cargo") {
-    const matches = [
-      ...output.matchAll(
-        /test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out/g,
-      ),
-    ];
-    if (!matches.length)
-      return {
-        passed: 0,
-        failed: 0,
-        skipped: 0,
-        executed: 0,
-        summaryFound: false,
-      };
-    const rows = matches.map((match) => ({
-      passed: +match[1],
-      failed: +match[2],
-      skipped: +match[3],
-      executed: +match[1] + +match[2],
-    }));
-    const result = rows.reduce(
-      (sum, row) =>
-        Object.fromEntries(
-          Object.keys(row).map((key) => [key, (sum[key] ?? 0) + row[key]]),
-        ),
-      { summaryFound: true },
+    return output.split("\n").reduce(
+      (counts, line) => {
+        let event;
+        try {
+          event = JSON.parse(line);
+        } catch {
+          return counts;
+        }
+        if (event.type !== "suite" || !["ok", "failed"].includes(event.event))
+          return counts;
+        counts.passed += event.passed ?? 0;
+        counts.failed += event.failed ?? 0;
+        counts.skipped += event.ignored ?? 0;
+        counts.executed += (event.passed ?? 0) + (event.failed ?? 0);
+        counts.summaryFound = true;
+        return counts;
+      },
+      { passed: 0, failed: 0, skipped: 0, executed: 0, summaryFound: false },
     );
-    result.summaryFound = true;
-    return result;
   }
   if (item.ecosystem === "server") {
     const suite = output.match(
@@ -638,19 +667,36 @@ function runLogged(command, args, cwd, log, environment = process.env) {
         return [signal, handler];
       }),
     );
-    child.on("error", (error) =>
-      resolve({
-        code: 127,
-        signal: null,
-        output: `${output}\n${error.message}`,
-      }),
-    );
+    child.on("error", (error) => {
+      const message =
+        command === "cargo" && args[0] === "nextest"
+          ? `${NEXTTEST_MISSING}\n${error.message}`
+          : `${output}\n${error.message}`;
+      resolve({ code: 127, signal: null, output: message });
+    });
     child.on("close", (code, signal) => {
       for (const [name, handler] of handlers)
         process.removeListener(name, handler);
       resolve({ code, signal: signal || interrupted, output });
     });
   });
+}
+
+const NEXTTEST_INSTALL =
+  "cargo install cargo-nextest --version 0.9.146 --locked";
+const NEXTTEST_MISSING = `cargo-nextest 0.9.146 is required. Install it with: ${NEXTTEST_INSTALL}`;
+
+export function nextestError(output) {
+  return output.includes(NEXTTEST_MISSING) ||
+    /no such command.*nextest|could not find.*cargo-nextest/i.test(output)
+    ? NEXTTEST_MISSING
+    : null;
+}
+
+export function nextestSelectionError(exitCode) {
+  return exitCode === 4
+    ? "nextest found no tests matching this selection"
+    : null;
 }
 
 export async function execute(
@@ -671,13 +717,28 @@ export async function execute(
   let exitCode = 0;
   let signal = null;
   let output = "";
+  const errors = [];
   for (const [bin, args] of commands) {
     const env =
       bin === "cargo"
-        ? { ...process.env, CARGO_TARGET_DIR: cargoTarget(root) }
+        ? {
+            ...process.env,
+            CARGO_TARGET_DIR: cargoTarget(root),
+            ...(args[0] === "nextest"
+              ? { NEXTEST_EXPERIMENTAL_LIBTEST_JSON: "1" }
+              : {}),
+          }
         : process.env;
     const child = await runLogged(bin, args, root, logPath, env);
-    output += child.output;
+    const missingNextest =
+      bin === "cargo" && args[0] === "nextest"
+        ? nextestError(child.output)
+        : null;
+    if (missingNextest) {
+      errors.push(missingNextest);
+      appendFileSync(logPath, `${missingNextest}\n`);
+    }
+    output += missingNextest ?? child.output;
     if (child.signal) {
       signal = child.signal;
       exitCode =
@@ -694,7 +755,10 @@ export async function execute(
     ((performance.now() - started) / 1000).toFixed(3),
   );
   counts = parseCounts(item, output);
-  const errors = [];
+  const selectionError = nextestSelectionError(exitCode);
+  if (selectionError) errors.push(selectionError);
+  if (nextestError(output) && !errors.includes(NEXTTEST_MISSING))
+    errors.push(NEXTTEST_MISSING);
   if (exitCode === 0 && item.ecosystem !== "pnpm" && !counts.summaryFound)
     errors.push(
       "native runner summary was missing; refusing to report success",
@@ -1201,13 +1265,31 @@ export async function main(argv = process.argv.slice(2)) {
     const started = performance.now();
     let output = "";
     let exitCode = 0;
+    const errors = [];
     for (const [bin, args] of commands) {
       const env =
         bin === "cargo"
-          ? { ...process.env, CARGO_TARGET_DIR: cargoTarget(root) }
+          ? {
+              ...process.env,
+              CARGO_TARGET_DIR: cargoTarget(root),
+              ...(args[0] === "nextest"
+                ? { NEXTEST_EXPERIMENTAL_LIBTEST_JSON: "1" }
+                : {}),
+            }
           : process.env;
       const result = await runLogged(bin, args, root, log, env);
-      output += result.output;
+      const missingNextest =
+        bin === "cargo" && args[0] === "nextest"
+          ? nextestError(result.output)
+          : null;
+      const selectionError =
+        bin === "cargo" && args[0] === "nextest"
+          ? nextestSelectionError(result.code)
+          : null;
+      if (missingNextest) errors.push(missingNextest);
+      if (selectionError) errors.push(selectionError);
+      output += [missingNextest, result.output].filter(Boolean).join("\n");
+      if (missingNextest) appendFileSync(log, `${missingNextest}\n`);
       if (result.signal) {
         process.kill(process.pid, result.signal);
       }
@@ -1244,6 +1326,7 @@ export async function main(argv = process.argv.slice(2)) {
       notStarted: checkPlan.notStarted,
       costCategory: checkPlan.costCategory,
       exitCode,
+      ...(errors.length ? { errors } : {}),
     };
     if (json) process.stdout.write(`${JSON.stringify(result)}\n`);
     else

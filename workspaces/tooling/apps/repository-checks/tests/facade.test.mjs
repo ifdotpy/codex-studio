@@ -4,6 +4,10 @@ import {
   affectedPlan,
   boundaryFindings,
   commandFor,
+  execute,
+  main,
+  nextestError,
+  nextestSelectionError,
   parseCounts,
   parseSelection,
   pruneLogs,
@@ -11,6 +15,7 @@ import {
 import {
   mkdtempSync,
   mkdirSync,
+  chmodSync,
   statSync,
   rmSync,
   utimesSync,
@@ -99,10 +104,25 @@ test("pnpm Node test selection uses the native test-name filter", () => {
   );
 });
 
-test("Cargo uses manifest package filters and its native summary detects zero matches", () => {
+test("Cargo uses nextest filters and keeps package and test selectors narrow", () => {
   const item = { name: "studio-diagnostics", ecosystem: "cargo" };
   assert.deepEqual(commandFor("/repo", item, "test", "cli::tests::help"), [
-    ["cargo", ["test", "-p", item.name, "cli::tests::help"]],
+    [
+      "cargo",
+      [
+        "nextest",
+        "run",
+        "--locked",
+        "--no-tests",
+        "fail",
+        "--message-format",
+        "libtest-json-plus",
+        "-p",
+        item.name,
+        "--filterset",
+        "test(~cli::tests::help)",
+      ],
+    ],
   ]);
   assert.deepEqual(
     commandFor("/repo", item, "test", "cli::tests::help", {
@@ -113,12 +133,19 @@ test("Cargo uses manifest package filters and its native summary detects zero ma
       [
         "cargo",
         [
-          "test",
+          "nextest",
+          "run",
+          "--locked",
+          "--no-tests",
+          "fail",
+          "--message-format",
+          "libtest-json-plus",
           "-p",
           item.name,
           "--test",
           "compatibility",
-          "cli::tests::help",
+          "--filterset",
+          "test(~cli::tests::help)",
           "--",
           "--exact",
           "--test",
@@ -128,17 +155,136 @@ test("Cargo uses manifest package filters and its native summary detects zero ma
     ],
   );
   assert.deepEqual(
+    commandFor("/repo", item, "test", "cli::tests::help", {
+      name: "help renders",
+    })[0][1].slice(-2),
+    ["--filterset", "test(~cli::tests::help) and test(~help renders)"],
+  );
+  assert.deepEqual(
     parseCounts(
       item,
-      "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out",
+      [
+        '{"type":"suite","event":"started","test_count":1}',
+        '{"type":"suite","event":"ok","passed":2,"failed":0,"ignored":1}',
+        '{"type":"suite","event":"failed","passed":0,"failed":1,"ignored":0}',
+      ].join("\n"),
     ),
     {
-      passed: 0,
-      failed: 0,
-      skipped: 0,
-      executed: 0,
+      passed: 2,
+      failed: 1,
+      skipped: 1,
+      executed: 3,
       summaryFound: true,
     },
+  );
+  const checkCommands = commandFor(
+    "/repo",
+    { ...item, docTests: true },
+    "check",
+  );
+  assert.deepEqual(checkCommands.at(-1), [
+    "cargo",
+    ["test", "--doc", "--locked", "-p", item.name],
+  ]);
+  assert.equal(
+    commandFor("/repo", { ...item, docTests: false }, "check").some(
+      ([, args]) => args.includes("--doc"),
+    ),
+    false,
+  );
+});
+
+test("nextest empty-selection and missing-runner errors stay actionable", () => {
+  assert.equal(
+    nextestSelectionError(4),
+    "nextest found no tests matching this selection",
+  );
+  assert.equal(nextestSelectionError(0), null);
+  const missing = nextestError("error: no such command: `nextest`");
+  assert.match(missing, /cargo-nextest 0\.9\.146 is required/);
+  assert.match(
+    missing,
+    /cargo install cargo-nextest --version 0\.9\.146 --locked/,
+  );
+  assert.equal(nextestError("error: failed to compile package"), null);
+});
+
+test("Cargo facade failures retain selection, test failure, install guidance and logs", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-nextest-facade-"));
+  const bin = path.join(root, "bin");
+  mkdirSync(bin);
+  const cargo = path.join(bin, "cargo");
+  writeFileSync(
+    cargo,
+    `#!/bin/sh
+case "$FIXTURE_CARGO_MODE" in
+  fail) printf '%s\\n' '{"type":"suite","event":"failed","passed":0,"failed":1,"ignored":0}'; exit 100 ;;
+  empty) echo 'error: no tests to run'; exit 4 ;;
+  missing) echo 'error: no such command: \`nextest\`'; exit 101 ;;
+esac
+`,
+  );
+  chmodSync(cargo, 0o755);
+  const original = {
+    PATH: process.env.PATH,
+    CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR,
+    CODEX_STUDIO_CHECKS_CACHE: process.env.CODEX_STUDIO_CHECKS_CACHE,
+  };
+  process.env.PATH = `${bin}:${original.PATH}`;
+  process.env.CARGO_TARGET_DIR = path.join(root, "target");
+  process.env.CODEX_STUDIO_CHECKS_CACHE = path.join(root, "logs");
+  const originalWrite = process.stdout.write;
+  process.stdout.write = () => true;
+  const item = { name: "fixture", ecosystem: "cargo" };
+  try {
+    process.env.FIXTURE_CARGO_MODE = "empty";
+    const empty = await execute(root, item, "missing_case", true);
+    assert.equal(empty.exitCode, 1);
+    assert.deepEqual(empty.errors, [
+      "nextest found no tests matching this selection",
+    ]);
+    assert.match(empty.command, /--filterset/);
+    assert.ok(readFileSync(empty.logPath, "utf8").includes("no tests to run"));
+
+    process.env.FIXTURE_CARGO_MODE = "fail";
+    const failed = await execute(root, item, "fails", true);
+    assert.equal(failed.exitCode, 100);
+    assert.equal(failed.failed, 1);
+    assert.match(failed.command, /cargo.*nextest.*run/);
+    assert.ok(failed.logPath);
+    assert.ok(
+      readFileSync(failed.logPath, "utf8").includes('"event":"failed"'),
+    );
+
+    process.env.FIXTURE_CARGO_MODE = "missing";
+    const absent = await execute(root, item, "", true);
+    assert.equal(absent.exitCode, 1);
+    assert.match(
+      absent.errors[0],
+      /cargo install cargo-nextest --version 0\.9\.146 --locked/,
+    );
+    assert.ok(absent.logPath);
+  } finally {
+    process.stdout.write = originalWrite;
+    if (original.PATH === undefined) delete process.env.PATH;
+    else process.env.PATH = original.PATH;
+    if (original.CARGO_TARGET_DIR === undefined)
+      delete process.env.CARGO_TARGET_DIR;
+    else process.env.CARGO_TARGET_DIR = original.CARGO_TARGET_DIR;
+    if (original.CODEX_STUDIO_CHECKS_CACHE === undefined)
+      delete process.env.CODEX_STUDIO_CHECKS_CACHE;
+    else
+      process.env.CODEX_STUDIO_CHECKS_CACHE =
+        original.CODEX_STUDIO_CHECKS_CACHE;
+    delete process.env.FIXTURE_CARGO_MODE;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("unknown Rust package stays a facade error", async () => {
+  await assert.rejects(
+    main(["test", "codex-package-that-does-not-exist"]),
+    /Unknown package/,
   );
 });
 
