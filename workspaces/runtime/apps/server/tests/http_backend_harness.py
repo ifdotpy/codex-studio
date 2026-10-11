@@ -177,6 +177,11 @@ class BackendProcess:
             path_entries.append(str(self._backend_python.parent))
         path_entries.extend(os.defpath.split(os.pathsep))
         values["PATH"] = os.pathsep.join(path_entries)
+        # The backend starts Node helpers (the Ed25519 service). Name the caller's
+        # Node explicitly instead of exposing the caller's PATH.
+        node = os.environ.get("CODEX_NODE") or shutil.which("node")
+        if node:
+            values["CODEX_NODE"] = node
         environment.update(values)
         if executable is not None:
             environment["CODEX_BIN"] = str(executable)
