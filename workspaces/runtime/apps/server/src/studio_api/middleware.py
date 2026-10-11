@@ -69,6 +69,9 @@ class HttpTraceMiddleware:
             await self.app(scope, receive, send)
             return
 
+        started_ns = time.perf_counter_ns()
+        method = str(scope.get("method", "GET"))
+        response_bytes = 0
         trace_id: object = None
         status: int | None = None
         outcome = "complete"
@@ -89,9 +92,11 @@ class HttpTraceMiddleware:
                 pass
 
         async def traced_send(message: Message) -> None:
-            nonlocal status
+            nonlocal status, response_bytes
             if message["type"] == "http.response.start":
                 status = int(message["status"])
+            elif message["type"] == "http.response.body":
+                response_bytes += len(message.get("body", b""))
             await send(message)
 
         try:
@@ -100,6 +105,23 @@ class HttpTraceMiddleware:
             outcome = "error"
             raise
         finally:
+            try:
+                import codex_http_traces
+
+                matched_route = scope.get("route")
+                route = getattr(matched_route, "path", None) or scope.get("path_format")
+                if not isinstance(route, str) or not route.startswith("/"):
+                    route = "<unmatched>"
+                codex_http_traces.record_route(
+                    method, route, time.perf_counter_ns() - started_ns, response_bytes
+                )
+            except Exception as error:
+                try:
+                    import codex_http_traces
+
+                    codex_http_traces.report_failure(error)
+                except Exception:
+                    pass
             try:
                 import codex_http_traces
 

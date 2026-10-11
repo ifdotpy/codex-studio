@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Opt-in Runtime.lock metrics keep reentrancy and Condition behavior."""
+"""Runtime.lock metrics keep reentrancy, bounded samples, and Condition behavior."""
 
 # Support direct execution without runner-provided PYTHONPATH.
 import sys
@@ -72,17 +72,33 @@ class RuntimeLockMetricsContract(unittest.TestCase):
         self.assertEqual(row["waitMs"]["samples"], SAMPLE_LIMIT)
         self.assertEqual(row["holdMs"]["samples"], SAMPLE_LIMIT)
 
-    def test_runtime_lock_is_uninstrumented_without_opt_in(self):
+    def test_concurrent_acquisitions_preserve_exact_callsite_count(self):
+        lock = MeasuredRLock()
+        workers, per_worker = 8, 250
+
+        def acquire_many():
+            for _ in range(per_worker):
+                with lock:
+                    pass
+
+        threads = [threading.Thread(target=acquire_many) for _ in range(workers)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+            self.assertFalse(thread.is_alive())
+        rows = lock.runtime_lock_metrics()
+        self.assertEqual(sum(row["count"] for row in rows), workers * per_worker)
+        self.assertEqual(len(rows), 1)
+
+    def test_runtime_lock_is_instrumented_without_opt_in(self):
         home = os.environ.get("HOME", str(Path.home()))
         with patch.dict(os.environ, {"HOME": home}, clear=True):
-            self.assertNotIsInstance(runtime_lock(), MeasuredRLock)
-        with patch.dict(os.environ, {"HOME": home, "CODEX_RUNTIME_LOCK_METRICS": "1"}, clear=True):
             self.assertIsInstance(runtime_lock(), MeasuredRLock)
 
-    def test_runtime_uses_the_opt_in_metrics_lock_in_temp_state(self):
+    def test_runtime_uses_metrics_lock_in_temp_state(self):
         with tempfile.TemporaryDirectory(prefix="studio-lock-metrics-") as folder:
-            with patch.dict(os.environ, {"CODEX_RUNTIME_LOCK_METRICS": "1",
-                                         "HOME": folder, "CODEX_HOME": folder}, clear=True):
+            with patch.dict(os.environ, {"HOME": folder, "CODEX_HOME": folder}, clear=True):
                 runtime = Runtime(folder, server_factory=lambda *_args: None)
                 try:
                     self.assertIsInstance(runtime.lock, MeasuredRLock)

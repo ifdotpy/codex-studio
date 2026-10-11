@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from codex_sqlite_traces import _frames
 from codex_private_paths import ensure_private_dir, protect_temp_file
+from codex_lock_metrics import FixedSampleRing, percentile_summary
 
 SLOW_MS = 1000
 ACTIVE_LIMIT = 128
@@ -27,6 +28,13 @@ _SAVED = None
 _ARCHIVE_CHECKED = None
 _STARTED_AT = time.time()
 _UNTRACKED = 0
+# Request metrics use fixed-size rings. Unknown and unmatched routes share a
+# single key, so user-controlled paths cannot grow the registry.
+ROUTE_SAMPLE_LIMIT = 2048
+ROUTE_LIMIT = 256
+_ROUTE_LOCK = threading.Lock()
+_ROUTE_METRICS = {}
+_ROUTE_UNTRACKED = 0
 # Only these constant routes can identify the global connection error.
 _ROUTES = frozenset(("/api/session", "/api/sync/identity",
                      "/api/sync/pull"))
@@ -37,6 +45,41 @@ def report_failure(error):
         logging.getLogger("codex.http").warning("HTTP request journal failed: %s", type(error).__name__)
     except Exception:
         pass  # A diagnostic logger must not change the API response.
+
+
+def record_route(method, route, latency_ns, response_bytes):
+    """Record one request using its resolved route template, never its URL."""
+    global _ROUTE_UNTRACKED
+    key = (method, route)
+    with _ROUTE_LOCK:
+        metrics = _ROUTE_METRICS.get(key)
+        if metrics is None:
+            if len(_ROUTE_METRICS) >= ROUTE_LIMIT:
+                _ROUTE_UNTRACKED += 1
+                return
+            metrics = FixedSampleRing(
+                ROUTE_SAMPLE_LIMIT, ("latencyNs", "responseBytes")
+            )
+            _ROUTE_METRICS[key] = metrics
+        metrics.record((latency_ns, response_bytes))
+
+
+def route_metrics():
+    """Return bounded per-route latency and response-size summaries."""
+    with _ROUTE_LOCK:
+        rows = [(method, route, metrics.snapshot())
+                for (method, route), metrics in _ROUTE_METRICS.items()]
+        untracked = _ROUTE_UNTRACKED
+
+    return {"routes": [{"method": method, "route": route, "count": count,
+                         "latencyMs": percentile_summary(
+                             samples["latencyNs"], include_p99=True
+                         ),
+                         "responseBytes": percentile_summary(
+                             samples["responseBytes"], include_p99=True, divisor=1
+                         )}
+                        for method, route, (count, samples) in sorted(rows)],
+            "untrackedRoutes": untracked}
 
 
 def _archive_previous(path):
