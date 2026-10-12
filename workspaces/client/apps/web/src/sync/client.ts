@@ -1824,7 +1824,31 @@ export async function startDraftReplication(
         handler: (rows) =>
           attempt(generation, "push", async () => {
             await verifyWorkspace();
-            return syncPost("/api/sync/drafts", { rows }, { workspaceId });
+            const requestRows = rows.map((row) => {
+              const { _deleted, ...newDocumentState } = row.newDocumentState;
+              const assumedMasterState = row.assumedMasterState;
+              if (!assumedMasterState) {
+                return {
+                  ...row,
+                  newDocumentState: { ...newDocumentState, deleted: _deleted },
+                };
+              }
+              const { _deleted: assumedDeleted, ...assumedState } =
+                assumedMasterState;
+              return {
+                ...row,
+                newDocumentState: { ...newDocumentState, deleted: _deleted },
+                assumedMasterState: {
+                  ...assumedState,
+                  deleted: assumedDeleted,
+                },
+              };
+            });
+            return syncPost(
+              "/api/sync/drafts",
+              { rows: requestRows },
+              { workspaceId },
+            );
           }),
         batchSize: 100,
       },

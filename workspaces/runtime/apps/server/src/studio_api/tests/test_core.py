@@ -17,11 +17,11 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from types import ModuleType
-from typing import cast
+from typing import Annotated, cast
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.testclient import TestClient
@@ -42,14 +42,18 @@ from studio_api.context import (
     read_cached_or_compute_api_schema_hash,
 )
 from studio_api.middleware import HeaderView, HttpTraceMiddleware, RequestBoundary
-from studio_api.models import ContractModel, JsonValue, ResponseModel
+from studio_api.models import ContractModel, JsonValue, MAX_SAFE_INTEGER, ResponseModel, SafeInt
 from studio_api.responses import register_route_components
 from studio_api.server import _run_maintenance
+from studio_api.accounts.models import PeerTeamRadioPassRequest, PeerTeamRadioSendRequest
+from studio_api.federation.models import PairRequest, SignedEnvelope
+from studio_api.multi_server.models import AccessInvitation, AutoPairRequest, DevicePairRequest
 from studio_api.schema import (
     API_SCHEMA_HASH_HEADER,
     API_SCHEMA_HASH_PARAM,
     API_SCHEMA_MISMATCH_HEADER,
     api_schema_hash,
+    openapi_document,
 )
 
 
@@ -85,7 +89,7 @@ class NativeActionResponse(ResponseModel):
 
 class NumericResponse(ResponseModel):
     value: float
-    integer: int = 0
+    integer: SafeInt = 0
 
 
 class WeakTagResponse(ResponseModel):
@@ -132,6 +136,24 @@ class CoreResponseTests(unittest.TestCase):
 
     def test_runtime_property_is_inert_before_runtime_attachment(self) -> None:
         self.assertIsNone(self.context.runtime)
+
+    def test_integer_protocol_and_round_fields_reject_booleans(self) -> None:
+        request_models_and_fields = (
+            (PairRequest, "protocol", 1),
+            (SignedEnvelope, "protocol", 1),
+            (AccessInvitation, "protocol", 1),
+            (AutoPairRequest, "protocol", 1),
+            (DevicePairRequest, "protocol", 1),
+            (PeerTeamRadioSendRequest, "rounds", 1),
+            (PeerTeamRadioPassRequest, "rounds", 2),
+        )
+        for model, field_name, valid_value in request_models_and_fields:
+            field = model.model_fields[field_name]
+            field_type = Annotated[field.annotation, *field.metadata]
+            with self.subTest(model=model.__name__, field=field_name):
+                self.assertEqual(TypeAdapter(field_type).validate_python(valid_value), valid_value)
+                with self.assertRaises(ValueError):
+                    TypeAdapter(field_type).validate_python(True)
 
     def test_schema_hash_matches_generated_client_across_import_orders(self) -> None:
         generated_schema = (WEB_ROOT / "src/generated/apiSchema.ts").read_text(
@@ -260,15 +282,156 @@ print(api_schema_hash(openapi_document()))
         message = "x" * 4096
         response = self.context.send(
             request_for(accept_encoding="gzip"),
-            {"error": "Invalid request", "details": [{"message": message}]},
+            {"error": "Invalid request", "location": ["body", message]},
             status=400,
         )
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.headers.get("content-encoding"), "gzip")
         body = json.loads(gzip.decompress(bytes(response.body)))
-        self.assertEqual(body["details"][0]["message"], message)
+        self.assertEqual(body["location"][1], message)
         self.assertEqual(int(response.headers["content-length"]), len(response.body))
         self.assert_security_headers(response)
+
+    def test_repeated_scalar_query_is_rejected_with_location(self) -> None:
+        from studio_api.app import create_app
+
+        context = ApiContext.for_schema()
+        context.remote = SimpleNamespace(
+            request_origin=lambda _headers, _peer, _port: "http://testserver",
+        )
+        with TestClient(create_app(context)) as client:
+            response = client.get("/api/limits?account_key=first&account_key=second")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json(),
+            {"error": "Invalid request", "location": ["query", "account_key"]},
+        )
+
+    def test_sync_stream_last_event_id_uses_typed_safe_integer_header(self) -> None:
+        from studio_api.app import create_app
+
+        context = ApiContext.for_schema()
+        context.remote = SimpleNamespace(
+            request_origin=lambda _headers, _peer, _port: "http://testserver",
+        )
+        stream = "/api/sync/stream?protocol=3&resources=%5B%7B%22kind%22%3A%22state%22%7D%5D"
+        headers = {"Origin": "http://testserver", "X-Canvas-Token": context.token}
+        unavailable_hub = SimpleNamespace(subscribe=Mock(side_effect=RuntimeError("fixture hub unavailable")))
+        with patch.object(context, "resource_hub", return_value=unavailable_hub):
+            with TestClient(create_app(context)) as client:
+                values = (
+                    ("0", 503), ("1", 503), (str(MAX_SAFE_INTEGER), 503), ("01", 503),
+                    (str(MAX_SAFE_INTEGER + 1), 400), ("+1", 400), (" 1", 400),
+                    ("1.0", 400), ("", 400),
+                )
+                for value, expected_status in values:
+                    with self.subTest(value=value):
+                        response = client.get(stream, headers={**headers, "Last-Event-ID": value})
+                        self.assertEqual(response.status_code, expected_status)
+                        if expected_status == 400:
+                            self.assertEqual(response.json(), {
+                                "error": "Invalid request",
+                                "location": ["header", "Last-Event-ID"],
+                            })
+
+    def test_nested_json_value_accepts_integer_above_javascript_safe_range(self) -> None:
+        from studio_api.app import create_app
+
+        context = ApiContext.for_schema()
+        context.remote = SimpleNamespace(
+            request_origin=lambda _headers, _peer, _port: "http://testserver",
+        )
+        with TestClient(create_app(context)) as client:
+            response = client.post(
+                "/api/voice/record",
+                headers={
+                    "Origin": "http://testserver",
+                    "X-Canvas-Token": context.token,
+                },
+                json={
+                    "agent": "agent-1",
+                    "session_id": "session-1",
+                    "event_id": "event-1",
+                    "kind": "user",
+                    "payload": {"nested": [1, {"number": 1267650600228229401496703205376}]},
+                },
+            )
+
+        # The schema-only context has no voice runtime, so the request reaches
+        # the handler and returns its ordinary unavailable result.
+        self.assertEqual(response.status_code, 404)
+        self.assertNotEqual(response.json().get("error"), "Invalid request")
+
+    def test_unknown_query_names_and_non_decimal_integer_values_are_rejected(self) -> None:
+        from studio_api.app import create_app
+
+        context = ApiContext.for_schema()
+        context.remote = SimpleNamespace(
+            request_origin=lambda _headers, _peer, _port: "http://testserver",
+        )
+        with TestClient(create_app(context)) as client:
+            unknown = client.get("/api/session?cacheBuster=1")
+            oversized = client.get(
+                "/api/agent-chat?before=1267650600228229401496703205376"
+            )
+            malformed = [
+                client.get(f"/api/agent-chat?limit={value}")
+                for value in ("1.0", "1_000", "%201%20")
+            ]
+            query_values = (
+                ("0", False), ("1", False), (str(MAX_SAFE_INTEGER), False),
+                (str(MAX_SAFE_INTEGER + 1), True), ("01", False), ("+1", True),
+                (" 1", True), ("1.0", True), ("", True),
+            )
+            query_responses = [
+                (value, rejected, client.get("/api/agent-chat", params={"before": value}))
+                for value, rejected in query_values
+            ]
+            negative_after = client.get("/api/sync/pull?after=-1")
+            negative_initial_high = client.get("/api/sync/pull?initialHigh=-1")
+
+        self.assertEqual(unknown.status_code, 400)
+        self.assertEqual(unknown.json(), {"error": "Invalid request", "location": ["query", "cacheBuster"]})
+        self.assertEqual(oversized.status_code, 400)
+        self.assertEqual(oversized.json(), {"error": "Invalid request", "location": ["query", "before"]})
+        for response in malformed:
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.json(), {"error": "Invalid request", "location": ["query", "limit"]})
+        for value, rejected, response in query_responses:
+            with self.subTest(before=value):
+                self.assertEqual(response.status_code, 400)
+                if rejected:
+                    self.assertEqual(response.json(), {
+                        "error": "Invalid request",
+                        "location": ["query", "before"],
+                    })
+                else:
+                    self.assertEqual(response.json(), {"error": "The agent runtime is unavailable"})
+        for response, name in (
+            (negative_after, "after"),
+            (negative_initial_high, "initialHigh"),
+        ):
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.json(), {
+                "error": "Invalid request",
+                "location": ["query", name],
+            })
+
+    def test_query_contract_does_not_generate_openapi(self) -> None:
+        from studio_api.app import create_app
+
+        context = ApiContext.for_schema()
+        context.remote = SimpleNamespace(
+            request_origin=lambda _headers, _peer, _port: "http://testserver",
+        )
+        app = create_app(context)
+        with TestClient(app) as client:
+            response = client.get("/api/session?unexpected=secret")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json(), {"error": "Invalid request", "location": ["query", "unexpected"]})
+        self.assertIsNone(app.openapi_schema)
 
     def test_etag_not_modified_keeps_cache_contract_without_security_policy(self) -> None:
         value = {"status": "unchanged"}
@@ -321,15 +484,15 @@ print(api_schema_hash(openapi_document()))
         self.assertEqual(json.loads(bytes(response.body)), {"value": "not-a-number"})
         self.assertIn("Response contract mismatch for POST", logs.output[0])
 
-    def test_direct_json_encoding_accepts_integers_beyond_python_string_limit(self) -> None:
-        value = 10 ** 4_300
+    def test_direct_json_encoding_accepts_the_javascript_safe_integer_limit(self) -> None:
+        value = MAX_SAFE_INTEGER
         response = self.context.send(request_for(NumericResponse), {"value": 0.0, "integer": value})
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"1" + b"0" * 4_300, bytes(response.body))
+        self.assertIn(str(MAX_SAFE_INTEGER).encode(), bytes(response.body))
 
     def test_weak_etag_still_ignores_configured_fields(self) -> None:
-        huge_integer = 10 ** 4_300
+        huge_integer = MAX_SAFE_INTEGER
         first = self.context.send(
             request_for(WeakTagResponse),
             {
@@ -1218,6 +1381,26 @@ print(api_schema_hash(openapi_document()))
         document["components"]["schemas"]["summary"]["type"] = "integer"
         self.assertNotEqual(original, api_schema_hash(document))
 
+    def test_openapi_documents_global_query_rules_and_sync_schema_parameter(self) -> None:
+        document = openapi_document()
+
+        self.assertEqual(
+            document["x-query-parameter-contract"],
+            {
+                "unknown": "reject",
+                "repeatedScalar": "reject",
+                "integerPattern": "^[0-9]+$",
+                "numberPattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$",
+                "booleanValues": ["true", "false"],
+            },
+        )
+        query_names = {
+            parameter["name"]
+            for parameter in document["paths"]["/api/sync/stream"]["get"]["parameters"]
+            if parameter["in"] == "query"
+        }
+        self.assertIn("apiSchema", query_names)
+
         defaults: dict[str, JsonValue] = {
             "components": {
                 "schemas": {
@@ -1317,7 +1500,7 @@ print(api_schema_hash(openapi_document()))
             for value, status in (
                 ({"paired": True}, 200),
                 ({"invitation": "signed", "expires": 123, "warning": None}, 200),
-                # Contract mismatches fail open with the strict JSON body.
+                # Production contract mismatches fail open with strict JSON.
                 ({"paired": "true"}, 200),
                 ({"paired": True, "unexpected": 1}, 200),
                 ({"paired": False}, 200),
@@ -1511,7 +1694,7 @@ print(api_schema_hash(openapi_document()))
         self.assertEqual(empty.status_code, 400)
         self.assertEqual(empty.json()["outcome"], "not_applied")
         self.assertEqual(calls, [])
-        self.assertNotIn("422", action_schema)
+        self.assertEqual(action_schema["400"]["$ref"], "#/components/responses/ApiError400")
 
     def test_prebound_tcp_and_unix_listeners_share_one_typed_app(self) -> None:
         package_names = (

@@ -4,12 +4,10 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
-from .models import LinuxVMSettingsResponse
-from .router import create_router
+from studio_api.app import create_app
+from studio_api.context import ApiContext
 
 
 GIB = 1024 ** 3
@@ -43,11 +41,13 @@ class VMSettingsApi(unittest.TestCase):
         self.patcher = patch.dict('sys.modules', {'codex_linux_vm': SimpleNamespace(connect=lambda: self.vm)})
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
-        def send(_request, value):
-            return JSONResponse(LinuxVMSettingsResponse.model_validate(value).model_dump(mode='json'))
-        app = FastAPI()
-        app.include_router(create_router(SimpleNamespace(send=send)))
-        self.client = TestClient(app)
+        context = ApiContext.for_schema()
+        context.remote = SimpleNamespace(
+            request_origin=lambda _headers, _peer, _port: "http://testserver",
+        )
+        self.client = TestClient(
+            create_app(context), headers={"x-canvas-token": context.token}
+        )
 
     def test_read_reports_settings_without_a_write(self):
         response = self.client.get('/api/linux-vm/settings')
@@ -67,14 +67,18 @@ class VMSettingsApi(unittest.TestCase):
         for key, value in [('cpus', True), ('cpus', 0), ('memoryBytes', 1),
                            ('dataDiskBytes', 2048 * GIB), ('systemDiskBytes', 1.5)]:
             response = self.client.post('/api/linux-vm/settings', json={**SETTINGS, key: value})
-            self.assertEqual(response.status_code, 422)
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.json(), {
+                "error": "Invalid request",
+                "location": ["body", key],
+            })
         self.assertEqual(self.vm.writes, [])
 
     def test_live_vm_is_never_stopped_to_save_settings(self):
         self.vm.state = 'running'
         response = self.client.post('/api/linux-vm/settings', json=SETTINGS)
         self.assertEqual(response.status_code, 400)
-        self.assertIn('Stop the Linux VM', response.json()['detail'])
+        self.assertEqual(response.json(), {"error": "Stop the Linux VM before changing its resource limits."})
         self.assertEqual(self.vm.writes, [])
         self.assertEqual(self.vm.state, 'running')
 

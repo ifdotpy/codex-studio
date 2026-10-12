@@ -354,32 +354,12 @@ test("Progress markdown panel browser", async ({
     await compactError.waitFor({ state: "hidden" });
     await panel.getByRole("button", { name: "Show", exact: true }).click();
     await closeError(await readError("Connection interrupted"));
-    const diagnostic = {
-      message: "Read denied",
-      code: "EACCES",
-      path: "/fixture/PROGRESS.md",
-    };
     await page.evaluate(
       (value) => window.panelResponse(value, 503),
-      next("", null, diagnostic),
+      next("", null, "Read denied"),
     );
-    // Wait for the next failed poll before opening its full diagnostic.
     await page.waitForTimeout(1100);
-    const dialog = await readError("Read denied");
-    await dialog
-      .getByRole("button", { name: "Error details", exact: true })
-      .click();
-    const details = JSON.parse(
-      await dialog
-        .getByRole("button", { name: "Hide error details", exact: true })
-        .locator("..")
-        .locator(":scope > span")
-        .last()
-        .innerText(),
-    );
-    assert.equal(details.status, 503);
-    assert.deepEqual(details.details.error, diagnostic);
-    await closeError(dialog);
+    await closeError(await readError("Read denied"));
     await page.evaluate(
       (value) => window.panelResponse(value),
       next("", null, "UTF-8 read failed"),

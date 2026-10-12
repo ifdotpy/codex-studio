@@ -73,7 +73,7 @@ class SyncHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
     def test_draft_push_rejects_a_foreign_workspace_and_malformed_row(self) -> None:
         body = {"rows": [{"newDocumentState": {
-            "id": "phone:lead", "seq": 0, "_deleted": False,
+            "id": "phone:lead", "seq": 0, "deleted": False,
             "payload": json.dumps({"text": "draft", "session": "lead", "device": "phone"}),
         }}]}
         foreign = self.backend.request(

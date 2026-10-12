@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from email.message import Message
 from typing import TYPE_CHECKING
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from fastapi import APIRouter, Request
 from starlette.concurrency import run_in_threadpool
@@ -26,6 +26,7 @@ from studio_api.federation.models import (
     SignedStatusResponse,
     StatusRequest,
 )
+from codex_federation import SIGNED_REQUEST_MODELS
 from studio_api.responses import api_write_responses, error_responses, register_route_components
 
 if TYPE_CHECKING:
@@ -56,6 +57,7 @@ FEDERATION_PATHS = (
     "/api/federation/v1/message",
     "/api/federation/v1/pull",
 )
+SIGNED_REQUEST_OPERATION_MODELS: dict[str, type[BaseModel]] = {}
 NO_GET_PATHS = ("/api/federation", *FEDERATION_PATHS)
 
 
@@ -72,7 +74,15 @@ def _openapi_body(component_name: str) -> dict[str, object]:
     }
 
 
-def _register_request_schema(route: object, name: str, model: type[BaseModel]) -> None:
+def _register_request_schema(
+    route: object, name: str, model: type[BaseModel], action: str
+) -> None:
+    if SIGNED_REQUEST_MODELS.get(action) is not model:
+        raise RuntimeError(f"Signed federation operation {action!r} has mismatched request model")
+    path = getattr(route, "path", None)
+    if not isinstance(path, str):
+        raise RuntimeError(f"Signed federation operation {action!r} has no route path")
+    SIGNED_REQUEST_OPERATION_MODELS[path] = model
     schema = model.model_json_schema(ref_template="#/components/schemas/{model}")
     register_route_components(route, {name: schema})
 
@@ -101,7 +111,13 @@ def create_router(context: ApiContext) -> APIRouter:
                 return context.send(request, result)
             except PermissionError as error:
                 return context.send(request, {"error": str(error)}, status=403)
-            except (ValueError, RuntimeError, OSError, sqlite3.Error) as error:
+            except ValueError:
+                return context.send(
+                    request,
+                    {"error": "Invalid request", "location": ["body"]},
+                    status=400,
+                )
+            except (RuntimeError, OSError, sqlite3.Error) as error:
                 return context.send(request, {"error": str(error)}, status=400)
 
         return await run_in_threadpool(dispatch)
@@ -122,8 +138,12 @@ def create_router(context: ApiContext) -> APIRouter:
         try:
             remote = context.remote
             origin = remote.request_origin(headers, peer, port)
-        except ValueError as error:
-            return context.send(request, {"error": str(error)}, status=400)
+        except ValueError:
+            return context.send(
+                request,
+                {"error": "Invalid request", "location": ["header", "origin"]},
+                status=400,
+            )
         if origin is None:
             return context.send(request, {"error": "Tailscale Serve origin required"}, status=403)
 
@@ -131,18 +151,34 @@ def create_router(context: ApiContext) -> APIRouter:
         try:
             length = int(content_length)
         except ValueError:
-            return context.send(request, {"error": "Invalid Content-Length"}, status=400)
+            return context.send(
+                request,
+                {"error": "Invalid request", "location": ["header", "content-length"]},
+                status=400,
+            )
         if not 0 < length <= MAX_BODY_BYTES:
-            return context.send(request, {"error": "Invalid federation request size"}, status=413)
+            return context.send(
+                request,
+                {"error": "Invalid request size", "location": ["body"]},
+                status=413,
+            )
 
         content_type = Message()
         content_type["Content-Type"] = request.headers.get("content-type", "")
         if content_type.get_content_type() != "application/json":
-            return context.send(request, {"error": "JSON required"}, status=415)
+            return context.send(
+                request,
+                {"error": "Unsupported media type", "location": ["header", "content-type"]},
+                status=415,
+            )
 
         raw = await request.body()
         if len(raw) != length:
-            return context.send(request, {"error": "Incomplete federation request"}, status=400)
+            return context.send(
+                request,
+                {"error": "Invalid request", "location": ["body"]},
+                status=400,
+            )
 
         def dispatch() -> Response:
             try:
@@ -150,51 +186,73 @@ def create_router(context: ApiContext) -> APIRouter:
                 # its signature against these exact bytes.
                 result = runtime.federation().route(action, headers, peer, raw)
                 return context.send(request, result)
+            except ValidationError as error:
+                problems = error.errors(
+                    include_url=False,
+                    include_context=False,
+                    include_input=False,
+                )
+                first_location = problems[0].get("loc", ()) if problems else ()
+                location = [
+                    "body",
+                    *(str(part) for part in first_location if isinstance(part, (str, int))),
+                ]
+                return context.send(
+                    request,
+                    {"error": "Invalid request", "location": location},
+                    status=400,
+                )
             except PermissionError as error:
                 return context.send(request, {"error": str(error)}, status=403)
-            except (ValueError, RuntimeError, OSError, sqlite3.Error) as error:
+            except ValueError:
+                return context.send(
+                    request,
+                    {"error": "Invalid request", "location": ["body"]},
+                    status=400,
+                )
+            except (RuntimeError, OSError, sqlite3.Error) as error:
                 return context.send(request, {"error": str(error)}, status=400)
         return await run_in_threadpool(dispatch)
 
     @router.post(
         FEDERATION_PATHS[0],
         response_model=SignedPairResponse,
-        responses=api_write_responses(errors=(404,)),
+        responses=api_write_responses(errors=(400, 404, 413, 415)),
         openapi_extra=_openapi_body("PairRequest"),
     )
     async def pair(request: Request) -> Response:
         return await signed_post(request, "pair")
-    _register_request_schema(router.routes[-1], "PairRequest", PairRequest)
+    _register_request_schema(router.routes[-1], "PairRequest", PairRequest, "pair")
 
     @router.post(
         FEDERATION_PATHS[1],
         response_model=SignedStatusResponse,
-        responses=api_write_responses(errors=(404,)),
+        responses=api_write_responses(errors=(400, 404, 413, 415)),
         openapi_extra=_openapi_body("StatusRequest"),
     )
     async def status(request: Request) -> Response:
         return await signed_post(request, "status")
-    _register_request_schema(router.routes[-1], "StatusRequest", StatusRequest)
+    _register_request_schema(router.routes[-1], "StatusRequest", StatusRequest, "status")
 
     @router.post(
         FEDERATION_PATHS[2],
         response_model=SignedMessageResponse,
-        responses=api_write_responses(errors=(404,)),
+        responses=api_write_responses(errors=(400, 404, 413, 415)),
         openapi_extra=_openapi_body("MessageRequest"),
     )
     async def message(request: Request) -> Response:
         return await signed_post(request, "message")
-    _register_request_schema(router.routes[-1], "MessageRequest", MessageRequest)
+    _register_request_schema(router.routes[-1], "MessageRequest", MessageRequest, "message")
 
     @router.post(
         FEDERATION_PATHS[3],
         response_model=SignedPullResponse,
-        responses=api_write_responses(errors=(404,)),
+        responses=api_write_responses(errors=(400, 404, 413, 415)),
         openapi_extra=_openapi_body("PullRequest"),
     )
     async def pull(request: Request) -> Response:
         return await signed_post(request, "pull")
-    _register_request_schema(router.routes[-1], "PullRequest", PullRequest)
+    _register_request_schema(router.routes[-1], "PullRequest", PullRequest, "pull")
 
     async def no_get_counterpart(request: Request) -> Response:
         return context.send(request, {"error": "Not found"}, status=404)

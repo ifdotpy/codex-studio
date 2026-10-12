@@ -4,12 +4,19 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
+import re
 import sqlite3
-from typing import TYPE_CHECKING
+import types
+from collections.abc import Sequence
+from enum import Enum
+from typing import TYPE_CHECKING, Annotated, Literal, Union, get_args, get_origin
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError, ResponseValidationError
+from fastapi.routing import APIRoute
+from pydantic import BaseModel
 from starlette.responses import Response
+from starlette.routing import BaseRoute
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from studio_api.core_models import SessionResponse
@@ -27,9 +34,122 @@ if TYPE_CHECKING:
     from studio_api.context import ApiContext
 
 
+class QueryContractError(Exception):
+    """Raised when a hand-encoded query value fails its route contract."""
+
+    def __init__(self, parameter: str) -> None:
+        self.parameter = parameter
+
+
 def create_app(context: ApiContext) -> FastAPI:
     """Create the API without opening state or starting background services."""
-    app = FastAPI(title="Codex Studio API", version="1")
+    integer_query_value = re.compile(r"[0-9]+\Z")
+    number_query_value = re.compile(
+        r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\Z"
+    )
+
+    query_parameters: dict[tuple[str, str], dict[str, tuple[bool, frozenset[str]]]] = {}
+
+    def query_types(annotation: object) -> tuple[bool, frozenset[str]]:
+        origin = get_origin(annotation)
+        args = get_args(annotation)
+        if origin is Annotated:
+            return query_types(args[0])
+        if origin in (Union, types.UnionType):
+            variants = [query_types(arg) for arg in args if arg is not type(None)]
+            return any(array for array, _ in variants), frozenset().union(*(types_ for _, types_ in variants))
+        if origin in (list, tuple, set, frozenset):
+            _, item_types = query_types(args[0] if args else str)
+            return True, frozenset({"array", *item_types})
+        if origin is Literal:
+            values = args
+            return False, frozenset(
+                "boolean" if isinstance(value, bool) else
+                "integer" if isinstance(value, int) else
+                "number" if isinstance(value, float) else "string"
+                for value in values
+            )
+        if isinstance(annotation, type):
+            if issubclass(annotation, BaseModel):
+                return False, frozenset()
+            if issubclass(annotation, Enum):
+                return query_types(type(next(iter(annotation)).value)) if annotation else (False, frozenset({"string"}))
+            if issubclass(annotation, bool):
+                return False, frozenset({"boolean"})
+            if issubclass(annotation, int):
+                return False, frozenset({"integer"})
+            if issubclass(annotation, float):
+                return False, frozenset({"number"})
+        return False, frozenset({"string"})
+
+    def add_query_model(target: dict[str, tuple[bool, frozenset[str]]], model: type[BaseModel]) -> None:
+        for field_name, field in model.model_fields.items():
+            name = field.alias or field_name
+            target[name] = query_types(field.annotation)
+
+    def cache_route_queries(routes: Sequence[BaseRoute]) -> None:
+        for route in routes:
+            if isinstance(route, APIRoute):
+                declared = route_query_parameters(route)
+                for method in route.methods or ():
+                    query_parameters[(route.path, method)] = declared
+
+    def route_query_parameters(route: APIRoute) -> dict[str, tuple[bool, frozenset[str]]]:
+        declared: dict[str, tuple[bool, frozenset[str]]] = {}
+        pending = [route.dependant]
+        seen: set[int] = set()
+        while pending:
+            dependant = pending.pop()
+            if id(dependant) in seen:
+                continue
+            seen.add(id(dependant))
+            pending.extend(dependant.dependencies)
+            for field in dependant.query_params:
+                annotation = field.field_info.annotation
+                if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+                    add_query_model(declared, annotation)
+                else:
+                    declared[field.alias] = query_types(annotation)
+        return declared
+
+    def query_contract_problem(request: Request) -> str | None:
+        if not request.scope.get("query_string"):
+            return None
+        route = request.scope.get("route")
+        if not isinstance(route, APIRoute) or not route.path.startswith("/api/"):
+            return None
+        path = route.path
+        route_key = (path, request.method)
+        declared = query_parameters.get(route_key)
+        if declared is None:
+            declared = route_query_parameters(route)
+            query_parameters[route_key] = declared
+        for name in request.query_params.keys():
+            parameter = declared.get(name)
+            if parameter is None:
+                return name
+            is_array, value_types = parameter
+            values = request.query_params.getlist(name)
+            if len(values) > 1 and not is_array:
+                return name
+            if "integer" in value_types and any(not integer_query_value.fullmatch(value) for value in values):
+                return name
+            if "number" in value_types and any(not number_query_value.fullmatch(value) for value in values):
+                return name
+            if "boolean" in value_types and any(value not in {"true", "false"} for value in values):
+                return name
+        return None
+
+    def validate_query_contract(request: Request) -> None:
+        problem = query_contract_problem(request)
+        if problem is not None:
+            raise QueryContractError(problem)
+
+    app = FastAPI(
+        title="Codex Studio API",
+        version="1",
+        dependencies=[Depends(validate_query_contract)],
+    )
     app.state.api_context = context
     app.add_middleware(RequestBoundary, context=context)
     app.add_middleware(MultiServerBoundary, context=context)
@@ -72,6 +192,8 @@ def create_app(context: ApiContext) -> FastAPI:
         create_system_router,
     ):
         app.include_router(create_router(context))
+
+    cache_route_queries(app.routes)
 
     @app.get("/", include_in_schema=False)
     def root(request: Request) -> object:
@@ -131,17 +253,27 @@ def create_app(context: ApiContext) -> FastAPI:
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, error: RequestValidationError) -> Response:
         request.scope["studio_prehandler_failure"] = True
-        problems: list[JsonValue] = [
-            {"location": [str(part) for part in row.get("loc", ())], "message": str(row.get("msg", "Invalid request"))}
-            for row in error.errors()
-        ]
+        problems = error.errors()
+        location = [str(part) for part in problems[0].get("loc", ())] if problems else []
+        status = 400
         if request.method == "POST" and request.url.path == "/api/action":
             return context.send(
                 request,
-                ErrorResponse(error="Invalid request", outcome="not_applied", details=problems),
-                status=400,
+                ErrorResponse(error="Invalid request", outcome="not_applied", location=location),
+                status=status,
             )
-        return error_response(context, request, "Invalid request", 400, details=problems)
+        return error_response(context, request, "Invalid request", status, location=location)
+
+    @app.exception_handler(QueryContractError)
+    async def query_contract_error(request: Request, error: QueryContractError) -> Response:
+        request.scope["studio_prehandler_failure"] = True
+        return error_response(
+            context,
+            request,
+            "Invalid request",
+            400,
+            location=["query", error.parameter],
+        )
 
     @app.exception_handler(StarletteHTTPException)
     async def http_error(request: Request, error: StarletteHTTPException) -> Response:

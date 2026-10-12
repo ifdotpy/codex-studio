@@ -78,7 +78,7 @@ class HttpRequestTracesContract(unittest.TestCase):
     def _prepare_slow_asgi_trace(self):
         request = self.pool.submit(
             self.request,
-            "/api/sync/pull?scope=transcript%3Aprivate-agent-id&token=private-query-token",
+            "/api/sync/pull?scope=transcript%3Aprivate-agent-id",
         )
         self.assertTrue(self.entered.wait(HANG_GUARD_SECONDS), "The real HTTP transcript callback did not enter")
         self.clock += .1
@@ -127,7 +127,7 @@ class HttpRequestTracesContract(unittest.TestCase):
         return json.loads(self.journal.read_text())
 
     def test_active_wait_is_saved_before_a_real_http_response_then_finishes_with_status(self):
-        path = "/api/sync/pull?scope=transcript%3Aprivate-agent-id&token=private-query-token"
+        path = "/api/sync/pull?scope=transcript%3Aprivate-agent-id"
         request = self.pool.submit(self.request, path)
         try:
             self.assertTrue(self.entered.wait(HANG_GUARD_SECONDS), "The real HTTP transcript callback did not enter")
@@ -146,7 +146,6 @@ class HttpRequestTracesContract(unittest.TestCase):
                 self.assertEqual(frame["file"], Path(frame["file"]).name)
             text = self.journal.read_text()
             self.assertNotIn("private-agent-id", text)
-            self.assertNotIn("private-query-token", text)
             self.assertNotIn("token=", text)
             self.assertEqual(self.journal.stat().st_mode & 0o777, 0o600)
             self.assertEqual(self.journal.parent.stat().st_mode & 0o777, 0o700)
@@ -165,7 +164,21 @@ class HttpRequestTracesContract(unittest.TestCase):
                          (200, "complete", 100))
         self.assertEqual(saved["frames"], row["frames"])
         self.assertNotIn("private-agent-id", self.journal.read_text())
-        self.assertNotIn("private-query-token", self.journal.read_text())
+
+    def test_undeclared_secret_query_is_refused_without_logging_its_value(self):
+        response = self.request(
+            "/api/sync/pull?scope=transcript%3Aprivate-agent-id&token=private-query-token",
+        )
+
+        self.assertEqual(response["status"], 400)
+        body = response["body"].decode()
+        self.assertIn('"location":["query","token"]', body)
+        self.assertNotIn("private-query-token", body)
+        self.assertTrue(self.finished.wait(HANG_GUARD_SECONDS))
+        traces.watchdog(self.root)
+        journal = self.journal.read_text()
+        self.assertNotIn("private-query-token", journal)
+        self.assertNotIn("token=", journal)
 
     def test_fast_get_post_and_sse_do_not_retain_history_or_rewrite_the_journal(self):
         traces.watchdog(self.root)
@@ -190,21 +203,25 @@ class HttpRequestTracesContract(unittest.TestCase):
         self.assertNotIn(token, self.journal.read_text())
 
     def test_route_metrics_record_real_http_requests_by_route_template(self):
-        for query in ("?scope=first", "?scope=second", "?scope=third"):
-            response = self.request("/api/session" + query)
+        for query in (
+            "?scope=state%3Aentities%3Av1",
+            "?scope=state%3Aentities%3Av1&after=1",
+            "?scope=state%3Aentities%3Av1&after=2",
+        ):
+            response = self.request("/api/sync/pull" + query)
             self.assertEqual(response["status"], 200)
         deadline = time.monotonic() + 5
         last_count = 0
         while True:
             route_stats = traces.route_metrics()
             row = next((row for row in route_stats["routes"]
-                        if row["method"] == "GET" and row["route"] == "/api/session"), None)
+                        if row["method"] == "GET" and row["route"] == "/api/sync/pull"), None)
             last_count = row["count"] if row else 0
             if last_count >= 3:
                 break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                self.fail(f"Expected 3 completed GET /api/session route metrics; last count was {last_count}")
+                self.fail(f"Expected 3 completed GET /api/sync/pull route metrics; last count was {last_count}")
             threading.Event().wait(min(.01, remaining))
         self.assertGreaterEqual(row["latencyMs"]["max"], row["latencyMs"]["p50"])
         self.assertGreater(row["responseBytes"]["p50"], 0)
@@ -345,9 +362,9 @@ class HttpRequestTracesContract(unittest.TestCase):
                     with begin_patch, \
                          operation_patch, \
                          patch.object(traces, "discard", side_effect=observed_discard):
-                        response = self.request("/api/session?token=private-failed-query-token")
+                        response = self.request("/api/sync/pull?scope=state%3Aentities%3Av1")
                         self.assertEqual(response["status"], 200, response)
-                        self.assertTrue(json.loads(response["body"])["token"])
+                        self.assertIn("documents", json.loads(response["body"]))
                         if operation == "finish":
                             self.assertTrue(retired.wait(HANG_GUARD_SECONDS), "The failed completion did not retire its active trace")
                             self.assertEqual(discarded_keys, trace_keys)

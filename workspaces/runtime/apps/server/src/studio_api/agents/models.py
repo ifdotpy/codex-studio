@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from uuid import UUID
-from typing import Literal, TypeAlias
+from typing import Annotated, Literal, TypeAlias
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
-from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel
+from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel, SafeInt
 from codex_nested_delegation import (
     DEFAULT_DELEGATION_DEPTH, MAX_DELEGATION_DEPTH, MIN_DELEGATION_DEPTH,
 )
@@ -208,7 +207,7 @@ class CreateLeadRequest(ContractModel):
     cwd: str | None = None
     project_folder: str | None = None
     account_key: str | None = Field(default=None, min_length=1, max_length=200)
-    model: str | None = Field(default=None, min_length=1, max_length=300)
+    model: str | None = Field(default=None, min_length=1, max_length=300, pattern=r"\S")
     yolo_mode: bool | None = None
     effort: str | None = Field(default=None, max_length=100)
     fast_mode: bool | None = None
@@ -216,103 +215,58 @@ class CreateLeadRequest(ContractModel):
     worker_defaults: WorkerDefaults | None = None
     review_defaults: ReviewDefaults | None = None
 
-    @field_validator("model")
-    @classmethod
-    def model_not_blank(cls, value: str | None) -> str | None:
-        if value is not None and not value.strip():
-            raise ValueError("Selected model must not be empty")
-        return value
-
-
 class WorkerDefaults(ContractModel):
-    model: str | None = Field(min_length=1, max_length=300)
-    effort: str | None = Field(max_length=100)
+    model: str | None = Field(min_length=1, max_length=300, pattern=r"\S")
+    effort: str | None = Field(max_length=100, pattern=r"\S")
     fast_mode: bool
     daybreak_enabled: bool | None = None
     account_key: str | None = Field(default=None, max_length=200)
-    delegation_depth: int = Field(
-        default=DEFAULT_DELEGATION_DEPTH,
-        strict=True,
-        ge=MIN_DELEGATION_DEPTH,
-        le=MAX_DELEGATION_DEPTH,
-    )
-
-    @field_validator("effort")
-    @classmethod
-    def effort_not_blank(cls, value: str | None) -> str | None:
-        if value is not None and not value.strip():
-            raise ValueError("Reasoning effort must be a non-empty string or null")
-        return value
-
+    delegation_depth: Annotated[
+        int,
+        Field(
+            strict=True,
+            ge=MIN_DELEGATION_DEPTH,
+            le=MAX_DELEGATION_DEPTH,
+        ),
+    ] = DEFAULT_DELEGATION_DEPTH
 
 class ReviewDefaults(ContractModel):
-    model: str | None = Field(max_length=300)
-    effort: str | None = Field(max_length=100)
-
-    @field_validator("model", "effort")
-    @classmethod
-    def selected_value_not_blank(cls, value: str | None) -> str | None:
-        if value is not None and not value.strip():
-            raise ValueError("Review model and effort must be non-empty strings or null")
-        return value
+    model: str | None = Field(max_length=300, pattern=r"\S")
+    effort: str | None = Field(max_length=100, pattern=r"\S")
 
 
 class CreateAgentRequest(ContractModel):
     workspaceMode: Literal["layr", "image", "worktree"] | None = None
-    id: str | None = Field(default=None, min_length=1, max_length=200)
+    id: str | None = Field(
+        default=None,
+        min_length=36,
+        max_length=36,
+        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+    )
     parent: str | None = Field(default=None, min_length=1, max_length=200)
     cwd: str | None = None
-    prompt: str
-    name: str | None = None
+    prompt: str = Field(min_length=1, max_length=32000, pattern=r"\S")
+    name: str | None = Field(default=None, min_length=1, max_length=100, pattern=r"\S")
     role: AgentRole | None = None
-    model: str | None = Field(default=None, min_length=1, max_length=300)
-    effort: str | None = Field(default=None, max_length=100)
+    model: str | None = Field(default=None, min_length=1, max_length=300, pattern=r"\S")
+    effort: str | None = Field(default=None, max_length=100, pattern=r"\S")
     fast_mode: bool | None = None
     daybreak_enabled: bool | None = None
     yolo_mode: bool | None = None
     account_key: str | None = Field(default=None, max_length=200)
     worker_defaults: WorkerDefaults | None = None
     profile_id: str | None = Field(default=None, max_length=200)
-    concurrency: int | None = Field(default=None, ge=0, le=512)
-    maxAgents: int | None = Field(default=None, ge=1, le=1024)
-    tokenBudget: int | None = Field(default=None, gt=0)
-
-    @field_validator("id")
-    @classmethod
-    def id_is_uuid(cls, value: str | None) -> str | None:
-        if value is not None:
-            UUID(value)
-        return value
-
-    @field_validator("prompt")
-    @classmethod
-    def prompt_has_runtime_length(cls, value: str) -> str:
-        if not 1 <= len(value.strip()) <= 32000:
-            raise ValueError("Task must have 1 to 32000 characters")
-        return value
-
-    @field_validator("name")
-    @classmethod
-    def name_has_runtime_length(cls, value: str | None) -> str | None:
-        if value is not None and not 1 <= len(value.strip()) <= 100:
-            raise ValueError("Agent name must have 1 to 100 characters")
-        return value
-
-    @field_validator("model", "effort")
-    @classmethod
-    def execution_name_not_blank(cls, value: str | None) -> str | None:
-        if value is not None and not value.strip():
-            raise ValueError("Selected model and reasoning effort must not be empty")
-        return value
-
+    concurrency: SafeInt | None = Field(default=None, ge=0, le=512)
+    maxAgents: SafeInt | None = Field(default=None, ge=1, le=1024)
+    tokenBudget: SafeInt | None = Field(default=None, gt=0)
 
 class ConversationRequest(ContractModel):
     id: str = Field(min_length=1, max_length=200)
     cwd: str | None = None
     yolo_mode: bool | None = None
     expected_account_key: str | None = Field(default=None, min_length=1, max_length=200)
-    model: str | None = Field(default=None, min_length=1, max_length=300)
-    effort: str | None = Field(default=None, max_length=100)
+    model: str | None = Field(default=None, min_length=1, max_length=300, pattern=r"\S")
+    effort: str | None = Field(default=None, max_length=100, pattern=r"\S")
     fast_mode: bool | None = None
     daybreak_enabled: bool | None = None
     next_turn: bool | None = None
@@ -320,32 +274,31 @@ class ConversationRequest(ContractModel):
     worker_defaults: WorkerDefaults | None = None
     review_defaults: ReviewDefaults | None = None
     agent_mode: AgentMode | None = None
-    subagent_concurrency: int | None = Field(default=None, ge=0, le=512)
-    expected_mode_revision: int | None = Field(default=None, ge=0)
-    excluded_account_keys: list[str] | None = Field(default=None, max_length=512)
+    subagent_concurrency: SafeInt | None = Field(default=None, ge=0, le=512)
+    expected_mode_revision: SafeInt | None = Field(default=None, ge=0)
+    excluded_account_keys: list[Annotated[str, Field(min_length=1, pattern=r"\S")]] | None = Field(
+        default=None,
+        max_length=512,
+        json_schema_extra={"uniqueItems": True},
+    )
 
     @field_validator("excluded_account_keys")
     @classmethod
-    def excluded_accounts_are_unique_nonempty(cls, value: list[str] | None) -> list[str] | None:
-        if value is not None and (any(not key.strip() for key in value) or len(set(value)) != len(value)):
-            raise ValueError("Chat account exclusions must be unique, non-empty account keys")
-        return value
-
-    @field_validator("model", "effort")
-    @classmethod
-    def execution_name_not_blank(cls, value: str | None) -> str | None:
-        if value is not None and not value.strip():
-            raise ValueError("Selected model and reasoning effort must not be empty")
+    def validate_excluded_account_keys(
+        cls, value: list[str] | None
+    ) -> list[str] | None:
+        if value is not None and len(value) != len(set(value)):
+            raise ValueError("excluded_account_keys must contain unique values")
         return value
 
 
 class ConfigureRequest(ContractModel):
     id: str = Field(min_length=1, max_length=200)
-    concurrency: int | None = Field(default=None, ge=0, le=512)
-    expected_mode_revision: int | None = Field(default=None, ge=0)
+    concurrency: SafeInt | None = Field(default=None, ge=0, le=512)
+    expected_mode_revision: SafeInt | None = Field(default=None, ge=0)
     request_id: str | None = Field(default=None, min_length=1, max_length=200)
-    maxAgents: int | None = Field(default=None, ge=1, le=1024)
-    tokenBudget: int | None = Field(default=None, gt=0)
+    maxAgents: SafeInt | None = Field(default=None, ge=1, le=1024)
+    tokenBudget: SafeInt | None = Field(default=None, gt=0)
 
 
 class AccountSelectionRequest(ContractModel):
@@ -376,7 +329,7 @@ AccountTransferRequest = TransferStartRequest | TransferActionRequest
 class ActionContext(ContractModel):
     accountKey: str | None = None
     threadId: str | None = None
-    epoch: int | None = None
+    epoch: SafeInt | None = None
 
 
 class SafetyActionRequest(ContractModel):
@@ -399,26 +352,11 @@ class NativeCommandRequest(ContractModel):
 
 class ImportRequest(ContractModel):
     id: str | None = Field(default=None, max_length=200)
-    threadId: str = Field(min_length=1, max_length=300)
+    threadId: str = Field(min_length=1, max_length=300, pattern=r"\S")
     account_key: str = Field(default="default", min_length=1, max_length=200)
     prompt: str | None = Field(default=None, max_length=32000)
     cwd: str | None = None
-    model: str | None = Field(default=None, min_length=1, max_length=300)
-
-    @field_validator("threadId")
-    @classmethod
-    def selected_thread_not_blank(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("Select a Codex thread")
-        return value
-
-    @field_validator("model")
-    @classmethod
-    def model_not_blank(cls, value: str | None) -> str | None:
-        if value is not None and not value.strip():
-            raise ValueError("Selected model must not be empty")
-        return value
-
+    model: str | None = Field(default=None, min_length=1, max_length=300, pattern=r"\S")
 
 class ImportListQuery(ContractModel):
     cursor: str | None = None
@@ -550,7 +488,7 @@ class UsageResumeResponse(UsageResumeDto, ResponseModel):
     status: UsageResumeStatus
     accountKey: str
     threadId: str
-    epoch: int
+    epoch: SafeInt
     turnId: str
     cause: UsageResumeCause
     failedAt: float
@@ -558,16 +496,8 @@ class UsageResumeResponse(UsageResumeDto, ResponseModel):
 
 class RenameRequest(ContractModel):
     id: str = Field(min_length=1, max_length=200)
-    name: str | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=80)
     request_id: str | None = Field(default=None, min_length=1, max_length=200)
-
-    @field_validator("name")
-    @classmethod
-    def name_not_blank(cls, value: str | None) -> str | None:
-        if value is not None and not 1 <= len(value.strip()) <= 80:
-            raise ValueError("A name must have 1 to 80 characters")
-        return value
-
 
     @model_validator(mode="after")
     def smart_rename_identity(self) -> RenameRequest:
@@ -619,7 +549,7 @@ class NativeActionReceipt(ResponseModel):
     action: NativeAction
     accountKey: str
     threadId: str
-    epoch: int
+    epoch: SafeInt
     attemptId: str
     acceptedAt: float
     status: NativeActionReceiptStatus
@@ -647,7 +577,7 @@ class NativeActionResponse(ResponseModel):
     turnId: str | None = None
     created: float | None = None
     updated: float | None = None
-    epoch: int | None = None
+    epoch: SafeInt | None = None
     accountKey: str | None = None
     error: str | None = None
     newThreadId: str | None = None
@@ -668,16 +598,16 @@ class TransferResponse(ResponseModel):
     finishHistory: bool | None = None
     members: dict[str, TransferMemberResponse]
     requests: dict[str, TransferRequestReceipt] | None = None
-    total: int | None = None
-    completed: int | None = None
-    moved: int | None = None
-    nativeHistoryPending: int | None = None
-    movingNow: int | None = None
+    total: SafeInt | None = None
+    completed: SafeInt | None = None
+    moved: SafeInt | None = None
+    nativeHistoryPending: SafeInt | None = None
+    movingNow: SafeInt | None = None
     canFinishHistory: bool | None = None
     interrupted: list[TransferMemberNotice] | None = None
     leftOnSource: list[TransferMemberNotice] | None = None
     blocked: list[TransferMemberNotice] | None = None
-    waitingCount: int | None = None
+    waitingCount: SafeInt | None = None
     waiting: str | None = None
     needsAttention: bool | None = None
     canRetry: bool | None = None
@@ -745,7 +675,7 @@ class MacSyncStatusResponse(ResponseModel):
     conflicts: list[str]
     choices: list[str]
     withAgent: list[str]
-    deletes: int
+    deletes: SafeInt
     reason: str | None
     at: float | None
 
@@ -761,9 +691,9 @@ class VaultPullResponse(ResponseModel):
     requestId: str
     state: Literal["running", "done", "failed"]
     folder: str
-    seq: int | None = None
-    files: int | None = None
-    bytes: int | None = None
+    seq: SafeInt | None = None
+    files: SafeInt | None = None
+    bytes: SafeInt | None = None
     error: str | None = None
 
 

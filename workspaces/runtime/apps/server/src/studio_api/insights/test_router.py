@@ -157,9 +157,9 @@ class InsightsRouterTests(unittest.TestCase):
 
         @self.app.exception_handler(RequestValidationError)
         async def invalid_request(_request: Request, error: RequestValidationError) -> Response:
-            return JSONResponse(
-                ErrorResponse(error=str(error)).wire_dump(), status_code=400
-            )
+            problems = error.errors()
+            location = [str(part) for part in problems[0].get("loc", ())] if problems else []
+            return JSONResponse(ErrorResponse(error="Invalid request", location=location).wire_dump(), status_code=400)
 
         self.client = TestClient(self.app, raise_server_exceptions=False)
 
@@ -228,13 +228,15 @@ class InsightsRouterTests(unittest.TestCase):
             for parameter in paths["/api/analytics"]["get"]["parameters"]
         }
         self.assertIn(("scope", "query"), params)
-        self.assertIn(("from", "query"), params)
+        self.assertIn(("from_time", "query"), params)
         self.assertIn(("export", "query"), params)
         scope_schema = next(
             parameter["schema"]
             for parameter in paths["/api/analytics"]["get"]["parameters"]
             if parameter["name"] == "scope"
         )
+        if "$ref" in scope_schema:
+            scope_schema = openapi["components"]["schemas"][scope_schema["$ref"].rsplit("/", 1)[-1]]
         self.assertEqual(scope_schema["enum"], ["agent", "team", "all"])
         self.assertIn(("agent", "query"), {
             (parameter["name"], parameter["in"])
@@ -307,9 +309,9 @@ class InsightsRouterTests(unittest.TestCase):
             },
         )
 
-    def test_analytics_keeps_first_query_value_and_timing_header(self) -> None:
+    def test_analytics_uses_single_query_value_and_timing_header(self) -> None:
         response = self.client.get(
-            "/api/analytics?scope=team&scope=all&from=10.5&timing=1"
+            "/api/analytics?scope=team&from_time=10.5&timing=1"
         )
 
         self.assertEqual(response.status_code, 200)
@@ -355,20 +357,24 @@ class InsightsRouterTests(unittest.TestCase):
         response = self.client.get("/api/analytics?scope=unknown")
 
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["error"], "Unknown analytics scope")
+        self.assertEqual(response.json()["error"], "Invalid request")
+        self.assertEqual(response.json()["location"], ["query", "scope"])
         self.assertEqual(self.context.runtime.analytics_calls, [])
 
-    def test_legacy_non_trigger_values_remain_ordinary_analytics_options(self) -> None:
+    def test_unrecognized_export_is_rejected_but_ordinary_filters_remain_open(self) -> None:
         response = self.client.get(
-            "/api/analytics?export=other&timing=other&view=unknown"
+            "/api/analytics?export=other"
         )
+        ordinary = self.client.get("/api/analytics?timing=other&view=unknown")
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json(), {"error": "Invalid request", "location": ["query", "export"]})
+        self.assertEqual(ordinary.status_code, 200)
         self.assertEqual(
             self.context.runtime.analytics_calls,
-            [{"export": "other", "timing": "other", "view": "unknown"}],
+            [{"scope": "agent", "timing": "other", "view": "unknown"}],
         )
-        self.assertNotIn("Server-Timing", response.headers)
+        self.assertNotIn("Server-Timing", ordinary.headers)
 
     def test_response_validation_failure_is_server_error_after_one_service_call(self) -> None:
         self.context.runtime.invalid_response = True
@@ -379,9 +385,7 @@ class InsightsRouterTests(unittest.TestCase):
         self.assertEqual(len(self.context.runtime.analytics_calls), 1)
 
     def test_cost_and_session_cost_retain_nulls_and_validate_agent_first(self) -> None:
-        cost = self.client.get(
-            "/api/costs?account_key=team-a&account_key=team-b&legacyUnknown=ignored"
-        )
+        cost = self.client.get("/api/costs?account_key=team-a")
         invalid_session = self.client.get("/api/session-cost?agent=not%20valid")
         session = self.client.get("/api/session-cost?agent=agent_123")
 

@@ -101,7 +101,7 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
           view: "turn-errors",
           thread: threadId,
           turns: requestKey,
-          limit: "1",
+          limit: 1,
         },
         timeoutMs: 60000,
       }).then((data) => {

@@ -7,12 +7,10 @@ import re
 import sqlite3
 from collections.abc import AsyncGenerator, Generator, Iterator
 from typing import TYPE_CHECKING, Annotated, Protocol, cast
-from urllib.parse import parse_qs, urlsplit
 
 import anyio
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response, StreamingResponse
-from pydantic import ValidationError
 
 from studio_api.insights.models import (
     AccountCostQuery,
@@ -48,15 +46,6 @@ class CostSnapshotReader(Protocol):
 
 class SessionCostSnapshotReader(Protocol):
     def snapshot(self, agent_id: str) -> dict[str, JsonValue]: ...
-
-
-def _query_first_values(request: Request) -> dict[str, str]:
-    """Match the legacy parse_qs contract: first occurrence, blank omitted."""
-    return {
-        key: values[0]
-        for key, values in parse_qs(urlsplit(str(request.url)).query).items()
-        if values
-    }
 
 
 def _error(
@@ -152,14 +141,8 @@ def create_router(context: ApiContext) -> APIRouter:
         ),
     )
     def analytics(
-        request: Request, _query_schema: Annotated[AnalyticsQuery, Query()]
+        request: Request, query: Annotated[AnalyticsQuery, Query()]
     ) -> Response:
-        query_values = _query_first_values(request)
-        try:
-            query = AnalyticsQuery.model_validate(query_values)
-        except ValidationError as error:
-            return _error(context, request, ValueError(str(error)))
-
         runtime_value = context.runtime
         if runtime_value is None:
             return _error(context, request, ValueError("Not found"), 404)
@@ -179,9 +162,8 @@ def create_router(context: ApiContext) -> APIRouter:
         response_model=AccountCostResponse,
         responses=api_read_responses(),
     )
-    def costs(request: Request, _query_schema: Annotated[AccountCostQuery, Query()]) -> Response:
-        query = _query_first_values(request)
-        account_key = query.get("account_key", "default")
+    def costs(request: Request, query: Annotated[AccountCostQuery, Query()]) -> Response:
+        account_key = query.account_key or "default"
         try:
             reader = cast(CostSnapshotReader, context.costs())
             result = reader.snapshot(account_key)
@@ -195,10 +177,9 @@ def create_router(context: ApiContext) -> APIRouter:
         responses=api_read_responses(),
     )
     def session_cost(
-        request: Request, _query_schema: Annotated[SessionCostQuery, Query()]
+        request: Request, query: Annotated[SessionCostQuery, Query()]
     ) -> Response:
-        query = _query_first_values(request)
-        agent_id = query.get("agent")
+        agent_id = query.agent
         if not agent_id or re.fullmatch(AGENT_ID_PATTERN, agent_id) is None:
             return _error(context, request, ValueError("Select a chat"))
         try:

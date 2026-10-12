@@ -20,6 +20,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from studio_api.context import ApiContext, RemoteAccessContract
+from studio_api.app import QueryContractError
 from studio_api.models import JsonValue
 from studio_api.responses import install_error_response_docs
 from studio_api.work.router import create_router
@@ -63,6 +64,13 @@ def make_client(context: FakeContext) -> TestClient:
     @app.exception_handler(ValueError)
     def invalid_operation(_: Request, __: ValueError) -> JSONResponse:
         return JSONResponse({"error": "Invalid request"}, status_code=400)
+
+    @app.exception_handler(QueryContractError)
+    def invalid_query(_: Request, error: QueryContractError) -> JSONResponse:
+        return JSONResponse(
+            {"error": "Invalid request", "location": ["query", error.parameter]},
+            status_code=400,
+        )
 
     return TestClient(app)
 
@@ -249,7 +257,7 @@ class WorkRouterTests(unittest.TestCase):
         invalid = client.post("/api/panel/layout", json={key: value for key, value in body.items() if key != "revision"})
         self.assertEqual(invalid.status_code, 400, invalid.text)
 
-    def test_chat_query_documents_parameters_and_keeps_first_duplicate(self) -> None:
+    def test_chat_query_documents_parameters_and_uses_declared_values(self) -> None:
         context = FakeContext()
         context.runtime.chat_read = Mock(return_value={
             "room": {"id": "feed:team", "name": "Team", "members": []},
@@ -257,28 +265,28 @@ class WorkRouterTests(unittest.TestCase):
         })
         client = make_client(context)
 
-        response = client.get("/api/agent-chat?room=feed%3Ateam&limit=5&before=11&before=12")
+        response = client.get("/api/agent-chat?room=feed%3Ateam&limit=5&before=11")
 
         self.assertEqual(response.status_code, 200, response.text)
         context.runtime.chat_read.assert_called_once_with("feed:team", before=11, after=None, limit=5)
         parameters = {row["name"] for row in client.get("/openapi.json").json()["paths"]["/api/agent-chat"]["get"]["parameters"]}
         self.assertTrue({"room", "before", "after", "limit"} <= parameters)
 
-    def test_chat_query_skips_blank_duplicate_values_like_parse_qs(self) -> None:
+    def test_chat_query_parses_declared_integer_values(self) -> None:
         context = FakeContext()
         context.runtime.chat_read = Mock(return_value={
             "room": {"id": "feed:team", "name": "Team", "members": []},
             "messages": [], "nextBefore": None, "nextAfter": None,
         })
-        response = make_client(context).get("/api/agent-chat?room=feed&before=&before=11&limit=&limit=5")
+        response = make_client(context).get("/api/agent-chat?room=feed&before=11&limit=5")
 
         self.assertEqual(response.status_code, 200, response.text)
         context.runtime.chat_read.assert_called_once_with("feed", before=11, after=None, limit=5)
 
-    def test_invalid_first_duplicate_query_is_rejected_before_runtime_call(self) -> None:
+    def test_invalid_query_value_is_rejected_before_runtime_call(self) -> None:
         context = FakeContext()
         context.runtime.chat_read = Mock()
-        response = make_client(context).get("/api/agent-chat?room=feed&before=secret&before=12")
+        response = make_client(context).get("/api/agent-chat?room=feed&before=secret")
 
         self.assertEqual(response.status_code, 400)
         self.assertNotIn("secret", response.text)

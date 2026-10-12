@@ -366,7 +366,7 @@ class FederationContract(unittest.TestCase):
         service = self.services[0]
         remote = service._local_identity()
         other = self.services[1]._local_identity()
-        with self.assertRaisesRegex(ValueError, "Unsupported federation protocol"):
+        with self.assertRaisesRegex(ValueError, "StatusRequest"):
             service._request(self.http[1].origin, "/api/federation/v1/status",
                 {"protocol": PROTOCOL + 1}, remote, expected_key=other["publicKey"],
                 expected_state=other["stateId"])

@@ -18,6 +18,9 @@ from studio_api.models import (
     ResponseModel,
     SyncEntity as SyncEntity,
     SupervisorIdentity,
+    SafeInt,
+    SafeQueryInt,
+    SignedSafeInt,
 )
 
 
@@ -79,7 +82,7 @@ class NativeProviderError(ContractModel):
     """
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
-    code: int | str | None = None
+    code: SignedSafeInt | str | None = None
     message: str | dict[str, JsonValue] | None = None
     data: JsonValue | None = None
     codexErrorInfo: str | dict[str, JsonValue] | list[JsonValue] | None = None
@@ -123,7 +126,7 @@ class NativeSafetyRetryDto(ContractModel):
     stage: NativeSafetyStage | None = None
     model: str | None = None
     turnId: str | None = None
-    epoch: int | None = None
+    epoch: SafeInt | None = None
     accountKey: str | None = None
     created: float | None = None
     updated: float | None = None
@@ -134,15 +137,12 @@ class NativeSafetyRetryDto(ContractModel):
     rpcMethod: str | None = None
 
 
-NativeSafetyBufferingDto = Annotated[
-    NativeSafetyBufferingRecord,
-    Field(json_schema_extra={"additionalProperties": False}),
-]
+NativeSafetyBufferingDto = NativeSafetyBufferingRecord
 
 
 class ContextUsageDto(ContractModel):
-    tokens: int | None
-    window: int | None
+    tokens: SafeInt | None
+    window: SafeInt | None
     at: float | None = None
 
 
@@ -150,11 +150,11 @@ class ReadStateDto(ContractModel):
     threadId: str
     turnId: str
     read: bool
-    revision: int
+    revision: SafeInt
 
 
 class ConnectionCheckDto(ContractModel):
-    epoch: int | None = None
+    epoch: SafeInt | None = None
     accountKey: str | None = None
     threadId: str | None = None
     turnId: str | None = None
@@ -189,19 +189,19 @@ class CapacityRetryDto(ContractModel):
     threadId: str | None = None
     turnId: str | None = None
     accountKey: str | None = None
-    epoch: int | None = None
+    epoch: SafeInt | None = None
     cause: CapacityRetryCause | None = None
     status: CapacityRetryStatus | None = None
     dueAt: float | None = None
     retryAt: float | None = None
     acceptedTurnId: str | None = None
     claimedAt: float | None = None
-    attempt: int | None = None
-    maxAttempts: int | None = None
+    attempt: SafeInt | None = None
+    maxAttempts: SafeInt | None = None
     cwd: str | None = None
     settings: CapacityRetrySettingsDto | None = None
     updatedAt: float | None = None
-    waits: int | None = None
+    waits: SafeInt | None = None
     taskClaims: list[str] | None = None
     reason: str | None = None
 
@@ -224,11 +224,11 @@ class UsageResumeDto(ContractModel):
     status: UsageResumeStatus | None = None
     accountKey: str | None = None
     threadId: str | None = None
-    epoch: int | None = None
+    epoch: SafeInt | None = None
     turnId: str | None = None
     cause: UsageResumeCause | None = None
     failedAt: float | None = None
-    authAttempt: int | None = None
+    authAttempt: SafeInt | None = None
     authRefreshMarker: str | None = None
     dueAt: float | None = None
     plannedAt: float | None = None
@@ -246,7 +246,7 @@ class AgentEntityCapacityRetryDto(ContractModel):
     """Capacity retry state consumed by the entity-backed renderer."""
     id: str
     threadId: str | None
-    epoch: int | None
+    epoch: SafeInt | None
     accountKey: str | None
     status: str
     updatedAt: float
@@ -382,12 +382,14 @@ class WorkerDefaultsDto(ContractModel):
     daybreakEnabled: bool = False
     accountKey: str | None = None
     cyberAccessProgram: str | None = None
-    delegationDepth: int = Field(
-        default=DEFAULT_DELEGATION_DEPTH,
-        strict=True,
-        ge=MIN_DELEGATION_DEPTH,
-        le=MAX_DELEGATION_DEPTH,
-    )
+    delegationDepth: Annotated[
+        int,
+        Field(
+            strict=True,
+            ge=MIN_DELEGATION_DEPTH,
+            le=MAX_DELEGATION_DEPTH,
+        ),
+    ] = DEFAULT_DELEGATION_DEPTH
 
 
 class ReviewDefaultsDto(ContractModel):
@@ -445,16 +447,16 @@ class AccountTransferSummaryDto(ContractModel):
     updated: float | None = None
     scope: AccountTransferScope | None = None
     finishHistory: bool | None = None
-    total: int | None = None
-    completed: int | None = None
-    moved: int | None = None
-    nativeHistoryPending: int | None = None
-    movingNow: int | None = None
+    total: SafeInt | None = None
+    completed: SafeInt | None = None
+    moved: SafeInt | None = None
+    nativeHistoryPending: SafeInt | None = None
+    movingNow: SafeInt | None = None
     canFinishHistory: bool | None = None
     interrupted: list[AccountTransferInterruptedDto] | None = None
     leftOnSource: list[AccountTransferLeftOnSourceDto] | None = None
     blocked: list[AccountTransferBlockedDto] | None = None
-    waitingCount: int | None = None
+    waitingCount: SafeInt | None = None
     waiting: str | None = None
     needsAttention: bool | None = None
     canRetry: bool | None = None
@@ -480,7 +482,7 @@ class CapacityRetrySettingsDto(ExecutionSettingsDto):
 
 class SnapshotModelSettingsDto(ContractModel):
     id: str
-    epoch: int
+    epoch: SafeInt
     accountKey: str
     threadId: str
     connectionId: str
@@ -573,7 +575,7 @@ class AgentEntityDto(ContractModel):
     # Reasoning effort levels come from the selected model's capability catalog.
     effort: str | None = None
     fastMode: bool | None = None
-    concurrency: int | None = None
+    concurrency: SafeInt | None = None
     accountKey: str | None = None
     excludedAccountKeys: list[str] | None = None
     cwd: str | None = None
@@ -604,8 +606,8 @@ class AgentEntityDto(ContractModel):
     turnId: str | None = None
     turnStatus: AgentStatus | None = None
     inFlight: bool | None = None
-    compactions: int | None = None
-    tokensUsed: int | None = None
+    compactions: SafeInt | None = None
+    tokensUsed: SafeInt | None = None
     contextUsage: ContextUsageDto | None = None
     error: NativeProviderError | str | None = None
     tail: str | None = None
@@ -614,9 +616,9 @@ class AgentEntityDto(ContractModel):
     empty: bool | None = None
     yoloMode: bool | None = None
     agentMode: AgentMode | None = None
-    agentModeRevision: int | None = None
+    agentModeRevision: SafeInt | None = None
     agentModeSupported: bool | None = None
-    subagentConcurrencyVersion: int | None = None
+    subagentConcurrencyVersion: SafeInt | None = None
     workerDefaults: WorkerDefaultsDto | None = None
     reviewDefaults: ReviewDefaultsDto | None = None
     parkedEvent: str | None = None
@@ -639,9 +641,9 @@ class AgentEntityDto(ContractModel):
     readState: ReadStateDto | None = None
     nativeLimitErrorAt: float | None = None
     startAttempt: AgentStartAttempt | None = None
-    panelVersion: int | None = None
-    panelDataVersion: int | None = None
-    unreadCount: int | None = None
+    panelVersion: SafeInt | None = None
+    panelDataVersion: SafeInt | None = None
+    unreadCount: SafeInt | None = None
     lastReadAt: float | None = None
     deletedAt: float | None = None
     autoWake: bool | None = None
@@ -659,9 +661,9 @@ class AgentEntityDto(ContractModel):
     pinned: bool | None = None
     archived: bool | None = None
     projectFolder: str | None = None
-    projectFolderRevision: int | None = None
+    projectFolderRevision: SafeInt | None = None
     project: str | None = None
-    epoch: int | None = None
+    epoch: SafeInt | None = None
     lastCompletedTurnStatus: str | None = None
     capacityRetry: AgentEntityCapacityRetryDto | None = None
     usageResume: AgentEntityUsageResumeDto | None = None
@@ -686,14 +688,14 @@ class RadioStatus(ContractStrEnum):
 
 
 class RoomLastMessage(ContractModel):
-    seq: int
+    seq: SafeInt
     text: str
     sender: str
     created: float
 
 
 class _RoomRadioIdentity(ContractModel):
-    identity: tuple[str | None, int | None, int]
+    identity: tuple[str | None, SafeInt | None, SafeInt]
 
     @field_validator("identity", mode="before")
     @classmethod
@@ -705,9 +707,9 @@ class _RoomRadioIdentity(ContractModel):
 class RoomRadioActive(_RoomRadioIdentity):
     eventId: str
     agentId: str
-    epoch: int
+    epoch: SafeInt
     threadId: str | None
-    through: int
+    through: SafeInt
     turnId: str | None = None
     interruptRequested: bool | None = None
     questionContinuationPlanned: bool | None = None
@@ -716,13 +718,13 @@ class RoomRadioActive(_RoomRadioIdentity):
 class RoomRadioSeen(_RoomRadioIdentity):
     """Per-agent transcript cursor persisted by the shared-radio runtime."""
 
-    seq: int
+    seq: SafeInt
 
 
 class RoomRadio(ContractModel):
     direct: bool | None = None
     teamId: str
-    revision: int
+    revision: SafeInt
     status: RadioStatus
     speaker: str | None
     next: list[str]
@@ -781,15 +783,15 @@ class TaskEntityDto(ContractModel):
     query: str | None = None
     cwd: str | None = None
     processId: str | None = None
-    durationMs: int | float | None = None
-    timeout_ms: int | None = None
+    durationMs: SafeInt | float | None = None
+    timeout_ms: SafeInt | None = None
     interactive: bool | None = None
     stdinClosed: bool | None = None
     stdinCloseRequested: str | None = None
     stdinError: str | None = None
     cancelRequested: bool | None = None
-    exitCode: int | None = None
-    bytes: int | None = None
+    exitCode: SignedSafeInt | None = None
+    bytes: SafeInt | None = None
     log: str | None = None
     outputTruncated: bool | None = None
 
@@ -804,17 +806,17 @@ class MonitorEntityDto(ContractModel):
     command: str | None = None
     cwd: str | None = None
     processId: str | None = None
-    durationMs: int | None = None
-    timeout_ms: int | None = None
+    durationMs: SafeInt | None = None
+    timeout_ms: SafeInt | None = None
     interactive: bool | None = None
     stdinClosed: bool | None = None
     stdinCloseRequested: str | None = None
     stdinError: str | None = None
     cancelRequested: bool | None = None
-    exitCode: int | None = None
+    exitCode: SignedSafeInt | None = None
     tail: str | None = None
     error: str | None = None
-    bytes: int | None = None
+    bytes: SafeInt | None = None
     log: str | None = None
     outputTruncated: bool | None = None
     ruleId: str | None = None
@@ -841,7 +843,7 @@ class ComplaintEntityDto(ContractModel):
     created: float | None = None
     readAt: float | None = None
     recipient: Literal["user", "lead"] | None = None
-    version: int | None = None
+    version: SafeInt | None = None
 
 
 class ComplaintResponseDto(ContractModel):
@@ -872,7 +874,7 @@ class RequestEntityDto(ContractModel):
     agent: str | None = None
     accountKey: str | None = None
     connectionId: str | None = None
-    epoch: int | None = None
+    epoch: SafeInt | None = None
     threadId: str | None = None
     turnId: str | None = None
     status: RequestStatus | None = None
@@ -954,7 +956,7 @@ class ProjectLayrSyncDto(ContractModel):
     conflicts: list[str]
     choices: list[str]
     withAgent: list[str]
-    deletes: int
+    deletes: SafeInt
     reason: str | None = None
 
 
@@ -976,7 +978,7 @@ class ProjectVaultDto(ContractModel):
 class ProjectEntityDto(ContractModel):
     homeServerId: str | None = None
     locations: list[ProjectLocationDto] | None = None
-    locationsRevision: int | None = None
+    locationsRevision: SafeInt | None = None
     projectAliases: list[ProjectAliasDto] | None = None
     id: str
     path: str | None = None
@@ -984,16 +986,16 @@ class ProjectEntityDto(ContractModel):
     created: float | None = None
     updated: float | None = None
     accountKey: str | None = None
-    accountRevision: int | None = None
+    accountRevision: SafeInt | None = None
     accountKeys: list[str] | None = None
     workerEnvironment: Literal["host", "linux"] | None = None
-    workerEnvironmentRevision: int | None = None
-    organizationRevision: int | None = None
-    peerTeamsRevision: int | None = None
+    workerEnvironmentRevision: SafeInt | None = None
+    organizationRevision: SafeInt | None = None
+    peerTeamsRevision: SafeInt | None = None
     folders: list[ProjectFolder] | None = None
     peerTeams: list[ProjectPeerTeamDto] | None = None
     workerBaseRef: str | None = None
-    workerBaseRevision: int | None = None
+    workerBaseRevision: SafeInt | None = None
     # Only macOS servers with a folder of the project set it.
     layrReadiness: ProjectLayrReadinessDto | None = None
     # Set with layrReadiness "ready" when the layr project syncs a Mac folder.
@@ -1007,7 +1009,7 @@ class PeerTeamEntityDto(ContractModel):
     name: str | None = None
     projectPath: str | None = None
     members: list[str] | None = None
-    revision: int | None = None
+    revision: SafeInt | None = None
 
 
 class ChatEntityDto(ContractModel):
@@ -1015,7 +1017,7 @@ class ChatEntityDto(ContractModel):
     name: str | None = None
     members: list[str] | None = None
     kind: Literal["chat"] | None = None
-    messageCount: int | None = None
+    messageCount: SafeInt | None = None
     tail: str | None = None
     lastMessageAt: float | None = None
 
@@ -1130,14 +1132,16 @@ class ProviderVersionWarningDto(TypedDict):
     level: NotRequired[Literal["warning", "info"]]
 
 
+setattr(ProviderVersionWarningDto, "__pydantic_config__", ConfigDict(extra="forbid"))
+
+
 NativeNoticeDto = (
-    Annotated[NativeNoticeRecord, Field(json_schema_extra={"additionalProperties": False})]
-    | Annotated[ProviderVersionWarningDto, Field(json_schema_extra={"additionalProperties": False})]
+    NativeNoticeRecord | ProviderVersionWarningDto
 )
 
 
 class SidebarOrderDto(ContractModel):
-    revision: int
+    revision: SafeInt
     groups: dict[str, list[str]] | None
 
 
@@ -1146,10 +1150,10 @@ class WorkspaceEntityDto(ContractModel):
     rateLimits: AccountRateLimitsDto | None = None
     rateLimitsByAccount: dict[str, AccountRateLimitsDto] | None = None
     nativeNotices: list[NativeNoticeDto] | None = None
-    projectOrganizationVersion: int | None = None
+    projectOrganizationVersion: SafeInt | None = None
     sidebarOrder: SidebarOrderDto | None = None
-    peerTeamsVersion: int | None = None
-    tasksHistoryLimit: int | None = None
+    peerTeamsVersion: SafeInt | None = None
+    tasksHistoryLimit: SafeInt | None = None
     stateDir: str | None = None
 
 
@@ -1160,10 +1164,10 @@ class SyncProtocolResponse(ResponseModel):
     scopes: list[str]
     pullEndpoint: Literal["/api/sync/pull"]
     streamEndpoint: Literal["/api/sync/stream"]
-    maxEntityPage: int
-    maxOtherPage: int
-    maxStreamDocuments: int
-    maxStreamBytes: int
+    maxEntityPage: SafeInt
+    maxOtherPage: SafeInt
+    maxStreamDocuments: SafeInt
+    maxStreamBytes: SafeInt
 
 
 class SyncIdentityResponse(ResponseModel):
@@ -1172,45 +1176,45 @@ class SyncIdentityResponse(ResponseModel):
 
 
 class SyncStreamQuery(ContractModel):
-    model_config = ConfigDict(extra="forbid", strict=False, validate_assignment=True, populate_by_name=True)
+    model_config = ConfigDict(extra="forbid", strict=True, validate_assignment=True)
 
-    protocol: str | None = None
     scope: str | None = None
-    after: int | None = None
+    after: SafeQueryInt | None = None
     resources: str | None = Field(
         default=None,
         description="Protocol 3 JSON-encoded array of ResourceRef values",
     )
+    apiSchema: str | None = None
 
 
 class SyncCheckpoint(ContractModel):
-    seq: int
+    seq: SafeInt
 
 
 class SyncPullResponse(ResponseModel):
     workspaceId: str
-    generation: int
+    generation: SafeInt
     documents: list[SyncDocument]
     checkpoint: SyncCheckpoint
     reset: Literal[False] | None = None
-    floor: int | None = None
-    maxSeq: int | None = None
-    initialHigh: int | None = None
+    floor: SafeInt | None = None
+    maxSeq: SafeInt | None = None
+    initialHigh: SafeInt | None = None
 
 
 class SyncPullResetResponse(ResponseModel):
     workspaceId: str
-    generation: int
+    generation: SafeInt
     reset: Literal[True]
-    floor: int
-    maxSeq: int
+    floor: SafeInt
+    maxSeq: SafeInt
 
 
 class DraftDocumentInput(ContractModel):
     id: str = Field(max_length=300)
     payload: str
-    deleted: bool = Field(default=False, alias="_deleted")
-    seq: int | None = None
+    deleted: bool = False
+    seq: SafeInt | None = None
 
 
 class DraftPayload(ContractModel):
@@ -1224,7 +1228,7 @@ class DraftPayload(ContractModel):
     text: str = Field(max_length=2_000_000)
     id: str | None = None
     alternatives: list[str] = Field(default_factory=list)
-    updated: int | float | None = None
+    updated: SafeInt | float | None = None
 
 
 _DRAFT_ASSUMED_PAYLOAD_ADAPTER: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
@@ -1282,7 +1286,7 @@ class TranscriptStreamDelta(ContractModel):
 
 
 class TranscriptStreamUpdate(ContractModel):
-    version: int
+    version: SafeInt
     replaceAll: bool = Field(alias="replace")
     items: list[TranscriptStreamDelta]
     order: list[str] | None = None
@@ -1427,5 +1431,5 @@ SyncEntityPayload = Annotated[
 class SyncDocument(ContractModel):
     id: str
     payload: str
-    seq: int
+    seq: SafeInt
     deleted: bool = Field(alias="_deleted")

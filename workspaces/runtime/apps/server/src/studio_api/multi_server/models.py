@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from typing import Annotated, Literal, TypeAlias
-from pydantic import ConfigDict, Field
+from pydantic import BeforeValidator, ConfigDict, Field, StrictInt
 
-from studio_api.models import ContractModel, JsonValue, ResponseModel
+from studio_api.models import ContractModel, JsonValue, ResponseModel, SafeInt, require_strict_integer
+
+ACCESS_PROTOCOL_VERSION = 1
 
 
 class ServerIdentity(ContractModel):
@@ -20,7 +22,7 @@ class ServerIdentityResponse(ServerIdentity, ResponseModel):
 
 
 class AccessInvitation(ContractModel):
-    protocol: Literal[1]
+    protocol: Annotated[Literal[1], BeforeValidator(require_strict_integer)]
     inviteId: str = Field(min_length=1, max_length=128)
     token: str = Field(min_length=1, max_length=128)
     serverId: str = Field(min_length=1, max_length=128)
@@ -28,12 +30,12 @@ class AccessInvitation(ContractModel):
     origin: str = Field(max_length=512)
     publicKey: str = Field(max_length=4096)
     tailscaleUser: str = Field(min_length=1, max_length=254)
-    expires: int
+    expires: SafeInt
 
 
 class InvitationResponse(ResponseModel):
     invitation: AccessInvitation
-    expires: int
+    expires: SafeInt
 
 
 class AccessClient(ContractModel):
@@ -64,8 +66,8 @@ class DiscoveredServer(AccessClient):
 
 class InviteSummary(ContractModel):
     inviteId: str
-    expires: int
-    created: int
+    expires: SafeInt
+    created: SafeInt
     status: Literal["open", "used"]
 
 
@@ -89,7 +91,7 @@ class AccessSnapshot(ResponseModel):
 
 
 class AccessAudit(ContractModel):
-    sequence: int
+    sequence: SafeInt
     clientId: str
     actorId: str
     action: Literal["create_invite", "pair", "revoke", "accept_invite", "auto_pair", "unrevoke", "settings", "alias", "name"]
@@ -161,7 +163,7 @@ class UnrevokeServer(ContractModel):
 
 
 class AutoPairRequest(ContractModel):
-    protocol: Literal[1]
+    protocol: Annotated[Literal[1], BeforeValidator(require_strict_integer)]
     serverId: str = Field(min_length=1, max_length=128)
     label: str = Field(min_length=1, max_length=80)
     origin: str = Field(max_length=512)
@@ -173,7 +175,7 @@ ManagementRequest: TypeAlias = Annotated[CreateInvite | RevokeClient | AcceptInv
 
 
 class DevicePairRequest(ContractModel):
-    protocol: Literal[1]
+    protocol: Annotated[Literal[1], BeforeValidator(require_strict_integer)]
     inviteId: str = Field(min_length=1, max_length=128)
     token: str = Field(min_length=1, max_length=128)
     clientId: str = Field(min_length=1, max_length=128)

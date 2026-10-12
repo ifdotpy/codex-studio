@@ -1,24 +1,12 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { ApiError, get } from "../api";
 import { watchResourceReads } from "../components/watchResourceReads";
-import type { JsonValue } from "../types";
 import {
   accountLimits,
   cachedAccountLimits,
   cacheAccountLimits,
   subscribeLimitsCache,
 } from "./accountUsage";
-
-function serializableDetails(value: unknown): JsonValue {
-  try {
-    const serialized = JSON.stringify(value);
-    return serialized === undefined
-      ? String(value)
-      : (JSON.parse(serialized) as JsonValue);
-  } catch {
-    return String(value);
-  }
-}
 
 export function useAccountLimits(
   accountKey: string,
@@ -53,7 +41,7 @@ export function useAccountLimits(
             ? {
                 message: error.message,
                 status: error.status,
-                details: serializableDetails(error.details),
+                ...(error.location ? { location: error.location } : {}),
               }
             : undefined;
         cacheAccountLimits(

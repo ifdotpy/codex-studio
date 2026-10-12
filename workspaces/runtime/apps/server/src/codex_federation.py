@@ -25,6 +25,8 @@ from codex_records import (
     FederationIdentityRecord, FederationInviteRecord, FederationOutboxRecord,
     AgentRecord, FederationPeerRecord, JsonObject, JsonValue, RecordStore, RoomRecord,
 )
+from pydantic import BaseModel
+from studio_api.federation.models import MessageRequest, PairRequest, PullRequest, StatusRequest
 
 PROTOCOL = 1
 MAX_CLOCK_SKEW = 300
@@ -33,6 +35,12 @@ MAX_MESSAGE = 12_000
 MAX_BATCH = 50
 MAX_BATCH_BYTES = 200 * 1024
 CRYPTO_HELPER = Path(__file__).with_name("codex_federation_crypto.mjs")
+SIGNED_REQUEST_MODELS: dict[str, type[BaseModel]] = {
+    "pair": PairRequest,
+    "message": MessageRequest,
+    "pull": PullRequest,
+    "status": StatusRequest,
+}
 
 
 def _json(value: JsonValue) -> str:
@@ -519,8 +527,6 @@ class FederationService:
         if not peer_id or len(peer_id) > 100 or not _fresh(timestamp) or not 16 <= len(nonce) <= 128:
             raise PermissionError("Expired or invalid federation request")
         if action == "pair":
-            if body.get("protocol") != PROTOCOL:
-                raise ValueError("Unsupported federation protocol version")
             invite_id, token = body.get("inviteId"), body.get("token")
             with self.runtime.lock, self.runtime.db() as db:
                 invite = _record(db.execute("SELECT record FROM runtime_federation_invites WHERE id=?", (invite_id,)).fetchone())
@@ -531,6 +537,7 @@ class FederationService:
                 key = body.get("publicKey")
                 if not isinstance(key, str) or not _verify(key, _request_bytes("POST", method_path, timestamp, nonce, raw), signature):
                     raise PermissionError("Invalid pairing signature")
+                SIGNED_REQUEST_MODELS[action].model_validate(body)
                 self._consume_nonce(db, peer_id, nonce, timestamp)
                 whois_status = self._validate_whois(invite, body, headers, remote_address)
                 if body.get("stateId") != peer_id or not isinstance(body.get("label"), str):
@@ -567,9 +574,8 @@ class FederationService:
                         "whoisStatus": peer["whoisStatus"], "stateId": identity["stateId"]})
         peer = self._verified_peer(peer_id, method_path, timestamp, nonce, signature, raw,
                                    allow_revoked=action == "status")
+        SIGNED_REQUEST_MODELS[action].model_validate(body)
         self._validate_peer_origin(peer, headers, remote_address)
-        if body.get("protocol") != PROTOCOL:
-            raise ValueError("Unsupported federation protocol version")
         if action == "status":
             return self.signed_response({"protocol": PROTOCOL, "approved": _peer_allowed(peer),
                     "revoked": peer.get("status") == "revoked"})

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
+from pathlib import Path
 
 from pydantic import ValidationError
 
 from studio_api.insights.models import (
     AccountCostResponse,
+    AnalyticsHistoryRecord,
     AnalyticsResponse,
     AnalyticsQuery,
     AnalyticsScope,
@@ -16,9 +19,31 @@ from studio_api.insights.models import (
 
 
 class InsightsModelTests(unittest.TestCase):
-    def test_analytics_query_preserves_wire_string_values_and_aliases(self) -> None:
+    def test_analytics_filesystem_identity_uses_real_stat_integer_domains(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "rollout.jsonl"
+            path.write_bytes(b"{}\n")
+            stat = path.stat()
+            identity = [stat.st_dev, stat.st_ino]
+            record = AnalyticsHistoryRecord.model_validate(
+                {
+                    "fileBytes": stat.st_size,
+                    "identity": identity,
+                    "filesystemIdentity": identity,
+                }
+            )
+
+        self.assertEqual(record.identity, identity)
+        self.assertEqual(record.filesystemIdentity, identity)
+        schema = AnalyticsHistoryRecord.model_json_schema()
+        self.assertEqual(
+            schema["properties"]["identity"]["anyOf"][0]["items"]["x-integer-domain"],
+            "signed64",
+        )
+
+    def test_analytics_query_preserves_wire_string_values(self) -> None:
         query = AnalyticsQuery.model_validate(
-            {"scope": "team", "from": "10.5", "limit": "20", "view": "detail"}
+            {"scope": "team", "from_time": 10.5, "limit": 20, "view": "detail"}
         )
 
         self.assertEqual(AnalyticsScope(query.scope), AnalyticsScope.TEAM)
@@ -28,12 +53,10 @@ class InsightsModelTests(unittest.TestCase):
         )
 
     def test_analytics_query_rejects_unknown_closed_values(self) -> None:
-        with self.assertRaisesRegex(ValueError, "Unknown analytics scope"):
+        with self.assertRaises(ValidationError):
             AnalyticsQuery.model_validate({"scope": "workspace"}).service_options()
-        self.assertEqual(
-            AnalyticsQuery.model_validate({"legacyUnknown": "ignored"}).service_options(),
-            {},
-        )
+        with self.assertRaises(ValidationError):
+            AnalyticsQuery.model_validate({"legacyUnknown": "ignored"})
 
     def test_cost_responses_keep_nulls_and_reject_unknown_fields(self) -> None:
         cost = AccountCostResponse.model_validate(

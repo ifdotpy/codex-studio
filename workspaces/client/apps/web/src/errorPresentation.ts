@@ -4,6 +4,36 @@ import { serviceTimeText } from "./local-time.ts";
 export function errorDetails(value: unknown): string {
   if (value == null) return "";
   if (typeof value !== "object") return String(value);
+  if (
+    "response" in value &&
+    "status" in value &&
+    typeof value.status === "number"
+  ) {
+    const response = value.response;
+    if (response && typeof response === "object" && !Array.isArray(response)) {
+      const record = response as Record<string, unknown>;
+      const diagnostics: Record<string, unknown> = {};
+      for (const key of [
+        "code",
+        "metadata",
+        "outcome",
+        "catalogPending",
+        "protocolVersion",
+        "supportedVersions",
+      ]) {
+        if (key in record) diagnostics[key] = record[key];
+      }
+      if (Object.keys(diagnostics).length)
+        return JSON.stringify(diagnostics, null, 2);
+    }
+    const location =
+      "location" in value && Array.isArray(value.location)
+        ? value.location.filter(
+            (part): part is string => typeof part === "string",
+          )
+        : [];
+    return location.length ? `Location: ${location.join(" → ")}` : "";
+  }
   try {
     const seen = new WeakSet<object>();
     return (

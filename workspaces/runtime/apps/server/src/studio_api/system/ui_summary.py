@@ -9,7 +9,7 @@ from typing import ContextManager, Literal
 
 from pydantic import Field
 
-from studio_api.models import ContractModel, ResponseModel
+from studio_api.models import ContractModel, ResponseModel, SafeInt
 from studio_api.sync.models import ProjectLocationDto, ProjectAliasDto
 
 
@@ -70,7 +70,7 @@ class UiSummaryResponse(ResponseModel):
     ready: bool
     busy: bool
     system: str
-    agentsRunning: int
+    agentsRunning: SafeInt
     projects: list[SummaryProject]
     chats: list[SummaryChat]
     alerts: list[SummaryAlert]

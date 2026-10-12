@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, BinaryIO, Iterator, Protocol, TypedDict, cast
 
-from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from starlette.types import Receive, Scope, Send
 
@@ -33,7 +33,7 @@ from studio_api.io.models import (
     TerminalOutputQuery,
 )
 from studio_api.models import JsonValue
-from studio_api.request_helpers import body_data, first_nonempty_query
+from studio_api.request_helpers import body_data
 from studio_api.responses import (
     API_BOUNDARY_RESPONSE_HEADERS,
     API_CONTEXT_RESPONSE_HEADERS,
@@ -121,7 +121,9 @@ def _runtime(runtime: IORuntimeService | None) -> IORuntimeService:
     return runtime
 
 
-def _monitor_log_response(context: IOContext, request: Request, monitor_id: str) -> Response:
+def _monitor_log_response(
+    context: IOContext, request: Request, monitor_id: str, range_header: str | None = None
+) -> Response:
     download = _runtime(context.runtime).monitor_log(monitor_id)
     path = Path(download["path"])
     fallback = download.get("fallback") or b""
@@ -134,19 +136,24 @@ def _monitor_log_response(context: IOContext, request: Request, monitor_id: str)
         size = len(fallback)
 
     start, end, status_code = 0, size, 200
-    header = request.headers.get("range")
+    header = range_header
     if header:
-        match = BYTE_RANGE.fullmatch(header.strip())
+        match = BYTE_RANGE.fullmatch(header)
         if not match or (not match.group(1) and not match.group(2)):
             if stream:
                 stream.close()
             return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
-        if match.group(1):
-            start = int(match.group(1))
-            end = min(size, int(match.group(2)) + 1) if match.group(2) else size
-        else:
-            suffix = int(match.group(2))
-            start, end = max(0, size - suffix), size
+        try:
+            if match.group(1):
+                start = int(match.group(1))
+                end = min(size, int(match.group(2)) + 1) if match.group(2) else size
+            else:
+                suffix = int(match.group(2))
+                start, end = max(0, size - suffix), size
+        except ValueError:
+            if stream:
+                stream.close()
+            return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
         if start >= size or end <= start:
             if stream:
                 stream.close()
@@ -199,12 +206,12 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.get("/api/terminals/output", response_model=TerminalOutput, responses=api_read_responses(errors=(400,)))
     def terminal_output(request: Request, _query: Annotated[TerminalOutputQuery, Query()]) -> Response:
         manager = io_context.terminals()
-        key = first_nonempty_query(request, "id")
-        offset = first_nonempty_query(request, "offset", "0")
-        if [value for value in request.query_params.getlist("history") if value] == ["1"]:
-            result = manager.history_output(key, offset, first_nonempty_query(request, "limit", "65536"))
+        if _query.history == "1":
+            result = manager.history_output(
+                _query.id, str(_query.offset), str(_query.limit)
+            )
         else:
-            result = manager.output(key, offset)
+            result = manager.output(_query.id, str(_query.offset))
         return io_context.send(request, result)
 
     @router.get(
@@ -230,28 +237,23 @@ def create_router(context: ApiContext) -> APIRouter:
             **_MONITOR_LOG_ERRORS,
         },
     )
-    def monitor_log(request: Request, query: Annotated[MonitorLogQuery, Query()]) -> Response:
-        monitor_id = first_nonempty_query(request, "id")
-        if monitor_id is None:
-            raise ValueError("Unknown monitor")
-        return _monitor_log_response(io_context, request, monitor_id)
+    def monitor_log(
+        request: Request,
+        query: Annotated[MonitorLogQuery, Query()],
+        range_header: str | None = Header(
+            default=None,
+            alias="Range",
+        ),
+    ) -> Response:
+        monitor_id = query.id
+        return _monitor_log_response(io_context, request, monitor_id, range_header)
 
     @router.get("/api/file-info", response_model=FileInfo, responses=api_read_responses(errors=(400, 404)))
-    def file_info(request: Request, _query: Annotated[FileQuery, Query()]) -> Response:
-        query = FileQuery.model_validate({
-            "agent": first_nonempty_query(request, "agent"),
-            "path": first_nonempty_query(request, "path"),
-            "asset": first_nonempty_query(request, "asset"),
-        })
+    def file_info(request: Request, query: Annotated[FileQuery, Query()]) -> Response:
         return io_context.send(request, _runtime(io_context.runtime).file_info(query.agent, query.path, query.asset))
 
     @router.get("/api/file", response_model=FileContent, responses=api_read_responses(errors=(400, 404)))
-    def file_content(request: Request, _query: Annotated[FileQuery, Query()]) -> Response:
-        query = FileQuery.model_validate({
-            "agent": first_nonempty_query(request, "agent"),
-            "path": first_nonempty_query(request, "path"),
-            "asset": first_nonempty_query(request, "asset"),
-        })
+    def file_content(request: Request, query: Annotated[FileQuery, Query()]) -> Response:
         content, mime, name = _runtime(io_context.runtime).file_content(query.agent, query.path, query.asset)
         return io_context.send(request, {"name": name, "mime": mime, "base64": base64.b64encode(content).decode()})
 

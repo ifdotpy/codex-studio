@@ -30,6 +30,8 @@ type Pull = components["schemas"]["SyncPullResponse"];
 type Fetch = (request: Request) => Promise<Response>;
 type PreferenceChangeEvent = components["schemas"]["ResourceChangeEvent"];
 
+export const SYNC_ENTITY_PAGE_SIZE = 500;
+
 function preferenceScopeFromEntityId(id: string): PreferenceScope | undefined {
   if (id === "entity:uiPreferences:user") return "user";
   if (id === "entity:uiPreferences:server") return "server";
@@ -200,7 +202,7 @@ export function connectUiPreferences(
     let more: boolean;
     do {
       const response = (await request(
-        `/api/sync/pull?scope=state:entities:v1&after=${Math.max(0, cursor.value)}&limit=500`,
+        `/api/sync/pull?scope=state:entities:v1&after=${Math.max(0, cursor.value)}&limit=${SYNC_ENTITY_PAGE_SIZE}`,
       )) as Pull & { reset?: boolean };
       if (stopped) return;
       workspaceId = response.workspaceId;

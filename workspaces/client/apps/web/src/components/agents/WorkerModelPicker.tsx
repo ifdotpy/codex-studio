@@ -123,7 +123,7 @@ export function supportsDaybreakMode(
 export const ModelCatalogReader = createContext<{
   scope: string;
   read: (options: {
-    query?: { account_key?: string; workers?: string; retry?: "1" };
+    query?: { account_key?: string; workers?: "1"; retry?: "1" };
     signal?: AbortSignal;
   }) => Promise<GetResult<"/api/models">>;
 }>({
@@ -263,8 +263,7 @@ function readModelCatalog(
       const pending =
         error instanceof ApiError &&
         error.status === 400 &&
-        isRecord(error.details) &&
-        error.details.catalogPending === true;
+        error.catalogPending === true;
       publishCatalog(entry, {
         models: previous.models,
         error: pending ? "" : errorText(error),

@@ -14,7 +14,7 @@ from pydantic import (
     model_validator,
 )
 
-from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel
+from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel, SafeInt
 
 
 class VoiceRecordKind(ContractStrEnum):
@@ -119,7 +119,7 @@ class VoiceRecordRequest(ContractModel):
 
 class VoiceRecordsRequest(ContractModel):
     agent: StrictStr
-    after: StrictInt = 0
+    after: SafeInt = 0
 
 
 class VoiceSpeechRequest(ContractModel):
@@ -178,11 +178,11 @@ class VoiceSessionResponse(ResponseModel):
     state: VoiceSessionState | None
     sdp: StrictStr | None
     error: StrictStr | None
-    ended: StrictFloat | StrictInt | None
+    ended: StrictFloat | SafeInt | None
 
 
 class VoiceRecordResponse(ResponseModel):
-    seq: StrictInt
+    seq: SafeInt
     id: StrictStr
     agent: StrictStr
     session: StrictStr
@@ -191,12 +191,12 @@ class VoiceRecordResponse(ResponseModel):
     item_id: StrictStr
     previous_item_id: StrictStr
     payload: StrictStr
-    created: StrictFloat | StrictInt
+    created: StrictFloat | SafeInt
 
 
 class VoiceRecordsResponse(ResponseModel):
     records: list[VoiceRecordResponse]
-    cursor: StrictInt
+    cursor: SafeInt
     delivered: list[StrictStr]
     session: VoiceSessionResponse | None
 

@@ -6,13 +6,14 @@ import json
 import sqlite3
 import time
 from contextlib import AbstractContextManager
-from typing import TYPE_CHECKING, Callable, Literal, Protocol, TypeVar, cast, get_args
+from typing import TYPE_CHECKING, Callable, Literal, Protocol, cast
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import StrictStr, TypeAdapter, ValidationError
 from starlette.responses import Response
 
-from studio_api.models import ContractModel, JsonValue
+from studio_api.app import QueryContractError
+from studio_api.models import JsonValue
 from studio_api.request_helpers import body_data
 from studio_api.responses import api_read_responses, api_write_responses
 
@@ -65,6 +66,8 @@ from .models import (
     RuleList,
     RuleMutation,
     TaskFeedQuery,
+    TaskFeedCursor,
+    TaskFeedBeforeCursor,
     TaskDetailResponse,
     TaskIdQuery,
     ToolRequestCancelBody,
@@ -81,7 +84,6 @@ from .models import (
 )
 
 
-ModelT = TypeVar("ModelT", bound=ContractModel)
 Body = dict[str, JsonValue]
 _RECEIPT_IDS_ADAPTER: TypeAdapter[list[StrictStr]] = TypeAdapter(list[StrictStr])
 
@@ -132,23 +134,6 @@ class CanvasPort(Protocol):
     def connect_chat(self, source: str, target: str, connected: bool) -> object: ...
 
 
-def _query(model: type[ModelT], request: Request) -> ModelT:
-    """Match the legacy parse_qs(...)[key][0] behavior for repeated keys."""
-    values: dict[str, str | int] = {}
-    for key in request.query_params.keys():
-        nonempty = [value for value in request.query_params.getlist(key) if value != ""]
-        if key in model.model_fields and nonempty:
-            values[key] = nonempty[0]
-    try:
-        for key, value in tuple(values.items()):
-            annotation = model.model_fields[key].annotation
-            if annotation is int or int in get_args(annotation):
-                values[key] = int(value)
-        return model.model_validate(values)
-    except (ValidationError, ValueError):
-        raise ValueError("Invalid query parameters") from None
-
-
 def local_window(request: Request) -> bool:
     """True for a Studio window on the Mac that runs this server: a direct loopback or Unix
     socket request without a paired-server signature and without Tailscale Serve headers.
@@ -181,7 +166,7 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.get("/api/tool-requests", response_model=ToolRequestList | ToolRequestReceipt,
                 responses=api_read_responses(errors=(400,)))
     def tool_requests(request: Request, documented: RequestIdQuery = Depends()) -> Response:
-        query = _query(RequestIdQuery, request)
+        query = documented
         agent = query.agent
         request_id = query.request_id
         action: Body = {"action": "get", "request_id": request_id} if request_id else {"action": "list"}
@@ -196,35 +181,42 @@ def create_router(context: ApiContext) -> APIRouter:
 
     @router.get("/api/questions", response_model=QuestionHistory, responses=api_read_responses(errors=(400,)))
     def questions(request: Request, documented: AgentQuery = Depends()) -> Response:
-        query = _query(AgentQuery, request)
+        query = documented
         return context.send(request, _runtime(context).question_history(query.agent))
 
     @router.get("/api/workspace", response_model=WorkspaceView, responses=api_read_responses(errors=(400,), etag=True))
     def workspace(request: Request, documented: WorkspaceQuery = Depends()) -> Response:
-        query = _query(WorkspaceQuery, request)
-        if query.view in {"work", "inbox", "annotations"}:
-            value = _runtime(context).workspace_part(query.agent, query.view)
-        elif query.view == "full":
+        query = documented
+        if query.view == "full":
             value = _runtime(context).workspace_snapshot(query.agent, view="full")
         else:
-            raise ValueError("Unknown workspace view")
+            value = _runtime(context).workspace_part(query.agent, query.view)
         return context.send(request, value, etag=True)
 
     @router.get("/api/workspace/tasks", response_model=WorkspaceTaskFeed,
                 responses=api_read_responses(errors=(400,), etag=True, headers=("Server-Timing",)))
     def workspace_tasks(request: Request, documented: TaskFeedQuery = Depends()) -> Response:
-        query = _query(TaskFeedQuery, request)
-        cursor = json.loads(query.cursor) if query.cursor else None
-        before = json.loads(query.before) if query.before else None
+        query = documented
+        try:
+            cursor = TaskFeedCursor.model_validate_json(query.cursor) if query.cursor else None
+        except (ValueError, ValidationError):
+            raise QueryContractError("cursor") from None
+        try:
+            before = TaskFeedBeforeCursor.model_validate_json(query.before) if query.before else None
+        except (ValueError, ValidationError):
+            raise QueryContractError("before") from None
         started = time.perf_counter() if query.timing == "1" else None
-        result = _runtime(context).workspace_task_feed(query.agent, cursor=cursor, before=before,
+        result = _runtime(context).workspace_task_feed(
+            query.agent,
+            cursor=cursor.model_dump() if cursor is not None else None,
+            before=before.model_dump() if before is not None else None,
                                                        limit=query.limit)
         timing = {"task-feed": (time.perf_counter() - started) * 1000} if started is not None else None
         return context.send(request, result, etag=True, server_timing=timing)
 
     @router.get("/api/work", response_model=WorkList, responses=api_read_responses(errors=(400,)))
     def work(request: Request, documented: AgentQuery = Depends()) -> Response:
-        query = _query(AgentQuery, request)
+        query = documented
         return context.send(request, _runtime(context).work_action(query.agent, {"action": "list"}))
 
     @router.post("/api/work", response_model=WorkItem | WorkList,
@@ -235,7 +227,7 @@ def create_router(context: ApiContext) -> APIRouter:
 
     @router.get("/api/queue", response_model=QueueView, responses=api_read_responses(errors=(400,)))
     def queue(request: Request, documented: AgentQuery = Depends()) -> Response:
-        query = _query(AgentQuery, request)
+        query = documented
         return context.send(request, _runtime(context).queue_action(query.agent))
 
     @router.post("/api/queue", response_model=MutationReceipt, responses=api_write_responses(errors=(400,)))
@@ -245,22 +237,22 @@ def create_router(context: ApiContext) -> APIRouter:
 
     @router.get("/api/messages/receipts", response_model=MessageReceipts, responses=api_read_responses(errors=(400,)))
     def message_receipts(request: Request, documented: ReceiptQuery = Depends()) -> Response:
-        query = _query(ReceiptQuery, request)
+        query = documented
         try:
             ids = _RECEIPT_IDS_ADAPTER.validate_json(query.ids)
         except ValidationError:
-            raise ValueError("Invalid receipt ID list") from None
+            raise QueryContractError("ids") from None
         result = _runtime(context).user_delivery_receipts(query.agent, ids)
         return context.send(request, {**result, "workspaceId": context.workspace_id()})
 
     @router.get("/api/changes", response_model=ChangesResponse, responses=api_read_responses(errors=(400,), etag=True))
     def changes(request: Request, documented: ChangesQuery = Depends()) -> Response:
-        query = _query(ChangesQuery, request)
+        query = documented
         return context.send(request, _runtime(context).changes(query.agent, scope=query.scope), etag=True)
 
     @router.get("/api/plan", response_model=PlanView, responses=api_read_responses(errors=(400,), etag=True))
     def plan(request: Request, documented: AgentQuery = Depends()) -> Response:
-        query = _query(AgentQuery, request)
+        query = documented
         return context.send(request, _runtime(context).plan_action(query.agent), etag=True)
 
     @router.post("/api/plan", response_model=PlanView, responses=api_write_responses(errors=(400,)))
@@ -270,7 +262,7 @@ def create_router(context: ApiContext) -> APIRouter:
 
     @router.get("/api/panel", response_model=ProgressPanel, responses=api_read_responses(errors=(400,)))
     def panel(request: Request, documented: AgentQuery = Depends()) -> Response:
-        query = _query(AgentQuery, request)
+        query = documented
         return context.send(request, _runtime(context).get_panel(query.agent))
 
     @router.get("/api/profiles", response_model=ProfileList, responses=api_read_responses(errors=(400,)))
@@ -284,7 +276,7 @@ def create_router(context: ApiContext) -> APIRouter:
 
     @router.get("/api/rules", response_model=RuleList, responses=api_read_responses(errors=(400,), etag=True))
     def rules(request: Request, documented: RulesQuery = Depends()) -> Response:
-        _query(RulesQuery, request)
+        _ = documented
         return context.send(request, _runtime(context).rules(), etag=True)
 
     @router.post("/api/rules", response_model=RuleMutation, responses=api_write_responses(errors=(400,)))
@@ -294,24 +286,24 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.get("/api/task", response_model=TaskDetailResponse,
                 responses=api_read_responses(errors=(400,)))
     def task_detail(request: Request, documented: TaskIdQuery = Depends()) -> Response:
-        query = _query(TaskIdQuery, request)
+        query = documented
         return context.send(request, _runtime(context).task_detail(query.id))
 
     @router.get("/api/complaint", response_model=ComplaintDetailResponse,
                 responses=api_read_responses(errors=(400,)))
     def complaint_detail(request: Request, documented: TaskIdQuery = Depends()) -> Response:
-        query = _query(TaskIdQuery, request)
+        query = documented
         return context.send(request, _runtime(context).complaint_detail(query.id))
 
     @router.get("/api/agent-chat", response_model=ChatRead, responses=api_read_responses(errors=(400,)))
     def agent_chat(request: Request, documented: AgentChatQuery = Depends()) -> Response:
-        query = _query(AgentChatQuery, request)
+        query = documented
         return context.send(request, _runtime(context).chat_read(query.room, before=query.before,
                                                         after=query.after, limit=query.limit))
 
     @router.get("/api/messages", response_model=MessageHistory, responses=api_read_responses(errors=(400,)))
     def messages(request: Request, documented: AgentRoomQuery = Depends()) -> Response:
-        query = _query(AgentRoomQuery, request)
+        query = documented
         return context.send(request, _canvas(context).messages(query.room))
 
     @router.post("/api/annotation", response_model=AnnotationReceipt,

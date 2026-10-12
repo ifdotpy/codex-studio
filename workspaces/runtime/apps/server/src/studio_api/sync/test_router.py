@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import asyncio
 import anyio
+import re
 from pathlib import Path
 from contextlib import contextmanager
 import sqlite3
@@ -25,8 +26,8 @@ from studio_api.context import ApiContext
 from studio_api.models import ErrorResponse
 from studio_api.sync.models import SyncStreamQuery
 from studio_api.responses import API_BOUNDARY_RESPONSE_HEADERS, install_error_response_docs
-from studio_api.schema import API_SCHEMA_HASH_PARAM, API_SCHEMA_MISMATCH_FIELD
-from studio_api.sync.router import create_router
+from studio_api.schema import API_SCHEMA_HASH_PARAM, API_SCHEMA_MISMATCH_FIELD, openapi_document
+from studio_api.sync.router import SYNC_ENTITY_PAGE_LIMIT, create_router
 from studio_api.sync.resources.hub import ResourceHub
 from studio_api.sync.resources.models import (
     ResourceRef,
@@ -261,12 +262,15 @@ class SyncRouterTests(unittest.TestCase):
                     if getattr(route, "path", None) == "/api/sync/stream"
                 ),
             )
+            scope["route"] = route
             response = await route.endpoint(
                 request,
                 SyncStreamQuery(
-                    protocol="3",
                     resources=request.query_params.get("resources"),
                 ),
+                protocol="3",
+                sync_protocol_header=None,
+                last_event_id_header=None,
             )
             receive_started = False
             sent_types: list[str] = []
@@ -626,11 +630,36 @@ class SyncRouterTests(unittest.TestCase):
         self.assertNotIn("secret", logs.output[0])
 
     def test_stream_openapi_declares_protocol_three_event_stream(self) -> None:
-        app = FastAPI()
-        app.include_router(create_router(cast(ApiContext, ContextStub())))
-        install_error_response_docs(app)
-        paths = app.openapi()["paths"]
-        responses = paths["/api/sync/stream"]["get"]["responses"]
+        document = openapi_document()
+        paths = document["paths"]
+        operation = paths["/api/sync/stream"]["get"]
+        responses = operation["responses"]
+        parameters = {(parameter["name"], parameter["in"]): parameter for parameter in operation["parameters"]}
+        def value_schema(schema: dict[str, object]) -> dict[str, object]:
+            branches = schema.get("anyOf")
+            if isinstance(branches, list):
+                return next(
+                    branch
+                    for branch in branches
+                    if isinstance(branch, dict) and branch.get("type") != "null"
+                )
+            return schema
+
+        protocol_schema = value_schema(parameters[("protocol", "query")]["schema"])
+        self.assertEqual(protocol_schema["type"], "string")
+        self.assertNotIn("enum", protocol_schema)
+        header_schema = value_schema(parameters[("X-Codex-Sync-Protocol", "header")]["schema"])
+        self.assertEqual(header_schema["type"], "string")
+        self.assertNotIn("enum", header_schema)
+        last_event_parameter = parameters[("Last-Event-ID", "header")]
+        self.assertFalse(last_event_parameter["required"])
+        last_event_id = last_event_parameter["schema"]
+        self.assertNotIn("anyOf", last_event_id)
+        self.assertNotIn("oneOf", last_event_id)
+        self.assertEqual(last_event_id["type"], "integer")
+        self.assertEqual(last_event_id["minimum"], 0)
+        self.assertEqual(last_event_id["maximum"], 9_007_199_254_740_991)
+        self.assertIn("426", responses)
         event_schema = responses["200"]["content"]["text/event-stream"]["schema"]
         self.assertEqual(
             event_schema["oneOf"],
@@ -641,7 +670,7 @@ class SyncRouterTests(unittest.TestCase):
                 {"$ref": "#/components/schemas/ResourceTokenRatesEvent"},
             ],
         )
-        components = app.openapi()["components"]["schemas"]
+        components = document["components"]["schemas"]
         self.assertIn("ApiSchemaEvent", components)
         self.assertIn("ResourceRef", components)
         self.assertIn("ResourceChangeEvent", components)
@@ -673,15 +702,19 @@ class SyncRouterTests(unittest.TestCase):
             "headers": headers or [], "client": ("test", 1000), "server": ("test", 80),
         }
         request = ConnectedRequest(scope)
+        scope["route"] = route
 
         async def read() -> bytes:
             resources = request.query_params.get("resources")
             response = await route.endpoint(
                 request,
                 SyncStreamQuery(
-                    protocol=request.query_params.get("protocol"),
                     resources=resources,
+                    apiSchema=request.query_params.get("apiSchema"),
                 ),
+                protocol=request.query_params.get("protocol"),
+                sync_protocol_header=request.headers.get("x-codex-sync-protocol"),
+                last_event_id_header=request.headers.get("last-event-id"),
             )
             result = bytearray()
             async for chunk in response.body_iterator:
@@ -757,10 +790,14 @@ class SyncRouterTests(unittest.TestCase):
             "query_string": ("protocol=3&resources=" + resources).encode(),
             "headers": [],
         })
+        request.scope["route"] = route
 
         async def cancel_stream() -> None:
             response = await route.endpoint(
-                request, SyncStreamQuery(protocol="3", resources=resources),
+                request, SyncStreamQuery(resources=resources),
+                protocol="3",
+                sync_protocol_header=None,
+                last_event_id_header=None,
             )
             iterator = response.body_iterator
             await anext(iterator)
@@ -798,6 +835,16 @@ class SyncRouterTests(unittest.TestCase):
                 f"event: api-schema\ndata: {{\"hash\":\"{context.api_schema_hash}\",\"mismatch\":true}}\n\n",
             )
         subscribe.assert_not_called()
+
+    def test_invalid_resource_subscription_uses_request_error_location(self) -> None:
+        response = make_client(ContextStub()).get(
+            "/api/sync/stream?protocol=3&resources=not-json"
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json(),
+            {"error": "Invalid request", "location": ["query", "resources"]},
+        )
 
     def test_matching_schema_stream_starts_with_handshake(self) -> None:
         context = ContextStub()
@@ -888,9 +935,9 @@ class SyncRouterTests(unittest.TestCase):
         self.assertIn('"kind":"state"', body)
         self.assertEqual(context.watchdog.agents, [])
 
-    def test_pull_uses_first_nonempty_entity_scope_query_value(self) -> None:
+    def test_pull_uses_single_scalar_query_values(self) -> None:
         context = ContextStub()
-        response = make_client(context).get("/api/sync/pull?scope=&scope=state:entities:v1&after=&after=9&limit=20")
+        response = make_client(context).get("/api/sync/pull?scope=state:entities:v1&after=9&limit=20")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["workspaceId"], "workspace-a")
         self.assertEqual(context.store.pull_arguments, ("state:entities:v1", 9, 20, False, 0, False, None))
@@ -973,8 +1020,23 @@ class SyncRouterTests(unittest.TestCase):
         app = FastAPI()
         app.include_router(create_router(cast(ApiContext, ContextStub())))
         parameters = app.openapi()["paths"]["/api/sync/pull"]["get"]["parameters"]
+        limit_parameter = next(parameter for parameter in parameters if parameter["name"] == "limit")
+        schema = limit_parameter["schema"]
+        if "anyOf" in schema:
+            schema = schema["anyOf"][0]
+        self.assertEqual(schema["maximum"], SYNC_ENTITY_PAGE_LIMIT)
+        self.assertIn("server may lower it by scope", limit_parameter["description"])
+
+        def query_type(parameter: dict[str, object]) -> str:
+            parameter_schema = cast(dict[str, object], parameter["schema"])
+            if "anyOf" in parameter_schema:
+                parameter_schema = cast(
+                    dict[str, object], cast(list[object], parameter_schema["anyOf"])[0]
+                )
+            return cast(str, parameter_schema["type"])
+
         self.assertEqual(
-            [(parameter["name"], parameter["schema"]["anyOf"][0]["type"]) for parameter in parameters],
+            [(parameter["name"], query_type(parameter)) for parameter in parameters],
             [
                 ("scope", "string"),
                 ("after", "integer"),
@@ -987,13 +1049,22 @@ class SyncRouterTests(unittest.TestCase):
         )
         self.assertTrue(all(parameter["in"] == "query" and not parameter["required"] for parameter in parameters))
 
+    def test_web_entity_page_size_fits_the_documented_pull_limit(self) -> None:
+        repo_root = Path(__file__).resolve().parents[7]
+        client_source = (repo_root / "workspaces/client/apps/web/src/sync/uiPreferenceConnection.ts").read_text()
+        match = re.search(r"SYNC_ENTITY_PAGE_SIZE\s*=\s*(\d+)", client_source)
+        self.assertIsNotNone(match, "web sync page size constant must remain explicit")
+        assert match is not None
+        self.assertLessEqual(int(match.group(1)), SYNC_ENTITY_PAGE_LIMIT)
+        self.assertIn("limit=${SYNC_ENTITY_PAGE_SIZE}", client_source)
+
     def test_pull_keeps_invalid_integer_query_status(self) -> None:
         response = make_client(ContextStub()).get("/api/sync/pull?after=invalid")
         self.assertEqual(response.status_code, 400)
 
-    def test_pull_keeps_status_for_invalid_first_repeated_integer(self) -> None:
+    def test_pull_rejects_invalid_integer_query_value(self) -> None:
         response = make_client(ContextStub(), raise_server_exceptions=False).get(
-            "/api/sync/pull?after=invalid&after=9"
+            "/api/sync/pull?after=invalid"
         )
         self.assertEqual(response.status_code, 400)
         self.assertNotEqual(response.json(), {"error": "Invalid sync scope"})
@@ -1040,12 +1111,26 @@ class SyncRouterTests(unittest.TestCase):
             "/api/sync/drafts",
             headers={"X-Canvas-Workspace": "workspace-a"},
             json={"rows": [{"newDocumentState": {
-                "id": "device:lead", "payload": payload, "_deleted": False,
+                "id": "device:lead", "payload": payload, "deleted": False,
             }}]},
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), [])
         self.assertEqual(len(context.store.push_calls), 1)
+        self.assertIs(context.store.push_calls[0][0]["newDocumentState"]["_deleted"], False)
+
+    def test_draft_request_uses_canonical_deleted_field_name(self) -> None:
+        context = ContextStub()
+        payload = json.dumps({"device": "device", "session": "lead", "text": "draft"})
+        response = make_client(context).post(
+            "/api/sync/drafts",
+            headers={"X-Canvas-Workspace": "workspace-a"},
+            json={"rows": [{"newDocumentState": {
+                "id": "device:lead", "payload": payload, "_deleted": False,
+            }}]},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(context.store.push_calls, [])
 
     def test_noop_draft_write_does_not_publish_resource_change(self) -> None:
         context = ContextStub()
@@ -1055,7 +1140,7 @@ class SyncRouterTests(unittest.TestCase):
             "/api/sync/drafts",
             headers={"X-Canvas-Workspace": "workspace-a"},
             json={"rows": [{"newDocumentState": {
-                "id": "device:lead", "payload": payload, "_deleted": False,
+                "id": "device:lead", "payload": payload, "deleted": False,
             }}]},
         )
         self.assertEqual(response.status_code, 200)
@@ -1079,7 +1164,7 @@ class SyncRouterTests(unittest.TestCase):
         payload = json.dumps({"device": "device", "session": "lead", "text": "draft"})
         request = {
             "rows": [{"newDocumentState": {
-                "id": "device:lead", "payload": payload, "_deleted": False,
+                "id": "device:lead", "payload": payload, "deleted": False,
             }}],
         }
         with patch.object(context, "sync", return_value=store):

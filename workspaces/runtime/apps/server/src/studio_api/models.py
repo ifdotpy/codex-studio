@@ -3,21 +3,24 @@ from __future__ import annotations
 
 from enum import StrEnum
 import math
+import re
 from typing import Annotated, Literal, TypeAlias, cast
 
 from pydantic import (
-    AfterValidator,
     BaseModel,
+    AfterValidator,
+    BeforeValidator,
     ConfigDict,
     Field,
     GetCoreSchemaHandler,
     JsonValue as PydanticJsonValue,
+    StrictInt,
 )
 from pydantic_core import CoreSchema, core_schema
 
 
 def _validate_finite_json(value: object) -> object:
-    """Reject non-standard NaN and infinity values from extensible JSON data."""
+    """Keep arbitrary JSON numbers portable across JavaScript and Rust."""
     if isinstance(value, float) and not math.isfinite(value):
         raise ValueError("JSON numbers must be finite")
     if isinstance(value, list):
@@ -29,6 +32,100 @@ def _validate_finite_json(value: object) -> object:
     return value
 
 
+# JavaScript's exact integer range is the cross-runtime wire limit. Quantities
+# bounded by physical storage or product work (byte counts, file offsets,
+# counters, sequences and millisecond timestamps) stay in this safe range.
+# Use 64-bit aliases only for values whose source is inherently 64-bit at any
+# scale, such as filesystem identities, nanosecond clocks, or integer hashes.
+# API integer fields default to non-negative values; signed values use
+# SignedSafeInt only where the domain gives negative numbers meaning.
+MAX_SAFE_INTEGER = 9_007_199_254_740_991
+MIN_SAFE_INTEGER = -MAX_SAFE_INTEGER
+MAX_INT64 = 9_223_372_036_854_775_807
+MIN_INT64 = -(2**63)
+
+
+def _validate_safe_int(value: int) -> int:
+    if value < 0 or value > MAX_SAFE_INTEGER:
+        raise ValueError(f"Integer must be between 0 and {MAX_SAFE_INTEGER}")
+    return value
+
+
+def _validate_signed_safe_int(value: int) -> int:
+    if value < MIN_SAFE_INTEGER or value > MAX_SAFE_INTEGER:
+        raise ValueError(
+            f"Integer must be between {MIN_SAFE_INTEGER} and {MAX_SAFE_INTEGER}"
+        )
+    return value
+
+
+def _validate_uint64(value: int) -> int:
+    if value < 0 or value > MAX_INT64:
+        raise ValueError(f"Integer must be between 0 and {MAX_INT64}")
+    return value
+
+
+def _validate_int64(value: int) -> int:
+    if value < MIN_INT64 or value > MAX_INT64:
+        raise ValueError(f"Integer must be between {MIN_INT64} and {MAX_INT64}")
+    return value
+
+
+def require_strict_integer(value: object) -> object:
+    """Reject bool before integer Literals, where Python otherwise equates True with 1."""
+    if type(value) is not int:
+        raise ValueError("Value must be an integer")
+    return value
+
+
+# Keep the shared range check in a validator so a field's narrower Field bounds
+# compose with it instead of being shadowed by nested Annotated metadata.
+SafeInt: TypeAlias = Annotated[
+    StrictInt,
+    AfterValidator(_validate_safe_int),
+    Field(json_schema_extra={"x-safe-integer": "unsigned"}),
+]
+SignedSafeInt: TypeAlias = Annotated[
+    StrictInt,
+    AfterValidator(_validate_signed_safe_int),
+    Field(json_schema_extra={"x-safe-integer": "signed"}),
+]
+UInt64: TypeAlias = Annotated[
+    StrictInt,
+    AfterValidator(_validate_uint64),
+    Field(json_schema_extra={"x-integer-domain": "unsigned64"}),
+]
+Int64: TypeAlias = Annotated[
+    StrictInt,
+    AfterValidator(_validate_int64),
+    Field(json_schema_extra={"x-integer-domain": "signed64"}),
+]
+
+
+def _parse_safe_query_integer(value: object) -> object:
+    """Convert a lexically valid query integer to the strict shared int type."""
+    if isinstance(value, str) and re.fullmatch(r"[0-9]+", value):
+        try:
+            return int(value)
+        except ValueError:
+            return value
+    return value
+
+
+SafeQueryInt: TypeAlias = Annotated[SafeInt, BeforeValidator(_parse_safe_query_integer)]
+
+
+def _parse_safe_integer_header(value: object) -> object:
+    """Parse decimal HTTP header text before applying the shared SafeInt bounds."""
+    if isinstance(value, str) and re.fullmatch(r"[0-9]+", value):
+        try:
+            return int(value)
+        except ValueError:
+            return value
+    return value
+
+
+SafeIntHeader: TypeAlias = Annotated[SafeInt, BeforeValidator(_parse_safe_integer_header)]
 JsonValue: TypeAlias = Annotated[PydanticJsonValue, AfterValidator(_validate_finite_json)]
 
 
@@ -72,14 +169,14 @@ class ContractModel(BaseModel):
 class SupervisorIdentity(ContractModel):
     stateDir: str
     handle: str
-    generation: int
+    generation: SafeInt
 
 
 class SyncEntity(ContractModel):
     """One durable sync entity change attached to a successful response."""
 
     id: str
-    seq: int
+    seq: SafeInt
     payload: str
     deleted: bool = Field(alias="_deleted")
 
@@ -92,7 +189,7 @@ class ResponseModel(ContractModel):
         alias="_syncEntities",
         serialization_alias="_syncEntities",
     )
-    sync_entities_after: int | None = Field(
+    sync_entities_after: SafeInt | None = Field(
         default=None,
         alias="_syncEntitiesAfter",
         serialization_alias="_syncEntitiesAfter",
@@ -105,13 +202,13 @@ class ResponseModel(ContractModel):
 
 
 class ErrorResponse(ResponseModel):
-    """Existing API error shape plus explicitly documented optional metadata."""
+    """Standard API error envelope with an optional first-problem location."""
 
     error: str
     code: str | None = None
     outcome: Literal["not_applied"] | None = None
-    details: JsonValue | None = None
+    location: list[str] | None = None
     metadata: dict[str, JsonValue] | None = None
     catalogPending: bool | None = None
-    protocolVersion: int | None = None
-    supportedVersions: list[int] | None = None
+    protocolVersion: SafeInt | None = None
+    supportedVersions: list[SafeInt] | None = None

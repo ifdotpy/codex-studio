@@ -5,7 +5,7 @@ from typing import Annotated, Literal
 
 from pydantic import ConfigDict, Field
 
-from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel
+from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel, SafeInt
 from studio_api.models import SupervisorIdentity as SupervisorIdentity
 from studio_api.sync.models import AgentStatus, ReviewTargetDto, SnapshotModelSettingsDto
 
@@ -92,7 +92,7 @@ class NativeBinary(ContractModel):
     sha256: str | None = None
     bundleSha256: str | None = None
     validatedAt: float | None = None
-    approvalRevision: int | None = None
+    approvalRevision: SafeInt | None = None
     checks: dict[str, JsonValue] | None = None
     companions: dict[str, JsonValue] | None = None
     sourceIdentity: dict[str, JsonValue] | None = None
@@ -110,7 +110,7 @@ class NativeCandidate(ContractModel):
 class NativeAccountUpdate(ContractModel):
     status: NativeAccountState
     version: str | None = None
-    pid: int | None = None
+    pid: SafeInt | None = None
     targetVersion: str
     reason: str | None = None
     updatedAt: float
@@ -191,13 +191,13 @@ class LiveUpdateStatus(ContractModel):
     """Stable status and receipt written by the local live-patch manager."""
 
     status: LiveUpdateState
-    pid: int | None = None
+    pid: SafeInt | None = None
     managerId: str | None = None
     scope: str | None = None
     receiptError: str | None = None
     manifestId: str | None = None
     manifestHash: str | None = None
-    attempt: int | None = None
+    attempt: SafeInt | None = None
     checkedAt: float | None = None
     appliedAt: float | None = None
     patchStatus: str | None = None
@@ -212,12 +212,13 @@ class SupervisorRecovery(ContractModel):
 
 class SupervisorHandle(ContractModel):
     id: str
-    pid: int | None
+    pid: SafeInt | None
     signature: str
     startTime: str | None
-    sequence: int
-    acknowledged: int
-    bufferedBytes: int
+    jobIdentity: str | None = None
+    sequence: SafeInt
+    acknowledged: SafeInt
+    bufferedBytes: SafeInt
     backpressure: bool
     stdoutReaderAlive: bool | None = None
     stdoutReaderError: str | None = None
@@ -225,11 +226,11 @@ class SupervisorHandle(ContractModel):
 
 
 class SupervisorHealth(ContractModel):
-    protocol: int
+    protocol: SafeInt
     stateDir: str
     handles: list[SupervisorHandle]
-    journalLimitBytes: int
-    outputLimitBytesPerHandle: int | None = None
+    journalLimitBytes: SafeInt
+    outputLimitBytesPerHandle: SafeInt | None = None
     durability: str
     recovery: SupervisorRecovery
 
@@ -251,8 +252,8 @@ class RestartEnvironmentKey(ContractStrEnum):
 
 class LinuxVMDownload(ContractModel):
     stage: str
-    attempt: int
-    bytes: int
+    attempt: SafeInt
+    bytes: SafeInt
     seconds: float
 
 
@@ -284,8 +285,8 @@ class LinuxVMStatus(ContractModel):
     __pydantic_extra__: dict[str, JsonValue]
 
     state: str | None = None
-    allocatedDiskBytes: int | None = None
-    freeHostBytes: int | None = None
+    allocatedDiskBytes: SafeInt | None = None
+    freeHostBytes: SafeInt | None = None
     provision: LinuxVMProvision | None = None
     # layr.health is a separately-versioned guest payload; preserve it as JSON.
     layr: JsonValue = None
@@ -295,8 +296,8 @@ class LinuxVMStatus(ContractModel):
 
 class DesktopResponse(ResponseModel):
     application: str
-    protocol: int
-    mobileProtocol: int
+    protocol: SafeInt
+    mobileProtocol: SafeInt
     backendBuild: str
     nativeRuntime: NativeRuntimeStatus | None
     providerVersions: ProviderVersions
@@ -304,7 +305,7 @@ class DesktopResponse(ResponseModel):
     liveUpdate: LiveUpdateStatus | None
     restartEnvironment: dict[RestartEnvironmentKey, str]
     publicOrigin: str | None
-    pid: int
+    pid: SafeInt
     supervisorMode: bool
     supervisorRequired: bool
     supervisorError: str | None
@@ -316,27 +317,27 @@ class DesktopResponse(ResponseModel):
 
 
 class HostResources(ContractModel):
-    cpuCount: int | None
-    totalMemoryBytes: int | None
-    availableMemoryBytes: int | None
+    cpuCount: SafeInt | None
+    totalMemoryBytes: SafeInt | None
+    availableMemoryBytes: SafeInt | None
 
 
 class ProcessRecord(ContractModel):
-    pid: int
-    parentPid: int
+    pid: SafeInt
+    parentPid: SafeInt
     kind: ProcessKind
     rssMiB: float
     cpuPercent: float
 
 
 class ProcessKindTotals(ContractModel):
-    count: int
+    count: SafeInt
     rssMiB: float
     cpuPercent: float
 
 
 class ProcessTree(ContractModel):
-    rootPid: int
+    rootPid: SafeInt
     processes: list[ProcessRecord]
     kinds: dict[ProcessKind, ProcessKindTotals]
     totalRssMiB: float
@@ -345,9 +346,9 @@ class ProcessTree(ContractModel):
 class ResourceAttribution(ContractModel):
     component: AttributionComponent
     operation: AttributionOperation
-    count: int
-    logicalReadBytes: int | None = None
-    residentBytes: int | None = None
+    count: SafeInt
+    logicalReadBytes: SafeInt | None = None
+    residentBytes: SafeInt | None = None
     durationMs: float | None = None
 
 
@@ -355,7 +356,7 @@ class QueueSizes(ContractModel):
     """Queue labels include generated account aliases and queue names."""
 
     model_config = {"extra": "allow"}
-    __pydantic_extra__: dict[str, int | None]
+    __pydantic_extra__: dict[str, SafeInt | None]
 
 
 class RuntimeLockSample(ContractModel):
@@ -365,7 +366,7 @@ class RuntimeLockSample(ContractModel):
 
 class RuntimeLockOperation(ContractModel):
     callSite: str
-    count: int
+    count: SafeInt
     totalWaitMs: float
     totalHoldMs: float
     waitMs: "LockMetricSummary"
@@ -376,7 +377,7 @@ class LockMetricSummary(ContractModel):
     p50: float
     p95: float
     max: float
-    samples: int
+    samples: SafeInt
 
 
 class HttpMetricSummary(ContractModel):
@@ -384,28 +385,28 @@ class HttpMetricSummary(ContractModel):
     p95: float
     p99: float
     max: float
-    samples: int
+    samples: SafeInt
 
 
 class HttpRouteMetric(ContractModel):
     method: str
     route: str
-    count: int
+    count: SafeInt
     latencyMs: HttpMetricSummary
     responseBytes: HttpMetricSummary
 
 
 class HttpRequestMetrics(ContractModel):
     routes: list[HttpRouteMetric]
-    untrackedRoutes: int
+    untrackedRoutes: SafeInt
 
 
 class SqliteMetric(ContractModel):
-    transactions: int
-    longTransactions: int
-    writeWaits: int
+    transactions: SafeInt
+    longTransactions: SafeInt
+    writeWaits: SafeInt
     writeWaitMs: float
-    lockErrors: int
+    lockErrors: SafeInt
     longestTransactionMs: float
     p50TransactionMs: float | None = None
     p95TransactionMs: float | None = None
@@ -415,7 +416,7 @@ class SqliteMetric(ContractModel):
 class SqliteFrame(ContractModel):
     file: str
     function: str
-    line: int
+    line: SafeInt
 
 
 class SqliteObservation(ContractModel):
@@ -453,11 +454,11 @@ class SqliteStatement(ContractStrEnum):
 
 class SqliteTransaction(ContractModel):
     id: str
-    pid: int
+    pid: SafeInt
     site: str
     database: SqliteDatabase
-    threadId: int
-    nativeThreadId: int
+    threadId: SafeInt
+    nativeThreadId: SafeInt
     threadName: str
     originFrames: list[SqliteFrame]
     firstStatement: SqliteStatement
@@ -485,9 +486,9 @@ class SqliteJournal(ContractModel):
 
 
 class SqliteTracking(ContractModel):
-    tracked: int
-    limit: int
-    untrackedStarts: int
+    tracked: SafeInt
+    limit: SafeInt
+    untrackedStarts: SafeInt
 
 
 class SqliteHistory(ContractModel):
@@ -507,15 +508,15 @@ class SqliteActiveTransaction(ContractModel):
 
 
 class SqliteThread(ContractModel):
-    threadId: int
+    threadId: SafeInt
     threadName: str
     frames: list[SqliteFrame]
 
 
 class SqliteActiveScan(ContractModel):
-    threads: int
-    frames: int
-    locals: int
+    threads: SafeInt
+    frames: SafeInt
+    locals: SafeInt
     truncated: bool
 
 
@@ -530,24 +531,24 @@ class SqliteContention(ContractModel):
 
 class NativeCodexAccount(ContractModel):
     provider: Literal["codex"]
-    loadedThreads: int
+    loadedThreads: SafeInt
 
 
 class NativeClaudeAccount(ContractModel):
     provider: Literal["claude"]
-    liveQueries: int
-    activeTurns: int
-    backgroundQueries: int
-    idleQueries: int
-    idleLimitSeconds: int
+    liveQueries: SafeInt
+    activeTurns: SafeInt
+    backgroundQueries: SafeInt
+    idleQueries: SafeInt
+    idleLimitSeconds: SafeInt
     sessionCache: SessionCacheStats
 
 
 class SessionCacheStats(ContractModel):
-    cachedSessions: int
-    retainedBytes: int
-    pendingWrites: int
-    journalBytes: int
+    cachedSessions: SafeInt
+    retainedBytes: SafeInt
+    pendingWrites: SafeInt
+    journalBytes: SafeInt
 
 
 class NativeErrorAccount(ContractModel):
@@ -576,7 +577,7 @@ class PayloadMigrationState(ContractStrEnum):
 
 
 class PayloadMigration(ContractModel):
-    cursor: int
+    cursor: SafeInt
     complete: bool
     status: PayloadMigrationState
     updated: float | None
@@ -592,10 +593,10 @@ class SearchMigrationPhase(ContractStrEnum):
 
 class SearchMigration(ContractModel):
     phase: SearchMigrationPhase
-    cursor: int
+    cursor: SafeInt
     updated: float
     error: str | None
-    lastBatchBytes: int | None
+    lastBatchBytes: SafeInt | None
 
 
 class TombstonePruneState(ContractStrEnum):
@@ -610,14 +611,14 @@ class TombstonePruneState(ContractStrEnum):
 class TombstonePruning(ContractModel):
     status: TombstonePruneState
     updated: float
-    deleted: int
-    remaining: int | None = None
+    deleted: SafeInt
+    remaining: SafeInt | None = None
     error: str | None = None
 
 
 class TombstoneMigration(ContractModel):
-    count: int
-    floor: int
+    count: SafeInt
+    floor: SafeInt
     pruning: TombstonePruning
 
 
@@ -630,15 +631,15 @@ class MigrationStatus(ContractModel):
 
 class AnalyticsCaptureStatus(ContractModel):
     available: bool | None = None
-    limit: int | None = None
-    byteLimit: int | None = None
-    queued: int | None = None
-    active: int | None = None
-    bytes: int | None = None
-    completed: int | None = None
-    failed: int | None = None
-    overflow: int | None = None
-    pendingErrors: int | None = None
+    limit: SafeInt | None = None
+    byteLimit: SafeInt | None = None
+    queued: SafeInt | None = None
+    active: SafeInt | None = None
+    bytes: SafeInt | None = None
+    completed: SafeInt | None = None
+    failed: SafeInt | None = None
+    overflow: SafeInt | None = None
+    pendingErrors: SafeInt | None = None
     lastError: str | None = None
 
 
@@ -671,7 +672,7 @@ class ExecutionAction(ContractStrEnum):
 class ExecutionActionIdentity(ContractModel):
     accountKey: str
     threadId: str
-    epoch: int
+    epoch: SafeInt
 
 
 class ExecutionInputEvent(ContractModel):
@@ -694,7 +695,7 @@ class ExecutionClaudeInput(ContractModel):
 
 class ExecutionInputRejection(ContractModel):
     id: str
-    epoch: int
+    epoch: SafeInt
     accountKey: str
     threadId: str
     connectionId: str
@@ -710,7 +711,7 @@ class ExecutionAttempt(ContractModel):
     id: str
     supervisorIdentity: SupervisorIdentity | None = None
     runId: str | None = None
-    epoch: int | None = None
+    epoch: SafeInt | None = None
     activeAtReservation: bool | None = None
     settingsFixed: bool | None = None
     claudeRetryOf: str | None = None
@@ -801,7 +802,7 @@ class ExecutionHeldOperation(ContractModel):
 
 
 class ExecutionRecovery(ContractModel):
-    epoch: int | None = None
+    epoch: SafeInt | None = None
     accountKey: str | None = None
     threadId: str | None = None
     turnId: str | None = None
@@ -835,7 +836,7 @@ class ExecutionRun(ContractModel):
     id: str
     agent: str
     accountKey: str
-    epoch: int
+    epoch: SafeInt
     threadId: str | None
     turnId: str | None
     created: float
@@ -861,8 +862,8 @@ class ExecutionRun(ContractModel):
 
 class ExecutionLedger(ContractModel):
     runs: list[ExecutionRun]
-    limit: int
-    relatedLimit: int
+    limit: SafeInt
+    relatedLimit: SafeInt
 
 
 class SupervisorDiagnostics(ContractModel):
@@ -878,7 +879,7 @@ class DiagnosticsResponse(ResponseModel):
     hostResources: HostResources
     resourceAttribution: list[ResourceAttribution]
     nativeAccounts: dict[str, NativeProviderAccount | NativeErrorAccount]
-    studioLoadedThreads: int
+    studioLoadedThreads: SafeInt
     queues: QueueSizes
     runtimeLockSamples: list[RuntimeLockSample]
     executions: ExecutionLedger
@@ -897,16 +898,16 @@ class DirectoryEntry(ContractModel):
 
 
 class LinuxVMSettings(ContractModel):
-    cpus: int = Field(ge=1, strict=True)
-    memoryBytes: int = Field(ge=1024 ** 3, le=64 * 1024 ** 3, strict=True)
-    systemDiskBytes: int = Field(ge=8 * 1024 ** 3, le=128 * 1024 ** 3, strict=True)
-    dataDiskBytes: int = Field(ge=8 * 1024 ** 3, le=1024 * 1024 ** 3, strict=True)
+    cpus: SafeInt = Field(ge=1, strict=True)
+    memoryBytes: SafeInt = Field(ge=1024 ** 3, le=64 * 1024 ** 3, strict=True)
+    systemDiskBytes: SafeInt = Field(ge=8 * 1024 ** 3, le=128 * 1024 ** 3, strict=True)
+    dataDiskBytes: SafeInt = Field(ge=8 * 1024 ** 3, le=1024 * 1024 ** 3, strict=True)
 
 
 class LinuxVMSettingsResponse(ResponseModel):
     settings: LinuxVMSettings
     state: str
-    allocatedDiskBytes: int | None = None
+    allocatedDiskBytes: SafeInt | None = None
 
 
 class DirectoriesResponse(ResponseModel):

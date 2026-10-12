@@ -120,6 +120,33 @@ class EntityFieldProducers(unittest.TestCase):
             "threadId": thread_id, "turn": {"id": turn_id, "status": "aborted"}}})
         self.assertEqual(self.entity("agent", self.lead["id"])["lastCompletedTurnStatus"], "aborted")
 
+    def test_native_safety_buffering_writer_persists_a_valid_closed_projection(self):
+        from pydantic import TypeAdapter
+        from codex_records import NativeSafetyBufferingRecord
+
+        connection_id = "safety-buffering-projection"
+        thread_id, turn_id = "safety-buffering-thread", "safety-buffering-turn"
+        self.runtime.connection_ids["default"] = connection_id
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.lead["id"], db)
+            agent.update(threadId=thread_id, turnId=turn_id, inFlight=True, status="running")
+            self.runtime.put(db, "agents", agent)
+        self.runtime.notification({"method": "model/safetyBuffering/updated", "params": {
+            "threadId": thread_id, "turnId": turn_id, "showBufferingUi": True,
+            "fasterModel": "gpt-6-mini", "unprojectedProviderField": "retained internally",
+        }}, "default", connection_id)
+
+        persisted = self.runtime.agent(self.lead["id"])["nativeSafetyBuffering"]
+        projected = self.entity("agent", self.lead["id"])["nativeSafetyBuffering"]
+        self.assertIn("unprojectedProviderField", persisted)
+        self.assertNotIn("unprojectedProviderField", projected)
+        self.assertEqual(
+            set(projected),
+            {"turnId", "threadId", "accountKey", "connectionId", "at", "dismissed",
+             "responseStarted", "showBufferingUi", "fasterModel"},
+        )
+        TypeAdapter(NativeSafetyBufferingRecord).validate_python(projected)
+
     def test_agent_capacity_retry(self):
         self.write_agent_field("capacityRetry", capacity_retry())
         value = self.entity("agent", self.lead["id"])["capacityRetry"]
@@ -904,18 +931,51 @@ class EntityFieldProducers(unittest.TestCase):
         self.assertNotIn("warning-0", " ".join(notice["message"] for notice in notices))
 
     def test_workspace_native_notices_update_on_desktop_change(self):
+        from pydantic import TypeAdapter
         connection_id = "native-notice-connection"
         self.runtime.connection_ids["default"] = connection_id
         self.runtime.offline_accounts.discard("default")
         self.runtime.notification({"method": "mcpServer/oauthLogin/completed", "params": {
-            "name": "Fixture tool", "success": False, "error": "Sign-in expired"}},
+            "name": "Fixture tool", "success": False, "error": "Sign-in expired",
+            "details": {"reason": "expired", "attempt": 2}}},
             "default", connection_id)
         notices = self.entity("workspace", "current")["nativeNotices"]
         self.assertEqual(len(notices), 1)
         self.assertEqual(notices[0]["message"], "Fixture tool: Sign-in expired")
+        from studio_api.sync.models import WorkspaceEntityDto
+        with self.runtime.db() as db:
+            persisted_notice = self.runtime.records(db, "native_notices")[0]
+        self.assertEqual(persisted_notice["message"], notices[0]["message"])
+        self.assertEqual(persisted_notice["details"], {"reason": "expired", "attempt": 2})
+        self.assertEqual(
+            set(persisted_notice),
+            {"id", "accountKey", "connectionId", "message", "details", "at"},
+        )
+        TypeAdapter(WorkspaceEntityDto).validate_python(self.entity("workspace", "current"))
+        # The native notice writer always persists the details key, using null
+        # when the provider omitted details. The closed record must accept both
+        # that value and provider supplied recursive JSON details.
+        self.runtime.notification({"method": "configWarning", "params": {
+            "summary": "Configuration warning"}}, "default", connection_id)
+        with self.runtime.db() as db:
+            null_details_notice = next(
+                record for record in self.runtime.records(db, "native_notices")
+                if record["message"] == "Configuration warning"
+            )
+        self.assertIsNone(null_details_notice["details"])
+        self.assertEqual(
+            set(null_details_notice),
+            {"id", "accountKey", "connectionId", "message", "details", "at"},
+        )
+        TypeAdapter(WorkspaceEntityDto).validate_python(self.entity("workspace", "current"))
+        self.runtime.notification({"method": "configWarning", "params": {"summary": ""}},
+                                 "default", connection_id)
         self.runtime.notification({"method": "mcpServer/oauthLogin/completed", "params": {
             "name": "Fixture tool", "success": True}}, "default", connection_id)
-        self.assertEqual(self.entity("workspace", "current")["nativeNotices"], [])
+        self.assertFalse(any(
+            notice["message"].startswith("Fixture tool:")
+            for notice in self.entity("workspace", "current")["nativeNotices"]
+        ))
 
     def test_provider_version_notice_refreshes_workspace_entity(self):
         from codex_provider_versions import ProviderVersionMonitor
@@ -937,6 +997,13 @@ class EntityFieldProducers(unittest.TestCase):
         update_notice = next(notice for notice in notices if notice.get("level") == "info")
         self.assertEqual(update_notice["id"], "provider-update:default")
         self.assertEqual(update_notice["version"], "0.2.0")
+        self.assertEqual(
+            set(update_notice),
+            {"id", "accountKey", "provider", "version", "baseline", "message", "at", "level"},
+        )
+        from pydantic import TypeAdapter
+        from studio_api.sync.models import ProviderVersionWarningDto
+        TypeAdapter(ProviderVersionWarningDto).validate_python(update_notice)
 
         monitor.tick(self.runtime)
         monitor.worker.join(HANG_GUARD_SECONDS)

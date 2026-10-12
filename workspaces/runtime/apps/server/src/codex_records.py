@@ -10,6 +10,8 @@ remain separate contracts; known disagreements are checked in
 
 from typing import Literal, Protocol, TYPE_CHECKING, overload
 from typing_extensions import NotRequired, TypedDict
+from pydantic import ConfigDict
+from studio_api.models import Int64, SafeInt, SignedSafeInt, UInt64
 
 if TYPE_CHECKING:
     import sqlite3
@@ -46,13 +48,13 @@ NativeStatusValue = Literal["idle", "notLoaded", "unsubscribed", "notSubscribed"
 
 class SupervisorIdentityRecord(TypedDict):
     handle: NotRequired[str]
-    generation: NotRequired[int]
+    generation: NotRequired[SafeInt]
     stateDir: NotRequired[str]
 
 
 class StartModelSettingsRecord(TypedDict):
     id: NotRequired[str]
-    epoch: NotRequired[int]
+    epoch: NotRequired[SafeInt]
     accountKey: NotRequired[str]
     connectionId: NotRequired[str]
     threadId: NotRequired[str]
@@ -63,12 +65,12 @@ class StartModelSettingsRecord(TypedDict):
 class StartActionIdentityRecord(TypedDict):
     accountKey: str
     threadId: str
-    epoch: int
+    epoch: SafeInt
 
 
 class StartAttemptRecord(TypedDict):
     id: NotRequired[str]
-    epoch: NotRequired[int]
+    epoch: NotRequired[SafeInt]
     accountKey: NotRequired[str]
     events: NotRequired[list[str]]
     submitted: NotRequired[bool]
@@ -98,7 +100,7 @@ class StartAttemptRecord(TypedDict):
 
 class ClaudePreInputRetryRecord(TypedDict):
     id: NotRequired[str]
-    epoch: NotRequired[int]
+    epoch: NotRequired[SafeInt]
     accountKey: NotRequired[str]
     threadId: NotRequired[str]
     connectionId: NotRequired[str | None]
@@ -121,7 +123,7 @@ class RestartRecoveryRecord(TypedDict):
     stage: NotRequired[str]
     at: NotRequired[float]
     autoWake: NotRequired[bool]
-    epoch: NotRequired[int]
+    epoch: NotRequired[SafeInt]
     accountKey: NotRequired[str]
     threadId: NotRequired[str]
     turnId: NotRequired[str | None]
@@ -136,7 +138,7 @@ class RestartRecoveryRecord(TypedDict):
 
 
 class DisconnectRecoveryRecord(TypedDict):
-    epoch: NotRequired[int]
+    epoch: NotRequired[SafeInt]
     accountKey: NotRequired[str]
     threadId: NotRequired[str]
     turnId: NotRequired[str | None]
@@ -165,7 +167,7 @@ class ConnectionRecoveryRecord(TypedDict):
 
 class ContextRepairSourceRecord(TypedDict):
     id: NotRequired[str]
-    epoch: NotRequired[int]
+    epoch: NotRequired[SafeInt]
     accountKey: NotRequired[str]
     threadId: NotRequired[str]
     turnId: NotRequired[str]
@@ -175,16 +177,16 @@ class ContextRepairSourceRecord(TypedDict):
 class ContextRepairSnapshotRecord(TypedDict):
     sourcePath: NotRequired[str]
     sourceSha256: NotRequired[str]
-    sourceBytes: NotRequired[int]
+    sourceBytes: NotRequired[SafeInt]
     importThreadId: NotRequired[str]
-    savedBytes: NotRequired[int]
+    savedBytes: NotRequired[SafeInt]
     eventIds: NotRequired[list[str]]
     terminalTurnId: NotRequired[str | None]
     terminalCompletedAt: NotRequired[float | None]
     ancestry: NotRequired[list[JsonValue]]
     copyPath: NotRequired[str]
     copySha256: NotRequired[str]
-    copyBytes: NotRequired[int]
+    copyBytes: NotRequired[SafeInt]
     sourceFileIdentity: NotRequired[list[JsonValue]]
 
 
@@ -212,7 +214,7 @@ class ContextRepairRecord(TypedDict):
     phase: NotRequired[str]
     created: NotRequired[float]
     updated: NotRequired[float]
-    compactions: NotRequired[int]
+    compactions: NotRequired[SafeInt]
     connectionId: NotRequired[str]
     settings: NotRequired[JsonObject]
     snapshot: NotRequired[ContextRepairSnapshotRecord]
@@ -223,7 +225,7 @@ class ContextRepairRecord(TypedDict):
     newThreadId: NotRequired[str]
     result: NotRequired[JsonValue]
     error: NotRequired[JsonValue]
-    rpcId: NotRequired[str | int]
+    rpcId: NotRequired[str | SafeInt]
     rpcMethod: NotRequired[str]
     copyCleanup: NotRequired[JsonObject]
     historicalInputProof: NotRequired[HistoricalInputProofRecord]
@@ -239,7 +241,7 @@ class ContextRepairWaitRecord(TypedDict):
     nextCheckAt: NotRequired[float]
     at: NotRequired[float]
     firstAt: NotRequired[float]
-    checks: NotRequired[int]
+    checks: NotRequired[SafeInt]
     action: NotRequired[str]
     actionAt: NotRequired[float]
     actionId: NotRequired[str]
@@ -270,15 +272,15 @@ class NativeReleaseRecord(TypedDict):
     nativeStatus: NotRequired[str]
     resetPending: NotRequired[bool]
     resetReason: NotRequired[str]
-    resetActorEpoch: NotRequired[int | None]
+    resetActorEpoch: NotRequired[SafeInt | None]
     resetBy: NotRequired[str | None]
     resetActorScope: NotRequired[JsonObject | None]
-    inspectionFailures: NotRequired[int]
+    inspectionFailures: NotRequired[SafeInt]
     supersededAt: NotRequired[float]
     nextAttemptAt: NotRequired[float]
     inspectionPhase: NotRequired[str]
     inspectionError: NotRequired[JsonValue]
-    targetEpoch: NotRequired[int]
+    targetEpoch: NotRequired[SafeInt]
     targetParentId: NotRequired[str | None]
     targetRootId: NotRequired[str]
 
@@ -297,14 +299,14 @@ class WorkerDefaultsRecord(TypedDict):
     daybreakEnabled: NotRequired[bool]
     cyberAccessProgram: NotRequired[str | None]
     accountKey: NotRequired[str | None]
-    delegationDepth: NotRequired[int]
+    delegationDepth: NotRequired[SafeInt]
 
 
 class AgentArchiveRecord(TypedDict):
     at: NotRequired[float]
     by: NotRequired[str]
     reason: NotRequired[str]
-    epoch: NotRequired[int]
+    epoch: NotRequired[SafeInt]
     cleanupPending: NotRequired[bool]
     unknownToolRequests: NotRequired[list[JsonValue]]
     unassignedWork: NotRequired[list[JsonValue]]
@@ -343,17 +345,17 @@ class CapacityRetryRecord(TypedDict):
     acceptedTurnId: NotRequired[str]
     claimedAt: NotRequired[float]
     taskClaims: NotRequired[list[str]]
-    attempt: NotRequired[int]
+    attempt: NotRequired[SafeInt]
     cause: NotRequired[str]
     cwd: NotRequired[str]
-    epoch: NotRequired[int]
-    maxAttempts: NotRequired[int]
+    epoch: NotRequired[SafeInt]
+    maxAttempts: NotRequired[SafeInt]
     settings: NotRequired[JsonObject]
     threadId: NotRequired[str]
     turnId: NotRequired[str]
     updatedAt: NotRequired[float]
     accountKey: NotRequired[str]
-    waits: NotRequired[int]
+    waits: NotRequired[SafeInt]
 
 
 class UsageResumeRecord(TypedDict):
@@ -362,10 +364,10 @@ class UsageResumeRecord(TypedDict):
     cause: NotRequired[UsageResumeCauseValue]
     accountKey: NotRequired[str]
     threadId: NotRequired[str]
-    epoch: NotRequired[int]
+    epoch: NotRequired[SafeInt]
     turnId: NotRequired[str]
     failedAt: NotRequired[float]
-    authAttempt: NotRequired[int]
+    authAttempt: NotRequired[SafeInt]
     authRefreshMarker: NotRequired[str | None]
     dueAt: NotRequired[float | None]
     plannedAt: NotRequired[float | None]
@@ -380,14 +382,14 @@ class UsageResumeRecord(TypedDict):
 
 
 class RateLimitWindowRecord(TypedDict):
-    usedPercent: NotRequired[int | float]
-    resetsAt: NotRequired[int | float]
+    usedPercent: NotRequired[SafeInt | float]
+    resetsAt: NotRequired[SafeInt | float]
 
 
 class RateLimitBucketRecord(TypedDict):
     primary: NotRequired[RateLimitWindowRecord]
     secondary: NotRequired[RateLimitWindowRecord]
-    individualLimit: NotRequired[dict[str, int | float]]
+    individualLimit: NotRequired[dict[str, SafeInt | float]]
     rateLimitReachedType: NotRequired[JsonValue]
     spendControlReached: NotRequired[bool]
 
@@ -403,7 +405,7 @@ class RateLimitSnapshotRecord(TypedDict):
     error: NotRequired[JsonValue]
     stale: NotRequired[bool]
     accountKey: NotRequired[str]
-    at: NotRequired[int | float | None]
+    at: NotRequired[SafeInt | float | None]
 
 
 class AccountDataRecord(TypedDict):
@@ -450,7 +452,7 @@ class QuestionRequestRecord(TypedDict):
     id: str
     method: Literal["agent/asyncQuestion"]
     agent: str
-    epoch: int
+    epoch: SafeInt
     turnId: str | None
     params: QuestionRequestParamsRecord
     status: Literal["pending"]
@@ -502,9 +504,9 @@ class RequestRecord(TypedDict):
     accountKey: NotRequired[str]
     connectionId: NotRequired[str]
     supervisor: NotRequired[JsonObject | None]
-    epoch: NotRequired[int]
+    epoch: NotRequired[SafeInt]
     turnId: NotRequired[str | None]
-    rpcId: NotRequired[str | int]
+    rpcId: NotRequired[str | SafeInt]
     preview: NotRequired[JsonValue]
     answerSignature: NotRequired[str]
     answeredAt: NotRequired[float]
@@ -522,7 +524,7 @@ class RequestRecord(TypedDict):
     cursor: NotRequired[str]
     cwd: NotRequired[str]
     env: NotRequired[JsonObject]
-    expectedPid: NotRequired[int]
+    expectedPid: NotRequired[SafeInt]
     expectedSignature: NotRequired[str]
     expectedStartTime: NotRequired[float]
     handle: NotRequired[str]
@@ -530,59 +532,59 @@ class RequestRecord(TypedDict):
     nativeId: NotRequired[str]
     operationId: NotRequired[str]
     resolvedAt: NotRequired[float]
-    sequence: NotRequired[int]
+    sequence: NotRequired[SafeInt]
 
 
 class RuleRecord(TypedDict):
     id: NotRequired[str]
     agent: NotRequired[str]
     rootId: NotRequired[str]
-    epoch: NotRequired[int]
+    epoch: NotRequired[SafeInt]
     name: NotRequired[str]
     kind: NotRequired[Literal["interval", "once", "file", "event", "low_workers"]]
     status: NotRequired[str]
     at: NotRequired[float]
-    intervalSeconds: NotRequired[int]
+    intervalSeconds: NotRequired[SafeInt]
     nextAt: NotRequired[float]
     path: NotRequired[str | None]
     event: NotRequired[str]
     command: NotRequired[str]
     text: NotRequired[str]
-    minimumWorkers: NotRequired[int]
-    durationMinutes: NotRequired[int]
+    minimumWorkers: NotRequired[SafeInt]
+    durationMinutes: NotRequired[SafeInt]
     created: NotRequired[float]
     inFlight: NotRequired[bool]
-    checks: NotRequired[int]
-    wakes: NotRequired[int]
+    checks: NotRequired[SafeInt]
+    wakes: NotRequired[SafeInt]
     fingerprint: NotRequired[list[JsonValue] | None]
     fileActivityAt: NotRequired[float]
-    fileGeneration: NotRequired[int]
-    stallWakeGeneration: NotRequired[int]
-    stallTimeoutSeconds: NotRequired[int]
+    fileGeneration: NotRequired[SafeInt]
+    stallWakeGeneration: NotRequired[SignedSafeInt]
+    stallTimeoutSeconds: NotRequired[SafeInt]
     livenessCommand: NotRequired[str]
     error: NotRequired[str | None]
     lowSince: NotRequired[float | None]
     lastAt: NotRequired[float]
-    lastExitCode: NotRequired[int | None]
+    lastExitCode: NotRequired[SignedSafeInt | None]
     lastFinished: NotRequired[float]
     lastOutput: NotRequired[str]
-    activeWorkers: NotRequired[int]
+    activeWorkers: NotRequired[SafeInt]
     alerted: NotRequired[bool]
     eventText: NotRequired[str]
     lastEvent: NotRequired[str]
     lastStallError: NotRequired[str | None]
-    lastStallExitCode: NotRequired[int | None]
+    lastStallExitCode: NotRequired[SignedSafeInt | None]
     lastStallFinished: NotRequired[float]
     restartCheck: NotRequired["RuleRestartCheckRecord"]
-    stall_timeout_seconds: NotRequired[int]
+    stall_timeout_seconds: NotRequired[SafeInt]
     stallProbe: NotRequired[bool]
     stallEventKey: NotRequired[str]
     stallText: NotRequired[str]
 
 
 class RuleRestartCheckRecord(TypedDict):
-    epoch: int
-    checks: int
+    epoch: SafeInt
+    checks: SafeInt
     monitorId: str
 
 
@@ -591,33 +593,33 @@ class MonitorRecord(TypedDict):
 
     id: NotRequired[str]
     agent: NotRequired[str]
-    epoch: NotRequired[int]
+    epoch: NotRequired[SafeInt]
     turnId: NotRequired[str | None]
     requestId: NotRequired[str | None]
     command: NotRequired[str]
     cwd: NotRequired[str]
-    timeout_ms: NotRequired[int]
-    stallTimeoutSeconds: NotRequired[int]
+    timeout_ms: NotRequired[SafeInt]
+    stallTimeoutSeconds: NotRequired[SafeInt]
     livenessCommand: NotRequired[str]
-    activityAt: NotRequired[int | float]
-    activityGeneration: NotRequired[int]
-    stallWakeGeneration: NotRequired[int]
+    activityAt: NotRequired[SafeInt | float]
+    activityGeneration: NotRequired[SafeInt]
+    stallWakeGeneration: NotRequired[SignedSafeInt]
     wakeOn: NotRequired[str]
-    successExitCodes: NotRequired[list[int]]
+    successExitCodes: NotRequired[list[SafeInt]]
     status: NotRequired[str]
-    created: NotRequired[int | float]
-    finished: NotRequired[int | float | None]
-    exitCode: NotRequired[int | None]
+    created: NotRequired[SafeInt | float]
+    finished: NotRequired[SafeInt | float | None]
+    exitCode: NotRequired[SignedSafeInt | None]
     tail: NotRequired[str]
-    bytes: NotRequired[int]
+    bytes: NotRequired[SafeInt]
     interactive: NotRequired[bool]
     ruleId: NotRequired[str | None]
     log: NotRequired[str]
     error: NotRequired[str | None]
-    lastStallExitCode: NotRequired[int | None]
+    lastStallExitCode: NotRequired[SignedSafeInt | None]
     lastStallFinished: NotRequired[float]
     lowSince: NotRequired[float | None]
-    minimumWorkers: NotRequired[int]
+    minimumWorkers: NotRequired[SafeInt]
     restartCheck: NotRequired[JsonObject]
     restartHoldNotified: NotRequired[bool]
     stallEventKey: NotRequired[str]
@@ -629,16 +631,16 @@ class MonitorRecord(TypedDict):
 class ToolRequestTimingRecord(TypedDict):
     admissionDelayMs: NotRequired[float]
     callbackQueueDelayMs: NotRequired[float]
-    callbackStartedAt: NotRequired[int | float]
+    callbackStartedAt: NotRequired[SafeInt | float]
     executionQueueDelayMs: NotRequired[float]
-    handlerEndedAt: NotRequired[int]
-    handlerStartedAt: NotRequired[int]
+    handlerEndedAt: NotRequired[UInt64]  # monotonic_ns response timestamp
+    handlerStartedAt: NotRequired[UInt64]  # monotonic_ns response timestamp
     queueDelayMs: NotRequired[float]
-    reservationBeganAt: NotRequired[int]
+    reservationBeganAt: NotRequired[UInt64]  # monotonic_ns response timestamp
     reservationDelayMs: NotRequired[float]
-    reservationEndedAt: NotRequired[int]
-    reservationLockedAt: NotRequired[int]
-    wireReceivedAt: NotRequired[int | float]
+    reservationEndedAt: NotRequired[UInt64]  # monotonic_ns response timestamp
+    reservationLockedAt: NotRequired[UInt64]  # monotonic_ns response timestamp
+    wireReceivedAt: NotRequired[SafeInt | float]
 
 
 class ToolRequestRecord(TypedDict):
@@ -648,12 +650,12 @@ class ToolRequestRecord(TypedDict):
     callId: NotRequired[str]
     connectionId: NotRequired[str | None]
     created: NotRequired[float]
-    epoch: NotRequired[int]
+    epoch: NotRequired[SafeInt]
     outcome: NotRequired[str]
     readOnly: NotRequired[bool]
     request_id: NotRequired[str]
     result: NotRequired[JsonObject]
-    rpcId: NotRequired[int | str]
+    rpcId: NotRequired[SafeInt | str]
     signature: NotRequired[str]
     stage: NotRequired[Literal[
         "queued", "running", "cancelled", "interrupted", "failed", "unknown", "completed",
@@ -673,11 +675,11 @@ class ToolRequestRecord(TypedDict):
     supervisor: NotRequired[JsonObject]
     admissionDelayMs: NotRequired[float]
     callbackQueueDelayMs: NotRequired[float]
-    callbackStartedAt: NotRequired[int | float]
+    callbackStartedAt: NotRequired[SafeInt | float]
     executionQueueDelayMs: NotRequired[float]
     queueDelayMs: NotRequired[float]
     reservationDelayMs: NotRequired[float]
-    wireReceivedAt: NotRequired[int | float]
+    wireReceivedAt: NotRequired[SafeInt | float]
 
 
 class AgentActivityRecord(TypedDict):
@@ -715,13 +717,13 @@ class NativeNameSyncedRecord(TypedDict):
 class NativeNameFailureRecord(TypedDict):
     identity: NotRequired[NativeNameIdentityRecord]
     error: NotRequired[JsonValue]
-    attempts: NotRequired[int]
+    attempts: NotRequired[SafeInt]
     retryAt: NotRequired[float]
 
 
 class ContextUsageRecord(TypedDict):
-    tokens: int
-    window: int
+    tokens: SafeInt
+    window: SafeInt
     at: NotRequired[float]
 
 
@@ -764,16 +766,16 @@ class AccountTransferSummaryRecord(TypedDict):
     updated: NotRequired[float | None]
     scope: NotRequired[AccountTransferScopeValue | None]
     finishHistory: NotRequired[bool | None]
-    total: NotRequired[int | None]
-    completed: NotRequired[int | None]
-    moved: NotRequired[int | None]
-    nativeHistoryPending: NotRequired[int | None]
-    movingNow: NotRequired[int | None]
+    total: NotRequired[SafeInt | None]
+    completed: NotRequired[SafeInt | None]
+    moved: NotRequired[SafeInt | None]
+    nativeHistoryPending: NotRequired[SafeInt | None]
+    movingNow: NotRequired[SafeInt | None]
     canFinishHistory: NotRequired[bool | None]
     interrupted: NotRequired[list[AccountTransferInterruptedRecord] | None]
     leftOnSource: NotRequired[list[AccountTransferLeftOnSourceRecord] | None]
     blocked: NotRequired[list[AccountTransferBlockedRecord] | None]
-    waitingCount: NotRequired[int | None]
+    waitingCount: NotRequired[SafeInt | None]
     waiting: NotRequired[str | None]
     needsAttention: NotRequired[bool | None]
     canRetry: NotRequired[bool | None]
@@ -789,6 +791,9 @@ class NativeSafetyBufferingRecord(TypedDict):
     responseStarted: NotRequired[bool]
     showBufferingUi: NotRequired[bool]
     fasterModel: NotRequired[str]
+
+
+setattr(NativeSafetyBufferingRecord, "__pydantic_config__", ConfigDict(extra="forbid"))
 
 
 class NativeSafetyRetryRecord(TypedDict):
@@ -810,7 +815,7 @@ class NativeSafetyRetryRecord(TypedDict):
     created: NotRequired[float]
     updated: NotRequired[float]
     finished: NotRequired[float]
-    epoch: NotRequired[int]
+    epoch: NotRequired[SafeInt]
     accountKey: NotRequired[str]
     error: NotRequired[str | None]
     newThreadId: NotRequired[str]
@@ -827,7 +832,7 @@ class NativeSafetyRetryViewRecord(TypedDict):
     ] | None]
     model: NotRequired[str | None]
     turnId: NotRequired[str | None]
-    epoch: NotRequired[int | None]
+    epoch: NotRequired[SafeInt | None]
     accountKey: NotRequired[str | None]
     created: NotRequired[float | None]
     updated: NotRequired[float | None]
@@ -857,8 +862,11 @@ class NativeNoticeRecord(TypedDict):
     at: float
 
 
+setattr(NativeNoticeRecord, "__pydantic_config__", ConfigDict(extra="forbid"))
+
+
 class ConnectionCheckRecord(TypedDict):
-    epoch: NotRequired[int]
+    epoch: NotRequired[SafeInt]
     accountKey: NotRequired[str]
     threadId: NotRequired[str]
     turnId: NotRequired[str]
@@ -873,7 +881,7 @@ class ReadStateRecord(TypedDict):
     threadId: str
     turnId: str
     read: bool
-    revision: int
+    revision: SafeInt
 
 
 class NativeReviewRecord(TypedDict):
@@ -906,7 +914,7 @@ class BrowserRecoveryRecord(TypedDict):
     itemId: NotRequired[str]
     turnId: NotRequired[str]
     threadId: NotRequired[str | None]
-    epoch: NotRequired[int]
+    epoch: NotRequired[SafeInt]
     accountKey: NotRequired[str]
     connectionId: NotRequired[str | None]
     reason: NotRequired[str]
@@ -937,7 +945,7 @@ class EmptyTransferRecoveryRecord(TypedDict):
     error: NotRequired[JsonValue]
     sourceState: NotRequired[LazyAccountTransferSourceRecord]
     requestId: NotRequired[str]
-    epoch: NotRequired[int]
+    epoch: NotRequired[SafeInt]
     threadId: NotRequired[str]
     turnId: NotRequired[str]
     transferId: NotRequired[str]
@@ -957,14 +965,14 @@ class WorktreeCleanupErrorRecord(TypedDict):
     at: float
     by: str
     stderr: NotRequired[str]
-    errno: NotRequired[int]
-    returncode: NotRequired[int]
+    errno: NotRequired[SafeInt]
+    returncode: NotRequired[SignedSafeInt]
 
 
 class WorktreeRegistrationRepairRecord(TypedDict):
     gitdir: str
-    gitFile: list[int]
-    rootFile: list[int]
+    gitFile: list[Int64]  # filesystem identity includes epoch nanoseconds
+    rootFile: list[Int64]  # filesystem identity includes epoch nanoseconds
 
 
 class WorktreeCleanupRecord(TypedDict):
@@ -977,12 +985,12 @@ class WorktreeCleanupRecord(TypedDict):
     relative: str
     branch: NotRequired[str | None]
     head: NotRequired[str | None]
-    identity: list[int | float | str | None]
-    gitFile: NotRequired[list[int]]
-    rootFile: NotRequired[list[int]]
+    identity: list[SafeInt | float | str | None]
+    gitFile: NotRequired[list[Int64]]  # filesystem identity includes epoch nanoseconds
+    rootFile: NotRequired[list[Int64]]  # filesystem identity includes epoch nanoseconds
     missing: NotRequired[bool]
     registrationRepair: NotRequired[WorktreeRegistrationRepairRecord]
-    bytes: NotRequired[int | None]
+    bytes: NotRequired[SafeInt | None]
     note: NotRequired[str]
 
 
@@ -995,7 +1003,7 @@ class WorkspaceOperationAgentRecord(TypedDict):
     updated: NotRequired[float]
     error: NotRequired[JsonValue]
     cwd: NotRequired[str]
-    epoch: NotRequired[int]
+    epoch: NotRequired[SafeInt]
     turnId: NotRequired[str]
 
 
@@ -1008,9 +1016,9 @@ class WorkspaceWaitRecord(TypedDict):
 
 class CleanedWorktreeRecord(TypedDict):
     branch: NotRequired[str | None]
-    bytes: NotRequired[int | None]
+    bytes: NotRequired[SafeInt | None]
     head: NotRequired[str | None]
-    identity: NotRequired[list[int | float | str | None]]
+    identity: NotRequired[list[SafeInt | float | str | None]]
     relative: NotRequired[str]
     repo: NotRequired[str]
     root: NotRequired[str]
@@ -1019,22 +1027,22 @@ class CleanedWorktreeRecord(TypedDict):
 
 
 class DeliveredModeRecord(TypedDict):
-    epoch: NotRequired[list[str | int | None]]
+    epoch: NotRequired[list[str | SafeInt | None]]
     version: NotRequired[str]
-    revision: NotRequired[int]
+    revision: NotRequired[SafeInt]
     text: NotRequired[str | None]
 
 
 class PreparedContextRecord(TypedDict):
-    epoch: NotRequired[list[str | int | None]]
+    epoch: NotRequired[list[str | SafeInt | None]]
     versions: NotRequired[dict[str, str]]
 
 
 class ParkReceiptRecord(TypedDict):
     event: NotRequired[str]
-    epoch: NotRequired[int]
-    sequence: NotRequired[int]
-    cancelledAtEpoch: NotRequired[int]
+    epoch: NotRequired[SafeInt]
+    sequence: NotRequired[SafeInt]
+    cancelledAtEpoch: NotRequired[SafeInt]
 
 
 class TurnRecoveryRecord(TypedDict):
@@ -1050,7 +1058,7 @@ class BudgetWaitRecord(TypedDict):
     attemptId: NotRequired[str]
     agentId: NotRequired[str]
     accountKey: NotRequired[str]
-    epoch: NotRequired[int]
+    epoch: NotRequired[SafeInt]
     threadId: NotRequired[str]
     events: NotRequired[list[JsonValue]]
     action: NotRequired[bool | str | None]
@@ -1065,17 +1073,17 @@ class BudgetWaitRecord(TypedDict):
 
 class BudgetStateRecord(TypedDict):
     cutoff: float
-    floor: int
-    spent: int
-    before: int
-    after: int
-    historicalNotices: int
-    noticeSpent: int
-    counter: int | None
+    floor: SafeInt
+    spent: SafeInt
+    before: SafeInt
+    after: SafeInt
+    historicalNotices: SafeInt
+    noticeSpent: SafeInt
+    counter: SafeInt | None
     thread: str | None
-    noticeAt: int | float
+    noticeAt: SafeInt | float
     created: float
-    lastAmount: int | None
+    lastAmount: SafeInt | None
     ambiguousNotices: list[str]
     faults: list[str]
 
@@ -1090,16 +1098,16 @@ class CleanedImageWorkspaceRecord(TypedDict):
     branch: NotRequired[str]
     head: NotRequired[str]
     restoreHeads: NotRequired[dict[str, str]]
-    bytes: NotRequired[int | None]
+    bytes: NotRequired[SafeInt | None]
     phase: NotRequired[str]
-    freedBytes: NotRequired[int]
+    freedBytes: NotRequired[SafeInt]
     collect: NotRequired["ImageWorkspaceCollectResultRecord"]
 
 
 class ImageWorkspaceCleanupResultRecord(TypedDict):
     state: NotRequired[str]
-    bytes: NotRequired[int]
-    freedBytes: NotRequired[int]
+    bytes: NotRequired[SafeInt]
+    freedBytes: NotRequired[SafeInt]
     reason: NotRequired[str]
     restoreHeads: NotRequired[dict[str, str]]
     collect: NotRequired["ImageWorkspaceCollectResultRecord"]
@@ -1119,7 +1127,7 @@ class ImageWorkspaceBaseState(TypedDict):
     state: NotRequired[str]
     version: NotRequired[str]
     image: NotRequired[str]
-    token: NotRequired[str | int | None]
+    token: NotRequired[str | SafeInt | None]
     repoRoot: NotRequired[str]
     repoKey: NotRequired[str]
     excludes: NotRequired[list[str]]
@@ -1134,7 +1142,7 @@ class ImageWorkspaceBaseState(TypedDict):
 
 class ImageWorkspaceBaseStaging(TypedDict):
     root: NotRequired[str]
-    token: NotRequired[str | int | None]
+    token: NotRequired[str | SafeInt | None]
     versionPath: str
     image: NotRequired[str]
     mount: NotRequired[str]
@@ -1154,7 +1162,7 @@ class ImageWorkspaceAgentState(TypedDict):
     branch: NotRequired[str]
     startCommit: NotRequired[str | None]
     snapshotCommit: NotRequired[str | None]
-    token: NotRequired[str | int | None]
+    token: NotRequired[str | SafeInt | None]
     repositories: NotRequired[list[ImageWorkspaceRepositoryState]]
     mounted: NotRequired[bool]
     restore: NotRequired[bool]
@@ -1191,13 +1199,13 @@ class ImageWorkspaceCollectResultRecord(TypedDict):
 
 
 class ImageWorkspaceRemovalResultRecord(TypedDict):
-    freedBytes: int
+    freedBytes: SafeInt
     state: str
 
 
 class NativeToolSourceRecord(TypedDict):
     threadId: NotRequired[str]
-    epoch: NotRequired[int]
+    epoch: NotRequired[SafeInt]
     digest: NotRequired[str]
 
 
@@ -1210,16 +1218,16 @@ class NativeToolUpdateRecord(TypedDict):
 class PortableHistorySourceRecord(TypedDict):
     agentId: NotRequired[str]
     accountKey: NotRequired[str]
-    epoch: NotRequired[int]
+    epoch: NotRequired[SafeInt]
     threadId: NotRequired[str]
 
 
 class PortableHistoryRecord(TypedDict):
-    version: NotRequired[int]
+    version: NotRequired[SafeInt]
     path: NotRequired[str]
     sha256: NotRequired[str]
-    bytes: NotRequired[int]
-    counts: NotRequired[dict[str, int]]
+    bytes: NotRequired[SafeInt]
+    counts: NotRequired[dict[str, SafeInt]]
     source: NotRequired[PortableHistorySourceRecord]
     transferId: NotRequired[str]
 
@@ -1303,7 +1311,7 @@ class AgentRecord(TypedDict):
     projectId: NotRequired[str | None]
     projectServerId: NotRequired[str | None]
     serverId: NotRequired[str | None]
-    epoch: int
+    epoch: SafeInt
     status: AgentStatusValue
     name: NotRequired[str]
     prompt: NotRequired[str]
@@ -1325,11 +1333,11 @@ class AgentRecord(TypedDict):
     autoWake: NotRequired[bool]
     inFlight: NotRequired[bool]
     turnId: NotRequired[str | None]
-    turnEpoch: NotRequired[int]
-    tokensUsed: NotRequired[int]
-    compactions: NotRequired[int]
+    turnEpoch: NotRequired[SafeInt]
+    tokensUsed: NotRequired[SafeInt]
+    compactions: NotRequired[SafeInt]
     compactionsObservedOnly: NotRequired[bool]
-    events: NotRequired[int]
+    events: NotRequired[SafeInt]
     created: NotRequired[float]
     updated: NotRequired[float]
     error: NotRequired[str | JsonObject | None]
@@ -1363,9 +1371,9 @@ class AgentRecord(TypedDict):
     layrError: NotRequired[str]
     remoteOrigin: NotRequired[RemoteParentLinkRecord]
     remoteAnchor: NotRequired[RemoteParentLinkRecord]
-    remoteEpoch: NotRequired[int]
-    remoteControlEpoch: NotRequired[int]
-    remoteStateSequence: NotRequired[int]
+    remoteEpoch: NotRequired[SafeInt]
+    remoteControlEpoch: NotRequired[SafeInt]
+    remoteStateSequence: NotRequired[SafeInt]
     remoteReservation: NotRequired[bool]
     remoteAdmission: NotRequired[JsonObject]
     remoteAdmissionRequest: NotRequired[str]
@@ -1396,10 +1404,10 @@ class AgentRecord(TypedDict):
     imageWorkspaceNoticeError: NotRequired[str | None]
     imageWorkspaceHandoffText: NotRequired[str | None]
     imageWorkspaceCollect: NotRequired[ImageWorkspaceCollectResultRecord]
-    concurrency: NotRequired[int]
-    maxAgents: NotRequired[int]
+    concurrency: NotRequired[SafeInt]
+    maxAgents: NotRequired[SafeInt]
     maxAgentsExplicit: NotRequired[bool]
-    tokenBudget: NotRequired[int | None]
+    tokenBudget: NotRequired[SafeInt | None]
     usageResumeEnabled: NotRequired[bool]
     contextUsage: NotRequired[ContextUsageRecord | None]
     activeTools: NotRequired[list[ActiveToolRecord]]
@@ -1439,7 +1447,7 @@ class AgentRecord(TypedDict):
     lazyAccountTransfer: NotRequired[LazyAccountTransferRecord]
     emptyTransferRecovery: NotRequired[EmptyTransferRecoveryRecord]
     capacityRetry: NotRequired[CapacityRetryRecord]
-    capacityRetryCount: NotRequired[int]
+    capacityRetryCount: NotRequired[SafeInt]
     usageResume: NotRequired[UsageResumeRecord]
     budgetBlocked: NotRequired[str]
     budgetStartWait: NotRequired[BudgetWaitRecord]
@@ -1454,7 +1462,7 @@ class AgentRecord(TypedDict):
     quickCreateRequest: NotRequired[str | None]
     needsTitle: NotRequired[bool]
     projectFolder: NotRequired[str]
-    projectFolderRevision: NotRequired[int]
+    projectFolderRevision: NotRequired[SafeInt]
     project: NotRequired[str]
     profileId: NotRequired[str | None]
     profileInstructions: NotRequired[str]
@@ -1472,7 +1480,7 @@ class AgentRecord(TypedDict):
     parkedEvent: NotRequired[str]
     parkAfterTurn: NotRequired[bool]
     parkReceipt: NotRequired[ParkReceiptRecord]
-    parkSequence: NotRequired[int]
+    parkSequence: NotRequired[SafeInt]
     cancelledPark: NotRequired[ParkReceiptRecord]
     liveSteerAttempt: NotRequired[JsonObject]
     liveSteerRejectedTurnId: NotRequired[str]
@@ -1487,16 +1495,16 @@ class AgentRecord(TypedDict):
     lastWorkspaceWait: NotRequired[WorkspaceWaitRecord]
     workerBaseRef: NotRequired[str | None]
     workerBaseCommit: NotRequired[str | None]
-    workerBaseBehindMain: NotRequired[int | None]
+    workerBaseBehindMain: NotRequired[SafeInt | None]
     workerBaseMainRef: NotRequired[str | None]
     accountHistory: NotRequired[list[AccountHistoryRecord]]
     deliveredMode: NotRequired[DeliveredModeRecord]
     agentMode: NotRequired[AgentModeValue]
-    agentModeRevision: NotRequired[int]
+    agentModeRevision: NotRequired[SafeInt]
     agentModeSupported: NotRequired[bool]
     agentModeChangedAt: NotRequired[float]
     agentModeChangedBy: NotRequired[str]
-    subagentConcurrencyVersion: NotRequired[int]
+    subagentConcurrencyVersion: NotRequired[SafeInt]
     accountId: NotRequired[str]
     deletedAt: NotRequired[float]
     archived: NotRequired[bool]
@@ -1510,28 +1518,28 @@ class AgentRecord(TypedDict):
     nativeName: NotRequired[str]
     nativeNameSyncError: NotRequired[str]
     workerBaseStatus: NotRequired[str]
-    deliveredModeVersion: NotRequired[int]
+    deliveredModeVersion: NotRequired[SafeInt]
     nativeOperation: NotRequired[JsonObject]
     branch: NotRequired[str]
     checkpointError: NotRequired[str | None]
-    complaintMisses: NotRequired[int]
+    complaintMisses: NotRequired[SafeInt]
     complaintsPresented: NotRequired[list[str]]
     lastEvent: NotRequired[str]
     prepareAttempt: NotRequired[str]
     preparedContext: NotRequired[PreparedContextRecord]
     profile: NotRequired[JsonObject | None]
-    reviewArchiveAttempts: NotRequired[int]
+    reviewArchiveAttempts: NotRequired[SafeInt]
     reviewArchiveError: NotRequired[str | None]
     reviewArchiveNextAt: NotRequired[float]
     reviewArchiveScheduled: NotRequired[str]
-    authResumeAttempt: NotRequired[int]
+    authResumeAttempt: NotRequired[SafeInt]
     cleanedImageWorkspace: NotRequired[CleanedImageWorkspaceRecord]
     imageWorkspaceCleanupResult: NotRequired[ImageWorkspaceCleanupResultRecord]
     imageWorkspaceBaseError: NotRequired[str]
     nativeToolRefreshId: NotRequired[str]
     nativeToolUpdate: NotRequired[NativeToolUpdateRecord]
     portableHistory: NotRequired[PortableHistoryRecord]
-    queueMutationRevision: NotRequired[int]
+    queueMutationRevision: NotRequired[SafeInt]
     forkedFrom: NotRequired[str]
     sourceMessage: NotRequired[str]
     draft: NotRequired[AgentDraftRecord]
@@ -1547,9 +1555,9 @@ class WorkArchiveIntentRecord(TypedDict, extra_items=JsonValue):  # type: ignore
     id: str
     status: Literal["pending", "complete", "terminal"]
     owner: NotRequired[str | None]
-    attempts: NotRequired[int]
+    attempts: NotRequired[SafeInt]
     created: NotRequired[float]
-    schedulerVersion: NotRequired[int]
+    schedulerVersion: NotRequired[SafeInt]
     previousId: NotRequired[str]
     nextAttemptAt: NotRequired[float]
     lastOutcome: NotRequired[WorkArchiveRecord]
@@ -1588,7 +1596,7 @@ class PlanRecord(TypedDict):
     id: str
     rootId: str
     text: str
-    version: int
+    version: SafeInt
     updated: float | None
     steps: list[JsonValue]
 
@@ -1598,7 +1606,7 @@ class AnnotationRecord(TypedDict):
     agent: str
     rootId: str
     path: str
-    line: int
+    line: SafeInt
     text: str
     created: float
     turnId: NotRequired[str]
@@ -1640,7 +1648,7 @@ class WorkRecord(TypedDict):
     created: float
     updated: float
     createdBy: str
-    version: int
+    version: SafeInt
     dependencies: list[str]
     decisions: list[WorkDecisionRecord]
     results: list[WorkResultRecord]
@@ -1664,12 +1672,12 @@ class CheckpointRecord(TypedDict):
     source: NotRequired[str]
     worktree: NotRequired[str]
     rootId: NotRequired[str]
-    revision: NotRequired[int]
+    revision: NotRequired[SafeInt]
     error: NotRequired[str]
     data: NotRequired[JsonObject]
     automatic: NotRequired[bool]
     cwd: NotRequired[str]
-    historyBoundary: NotRequired[int | None]
+    historyBoundary: NotRequired[SafeInt | None]
     historyDelta: NotRequired[list[JsonValue]]
     historyParent: NotRequired[str | None]
     label: NotRequired[str]
@@ -1694,7 +1702,7 @@ class ComplaintRecord(TypedDict):
     sourceType: NotRequired[str]
     recipient: NotRequired[str]
     responses: NotRequired[list[JsonValue]]
-    version: NotRequired[int]
+    version: NotRequired[SafeInt]
 
 
 class ProjectLocationRecord(TypedDict):
@@ -1738,21 +1746,21 @@ class ProjectRecord(TypedDict):
     name: str
     created: float
     accountKey: NotRequired[str]
-    accountRevision: NotRequired[int]
+    accountRevision: NotRequired[SafeInt]
     homeServerId: NotRequired[str]
     locations: NotRequired[list[ProjectLocationRecord]]
-    locationsRevision: NotRequired[int]
+    locationsRevision: NotRequired[SafeInt]
     projectAliases: NotRequired[list[ProjectAliasRecord]]
     updated: NotRequired[float]
     accountKeys: NotRequired[list[str]]
     folders: NotRequired[list[ProjectFolderRecord]]
-    organizationRevision: NotRequired[int]
+    organizationRevision: NotRequired[SafeInt]
     peerTeams: NotRequired[list[ProjectPeerTeamRecord]]
-    peerTeamsRevision: NotRequired[int]
+    peerTeamsRevision: NotRequired[SafeInt]
     workerBaseRef: NotRequired[str]
-    workerBaseRevision: NotRequired[int]
+    workerBaseRevision: NotRequired[SafeInt]
     workerEnvironment: NotRequired[Literal["host", "linux"]]
-    workerEnvironmentRevision: NotRequired[int]
+    workerEnvironmentRevision: NotRequired[SafeInt]
     registration: NotRequired[ProjectRegistrationRecord]
 
 
@@ -1761,7 +1769,7 @@ class PeerTeamRecord(TypedDict):
     name: str
     members: list[str]
     projectPath: NotRequired[str]
-    revision: NotRequired[int]
+    revision: NotRequired[SafeInt]
 
 
 class FederationPeerRecord(TypedDict):
@@ -1807,7 +1815,7 @@ class FederationOutboxRecord(TypedDict):
     payload: JsonObject
     messageHash: str
     created: float
-    attempts: NotRequired[int]
+    attempts: NotRequired[SafeInt]
     nextAttempt: NotRequired[float]
     deliveredAt: NotRequired[float]
     error: NotRequired[str | None]
@@ -1889,14 +1897,14 @@ class WorkspaceOperationRecord(TypedDict):
     created: float
     updated: float
     cwd: str
-    epoch: int
+    epoch: SafeInt
     turnId: str
     error: str | None
     source: NotRequired[JsonObject]
 
 
 class RoomLastMessageRecord(TypedDict):
-    seq: int
+    seq: SafeInt
     text: str
     created: float
     sender: str

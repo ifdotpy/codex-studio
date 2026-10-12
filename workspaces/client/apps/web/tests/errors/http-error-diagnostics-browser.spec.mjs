@@ -34,12 +34,8 @@ test("Http error diagnostics browser", async ({
       {
         status: 429,
         body: {
-          error: {
-            message: { message: "Provider quota exhausted" },
-            code: "quota",
-            details: { reset: 123 },
-          },
-          requestId: "exact-request",
+          error: "Provider quota exhausted",
+          location: ["body", "account_key"],
         },
         message: "Provider quota exhausted",
       },
@@ -50,7 +46,7 @@ test("Http error diagnostics browser", async ({
       },
       {
         status: 403,
-        body: { message: "Permission denied", details: { operation: "read" } },
+        body: { error: "Permission denied", location: ["query", "id"] },
         message: "Permission denied",
       },
       { status: 409, body: "Request conflict", message: "Request conflict" },
@@ -76,7 +72,7 @@ test("Http error diagnostics browser", async ({
             apiError: error instanceof ApiError,
             status: error.status,
             message: errorText(error),
-            details: error.details,
+            location: error.location,
           };
         }
       });
@@ -84,13 +80,13 @@ test("Http error diagnostics browser", async ({
         apiError: true,
         status: fixture.status,
         message: fixture.message,
-        details: fixture.body,
+        location: fixture.body?.location,
       });
       await page.unroute("**/api/session");
     }
     assert.equal(calls, cases.length, "Formatting does not retry requests");
     console.log(
-      "PASS: structured/string/null HTTP failures retain status and complete response details; no automatic retries",
+      "PASS: HTTP failures retain status, short message and location; no automatic retries",
     );
   } finally {
     await Promise.all(

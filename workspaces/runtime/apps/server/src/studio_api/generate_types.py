@@ -13,6 +13,7 @@ from typing import cast
 
 from studio_api.models import JsonValue
 from studio_api.schema import (
+    bound_integer_schemas,
     API_SCHEMA_HASH_HEADER,
     API_SCHEMA_HASH_PARAM,
     API_SCHEMA_MISMATCH_HEADER,
@@ -55,21 +56,26 @@ def _entity_aliases(names: list[str], include_sync_entity_payload: bool = False)
 
 def _normalize_recursive_json_value(generated: str) -> str:
     """Break openapi-typescript's indexed self-reference for the recursive JSON schema."""
-    pattern = re.compile(
-        r'(?m)^([ \t]*)JsonValue: null \| boolean \| number \| string \| '
-        r'components\["schemas"\]\["JsonValue"\]\[\] \| \{\r?\n'
-        r'[ \t]*\[key: string\]: components\["schemas"\]\["JsonValue"\];\r?\n'
-        r'([ \t]*)\};$'
-    )
-    normalized, replacements = pattern.subn(r"\1JsonValue: JsonValue;", generated)
-    if replacements != 1:
+    start = re.search(r"(?m)^([ \t]*)JsonValue: ", generated)
+    if start is None:
         raise ValueError("openapi-typescript output has no unique recursive JsonValue component")
-    return normalized
+    ending = re.search(
+        rf"(?m)^{re.escape(start.group(1))}}}[^;\n]*;",
+        generated[start.end() :],
+    )
+    if ending is None:
+        raise ValueError("openapi-typescript output has no unique recursive JsonValue component")
+    end = start.end() + ending.end()
+    definition = generated[start.start() : end]
+    if 'components["schemas"]["JsonValue"]' not in definition:
+        raise ValueError("openapi-typescript output has no unique recursive JsonValue component")
+    return generated[: start.start()] + start.group(1) + "JsonValue: JsonValue;" + generated[end:]
 
 
 def render(document: dict[str, JsonValue]) -> str:
     remove_orphan_fastapi_validation_schemas(document)
     normalize_json_value_schema(document)
+    bound_integer_schemas(document)
     validate_contract_schemas(document)
     validate_error_responses(document)
     entities = entity_schema_names(document)

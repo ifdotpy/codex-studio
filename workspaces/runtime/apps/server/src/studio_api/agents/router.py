@@ -16,7 +16,7 @@ from codex_records import AgentRecord
 from studio_api.models import JsonValue
 from studio_api.context import ApiContext
 from studio_api.responses import api_read_responses, api_write_responses
-from studio_api.request_helpers import body_data, first_nonempty_query
+from studio_api.request_helpers import body_data
 from codex_sync_entities import project
 
 from .models import (
@@ -75,7 +75,7 @@ from .models import (
     UsageResumeRequest,
     UsageResumeResponse,
 )
-from studio_api.models import JsonValue, ResponseModel
+from studio_api.models import JsonValue, ResponseModel, SafeInt
 
 AgentJsonRecord = dict[str, JsonValue]
 
@@ -142,11 +142,11 @@ class StopResponse(ResponseModel):
 
 class ConfigureResponse(ResponseModel):
     id: str
-    concurrency: int
+    concurrency: SafeInt
     agentMode: AgentMode
-    agentModeRevision: int
-    maxAgents: int
-    tokenBudget: int | None = None
+    agentModeRevision: SafeInt
+    maxAgents: SafeInt
+    tokenBudget: SafeInt | None = None
 
 
 def create_router(context: ApiContext) -> APIRouter:
@@ -188,6 +188,8 @@ def create_router(context: ApiContext) -> APIRouter:
     def conversation_settings(http_request: Request, body: ConversationRequest) -> Response:
         runtime = current_runtime()
         request = body_data(body)
+        if body.excluded_account_keys is not None:
+            request["excluded_account_keys"] = cast(JsonValue, sorted(body.excluded_account_keys))
         try:
             result = runtime.conversation_settings(body.id, request)
         except ValueError as error:
@@ -246,8 +248,6 @@ def create_router(context: ApiContext) -> APIRouter:
             if isinstance(request.get("context"), dict)
             else None if "context" in request else {}
         )
-        if set(request) - {"id", "action", "request_id", "context"}:
-            return context.send(http_request, {"error": "Invalid native action fields", "outcome": "not_applied"}, status=400)
         try:
             result = runtime.native_action(body.id, action, request_id, context_data)
         except ValueError as error:
@@ -313,16 +313,13 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.get("/api/import", response_model=ImportListResponse, responses=api_read_responses(errors=(404,)))
     def import_list(request: Request, query: ImportListQuery = Depends()) -> Response:
         runtime = current_runtime()
-        cursor = first_nonempty_query(request, "cursor")
-        account_key = first_nonempty_query(request, "account_key") or "default"
-        return context.send(request, runtime.import_list(cursor, account_key=account_key))
+        return context.send(request, runtime.import_list(query.cursor, account_key=query.account_key or "default"))
 
     @router.get("/api/capabilities", response_model=CapabilitiesResponse,
                 responses=api_read_responses(errors=(404,), etag=True))
     def capabilities(request: Request, query: CapabilitiesQuery = Depends()) -> Response:
         runtime = current_runtime()
-        agent = first_nonempty_query(request, "agent")
-        return context.send(request, runtime.capabilities(agent), etag=True, weak_etag_fields=("at",))
+        return context.send(request, runtime.capabilities(query.agent), etag=True, weak_etag_fields=("at",))
 
     @router.get("/api/agents/finder-view", response_model=FinderViewResponse,
                 responses=api_read_responses(errors=(404,)))
@@ -480,8 +477,7 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.get("/api/skills", response_model=SkillsResponse, responses=api_read_responses(errors=(404,)))
     def skills(request: Request, query: SkillsQuery = Depends()) -> Response:
         runtime = current_runtime()
-        agent = first_nonempty_query(request, "agent")
-        return context.send(request, runtime.skill_catalog(agent))
+        return context.send(request, runtime.skill_catalog(query.agent))
 
     return router
 

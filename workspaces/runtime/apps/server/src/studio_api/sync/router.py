@@ -8,15 +8,16 @@ import json
 import logging
 import sqlite3
 from collections.abc import AsyncIterator, Sequence
-from typing import TYPE_CHECKING, Any, ContextManager, NotRequired, Protocol, TypedDict, cast
+from typing import TYPE_CHECKING, Any, ContextManager, Literal, NotRequired, Protocol, TypedDict, cast
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.sse import format_sse_event
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from starlette.types import Receive, Scope, Send
 from pydantic import TypeAdapter, ValidationError
 
+from studio_api.models import MAX_SAFE_INTEGER, SafeIntHeader, SafeQueryInt
 from studio_api.sync.preferences import (
     AppearancePreferences,
     PreferencePushRequest,
@@ -32,7 +33,6 @@ from studio_api.responses import (
 )
 from studio_api.schema import (
     API_SCHEMA_HASH_HEADER,
-    API_SCHEMA_HASH_PARAM,
 )
 from studio_api.sync.models import (
     DraftPushRequest,
@@ -58,7 +58,6 @@ from studio_api.sync.resources.models import (
 if TYPE_CHECKING:
     from studio_api.context import ApiContext
 
-MAX_SAFE_CURSOR = 9_007_199_254_740_991
 SYNC_BATCH_LIMIT = 100
 SYNC_ENTITY_PAGE_LIMIT = 500
 SYNC_STREAM_BYTE_LIMIT = 1_048_576
@@ -135,13 +134,8 @@ def _sync_store(context: ApiContext) -> SyncStoreContract:
 
 
 def _first(request: Request, key: str, default: str | None = None) -> str | None:
-    values = [value for value in request.query_params.getlist(key) if value != ""]
-    return values[0] if values else default
-
-
-def _query_int(request: Request, key: str, default: int) -> int:
-    value = _first(request, key)
-    return default if value is None else int(value)
+    """Return one scalar query value; clients do not send repeated keys."""
+    return request.query_params.get(key, default)
 
 
 def _resource_event(
@@ -242,21 +236,23 @@ def create_router(context: ApiContext) -> APIRouter:
     )
     def pull(
         request: Request,
-        scope: str | None = None,
-        after: int | None = None,
-        limit: int | None = None,
-        fresh: str | None = None,
-        initialHigh: int | None = None,
-        reset: str | None = None,
+        scope: str = Query(default="state:entities:v1", min_length=1),
+        after: SafeQueryInt = Query(default=0, ge=0, le=MAX_SAFE_INTEGER),
+        limit: SafeQueryInt = Query(
+            default=SYNC_BATCH_LIMIT,
+            ge=1,
+            le=SYNC_ENTITY_PAGE_LIMIT,
+            description="Upper bound; the server may lower it by scope.",
+        ),
+        fresh: Literal["1"] | None = None,
+        initialHigh: SafeQueryInt = Query(default=0, ge=0, le=MAX_SAFE_INTEGER),
+        reset: Literal["1"] | None = None,
         priorityId: str | None = None,
     ) -> object:
-        scope = _first(request, "scope", "state:entities:v1") or "state:entities:v1"
-        after = _query_int(request, "after", 0)
-        limit = _query_int(request, "limit", SYNC_BATCH_LIMIT)
-        initial_high = _query_int(request, "initialHigh", 0)
-        fresh_flag = _first(request, "fresh") == "1"
-        reset_flag = _first(request, "reset") == "1"
-        priority_id = _first(request, "priorityId")
+        initial_high = initialHigh
+        fresh_flag = fresh == "1"
+        reset_flag = reset == "1"
+        priority_id = priorityId
         store = _sync_store(context)
         projection = store.pull(scope, after, limit, fresh_flag, initial_high, reset_flag, priority_id)
         if scope == "state:entities:v1":
@@ -314,21 +310,33 @@ def create_router(context: ApiContext) -> APIRouter:
             **SYNC_STREAM_ERRORS,
         },
     )
-    async def sync_stream(request: Request, _query: SyncStreamQuery = Depends()) -> StreamingResponse:  # type: ignore[return]
-        protocol_value = _first(request, "protocol")
-        header_version = request.headers.get("X-Codex-Sync-Protocol")
+    async def sync_stream(
+        request: Request,
+        _query: SyncStreamQuery = Depends(),
+        protocol: str | None = Query(default=None),
+        sync_protocol_header: str | None = Header(
+            default=None,
+            alias="X-Codex-Sync-Protocol",
+        ),
+        last_event_id_header: SafeIntHeader | None = Header(
+            default=None,
+            alias="Last-Event-ID",
+        ),
+    ) -> Response:
+        protocol_value = protocol
+        header_version = sync_protocol_header
         if protocol_value not in (None, "3") or header_version not in (None, "3"):
             response = context.send(
                 request,
                 {"error": "Unsupported sync protocol version", "supportedVersions": [3]},
                 status=426,
             )
-            return cast(StreamingResponse, response)
+            return response
 
         if protocol_value == "3" or header_version == "3":
             renderer_hash = request.headers.get(API_SCHEMA_HASH_HEADER)
             if renderer_hash is None:
-                renderer_hash = request.query_params.get(API_SCHEMA_HASH_PARAM)
+                renderer_hash = _query.apiSchema
             server_hash = await context.get_api_schema_hash() if renderer_hash is not None else None
             if renderer_hash is not None and renderer_hash != server_hash:
                 async def schema_mismatch_event() -> AsyncIterator[bytes]:
@@ -341,22 +349,23 @@ def create_router(context: ApiContext) -> APIRouter:
                 return _stream_response(schema_mismatch_event())
             resources_json = _first(request, "resources", "") or ""
             if not resources_json or len(resources_json.encode("utf-8")) > MAX_RESOURCE_QUERY_BYTES:
-                return cast(StreamingResponse, context.send(
-                    request, {"error": "Invalid resource subscription"}, status=400
-                ))
+                return context.send(
+                    request,
+                    {"error": "Invalid request", "location": ["query", "resources"]},
+                    status=400,
+                )
             try:
                 raw_resources = json.loads(resources_json)
                 resources = RESOURCE_REFS_ADAPTER.validate_python(raw_resources)
                 if not resources or len(resources) > MAX_RESOURCE_COUNT:
                     raise ValueError("Invalid resource count")
-                last_event_id = request.headers.get("Last-Event-ID")
-                if last_event_id is not None:
-                    if int(last_event_id) < 0 or int(last_event_id) > MAX_SAFE_CURSOR:
-                        raise ValueError("Invalid last event ID")
+                last_event_id = last_event_id_header
             except (ValueError, TypeError, ValidationError):
-                return cast(StreamingResponse, context.send(
-                    request, {"error": "Invalid resource subscription"}, status=400
-                ))
+                return context.send(
+                    request,
+                    {"error": "Invalid request", "location": ["query", "resources"]},
+                    status=400,
+                )
 
             try:
                 runtime = context.runtime
@@ -369,9 +378,9 @@ def create_router(context: ApiContext) -> APIRouter:
                     _LOGGER.error(
                         "Sync resource stream unavailable: panel resources requested without a runtime"
                     )
-                    return cast(StreamingResponse, context.send(
+                    return context.send(
                         request, {"error": "Resource stream is unavailable; reconnect to retry."}, status=503
-                    ))
+                    )
                 active_panel_agents = (
                     await run_in_threadpool(_active_panel_agents, runtime, resources)
                     if runtime is not None and panel_agent_ids else None
@@ -389,9 +398,9 @@ def create_router(context: ApiContext) -> APIRouter:
                     "Sync resource stream unavailable while resolving panel activity "
                     "or subscribing to the resource hub"
                 )
-                return cast(StreamingResponse, context.send(
+                return context.send(
                     request, {"error": "Resource stream is unavailable; reconnect to retry."}, status=503
-                ))
+                )
 
             async def resource_events() -> AsyncIterator[bytes]:
                 runtime = context.runtime
@@ -439,12 +448,11 @@ def create_router(context: ApiContext) -> APIRouter:
 
             return _stream_response(resource_events())
 
-        if protocol_value != "3" and header_version != "3":
-            return cast(StreamingResponse, context.send(
-                request,
-                {"error": "Unsupported sync protocol version", "supportedVersions": [3]},
-                status=426,
-            ))
+        return context.send(
+            request,
+            {"error": "Unsupported sync protocol version", "supportedVersions": [3]},
+            status=426,
+        )
 
     resource_event_route = router.routes[-1]
     register_route_components(
@@ -474,7 +482,12 @@ def create_router(context: ApiContext) -> APIRouter:
         identity = store.identity()
         if workspace != identity["workspaceId"]:
             return context.send(request, {"error": "The server workspace changed. Reload before sending."}, status=409)
-        body_rows = body.model_dump(mode="json", by_alias=True, exclude_unset=True)["rows"]
+        body_rows = body.model_dump(mode="json", exclude_unset=True)["rows"]
+        for row in body_rows:
+            for state_name in ("newDocumentState", "assumedMasterState"):
+                state = row.get(state_name)
+                if isinstance(state, dict):
+                    state["_deleted"] = state.pop("deleted", False)
         previous_sequence = store.draft_sequence()
         result = store.push_drafts(body_rows)
         if store.draft_sequence() != previous_sequence:

@@ -13,10 +13,17 @@ from codex_native_errors import NativeRpcError, assert_native_thread_open
 
 if TYPE_CHECKING:
     import sqlite3
-    from codex_records import AgentRecord, NativeSafetyRetryRecord, NativeSafetyRetryViewRecord
+    from codex_records import (
+        AgentRecord, NativeSafetyBufferingRecord, NativeSafetyRetryRecord,
+        NativeSafetyRetryViewRecord,
+    )
     from codex_runtime import Runtime
 
 ACTIVE = {'turns', 'items', 'interrupt', 'verify_turns', 'verify_items', 'fork', 'start', 'unknown'}
+
+
+def _empty_safety_buffering() -> "NativeSafetyBufferingRecord":
+    return {}
 
 
 def active(agent: "AgentRecord") -> bool:
@@ -73,7 +80,9 @@ def action(runtime: "Runtime", key: str, data: Any) -> Any:
                 if receipt.get('rpcMethod') == 'turn/start':
                     raise ValueError('The retry was already submitted. Wait for its receipt or stop the turn.')
                 receipt.update(stage='cancelled', error=None)
-                buffering = a.get('nativeSafetyBuffering') or {}
+                buffering: "NativeSafetyBufferingRecord" = (
+                    a.get('nativeSafetyBuffering') or _empty_safety_buffering()
+                )
                 buffering['dismissed'] = True
                 if not a.get('inFlight'):
                     a['status'] = 'interrupted'
@@ -81,7 +90,9 @@ def action(runtime: "Runtime", key: str, data: Any) -> Any:
             return public(receipt)
         if choice == 'cancel':
             raise ValueError('No model change exists for this turn')
-        b = a.get('nativeSafetyBuffering') or {}
+        b: "NativeSafetyBufferingRecord" = (
+            a.get('nativeSafetyBuffering') or _empty_safety_buffering()
+        )
         if (not a.get('inFlight') or not a.get('autoWake') or a.get('accountTransferId')
                 or b.get('turnId') != data.get('turnId') or b.get('turnId') != a.get('turnId')
                 or b.get('threadId') != a.get('threadId') or not b.get('showBufferingUi')
@@ -156,7 +167,9 @@ def issue(runtime: "Runtime", op: "NativeSafetyRetryRecord", stage: str) -> None
                 method = 'thread/items/list'
                 params.update(turnId=op['turnId'], limit=1000, sortDirection='asc')
             elif stage == 'interrupt':
-                b = a.get('nativeSafetyBuffering') or {}
+                b: "NativeSafetyBufferingRecord" = (
+                    a.get('nativeSafetyBuffering') or _empty_safety_buffering()
+                )
                 if (not b.get('showBufferingUi') or b.get('responseStarted') or
                         a.get('nativeResponseTurn') == op['turnId'] or a.get('turnId') != op['turnId']):
                     raise ValueError('The response started. Keep the current turn.')

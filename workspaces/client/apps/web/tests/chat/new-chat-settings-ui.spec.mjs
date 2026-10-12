@@ -129,10 +129,9 @@ test("new chat chips open each role, save settings and disappear after send", as
     await page.setViewportSize({ width: 390, height: 844 });
     for (const chip of [main, workers]) {
       await expect(chip).toBeVisible();
+      const label = chip.locator(".execution-selected");
       expect(
-        await chip
-          .locator(".execution-selected")
-          .evaluate((node) => node.scrollWidth <= node.clientWidth),
+        await label.evaluate((node) => node.scrollWidth <= node.clientWidth),
       ).toBe(true);
     }
     await page.locator("#message").fill("Fixture first message");

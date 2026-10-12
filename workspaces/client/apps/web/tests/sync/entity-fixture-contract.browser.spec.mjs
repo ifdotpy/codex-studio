@@ -522,7 +522,7 @@ test("shared entity stub converges on one matching stream", async ({
     });
     assert.deepEqual(
       routeParity.map(({ status }) => status),
-      [200, 400, 400, 400],
+      [400, 400, 400, 400],
       "browser page route validates pull requests like the real server",
     );
     await page.locator("#message").waitFor({ timeout: 30000 });

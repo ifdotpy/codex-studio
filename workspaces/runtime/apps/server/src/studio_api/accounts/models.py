@@ -3,24 +3,22 @@
 from __future__ import annotations
 
 from typing import Annotated, Literal
-from uuid import UUID
 
-from pydantic import AfterValidator, ConfigDict, Field, StrictBool, StrictInt, field_validator
+from pydantic import BeforeValidator, ConfigDict, Field, StrictBool, StrictInt, field_validator
 
-from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel
+from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel, SafeInt, require_strict_integer
 from studio_api.sync.models import RoomEntityDto, RoomRadio, RoomRadioActive, SidebarOrderDto
 from studio_api.multi_server.models import ServerOperationResponse
 
 
-def _uuid_string(value: str) -> str:
-    try:
-        UUID(value)
-    except ValueError as error:
-        raise ValueError("Supply a UUID request_id") from error
-    return value
-
-
-RequestUUID = Annotated[str, AfterValidator(_uuid_string)]
+RequestUUID = Annotated[
+    str,
+    Field(
+        min_length=36,
+        max_length=36,
+        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+    ),
+]
 
 
 class AccountStatus(ContractStrEnum):
@@ -39,7 +37,7 @@ class ClaudeOptions(ContractModel):
     binaryPath: str | None = None
     configDir: str | None = None
     launchArgs: str | None = None
-    autoCompactWindow: int | None = None
+    autoCompactWindow: SafeInt | None = None
     customModels: list[ClaudeCustomModel] | None = None
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
@@ -209,7 +207,7 @@ class Project(ContractModel):
 
     homeServerId: str | None = None
     locations: list[ProjectLocation] | None = None
-    locationsRevision: int | None = None
+    locationsRevision: SafeInt | None = None
     projectAliases: list[ProjectAlias] | None = None
     id: str
     path: str
@@ -218,13 +216,13 @@ class Project(ContractModel):
     updated: float | None = None
     accountKey: str | None = None
     accountKeys: list[str] | None = None
-    accountRevision: int | None = None
+    accountRevision: SafeInt | None = None
     workerBaseRef: str | None = None
-    workerBaseRevision: int | None = None
+    workerBaseRevision: SafeInt | None = None
     workerEnvironment: Literal["host", "linux"] | None = None
-    workerEnvironmentRevision: int | None = None
-    organizationRevision: int | None = None
-    peerTeamsRevision: int | None = None
+    workerEnvironmentRevision: SafeInt | None = None
+    organizationRevision: SafeInt | None = None
+    peerTeamsRevision: SafeInt | None = None
     folders: list[ProjectFolder] | None = None
     peerTeams: list[PeerTeam] | None = None
     registration: ProjectRegistration | None = None
@@ -260,7 +258,7 @@ class ProjectReadResponse(ResponseModel):
 
 
 class PeerRadioActive(RoomRadioActive):
-    epoch: int
+    epoch: SafeInt
     interruptRequested: bool | None = None
     questionContinuationPlanned: bool | None = None
 
@@ -300,13 +298,13 @@ class ModelCatalogResponse(ResponseModel):
 
 
 class RateLimitWindow(ContractModel):
-    usedPercent: int | float | None = None
-    resetsAt: int | float | None = None
-    windowDurationMins: int | float | None = None
+    usedPercent: SafeInt | float | None = None
+    resetsAt: SafeInt | float | None = None
+    windowDurationMins: SafeInt | float | None = None
 
 
 class RateLimitIndividualLimit(ContractModel):
-    remainingPercent: int | float | None = None
+    remainingPercent: SafeInt | float | None = None
 
 
 class RateLimitBucket(ContractModel):
@@ -329,8 +327,8 @@ class RateLimitResetCredit(ContractModel):
     id: str
     status: str
     resetType: str
-    grantedAt: int | float | None = None
-    expiresAt: int | float | None = None
+    grantedAt: SafeInt | float | None = None
+    expiresAt: SafeInt | float | None = None
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
@@ -338,7 +336,7 @@ class RateLimitResetCredit(ContractModel):
 class RateLimitResetCredits(ContractModel):
     """Provider-owned reset-credit summary with the known count and credit fields."""
 
-    availableCount: int | None = None
+    availableCount: SafeInt | None = None
     credits: list[RateLimitResetCredit] = Field(default_factory=list)
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
@@ -398,7 +396,7 @@ class PeerConversionResponse(ResponseModel):
     parentId: str
     rootId: str
     movedAgents: list[str]
-    peerTeamsRevision: int
+    peerTeamsRevision: SafeInt
 
 
 class PeerRadioResponse(ResponseModel):
@@ -424,32 +422,25 @@ class DeleteAccountRequest(RequiredAccountKeyRequest):
     request_id: RequestUUID
 
 
-def _account_name(value: str) -> str:
-    if len(value.strip()) > 32:
-        raise ValueError("The account name must contain at most 32 characters")
-    return value
-
-
 class AccountNameRequest(RequiredAccountKeyRequest):
-    label: Annotated[str, AfterValidator(_account_name)]
+    label: str = Field(max_length=32)
     request_id: RequestUUID
+
+    @field_validator("label")
+    @classmethod
+    def require_unicode_scalar_label(cls, value: str) -> str:
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise ValueError("Label must contain valid Unicode scalar values") from error
+        return value
 
 
 class LoginRequest(ContractModel):
     login_id: RequestUUID
     account_key: str | None = None
-    email: str | None = Field(default=None, max_length=320)
-    label: str | None = Field(default=None, min_length=1, max_length=32)
-
-    @field_validator("email", "label")
-    @classmethod
-    def _strip_login_text(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        cleaned = value.strip()
-        if not cleaned:
-            raise ValueError("Value cannot be blank")
-        return cleaned
+    email: str | None = Field(default=None, max_length=320, pattern=r"\S")
+    label: str | None = Field(default=None, min_length=1, max_length=32, pattern=r"\S")
 
 
 class ClaudeStartRequest(ContractModel):
@@ -459,18 +450,8 @@ class ClaudeStartRequest(ContractModel):
 
 class ClaudeAddStartRequest(ContractModel):
     login_id: RequestUUID
-    email: str | None = Field(default=None, max_length=320)
-    label: str | None = Field(default=None, min_length=1, max_length=32)
-
-    @field_validator("email", "label")
-    @classmethod
-    def _strip_optional_text(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        cleaned = value.strip()
-        if not cleaned:
-            raise ValueError("Value cannot be blank")
-        return cleaned
+    email: str | None = Field(default=None, max_length=320, pattern=r"\S")
+    label: str | None = Field(default=None, min_length=1, max_length=32, pattern=r"\S")
 
 
 class ClaudeCodeRequest(ContractModel):
@@ -517,7 +498,7 @@ class ClaudeSessionRollbackRequest(ContractModel):
 class ClaudeSettings(ContractModel):
     permissionMode: Literal["default", "acceptEdits", "auto", "plan", "bypassPermissions"] | None = None
     thinking: StrictBool | None = None
-    autoCompactWindow: StrictInt | None = Field(default=None, ge=100000, le=1000000)
+    autoCompactWindow: SafeInt | None = Field(default=None, ge=100000, le=1000000)
 
 
 class ClaudeSessionStopTaskRequest(ContractModel):
@@ -564,8 +545,8 @@ class ClaudeSessionStateResponse(ResponseModel):
     controlOperation: ClaudeControlOperation | None = None
     version: str | None = None
     nativeId: str | None = None
-    contextWindow: int | None = None
-    totalTokens: int | None = None
+    contextWindow: SafeInt | None = None
+    totalTokens: SafeInt | None = None
 
 
 class ClaudeCommand(ContractModel):
@@ -592,7 +573,7 @@ class ClaudeSettingsResponse(ResponseModel):
 class ClaudeRollbackResponse(ResponseModel):
     threadId: str
     nativeId: str
-    removedTurns: int
+    removedTurns: SafeInt
 
 
 class ClaudeStopTaskResponse(ResponseModel):
@@ -611,12 +592,12 @@ ClaudeSessionResponse = (
 
 class LimitsQuery(ContractModel):
     account_key: str = "default"
-    cached: str | None = None
+    cached: Literal["1"] | None = None
 
 
 class ModelsQuery(ContractModel):
     account_key: str = "default"
-    workers: str | None = None
+    workers: Literal["1"] | None = None
     retry: Literal["1"] | None = None
 
 
@@ -627,7 +608,7 @@ class ClaudeLoginQuery(ContractModel):
 class PeerTeamSaveRequest(ContractModel):
     action: Literal["save"]
     path: str
-    expected_revision: int
+    expected_revision: SafeInt
     team_id: str | None = None
     request_id: str
     name: str
@@ -637,7 +618,7 @@ class PeerTeamSaveRequest(ContractModel):
 class PeerTeamDeleteRequest(ContractModel):
     action: Literal["delete"]
     path: str
-    expected_revision: int
+    expected_revision: SafeInt
     team_id: str
     request_id: str
 
@@ -645,7 +626,7 @@ class PeerTeamDeleteRequest(ContractModel):
 class PeerTeamMoveRequest(ContractModel):
     action: Literal["move"]
     path: str
-    expected_revision: int
+    expected_revision: SafeInt
     team_id: str | None = None
     member: str
     request_id: str
@@ -657,7 +638,7 @@ class PeerTeamRadioOpenRequest(ContractModel):
     path: str
     team_id: str
     request_id: str
-    expected_revision: int | None = None
+    expected_revision: SafeInt | None = None
 
 
 class PeerTeamRadioSendRequest(ContractModel):
@@ -666,10 +647,10 @@ class PeerTeamRadioSendRequest(ContractModel):
     path: str
     team_id: str
     request_id: str
-    expected_revision: int
+    expected_revision: SafeInt
     text: str
     target: str = "both"
-    rounds: Literal[1, 2] = 1
+    rounds: Annotated[Literal[1, 2], BeforeValidator(require_strict_integer)] = 1
 
 
 class PeerTeamRadioPassRequest(ContractModel):
@@ -678,9 +659,9 @@ class PeerTeamRadioPassRequest(ContractModel):
     path: str
     team_id: str
     request_id: str
-    expected_revision: int
+    expected_revision: SafeInt
     target: str
-    rounds: Literal[1, 2] = 1
+    rounds: Annotated[Literal[1, 2], BeforeValidator(require_strict_integer)] = 1
 
 
 class PeerTeamRadioStopRequest(ContractModel):
@@ -689,7 +670,7 @@ class PeerTeamRadioStopRequest(ContractModel):
     path: str
     team_id: str
     request_id: str
-    expected_revision: int
+    expected_revision: SafeInt
 
 
 class SharedParticipantRequest(ContractModel):
@@ -713,7 +694,7 @@ class PeerTeamConvertRequest(ContractModel):
     member: str
     target: str
     request_id: str
-    expected_revision: int
+    expected_revision: SafeInt
 
 
 class ProjectRegisterRequest(ContractModel):
@@ -728,14 +709,14 @@ class ProjectPathActionRequest(ContractModel):
     path: str
     name: str | None = None
     account_key: str | None = None
-    expected_revision: int | None = None
+    expected_revision: SafeInt | None = None
     base_ref: str | None = None
 
 
 class ProjectOrganizationRequest(ContractModel):
     action: Literal["rename", "add_folder", "rename_folder", "remove_folder"]
     path: str
-    expected_revision: int
+    expected_revision: SafeInt
     name: str | None = None
     folder_id: str | None = None
     parent_id: str | None = None
@@ -746,13 +727,13 @@ class ProjectAccountsRequest(ContractModel):
     path: str
     account_key: str
     account_keys: list[str]
-    expected_revision: int
+    expected_revision: SafeInt
 
 
 class SidebarReorderRequest(ContractModel):
     action: Literal["reorder"]
     request_id: str = Field(min_length=1, max_length=255)
-    expected_revision: int = Field(ge=0)
+    expected_revision: SafeInt = Field(ge=0)
     groups: dict[str, list[str]]
     migration: bool | None = None
 
@@ -794,7 +775,7 @@ class ProjectWriteRequest(ContractModel):
     name: str | None = None
     account_key: str | None = None
     account_keys: list[str] | None = None
-    expected_revision: int | None = None
+    expected_revision: SafeInt | None = None
     base_ref: str | None = None
     environment: Literal["host", "linux"] | None = None
     folder_id: str | None = None
@@ -824,15 +805,15 @@ class ProjectAccountSetRequest(ProjectWriteRequest):
     action: Literal["set_accounts"]
     account_key: str
     account_keys: list[str]
-    expected_revision: int
+    expected_revision: SafeInt
 
 
 class ProjectWorkerBaseRequest(ProjectWriteRequest):
     action: Literal["set_worker_base"]
-    expected_revision: int
+    expected_revision: SafeInt
 
 
 class ProjectWorkerEnvironmentRequest(ProjectWriteRequest):
     action: Literal["set_worker_environment"]
     environment: Literal["host", "linux"]
-    expected_revision: int
+    expected_revision: SafeInt

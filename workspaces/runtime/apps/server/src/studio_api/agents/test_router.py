@@ -238,14 +238,14 @@ def test_stop_preserves_explicit_false_descendant_flag() -> None:
     assert runtime.calls == [("stop", ("agent", False))]
 
 
-def test_capabilities_query_is_in_openapi_and_uses_legacy_first_value() -> None:
+def test_capabilities_query_is_in_openapi_and_uses_declared_value() -> None:
     app, runtime, _context = _app()
     parameters = app.openapi()["paths"]["/api/capabilities"]["get"]["parameters"]
-    response = TestClient(app).get("/api/capabilities?agent=first&agent=second")
+    response = TestClient(app).get("/api/capabilities?agent=second")
 
     assert any(parameter["name"] == "agent" and parameter["in"] == "query" for parameter in parameters)
     assert response.status_code == 200
-    assert runtime.calls == [("capabilities", ("first",))]
+    assert runtime.calls == [("capabilities", ("second",))]
 
 
 def test_invalid_native_command_enum_returns_400_before_side_effect() -> None:
@@ -828,8 +828,8 @@ class AgentRouterTests(unittest.TestCase):
     def test_stop_preserves_explicit_false_descendant_flag(self) -> None:
         test_stop_preserves_explicit_false_descendant_flag()
 
-    def test_capabilities_query_is_in_openapi_and_uses_legacy_first_value(self) -> None:
-        test_capabilities_query_is_in_openapi_and_uses_legacy_first_value()
+    def test_capabilities_query_is_in_openapi_and_uses_declared_value(self) -> None:
+        test_capabilities_query_is_in_openapi_and_uses_declared_value()
 
     def test_invalid_native_command_enum_returns_400_before_side_effect(self) -> None:
         test_invalid_native_command_enum_returns_400_before_side_effect()

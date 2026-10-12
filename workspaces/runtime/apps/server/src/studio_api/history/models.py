@@ -10,10 +10,10 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import ConfigDict, Field, StrictBool, StrictInt, StrictStr, model_validator
+from pydantic import ConfigDict, Field, StrictBool, StrictStr, model_validator
 
 from studio_api.sync.models import AgentActivity
-from studio_api.models import ContractModel, JsonValue, ResponseModel
+from studio_api.models import ContractModel, JsonValue, ResponseModel, SafeInt, SafeQueryInt
 from studio_api.sync.models import (
     AgentEntityDto,
     ComplaintResponseDto,
@@ -36,7 +36,7 @@ class TranscriptAsset(ContractModel):
     name: StrictStr
     mime: StrictStr
     image: StrictBool
-    size: int
+    size: SafeInt
     hash: StrictStr
     created: float
 
@@ -122,8 +122,8 @@ class TranscriptMessageRecord(TranscriptRecord):
 class TranscriptContextUsage(ContractModel):
     """Runtime token usage shape published by tokenUsage notifications."""
 
-    tokens: StrictInt | None = None
-    window: StrictInt | None = None
+    tokens: SafeInt | None = None
+    window: SafeInt | None = None
     at: float
 
 
@@ -133,7 +133,7 @@ class TranscriptAgent(ContractModel):
     activity: AgentActivity | None = None
     inFlight: StrictBool | None = None
     contextUsage: TranscriptContextUsage | None = None
-    compactions: int | None = None
+    compactions: SafeInt | None = None
     compactionsObservedOnly: StrictBool | None = None
 
 
@@ -185,7 +185,7 @@ class SearchResult(ContractModel):
 class SearchResponse(ResponseModel):
     results: list[SearchResult]
     query: StrictStr
-    limit: int
+    limit: SafeInt
 
 
 class SearchItemResponse(TranscriptRecord, ResponseModel):
@@ -205,7 +205,7 @@ class SearchItemResponse(TranscriptRecord, ResponseModel):
     text: StrictStr
     room: StrictStr | None = None
     sender: StrictStr | None = None
-    seq: int | None = None
+    seq: SafeInt | None = None
     deliveries: StrictStr | None = None
     name: StrictStr | None = None
     status: StrictStr | None = None
@@ -227,7 +227,7 @@ class SearchItemResponse(TranscriptRecord, ResponseModel):
     description: StrictStr | None = None
     owner: StrictStr | None = None
     dependencies: list[StrictStr] | None = None
-    version: int | None = None
+    version: SafeInt | None = None
     results: list[WorkResultDto] | None = None
     decisions: list[WorkDecisionDto] | None = None
     createdBy: StrictStr | None = None
@@ -265,14 +265,14 @@ class CheckpointSummary(ContractModel):
     created: float
     cwd: StrictStr | None = None
     historyParent: StrictStr | None = None
-    historyBoundary: int | None = None
+    historyBoundary: SafeInt | None = None
     # Known legacy fields from CheckpointRecord remain typed even though the
     # current census contains no rows with these keys.
     path: StrictStr | None = None
     message: StrictStr | None = None
     source: StrictStr | None = None
     worktree: StrictStr | None = None
-    revision: int | None = None
+    revision: SafeInt | None = None
     error: StrictStr | None = None
     data: dict[str, JsonValue] | None = None
     automatic: StrictBool | None = None
@@ -320,7 +320,7 @@ class TranscriptQuery(ContractModel):
     before: StrictStr | None = None
     around: StrictStr | None = None
     after: StrictStr | None = None
-    limit: int | None = Field(default=None, strict=False)
+    limit: SafeQueryInt | None = None
 
 
 class TranscriptItemQuery(ContractModel):
@@ -331,12 +331,12 @@ class TranscriptItemQuery(ContractModel):
 class TranscriptSearchQuery(ContractModel):
     id: StrictStr | None = None
     q: StrictStr | None = None
-    limit: int | None = Field(default=None, strict=False)
+    limit: SafeQueryInt | None = None
 
 
 class SearchQuery(ContractModel):
-    q: StrictStr | None = None
-    limit: int | None = Field(default=None, strict=False)
+    q: str = Field(min_length=1, max_length=500)
+    limit: SafeQueryInt | None = None
 
 
 class CheckpointsQuery(ContractModel):
@@ -347,15 +347,8 @@ class BranchRequest(ContractModel):
     agent: StrictStr
     message_id: StrictStr
     id: StrictStr
-    before: StrictBool | None = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def before_must_be_boolean_when_supplied(cls, value: object) -> object:
-        if isinstance(value, dict) and "before" in value and type(value["before"]) is not bool:
-            raise ValueError("before must be a boolean")
-        return value
-
+    # Missing means the legacy default; an explicit JSON null is not boolean.
+    before: StrictBool = False
 
 class CheckpointCaptureRequest(ContractModel):
     agent: StrictStr

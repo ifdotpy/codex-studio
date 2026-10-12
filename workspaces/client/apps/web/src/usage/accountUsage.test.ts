@@ -51,9 +51,7 @@ describe("account limits cache", () => {
       readError: {
         message: "Provider request failed",
         status: 503,
-        details: {
-          error: { message: "Provider request failed", code: "overloaded" },
-        },
+        location: ["query", "account_key"],
       },
     };
     cacheAccountLimits(failed);

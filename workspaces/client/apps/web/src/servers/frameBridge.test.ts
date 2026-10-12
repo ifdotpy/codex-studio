@@ -27,6 +27,7 @@ vi.mock("../sync/resourceEvents", () => ({
 
 import { useServerFrame } from "./frameBridge";
 import * as sidebarRpc from "./sidebarRpc";
+import { ApiError } from "../api";
 import { preferenceEvent } from "../sync/uiPreferenceMerge";
 import { writePreferenceEdit } from "../sync/uiPreferenceStore";
 import { defaultStudioPreferences } from "../studioPreferences";
@@ -300,6 +301,80 @@ it("executes sidebar requests only from the bound parent and replies with the sa
       serverId: "remote",
       correlation: "exact-request",
       result: { ok: true },
+    },
+    "https://parent.example",
+  );
+});
+
+it("forwards typed operational diagnostics and only documented validation details", async () => {
+  const execute = vi.spyOn(sidebarRpc, "executeSidebarRequest");
+  mount();
+  const request = {
+    kind: "studio-sidebar-request",
+    serverId: "remote",
+    correlation: "typed-error",
+    value: { action: "refresh" },
+  };
+  execute.mockRejectedValueOnce(
+    new ApiError("Conflict", 409, {
+      error: "Conflict",
+      code: "request_conflict",
+      metadata: { attempt: 2 },
+      outcome: "not_applied",
+      catalogPending: true,
+      protocolVersion: 3,
+      supportedVersions: [2, 3],
+      extra: "must not cross the frame boundary",
+    }),
+  );
+  message(request);
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(surface.parent.postMessage).toHaveBeenLastCalledWith(
+    {
+      kind: "studio-sidebar-result",
+      serverId: "remote",
+      correlation: "typed-error",
+      result: undefined,
+      error: {
+        message: "Conflict",
+        status: 409,
+        code: "request_conflict",
+        metadata: { attempt: 2 },
+        outcome: "not_applied",
+        catalogPending: true,
+        protocolVersion: 3,
+        supportedVersions: [2, 3],
+      },
+    },
+    "https://parent.example",
+  );
+
+  execute.mockRejectedValueOnce(
+    new ApiError(
+      "Invalid request",
+      422,
+      {
+        error: "Invalid request",
+        location: ["body", "name"],
+      },
+      ["body", "name"],
+    ),
+  );
+  message({ ...request, correlation: "validation-error" });
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(surface.parent.postMessage).toHaveBeenLastCalledWith(
+    {
+      kind: "studio-sidebar-result",
+      serverId: "remote",
+      correlation: "validation-error",
+      result: undefined,
+      error: {
+        message: "Invalid request",
+        status: 422,
+        location: ["body", "name"],
+      },
     },
     "https://parent.example",
   );

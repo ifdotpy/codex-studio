@@ -2,8 +2,8 @@ import {
   parseStudioPreferences,
   studioPreferencesStorageKey,
 } from "../studioPreferences";
-import { get, errorText, ApiError } from "../api";
-import { executeSidebarRequest } from "./sidebarRpc";
+import { get, errorText } from "../api";
+import { executeSidebarRequest, serializeSidebarError } from "./sidebarRpc";
 import { desktopAlerts } from "../desktop/desktopAlerts";
 import { useEffect, useRef } from "react";
 import { serverViewId, serverParentOrigin } from "./environment";
@@ -54,10 +54,7 @@ export function useServerFrame(
               ...(failure
                 ? {
                     error: {
-                      message: errorText(failure),
-                      ...(failure instanceof ApiError
-                        ? { status: failure.status, payload: failure.details }
-                        : {}),
+                      ...serializeSidebarError(failure),
                     },
                   }
                 : {}),

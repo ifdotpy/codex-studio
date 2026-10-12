@@ -89,7 +89,8 @@ def supervisor_health() -> dict[str, JsonValue]:
         "recovery": {"degraded": False, "fallbackReady": False, "blocked": None},
         "handles": [{
             "id": "native:fixture", "pid": 10, "signature": "fixture-signature",
-            "startTime": "fixture-start", "sequence": 2, "acknowledged": 1,
+            "startTime": "fixture-start", "jobIdentity": None,
+            "sequence": 2, "acknowledged": 1,
             "bufferedBytes": 64, "backpressure": False, "stdoutReaderAlive": True,
             "stdoutReaderError": None, "persistenceErrors": {"stdout": "OSError: fixture"},
         }],
@@ -116,7 +117,7 @@ class SystemApiTests(unittest.TestCase):
         (self.root / ".private").mkdir()
         (self.root / "plain-file").write_text("fixture", encoding="utf-8")
 
-        response = self.client.get(f"/api/directories?path=&path={self.root}&path=/does/not/exist")
+        response = self.client.get(f"/api/directories?path={self.root}")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {
@@ -180,7 +181,7 @@ class SystemApiTests(unittest.TestCase):
             self.context.canvas.runtime = runtime
             native.return_value = native_status
             self.context.remote.origin = lambda: None
-            response = self.client.get("/api/desktop?account_key=&account_key=fixture-account")
+            response = self.client.get("/api/desktop?account_key=fixture-account")
 
         self.assertEqual(response.status_code, 200)
         body = response.json()

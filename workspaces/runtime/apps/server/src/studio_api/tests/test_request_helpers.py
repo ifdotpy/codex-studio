@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import unittest
 
-from starlette.requests import Request
 from pydantic import Field
 
 from studio_api.models import ContractModel
-from studio_api.request_helpers import body_data, first_nonempty_query
+from studio_api.request_helpers import body_data
 
 
 class _AliasedBody(ContractModel):
@@ -26,9 +25,3 @@ class RequestHelperTests(unittest.TestCase):
             {"requestId": "stable", "optional": None},
         )
         self.assertNotIn("optional", body_data(_AliasedBody.model_validate({"requestId": "stable"})))
-
-    def test_first_nonempty_query_preserves_order_and_default(self) -> None:
-        request = Request({"type": "http", "query_string": b"value=&value=first&value=second"})
-
-        self.assertEqual(first_nonempty_query(request, "value"), "first")
-        self.assertEqual(first_nonempty_query(request, "missing", "fallback"), "fallback")

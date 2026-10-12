@@ -166,8 +166,7 @@ def create_router(context: ApiContext) -> APIRouter:
             except (OSError, RuntimeError, ValueError) as error:
                 supervisor_status = {"error": str(error)[:300]}
 
-        account_keys = request.query_params.getlist("account_key")
-        browser_account = next((value for value in account_keys if value), "default")
+        browser_account = query.account_key or "default"
         runtime = canvas.runtime
         provider_versions = (
             {"checkedAt": None, "providers": [], "warnings": []}
@@ -267,8 +266,7 @@ def create_router(context: ApiContext) -> APIRouter:
                 if result["outcome"] != "applied":
                     raise HTTPException(status_code=503, detail=result.get("error") or "The server is unavailable")
                 return context.send(request, {key: result["value"][key] for key in ("path", "parent", "directories")})
-        paths = request.query_params.getlist("path")
-        raw_path = next((value for value in paths if value), os.getcwd())
+        raw_path = query.path or os.getcwd()
         directory = Path(raw_path).expanduser().resolve()
         if not directory.is_dir():
             raise HTTPException(status_code=400, detail="This directory is unavailable")

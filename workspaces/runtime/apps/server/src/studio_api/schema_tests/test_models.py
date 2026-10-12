@@ -114,13 +114,13 @@ class ModelContractTests(unittest.TestCase):
             {"_syncEntities": [], "_syncEntitiesAfter": 8},
         )
 
-    def test_error_response_keeps_documented_metadata(self) -> None:
+    def test_error_response_uses_short_location_envelope(self) -> None:
         error = ErrorResponse.model_validate(
             {
                 "error": "Invalid field",
                 "outcome": "not_applied",
                 "code": "invalid",
-                "details": {"field": "id"},
+                "location": ["body", "id"],
             }
         )
         self.assertEqual(
@@ -129,7 +129,7 @@ class ModelContractTests(unittest.TestCase):
                 "error": "Invalid field",
                 "outcome": "not_applied",
                 "code": "invalid",
-                "details": {"field": "id"},
+                "location": ["body", "id"],
             },
         )
 

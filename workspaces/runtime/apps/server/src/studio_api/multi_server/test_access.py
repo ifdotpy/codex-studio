@@ -106,7 +106,7 @@ class AccessTests(unittest.TestCase):
         self.app = create_app(self.context)
 
         @self.app.get("/api/probe")
-        async def read_probe() -> JSONResponse:
+        async def read_probe(a: str | None = None, b: str | None = None) -> JSONResponse:
             return JSONResponse({"ok": True})
 
         @self.app.post("/api/probe")
@@ -157,7 +157,7 @@ class AccessTests(unittest.TestCase):
         self.assertEqual(service.identity()["label"], "Newer")
         for label in ("", " ", "outer ", " leading", "x" * 81, "line\nname", "hidden\u202ename", "tab\tname", "null\x00name", "nonbreaking\u00a0space"):
             reply = self.client.post("/api/multi-server", json={**body, "label": label, "requestId": secrets.token_hex(8)}, headers=headers)
-            self.assertIn(reply.status_code, (400, 422), reply.text)
+            self.assertEqual(reply.status_code, 400, reply.text)
         self.assertEqual(self.client.post("/api/multi-server", json={**body, "requestId": "no-token"}).status_code, 403)
         with self.runtime.read_db() as db:
             self.assertEqual(db.execute("SELECT count(*) FROM runtime_access_audit WHERE action='name'").fetchone()[0], 2)
@@ -237,7 +237,7 @@ class AccessTests(unittest.TestCase):
         self.assertEqual(replay.json()["settings"]["aliases"]["mbp"], "TOP")
         for alias in ["", "ABCD", "lower", "A1", stored_alias, "DES"]:
             reply = self.client.post("/api/multi-server", json={**body, "alias": alias, "requestId": "invalid-" + alias}, headers=headers)
-            self.assertIn(reply.status_code, [400, 409, 422], reply.text)
+            self.assertIn(reply.status_code, [400, 409], reply.text)
         local = self.client.post("/api/multi-server", json={**body, "serverId": "local", "alias": "SYS", "requestId": "alias-local"}, headers=headers)
         self.assertEqual(local.status_code, 200, local.text)
         self.assertEqual(local.json()["settings"]["aliases"]["local"], "SYS")

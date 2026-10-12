@@ -105,9 +105,8 @@ test("Account settings errors", async () => {
     let limitsRecovered = false;
     let limitsReads = 0;
     const limitsFailureBody = {
-      error: failure,
-      requestId: "limits-request",
-      retryable: true,
+      error: failure.message,
+      location: ["query", "account_key"],
     };
     await page.route("**/api/**", (route) => {
       const pathname = new URL(route.request().url()).pathname;
@@ -237,7 +236,7 @@ test("Account settings errors", async () => {
       );
       assert.equal(httpDiagnostic.status, 503);
       assert.equal(httpDiagnostic.message, failure.message);
-      assert.deepEqual(httpDiagnostic.details, limitsFailureBody);
+      assert.deepEqual(httpDiagnostic.location, limitsFailureBody.location);
       assert.equal(await page.locator("[data-shell]").count(), 1);
       limitsHttpFailure = false;
       limitsRecovered = true;

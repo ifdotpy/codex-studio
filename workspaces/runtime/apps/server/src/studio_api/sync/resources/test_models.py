@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import unittest
 import math
+from typing import cast
 
 from pydantic import ValidationError
 
+from studio_api.models import JsonValue
+from studio_api.schema import openapi_document
 from studio_api.sync.resources.models import (
     EntityChangeBatch,
     MAX_ENTITY_CHANGE_BYTES,
@@ -186,9 +189,26 @@ class ResourceContractTests(unittest.TestCase):
                     **base,
                     "rates": {"agent-a": {**base["rates"]["agent-a"], "rate": invalid}},
                 })
-        schema = ResourceTokenRatesEvent.model_json_schema()
-        rate_schema = schema["$defs"]["TokenRateValue"]["properties"]["rate"]
-        self.assertTrue(all("minimum" in option and option["minimum"] == 0 for option in rate_schema["anyOf"]))
+        document = cast(dict[str, JsonValue], openapi_document())
+        components = cast(dict[str, JsonValue], document["components"])
+        schemas = cast(dict[str, JsonValue], components["schemas"])
+        token_rate = cast(dict[str, JsonValue], schemas["TokenRateValue"])
+        properties = cast(dict[str, JsonValue], token_rate["properties"])
+        rate_schema = cast(dict[str, JsonValue], properties["rate"])
+        branches = cast(list[JsonValue], rate_schema["anyOf"])
+        integer_schema = next(
+            cast(dict[str, JsonValue], option)
+            for option in branches
+            if isinstance(option, dict) and option.get("type") == "integer"
+        )
+        number_schema = next(
+            cast(dict[str, JsonValue], option)
+            for option in branches
+            if isinstance(option, dict) and option.get("type") == "number"
+        )
+        self.assertEqual(integer_schema["minimum"], 0)
+        self.assertEqual(integer_schema["maximum"], 9_007_199_254_740_991)
+        self.assertEqual(number_schema["minimum"], 0)
 
 
 if __name__ == "__main__":

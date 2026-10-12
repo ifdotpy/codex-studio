@@ -213,7 +213,7 @@ export function useMessageQueue(p: {
     } catch (error) {
       if (
         error instanceof ApiError &&
-        [400, 401, 403, 404, 409, 422].includes(error.status)
+        [400, 401, 403, 404, 409].includes(error.status)
       ) {
         await clearRequest(request);
       }

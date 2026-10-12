@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import time
 from types import UnionType
 from typing import Annotated, Any, Callable, Literal, Union, cast, get_args, get_origin, get_type_hints
 from typing_extensions import NotRequired, Required, TypedDict, TypeAliasType
 
-from pydantic import ConfigDict, Field, RootModel, StrictBool, StrictFloat, StrictInt, StrictStr, create_model, model_validator
+from pydantic import ConfigDict, Field, RootModel, StrictBool, StrictFloat, StrictStr, create_model, model_validator
 
 from codex_records import (
     AgentRecord as AgentRecordContract,
@@ -19,12 +20,18 @@ from codex_records import (
     RuleRecord as RuleRecordContract,
     ToolRequestRecord as ToolRequestRecordContract,
     WorkViewRecord as WorkViewRecordContract,
-    WorkArchiveIntentRecord,
-    WorkArchiveRecord,
     WorkDecisionRecord,
     WorkResultRecord,
 )
-from studio_api.models import ContractModel, JsonValue, ResponseModel
+from studio_api.models import (
+    MAX_SAFE_INTEGER,
+    ContractModel,
+    JsonValue,
+    ResponseModel,
+    SafeInt,
+    SafeQueryInt,
+    SignedSafeInt,
+)
 from studio_api.history.models import CheckpointSummary, TranscriptAsset
 from studio_api.sync.models import (
     MonitorEntityDto,
@@ -59,8 +66,18 @@ class WorkspaceQuery(AgentQuery):
 class TaskFeedQuery(AgentQuery):
     cursor: StrictStr | None = None
     before: StrictStr | None = None
-    limit: int = 100
+    limit: SafeQueryInt = Field(default=100, ge=0, le=MAX_SAFE_INTEGER)
     timing: Literal["0", "1"] = "0"
+
+
+class TaskFeedCursor(ContractModel):
+    id: StrictStr
+    updated: SafeInt | StrictFloat
+
+
+class TaskFeedBeforeCursor(ContractModel):
+    id: StrictStr
+    created: SafeInt | StrictFloat
 
 
 class TaskIdQuery(ContractModel):
@@ -69,9 +86,9 @@ class TaskIdQuery(ContractModel):
 
 class AgentChatQuery(ContractModel):
     room: StrictStr = ""
-    before: int | None = None
-    after: int | None = None
-    limit: int = 100
+    before: SafeQueryInt | None = None
+    after: SafeQueryInt | None = None
+    limit: SafeQueryInt = Field(default=100, ge=0, le=MAX_SAFE_INTEGER)
 
 
 class ReceiptQuery(AgentQuery):
@@ -103,7 +120,7 @@ class OperationBody(ContractModel):
 class WorkBody(OperationBody):
     action: Literal["list", "create", "update", "claim", "submit", "cancel", "accept", "reject"]
     task_id: StrictStr | None = None
-    version: StrictInt | None = None
+    version: SafeInt | None = None
     title: StrictStr | None = Field(default=None, max_length=160)
     description: StrictStr | None = Field(default=None, max_length=64000)
     owner: StrictStr | None = None
@@ -117,6 +134,7 @@ class WorkBody(OperationBody):
 
 
 class QueueCancelBody(OperationBody):
+    id: StrictStr | None = None
     action: Literal["cancel"]
     request_id: StrictStr | None = Field(default=None, max_length=200)
     message_id: StrictStr | None = None
@@ -176,12 +194,12 @@ QueueBody = Annotated[
 
 class PlanBody(OperationBody):
     text: StrictStr
-    version: StrictInt
+    version: SafeInt
 
 
 class AnnotationBody(OperationBody):
     path: StrictStr
-    line: StrictInt
+    line: SafeInt
     text: StrictStr
     turnId: StrictStr | None = None
 
@@ -191,7 +209,7 @@ class OrganizationBody(ContractModel):
     read_state: "ReadStateBody | None" = None
     project_folder: StrictStr | None = None
     project_path: StrictStr | None = None
-    expected_revision: StrictInt | None = None
+    expected_revision: SafeInt | None = None
     expected_folder: StrictStr | None = None
     pinned: StrictBool | None = None
     archived: StrictBool | None = None
@@ -202,7 +220,7 @@ class ReadStateBody(ContractModel):
     thread_id: StrictStr
     turn_id: StrictStr
     read: StrictBool
-    expected_revision: StrictInt
+    expected_revision: SafeInt
 
 
 class MessageBody(ContractModel):
@@ -261,7 +279,7 @@ class ComplaintBody(ContractModel):
     text: StrictStr = Field(min_length=1, max_length=12000)
     complaint_id: StrictStr | None = None
     status: Literal["in_progress", "resolved", "declined"] | None = None
-    version: StrictInt | None = None
+    version: SafeInt | None = None
 
 
 class ProfileBody(ContractModel):
@@ -281,66 +299,98 @@ class RuleBody(ContractModel):
     isNew: StrictBool | None = None
     id: StrictStr | None = None
     rootId: StrictStr | None = None
-    epoch: StrictInt | None = None
+    epoch: SafeInt | None = None
     name: StrictStr | None = Field(default=None, max_length=120)
     kind: Literal["interval", "once", "file", "event", "low_workers"] = "interval"
-    intervalSeconds: StrictInt = Field(default=60, ge=10, le=31536000)
-    stallTimeoutSeconds: StrictInt = Field(default=1800, ge=0, le=31536000)
-    stall_timeout_seconds: StrictInt | None = Field(default=None, ge=0, le=31536000)
-    at: StrictInt | StrictFloat | None = None
-    nextAt: StrictInt | StrictFloat | None = None
+    intervalSeconds: SafeInt = Field(default=60, ge=10, le=31536000)
+    stallTimeoutSeconds: SafeInt = Field(default=1800, ge=0, le=31536000)
+    stall_timeout_seconds: SafeInt | None = Field(default=None, ge=0, le=31536000)
+    at: SafeInt | StrictFloat | None = None
+    nextAt: SafeInt | StrictFloat | None = None
     event: Literal["worker_completed", "monitor_exit", "work_review", "complaint"] = "worker_completed"
     command: StrictStr = Field(default="", max_length=12000)
     text: StrictStr = Field(default="", max_length=12000)
     path: StrictStr | None = Field(default=None, max_length=4096)
     livenessCommand: StrictStr = Field(default="", max_length=12000)
-    minimumWorkers: StrictInt = Field(default=8, ge=1, le=255)
-    durationMinutes: StrictInt = Field(default=30, ge=1, le=525600)
+    minimumWorkers: SafeInt = Field(default=8, ge=1, le=255)
+    durationMinutes: SafeInt = Field(default=30, ge=1, le=525600)
     status: Literal["active", "paused"] | None = None
-    created: StrictInt | StrictFloat | None = None
+    created: SafeInt | StrictFloat | None = None
     inFlight: StrictBool | None = None
-    checks: StrictInt | None = None
-    wakes: StrictInt | None = None
-    fileActivityAt: StrictInt | StrictFloat | None = None
-    fileGeneration: StrictInt | None = None
-    stallWakeGeneration: StrictInt | None = None
-    fingerprint: list[StrictInt] | None = None
+    checks: SafeInt | None = None
+    wakes: SafeInt | None = None
+    fileActivityAt: SafeInt | StrictFloat | None = None
+    fileGeneration: SafeInt | None = None
+    stallWakeGeneration: SafeInt | None = None
+    fingerprint: list[SafeInt] | None = None
     error: StrictStr | None = None
-    lowSince: StrictInt | StrictFloat | None = None
+
+    @model_validator(mode="after")
+    def validate_save_kind(self) -> RuleBody:
+        if self.action != "save":
+            return self
+        if self.kind == "low_workers" and self.command:
+            raise ValueError("A low-worker alert does not run a command")
+        if self.kind == "file" and not self.path:
+            raise ValueError("A file rule requires a path")
+        if self.at is not None and not time.time() - 1 <= self.at <= time.time() + 31_536_000:
+            raise ValueError("Choose a date within the next year")
+        return self
+    lowSince: SafeInt | StrictFloat | None = None
     alerted: StrictBool | None = None
-    lastAt: StrictInt | StrictFloat | None = None
+    lastAt: SafeInt | StrictFloat | None = None
     lastEvent: StrictStr | None = None
     eventText: StrictStr | None = None
     stallProbe: StrictBool | None = None
     stallEventKey: StrictStr | None = None
     stallText: StrictStr | None = None
-    lastStallFinished: StrictInt | StrictFloat | None = None
-    lastStallExitCode: StrictInt | None = None
+    lastStallFinished: SafeInt | StrictFloat | None = None
+    lastStallExitCode: SignedSafeInt | None = None
     lastStallError: StrictStr | None = None
-    lastExitCode: StrictInt | None = None
+    lastExitCode: SignedSafeInt | None = None
     lastOutput: StrictStr | None = None
-    lastFinished: StrictInt | StrictFloat | None = None
-    activeWorkers: StrictInt | None = None
+    lastFinished: SafeInt | StrictFloat | None = None
+    activeWorkers: SafeInt | None = None
 
 
 class PanelLayoutBody(ContractModel):
     agent: StrictStr
     client: StrictStr
-    sequence: StrictInt
+    sequence: SafeInt
     renderer: Literal["progress-markdown-v2", "progress-markdown-v1"]
     revision: StrictStr
-    width: StrictInt | StrictFloat
-    height: StrictInt | StrictFloat
-    contentWidth: StrictInt | StrictFloat
-    contentHeight: StrictInt | StrictFloat
+    width: SafeInt | StrictFloat
+    height: SafeInt | StrictFloat
+    contentWidth: SafeInt | StrictFloat
+    contentHeight: SafeInt | StrictFloat
     fits: StrictBool
     reason: Literal["overflow", "unsupported"] | None
-    overflowX: StrictInt | StrictFloat | None = None
-    overflowY: StrictInt | StrictFloat | None = None
-    totalLines: StrictInt | None = None
-    visibleLines: StrictInt | None = None
+    overflowX: SafeInt | StrictFloat | None = None
+    overflowY: SafeInt | StrictFloat | None = None
+    totalLines: SafeInt | None = None
+    visibleLines: SafeInt | None = None
     lastVisibleLine: StrictStr | None = None
     lastVisibleHeading: StrictStr | None = None
+
+
+class WorkArchiveRecord(TypedDict, total=False, extra_items=JsonValue):  # type: ignore[call-arg]
+    reason: StrictStr
+    status: StrictStr
+    worktree: JsonObjectResponse
+
+
+class WorkArchiveIntentRecord(TypedDict, extra_items=JsonValue):  # type: ignore[call-arg]
+    id: Required[StrictStr]
+    status: Required[Literal["pending", "complete", "terminal"]]
+    owner: NotRequired[StrictStr | None]
+    attempts: NotRequired[SafeInt]
+    created: NotRequired[StrictFloat]
+    schedulerVersion: NotRequired[SafeInt]
+    previousId: NotRequired[StrictStr]
+    nextAttemptAt: NotRequired[StrictFloat]
+    lastOutcome: NotRequired[WorkArchiveRecord]
+    updated: NotRequired[StrictFloat]
+    outcome: NotRequired[WorkArchiveRecord]
 
 
 class WorkItem(ResponseModel):
@@ -356,9 +406,9 @@ class WorkItem(ResponseModel):
     owner: StrictStr | None = None
     dependencies: list[StrictStr] = Field(default_factory=list)
     status: Literal["ready", "blocked", "running", "review", "accepted", "cancelled"]
-    created: StrictInt | StrictFloat
-    updated: StrictInt | StrictFloat
-    version: StrictInt
+    created: SafeInt | StrictFloat
+    updated: SafeInt | StrictFloat
+    version: SafeInt
     results: list[WorkResultRecord] = Field(default_factory=list)
     decisions: list[WorkDecisionRecord] = Field(default_factory=list)
     createdBy: StrictStr | None = None
@@ -381,11 +431,11 @@ class QueueItem(ContractModel):
     text: StrictStr
     kind: Literal["user", "followup"]
     status: Literal["pending"]
-    created: StrictInt | StrictFloat
+    created: SafeInt | StrictFloat
     assets: list[TranscriptAsset] = Field(default_factory=list)
     delivery: Literal["queue", "steer", "after_tool", "after_turn"] = "queue"
     requestedDelivery: Literal["queue", "steer", "after_tool", "after_turn"] = "queue"
-    acceptedAt: StrictInt | StrictFloat | None = None
+    acceptedAt: SafeInt | StrictFloat | None = None
 
 
 class QueueCapabilities(ContractModel):
@@ -419,8 +469,8 @@ class PlanView(ResponseModel):
     id: StrictStr
     rootId: StrictStr
     text: StrictStr
-    version: StrictInt
-    updated: StrictInt | StrictFloat | None
+    version: SafeInt
+    updated: SafeInt | StrictFloat | None
     steps: list[JsonValue] = Field(default_factory=list)
     native: NativePlanPayload | None = None
 
@@ -443,12 +493,12 @@ class AgentRequest(ResponseModel):
     agent: StrictStr
     method: Literal["agent/asyncQuestion", "item/tool/requestUserInput", "mcpServer/elicitation/request"]
     status: Literal["pending", "blocked", "answered", "answering", "uncertain", "expired", "declined", "failed"]
-    createdAt: StrictInt | StrictFloat | None = None
-    answeredAt: StrictInt | StrictFloat | None = None
+    createdAt: SafeInt | StrictFloat | None = None
+    answeredAt: SafeInt | StrictFloat | None = None
     answeredBy: StrictStr | None = None
     decision: Literal["answer", "accept", "decline", "cancel"] | None = None
     deferred: StrictBool | None = None
-    deferredAt: StrictInt | StrictFloat | None = None
+    deferredAt: SafeInt | StrictFloat | None = None
     deferredBy: StrictStr | None = None
     questions: list[QuestionEntry] = Field(default_factory=list)
     answerHistory: list[AnswerHistoryEntry] | None = None
@@ -473,7 +523,7 @@ class MessageRecord(ContractModel):
     room: StrictStr
     author: StrictStr
     text: StrictStr
-    at: StrictInt | StrictFloat
+    at: SafeInt | StrictFloat
     deliveries: dict[StrictStr, StrictStr]
     status: Literal["queued", "delivered", "failed", "uncertain"] | None = None
     error: StrictStr | None = None
@@ -487,7 +537,7 @@ class MessageReceipt(ResponseModel):
     room: StrictStr | None = None
     author: StrictStr | None = None
     text: StrictStr | None = None
-    at: StrictInt | StrictFloat | None = None
+    at: SafeInt | StrictFloat | None = None
     deliveries: dict[StrictStr, StrictStr] | None = None
     agent: StrictStr | None = None
     message: StrictStr | None = None
@@ -509,21 +559,21 @@ class ReceiptList(ResponseModel):
 
 
 class ChatMessage(ContractModel):
-    seq: StrictInt
+    seq: SafeInt
     id: StrictStr
     room: StrictStr
     sender: StrictStr
     senderName: StrictStr
     text: StrictStr
-    created: StrictInt | StrictFloat
+    created: SafeInt | StrictFloat
     deliveries: dict[StrictStr, StrictStr]
 
 
 class ChatRead(ResponseModel):
     room: "RoomDetailDto"
     messages: list[ChatMessage]
-    nextBefore: StrictInt | None = None
-    nextAfter: StrictInt | None = None
+    nextBefore: SafeInt | None = None
+    nextAfter: SafeInt | None = None
 
 
 class ReadStateResponse(ResponseModel):
@@ -531,7 +581,7 @@ class ReadStateResponse(ResponseModel):
     threadId: StrictStr
     turnId: StrictStr
     read: StrictBool
-    revision: StrictInt
+    revision: SafeInt
 
 
 class MessageHistory(RootModel[list[MessageRecord]]):
@@ -549,6 +599,10 @@ _RECORD_RESPONSE_MODELS: dict[tuple[type[Any], frozenset[str]], Any] = {}
 
 
 def _response_annotation(annotation: object, name: str) -> Any:
+    if annotation is int:
+        # Plain record integers use the safe domain. Non-default integer domains
+        # stay explicit on the TypedDict field annotation itself.
+        return SafeInt
     if annotation == _JSON_OBJECT_CONTRACT:
         return JsonObjectResponse
     origin = get_origin(annotation)
@@ -559,6 +613,16 @@ def _response_annotation(annotation: object, name: str) -> Any:
         record = cast(type[Any], annotation)
         return _record_response_model(f"{record.__name__}Response", record)
     if origin is Annotated:
+        if any(
+            (
+                getattr(item, "json_schema_extra", {}).get("x-integer-domain")
+                or getattr(item, "json_schema_extra", {}).get("x-safe-integer")
+            )
+            for item in args[1:]
+            if isinstance(getattr(item, "json_schema_extra", None), dict)
+        ):
+            # Preserve an explicitly annotated integer domain on the record.
+            return annotation
         return Annotated[_response_annotation(args[0], name), *args[1:]]
     if origin in (Union, UnionType):
         return Union[tuple(_response_annotation(arg, name) for arg in args)]
@@ -589,7 +653,9 @@ def _record_response_model(
         origin = get_origin(annotation)
         if origin in (NotRequired, Required):
             annotation = get_args(annotation)[0]
-        annotation = _response_annotation(annotation, f"{name}{field_name.title()}")
+        annotation = _response_annotation(
+            annotation, f"{name}{field_name.title()}"
+        )
         default = ... if field_name in required or field_name in required_fields else None
         fields[field_name] = (annotation, default)
     create_response_model = cast(Callable[..., Any], create_model)
@@ -620,9 +686,9 @@ class AnnotationRecord(ContractModel):
     agent: StrictStr
     rootId: StrictStr
     path: StrictStr
-    line: StrictInt
+    line: SafeInt
     text: StrictStr
-    created: StrictInt | StrictFloat
+    created: SafeInt | StrictFloat
     turnId: StrictStr | None = None
 
 
@@ -671,26 +737,26 @@ class ComplaintDetailResponse(ResponseModel):
     title: StrictStr | None = None
     status: ComplaintStatus | None = None
     needsResponse: StrictBool | None = None
-    created: StrictInt | StrictFloat | None = None
-    readAt: StrictInt | StrictFloat | None = None
+    created: SafeInt | StrictFloat | None = None
+    readAt: SafeInt | StrictFloat | None = None
     leadStopped: StrictBool | None = None
     leadDeleted: StrictBool | None = None
     recipient: Literal["user", "lead"] | None = None
-    version: StrictInt
+    version: SafeInt
     text: StrictStr
     responses: list[ComplaintResponseDto]
-    updated: StrictInt | StrictFloat | None = None
+    updated: SafeInt | StrictFloat | None = None
 
 
 class TaskDetailResponse(TaskEntityDto, ResponseModel):
     agent: StrictStr
     kind: TaskKind
     status: TaskStatus
-    created: StrictInt | StrictFloat
+    created: SafeInt | StrictFloat
     type: StrictStr | None = None
     itemId: StrictStr | None = None
-    startedAtMs: StrictInt | StrictFloat | None = None
-    completedAtMs: StrictInt | StrictFloat | None = None
+    startedAtMs: SafeInt | StrictFloat | None = None
+    completedAtMs: SafeInt | StrictFloat | None = None
     server: StrictStr | None = None
     outputTruncated: StrictBool | None = None
     arguments: StrictStr | None = None
@@ -702,12 +768,12 @@ class WorkspaceTaskRecord(TaskEntityDto):
     agent: StrictStr
     kind: TaskKind
     status: TaskStatus
-    created: StrictInt | StrictFloat
+    created: SafeInt | StrictFloat
     itemId: StrictStr | None = None
     type: StrictStr | None = None
     server: StrictStr | None = None
-    startedAtMs: StrictInt | StrictFloat | None = None
-    completedAtMs: StrictInt | StrictFloat | None = None
+    startedAtMs: SafeInt | StrictFloat | None = None
+    completedAtMs: SafeInt | StrictFloat | None = None
     outputTruncated: StrictBool | None = None
 
 
@@ -823,7 +889,7 @@ class ChangesResponse(ResponseModel):
     error: StrictStr | None = None
     scope: Literal["chat"] | None = None
     turnId: StrictStr | None = None
-    reportedAt: StrictInt | StrictFloat | None = None
+    reportedAt: SafeInt | StrictFloat | None = None
 
 
 class ProgressPanel(ResponseModel):
@@ -833,18 +899,18 @@ class ProgressPanel(ResponseModel):
     markdown: StrictStr
     path: StrictStr
     revision: StrictStr | None
-    updated: StrictInt | StrictFloat | None
+    updated: SafeInt | StrictFloat | None
     exists: StrictBool
     error: StrictStr | None
 
 
 class TaskCursor(ContractModel):
-    updated: StrictInt | StrictFloat
+    updated: SafeInt | StrictFloat
     id: StrictStr
 
 
 class TaskHistoryCursor(ContractModel):
-    created: StrictInt | StrictFloat
+    created: SafeInt | StrictFloat
     id: StrictStr
 
 
@@ -874,41 +940,41 @@ class WorkspaceView(ResponseModel):
     rules: list[RuleRecord] | None = None
     inbox: list[WorkspaceInboxEntry] | None = None
     tasks: list[WorkspaceTaskRecord] | None = None
-    tasksHistoryLimit: StrictInt | None = None
+    tasksHistoryLimit: SafeInt | None = None
     monitors: list[MonitorEntityDto] | None = None
 
 
 class PanelLayoutReport(ContractModel):
     client: StrictStr
-    sequence: StrictInt
+    sequence: SafeInt
     renderer: StrictStr
     # Older layout feedback may include this redundant value. New reports do
     # not: their authoritative revision is stored on PanelLayoutResult.
     revision: StrictStr | None = None
     sha256: StrictStr | None = None
-    width: StrictInt | StrictFloat | None = None
-    height: StrictInt | StrictFloat | None = None
-    contentWidth: StrictInt | StrictFloat | None = None
-    contentHeight: StrictInt | StrictFloat | None = None
-    overflowX: StrictInt | StrictFloat | None = None
-    overflowY: StrictInt | StrictFloat | None = None
-    totalLines: StrictInt | None = None
-    visibleLines: StrictInt | None = None
+    width: SafeInt | StrictFloat | None = None
+    height: SafeInt | StrictFloat | None = None
+    contentWidth: SafeInt | StrictFloat | None = None
+    contentHeight: SafeInt | StrictFloat | None = None
+    overflowX: SafeInt | StrictFloat | None = None
+    overflowY: SafeInt | StrictFloat | None = None
+    totalLines: SafeInt | None = None
+    visibleLines: SafeInt | None = None
     lastVisibleLine: StrictStr | None = None
     lastVisibleHeading: StrictStr | None = None
     fits: StrictBool
     reason: Literal["overflow", "unsupported"] | None
-    measuredAt: StrictInt | StrictFloat | None = None
-    expiresAt: StrictInt | StrictFloat | None = None
+    measuredAt: SafeInt | StrictFloat | None = None
+    expiresAt: SafeInt | StrictFloat | None = None
 
 
 class PanelLayoutResult(ResponseModel):
-    version: StrictInt
+    version: SafeInt
     agent: StrictStr
     revision: StrictStr
     sha256: StrictStr
     status: Literal["fits", "does_not_fit", "unmeasured", "empty", "clipped"]
-    updatedAt: StrictInt | StrictFloat | None = None
+    updatedAt: SafeInt | StrictFloat | None = None
     reports: list[PanelLayoutReport]
 
 
@@ -917,9 +983,9 @@ class BrowserForward(ContractModel):
     server: StrictStr = Field(min_length=1, max_length=200)
     bridgeId: StrictStr = Field(pattern=r"^[0-9a-f]{32}$")
     host: Literal["127.0.0.1", "localhost", "::1"]
-    port: StrictInt = Field(ge=1024, le=65535)
+    port: SafeInt = Field(ge=1024, le=65535)
     path: StrictStr = Field(min_length=1, max_length=2048)
-    expiresAt: StrictInt | StrictFloat
+    expiresAt: SafeInt | StrictFloat
     token: StrictStr = Field(min_length=16, max_length=200)
 
 
