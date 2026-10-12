@@ -529,6 +529,29 @@ describe("paired server preference replication", () => {
     }
   });
 
+  it("skips a sequence-only state change already covered by the checkpoint", async () => {
+    const origin = "https://covered-sequence-change.invalid";
+    const server = backend(origin, {});
+    const stop = connectUiPreferences(origin, server.fetch, localStorage);
+    try {
+      await waitForBaseline(origin, server);
+      emitStateFrame(origin, {
+        protocol: 3,
+        workspaceId: origin,
+        epoch: "epoch-one",
+        reason: "change",
+        resources: [{ kind: "state" }],
+        resourceVersions: [
+          { revision: server.sequence, entitySequences: [server.sequence] },
+        ],
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(server.pullReads).toBe(1);
+    } finally {
+      stop();
+    }
+  });
+
   it("does not repeat a pull for a baseline covered by the in-flight response", async () => {
     vi.useFakeTimers();
     const server = backend("https://in-flight-baseline.invalid", {});

@@ -383,6 +383,19 @@ export function connectUiPreferences(
         }
         if (resource.kind !== "state") continue;
         const batch = version.entityChanges;
+        const hintedSequence = version.entitySequences?.length
+          ? Math.max(...version.entitySequences)
+          : batch?.through;
+        if (
+          !version.entitySequenceReset &&
+          hintedSequence !== undefined &&
+          cursor.canUseDurableCheckpoint &&
+          cursor.covers(hintedSequence) &&
+          (!batch ||
+            batch.after !== nextCursor ||
+            batch.through !== version.revision)
+        )
+          return;
         if (
           version.entitySequenceReset ||
           !batch ||
