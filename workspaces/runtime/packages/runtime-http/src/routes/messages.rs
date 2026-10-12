@@ -4,9 +4,8 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 use studio_runtime_services::coordination::{self, CoordinationError, PostMessage};
-use studio_runtime_store::CoordinationRepository;
 
 use super::extractors::{ApiJson, QueryParams};
 use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get, post};
@@ -80,25 +79,11 @@ async fn messages(
     let store = state.store.ok_or_else(ApiError::internal)?;
     let result = tokio::task::spawn_blocking(move || {
         let connection = store.read().map_err(|_| ApiError::internal())?;
-        let rows = CoordinationRepository::messages(&connection, &room).map_err(|_| invalid_stored("messages", &room))?;
-        let values = rows.into_iter().map(|row| {
-            if row.id.is_empty()
-                || row.room != room
-                || row.author.is_empty()
-                || !(1..=12_000).contains(&row.text.chars().count())
-                || !row.at.is_finite()
-                || !row
-                    .deliveries
-                    .as_object()
-                    .is_some_and(|map| map.values().all(Value::is_string))
-            {
-                return Err(invalid_stored("messages", &row.id));
-            }
-            let value = json!({"id":row.id,"room":row.room,"author":row.author,"text":row.text,"at":row.at,"deliveries":row.deliveries});
-            Ok(value)
-        }).collect::<Result<Vec<_>, ApiError>>()?;
-        generated_json::<Vec<crate::generated::MessageRecord>>(Value::Array(values))
-    }).await.map_err(|_| ApiError::internal())??;
+        let value = coordination::history(&connection, &room).map_err(coordination_error)?;
+        generated_json::<Vec<crate::generated::MessageRecord>>(value)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
     Ok(Json(result))
 }
 
