@@ -4,29 +4,24 @@
 //! validates the resulting document, and atomically persists it while holding
 //! the driver's mutex. Credential material is never retained in this module.
 
-use serde::Deserialize;
-use serde::Deserializer;
-use serde::de::{DeserializeSeed, MapAccess, Visitor};
-use serde::ser::{Serialize, SerializeMap, Serializer};
+use crate::account_policy::{RegistryOrder, decode_registry, encode_registry};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::env;
 use std::ffi::OsStr;
-use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
-const REGISTRY_SCHEMA: &str = include_str!("../../runtime-http/account-registry.schema.json");
 const AUTH_FILE_LIMIT: u64 = 1024 * 1024;
 const CLAUDE_OUTPUT_LIMIT: usize = 1024 * 1024;
 const CLAUDE_TIMEOUT: Duration = Duration::from_secs(8);
 const CLAUDE_BIN_OVERRIDE: &str = "STUDIO_CLAUDE_BIN";
-const AUTH_ERROR: &str = "Cannot read this account's authentication";
+const AUTH_ERROR: &str = "Cannot read this profile's authentication";
 const CHANGED_ERROR: &str =
     "This profile's account changed. Restore its original login or add a separate profile.";
 const UNVERIFIED_ERROR: &str =
@@ -48,9 +43,10 @@ pub enum AuthStatus {
     Ready,
     SignedOut,
     Error,
+    Unchanged,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct AuthMetadata {
     pub status: AuthStatus,
     pub account_id: Option<String>,
@@ -58,6 +54,7 @@ pub struct AuthMetadata {
     pub plan: Option<String>,
     pub credential_identity: Option<String>,
     pub error: Option<&'static str>,
+    pub error_kind: Option<&'static str>,
 }
 
 impl AuthMetadata {
@@ -69,19 +66,30 @@ impl AuthMetadata {
             plan: None,
             credential_identity: None,
             error: None,
+            error_kind: None,
         }
     }
 
-    fn error() -> Self {
+    fn error(kind: Option<&'static str>) -> Self {
         Self {
             status: AuthStatus::Error,
             error: Some(AUTH_ERROR),
+            error_kind: kind,
+            ..Self::signed_out()
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn unchanged(reason: &'static str) -> Self {
+        Self {
+            status: AuthStatus::Unchanged,
+            error_kind: Some(reason),
             ..Self::signed_out()
         }
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct AuthProfile {
     pub provider: String,
     pub home: PathBuf,
@@ -114,7 +122,7 @@ pub fn codex_auth_metadata(home: &Path) -> AuthMetadata {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return AuthMetadata::signed_out();
         }
-        Err(_) => return AuthMetadata::error(),
+        Err(_) => return AuthMetadata::error(None),
     };
     let auth = (|| -> Result<Value, ()> {
         if file.metadata().map_err(|_| ())?.len() > AUTH_FILE_LIMIT {
@@ -132,72 +140,110 @@ pub fn codex_auth_metadata(home: &Path) -> AuthMetadata {
         Ok(value)
     })();
     let Ok(auth) = auth else {
-        return AuthMetadata::error();
+        return AuthMetadata::error(None);
     };
-    codex_metadata_from_value(&auth)
+    codex_metadata_from_value(&auth).unwrap_or_else(|_| AuthMetadata::error(None))
 }
 
-fn codex_metadata_from_value(auth: &Value) -> AuthMetadata {
-    let tokens = auth.get("tokens").and_then(Value::as_object);
-    let token = tokens.and_then(|value| {
-        value
+fn codex_metadata_from_value(auth: &Value) -> Result<AuthMetadata, ()> {
+    let auth = auth.as_object().ok_or(())?;
+    let tokens = object_if_truthy(auth.get("tokens"))?;
+    let token = tokens.and_then(|tokens| {
+        tokens
             .get("id_token")
-            .and_then(nonempty_string)
-            .or_else(|| value.get("access_token").and_then(nonempty_string))
+            .filter(|value| python_truthy(value))
+            .or_else(|| {
+                tokens
+                    .get("access_token")
+                    .filter(|value| python_truthy(value))
+            })
     });
-    let claims = token
-        .as_deref()
-        .and_then(|value| value.split('.').nth(1))
-        .and_then(base64url_decode)
-        .and_then(|value| serde_json::from_slice::<Value>(&value).ok())
-        .unwrap_or(Value::Null);
-    let details = claims
-        .get("https://api.openai.com/auth")
-        .and_then(Value::as_object);
-    let profile = claims
-        .get("https://api.openai.com/profile")
-        .and_then(Value::as_object);
+    let claims = match token.and_then(Value::as_str) {
+        Some(token) => token
+            .split('.')
+            .nth(1)
+            .and_then(base64url_decode)
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .map(|value| value.as_object().cloned().ok_or(()))
+            .transpose()?
+            .unwrap_or_default(),
+        None => serde_json::Map::new(),
+    };
+    let details = object_if_truthy(claims.get("https://api.openai.com/auth"))?;
+    let profile = object_if_truthy(claims.get("https://api.openai.com/profile"))?;
     let account_id = tokens
-        .and_then(|value| value.get("account_id"))
-        .and_then(nonempty_string)
+        .and_then(|tokens| tokens.get("account_id"))
+        .filter(|value| python_truthy(value))
         .or_else(|| {
             details
-                .and_then(|value| value.get("chatgpt_account_id"))
-                .and_then(nonempty_string)
-        });
-    let email = claims.get("email").and_then(nonempty_string).or_else(|| {
-        profile
-            .and_then(|value| value.get("email"))
-            .and_then(nonempty_string)
-    });
+                .and_then(|details| details.get("chatgpt_account_id"))
+                .filter(|value| python_truthy(value))
+        })
+        .map(|value| value.as_str().map(str::to_owned).ok_or(()))
+        .transpose()?;
+    let email = claims
+        .get("email")
+        .filter(|value| python_truthy(value))
+        .or_else(|| {
+            profile
+                .and_then(|profile| profile.get("email"))
+                .filter(|value| python_truthy(value))
+        })
+        .map(|value| value.as_str().map(str::to_owned).ok_or(()))
+        .transpose()?;
     let api_key = auth
         .get("OPENAI_API_KEY")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty());
-    let is_ready = (account_id.is_some()
-        && tokens
-            .and_then(|value| value.get("access_token"))
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.is_empty()))
-        || api_key.is_some();
-    if !is_ready {
-        return AuthMetadata::signed_out();
+        .filter(|value| python_truthy(value));
+    if api_key.is_some_and(|value| value.as_str().is_none()) {
+        return Err(());
     }
+    let api_key = api_key.and_then(Value::as_str);
+    let ready = (account_id.as_ref().is_some_and(|value| !value.is_empty())
+        && tokens
+            .and_then(|tokens| tokens.get("access_token"))
+            .is_some_and(python_truthy))
+        || api_key.is_some();
     let credential_identity = account_id
         .as_ref()
+        .filter(|value| !value.is_empty())
         .map(|value| format!("chatgpt:{value}"))
         .or_else(|| api_key.map(|value| format!("api:{}", hex_sha256(value.as_bytes()))));
     let plan = details
-        .and_then(|value| value.get("chatgpt_plan_type"))
-        .and_then(nonempty_string)
+        .and_then(|details| details.get("chatgpt_plan_type"))
+        .filter(|value| python_truthy(value))
+        .map(|value| value.as_str().map(str::to_owned).ok_or(()))
+        .transpose()?
         .or_else(|| api_key.map(|_| "API key".to_owned()));
-    AuthMetadata {
-        status: AuthStatus::Ready,
+    Ok(AuthMetadata {
+        status: if ready {
+            AuthStatus::Ready
+        } else {
+            AuthStatus::SignedOut
+        },
         account_id,
         email,
         plan,
         credential_identity,
         error: None,
+        error_kind: None,
+    })
+}
+
+fn object_if_truthy(value: Option<&Value>) -> Result<Option<&serde_json::Map<String, Value>>, ()> {
+    match value.filter(|value| python_truthy(value)) {
+        None => Ok(None),
+        Some(value) => value.as_object().map(Some).ok_or(()),
+    }
+}
+
+fn python_truthy(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::Number(value) => value.as_f64().is_none_or(|number| number != 0.0),
+        Value::String(value) => !value.is_empty(),
+        Value::Array(value) => !value.is_empty(),
+        Value::Object(value) => !value.is_empty(),
     }
 }
 
@@ -205,11 +251,19 @@ struct ClaudeCliAuthReader;
 
 impl ProviderAuthReader for ClaudeCliAuthReader {
     fn read(&self, profile: &AuthProfile) -> AuthMetadata {
-        let environment = env::var(CLAUDE_BIN_OVERRIDE)
-            .ok()
-            .map(|value| BTreeMap::from([(CLAUDE_BIN_OVERRIDE.to_owned(), value)]))
-            .unwrap_or_default();
-        Self::read_with_environment(profile, &environment)
+        #[cfg(target_os = "macos")]
+        {
+            let _ = profile;
+            return AuthMetadata::unchanged("macos-passive-auth-unavailable");
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let environment = env::var(CLAUDE_BIN_OVERRIDE)
+                .ok()
+                .map(|value| BTreeMap::from([(CLAUDE_BIN_OVERRIDE.to_owned(), value)]))
+                .unwrap_or_default();
+            Self::read_with_environment(profile, &environment)
+        }
     }
 }
 
@@ -233,15 +287,18 @@ impl ClaudeCliAuthReader {
             .map(OsStr::new)
             .map(OsStr::to_os_string)
             .or_else(|| env::var_os("HOME"));
-        let binary = resolve_claude_binary(
+        let Some(binary) = resolve_claude_binary(
             configured_binary,
             environment.get(CLAUDE_BIN_OVERRIDE).map(String::as_str),
             path.as_deref(),
             home.as_deref(),
-        );
+        ) else {
+            return AuthMetadata::signed_out();
+        };
         let output = run_claude_status(&binary, options);
-        let Ok((stdout, succeeded)) = output else {
-            return AuthMetadata::error();
+        let (stdout, succeeded) = match output {
+            Ok(output) => output,
+            Err(kind) => return AuthMetadata::error(Some(kind)),
         };
         parse_claude_status(&stdout, succeeded)
     }
@@ -252,28 +309,32 @@ fn resolve_claude_binary(
     override_binary: Option<&str>,
     path: Option<&OsStr>,
     home: Option<&OsStr>,
-) -> String {
-    if let Some(binary) = configured
+) -> Option<String> {
+    let setting = configured
         .filter(|value| !value.is_empty())
-        .or_else(|| override_binary.filter(|value| !value.is_empty()))
-    {
-        return binary.to_owned();
+        .or_else(|| override_binary.filter(|value| !value.is_empty()));
+    if let Some(binary) = setting {
+        return find_executable(binary, path).map(|path| path.to_string_lossy().into_owned());
     }
-    if let Some(binary) = path.and_then(|path| {
-        env::split_paths(path)
-            .map(|directory| directory.join("claude"))
-            .find(|candidate| is_executable(candidate))
-    }) {
-        return binary.to_string_lossy().into_owned();
+    if let Some(binary) = find_executable("claude", path) {
+        return Some(binary.to_string_lossy().into_owned());
     }
-    if let Some(binary) = home
-        .map(PathBuf::from)
+    home.map(PathBuf::from)
         .map(|home| home.join(".local/bin/claude"))
         .filter(|candidate| is_executable(candidate))
-    {
-        return binary.to_string_lossy().into_owned();
+        .map(|binary| binary.to_string_lossy().into_owned())
+}
+
+fn find_executable(binary: &str, path: Option<&OsStr>) -> Option<PathBuf> {
+    let candidate = PathBuf::from(binary);
+    if candidate.components().count() > 1 || candidate.is_absolute() {
+        return is_executable(&candidate).then_some(candidate);
     }
-    "claude".to_owned()
+    path.and_then(|path| {
+        env::split_paths(path)
+            .map(|directory| directory.join(binary))
+            .find(|candidate| is_executable(candidate))
+    })
 }
 
 fn is_executable(path: &Path) -> bool {
@@ -294,7 +355,10 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
-fn run_claude_status(binary: &str, options: Option<&Value>) -> Result<(Vec<u8>, bool), ()> {
+fn run_claude_status(
+    binary: &str,
+    options: Option<&Value>,
+) -> Result<(Vec<u8>, bool), &'static str> {
     let mut command = Command::new(binary);
     command.args(["auth", "status", "--json"]);
     for name in [
@@ -324,8 +388,10 @@ fn run_claude_status(binary: &str, options: Option<&Value>) -> Result<(Vec<u8>, 
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|_| ())?;
-    let stdout = child.stdout.take().ok_or(())?;
+        .map_err(|_| "spawn")?;
+    let Some(stdout) = child.stdout.take() else {
+        return Err("spawn");
+    };
     let exceeded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let reader_exceeded = exceeded.clone();
@@ -344,9 +410,9 @@ fn run_claude_status(binary: &str, options: Option<&Value>) -> Result<(Vec<u8>, 
     let status = loop {
         if exceeded.load(std::sync::atomic::Ordering::Relaxed) {
             let _kill_result = child.kill();
-            break child.wait().map_err(|_| ())?;
+            break child.wait().map_err(|_| "spawn")?;
         }
-        if let Some(status) = child.try_wait().map_err(|_| ())? {
+        if let Some(status) = child.try_wait().map_err(|_| "spawn")? {
             break status;
         }
         if started.elapsed() >= CLAUDE_TIMEOUT {
@@ -354,30 +420,30 @@ fn run_claude_status(binary: &str, options: Option<&Value>) -> Result<(Vec<u8>, 
             let _wait_result = child.wait();
             // If a descendant inherited stdout, the reader may not reach EOF
             // even after the direct child is reaped. Detach it at the bound.
-            return Err(());
+            return Err("timeout");
         }
         std::thread::sleep(Duration::from_millis(20));
     };
     while !finished.load(std::sync::atomic::Ordering::Acquire) {
         if started.elapsed() >= CLAUDE_TIMEOUT {
-            return Err(());
+            return Err("timeout");
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    let output = reader.join().map_err(|_| ())?;
+    let output = reader.join().map_err(|_| "parser")?;
     if output.len() <= CLAUDE_OUTPUT_LIMIT {
         Ok((output, status.success()))
     } else {
-        Err(())
+        Err("parser")
     }
 }
 
 fn parse_claude_status(stdout: &[u8], succeeded: bool) -> AuthMetadata {
     let Ok(value) = serde_json::from_slice::<Value>(stdout) else {
-        return AuthMetadata::error();
+        return AuthMetadata::error(Some("parser"));
     };
     if !value.is_object() {
-        return AuthMetadata::error();
+        return AuthMetadata::error(Some("parser"));
     }
     if !succeeded
         || value.get("loggedIn").and_then(Value::as_bool) != Some(true)
@@ -386,7 +452,7 @@ fn parse_claude_status(stdout: &[u8], succeeded: bool) -> AuthMetadata {
         return AuthMetadata::signed_out();
     }
     let Some(email) = value.get("email").and_then(nonempty_string) else {
-        return AuthMetadata::error();
+        return AuthMetadata::error(Some("parser"));
     };
     let account_id = format!("claude:{email}");
     AuthMetadata {
@@ -396,6 +462,7 @@ fn parse_claude_status(stdout: &[u8], succeeded: bool) -> AuthMetadata {
         plan: value.get("subscriptionType").and_then(nonempty_string),
         credential_identity: Some(account_id),
         error: None,
+        error_kind: None,
     }
 }
 
@@ -409,16 +476,21 @@ pub enum AccountDriverError {
     UnknownAccount,
     #[error("Cannot write state/accounts/registry.json")]
     WriteRegistry,
+    #[error("Registry replacement completed but directory durability is unconfirmed")]
+    DurabilityUnconfirmed,
     #[error("Account registry lock is unavailable")]
     Poisoned,
 }
 
 pub struct AccountDriver<R = SystemProviderAuthReader> {
     path: PathBuf,
-    registry: Mutex<Value>,
-    account_order: Mutex<Vec<String>>,
-    login_order: Mutex<Vec<String>>,
+    state: Mutex<RegistryState>,
     reader: R,
+}
+
+struct RegistryState {
+    value: Value,
+    order: RegistryOrder,
 }
 
 impl AccountDriver<SystemProviderAuthReader> {
@@ -434,12 +506,11 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
     ) -> Result<Self, AccountDriverError> {
         let path = path.into();
         let bytes = read_registry(&path)?;
-        let (registry, account_order, login_order) = parse_registry(&bytes)?;
+        let (value, order) =
+            decode_registry(&bytes).map_err(|_| AccountDriverError::InvalidRegistry)?;
         Ok(Self {
             path,
-            registry: Mutex::new(registry),
-            account_order: Mutex::new(account_order),
-            login_order: Mutex::new(login_order),
+            state: Mutex::new(RegistryState { value, order }),
             reader,
         })
     }
@@ -447,57 +518,52 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
     /// Refresh one account and persist safe auth metadata before returning its
     /// admission status. Duplicate profiles return their stored status.
     pub fn get(&self, account: &str) -> Result<AccountStatus, AccountDriverError> {
-        let mut registry = self
-            .registry
+        let profile = {
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| AccountDriverError::Poisoned)?;
+            let row = state
+                .value
+                .get("accounts")
+                .and_then(Value::as_object)
+                .and_then(|accounts| accounts.get(account))
+                .and_then(Value::as_object)
+                .ok_or(AccountDriverError::UnknownAccount)?;
+            if row.get("deleted") == Some(&Value::Bool(true))
+                || row.get("disconnected") == Some(&Value::Bool(true))
+            {
+                return Ok(AccountStatus::Unavailable);
+            }
+            if row.get("duplicateOf").is_some_and(python_truthy) {
+                return Ok(status_from_value(row.get("status")));
+            }
+            AuthProfile {
+                provider: row
+                    .get("provider")
+                    .and_then(Value::as_str)
+                    .unwrap_or("codex")
+                    .to_owned(),
+                home: PathBuf::from(row.get("home").and_then(Value::as_str).unwrap_or_default()),
+                claude_options: row.get("claudeOptions").cloned(),
+            }
+        };
+        let metadata = self.reader.read(&profile);
+        let mut state = self
+            .state
             .lock()
             .map_err(|_| AccountDriverError::Poisoned)?;
-        let mut account_order = self
-            .account_order
-            .lock()
-            .map_err(|_| AccountDriverError::Poisoned)?;
-        let mut login_order = self
-            .login_order
-            .lock()
-            .map_err(|_| AccountDriverError::Poisoned)?;
-        let row = registry
+        let previous = state
+            .value
             .get("accounts")
             .and_then(Value::as_object)
             .and_then(|accounts| accounts.get(account))
             .and_then(Value::as_object)
             .ok_or(AccountDriverError::UnknownAccount)?;
-        if row.get("deleted") == Some(&Value::Bool(true))
-            || row.get("disconnected") == Some(&Value::Bool(true))
-        {
-            return Ok(AccountStatus::Unavailable);
+        if metadata.status == AuthStatus::Unchanged {
+            return Ok(status_from_value(previous.get("status")));
         }
-        if row.get("duplicateOf").is_some_and(|value| !value.is_null()) {
-            return Ok(status_from_value(row.get("status")));
-        }
-        let profile = AuthProfile {
-            provider: row
-                .get("provider")
-                .and_then(Value::as_str)
-                .unwrap_or("codex")
-                .to_owned(),
-            home: PathBuf::from(row.get("home").and_then(Value::as_str).unwrap_or_default()),
-            claude_options: row.get("claudeOptions").cloned(),
-        };
-        let old_account_id = row
-            .get("accountId")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        let old_credential = row
-            .get("_credentialIdentity")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        let old_source = row
-            .get("source")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
-        let old_status = status_from_value(row.get("status"));
-        let metadata = self.reader.read(&profile);
-        let mut updated = registry.clone();
+        let mut updated = state.value.clone();
         let accounts = updated
             .get_mut("accounts")
             .and_then(Value::as_object_mut)
@@ -506,47 +572,81 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .get_mut(account)
             .and_then(Value::as_object_mut)
             .ok_or(AccountDriverError::UnknownAccount)?;
-        apply_metadata(
-            row,
-            &metadata,
-            old_account_id.as_deref(),
-            old_credential.as_deref(),
-            &old_source,
-            old_status,
-        );
-        let encoded = serialize_registry(&updated, &account_order, &login_order)?;
-        let (checked, checked_order, checked_login_order) = parse_registry(&encoded)?;
-        atomic_replace(&self.path, &encoded)?;
-        let status = checked
+        apply_metadata(row, &metadata);
+        if updated == state.value {
+            let status = updated
+                .get("accounts")
+                .and_then(Value::as_object)
+                .and_then(|accounts| accounts.get(account))
+                .and_then(Value::as_object)
+                .and_then(|row| row.get("status"));
+            return Ok(status_from_value(status));
+        }
+        let status = updated
             .get("accounts")
             .and_then(Value::as_object)
             .and_then(|accounts| accounts.get(account))
             .and_then(Value::as_object)
             .and_then(|row| row.get("status"));
         let status = status_from_value(status);
-        *registry = checked;
-        *account_order = checked_order;
-        *login_order = checked_login_order;
+        let encoded = encode_registry(&updated, &state.order)
+            .map_err(|_| AccountDriverError::InvalidRegistry)?;
+        let (checked, order) =
+            decode_registry(&encoded).map_err(|_| AccountDriverError::InvalidRegistry)?;
+        match atomic_replace(&self.path, &encoded) {
+            Ok(()) => {}
+            Err(ReplaceError::NotReplaced) => return Err(AccountDriverError::WriteRegistry),
+            Err(ReplaceError::ReplacedNotDurable) => {
+                state.value = checked;
+                state.order = order;
+                return Err(AccountDriverError::DurabilityUnconfirmed);
+            }
+        }
+        state.value = checked;
+        state.order = order;
         Ok(status)
     }
 }
 
-fn apply_metadata(
-    row: &mut serde_json::Map<String, Value>,
-    metadata: &AuthMetadata,
-    expected_account: Option<&str>,
-    expected_credential: Option<&str>,
-    source: &str,
-    old_status: AccountStatus,
-) {
-    if metadata.status != AuthStatus::Error {
-        row.remove("_authErrorKind");
+fn apply_metadata(row: &mut serde_json::Map<String, Value>, metadata: &AuthMetadata) {
+    if metadata.status == AuthStatus::Unchanged {
+        return;
+    }
+    let expected_account = row
+        .get("accountId")
+        .and_then(nonempty_str)
+        .map(str::to_owned);
+    let expected_credential = row
+        .get("_credentialIdentity")
+        .and_then(nonempty_str)
+        .map(str::to_owned);
+    let source = row
+        .get("source")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let old_status = status_from_value(row.get("status"));
+    row.remove("_authErrorKind");
+    if let Some(kind) = metadata.error_kind {
+        row.insert("_authErrorKind".into(), Value::String(kind.into()));
     }
     if expected_account
-        .zip(metadata.account_id.as_deref())
+        .as_deref()
+        .zip(
+            metadata
+                .account_id
+                .as_deref()
+                .filter(|value| !value.is_empty()),
+        )
         .is_some_and(|(a, b)| a != b)
         || expected_credential
-            .zip(metadata.credential_identity.as_deref())
+            .as_deref()
+            .zip(
+                metadata
+                    .credential_identity
+                    .as_deref()
+                    .filter(|v| !v.is_empty()),
+            )
             .is_some_and(|(a, b)| a != b)
     {
         row.insert("status".into(), Value::String("changed".into()));
@@ -554,9 +654,28 @@ fn apply_metadata(
         return;
     }
     if metadata.status == AuthStatus::Ready
-        && ((expected_account.is_some() && metadata.account_id.is_none())
-            || (expected_credential.is_some() && metadata.credential_identity.is_none())
-            || (metadata.account_id.is_none() && metadata.credential_identity.is_none()))
+        && ((expected_account.is_some()
+            && metadata
+                .account_id
+                .as_deref()
+                .filter(|v| !v.is_empty())
+                .is_none())
+            || (expected_credential.is_some()
+                && metadata
+                    .credential_identity
+                    .as_deref()
+                    .filter(|v| !v.is_empty())
+                    .is_none())
+            || (metadata
+                .account_id
+                .as_deref()
+                .filter(|v| !v.is_empty())
+                .is_none()
+                && metadata
+                    .credential_identity
+                    .as_deref()
+                    .filter(|v| !v.is_empty())
+                    .is_none()))
     {
         row.insert("status".into(), Value::String("error".into()));
         row.insert("error".into(), Value::String(UNVERIFIED_ERROR.into()));
@@ -570,9 +689,10 @@ fn apply_metadata(
     }
     if metadata.status == AuthStatus::Error {
         row.insert("status".into(), Value::String("error".into()));
-        if let Some(error) = metadata.error {
-            row.insert("error".into(), Value::String(error.into()));
-        }
+        row.insert(
+            "error".into(),
+            Value::String(metadata.error.unwrap_or(AUTH_ERROR).into()),
+        );
         return;
     }
     let fields = [
@@ -582,7 +702,7 @@ fn apply_metadata(
         ("plan", metadata.plan.as_ref()),
     ];
     for (key, value) in fields {
-        if let Some(value) = value {
+        if let Some(value) = value.filter(|value| !value.is_empty()) {
             row.insert(key.into(), Value::String(value.clone()));
         }
     }
@@ -593,6 +713,7 @@ fn apply_metadata(
                 AuthStatus::Ready => "ready",
                 AuthStatus::SignedOut => "signedOut",
                 AuthStatus::Error => "error",
+                AuthStatus::Unchanged => return,
             }
             .into(),
         ),
@@ -615,159 +736,8 @@ fn status_from_value(value: Option<&Value>) -> AccountStatus {
     }
 }
 
-fn parse_registry(bytes: &[u8]) -> Result<(Value, Vec<String>, Vec<String>), AccountDriverError> {
-    if bytes.len() > studio_runtime_store::account_state::MAX_PERSISTED_DOCUMENT_BYTES
-        || !studio_runtime_store::account_state::persisted_document_within_bounds(bytes)
-    {
-        return Err(AccountDriverError::InvalidRegistry);
-    }
-    let value: Value =
-        serde_json::from_slice(bytes).map_err(|_| AccountDriverError::InvalidRegistry)?;
-    static VALIDATOR: OnceLock<Result<jsonschema::Validator, ()>> = OnceLock::new();
-    let valid = VALIDATOR
-        .get_or_init(|| {
-            let schema = serde_json::from_str(REGISTRY_SCHEMA).map_err(|_| ())?;
-            jsonschema::validator_for(&schema).map_err(|_| ())
-        })
-        .as_ref()
-        .map_err(|_| AccountDriverError::InvalidRegistry)?
-        .is_valid(&value);
-    if !valid {
-        return Err(AccountDriverError::InvalidRegistry);
-    }
-    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
-    let order = RegistryOrder::deserialize(&mut deserializer)
-        .map_err(|_| AccountDriverError::InvalidRegistry)?;
-    Ok((value, order.accounts, order.logins))
-}
-
-#[derive(Default)]
-struct RegistryOrder {
-    accounts: Vec<String>,
-    logins: Vec<String>,
-}
-
-impl<'de> Deserialize<'de> for RegistryOrder {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct RootVisitor;
-        impl<'de> Visitor<'de> for RootVisitor {
-            type Value = RegistryOrder;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("validated account registry")
-            }
-
-            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
-            where
-                M: MapAccess<'de>,
-            {
-                let mut order = RegistryOrder::default();
-                let mut seen = std::collections::HashSet::new();
-                while let Some(key) = map.next_key::<String>()? {
-                    if !seen.insert(key.clone()) {
-                        return Err(serde::de::Error::custom("duplicate registry field"));
-                    }
-                    if key == "accounts" {
-                        order.accounts = map.next_value_seed(AccountKeys)?;
-                    } else if key == "logins" {
-                        order.logins = map.next_value_seed(AccountKeys)?;
-                    } else {
-                        map.next_value::<serde::de::IgnoredAny>()?;
-                    }
-                }
-                Ok(order)
-            }
-        }
-        deserializer.deserialize_map(RootVisitor)
-    }
-}
-
-struct AccountKeys;
-
-impl<'de> DeserializeSeed<'de> for AccountKeys {
-    type Value = Vec<String>;
-
-    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct AccountsVisitor;
-        impl<'de> Visitor<'de> for AccountsVisitor {
-            type Value = Vec<String>;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("ordered account object")
-            }
-
-            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
-            where
-                M: MapAccess<'de>,
-            {
-                let mut keys = Vec::new();
-                let mut seen = std::collections::HashSet::new();
-                while let Some(key) = map.next_key::<String>()? {
-                    if !seen.insert(key.clone()) {
-                        return Err(serde::de::Error::custom("duplicate registry key"));
-                    }
-                    map.next_value::<serde::de::IgnoredAny>()?;
-                    keys.push(key);
-                }
-                Ok(keys)
-            }
-        }
-        deserializer.deserialize_map(AccountsVisitor)
-    }
-}
-
-fn serialize_registry(
-    registry: &Value,
-    account_order: &[String],
-    login_order: &[String],
-) -> Result<Vec<u8>, AccountDriverError> {
-    let Some(root) = registry.as_object() else {
-        return Err(AccountDriverError::InvalidRegistry);
-    };
-    let Some(accounts) = root.get("accounts").and_then(Value::as_object) else {
-        return Err(AccountDriverError::InvalidRegistry);
-    };
-    let logins = root.get("logins").and_then(Value::as_object);
-    let mut output = Vec::new();
-    let mut serializer = serde_json::Serializer::new(&mut output);
-    let mut map = serializer
-        .serialize_map(Some(root.len()))
-        .map_err(|_| AccountDriverError::InvalidRegistry)?;
-    for (key, value) in root {
-        if key == "accounts" {
-            map.serialize_entry(
-                key,
-                &OrderedAccounts {
-                    accounts,
-                    order: account_order,
-                },
-            )
-            .map_err(|_| AccountDriverError::InvalidRegistry)?;
-        } else if key == "logins" {
-            let Some(logins) = logins else {
-                return Err(AccountDriverError::InvalidRegistry);
-            };
-            map.serialize_entry(
-                key,
-                &OrderedAccounts {
-                    accounts: logins,
-                    order: login_order,
-                },
-            )
-            .map_err(|_| AccountDriverError::InvalidRegistry)?;
-        } else {
-            map.serialize_entry(key, value)
-                .map_err(|_| AccountDriverError::InvalidRegistry)?;
-        }
-    }
-    map.end().map_err(|_| AccountDriverError::InvalidRegistry)?;
-    Ok(output)
+fn nonempty_str(value: &Value) -> Option<&str> {
+    value.as_str().filter(|value| !value.is_empty())
 }
 
 fn read_registry(path: &Path) -> Result<Vec<u8>, AccountDriverError> {
@@ -791,42 +761,34 @@ fn read_registry(path: &Path) -> Result<Vec<u8>, AccountDriverError> {
     Ok(bytes)
 }
 
-struct OrderedAccounts<'a> {
-    accounts: &'a serde_json::Map<String, Value>,
-    order: &'a [String],
+enum ReplaceError {
+    NotReplaced,
+    ReplacedNotDurable,
 }
 
-impl Serialize for OrderedAccounts<'_> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut map = serializer.serialize_map(Some(self.accounts.len()))?;
-        let mut emitted = std::collections::HashSet::new();
-        for key in self.order {
-            if let Some(value) = self.accounts.get(key) {
-                map.serialize_entry(key, value)?;
-                emitted.insert(key);
-            }
-        }
-        for (key, value) in self.accounts {
-            if !emitted.contains(key) {
-                map.serialize_entry(key, value)?;
-            }
-        }
-        map.end()
-    }
+fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), ReplaceError> {
+    atomic_replace_with(
+        path,
+        bytes,
+        |temp, target| fs::rename(temp, target),
+        |parent| File::open(parent).and_then(|directory| directory.sync_all()),
+    )
 }
 
-fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), AccountDriverError> {
+fn atomic_replace_with(
+    path: &Path,
+    bytes: &[u8],
+    replace: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+    sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<(), ReplaceError> {
     static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let parent = path.parent().ok_or(AccountDriverError::WriteRegistry)?;
-    fs::create_dir_all(parent).map_err(|_| AccountDriverError::WriteRegistry)?;
+    let parent = path.parent().ok_or(ReplaceError::NotReplaced)?;
+    fs::create_dir_all(parent).map_err(|_| ReplaceError::NotReplaced)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
-            .map_err(|_| AccountDriverError::WriteRegistry)?;
+            .map_err(|_| ReplaceError::NotReplaced)?;
     }
     let sequence = NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let temp = parent.join(format!("registry-{}-{sequence}.tmp", std::process::id()));
@@ -838,20 +800,15 @@ fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), AccountDriverError> {
         options.mode(0o600);
     }
     let result = (|| {
-        let mut file = options
-            .open(&temp)
-            .map_err(|_| AccountDriverError::WriteRegistry)?;
+        let mut file = options.open(&temp).map_err(|_| ReplaceError::NotReplaced)?;
         file.write_all(bytes)
-            .map_err(|_| AccountDriverError::WriteRegistry)?;
-        file.sync_all()
-            .map_err(|_| AccountDriverError::WriteRegistry)?;
-        fs::rename(&temp, path).map_err(|_| AccountDriverError::WriteRegistry)?;
-        File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|_| AccountDriverError::WriteRegistry)?;
+            .map_err(|_| ReplaceError::NotReplaced)?;
+        file.sync_all().map_err(|_| ReplaceError::NotReplaced)?;
+        replace(&temp, path).map_err(|_| ReplaceError::NotReplaced)?;
+        sync_parent(parent).map_err(|_| ReplaceError::ReplacedNotDurable)?;
         Ok(())
     })();
-    if result.is_err() {
+    if matches!(result, Err(ReplaceError::NotReplaced)) {
         let _cleanup_result = fs::remove_file(temp);
     }
     result
@@ -931,13 +888,24 @@ mod tests {
         }
     }
 
-    fn isolated_python() -> PathBuf {
+    fn isolated_python(fixture: &Path) -> PathBuf {
         if let Some(path) = env::var_os("CODEX_AGENTS_PYTHON") {
             return PathBuf::from(path);
         }
         let server = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+        let home = fixture.join("python-home");
+        let cache = env::var_os("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| fixture.join("python-cache"));
+        let temp = fixture.join("python-tmp");
+        for directory in [&home, &cache, &temp] {
+            fs::create_dir_all(directory).expect("create disposable Python environment");
+        }
         let output = Command::new("python3")
             .arg(server.join("codex_python.py"))
+            .env("HOME", &home)
+            .env("XDG_CACHE_HOME", &cache)
+            .env("TMPDIR", &temp)
             .output()
             .expect("resolve isolated runtime interpreter");
         assert!(
@@ -975,6 +943,7 @@ mod tests {
             plan: Some("plus".into()),
             credential_identity: identity.map(str::to_owned),
             error: None,
+            error_kind: None,
         }
     }
 
@@ -1037,13 +1006,20 @@ from codex_accounts import AccountStore
 store = AccountStore(root / 'state')
 print(store.path)
 "#;
-        let output = Command::new(isolated_python())
+        let home = fixture.0.join("python-home");
+        let cache = fixture.0.join("python-cache");
+        let temp = fixture.0.join("python-tmp");
+        for directory in [&home, &cache, &temp] {
+            fs::create_dir_all(directory).expect("create disposable Python environment");
+        }
+        let output = Command::new(isolated_python(&fixture.0))
             .args(["-c", script])
             .arg(&server)
             .arg(&fixture.0)
             .env("PYTHONDONTWRITEBYTECODE", "1")
-            .env("TMPDIR", &fixture.0)
-            .env("HOME", fixture.0.join("fake-user"))
+            .env("TMPDIR", &temp)
+            .env("HOME", &home)
+            .env("XDG_CACHE_HOME", &cache)
             .env("XDG_CONFIG_HOME", fixture.0.join("fake-config"))
             .env("XDG_STATE_HOME", fixture.0.join("fake-state"))
             .output()
@@ -1215,6 +1191,148 @@ print(store.path)
             ]);
             let metadata = ClaudeCliAuthReader::read_with_environment(&profile, &environment);
             assert_eq!(metadata.status, AuthStatus::Ready);
+        }
+    }
+
+    #[test]
+    fn malformed_and_unreadable_registry_loads_are_refused() {
+        let fixture = TestDir::new();
+        let malformed = fixture.0.join("malformed.json");
+        fs::write(&malformed, b"{").expect("write malformed fixture");
+        assert_eq!(
+            AccountDriver::open(&malformed).err(),
+            Some(AccountDriverError::InvalidRegistry)
+        );
+        let unreadable = fixture.0.join("directory.json");
+        fs::create_dir(&unreadable).expect("create unreadable fixture");
+        assert_eq!(
+            AccountDriver::open(&unreadable).err(),
+            Some(AccountDriverError::ReadRegistry)
+        );
+    }
+
+    #[test]
+    fn failed_replacement_does_not_change_original_and_sync_failure_is_distinct() {
+        let fixture = TestDir::new();
+        let path = fixture.0.join("registry.json");
+        fs::write(&path, b"before").expect("write original");
+        let fail = |_: &Path, _: &Path| Err(std::io::Error::other("refused"));
+        assert!(matches!(
+            atomic_replace_with(&path, b"after", fail, |_| Ok(())),
+            Err(ReplaceError::NotReplaced)
+        ));
+        assert_eq!(fs::read(&path).expect("read unchanged registry"), b"before");
+        assert!(matches!(
+            atomic_replace_with(
+                &path,
+                b"after",
+                |temp, target| fs::rename(temp, target),
+                |_| Err(std::io::Error::other("sync"))
+            ),
+            Err(ReplaceError::ReplacedNotDurable)
+        ));
+        assert_eq!(fs::read(&path).expect("read replaced registry"), b"after");
+    }
+
+    #[test]
+    fn post_refresh_validation_failure_leaves_registry_untouched() {
+        let fixture = TestDir::new();
+        let path = fixture.0.join("registry.json");
+        let original = registry(&fixture.0);
+        fs::write(&path, &original).expect("write valid registry");
+        let (mut candidate, order) = decode_registry(&original).expect("decode original");
+        candidate["accounts"]["default"]["status"] = Value::String("invalid".into());
+        let encoded = encode_registry(&candidate, &order).expect("encode candidate");
+        assert!(decode_registry(&encoded).is_err());
+        assert_eq!(fs::read(path).expect("read unchanged registry"), original);
+    }
+
+    #[test]
+    fn refresh_keeps_unknown_fields_and_signed_out_identity() {
+        let fixture = TestDir::new();
+        let path = fixture.0.join("registry.json");
+        let mut value: Value = serde_json::from_slice(&registry(&fixture.0)).expect("fixture JSON");
+        let row = value["accounts"]["default"]
+            .as_object_mut()
+            .expect("account row");
+        row.insert("accountId".into(), Value::String("remember-me".into()));
+        row.insert(
+            "_credentialIdentity".into(),
+            Value::String("chatgpt:remember-me".into()),
+        );
+        row.insert("provider".into(), Value::String("claude".into()));
+        row.insert(
+            "claudeOptions".into(),
+            serde_json::json!({"futureField":"preserve"}),
+        );
+        fs::write(&path, serde_json::to_vec(&value).expect("encode")).expect("write registry");
+        let driver = AccountDriver::open_with_reader(
+            &path,
+            FakeReader(metadata(AuthStatus::SignedOut, None, None)),
+        )
+        .expect("open");
+        assert_eq!(
+            driver.get("default").expect("refresh"),
+            AccountStatus::SignedOut
+        );
+        let saved: Value = serde_json::from_slice(&fs::read(path).expect("read refreshed"))
+            .expect("parse refreshed");
+        assert_eq!(saved["accounts"]["default"]["accountId"], "remember-me");
+        assert_eq!(
+            saved["accounts"]["default"]["_credentialIdentity"],
+            "chatgpt:remember-me"
+        );
+        assert_eq!(
+            saved["accounts"]["default"]["claudeOptions"]["futureField"],
+            "preserve"
+        );
+    }
+
+    #[test]
+    fn refresh_statuses_match_python_account_store_on_shared_fixture() {
+        let fixture = TestDir::new();
+        let server = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+        let home = fixture.0.join("codex-home");
+        fs::create_dir_all(&home).expect("create fixture home");
+        let root = fixture.0.join("python-state");
+        let py_registry = root.join("accounts/registry.json");
+        fs::create_dir_all(py_registry.parent().expect("parent")).expect("create Python state");
+        let mut base: Value = serde_json::from_slice(&registry(&home)).expect("registry");
+        base["accounts"]["default"]["provider"] = Value::String("claude".into());
+        base["accounts"]["default"]["accountId"] = Value::String("stable".into());
+        base["accounts"]["default"]["_credentialIdentity"] = Value::String("chatgpt:stable".into());
+        for (index, auth) in [
+            serde_json::json!({"status":"ready", "accountId":"stable", "_credentialIdentity":"chatgpt:stable", "email":"fixture@example.invalid", "plan":"plus"}),
+            serde_json::json!({"status":"signedOut", "accountId":null, "_credentialIdentity":null, "email":null, "plan":null}),
+            serde_json::json!({"status":"error", "error":"Cannot read this account's authentication"}),
+        ].into_iter().enumerate() {
+            fs::write(&py_registry, serde_json::to_vec(&base).expect("Python registry bytes")).expect("write Python fixture");
+            let home_dir = fixture.0.join(format!("py-home-{index}"));
+            let cache = fixture.0.join(format!("py-cache-{index}"));
+            let temp = fixture.0.join(format!("py-tmp-{index}"));
+            for path in [&home_dir, &cache, &temp] { fs::create_dir_all(path).expect("isolate Python"); }
+            let script = "import json,sys; sys.path.insert(0,sys.argv[1]); from codex_accounts import AccountStore; store=AccountStore(sys.argv[2]); store.refresh('default', json.loads(sys.argv[3])); print(json.dumps(store._row('default')))";
+            let py = Command::new(isolated_python(&fixture.0)).args(["-c", script]).arg(&server).arg(&root).arg(auth.to_string())
+                .env("HOME", &home_dir).env("XDG_CACHE_HOME", &cache).env("TMPDIR", &temp)
+                .env("PYTHONDONTWRITEBYTECODE", "1").output().expect("run Python refresh");
+            assert!(py.status.success(), "Python AccountStore.refresh failed");
+            let oracle: Value = serde_json::from_slice(&py.stdout).expect("Python row");
+            let rust_path = fixture.0.join(format!("rust-{index}.json"));
+            fs::write(&rust_path, serde_json::to_vec(&base).expect("Rust fixture")).expect("write Rust fixture");
+            let md = AuthMetadata {
+                status: match auth["status"].as_str().unwrap_or_default() { "ready" => AuthStatus::Ready, "error" => AuthStatus::Error, _ => AuthStatus::SignedOut },
+                account_id: auth.get("accountId").and_then(Value::as_str).map(str::to_owned),
+                email: auth.get("email").and_then(Value::as_str).map(str::to_owned),
+                plan: auth.get("plan").and_then(Value::as_str).map(str::to_owned),
+                credential_identity: auth.get("_credentialIdentity").and_then(Value::as_str).map(str::to_owned),
+                error: auth.get("error").and_then(Value::as_str).map(|_| AUTH_ERROR),
+                error_kind: None,
+            };
+            AccountDriver::open_with_reader(&rust_path, FakeReader(md)).expect("open Rust fixture").get("default").expect("Rust refresh");
+            let rust: Value = serde_json::from_slice(&fs::read(rust_path).expect("read Rust result")).expect("parse Rust result");
+            for field in ["status", "error", "accountId", "_credentialIdentity", "email", "plan"] {
+                assert_eq!(rust["accounts"]["default"].get(field), oracle.get(field), "case {index}, field {field}");
+            }
         }
     }
 }
