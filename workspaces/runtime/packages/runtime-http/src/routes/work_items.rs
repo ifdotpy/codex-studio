@@ -47,13 +47,16 @@ pub(crate) async fn work(
     query: QueryParams,
 ) -> Result<Json<Value>, ApiError> {
     let agent_id = query_string(&query, "agent")?;
+    work_for_agent(state, agent_id).await.map(Json)
+}
+
+pub(crate) async fn work_for_agent(state: HttpState, agent_id: String) -> Result<Value, ApiError> {
     read_agent(state, agent_id, |connection, agent, validators| {
         let records = WorkItemsRepository::work(connection).map_err(|_| ApiError::internal())?;
         let records = stored_values("runtime_work", "WorkItem", records, validators, false)?;
         Ok(work_policy::work_list(&agent.root_id.0, &records))
     })
     .await
-    .map(Json)
 }
 
 pub(crate) async fn queue(
@@ -347,30 +350,50 @@ fn request_signature(body: &Value) -> Result<String, ApiError> {
     Ok(signature)
 }
 
+pub(crate) fn work_request_signature(agent: &str, body: &Value) -> Result<String, ApiError> {
+    use sha2::{Digest, Sha256};
+    let value = json!({"agent": agent, "actor": null, "body": body});
+    let canonical = python_json(&value);
+    let digest = Sha256::digest(canonical.as_bytes());
+    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
 fn python_operation_signature(body: &Value) -> Result<String, ApiError> {
     use sha2::{Digest, Sha256};
     let mut value = body.clone();
-    let object = value.as_object_mut().ok_or_else(ApiError::internal)?;
-    object.entry("agent").or_insert(Value::Null);
-    let object = value.as_object().ok_or_else(ApiError::internal)?;
-    let mut keys = object.keys().collect::<Vec<_>>();
-    keys.sort();
-    let canonical = format!(
-        "{{{}}}",
-        keys.into_iter()
-            .map(|key| {
-                let encoded = match &object[key] {
-                    Value::String(value) => python_quote(value),
-                    Value::Null | Value::Bool(_) | Value::Number(_) => object[key].to_string(),
-                    _ => return Err(ApiError::internal()),
-                };
-                Ok(format!("{}: {encoded}", python_quote(key)))
-            })
-            .collect::<Result<Vec<_>, ApiError>>()?
-            .join(", ")
-    );
-    let digest = Sha256::digest(canonical.as_bytes());
+    value
+        .as_object_mut()
+        .ok_or_else(ApiError::internal)?
+        .entry("agent")
+        .or_insert(Value::Null);
+    let digest = Sha256::digest(python_json(&value).as_bytes());
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn python_json(value: &Value) -> String {
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) => value.to_string(),
+        Value::String(value) => python_quote(value),
+        Value::Array(values) => format!(
+            "[{}]",
+            values
+                .iter()
+                .map(python_json)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Value::Object(values) => {
+            let mut keys = values.keys().collect::<Vec<_>>();
+            keys.sort();
+            format!(
+                "{{{}}}",
+                keys.into_iter()
+                    .map(|key| format!("{}: {}", python_quote(key), python_json(&values[key])))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+    }
 }
 
 fn python_quote(value: &str) -> String {
@@ -405,7 +428,7 @@ fn python_quote(value: &str) -> String {
     out
 }
 
-fn write_error(error: EventWriteError) -> ApiError {
+pub(crate) fn write_error(error: EventWriteError) -> ApiError {
     match error {
         EventWriteError::RuleDriverUnavailable => ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
@@ -414,6 +437,10 @@ fn write_error(error: EventWriteError) -> ApiError {
         EventWriteError::RemoteEventsUnavailable => ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
             "Not implemented: requires cross-server/remote-events",
+        ),
+        EventWriteError::WorkerAssignmentUnavailable => ApiError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            "Not implemented: requires worker-driver/work-assignment",
         ),
         EventWriteError::InvalidRequest(message) | EventWriteError::Conflict(message) => {
             ApiError::new(StatusCode::BAD_REQUEST, message)

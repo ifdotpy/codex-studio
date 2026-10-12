@@ -22,6 +22,8 @@ pub enum EventWriteError {
     RuleDriverUnavailable,
     #[error("Not implemented: requires cross-server/remote-events")]
     RemoteEventsUnavailable,
+    #[error("Not implemented: requires worker-driver/work-assignment")]
+    WorkerAssignmentUnavailable,
     #[error("invalid stored object {object}/{id}")]
     InvalidStoredObject { object: &'static str, id: String },
     #[error(transparent)]
@@ -285,12 +287,36 @@ pub fn enqueue_event(
     text: String,
     created: f64,
 ) -> Result<bool, EventWriteError> {
+    enqueue(transaction, agent, id, kind, text, created, false)
+}
+
+pub fn enqueue_recovery_event(
+    transaction: &Transaction<'_>,
+    agent: &AgentRecord,
+    id: String,
+    kind: &str,
+    text: String,
+    created: f64,
+) -> Result<bool, EventWriteError> {
+    enqueue(transaction, agent, id, kind, text, created, true)
+}
+
+fn enqueue(
+    transaction: &Transaction<'_>,
+    agent: &AgentRecord,
+    id: String,
+    kind: &str,
+    text: String,
+    created: f64,
+    recovery: bool,
+) -> Result<bool, EventWriteError> {
+    let auto_wake = agent_auto_wake(agent)?;
     let event = QueueEvent {
         id: QueueEventId::from(id.as_str()),
         agent: AgentId::from(agent.id.0.as_str()),
         kind: kind.to_owned(),
         text,
-        status: if agent_auto_wake(agent)? {
+        status: if auto_wake || recovery && recovery_pending(agent) {
             "pending"
         } else {
             "cancelled"
@@ -303,7 +329,9 @@ pub fn enqueue_event(
     };
     let inserted = EventWriteRepository::insert_event(transaction, &event)?;
     if inserted {
-        queue_agent(transaction, agent)?;
+        if auto_wake {
+            queue_agent(transaction, agent)?;
+        }
         static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
         EventWriteRepository::mark_event_enqueued(
             transaction,
@@ -314,7 +342,10 @@ pub fn enqueue_event(
     Ok(inserted)
 }
 
-fn checked_agent(connection: &Transaction<'_>, id: &str) -> Result<AgentRecord, EventWriteError> {
+pub fn checked_agent(
+    connection: &Transaction<'_>,
+    id: &str,
+) -> Result<AgentRecord, EventWriteError> {
     let agent = AgentRepository::get(connection, &AgentId::from(id))?
         .ok_or(EventWriteError::InvalidRequest("Invalid request"))?;
     if truthy(agent.extra.get("deletedAt")) {
@@ -355,7 +386,7 @@ fn agent_auto_wake(agent: &AgentRecord) -> Result<bool, EventWriteError> {
         .ok_or_else(|| invalid_stored("runtime_agents", &agent.id.0))
 }
 
-fn truthy(value: Option<&Value>) -> bool {
+pub fn truthy(value: Option<&Value>) -> bool {
     match value {
         None | Some(Value::Null) | Some(Value::Bool(false)) => false,
         Some(Value::Number(number)) => number.as_f64().is_some_and(|number| number != 0.0),
@@ -366,11 +397,105 @@ fn truthy(value: Option<&Value>) -> bool {
     }
 }
 
-fn unix_time() -> Result<f64, EventWriteError> {
+pub fn unix_time() -> Result<f64, EventWriteError> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs_f64())
         .map_err(|_| EventWriteError::Clock)
+}
+
+pub fn assert_delegation(agent: &AgentRecord) -> Result<(), EventWriteError> {
+    let mode = agent.extra.get("agentMode").and_then(Value::as_str);
+    let schema_version = agent
+        .extra
+        .get("subagentConcurrencyVersion")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    let limit = if schema_version < 2 && mode == Some("single") {
+        0
+    } else {
+        agent
+            .extra
+            .get("concurrency")
+            .and_then(Value::as_i64)
+            .unwrap_or(if mode == Some("single") { 0 } else { 32 })
+    };
+    if limit == 0 {
+        return Err(EventWriteError::InvalidRequest(
+            "Single agent mode disables new delegation. Complete the task in the lead chat or select Multi agent",
+        ));
+    }
+    Ok(())
+}
+
+pub fn read_receipt(
+    transaction: &Transaction<'_>,
+    request_id: Option<&str>,
+    signature: &str,
+    object: &'static str,
+    identity: &str,
+    validate: impl Fn(&Value) -> bool,
+) -> Result<Option<Value>, EventWriteError> {
+    let Some(request_id) = request_id.filter(|id| !id.is_empty()) else {
+        return Ok(None);
+    };
+    let Some(receipt) = EventWriteRepository::receipt(transaction, request_id)? else {
+        return Ok(None);
+    };
+    if receipt.signature != signature {
+        return Err(EventWriteError::Conflict(
+            "This request id has different content",
+        ));
+    }
+    let result: Value = serde_json::from_str(&receipt.result)
+        .map_err(|_| invalid_stored("runtime_operation_receipts", request_id))?;
+    if !validate(&result) {
+        return Err(invalid_stored(object, identity));
+    }
+    Ok(Some(result))
+}
+
+pub fn save_receipt(
+    transaction: &Transaction<'_>,
+    request_id: Option<&str>,
+    signature: &str,
+    result: &Value,
+) -> Result<(), EventWriteError> {
+    if let Some(request_id) = request_id.filter(|id| !id.is_empty()) {
+        EventWriteRepository::put_receipt(transaction, request_id, signature, &serialize(result)?)?;
+    }
+    Ok(())
+}
+
+fn recovery_pending(agent: &AgentRecord) -> bool {
+    let extra = &agent.extra;
+    let matches = |recovery: &Value| {
+        ["epoch", "accountKey", "threadId"]
+            .iter()
+            .all(|key| recovery.get(*key) == extra.get(*key))
+    };
+    let root = extra
+        .get("restartRecovery")
+        .and_then(Value::as_object)
+        .map(|recovery| {
+            recovery.get("stage").and_then(Value::as_str) == Some("pending")
+                && recovery.get("autoWake").and_then(Value::as_bool) == Some(true)
+                && matches(&Value::Object(recovery.clone()))
+        })
+        .unwrap_or(false);
+    let disconnect = extra
+        .get("disconnectRecovery")
+        .and_then(Value::as_object)
+        .map(|recovery| {
+            recovery.get("autoWake").and_then(Value::as_bool) == Some(true)
+                && matches(&Value::Object(recovery.clone()))
+        })
+        .unwrap_or(false);
+    let recovery = !agent_auto_wake(agent).unwrap_or(true)
+        && agent.status != AgentStatus::Paused
+        && !truthy(extra.get("deletedAt"))
+        && (root || disconnect);
+    recovery || truthy(extra.get("moveImportPending"))
 }
 
 fn serialize(value: &Value) -> Result<String, EventWriteError> {
