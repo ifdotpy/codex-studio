@@ -209,6 +209,22 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             rename_state(self.backend.state, self.agent_id, "unused-title-id"), before
         )
 
+    def test_blank_manual_title_refuses_without_writing(self):
+        before = rename_state(self.backend.state, self.agent_id, "unused-title-id")
+        response = self.backend.request(
+            "POST",
+            "/api/rename",
+            body={"id": self.agent_id, "name": " "},
+            headers=self.headers(),
+        )
+        self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertEqual(
+            response.json(), {"error": "A name must have 1 to 80 characters"}
+        )
+        self.assertEqual(
+            rename_state(self.backend.state, self.agent_id, "unused-title-id"), before
+        )
+
     def test_smart_title_reports_named_501_without_writing(self):
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             self.skipTest("the Python reference backend implements live title generation")
