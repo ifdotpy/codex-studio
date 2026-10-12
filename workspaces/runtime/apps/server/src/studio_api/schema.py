@@ -56,46 +56,26 @@ def openapi_document() -> dict[str, JsonValue]:
 
     app = create_app(ApiContext.for_schema())
     document = cast(dict[str, JsonValue], json.loads(json.dumps(app.openapi())))
-    _normalize_numeric_union_order(document)
+    _normalize_schema_union_order(document)
     return document
 
 
-def _normalize_numeric_union_order(value: JsonValue) -> None:
-    """Keep Python union argument order from changing integer/number schemas."""
+def _union_member_key(value: JsonValue) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _normalize_schema_union_order(value: JsonValue) -> None:
+    """Stabilize generated union types when model construction order varies."""
     if isinstance(value, dict):
-        variants = value.get("anyOf")
-        if (
-            isinstance(variants, list)
-            and {
-                variant.get("type")
-                for variant in variants
-                if isinstance(variant, dict)
-                and variant.get("type") in {"integer", "number"}
-            }
-            == {"integer", "number"}
-        ):
-            positions = [
-                index
-                for index, variant in enumerate(variants)
-                if isinstance(variant, dict)
-                and variant.get("type") in {"integer", "number"}
-            ]
-            numeric_variants = [
-                variant
-                for variant in variants
-                if isinstance(variant, dict)
-                and variant.get("type") in {"integer", "number"}
-            ]
-            numeric_variants.sort(
-                key=lambda variant: 0 if variant.get("type") == "integer" else 1
-            )
-            for index, variant in zip(positions, numeric_variants):
-                variants[index] = variant
+        for combinator in ("anyOf", "oneOf"):
+            variants = value.get(combinator)
+            if isinstance(variants, list):
+                variants.sort(key=_union_member_key)
         for child in value.values():
-            _normalize_numeric_union_order(child)
+            _normalize_schema_union_order(child)
     elif isinstance(value, list):
         for child in value:
-            _normalize_numeric_union_order(child)
+            _normalize_schema_union_order(child)
 
 
 _NAME_KEYED_MAPS = frozenset({
@@ -116,7 +96,10 @@ def canonical_openapi_json(document: dict[str, JsonValue]) -> bytes:
             for key, item in value.items():
                 if key in {"description", "summary", "examples", "externalDocs"}:
                     continue
-                if key == "default":
+                if key in {"anyOf", "oneOf"} and isinstance(item, list):
+                    members = [strip_documentation(child) for child in item]
+                    canonical[key] = sorted(members, key=_union_member_key)
+                elif key == "default":
                     # A default is arbitrary JSON data, not OpenAPI metadata.
                     canonical[key] = item
                 elif key in _NAME_KEYED_MAPS:

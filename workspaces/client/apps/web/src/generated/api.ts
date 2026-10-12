@@ -2533,7 +2533,7 @@ export interface components {
     /** AccessClient */
     AccessClient: {
       /** Alias */
-      alias?: string | null;
+      alias?: null | string;
       /** Autopair */
       autoPair?: boolean | null;
       /** Clientid */
@@ -2550,19 +2550,19 @@ export interface components {
       /** Label */
       label: string;
       /** Lastaccess */
-      lastAccess: number | null;
+      lastAccess: null | number;
       /** Lastseen */
-      lastSeen?: number | null;
+      lastSeen?: null | number;
       /** Origin */
-      origin: string | null;
+      origin: null | string;
       /** Publickey */
       publicKey: string;
       /** Reachability */
       reachability?: ("reachable" | "unreachable" | "unknown") | null;
       /** Revoked */
-      revoked: number | null;
+      revoked: null | number;
       /** Serverid */
-      serverId: string | null;
+      serverId: null | string;
       /**
        * Status
        * @enum {string}
@@ -2630,9 +2630,9 @@ export interface components {
      */
     Account: {
       /** Accountid */
-      accountId?: string | null;
+      accountId?: null | string;
       /** Authenticationrecovery */
-      authenticationRecovery?: string | null;
+      authenticationRecovery?: null | string;
       /** Canattemptnativeproof */
       canAttemptNativeProof?: boolean | null;
       claudeOptions?: components["schemas"]["ClaudeOptions"] | null;
@@ -2641,11 +2641,11 @@ export interface components {
       /** Disconnected */
       disconnected?: boolean | null;
       /** Duplicateof */
-      duplicateOf?: string | null;
+      duplicateOf?: null | string;
       /** Email */
-      email?: string | null;
+      email?: null | string;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Home */
       home: string;
       /** Id */
@@ -2653,7 +2653,7 @@ export interface components {
       /** Label */
       label: string;
       /** Plan */
-      plan?: string | null;
+      plan?: null | string;
       /** Provider */
       provider?: ("codex" | "claude") | null;
       /** Source */
@@ -2665,18 +2665,18 @@ export interface components {
     /** AccountCostData */
     AccountCostData: {
       /** Accountid */
-      accountId?: string | null;
+      accountId?: null | string;
       /** Billedusd */
       billedUSD?: number | null;
       coverage?: components["schemas"]["JsonValue"] | null;
       /** Currency */
-      currency?: string | null;
+      currency?: null | string;
       /** Currencycode */
-      currencyCode?: string | null;
+      currencyCode?: null | string;
       /** Historydays */
       historyDays?: number | null;
       /** Kind */
-      kind?: string | null;
+      kind?: null | string;
       /** Last30Daystokens */
       last30DaysTokens?: number | null;
       /** Last30Daysusd */
@@ -2686,15 +2686,15 @@ export interface components {
         [key: string]: number;
       } | null;
       /** Note */
-      note?: string | null;
+      note?: null | string;
       /** Scope */
-      scope?: string | null;
+      scope?: null | string;
       /** Source */
-      source?: string | null;
+      source?: null | string;
       /** Sourceday */
-      sourceDay?: string | null;
+      sourceDay?: null | string;
       /** Sourceupdatedat */
-      sourceUpdatedAt?: string | number | null;
+      sourceUpdatedAt?: null | number | string;
       /** Todaytokens */
       todayTokens?: number | null;
       /** Todayusd */
@@ -2713,10 +2713,10 @@ export interface components {
       /** At */
       at: number | null;
       /** Checkedat */
-      checkedAt?: number | null;
+      checkedAt?: null | number;
       data: components["schemas"]["AccountCostData"] | null;
       /** Error */
-      error: string | null;
+      error: null | string;
       /** Refreshing */
       refreshing: boolean;
       /** Stale */
@@ -2741,7 +2741,7 @@ export interface components {
       contextRepairId?: string;
       portableHistory?: components["schemas"]["PortableHistoryRecordResponse"];
       /** Provider */
-      provider?: string | null;
+      provider?: null | string;
       providerOptionsDiscarded?: components["schemas"]["JsonObjectResponse"];
       /** Reason */
       reason?: string;
@@ -2752,11 +2752,11 @@ export interface components {
       /** Targetaccountkey */
       targetAccountKey?: string;
       /** Targetprovider */
-      targetProvider?: string | null;
+      targetProvider?: null | string;
       /** Targetthreadid */
       targetThreadId?: string;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
       /** Toolrefreshid */
       toolRefreshId?: string;
       /** Transferid */
@@ -2767,7 +2767,7 @@ export interface components {
     /** AccountKeyRequest */
     AccountKeyRequest: {
       /** Account Key */
-      account_key?: string | null;
+      account_key?: null | string;
     };
     /** AccountLoginResponse */
     AccountLoginResponse: {
@@ -2778,19 +2778,19 @@ export interface components {
       /** Accountkey */
       accountKey: string;
       /** Createdat */
-      createdAt?: number | null;
+      createdAt?: null | number;
       /** Email */
-      email?: string | null;
+      email?: null | string;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Expiresat */
-      expiresAt?: number | null;
+      expiresAt?: null | number;
       /** Loginid */
-      loginId?: string | null;
+      loginId?: null | string;
       /** Requestid */
       requestId: string;
       /** Resolvedaccountkey */
-      resolvedAccountKey?: string | null;
+      resolvedAccountKey?: null | string;
       /**
        * Status
        * @enum {string}
@@ -2804,9 +2804,9 @@ export interface components {
         | "error"
         | "uncertain";
       /** Usercode */
-      userCode?: string | null;
+      userCode?: null | string;
       /** Verificationurl */
-      verificationUrl?: string | null;
+      verificationUrl?: null | string;
     };
     /** AccountNameRequest */
     AccountNameRequest: {
@@ -2825,23 +2825,23 @@ export interface components {
       /** Accountkey */
       accountKey: string;
       /** At */
-      at: number | null;
+      at: null | number;
       /** Checkedat */
-      checkedAt?: number | null;
+      checkedAt?: null | number;
       data?: components["schemas"]["RateLimitsDataDto"] | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Processedat */
-      processedAt?: number | null;
+      processedAt?: null | number;
       /** Readat */
-      readAt?: number | null;
+      readAt?: null | number;
     };
     /** AccountSelectionRequest */
     AccountSelectionRequest: {
       /** Account Key */
       account_key: string;
       /** Cwd */
-      cwd?: string | null;
+      cwd?: null | string;
       /** Id */
       id: string;
     };
@@ -2889,9 +2889,9 @@ export interface components {
       /** Id */
       id: string;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Reason */
-      reason?: string | null;
+      reason?: null | string;
     };
     /** AccountTransferBlockedRecordResponse */
     AccountTransferBlockedRecordResponse: {
@@ -2902,9 +2902,9 @@ export interface components {
       /** Id */
       id: string;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Reason */
-      reason?: string | null;
+      reason?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -2913,9 +2913,9 @@ export interface components {
       /** Id */
       id: string;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Reason */
-      reason?: string | null;
+      reason?: null | string;
     };
     /** AccountTransferInterruptedRecordResponse */
     AccountTransferInterruptedRecordResponse: {
@@ -2926,9 +2926,9 @@ export interface components {
       /** Id */
       id: string;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Reason */
-      reason?: string | null;
+      reason?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -2937,10 +2937,10 @@ export interface components {
       /** Id */
       id: string;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       provider?: components["schemas"]["AgentProvider"] | null;
       /** Reason */
-      reason?: string | null;
+      reason?: null | string;
     };
     /** AccountTransferLeftOnSourceRecordResponse */
     AccountTransferLeftOnSourceRecordResponse: {
@@ -2951,11 +2951,11 @@ export interface components {
       /** Id */
       id: string;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Provider */
       provider?: ("codex" | "claude") | null;
       /** Reason */
-      reason?: string | null;
+      reason?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -2985,7 +2985,7 @@ export interface components {
       /** Finishhistory */
       finishHistory?: boolean | null;
       /** Id */
-      id?: string | null;
+      id?: null | string;
       /** Interrupted */
       interrupted?:
         | components["schemas"]["AccountTransferInterruptedDto"][]
@@ -3005,13 +3005,13 @@ export interface components {
       scope?: components["schemas"]["AccountTransferScope"] | null;
       status?: components["schemas"]["AccountTransferStatus"] | null;
       /** Targetaccountkey */
-      targetAccountKey?: string | null;
+      targetAccountKey?: null | string;
       /** Total */
       total?: number | null;
       /** Updated */
-      updated?: number | null;
+      updated?: null | number;
       /** Waiting */
-      waiting?: string | null;
+      waiting?: null | string;
       /** Waitingcount */
       waitingCount?: number | null;
     };
@@ -3034,7 +3034,7 @@ export interface components {
       /** Finishhistory */
       finishHistory?: boolean | null;
       /** Id */
-      id?: string | null;
+      id?: null | string;
       /** Interrupted */
       interrupted?:
         | components["schemas"]["AccountTransferInterruptedRecordResponse"][]
@@ -3056,13 +3056,13 @@ export interface components {
       /** Status */
       status?: ("pending" | "completed" | "cancelled") | null;
       /** Targetaccountkey */
-      targetAccountKey?: string | null;
+      targetAccountKey?: null | string;
       /** Total */
       total?: number | null;
       /** Updated */
-      updated?: number | null;
+      updated?: null | number;
       /** Waiting */
-      waiting?: string | null;
+      waiting?: null | string;
       /** Waitingcount */
       waitingCount?: number | null;
     } & {
@@ -3071,11 +3071,11 @@ export interface components {
     /** ActionContext */
     ActionContext: {
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       /** Epoch */
       epoch?: number | null;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
     };
     /** ActiveToolDto */
     ActiveToolDto: {
@@ -3104,9 +3104,9 @@ export interface components {
     /** AgentActivity */
     AgentActivity: {
       /** At */
-      at?: number | null;
+      at?: null | number;
       /** Phase */
-      phase?: string | null;
+      phase?: null | string;
       /** Tools */
       tools?: components["schemas"]["ActiveToolDto"][] | null;
     };
@@ -3143,59 +3143,59 @@ export interface components {
       reason?: string;
       /** Unassignedwork */
       unassignedWork?: (
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
         | null
+        | string
       )[];
       /** Unknowntoolrequests */
       unknownToolRequests?: (
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
         | null
+        | string
       )[];
     } & {
       [key: string]: components["schemas"]["JsonValue"];
@@ -3208,31 +3208,31 @@ export interface components {
       _syncEntitiesAfter?: number | null;
       /** Assets */
       assets?: (
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
         | null
+        | string
       )[];
       /** Prefixtext */
       prefixText?: string;
@@ -3247,23 +3247,23 @@ export interface components {
      */
     AgentEntityCapacityRetryDto: {
       /** Acceptedturnid */
-      acceptedTurnId?: string | null;
+      acceptedTurnId?: null | string;
       /** Accountkey */
-      accountKey: string | null;
+      accountKey: null | string;
       /** Claimedat */
-      claimedAt?: number | null;
+      claimedAt?: null | number;
       /** Dueat */
-      dueAt: number | null;
+      dueAt: null | number;
       /** Epoch */
       epoch: number | null;
       /** Id */
       id: string;
       /** Reason */
-      reason?: string | null;
+      reason?: null | string;
       /** Status */
       status: string;
       /** Threadid */
-      threadId: string | null;
+      threadId: null | string;
       /** Updatedat */
       updatedAt: number;
     };
@@ -3280,12 +3280,12 @@ export interface components {
     /** AgentEntityDto */
     AgentEntityDto: {
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       accountTransfer?:
         | components["schemas"]["AccountTransferSummaryDto"]
         | null;
       /** Accounttransferid */
-      accountTransferId?: string | null;
+      accountTransferId?: null | string;
       activity?: components["schemas"]["AgentActivity"] | null;
       agentMode?: components["schemas"]["AgentMode"] | null;
       /** Agentmoderevision */
@@ -3312,17 +3312,17 @@ export interface components {
       contextUsage?: components["schemas"]["ContextUsageDto"] | null;
       convertedFromLead?: components["schemas"]["ConvertedFromLeadDto"] | null;
       /** Created */
-      created?: number | null;
+      created?: null | number;
       /** Cwd */
-      cwd?: string | null;
+      cwd?: null | string;
       /** Cyberaccessprogram */
-      cyberAccessProgram?: string | null;
+      cyberAccessProgram?: null | string;
       /** Daybreakenabled */
       daybreakEnabled?: boolean | null;
       /** Deletedat */
-      deletedAt?: number | null;
+      deletedAt?: null | number;
       /** Effort */
-      effort?: string | null;
+      effort?: null | string;
       /** Empty */
       empty?: boolean | null;
       /** Environment */
@@ -3330,7 +3330,7 @@ export interface components {
       /** Epoch */
       epoch?: number | null;
       /** Error */
-      error?: components["schemas"]["NativeProviderError"] | string | null;
+      error?: components["schemas"]["NativeProviderError"] | null | string;
       /** Executionmode */
       executionMode?: ("vm" | "native") | null;
       /** Fastmode */
@@ -3342,29 +3342,29 @@ export interface components {
       /** Hasunread */
       hasUnread?: boolean | null;
       /** Hostprojectpath */
-      hostProjectPath?: string | null;
+      hostProjectPath?: null | string;
       /** Id */
       id: string;
       /** Imageworkspace */
       imageWorkspace?: boolean | null;
       /** Imageworkspacebaseref */
-      imageWorkspaceBaseRef?: string | null;
+      imageWorkspaceBaseRef?: null | string;
       /** Imageworkspacebaserepo */
-      imageWorkspaceBaseRepo?: string | null;
+      imageWorkspaceBaseRepo?: null | string;
       /** Imageworkspacecreatedat */
-      imageWorkspaceCreatedAt?: number | null;
+      imageWorkspaceCreatedAt?: null | number;
       /** Imageworkspaceerror */
-      imageWorkspaceError?: string | null;
+      imageWorkspaceError?: null | string;
       /** Imageworkspacehasgit */
       imageWorkspaceHasGit?: boolean | null;
       /** Imageworkspacephase */
-      imageWorkspacePhase?: string | null;
+      imageWorkspacePhase?: null | string;
       /** Imageworkspaceready */
       imageWorkspaceReady?: boolean | null;
       /** Imageworkspacerepo */
-      imageWorkspaceRepo?: string | null;
+      imageWorkspaceRepo?: null | string;
       /** Imageworkspacesubpath */
-      imageWorkspaceSubpath?: string | null;
+      imageWorkspaceSubpath?: null | string;
       /** Inflight */
       inFlight?: boolean | null;
       /** Islead */
@@ -3372,31 +3372,31 @@ export interface components {
       /** Kind */
       kind?: "agent" | null;
       /** Lastanswer */
-      lastAnswer?: string | null;
+      lastAnswer?: null | string;
       /** Lastcompletedturn */
-      lastCompletedTurn?: string | null;
+      lastCompletedTurn?: null | string;
       /** Lastcompletedturnstatus */
-      lastCompletedTurnStatus?: string | null;
+      lastCompletedTurnStatus?: null | string;
       /** Lastevent */
-      lastEvent?: string | null;
+      lastEvent?: null | string;
       /** Lastreadat */
-      lastReadAt?: number | null;
+      lastReadAt?: null | number;
       /** Launcheralive */
       launcherAlive?: boolean | null;
       /** Layrerror */
-      layrError?: string | null;
+      layrError?: null | string;
       /** Layrline */
-      layrLine?: string | null;
+      layrLine?: null | string;
       /** Layrprojectid */
-      layrProjectId?: string | null;
+      layrProjectId?: null | string;
       /** Layrready */
       layrReady?: boolean | null;
       /** Layrstateid */
-      layrStateId?: string | null;
+      layrStateId?: null | string;
       /** Manualname */
       manualName?: boolean | null;
       /** Model */
-      model?: string | null;
+      model?: null | string;
       movedFrom?: components["schemas"]["MovePointerDto"] | null;
       movedTo?: components["schemas"]["MovePointerDto"] | null;
       /**
@@ -3405,11 +3405,11 @@ export interface components {
        */
       moveImportPending?: boolean;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Nativeerror */
-      nativeError?: string | null;
+      nativeError?: null | string;
       /** Nativelimiterrorat */
-      nativeLimitErrorAt?: number | null;
+      nativeLimitErrorAt?: null | number;
       nativeRelease?: components["schemas"]["AgentNativeRelease"] | null;
       nativeSafetyBuffering?:
         | components["schemas"]["NativeSafetyBufferingRecord"]
@@ -3425,33 +3425,33 @@ export interface components {
       /** Nextturnsettingssupported */
       nextTurnSettingsSupported?: boolean | null;
       /** Orchestratorid */
-      orchestratorId?: string | null;
+      orchestratorId?: null | string;
       /** Orchestratorname */
-      orchestratorName?: string | null;
+      orchestratorName?: null | string;
       overview?: components["schemas"]["AgentOverview"] | null;
       /** Paneldataversion */
       panelDataVersion?: number | null;
       /** Panelversion */
       panelVersion?: number | null;
       /** Parentid */
-      parentId?: string | null;
+      parentId?: null | string;
       /** Parkedevent */
-      parkedEvent?: string | null;
+      parkedEvent?: null | string;
       pendingSettings?: components["schemas"]["ExecutionSettingsDto"] | null;
       /** Pendingsettingsaccountkey */
-      pendingSettingsAccountKey?: string | null;
+      pendingSettingsAccountKey?: null | string;
       /** Pinned */
       pinned?: boolean | null;
       /** Project */
-      project?: string | null;
+      project?: null | string;
       /** Projectfolder */
-      projectFolder?: string | null;
+      projectFolder?: null | string;
       /** Projectfolderrevision */
       projectFolderRevision?: number | null;
       /** Projectid */
-      projectId?: string | null;
+      projectId?: null | string;
       /** Projectserverid */
-      projectServerId?: string | null;
+      projectServerId?: null | string;
       provider?: components["schemas"]["AgentProvider"] | null;
       queuedSettings?: components["schemas"]["ExecutionSettingsDto"] | null;
       quickCreate?: components["schemas"]["JsonValue"] | null;
@@ -3462,35 +3462,35 @@ export interface components {
       remoteOrigin?: components["schemas"]["RemoteParentLinkDto"] | null;
       remoteWorker?: components["schemas"]["RemoteWorkerLinkDto"] | null;
       /** Retryat */
-      retryAt?: number | null;
+      retryAt?: null | number;
       reviewDefaults?: components["schemas"]["ReviewDefaultsDto"] | null;
       role?: components["schemas"]["AgentRole"] | null;
       /** Rootid */
-      rootId?: string | null;
+      rootId?: null | string;
       /** Serverid */
-      serverId?: string | null;
+      serverId?: null | string;
       /** Sharedroomid */
-      sharedRoomId?: string | null;
+      sharedRoomId?: null | string;
       source?: components["schemas"]["AgentSource"] | null;
       startAttempt?: components["schemas"]["AgentStartAttempt"] | null;
       status?: components["schemas"]["AgentStatus"] | null;
       /** Statusdetail */
-      statusDetail?: string | null;
+      statusDetail?: null | string;
       /** Subagentconcurrencyversion */
       subagentConcurrencyVersion?: number | null;
       /** Tail */
-      tail?: string | null;
+      tail?: null | string;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
       /** Tokensused */
       tokensUsed?: number | null;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
       turnStatus?: components["schemas"]["AgentStatus"] | null;
       /** Unreadcount */
       unreadCount?: number | null;
       /** Updated */
-      updated?: number | null;
+      updated?: null | number;
       usageResume?: components["schemas"]["AgentEntityUsageResumeDto"] | null;
       voiceState?: components["schemas"]["JsonValue"] | null;
       workerDefaults?: components["schemas"]["WorkerDefaultsDto"] | null;
@@ -3499,9 +3499,9 @@ export interface components {
       /** Workspacemode */
       workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
       /** Workspaceoperation */
-      workspaceOperation?: string | null;
+      workspaceOperation?: null | string;
       /** Worktree */
-      worktree?: boolean | string | null;
+      worktree?: boolean | null | string;
       /** Worktreepreparation */
       worktreePreparation?: ("waiting" | "preparing") | null;
       /** Yolomode */
@@ -3515,13 +3515,13 @@ export interface components {
       /** Cause */
       cause: string;
       /** Dueat */
-      dueAt: number | null;
+      dueAt: null | number;
       /** Id */
       id: string;
       /** Plannedat */
-      plannedAt: number | null;
+      plannedAt: null | number;
       /** Reason */
-      reason: string | null;
+      reason: null | string;
       /** Status */
       status: string;
       /** Updatedat */
@@ -3561,15 +3561,15 @@ export interface components {
     /** AgentNativeStatus */
     AgentNativeStatus: {
       /** At */
-      at?: number | null;
+      at?: null | number;
       /** Error */
-      error?: components["schemas"]["NativeProviderError"] | string | null;
+      error?: components["schemas"]["NativeProviderError"] | null | string;
       /** Message */
-      message?: string | null;
+      message?: null | string;
       /** Phase */
       phase?: ("safety" | "retrying" | "auth") | null;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
     };
     /** AgentNativeStatusRecordResponse */
     AgentNativeStatusRecordResponse: {
@@ -3580,7 +3580,7 @@ export interface components {
       /** At */
       at?: number;
       /** Error */
-      error?: string | components["schemas"]["JsonObjectResponse"] | null;
+      error?: components["schemas"]["JsonObjectResponse"] | null | string;
       /** Message */
       message?: string;
       /**
@@ -3605,15 +3605,15 @@ export interface components {
     /** AgentOverview */
     AgentOverview: {
       /** Result */
-      result?: string | null;
+      result?: null | string;
       /** Resultfile */
-      resultFile?: string | null;
+      resultFile?: null | string;
       /** Resulttruncated */
       resultTruncated?: boolean | null;
       /** Resultturnid */
-      resultTurnId?: string | null;
+      resultTurnId?: null | string;
       /** Task */
-      task?: string | null;
+      task?: null | string;
       /** Tasktruncated */
       taskTruncated?: boolean | null;
     };
@@ -3641,31 +3641,31 @@ export interface components {
       accountTransferId?: string;
       /** Accounttransferstate */
       accountTransferState?:
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
-        | null;
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
+        | null
+        | string;
       /** Activetools */
       activeTools?: components["schemas"]["ActiveToolRecordResponse"][];
       activity?: components["schemas"]["AgentActivityRecordResponse"] | null;
@@ -3705,7 +3705,7 @@ export interface components {
       /** Capacityretrycount */
       capacityRetryCount?: number;
       /** Checkpointerror */
-      checkpointError?: string | null;
+      checkpointError?: null | string;
       /** Checkpointhistoryhead */
       checkpointHistoryHead?: string;
       claudeInputRequest?: components["schemas"]["JsonObjectResponse"];
@@ -3728,31 +3728,31 @@ export interface components {
       contextRepair?: components["schemas"]["ContextRepairRecordResponse"];
       /** Contextrepairhistory */
       contextRepairHistory?: (
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
         | null
+        | string
       )[];
       contextRepairWait?: components["schemas"]["ContextRepairWaitRecordResponse"];
       contextUsage?: components["schemas"]["ContextUsageRecordResponse"] | null;
@@ -3762,7 +3762,7 @@ export interface components {
       /** Cwd */
       cwd?: string;
       /** Cyberaccessprogram */
-      cyberAccessProgram?: string | null;
+      cyberAccessProgram?: null | string;
       /** Daybreakenabled */
       daybreakEnabled?: boolean | null;
       /** Deletedat */
@@ -3773,14 +3773,14 @@ export interface components {
       disconnectRecovery?: components["schemas"]["DisconnectRecoveryRecordResponse"];
       draft?: components["schemas"]["AgentDraftRecordResponse"];
       /** Effort */
-      effort?: string | null;
+      effort?: null | string;
       emptyTransferRecovery?: components["schemas"]["EmptyTransferRecoveryRecordResponse"];
       /** Environment */
       environment?: ("host" | "linux") | null;
       /** Epoch */
       epoch: number;
       /** Error */
-      error?: string | components["schemas"]["JsonObjectResponse"] | null;
+      error?: components["schemas"]["JsonObjectResponse"] | null | string;
       /** Events */
       events?: number;
       /** Executionarchives */
@@ -3809,29 +3809,29 @@ export interface components {
       /** Imageworkspacebaseerror */
       imageWorkspaceBaseError?: string;
       /** Imageworkspacebaseref */
-      imageWorkspaceBaseRef?: string | null;
+      imageWorkspaceBaseRef?: null | string;
       /** Imageworkspacebaserepo */
-      imageWorkspaceBaseRepo?: string | null;
+      imageWorkspaceBaseRepo?: null | string;
       imageWorkspaceCleanupResult?: components["schemas"]["ImageWorkspaceCleanupResultRecordResponse"];
       imageWorkspaceCollect?: components["schemas"]["ImageWorkspaceCollectResultRecordResponse"];
       /** Imageworkspacecreatedat */
-      imageWorkspaceCreatedAt?: number | null;
+      imageWorkspaceCreatedAt?: null | number;
       /** Imageworkspaceerror */
-      imageWorkspaceError?: string | null;
+      imageWorkspaceError?: null | string;
       /** Imageworkspacehandofftext */
-      imageWorkspaceHandoffText?: string | null;
+      imageWorkspaceHandoffText?: null | string;
       /** Imageworkspacehasgit */
       imageWorkspaceHasGit?: boolean;
       /** Imageworkspacemount */
-      imageWorkspaceMount?: string | null;
+      imageWorkspaceMount?: null | string;
       /** Imageworkspacenoticeerror */
-      imageWorkspaceNoticeError?: string | null;
+      imageWorkspaceNoticeError?: null | string;
       /** Imageworkspacenoticeid */
-      imageWorkspaceNoticeId?: string | null;
+      imageWorkspaceNoticeId?: null | string;
       /** Imageworkspacenoticesent */
-      imageWorkspaceNoticeSent?: string | null;
+      imageWorkspaceNoticeSent?: null | string;
       /** Imageworkspacenoticetext */
-      imageWorkspaceNoticeText?: string | null;
+      imageWorkspaceNoticeText?: null | string;
       /** Imageworkspacephase */
       imageWorkspacePhase?:
         | ("read_only" | "ready" | "fallback" | "archived")
@@ -3839,11 +3839,11 @@ export interface components {
       /** Imageworkspaceready */
       imageWorkspaceReady?: boolean;
       /** Imageworkspacerepo */
-      imageWorkspaceRepo?: string | null;
+      imageWorkspaceRepo?: null | string;
       /** Imageworkspacesnapshotcommit */
-      imageWorkspaceSnapshotCommit?: string | null;
+      imageWorkspaceSnapshotCommit?: null | string;
       /** Imageworkspacesubpath */
-      imageWorkspaceSubpath?: string | null;
+      imageWorkspaceSubpath?: null | string;
       /** Importedfrom */
       importedFrom?: string;
       /** Inflight */
@@ -3857,31 +3857,31 @@ export interface components {
       lastCompletedTurn?: string;
       /** Lastcompletedturnerror */
       lastCompletedTurnError?:
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
-        | null;
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
+        | null
+        | string;
       /** Lastcompletedturnstatus */
       lastCompletedTurnStatus?:
         | (
@@ -3944,7 +3944,7 @@ export interface components {
       /** Maxagentsexplicit */
       maxAgentsExplicit?: boolean;
       /** Model */
-      model?: string | null;
+      model?: null | string;
       movedFrom?: components["schemas"]["MovePointerRecordResponse"] | null;
       movedTo?: components["schemas"]["MovePointerRecordResponse"] | null;
       /** Moveimportpending */
@@ -3954,9 +3954,9 @@ export interface components {
       /** Name */
       name?: string;
       /** Nativeeffort */
-      nativeEffort?: string | null;
+      nativeEffort?: null | string;
       /** Nativefailurehold */
-      nativeFailureHold?: boolean | components["schemas"]["JsonObjectResponse"];
+      nativeFailureHold?: components["schemas"]["JsonObjectResponse"] | boolean;
       /** Nativelimiterrorat */
       nativeLimitErrorAt?: number;
       /** Nativename */
@@ -3999,7 +3999,7 @@ export interface components {
       /** Needstitle */
       needsTitle?: boolean;
       /** Parentid */
-      parentId?: string | null;
+      parentId?: null | string;
       /** Parkafterturn */
       parkAfterTurn?: boolean;
       /** Parkedevent */
@@ -4009,7 +4009,7 @@ export interface components {
       parkSequence?: number;
       pendingSettings?: components["schemas"]["PendingSettingsRecordResponse"];
       /** Pendingsettingsaccountkey */
-      pendingSettingsAccountKey?: string | null;
+      pendingSettingsAccountKey?: null | string;
       /** Pinned */
       pinned?: boolean;
       portableHistory?: components["schemas"]["PortableHistoryRecordResponse"];
@@ -4018,7 +4018,7 @@ export interface components {
       preparedContext?: components["schemas"]["PreparedContextRecordResponse"];
       profile?: components["schemas"]["JsonObjectResponse"] | null;
       /** Profileid */
-      profileId?: string | null;
+      profileId?: null | string;
       /** Profileinstructions */
       profileInstructions?: string;
       /** Project */
@@ -4028,9 +4028,9 @@ export interface components {
       /** Projectfolderrevision */
       projectFolderRevision?: number;
       /** Projectid */
-      projectId?: string | null;
+      projectId?: null | string;
       /** Projectserverid */
-      projectServerId?: string | null;
+      projectServerId?: null | string;
       /** Prompt */
       prompt?: string;
       /**
@@ -4044,7 +4044,7 @@ export interface components {
       /** Quickcreate */
       quickCreate?: boolean;
       /** Quickcreaterequest */
-      quickCreateRequest?: string | null;
+      quickCreateRequest?: null | string;
       readState?: components["schemas"]["ReadStateRecordResponse"];
       remoteAdmission?: components["schemas"]["JsonObjectResponse"];
       /** Remoteadmissionrequest */
@@ -4070,7 +4070,7 @@ export interface components {
       /** Reviewarchiveattempts */
       reviewArchiveAttempts?: number;
       /** Reviewarchiveerror */
-      reviewArchiveError?: string | null;
+      reviewArchiveError?: null | string;
       /** Reviewarchivenextat */
       reviewArchiveNextAt?: number;
       /** Reviewarchivescheduled */
@@ -4091,7 +4091,7 @@ export interface components {
       rootId: string;
       sandbox?: components["schemas"]["JsonObjectResponse"] | null;
       /** Serverid */
-      serverId?: string | null;
+      serverId?: null | string;
       /** Sharedroomid */
       sharedRoomId?: string;
       /** Sourcemessage */
@@ -4126,7 +4126,7 @@ export interface components {
       /** Tail */
       tail?: string;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
       /** Tokenbudget */
       tokenBudget?: number | null;
       /** Tokensused */
@@ -4136,7 +4136,7 @@ export interface components {
       /** Turnepoch */
       turnEpoch?: number;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
       turnRecovery?: components["schemas"]["TurnRecoveryRecordResponse"];
       /** Updated */
       updated?: number;
@@ -4146,11 +4146,11 @@ export interface components {
       /** Workerbasebehindmain */
       workerBaseBehindMain?: number | null;
       /** Workerbasecommit */
-      workerBaseCommit?: string | null;
+      workerBaseCommit?: null | string;
       /** Workerbasemainref */
-      workerBaseMainRef?: string | null;
+      workerBaseMainRef?: null | string;
       /** Workerbaseref */
-      workerBaseRef?: string | null;
+      workerBaseRef?: null | string;
       /** Workerbasestatus */
       workerBaseStatus?: string;
       workerDefaults?: components["schemas"]["WorkerDefaultsRecordResponse"];
@@ -4163,7 +4163,7 @@ export interface components {
       /** Workspacemodeexplicit */
       workspaceModeExplicit?: boolean;
       /** Workspaceoperation */
-      workspaceOperation?: string | null;
+      workspaceOperation?: null | string;
       /** Workspacereservationid */
       workspaceReservationId?: string;
       /** Worktree */
@@ -4174,7 +4174,7 @@ export interface components {
       /** Worktreeready */
       worktreeReady?: boolean;
       /** Worktreewarning */
-      worktreeWarning?: string | null;
+      worktreeWarning?: null | string;
       /** Yolomode */
       yoloMode?: boolean;
     } & {
@@ -4191,9 +4191,9 @@ export interface components {
       /** Answeredat */
       answeredAt?: number | null;
       /** Answeredby */
-      answeredBy?: string | null;
+      answeredBy?: null | string;
       /** Answererror */
-      answerError?: string | null;
+      answerError?: null | string;
       /** Answerhistory */
       answerHistory?: components["schemas"]["AnswerHistoryEntry"][] | null;
       /** Createdat */
@@ -4205,7 +4205,7 @@ export interface components {
       /** Deferredat */
       deferredAt?: number | null;
       /** Deferredby */
-      deferredBy?: string | null;
+      deferredBy?: null | string;
       /** Id */
       id: string;
       /**
@@ -4242,12 +4242,12 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       accountTransfer?:
         | components["schemas"]["AccountTransferSummaryDto"]
         | null;
       /** Accounttransferid */
-      accountTransferId?: string | null;
+      accountTransferId?: null | string;
       activity?: components["schemas"]["AgentActivity"] | null;
       agentMode?: components["schemas"]["AgentMode"] | null;
       /** Agentmoderevision */
@@ -4274,17 +4274,17 @@ export interface components {
       contextUsage?: components["schemas"]["ContextUsageDto"] | null;
       convertedFromLead?: components["schemas"]["ConvertedFromLeadDto"] | null;
       /** Created */
-      created?: number | null;
+      created?: null | number;
       /** Cwd */
-      cwd?: string | null;
+      cwd?: null | string;
       /** Cyberaccessprogram */
-      cyberAccessProgram?: string | null;
+      cyberAccessProgram?: null | string;
       /** Daybreakenabled */
       daybreakEnabled?: boolean | null;
       /** Deletedat */
-      deletedAt?: number | null;
+      deletedAt?: null | number;
       /** Effort */
-      effort?: string | null;
+      effort?: null | string;
       /** Empty */
       empty?: boolean | null;
       /** Environment */
@@ -4292,7 +4292,7 @@ export interface components {
       /** Epoch */
       epoch?: number | null;
       /** Error */
-      error?: components["schemas"]["NativeProviderError"] | string | null;
+      error?: components["schemas"]["NativeProviderError"] | null | string;
       /** Executionmode */
       executionMode?: ("vm" | "native") | null;
       /** Fastmode */
@@ -4304,29 +4304,29 @@ export interface components {
       /** Hasunread */
       hasUnread?: boolean | null;
       /** Hostprojectpath */
-      hostProjectPath?: string | null;
+      hostProjectPath?: null | string;
       /** Id */
       id: string;
       /** Imageworkspace */
       imageWorkspace?: boolean | null;
       /** Imageworkspacebaseref */
-      imageWorkspaceBaseRef?: string | null;
+      imageWorkspaceBaseRef?: null | string;
       /** Imageworkspacebaserepo */
-      imageWorkspaceBaseRepo?: string | null;
+      imageWorkspaceBaseRepo?: null | string;
       /** Imageworkspacecreatedat */
-      imageWorkspaceCreatedAt?: number | null;
+      imageWorkspaceCreatedAt?: null | number;
       /** Imageworkspaceerror */
-      imageWorkspaceError?: string | null;
+      imageWorkspaceError?: null | string;
       /** Imageworkspacehasgit */
       imageWorkspaceHasGit?: boolean | null;
       /** Imageworkspacephase */
-      imageWorkspacePhase?: string | null;
+      imageWorkspacePhase?: null | string;
       /** Imageworkspaceready */
       imageWorkspaceReady?: boolean | null;
       /** Imageworkspacerepo */
-      imageWorkspaceRepo?: string | null;
+      imageWorkspaceRepo?: null | string;
       /** Imageworkspacesubpath */
-      imageWorkspaceSubpath?: string | null;
+      imageWorkspaceSubpath?: null | string;
       /** Inflight */
       inFlight?: boolean | null;
       /** Islead */
@@ -4334,31 +4334,31 @@ export interface components {
       /** Kind */
       kind?: "agent" | null;
       /** Lastanswer */
-      lastAnswer?: string | null;
+      lastAnswer?: null | string;
       /** Lastcompletedturn */
-      lastCompletedTurn?: string | null;
+      lastCompletedTurn?: null | string;
       /** Lastcompletedturnstatus */
-      lastCompletedTurnStatus?: string | null;
+      lastCompletedTurnStatus?: null | string;
       /** Lastevent */
-      lastEvent?: string | null;
+      lastEvent?: null | string;
       /** Lastreadat */
-      lastReadAt?: number | null;
+      lastReadAt?: null | number;
       /** Launcheralive */
       launcherAlive?: boolean | null;
       /** Layrerror */
-      layrError?: string | null;
+      layrError?: null | string;
       /** Layrline */
-      layrLine?: string | null;
+      layrLine?: null | string;
       /** Layrprojectid */
-      layrProjectId?: string | null;
+      layrProjectId?: null | string;
       /** Layrready */
       layrReady?: boolean | null;
       /** Layrstateid */
-      layrStateId?: string | null;
+      layrStateId?: null | string;
       /** Manualname */
       manualName?: boolean | null;
       /** Model */
-      model?: string | null;
+      model?: null | string;
       movedFrom?: components["schemas"]["MovePointerDto"] | null;
       movedTo?: components["schemas"]["MovePointerDto"] | null;
       /**
@@ -4367,11 +4367,11 @@ export interface components {
        */
       moveImportPending?: boolean;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Nativeerror */
-      nativeError?: string | null;
+      nativeError?: null | string;
       /** Nativelimiterrorat */
-      nativeLimitErrorAt?: number | null;
+      nativeLimitErrorAt?: null | number;
       nativeRelease?: components["schemas"]["AgentNativeRelease"] | null;
       nativeSafetyBuffering?:
         | components["schemas"]["NativeSafetyBufferingRecord"]
@@ -4387,33 +4387,33 @@ export interface components {
       /** Nextturnsettingssupported */
       nextTurnSettingsSupported?: boolean | null;
       /** Orchestratorid */
-      orchestratorId?: string | null;
+      orchestratorId?: null | string;
       /** Orchestratorname */
-      orchestratorName?: string | null;
+      orchestratorName?: null | string;
       overview?: components["schemas"]["AgentOverview"] | null;
       /** Paneldataversion */
       panelDataVersion?: number | null;
       /** Panelversion */
       panelVersion?: number | null;
       /** Parentid */
-      parentId?: string | null;
+      parentId?: null | string;
       /** Parkedevent */
-      parkedEvent?: string | null;
+      parkedEvent?: null | string;
       pendingSettings?: components["schemas"]["ExecutionSettingsDto"] | null;
       /** Pendingsettingsaccountkey */
-      pendingSettingsAccountKey?: string | null;
+      pendingSettingsAccountKey?: null | string;
       /** Pinned */
       pinned?: boolean | null;
       /** Project */
-      project?: string | null;
+      project?: null | string;
       /** Projectfolder */
-      projectFolder?: string | null;
+      projectFolder?: null | string;
       /** Projectfolderrevision */
       projectFolderRevision?: number | null;
       /** Projectid */
-      projectId?: string | null;
+      projectId?: null | string;
       /** Projectserverid */
-      projectServerId?: string | null;
+      projectServerId?: null | string;
       provider?: components["schemas"]["AgentProvider"] | null;
       queuedSettings?: components["schemas"]["ExecutionSettingsDto"] | null;
       quickCreate?: components["schemas"]["JsonValue"] | null;
@@ -4424,37 +4424,37 @@ export interface components {
       remoteOrigin?: components["schemas"]["RemoteParentLinkDto"] | null;
       remoteWorker?: components["schemas"]["RemoteWorkerLinkDto"] | null;
       /** Retryat */
-      retryAt?: number | null;
+      retryAt?: null | number;
       reviewDefaults?: components["schemas"]["ReviewDefaultsDto"] | null;
       role?:
         | components["schemas"]["studio_api__sync__models__AgentRole"]
         | null;
       /** Rootid */
-      rootId?: string | null;
+      rootId?: null | string;
       /** Serverid */
-      serverId?: string | null;
+      serverId?: null | string;
       /** Sharedroomid */
-      sharedRoomId?: string | null;
+      sharedRoomId?: null | string;
       source?: components["schemas"]["AgentSource"] | null;
       startAttempt?: components["schemas"]["AgentStartAttempt"] | null;
       status?: components["schemas"]["AgentStatus"] | null;
       /** Statusdetail */
-      statusDetail?: string | null;
+      statusDetail?: null | string;
       /** Subagentconcurrencyversion */
       subagentConcurrencyVersion?: number | null;
       /** Tail */
-      tail?: string | null;
+      tail?: null | string;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
       /** Tokensused */
       tokensUsed?: number | null;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
       turnStatus?: components["schemas"]["AgentStatus"] | null;
       /** Unreadcount */
       unreadCount?: number | null;
       /** Updated */
-      updated?: number | null;
+      updated?: null | number;
       usageResume?: components["schemas"]["AgentEntityUsageResumeDto"] | null;
       voiceState?: components["schemas"]["JsonValue"] | null;
       workerDefaults?: components["schemas"]["WorkerDefaultsDto"] | null;
@@ -4463,9 +4463,9 @@ export interface components {
       /** Workspacemode */
       workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
       /** Workspaceoperation */
-      workspaceOperation?: string | null;
+      workspaceOperation?: null | string;
       /** Worktree */
-      worktree?: boolean | string | null;
+      worktree?: boolean | null | string;
       /** Worktreepreparation */
       worktreePreparation?: ("waiting" | "preparing") | null;
       /** Yolomode */
@@ -4499,9 +4499,9 @@ export interface components {
     /** AgentStartAttempt */
     AgentStartAttempt: {
       /** Prepareerror */
-      prepareError?: string | null;
+      prepareError?: null | string;
       /** Responseerror */
-      responseError?: string | null;
+      responseError?: null | string;
       /** Retiredevents */
       retiredEvents?: string[] | null;
     };
@@ -4553,33 +4553,33 @@ export interface components {
       /** Accounthistory */
       accountHistory?: components["schemas"]["JsonValue"][] | null;
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       /** Cwd */
-      cwd?: string | null;
+      cwd?: null | string;
       /** Cyberaccessprogram */
-      cyberAccessProgram?: string | null;
+      cyberAccessProgram?: null | string;
       /** Daybreakenabled */
       daybreakEnabled?: boolean | null;
       /** Deletedat */
       deletedAt?: number | null;
       /** Effort */
-      effort?: string | null;
+      effort?: null | string;
       /** Fastmode */
       fastMode?: boolean | null;
       /** Id */
       id: string;
       /** Model */
-      model?: string | null;
+      model?: null | string;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Parentid */
-      parentId?: string | null;
+      parentId?: null | string;
       /** Provider */
-      provider?: string | null;
+      provider?: null | string;
       /** Rootid */
-      rootId?: string | null;
+      rootId?: null | string;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -4588,20 +4588,20 @@ export interface components {
       /** Accounthistory */
       accountHistory?: components["schemas"]["JsonValue"][] | null;
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       /** Compactions */
       compactions: number;
       /** Cwd */
-      cwd?: string | null;
+      cwd?: null | string;
       /** Cyberaccessprogram */
-      cyberAccessProgram?: string | null;
+      cyberAccessProgram?: null | string;
       /** Daybreakenabled */
       daybreakEnabled?: boolean | null;
       /** Deletedat */
       deletedAt?: number | null;
       duration: components["schemas"]["AnalyticsDuration"];
       /** Effort */
-      effort?: string | null;
+      effort?: null | string;
       /** Failedtoolcalls */
       failedToolCalls: number;
       /** Fastmode */
@@ -4609,24 +4609,24 @@ export interface components {
       /** Id */
       id: string;
       /** Model */
-      model?: string | null;
+      model?: null | string;
       /** Modeltoolcalls */
       modelToolCalls: number;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Parentid */
-      parentId?: string | null;
+      parentId?: null | string;
       protocolDuration: components["schemas"]["AnalyticsDuration"];
       /** Protocolfailedtoolcalls */
       protocolFailedToolCalls: number;
       /** Protocoltoolcalls */
       protocolToolCalls: number;
       /** Provider */
-      provider?: string | null;
+      provider?: null | string;
       /** Rootid */
-      rootId?: string | null;
+      rootId?: null | string;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
       tokens: components["schemas"]["AnalyticsTokens"];
       /** Toolcalls */
       toolCalls: number;
@@ -4640,11 +4640,11 @@ export interface components {
       /** At */
       at: number;
       /** Code */
-      code?: string | null;
+      code?: null | string;
       /** Error */
       error: string;
       /** Errortype */
-      errorType?: string | null;
+      errorType?: null | string;
       /** Operation */
       operation: string;
     };
@@ -4669,7 +4669,7 @@ export interface components {
       /** Failed */
       failed?: number | null;
       /** Lasterror */
-      lastError?: string | null;
+      lastError?: null | string;
       /** Limit */
       limit?: number | null;
       /** Overflow */
@@ -4740,21 +4740,21 @@ export interface components {
     /** AnalyticsFilters */
     AnalyticsFilters: {
       /** Agent */
-      agent: string | null;
+      agent: null | string;
       /** From */
-      from: number | null;
+      from: null | number;
       scope: components["schemas"]["AnalyticsScope"];
       /** To */
-      to: number | null;
+      to: null | number;
       /** Tool */
-      tool: string | null;
+      tool: null | string;
     };
     /** AnalyticsGroupTotal */
     AnalyticsGroupTotal: {
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       /** Model */
-      model?: string | null;
+      model?: null | string;
       /** Samples */
       samples: number;
       tokens: components["schemas"]["AnalyticsTokens"];
@@ -4764,9 +4764,9 @@ export interface components {
       /** Allowedsourcethreadids */
       allowedSourceThreadIds?: string[] | null;
       /** Effort */
-      effort?: string | null;
+      effort?: null | string;
       /** Model */
-      model?: string | null;
+      model?: null | string;
       noticeAssociation?:
         | components["schemas"]["AnalyticsUsageAssociation"]
         | null;
@@ -4774,9 +4774,9 @@ export interface components {
       /** Requestusageavailable */
       requestUsageAvailable?: boolean | null;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
       /** Window */
       window?: number | null;
     } & {
@@ -4785,24 +4785,24 @@ export interface components {
     /** AnalyticsHistoryRecord */
     AnalyticsHistoryRecord: {
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       /** Agent */
-      agent?: string | null;
+      agent?: null | string;
       /** Anchor */
-      anchor?: string | null;
+      anchor?: null | string;
       /** Consecutivefailures */
       consecutiveFailures?: number | null;
       context?: components["schemas"]["AnalyticsHistoryContext"] | null;
       /** Coverage */
-      coverage?: string | null;
+      coverage?: null | string;
       /** Deletedat */
       deletedAt?: number | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Errorpersisted */
       errorPersisted?: boolean | null;
       /** Errorpersistenceerror */
-      errorPersistenceError?: string | null;
+      errorPersistenceError?: null | string;
       /** Filebytes */
       fileBytes?: number | null;
       /** Filesystemidentity */
@@ -4813,7 +4813,7 @@ export interface components {
       /** Filesystemremapcount */
       filesystemRemapCount?: number | null;
       /** Id */
-      id?: string | null;
+      id?: null | string;
       /** Identity */
       identity?: number[] | null;
       /** Importedrecords */
@@ -4823,11 +4823,11 @@ export interface components {
       /** Offset */
       offset?: number | null;
       /** Path */
-      path?: string | null;
+      path?: null | string;
       /** Status */
-      status?: string | null;
+      status?: null | string;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
       /** Updated */
       updated?: number | null;
       /** Validated */
@@ -4840,7 +4840,7 @@ export interface components {
     /** AnalyticsItemBreakdown */
     AnalyticsItemBreakdown: {
       /** Category */
-      category: string | null;
+      category: null | string;
       /** Count */
       count: number;
       /** Inputbytes */
@@ -4852,9 +4852,9 @@ export interface components {
       /** Outputmeasurements */
       outputMeasurements: number;
       /** Payloadboundary */
-      payloadBoundary: string | null;
+      payloadBoundary: null | string;
       /** Role */
-      role: string | null;
+      role: null | string;
       /** Type */
       type: string;
     };
@@ -4878,32 +4878,32 @@ export interface components {
       /** Agentid */
       agentId: string;
       /** Agentname */
-      agentName?: string | null;
+      agentName?: null | string;
       /** At */
       at: number;
       /** Callid */
-      callId?: string | null;
+      callId?: null | string;
       /** Category */
-      category?: string | null;
+      category?: null | string;
       /** Command */
-      command?: string | null;
+      command?: null | string;
       compactionMetadata?: components["schemas"]["JsonValue"] | null;
       /** Coverage */
-      coverage?: string | null;
+      coverage?: null | string;
       /** Cwd */
-      cwd?: string | null;
+      cwd?: null | string;
       /** Cyberaccessprogram */
-      cyberAccessProgram?: string | null;
+      cyberAccessProgram?: null | string;
       /** Daybreakenabled */
       daybreakEnabled?: boolean | null;
       /** Durationms */
       durationMs?: number | null;
       /** Durationsource */
-      durationSource?: string | null;
+      durationSource?: null | string;
       /** Effort */
-      effort?: string | null;
+      effort?: null | string;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Exitcode */
       exitCode?: number | null;
       /** Fastmode */
@@ -4920,15 +4920,15 @@ export interface components {
       /** Istool */
       isTool: boolean;
       /** Itemid */
-      itemId?: string | null;
+      itemId?: null | string;
       /** Model */
-      model?: string | null;
+      model?: null | string;
       modelInput?: components["schemas"]["AnalyticsPayloadMeasure"] | null;
       modelOutput?: components["schemas"]["AnalyticsPayloadMeasure"] | null;
       /** Name */
       name: string;
       /** Namespace */
-      namespace?: string | null;
+      namespace?: null | string;
       output?: components["schemas"]["AnalyticsPayloadMeasure"] | null;
       /**
        * Payloadboundary
@@ -4938,19 +4938,19 @@ export interface components {
       /** Payloadtruncated */
       payloadTruncated?: boolean | null;
       /** Processid */
-      processId?: string | number | null;
+      processId?: number | null | string;
       /** Provider */
-      provider?: string | null;
+      provider?: null | string;
       /** Recordedat */
       recordedAt: number;
       /** Role */
-      role?: string | null;
+      role?: null | string;
       /** Rootid */
       rootId: string;
       /** Server */
-      server?: string | null;
+      server?: null | string;
       /** Snapshotitemid */
-      snapshotItemId?: string | null;
+      snapshotItemId?: null | string;
       /** Source */
       source: string;
       /** Startedat */
@@ -4959,11 +4959,11 @@ export interface components {
       status: string;
       stream?: components["schemas"]["AnalyticsStreamMeasure"] | null;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
       /** Timestampsource */
       timestampSource: string;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
       /** Type */
       type: string;
     } & {
@@ -4972,21 +4972,21 @@ export interface components {
     /** AnalyticsMonitor */
     AnalyticsMonitor: {
       /** Agent */
-      agent: string | null;
+      agent: null | string;
       /** Bytes */
       bytes: number | null;
       /** Created */
       created: number | null;
       /** Error */
-      error: string | null;
+      error: null | string;
       /** Exitcode */
       exitCode: number | null;
       /** Finished */
       finished: number | null;
       /** Id */
-      id: string | null;
+      id: null | string;
       /** Status */
-      status: string | null;
+      status: null | string;
       /** Timeout Ms */
       timeout_ms: number | null;
     };
@@ -5005,7 +5005,7 @@ export interface components {
       /** Method */
       method: string;
       /** Root */
-      root?: string | null;
+      root?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -5070,9 +5070,9 @@ export interface components {
     /** AnalyticsPendingUsage */
     AnalyticsPendingUsage: {
       /** Responseid */
-      responseId: string | null;
+      responseId: null | string;
       /** Turnid */
-      turnId: string | null;
+      turnId: null | string;
       usage: components["schemas"]["AnalyticsProviderTokens"];
     } & {
       [key: string]: components["schemas"]["JsonValue"];
@@ -5112,13 +5112,13 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       /** Accountlabel */
-      accountLabel?: string | null;
+      accountLabel?: null | string;
       /** Accounttotals */
       accountTotals?: components["schemas"]["AnalyticsGroupTotal"][] | null;
       /** Agentid */
-      agentId?: string | null;
+      agentId?: null | string;
       /** Agents */
       agents?: components["schemas"]["AnalyticsAgentRecord"][] | null;
       /** Agenttotals */
@@ -5126,7 +5126,7 @@ export interface components {
       /** At */
       at?: number | null;
       /** Attemptid */
-      attemptId?: string | null;
+      attemptId?: null | string;
       /** Calls */
       calls?: components["schemas"]["AnalyticsItemRecord"][] | null;
       /** Chartbuckets */
@@ -5140,14 +5140,14 @@ export interface components {
       coverage?: components["schemas"]["AnalyticsCoverage"] | null;
       detailPagination?: components["schemas"]["AnalyticsPage"] | null;
       /** Effort */
-      effort?: string | null;
+      effort?: null | string;
       filters?: components["schemas"]["AnalyticsFilters"] | null;
       /** Generatedat */
-      generatedAt?: number | null;
+      generatedAt?: null | number;
       /** History */
       history?: components["schemas"]["AnalyticsHistoryRecord"][] | null;
       /** Id */
-      id?: string | null;
+      id?: null | string;
       /** Itembreakdown */
       itemBreakdown?: components["schemas"]["AnalyticsItemBreakdown"][] | null;
       /** Itemrecords */
@@ -5157,7 +5157,7 @@ export interface components {
       /** Items */
       items?: components["schemas"]["AnalyticsItemCount"][] | null;
       /** Model */
-      model?: string | null;
+      model?: null | string;
       /** Modeltotals */
       modelTotals?: components["schemas"]["AnalyticsGroupTotal"][] | null;
       /** Notifications */
@@ -5165,7 +5165,7 @@ export interface components {
       operations?: components["schemas"]["AnalyticsOperationCounts"] | null;
       pagination?: components["schemas"]["AnalyticsPagination"] | null;
       /** Provider */
-      provider?: string | null;
+      provider?: null | string;
       /** Provisionalusage */
       provisionalUsage?: components["schemas"]["AnalyticsUsageRecord"][] | null;
       /** Ratelimits */
@@ -5173,10 +5173,10 @@ export interface components {
       /** Responserate */
       responseRate?: number | null;
       /** Runid */
-      runId?: string | null;
+      runId?: null | string;
       summary?: components["schemas"]["AnalyticsSummary"] | null;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
       /** Timeline */
       timeline?: components["schemas"]["AnalyticsUsageRecord"][] | null;
       /** Timelinetotal */
@@ -5187,7 +5187,7 @@ export interface components {
       /** Turndurationms */
       turnDurationMs?: number | null;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
       /** Turns */
       turns?: components["schemas"]["AnalyticsTurnRecord"][] | null;
       /** Version */
@@ -5325,21 +5325,21 @@ export interface components {
       /** Accounthistory */
       accountHistory?: components["schemas"]["JsonValue"][] | null;
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       /** Agentid */
       agentId: string;
       /** Agentname */
-      agentName?: string | null;
+      agentName?: null | string;
       /** At */
       at?: number | null;
       /** Cyberaccessprogram */
-      cyberAccessProgram?: string | null;
+      cyberAccessProgram?: null | string;
       /** Daybreakenabled */
       daybreakEnabled?: boolean | null;
       /** Durationms */
       durationMs?: number | null;
       /** Effort */
-      effort?: string | null;
+      effort?: null | string;
       error?: components["schemas"]["JsonValue"] | null;
       /** Fastmode */
       fastMode?: boolean | null;
@@ -5350,29 +5350,29 @@ export interface components {
       /** Firstoutputdelayms */
       firstOutputDelayMs?: number | null;
       /** Id */
-      id?: string | null;
+      id?: null | string;
       /** Model */
-      model?: string | null;
+      model?: null | string;
       /** Nativedurationms */
       nativeDurationMs?: number | null;
       /** Nativetimetofirsttokenms */
       nativeTimeToFirstTokenMs?: number | null;
       /** Provider */
-      provider?: string | null;
+      provider?: null | string;
       /** Rootid */
-      rootId?: string | null;
+      rootId?: null | string;
       /** Source */
-      source?: string | null;
+      source?: null | string;
       /** Startedat */
       startedAt?: number | null;
       /** Status */
       status: string;
       /** Terminalsource */
-      terminalSource?: string | null;
+      terminalSource?: null | string;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -5380,10 +5380,10 @@ export interface components {
     AnalyticsUsageAssociation: {
       last: components["schemas"]["AnalyticsProviderTokens"];
       /** Responseid */
-      responseId: string | null;
+      responseId: null | string;
       total: components["schemas"]["AnalyticsProviderTokens"];
       /** Turnid */
-      turnId: string | null;
+      turnId: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -5396,7 +5396,7 @@ export interface components {
       /** Agentid */
       agentId: string;
       /** Agentname */
-      agentName?: string | null;
+      agentName?: null | string;
       /** At */
       at: number;
       /** Baselinemissing */
@@ -5408,23 +5408,23 @@ export interface components {
       counterDomain: "response" | "nativeNotice";
       cumulativeDelta: components["schemas"]["AnalyticsProviderTokens"];
       /** Cyberaccessprogram */
-      cyberAccessProgram?: string | null;
+      cyberAccessProgram?: null | string;
       /** Daybreakenabled */
       daybreakEnabled?: boolean | null;
       delta: components["schemas"]["AnalyticsProviderTokens"];
       /** Effort */
-      effort?: string | null;
+      effort?: null | string;
       /** Fastmode */
       fastMode?: boolean | null;
       /** Fingerprint */
-      fingerprint?: string | null;
+      fingerprint?: null | string;
       /** Id */
       id: string;
       /** Inputtokensareuncached */
       inputTokensAreUncached?: boolean | null;
       last: components["schemas"]["AnalyticsProviderTokens"];
       /** Model */
-      model?: string | null;
+      model?: null | string;
       /** Modelcontextwindow */
       modelContextWindow: number | null;
       /** Noticeat */
@@ -5432,7 +5432,7 @@ export interface components {
       noticeLast?: components["schemas"]["AnalyticsProviderTokens"] | null;
       noticeTotal?: components["schemas"]["AnalyticsProviderTokens"] | null;
       /** Provider */
-      provider?: string | null;
+      provider?: null | string;
       raw?: components["schemas"]["JsonValue"] | null;
       rawTokenUsageRecord?: components["schemas"]["JsonValue"] | null;
       /** Recordedat */
@@ -5441,30 +5441,30 @@ export interface components {
       /** Reset */
       reset: boolean | null;
       /** Responseid */
-      responseId?: string | null;
+      responseId?: null | string;
       /** Rootid */
       rootId: string;
       /** Source */
       source: string;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
       /** Timestampsource */
       timestampSource: string;
       total: components["schemas"]["AnalyticsProviderTokens"];
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
       turnUsage?: components["schemas"]["AnalyticsProviderTokens"] | null;
       /** Usagesource */
-      usageSource?: string | null;
+      usageSource?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
     /** AnnotationBody */
     AnnotationBody: {
       /** Agent */
-      agent?: string | null;
+      agent?: null | string;
       /** Id */
-      id?: string | null;
+      id?: null | string;
       /** Line */
       line: number;
       /** Path */
@@ -5472,7 +5472,7 @@ export interface components {
       /** Text */
       text: string;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
     };
     /** AnnotationReceipt */
     AnnotationReceipt: {
@@ -5495,7 +5495,7 @@ export interface components {
       /** Text */
       text: string;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
     };
     /** AnnotationRecord */
     AnnotationRecord: {
@@ -5514,7 +5514,7 @@ export interface components {
       /** Text */
       text: string;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
     };
     /**
      * AnswerBody
@@ -5553,7 +5553,7 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Openurl */
-      openUrl?: string | null;
+      openUrl?: null | string;
       /** Replayed */
       replayed?: boolean | null;
       /**
@@ -5706,9 +5706,9 @@ export interface components {
       /** Agent */
       agent: string;
       /** Base64 */
-      base64?: string | null;
+      base64?: null | string;
       /** Data */
-      data?: string | null;
+      data?: null | string;
       /** Id */
       id?: string | null;
       /** Name */
@@ -5763,9 +5763,9 @@ export interface components {
       /** Assets */
       assets?: components["schemas"]["TranscriptAsset"][] | null;
       /** Prefixtext */
-      prefixText?: string | null;
+      prefixText?: null | string;
       /** Text */
-      text?: string | null;
+      text?: null | string;
     };
     /** BranchRequest */
     BranchRequest: {
@@ -5788,12 +5788,12 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       accountTransfer?:
         | components["schemas"]["AccountTransferSummaryDto"]
         | null;
       /** Accounttransferid */
-      accountTransferId?: string | null;
+      accountTransferId?: null | string;
       activity?: components["schemas"]["AgentActivity"] | null;
       agentMode?: components["schemas"]["AgentMode"] | null;
       /** Agentmoderevision */
@@ -5820,18 +5820,18 @@ export interface components {
       contextUsage?: components["schemas"]["ContextUsageDto"] | null;
       convertedFromLead?: components["schemas"]["ConvertedFromLeadDto"] | null;
       /** Created */
-      created?: number | null;
+      created?: null | number;
       /** Cwd */
-      cwd?: string | null;
+      cwd?: null | string;
       /** Cyberaccessprogram */
-      cyberAccessProgram?: string | null;
+      cyberAccessProgram?: null | string;
       /** Daybreakenabled */
       daybreakEnabled?: boolean | null;
       /** Deletedat */
-      deletedAt?: number | null;
+      deletedAt?: null | number;
       draft?: components["schemas"]["BranchDraft"] | null;
       /** Effort */
-      effort?: string | null;
+      effort?: null | string;
       /** Empty */
       empty?: boolean | null;
       /** Environment */
@@ -5839,7 +5839,7 @@ export interface components {
       /** Epoch */
       epoch?: number | null;
       /** Error */
-      error?: components["schemas"]["NativeProviderError"] | string | null;
+      error?: components["schemas"]["NativeProviderError"] | null | string;
       /** Executionmode */
       executionMode?: ("vm" | "native") | null;
       /** Fastmode */
@@ -5851,29 +5851,29 @@ export interface components {
       /** Hasunread */
       hasUnread?: boolean | null;
       /** Hostprojectpath */
-      hostProjectPath?: string | null;
+      hostProjectPath?: null | string;
       /** Id */
       id: string;
       /** Imageworkspace */
       imageWorkspace?: boolean | null;
       /** Imageworkspacebaseref */
-      imageWorkspaceBaseRef?: string | null;
+      imageWorkspaceBaseRef?: null | string;
       /** Imageworkspacebaserepo */
-      imageWorkspaceBaseRepo?: string | null;
+      imageWorkspaceBaseRepo?: null | string;
       /** Imageworkspacecreatedat */
-      imageWorkspaceCreatedAt?: number | null;
+      imageWorkspaceCreatedAt?: null | number;
       /** Imageworkspaceerror */
-      imageWorkspaceError?: string | null;
+      imageWorkspaceError?: null | string;
       /** Imageworkspacehasgit */
       imageWorkspaceHasGit?: boolean | null;
       /** Imageworkspacephase */
-      imageWorkspacePhase?: string | null;
+      imageWorkspacePhase?: null | string;
       /** Imageworkspaceready */
       imageWorkspaceReady?: boolean | null;
       /** Imageworkspacerepo */
-      imageWorkspaceRepo?: string | null;
+      imageWorkspaceRepo?: null | string;
       /** Imageworkspacesubpath */
-      imageWorkspaceSubpath?: string | null;
+      imageWorkspaceSubpath?: null | string;
       /** Inflight */
       inFlight?: boolean | null;
       /** Islead */
@@ -5881,31 +5881,31 @@ export interface components {
       /** Kind */
       kind?: "agent" | null;
       /** Lastanswer */
-      lastAnswer?: string | null;
+      lastAnswer?: null | string;
       /** Lastcompletedturn */
-      lastCompletedTurn?: string | null;
+      lastCompletedTurn?: null | string;
       /** Lastcompletedturnstatus */
-      lastCompletedTurnStatus?: string | null;
+      lastCompletedTurnStatus?: null | string;
       /** Lastevent */
-      lastEvent?: string | null;
+      lastEvent?: null | string;
       /** Lastreadat */
-      lastReadAt?: number | null;
+      lastReadAt?: null | number;
       /** Launcheralive */
       launcherAlive?: boolean | null;
       /** Layrerror */
-      layrError?: string | null;
+      layrError?: null | string;
       /** Layrline */
-      layrLine?: string | null;
+      layrLine?: null | string;
       /** Layrprojectid */
-      layrProjectId?: string | null;
+      layrProjectId?: null | string;
       /** Layrready */
       layrReady?: boolean | null;
       /** Layrstateid */
-      layrStateId?: string | null;
+      layrStateId?: null | string;
       /** Manualname */
       manualName?: boolean | null;
       /** Model */
-      model?: string | null;
+      model?: null | string;
       movedFrom?: components["schemas"]["MovePointerDto"] | null;
       movedTo?: components["schemas"]["MovePointerDto"] | null;
       /**
@@ -5914,11 +5914,11 @@ export interface components {
        */
       moveImportPending?: boolean;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Nativeerror */
-      nativeError?: string | null;
+      nativeError?: null | string;
       /** Nativelimiterrorat */
-      nativeLimitErrorAt?: number | null;
+      nativeLimitErrorAt?: null | number;
       nativeRelease?: components["schemas"]["AgentNativeRelease"] | null;
       nativeSafetyBuffering?:
         | components["schemas"]["NativeSafetyBufferingRecord"]
@@ -5934,33 +5934,33 @@ export interface components {
       /** Nextturnsettingssupported */
       nextTurnSettingsSupported?: boolean | null;
       /** Orchestratorid */
-      orchestratorId?: string | null;
+      orchestratorId?: null | string;
       /** Orchestratorname */
-      orchestratorName?: string | null;
+      orchestratorName?: null | string;
       overview?: components["schemas"]["AgentOverview"] | null;
       /** Paneldataversion */
       panelDataVersion?: number | null;
       /** Panelversion */
       panelVersion?: number | null;
       /** Parentid */
-      parentId?: string | null;
+      parentId?: null | string;
       /** Parkedevent */
-      parkedEvent?: string | null;
+      parkedEvent?: null | string;
       pendingSettings?: components["schemas"]["ExecutionSettingsDto"] | null;
       /** Pendingsettingsaccountkey */
-      pendingSettingsAccountKey?: string | null;
+      pendingSettingsAccountKey?: null | string;
       /** Pinned */
       pinned?: boolean | null;
       /** Project */
-      project?: string | null;
+      project?: null | string;
       /** Projectfolder */
-      projectFolder?: string | null;
+      projectFolder?: null | string;
       /** Projectfolderrevision */
       projectFolderRevision?: number | null;
       /** Projectid */
-      projectId?: string | null;
+      projectId?: null | string;
       /** Projectserverid */
-      projectServerId?: string | null;
+      projectServerId?: null | string;
       provider?: components["schemas"]["AgentProvider"] | null;
       queuedSettings?: components["schemas"]["ExecutionSettingsDto"] | null;
       quickCreate?: components["schemas"]["JsonValue"] | null;
@@ -5971,37 +5971,37 @@ export interface components {
       remoteOrigin?: components["schemas"]["RemoteParentLinkDto"] | null;
       remoteWorker?: components["schemas"]["RemoteWorkerLinkDto"] | null;
       /** Retryat */
-      retryAt?: number | null;
+      retryAt?: null | number;
       reviewDefaults?: components["schemas"]["ReviewDefaultsDto"] | null;
       role?:
         | components["schemas"]["studio_api__sync__models__AgentRole"]
         | null;
       /** Rootid */
-      rootId?: string | null;
+      rootId?: null | string;
       /** Serverid */
-      serverId?: string | null;
+      serverId?: null | string;
       /** Sharedroomid */
-      sharedRoomId?: string | null;
+      sharedRoomId?: null | string;
       source?: components["schemas"]["AgentSource"] | null;
       startAttempt?: components["schemas"]["AgentStartAttempt"] | null;
       status?: components["schemas"]["AgentStatus"] | null;
       /** Statusdetail */
-      statusDetail?: string | null;
+      statusDetail?: null | string;
       /** Subagentconcurrencyversion */
       subagentConcurrencyVersion?: number | null;
       /** Tail */
-      tail?: string | null;
+      tail?: null | string;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
       /** Tokensused */
       tokensUsed?: number | null;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
       turnStatus?: components["schemas"]["AgentStatus"] | null;
       /** Unreadcount */
       unreadCount?: number | null;
       /** Updated */
-      updated?: number | null;
+      updated?: null | number;
       usageResume?: components["schemas"]["AgentEntityUsageResumeDto"] | null;
       voiceState?: components["schemas"]["JsonValue"] | null;
       workerDefaults?: components["schemas"]["WorkerDefaultsDto"] | null;
@@ -6010,9 +6010,9 @@ export interface components {
       /** Workspacemode */
       workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
       /** Workspaceoperation */
-      workspaceOperation?: string | null;
+      workspaceOperation?: null | string;
       /** Worktree */
-      worktree?: boolean | string | null;
+      worktree?: boolean | null | string;
       /** Worktreepreparation */
       worktreePreparation?: ("waiting" | "preparing") | null;
       /** Yolomode */
@@ -6029,38 +6029,38 @@ export interface components {
       /** At */
       at?: number;
       /** Connectionid */
-      connectionId?: string | null;
+      connectionId?: null | string;
       /** Createdat */
       createdAt?: number;
       /** Epoch */
       epoch?: number;
       /** Error */
       error?:
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
-        | null;
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
+        | null
+        | string;
       /** Failedat */
       failedAt?: number;
       /** Id */
@@ -6081,7 +6081,7 @@ export interface components {
       /** Startedat */
       startedAt?: number;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
       /** Turnid */
       turnId?: string;
       /** Verificationitem */
@@ -6114,9 +6114,9 @@ export interface components {
       /** Enabled */
       enabled: boolean;
       /** Reason */
-      reason?: string | null;
+      reason?: null | string;
       /** Skillroot */
-      skillRoot?: string | null;
+      skillRoot?: null | string;
     };
     /** BudgetWaitRecordResponse */
     BudgetWaitRecordResponse: {
@@ -6127,37 +6127,37 @@ export interface components {
       /** Accountkey */
       accountKey?: string;
       /** Action */
-      action?: boolean | string | null;
+      action?: boolean | null | string;
       actionIdentity?: components["schemas"]["StartActionIdentityRecordResponse"];
       /** Actionrequestid */
       actionRequestId?: string;
       /** Admission */
       admission?:
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
-        | null;
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
+        | null
+        | string;
       /** Agentid */
       agentId?: string;
       /** At */
@@ -6170,31 +6170,31 @@ export interface components {
       error?: string;
       /** Events */
       events?: (
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
         | null
+        | string
       )[];
       /** Finishedat */
       finishedAt?: number;
@@ -6216,7 +6216,7 @@ export interface components {
       /** At */
       at: number;
       /** Effort */
-      effort?: string | null;
+      effort?: null | string;
       /** Errors */
       errors: string[];
       /** Managed */
@@ -6235,11 +6235,11 @@ export interface components {
       /** Servers */
       servers: components["schemas"]["JsonValue"][];
       /** Serverscursor */
-      serversCursor?: string | null;
+      serversCursor?: null | string;
       /** Skills */
       skills: components["schemas"]["JsonValue"][];
       /** Skillscursor */
-      skillsCursor?: string | null;
+      skillsCursor?: null | string;
     };
     /**
      * CapacityRetryCause
@@ -6271,7 +6271,7 @@ export interface components {
       /** Cwd */
       cwd?: string;
       /** Dueat */
-      dueAt?: number | null;
+      dueAt?: null | number;
       /** Epoch */
       epoch?: number;
       /** Id */
@@ -6279,7 +6279,7 @@ export interface components {
       /** Maxattempts */
       maxAttempts?: number;
       /** Reason */
-      reason?: string | null;
+      reason?: null | string;
       settings?: components["schemas"]["JsonObjectResponse"];
       /** Status */
       status?: string;
@@ -6310,26 +6310,26 @@ export interface components {
      */
     CapacityRetrySettingsDto: {
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       /** Cyberaccessprogram */
-      cyberAccessProgram?: string | null;
+      cyberAccessProgram?: null | string;
       /** Daybreakenabled */
       daybreakEnabled?: boolean | null;
       /** Effort */
-      effort?: string | null;
+      effort?: null | string;
       /** Fastmode */
       fastMode?: boolean | null;
       /** Model */
-      model?: string | null;
+      model?: null | string;
       /** Nativeeffort */
-      nativeEffort?: string | null;
+      nativeEffort?: null | string;
       /** Profileinstructions */
-      profileInstructions?: string | null;
+      profileInstructions?: null | string;
       role?:
         | components["schemas"]["studio_api__sync__models__AgentRole"]
         | null;
       /** Updatedat */
-      updatedAt?: number | null;
+      updatedAt?: null | number;
       /** Yolomode */
       yoloMode?: boolean | null;
     };
@@ -6359,9 +6359,9 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Diff */
-      diff?: string | null;
+      diff?: null | string;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Files */
       files: components["schemas"]["ChangesFile"][];
       /** Git */
@@ -6371,13 +6371,13 @@ export interface components {
       /** Reportedat */
       reportedAt?: number | null;
       /** Revision */
-      revision?: string | null;
+      revision?: null | string;
       /** Scope */
       scope?: "chat" | null;
       /** Truncated */
       truncated?: boolean | null;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
     };
     /** ChatCreateBody */
     ChatCreateBody: {
@@ -6404,15 +6404,15 @@ export interface components {
       /** Kind */
       kind?: "chat" | null;
       /** Lastmessageat */
-      lastMessageAt?: number | null;
+      lastMessageAt?: null | number;
       /** Members */
       members?: string[] | null;
       /** Messagecount */
       messageCount?: number | null;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Tail */
-      tail?: string | null;
+      tail?: null | string;
     };
     /** ChatMessage */
     ChatMessage: {
@@ -6484,45 +6484,45 @@ export interface components {
       /** Automatic */
       automatic?: boolean | null;
       /** Commit */
-      commit?: string | null;
+      commit?: null | string;
       /** Created */
       created: number;
       /** Cwd */
-      cwd?: string | null;
+      cwd?: null | string;
       /** Data */
       data?: {
         [key: string]: components["schemas"]["JsonValue"];
       } | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Historyboundary */
       historyBoundary?: number | null;
       /** Historyparent */
-      historyParent?: string | null;
+      historyParent?: null | string;
       /** Id */
       id: string;
       /** Label */
-      label?: string | null;
+      label?: null | string;
       /** Message */
-      message?: string | null;
+      message?: null | string;
       /** Path */
-      path?: string | null;
+      path?: null | string;
       /** Ref */
-      ref?: string | null;
+      ref?: null | string;
       /** Revision */
       revision?: number | null;
       /** Rootid */
-      rootId?: string | null;
+      rootId?: null | string;
       /** Source */
-      source?: string | null;
+      source?: null | string;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
       /** Tree */
-      tree?: string | null;
+      tree?: null | string;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
       /** Worktree */
-      worktree?: string | null;
+      worktree?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -6556,9 +6556,9 @@ export interface components {
       /** Agent */
       agent: string;
       /** Checkpoint */
-      checkpoint?: string | null;
+      checkpoint?: null | string;
       /** Checkpoint Id */
-      checkpoint_id?: string | null;
+      checkpoint_id?: null | string;
       /** Expectedtree */
       expectedTree: string;
     };
@@ -6595,45 +6595,45 @@ export interface components {
       /** Automatic */
       automatic?: boolean | null;
       /** Commit */
-      commit?: string | null;
+      commit?: null | string;
       /** Created */
       created: number;
       /** Cwd */
-      cwd?: string | null;
+      cwd?: null | string;
       /** Data */
       data?: {
         [key: string]: components["schemas"]["JsonValue"];
       } | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Historyboundary */
       historyBoundary?: number | null;
       /** Historyparent */
-      historyParent?: string | null;
+      historyParent?: null | string;
       /** Id */
       id: string;
       /** Label */
-      label?: string | null;
+      label?: null | string;
       /** Message */
-      message?: string | null;
+      message?: null | string;
       /** Path */
-      path?: string | null;
+      path?: null | string;
       /** Ref */
-      ref?: string | null;
+      ref?: null | string;
       /** Revision */
       revision?: number | null;
       /** Rootid */
-      rootId?: string | null;
+      rootId?: null | string;
       /** Source */
-      source?: string | null;
+      source?: null | string;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
       /** Tree */
-      tree?: string | null;
+      tree?: null | string;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
       /** Worktree */
-      worktree?: string | null;
+      worktree?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -6649,9 +6649,9 @@ export interface components {
     /** ClaudeBackgroundTask */
     ClaudeBackgroundTask: {
       /** Description */
-      description?: string | null;
+      description?: null | string;
       /** Status */
-      status?: string | null;
+      status?: null | string;
       /** Task Id */
       task_id: string;
     };
@@ -6683,7 +6683,7 @@ export interface components {
     /** ClaudeControlOperation */
     ClaudeControlOperation: {
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /**
        * Phase
        * @enum {string}
@@ -6692,7 +6692,7 @@ export interface components {
       /** Requestid */
       requestId: string;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
     };
     /**
      * ClaudeCustomModel
@@ -6713,7 +6713,7 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Id */
       id: string;
       /**
@@ -6747,11 +6747,11 @@ export interface components {
       /** Codesubmitted */
       codeSubmitted?: boolean | null;
       /** Email */
-      email?: string | null;
+      email?: null | string;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Plan */
-      plan?: string | null;
+      plan?: null | string;
       /** Requestid */
       requestId: string;
       /**
@@ -6760,7 +6760,7 @@ export interface components {
        */
       status: "starting" | "pending" | "ready" | "cancelled" | "error";
       /** Verificationurl */
-      verificationUrl?: string | null;
+      verificationUrl?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -6772,13 +6772,13 @@ export interface components {
       /** Autocompactwindow */
       autoCompactWindow?: number | null;
       /** Binarypath */
-      binaryPath?: string | null;
+      binaryPath?: null | string;
       /** Configdir */
-      configDir?: string | null;
+      configDir?: null | string;
       /** Custommodels */
       customModels?: components["schemas"]["ClaudeCustomModel"][] | null;
       /** Launchargs */
-      launchArgs?: string | null;
+      launchArgs?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -6791,7 +6791,7 @@ export interface components {
       /** Accountkey */
       accountKey?: string;
       /** Connectionid */
-      connectionId?: string | null;
+      connectionId?: null | string;
       /** Epoch */
       epoch?: number;
       /** Events */
@@ -6822,9 +6822,9 @@ export interface components {
     /** ClaudeProfileRequest */
     ClaudeProfileRequest: {
       /** Account Key */
-      account_key?: string | null;
+      account_key?: null | string;
       /** Label */
-      label?: string | null;
+      label?: null | string;
       options?: components["schemas"]["ClaudeOptions"] | null;
     };
     /** ClaudeRollbackResponse */
@@ -6873,13 +6873,13 @@ export interface components {
       /** Autocompactwindow */
       autoCompactWindow?: number | null;
       /** Binarypath */
-      binaryPath?: string | null;
+      binaryPath?: null | string;
       /** Configdir */
-      configDir?: string | null;
+      configDir?: null | string;
       /** Custommodels */
       customModels?: components["schemas"]["ClaudeCustomModel"][] | null;
       /** Launchargs */
-      launchArgs?: string | null;
+      launchArgs?: null | string;
       /** Permissionmode */
       permissionMode?:
         | ("default" | "acceptEdits" | "auto" | "plan" | "bypassPermissions")
@@ -6920,7 +6920,7 @@ export interface components {
       contextWindow?: number | null;
       controlOperation?: components["schemas"]["ClaudeControlOperation"] | null;
       /** Nativeid */
-      nativeId?: string | null;
+      nativeId?: null | string;
       settings?: components["schemas"]["ClaudeSessionSettings"];
       /** Tasks */
       tasks?: components["schemas"]["ClaudeBackgroundTask"][];
@@ -6929,7 +6929,7 @@ export interface components {
       /** Turns */
       turns: components["schemas"]["ClaudeTurn"][];
       /** Version */
-      version?: string | null;
+      version?: null | string;
     };
     /** ClaudeSessionStopTaskRequest */
     ClaudeSessionStopTaskRequest: {
@@ -7000,15 +7000,15 @@ export interface components {
       bytes?: number | null;
       collect?: components["schemas"]["ImageWorkspaceCollectResultRecordResponse"];
       /** Createdat */
-      createdAt?: number | null;
+      createdAt?: null | number;
       /** Freedbytes */
       freedBytes?: number;
       /** Head */
       head?: string;
       /** Mount */
-      mount?: string | null;
+      mount?: null | string;
       /** Path */
-      path?: string | null;
+      path?: null | string;
       /** Phase */
       phase?: string;
       /** Relative */
@@ -7020,7 +7020,7 @@ export interface components {
         [key: string]: string;
       };
       /** Source */
-      source?: string | null;
+      source?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -7032,29 +7032,29 @@ export interface components {
       /** Accountkey */
       accountKey: string;
       /** Createdat */
-      createdAt?: number | null;
+      createdAt?: null | number;
       /** Email */
-      email?: string | null;
+      email?: null | string;
       /** Emailhint */
-      emailHint?: string | null;
+      emailHint?: null | string;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Expectedaccountid */
-      expectedAccountId?: string | null;
+      expectedAccountId?: null | string;
       /** Expiresat */
-      expiresAt?: number | null;
+      expiresAt?: null | number;
       /** Loginid */
-      loginId?: string | null;
+      loginId?: null | string;
       /** Nativecompleted */
       nativeCompleted?: boolean | null;
       /** Reauthaccountkey */
-      reauthAccountKey?: string | null;
+      reauthAccountKey?: null | string;
       /** Requestedlabel */
-      requestedLabel?: string | null;
+      requestedLabel?: null | string;
       /** Requestid */
       requestId: string;
       /** Resolvedaccountkey */
-      resolvedAccountKey?: string | null;
+      resolvedAccountKey?: null | string;
       /**
        * Status
        * @enum {string}
@@ -7068,9 +7068,9 @@ export interface components {
         | "error"
         | "uncertain";
       /** Usercode */
-      userCode?: string | null;
+      userCode?: null | string;
       /** Verificationurl */
-      verificationUrl?: string | null;
+      verificationUrl?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -7083,11 +7083,11 @@ export interface components {
        */
       action?: "submit" | "respond";
       /** Complaint Id */
-      complaint_id?: string | null;
+      complaint_id?: null | string;
       /** Id */
       id: string;
       /** Lead */
-      lead?: string | null;
+      lead?: null | string;
       /** Status */
       status?: ("in_progress" | "resolved" | "declined") | null;
       /** Text */
@@ -7102,9 +7102,9 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Author */
-      author?: string | null;
+      author?: null | string;
       /** Authorname */
-      authorName?: string | null;
+      authorName?: null | string;
       /** Created */
       created?: number | null;
       /** Id */
@@ -7112,9 +7112,9 @@ export interface components {
       /** Leaddeleted */
       leadDeleted?: boolean | null;
       /** Leadid */
-      leadId?: string | null;
+      leadId?: null | string;
       /** Leadname */
-      leadName?: string | null;
+      leadName?: null | string;
       /** Leadstopped */
       leadStopped?: boolean | null;
       /** Needsresponse */
@@ -7129,7 +7129,7 @@ export interface components {
       /** Text */
       text: string;
       /** Title */
-      title?: string | null;
+      title?: null | string;
       /** Updated */
       updated?: number | null;
       /** Version */
@@ -7138,26 +7138,26 @@ export interface components {
     /** ComplaintEntityDto */
     ComplaintEntityDto: {
       /** Author */
-      author?: string | null;
+      author?: null | string;
       /** Authorname */
-      authorName?: string | null;
+      authorName?: null | string;
       /** Created */
-      created?: number | null;
+      created?: null | number;
       /** Id */
       id: string;
       /** Leadid */
-      leadId?: string | null;
+      leadId?: null | string;
       /** Leadname */
-      leadName?: string | null;
+      leadName?: null | string;
       /** Needsuserresponse */
       needsUserResponse?: boolean | null;
       /** Readat */
-      readAt?: number | null;
+      readAt?: null | number;
       /** Recipient */
       recipient?: ("user" | "lead") | null;
       status?: components["schemas"]["ComplaintStatus"] | null;
       /** Title */
-      title?: string | null;
+      title?: null | string;
       /** Version */
       version?: number | null;
     };
@@ -7197,7 +7197,7 @@ export interface components {
       /** Leadid */
       leadId: string;
       /** Readat */
-      readAt?: number | null;
+      readAt?: null | number;
       /** Recipient */
       recipient?: string;
       /** Respondedat */
@@ -7208,31 +7208,31 @@ export interface components {
       response?: string;
       /** Responses */
       responses?: (
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
         | null
+        | string
       )[];
       /** Sourcetype */
       sourceType?: string;
@@ -7321,23 +7321,23 @@ export interface components {
     /** ConnectionCheckDto */
     ConnectionCheckDto: {
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       /** At */
       at: number;
       /** Epoch */
       epoch?: number | null;
       /** Nativestate */
-      nativeState?: string | null;
+      nativeState?: null | string;
       /** Previouserror */
-      previousError?: string | null;
+      previousError?: null | string;
       /** Readerror */
-      readError?: string | null;
+      readError?: null | string;
       /** Restartturnstatus */
-      restartTurnStatus?: string | null;
+      restartTurnStatus?: null | string;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
     };
     /** ConnectionCheckRecordResponse */
     ConnectionCheckRecordResponse: {
@@ -7354,9 +7354,9 @@ export interface components {
       /** Nativestate */
       nativeState?: string;
       /** Previouserror */
-      previousError?: string | null;
+      previousError?: null | string;
       /** Readerror */
-      readError?: string | null;
+      readError?: null | string;
       /** Restartturnstatus */
       restartTurnStatus?: string;
       /** Threadid */
@@ -7375,7 +7375,7 @@ export interface components {
       /** At */
       at?: number;
       /** Attemptid */
-      attemptId?: string | null;
+      attemptId?: null | string;
       /** Automatic */
       automatic?: boolean;
       /** Completiondelivered */
@@ -7388,31 +7388,31 @@ export interface components {
       outcome?: string;
       /** Previouserror */
       previousError?:
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
-        | null;
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
+        | null
+        | string;
       /** Queuedinputpreserved */
       queuedInputPreserved?: boolean;
       /** Source */
@@ -7442,59 +7442,59 @@ export interface components {
       created?: number;
       /** Error */
       error?:
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
-        | null;
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
+        | null
+        | string;
       historicalInputProof?: components["schemas"]["HistoricalInputProofRecordResponse"];
       /** Historicalinputs */
       historicalInputs?: (
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
         | null
+        | string
       )[];
       /** Id */
       id?: string;
@@ -7508,33 +7508,33 @@ export interface components {
       repairedEventIds?: string[];
       /** Result */
       result?:
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
-        | null;
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
+        | null
+        | string;
       /** Rpcid */
-      rpcId?: string | number;
+      rpcId?: number | string;
       /** Rpcmethod */
       rpcMethod?: string;
       settings?: components["schemas"]["JsonObjectResponse"];
@@ -7564,31 +7564,31 @@ export interface components {
       _syncEntitiesAfter?: number | null;
       /** Ancestry */
       ancestry?: (
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
         | null
+        | string
       )[];
       /** Copybytes */
       copyBytes?: number;
@@ -7606,40 +7606,40 @@ export interface components {
       sourceBytes?: number;
       /** Sourcefileidentity */
       sourceFileIdentity?: (
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
         | null
+        | string
       )[];
       /** Sourcepath */
       sourcePath?: string;
       /** Sourcesha256 */
       sourceSha256?: string;
       /** Terminalcompletedat */
-      terminalCompletedAt?: number | null;
+      terminalCompletedAt?: null | number;
       /** Terminalturnid */
-      terminalTurnId?: string | null;
+      terminalTurnId?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -7703,58 +7703,58 @@ export interface components {
       checks?: number;
       /** Error */
       error?:
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
-        | null;
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
+        | null
+        | string;
       /** Events */
       events?: (
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
         | null
+        | string
       )[];
       /** Firstat */
       firstAt?: number;
@@ -7769,31 +7769,31 @@ export interface components {
       lastTaskCheckAt?: number;
       /** Lasttaskcheckerror */
       lastTaskCheckError?:
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
-        | null;
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
+        | null
+        | string;
       /** Nextcheckat */
       nextCheckAt?: number;
       /** Scope */
@@ -7811,7 +7811,7 @@ export interface components {
     /** ContextUsageDto */
     ContextUsageDto: {
       /** At */
-      at?: number | null;
+      at?: null | number;
       /** Tokens */
       tokens: number | null;
       /** Window */
@@ -7836,7 +7836,7 @@ export interface components {
     ConversationRequest: {
       agent_mode?: components["schemas"]["AgentMode"] | null;
       /** Cwd */
-      cwd?: string | null;
+      cwd?: null | string;
       /** Daybreak Enabled */
       daybreak_enabled?: boolean | null;
       /** Effort */
@@ -7929,7 +7929,7 @@ export interface components {
       /** Concurrency */
       concurrency?: number | null;
       /** Cwd */
-      cwd?: string | null;
+      cwd?: null | string;
       /** Daybreak Enabled */
       daybreak_enabled?: boolean | null;
       /** Effort */
@@ -7943,7 +7943,7 @@ export interface components {
       /** Model */
       model?: string | null;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Parent */
       parent?: string | null;
       /** Profile Id */
@@ -8000,7 +8000,7 @@ export interface components {
       /** Account Key */
       account_key?: string | null;
       /** Cwd */
-      cwd?: string | null;
+      cwd?: null | string;
       /** Daybreak Enabled */
       daybreak_enabled?: boolean | null;
       /** Effort */
@@ -8014,7 +8014,7 @@ export interface components {
       /** Previous */
       previous?: string | null;
       /** Project Folder */
-      project_folder?: string | null;
+      project_folder?: null | string;
       /** Project Id */
       project_id?: string | null;
       /** Project Server Id */
@@ -8082,11 +8082,11 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Epoch */
-      epoch?: (string | number | null)[];
+      epoch?: (number | null | string)[];
       /** Revision */
       revision?: number;
       /** Text */
-      text?: string | null;
+      text?: null | string;
       /** Version */
       version?: string;
     } & {
@@ -8122,7 +8122,7 @@ export interface components {
       protocol: number;
       providerVersions: components["schemas"]["ProviderVersions"];
       /** Publicorigin */
-      publicOrigin: string | null;
+      publicOrigin: null | string;
       /** Restartenvironment */
       restartEnvironment: {
         [key: string]: string;
@@ -8131,17 +8131,17 @@ export interface components {
       stateDir: string;
       /** Supervisor */
       supervisor:
-        | components["schemas"]["SupervisorHealth"]
         | components["schemas"]["SupervisorError"]
+        | components["schemas"]["SupervisorHealth"]
         | null;
       /** Supervisorerror */
-      supervisorError: string | null;
+      supervisorError: null | string;
       /** Supervisorfallback */
       supervisorFallback: boolean;
       /** Supervisormode */
       supervisorMode: boolean;
       /** Supervisornotice */
-      supervisorNotice: string | null;
+      supervisorNotice: null | string;
       /** Supervisorrequired */
       supervisorRequired: boolean;
     };
@@ -8217,11 +8217,11 @@ export interface components {
       /** Nativeaccounts */
       nativeAccounts: {
         [key: string]:
+          | components["schemas"]["NativeErrorAccount"]
           | (
-              | components["schemas"]["NativeCodexAccount"]
               | components["schemas"]["NativeClaudeAccount"]
-            )
-          | components["schemas"]["NativeErrorAccount"];
+              | components["schemas"]["NativeCodexAccount"]
+            );
       };
       processTree: components["schemas"]["ProcessTree"];
       queues: components["schemas"]["QueueSizes"];
@@ -8232,7 +8232,7 @@ export interface components {
       /** Runtimelocksamples */
       runtimeLockSamples: components["schemas"]["RuntimeLockSample"][];
       /** Searchmigrationerror */
-      searchMigrationError: string | null;
+      searchMigrationError: null | string;
       sqliteContention: components["schemas"]["SqliteContention"];
       /** Studioloadedthreads */
       studioLoadedThreads: number;
@@ -8247,7 +8247,7 @@ export interface components {
       /** Directories */
       directories: components["schemas"]["DirectoryEntry"][];
       /** Parent */
-      parent: string | null;
+      parent: null | string;
       /** Path */
       path: string;
     };
@@ -8281,7 +8281,7 @@ export interface components {
       /** Threadid */
       threadId?: string;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -8291,7 +8291,7 @@ export interface components {
      */
     DiscoveredServer: {
       /** Alias */
-      alias?: string | null;
+      alias?: null | string;
       /** Autopair */
       autoPair?: boolean | null;
       /** Clientid */
@@ -8308,19 +8308,19 @@ export interface components {
       /** Label */
       label: string;
       /** Lastaccess */
-      lastAccess: number | null;
+      lastAccess: null | number;
       /** Lastseen */
-      lastSeen?: number | null;
+      lastSeen?: null | number;
       /** Origin */
-      origin: string | null;
+      origin: null | string;
       /** Publickey */
       publicKey: string;
       /** Reachability */
       reachability?: ("reachable" | "unreachable" | "unknown") | null;
       /** Revoked */
-      revoked: number | null;
+      revoked: null | number;
       /** Serverid */
-      serverId: string | null;
+      serverId: null | string;
       /**
        * Status
        * @enum {string}
@@ -8352,7 +8352,7 @@ export interface components {
       /** Label */
       label: string;
       /** Origin */
-      origin: string | null;
+      origin: null | string;
       /**
        * Protocol
        * @constant
@@ -8363,7 +8363,7 @@ export interface components {
       /** Serverid */
       serverId: string;
       /** Tailscaleuser */
-      tailscaleUser: string | null;
+      tailscaleUser: null | string;
     };
     /** DraftDocumentInput */
     DraftDocumentInput: {
@@ -8404,9 +8404,9 @@ export interface components {
       /** Kind */
       kind?: ("chat" | "spawn") | null;
       /** Source */
-      source?: string | null;
+      source?: null | string;
       /** Target */
-      target?: string | null;
+      target?: null | string;
     };
     /** EmptyTransferRecoveryRecordResponse */
     EmptyTransferRecoveryRecordResponse: {
@@ -8432,31 +8432,31 @@ export interface components {
       epoch?: number;
       /** Error */
       error?:
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
-        | null;
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
+        | null
+        | string;
       /** Failedinputids */
       failedInputIds?: string[];
       /** Id */
@@ -8472,31 +8472,31 @@ export interface components {
       sourceAccountKey?: string;
       /** Sourcehistorymissing */
       sourceHistoryMissing?:
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
-        | null;
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
+        | null
+        | string;
       sourceState?: components["schemas"]["LazyAccountTransferSourceRecordResponse"];
       /** Sourcethreadid */
       sourceThreadId?: string;
@@ -8552,7 +8552,7 @@ export interface components {
        * Code
        * @default null
        */
-      code?: string | null;
+      code?: null | string;
       /** @default null */
       details?: components["schemas"]["JsonValue"] | null;
       /** Error */
@@ -8583,17 +8583,17 @@ export interface components {
     /** EventEntityDto */
     EventEntityDto: {
       /** Agent */
-      agent?: string | null;
+      agent?: null | string;
       /** Created */
-      created?: number | null;
+      created?: null | number;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Id */
       id: string;
       /** Kind */
-      kind?: string | null;
+      kind?: null | string;
       /** Status */
-      status?: string | null;
+      status?: null | string;
     };
     /**
      * ExecutionAction
@@ -8612,7 +8612,7 @@ export interface components {
     /** ExecutionAttempt */
     ExecutionAttempt: {
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       /** Action */
       action?:
         | components["schemas"]["ExecutionAction"]
@@ -8620,25 +8620,25 @@ export interface components {
         | null;
       actionIdentity?: components["schemas"]["ExecutionActionIdentity"] | null;
       /** Actionrequestid */
-      actionRequestId?: string | null;
+      actionRequestId?: null | string;
       /** Activeatreservation */
       activeAtReservation?: boolean | null;
       /** Capacityretryid */
-      capacityRetryId?: string | null;
+      capacityRetryId?: null | string;
       claudeInputRejection?:
         | components["schemas"]["ExecutionInputRejection"]
         | null;
       claudeInputRequest?: components["schemas"]["ExecutionClaudeInput"] | null;
       /** Clauderetryof */
-      claudeRetryOf?: string | null;
+      claudeRetryOf?: null | string;
       /** Connectionid */
-      connectionId?: string | null;
+      connectionId?: null | string;
       /** Created */
-      created?: number | null;
+      created?: null | number;
       /** Epoch */
       epoch?: number | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Events */
       events?: string[] | null;
       executionOutcome?: components["schemas"]["ExecutionStatus"] | null;
@@ -8646,30 +8646,30 @@ export interface components {
       id: string;
       modelSettings?: components["schemas"]["SnapshotModelSettingsDto"] | null;
       /** Nativeoperationid */
-      nativeOperationId?: string | null;
+      nativeOperationId?: null | string;
       /** Notsubmittedreason */
-      notSubmittedReason?: string | null;
+      notSubmittedReason?: null | string;
       /** Observedturnid */
-      observedTurnId?: string | null;
+      observedTurnId?: null | string;
       /** Prepareattemptid */
-      prepareAttemptId?: string | null;
+      prepareAttemptId?: null | string;
       /** Prepareerror */
-      prepareError?: string | null;
+      prepareError?: null | string;
       /** Responseerror */
-      responseError?: string | null;
+      responseError?: null | string;
       /** Resultrunid */
-      resultRunId?: string | null;
+      resultRunId?: null | string;
       /** Reviewtarget */
       reviewTarget?:
         | (
-            | components["schemas"]["ReviewUncommittedTargetDto"]
             | components["schemas"]["ReviewBaseBranchTargetDto"]
             | components["schemas"]["ReviewCommitTargetDto"]
             | components["schemas"]["ReviewCustomTargetDto"]
+            | components["schemas"]["ReviewUncommittedTargetDto"]
           )
         | null;
       /** Runid */
-      runId?: string | null;
+      runId?: null | string;
       /** Settingsfixed */
       settingsFixed?: boolean | null;
       submission?: components["schemas"]["ExecutionStatus"] | null;
@@ -8677,9 +8677,9 @@ export interface components {
       submitted?: boolean | null;
       supervisorIdentity?: components["schemas"]["SupervisorIdentity"] | null;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
       turnStatus?: components["schemas"]["ExecutionStatus"] | null;
     };
     /** ExecutionClaudeInput */
@@ -8708,20 +8708,20 @@ export interface components {
     /** ExecutionEffect */
     ExecutionEffect: {
       /** Attemptid */
-      attemptId?: string | null;
+      attemptId?: null | string;
       /** Id */
       id: string;
       kind: components["schemas"]["ExecutionEffectKind"];
       /** Outcome */
-      outcome?: string | null;
+      outcome?: null | string;
       /** Referenceid */
       referenceId: string;
       /** Requestid */
-      requestId?: string | null;
+      requestId?: null | string;
       /** Resultreference */
-      resultReference?: string | null;
+      resultReference?: null | string;
       /** Revision */
-      revision?: string | null;
+      revision?: null | string;
       /** Runid */
       runId: string;
       /** Status */
@@ -8730,7 +8730,7 @@ export interface components {
         | ("answered" | "expired" | "lost")
         | null;
       /** Taskid */
-      taskId?: string | null;
+      taskId?: null | string;
     };
     /**
      * ExecutionEffectKind
@@ -8790,7 +8790,7 @@ export interface components {
       /** Threadid */
       threadId: string;
       /** Turnid */
-      turnId: string | null;
+      turnId: null | string;
     };
     /** ExecutionLedger */
     ExecutionLedger: {
@@ -8804,34 +8804,34 @@ export interface components {
     /** ExecutionNode */
     ExecutionNode: {
       /** Agentid */
-      agentId?: string | null;
+      agentId?: null | string;
       /** Error */
       error?:
-        | string
         | {
             [key: string]: components["schemas"]["JsonValue"];
           }
-        | null;
+        | null
+        | string;
       /** Id */
       id: string;
       kind: components["schemas"]["ExecutionNodeKind"];
       /** Parentturnid */
-      parentTurnId?: string | null;
+      parentTurnId?: null | string;
       /** Result */
-      result?: string | null;
+      result?: null | string;
       /** Resultturnid */
-      resultTurnId?: string | null;
+      resultTurnId?: null | string;
       /** Runid */
       runId: string;
       /** Status */
       status?:
-        | components["schemas"]["ExecutionStatus"]
         | components["schemas"]["AgentStatus"]
+        | components["schemas"]["ExecutionStatus"]
         | null;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
     };
     /**
      * ExecutionNodeKind
@@ -8841,11 +8841,11 @@ export interface components {
     /** ExecutionRecovery */
     ExecutionRecovery: {
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       /** At */
-      at?: number | null;
+      at?: null | number;
       /** Attemptid */
-      attemptId?: string | null;
+      attemptId?: null | string;
       /** Automatic */
       automatic?: boolean | null;
       /** Autowake */
@@ -8853,55 +8853,55 @@ export interface components {
       /** Completiondelivered */
       completionDelivered?: boolean | null;
       /** Connectionid */
-      connectionId?: string | null;
+      connectionId?: null | string;
       /** Detail */
-      detail?: string | null;
+      detail?: null | string;
       /** Epoch */
       epoch?: number | null;
       /** Error */
       error?:
-        | string
         | {
             [key: string]: components["schemas"]["JsonValue"];
           }
-        | null;
+        | null
+        | string;
       /** Eventid */
-      eventId?: string | null;
+      eventId?: null | string;
       /** Eventids */
       eventIds?: string[] | null;
       /** Heldat */
-      heldAt?: number | null;
+      heldAt?: null | number;
       /** Holdoperations */
       holdOperations?: components["schemas"]["ExecutionHeldOperation"][] | null;
       /** Observedat */
-      observedAt?: number | null;
+      observedAt?: null | number;
       /** Outcome */
-      outcome?: string | null;
+      outcome?: null | string;
       /** Previouserror */
       previousError?:
-        | string
         | {
             [key: string]: components["schemas"]["JsonValue"];
           }
-        | null;
+        | null
+        | string;
       /** Reason */
-      reason?: string | null;
+      reason?: null | string;
       /** Reattachedat */
-      reattachedAt?: number | null;
+      reattachedAt?: null | number;
       /** Reconciledat */
-      reconciledAt?: number | null;
+      reconciledAt?: null | number;
       /** Source */
-      source?: string | null;
+      source?: null | string;
       stage?: components["schemas"]["RecoveryStage"] | null;
       startAttempt?: components["schemas"]["ExecutionAttempt"] | null;
       status?: components["schemas"]["ExecutionStatus"] | null;
       /** Supersededat */
-      supersededAt?: number | null;
+      supersededAt?: null | number;
       supervisor?: components["schemas"]["SupervisorIdentity"] | null;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
     };
     /** ExecutionRun */
     ExecutionRun: {
@@ -8923,21 +8923,21 @@ export interface components {
       epoch: number;
       /** Error */
       error?:
-        | string
         | {
             [key: string]: components["schemas"]["JsonValue"];
           }
-        | null;
+        | null
+        | string;
       /** Finished */
-      finished?: number | null;
+      finished?: null | number;
       /** Firstattemptid */
-      firstAttemptId: string | null;
+      firstAttemptId: null | string;
       /** Id */
       id: string;
       /** Inputeventids */
       inputEventIds: string[];
       /** Latestattemptid */
-      latestAttemptId: string | null;
+      latestAttemptId: null | string;
       /** Nodes */
       nodes: components["schemas"]["ExecutionNode"][];
       /** Reconciled */
@@ -8946,35 +8946,35 @@ export interface components {
       requestIds: string[];
       restartRecovery?: components["schemas"]["ExecutionRecovery"] | null;
       /** Result */
-      result?: string | null;
+      result?: null | string;
       /** Resultitemid */
-      resultItemId?: string | null;
+      resultItemId?: null | string;
       /** Rootattemptid */
-      rootAttemptId: string | null;
+      rootAttemptId: null | string;
       status: components["schemas"]["ExecutionStatus"];
       /** Threadid */
-      threadId: string | null;
+      threadId: null | string;
       /** Turnid */
-      turnId: string | null;
+      turnId: null | string;
     };
     /** ExecutionSettingsDto */
     ExecutionSettingsDto: {
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       /** Cyberaccessprogram */
-      cyberAccessProgram?: string | null;
+      cyberAccessProgram?: null | string;
       /** Daybreakenabled */
       daybreakEnabled?: boolean | null;
       /** Effort */
-      effort?: string | null;
+      effort?: null | string;
       /** Fastmode */
       fastMode?: boolean | null;
       /** Model */
-      model?: string | null;
+      model?: null | string;
       /** Nativeeffort */
-      nativeEffort?: string | null;
+      nativeEffort?: null | string;
       /** Updatedat */
-      updatedAt?: number | null;
+      updatedAt?: null | number;
     };
     /**
      * ExecutionStatus
@@ -9031,7 +9031,7 @@ export interface components {
       /** Label */
       label: string;
       /** Leadname */
-      leadName?: string | null;
+      leadName?: null | string;
       /** Origin */
       origin: string;
       /**
@@ -9045,7 +9045,7 @@ export interface components {
       stateId: string;
       tailscaleStatus?: components["schemas"]["TailscaleStatus"] | null;
       /** Tailscaleuser */
-      tailscaleUser?: string | null;
+      tailscaleUser?: null | string;
       /** Token */
       token: string;
     };
@@ -9054,7 +9054,7 @@ export interface components {
       /** Created */
       created: number;
       /** Expecteduser */
-      expectedUser?: string | null;
+      expectedUser?: null | string;
       /** Expires */
       expires: number;
       /** Id */
@@ -9077,11 +9077,11 @@ export interface components {
     /** FederationPeer */
     FederationPeer: {
       /** Created */
-      created: number | null;
+      created: null | number;
       /** Label */
       label: string;
       /** Lasterror */
-      lastError: string | null;
+      lastError: null | string;
       /** Localapproved */
       localApproved: boolean;
       /** Origin */
@@ -9094,10 +9094,10 @@ export interface components {
       stateId: string;
       status: components["schemas"]["PeerStatus"];
       /** Updated */
-      updated: number | null;
+      updated: null | number;
       whoisStatus: components["schemas"]["WhoisStatus"] | null;
       /** Whoisuser */
-      whoisUser: string | null;
+      whoisUser: null | string;
     };
     /** FederationRoom */
     FederationRoom: {
@@ -9291,31 +9291,31 @@ export interface components {
       conflict?: string;
       /** Conflicts */
       conflicts?: (
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
         | null
+        | string
       )[];
       /** Path */
       path?: string;
@@ -9337,7 +9337,7 @@ export interface components {
       /** Data */
       data?: components["schemas"]["JsonValue"][];
       /** Nextcursor */
-      nextCursor?: string | null;
+      nextCursor?: null | string;
     };
     /** ImportRequest */
     ImportRequest: {
@@ -9347,7 +9347,7 @@ export interface components {
        */
       account_key?: string;
       /** Cwd */
-      cwd?: string | null;
+      cwd?: null | string;
       /** Id */
       id?: string | null;
       /** Model */
@@ -9403,7 +9403,7 @@ export interface components {
       sourceAccountKey?: string;
       sourceState?: components["schemas"]["LazyAccountTransferSourceRecordResponse"];
       /** Sourcethreadid */
-      sourceThreadId?: string | null;
+      sourceThreadId?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -9416,102 +9416,102 @@ export interface components {
       claudeOptions?: components["schemas"]["JsonObjectResponse"] | null;
       /** Cyberaccessprogram */
       cyberAccessProgram?:
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
-        | null;
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
+        | null
+        | string;
       /** Daybreakenabled */
       daybreakEnabled?: boolean | null;
       /** Effort */
-      effort?: string | null;
+      effort?: null | string;
       /** Error */
       error?:
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
-        | null;
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
+        | null
+        | string;
       /** Executionsettingsaccountkey */
       executionSettingsAccountKey?: string;
       /** Fastmode */
       fastMode?: boolean | null;
       /** Model */
-      model?: string | null;
+      model?: null | string;
       /** Nativeeffort */
-      nativeEffort?: string | null;
+      nativeEffort?: null | string;
       /** Nativefailurehold */
       nativeFailureHold?:
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
-        | null;
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
+        | null
+        | string;
       pendingSettings?:
         | components["schemas"]["PendingSettingsRecordResponse"]
         | null;
       /** Pendingsettingsaccountkey */
-      pendingSettingsAccountKey?: string | null;
+      pendingSettingsAccountKey?: null | string;
       /**
        * Provider
        * @enum {string}
@@ -9536,7 +9536,7 @@ export interface components {
       /** Credit Id */
       credit_id: string;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       limits: components["schemas"]["UsageLimitsResponse"];
       /**
        * Outcome
@@ -9575,13 +9575,13 @@ export interface components {
     /** LinuxVMProvision */
     LinuxVMProvision: {
       /** Cause */
-      cause?: string | null;
+      cause?: null | string;
       /** Downloads */
       downloads?: components["schemas"]["LinuxVMDownload"][] | null;
       /** Stage */
-      stage?: string | null;
+      stage?: null | string;
       /** State */
-      state?: string | null;
+      state?: null | string;
     };
     /** LinuxVMSettings */
     LinuxVMSettings: {
@@ -9609,9 +9609,9 @@ export interface components {
     /** LinuxVMShareProject */
     LinuxVMShareProject: {
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Path */
-      path?: string | null;
+      path?: null | string;
       /** Projectid */
       projectId: string;
       /** Readonly */
@@ -9634,14 +9634,14 @@ export interface components {
       /** Allocateddiskbytes */
       allocatedDiskBytes?: number | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Freehostbytes */
       freeHostBytes?: number | null;
       layr?: components["schemas"]["JsonValue"];
       provision?: components["schemas"]["LinuxVMProvision"] | null;
       share?: components["schemas"]["LinuxVMShareStatus"] | null;
       /** State */
-      state?: string | null;
+      state?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -9656,27 +9656,27 @@ export interface components {
      */
     LiveUpdateStatus: {
       /** Appliedat */
-      appliedAt?: number | null;
+      appliedAt?: null | number;
       /** Attempt */
       attempt?: number | null;
       /** Checkedat */
-      checkedAt?: number | null;
+      checkedAt?: null | number;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Managerid */
-      managerId?: string | null;
+      managerId?: null | string;
       /** Manifesthash */
-      manifestHash?: string | null;
+      manifestHash?: null | string;
       /** Manifestid */
-      manifestId?: string | null;
+      manifestId?: null | string;
       /** Patchstatus */
-      patchStatus?: string | null;
+      patchStatus?: null | string;
       /** Pid */
       pid?: number | null;
       /** Receipterror */
-      receiptError?: string | null;
+      receiptError?: null | string;
       /** Scope */
-      scope?: string | null;
+      scope?: null | string;
       status: components["schemas"]["LiveUpdateState"];
     };
     /** LocalRoomParticipantDto */
@@ -9684,14 +9684,14 @@ export interface components {
       /** Id */
       id: string;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /**
        * Role
        * @enum {string}
        */
       role: "lead" | "agent";
       /** Status */
-      status?: string | null;
+      status?: null | string;
     };
     /** LockMetricSummary */
     LockMetricSummary: {
@@ -9707,7 +9707,7 @@ export interface components {
     /** LoginRequest */
     LoginRequest: {
       /** Account Key */
-      account_key?: string | null;
+      account_key?: null | string;
       /** Email */
       email?: string | null;
       /** Label */
@@ -9759,15 +9759,15 @@ export interface components {
       /** Kind */
       kind?: ("file" | "link" | "absent") | null;
       /** Leadid */
-      leadId?: string | null;
+      leadId?: null | string;
       /** Line */
-      line?: string | null;
+      line?: null | string;
       /** Mainstateid */
       mainStateId: string;
       /** Path */
       path: string;
       /** Stateid */
-      stateId?: string | null;
+      stateId?: null | string;
       status: components["schemas"]["MacSyncStatusResponse"] | null;
     };
     /**
@@ -9781,7 +9781,7 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** At */
-      at: number | null;
+      at: null | number;
       /** Choices */
       choices: string[];
       /** Conflicts */
@@ -9793,7 +9793,7 @@ export interface components {
       /** Folder */
       folder: string;
       /** Reason */
-      reason: string | null;
+      reason: null | string;
       /**
        * State
        * @enum {string}
@@ -9837,7 +9837,7 @@ export interface components {
       /** Items */
       items: components["schemas"]["studio_api__work__models__MessageReceipt"][];
       /** Workspaceid */
-      workspaceId?: string | null;
+      workspaceId?: null | string;
     };
     /** MessageRecord */
     MessageRecord: {
@@ -9850,7 +9850,7 @@ export interface components {
         [key: string]: string;
       };
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Id */
       id: string;
       /** Room */
@@ -9878,7 +9878,7 @@ export interface components {
       } | null;
       search?: components["schemas"]["SearchMigration"] | null;
       /** Statereaderror */
-      stateReadError?: string | null;
+      stateReadError?: null | string;
     };
     /** MissingToolRequestResponse */
     MissingToolRequestResponse: {
@@ -9910,15 +9910,15 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       /** Catalogpending */
       catalogPending?: boolean | null;
       /** Data */
       data?: components["schemas"]["ProviderModel"][] | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Nextcursor */
-      nextCursor?: string | null;
+      nextCursor?: null | string;
       /** Unavailableaccounts */
       unavailableAccounts?: components["schemas"]["UnavailableAccount"][];
     };
@@ -9939,7 +9939,7 @@ export interface components {
       /** Cancelrequested */
       cancelRequested?: boolean | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Id */
       id: string;
       status: components["schemas"]["MonitorState"];
@@ -9947,48 +9947,48 @@ export interface components {
     /** MonitorEntityDto */
     MonitorEntityDto: {
       /** Agent */
-      agent?: string | null;
+      agent?: null | string;
       /** Bytes */
       bytes?: number | null;
       /** Cancelrequested */
       cancelRequested?: boolean | null;
       /** Command */
-      command?: string | null;
+      command?: null | string;
       /** Created */
-      created?: number | null;
+      created?: null | number;
       /** Cwd */
-      cwd?: string | null;
+      cwd?: null | string;
       /** Durationms */
       durationMs?: number | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Exitcode */
       exitCode?: number | null;
       /** Finished */
-      finished?: number | null;
+      finished?: null | number;
       /** Id */
       id: string;
       /** Interactive */
       interactive?: boolean | null;
       /** Log */
-      log?: string | null;
+      log?: null | string;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Outputtruncated */
       outputTruncated?: boolean | null;
       /** Processid */
-      processId?: string | null;
+      processId?: null | string;
       /** Ruleid */
-      ruleId?: string | null;
+      ruleId?: null | string;
       status?: components["schemas"]["TaskStatus"] | null;
       /** Stdinclosed */
       stdinClosed?: boolean | null;
       /** Stdincloserequested */
-      stdinCloseRequested?: string | null;
+      stdinCloseRequested?: null | string;
       /** Stdinerror */
-      stdinError?: string | null;
+      stdinError?: null | string;
       /** Tail */
-      tail?: string | null;
+      tail?: null | string;
       /** Timeout Ms */
       timeout_ms?: number | null;
     };
@@ -10066,7 +10066,7 @@ export interface components {
       /** Epoch */
       epoch?: number;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Exitcode */
       exitCode?: number | null;
       /** Finished */
@@ -10084,16 +10084,16 @@ export interface components {
       /** Log */
       log?: string;
       /** Lowsince */
-      lowSince?: number | null;
+      lowSince?: null | number;
       /** Minimumworkers */
       minimumWorkers?: number;
       /** Requestid */
-      requestId?: string | null;
+      requestId?: null | string;
       restartCheck?: components["schemas"]["JsonObjectResponse"];
       /** Restartholdnotified */
       restartHoldNotified?: boolean;
       /** Ruleid */
-      ruleId?: string | null;
+      ruleId?: null | string;
       /** Stalleventkey */
       stallEventKey?: string;
       stallProbe?: components["schemas"]["JsonObjectResponse"];
@@ -10112,7 +10112,7 @@ export interface components {
       /** Timeout Ms */
       timeout_ms?: number;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
       /** Userhidden */
       userHidden?: boolean;
       /** Wakeon */
@@ -10160,7 +10160,7 @@ export interface components {
     /** MovePointerDto */
     MovePointerDto: {
       /** Agentid */
-      agentId?: string | null;
+      agentId?: null | string;
       /** Move */
       move: string;
       /** Server */
@@ -10173,7 +10173,7 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Agentid */
-      agentId?: string | null;
+      agentId?: null | string;
       /** Move */
       move: string;
       /** Server */
@@ -10191,13 +10191,13 @@ export interface components {
       /** Deferred */
       deferred?: boolean | null;
       /** Deleted */
-      deleted?: string | string[] | null;
+      deleted?: string[] | null | string;
       /** Id */
-      id?: string | null;
+      id?: null | string;
       /** Revision */
-      revision?: string | null;
+      revision?: null | string;
       /** Status */
-      status?: string | null;
+      status?: null | string;
     };
     /**
      * NativeAccountState
@@ -10209,14 +10209,14 @@ export interface components {
       /** Pid */
       pid?: number | null;
       /** Reason */
-      reason?: string | null;
+      reason?: null | string;
       status: components["schemas"]["NativeAccountState"];
       /** Targetversion */
       targetVersion: string;
       /** Updatedat */
       updatedAt: number;
       /** Version */
-      version?: string | null;
+      version?: null | string;
     };
     /**
      * NativeAction
@@ -10233,7 +10233,7 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       status: components["schemas"]["NativeActionOutcomeStatus"];
     } & {
       [key: string]: components["schemas"]["JsonValue"];
@@ -10299,42 +10299,42 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Acceptedturnid */
-      acceptedTurnId?: string | null;
+      acceptedTurnId?: null | string;
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       /** Created */
-      created?: number | null;
+      created?: null | number;
       /** Epoch */
       epoch?: number | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Id */
-      id?: string | null;
+      id?: null | string;
       /** Model */
-      model?: string | null;
+      model?: null | string;
       /** Newthreadid */
-      newThreadId?: string | null;
+      newThreadId?: null | string;
       outcome?: components["schemas"]["NativeActionOutcome"] | null;
       receipt?: components["schemas"]["NativeActionReceipt"] | null;
       /** Replayed */
       replayed?: boolean | null;
       /** Requestid */
-      requestId?: string | null;
+      requestId?: null | string;
       result?: components["schemas"]["JsonValue"] | null;
       /** Rpcmethod */
-      rpcMethod?: string | null;
+      rpcMethod?: null | string;
       stage?: components["schemas"]["SafetyActionStage"] | null;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
       /** Updated */
-      updated?: number | null;
+      updated?: null | number;
     };
     /** NativeBinary */
     NativeBinary: {
       /** Approvalrevision */
       approvalRevision?: number | null;
       /** Bundlesha256 */
-      bundleSha256?: string | null;
+      bundleSha256?: null | string;
       /** Checks */
       checks?: {
         [key: string]: components["schemas"]["JsonValue"];
@@ -10346,15 +10346,15 @@ export interface components {
       /** Path */
       path: string;
       /** Sha256 */
-      sha256?: string | null;
+      sha256?: null | string;
       /** Sourceidentity */
       sourceIdentity?: {
         [key: string]: components["schemas"]["JsonValue"];
       } | null;
       /** Sourcepath */
-      sourcePath?: string | null;
+      sourcePath?: null | string;
       /** Validatedat */
-      validatedAt?: number | null;
+      validatedAt?: null | number;
       /** Version */
       version: string;
     };
@@ -10365,7 +10365,7 @@ export interface components {
         [key: string]: components["schemas"]["JsonValue"];
       } | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Identity */
       identity?: {
         [key: string]: components["schemas"]["JsonValue"];
@@ -10374,7 +10374,7 @@ export interface components {
       path: string;
       status: components["schemas"]["NativeCandidateState"];
       /** Version */
-      version?: string | null;
+      version?: null | string;
     };
     /**
      * NativeCandidateState
@@ -10444,11 +10444,11 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Id */
-      id?: string | null;
+      id?: null | string;
       /** Processid */
-      processId?: string | null;
+      processId?: null | string;
       receipt?: components["schemas"]["JsonValue"] | null;
       status?: components["schemas"]["NativeCommandEventStatus"] | null;
       /** Terminated */
@@ -10475,7 +10475,7 @@ export interface components {
        */
       kind: "native";
       /** Path */
-      path: string | null;
+      path: null | string;
     };
     /** NativeNameFailureRecordResponse */
     NativeNameFailureRecordResponse: {
@@ -10487,31 +10487,31 @@ export interface components {
       attempts?: number;
       /** Error */
       error?:
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
-        | null;
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
+        | null
+        | string;
       identity?: components["schemas"]["NativeNameIdentityRecordResponse"];
       /** Retryat */
       retryAt?: number;
@@ -10529,7 +10529,7 @@ export interface components {
       /** Name */
       name: string;
       /** Threadid */
-      threadId: string | null;
+      threadId: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -10558,31 +10558,31 @@ export interface components {
       connectionId: string;
       /** Details */
       details?:
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
-        | null;
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
+        | null
+        | string;
       /** Id */
       id: string;
       /** Message */
@@ -10594,13 +10594,13 @@ export interface components {
      */
     NativePlanPayload: {
       /** Explanation */
-      explanation?: string | null;
+      explanation?: null | string;
       /** Plan */
       plan?: components["schemas"]["JsonValue"][];
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -10614,29 +10614,29 @@ export interface components {
     NativeProviderError: {
       /** Additionaldetails */
       additionalDetails?:
-        | string
         | {
             [key: string]: components["schemas"]["JsonValue"];
           }
-        | null;
+        | null
+        | string;
       /** Code */
-      code?: number | string | null;
+      code?: number | null | string;
       /** Codexerrorinfo */
       codexErrorInfo?:
-        | string
         | {
             [key: string]: components["schemas"]["JsonValue"];
           }
         | components["schemas"]["JsonValue"][]
-        | null;
+        | null
+        | string;
       data?: components["schemas"]["JsonValue"] | null;
       /** Message */
       message?:
-        | string
         | {
             [key: string]: components["schemas"]["JsonValue"];
           }
-        | null;
+        | null
+        | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -10667,60 +10667,60 @@ export interface components {
       connectionId?: string;
       /** Error */
       error?:
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
-        | null;
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
+        | null
+        | string;
       /** Id */
       id?: string;
       /** Inspectionerror */
       inspectionError?:
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
-        | null;
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
+        | null
+        | string;
       /** Inspectionfailures */
       inspectionFailures?: number;
       /** Inspectionphase */
@@ -10746,7 +10746,7 @@ export interface components {
       resetActorEpoch?: number | null;
       resetActorScope?: components["schemas"]["JsonObjectResponse"] | null;
       /** Resetby */
-      resetBy?: string | null;
+      resetBy?: null | string;
       /** Resetpending */
       resetPending?: boolean;
       /** Resetreason */
@@ -10763,7 +10763,7 @@ export interface components {
       /** Targetepoch */
       targetEpoch?: number;
       /** Targetparentid */
-      targetParentId?: string | null;
+      targetParentId?: null | string;
       /** Targetrootid */
       targetRootId?: string;
       /** Threadid */
@@ -10784,89 +10784,89 @@ export interface components {
       created?: number;
       /** Error */
       error?:
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
-        | null;
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
+        | null
+        | string;
       /** Id */
       id?: string;
       /** Requestid */
       requestId?: string;
       /** Response */
       response?:
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
-        | null;
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
+        | null
+        | string;
       /** Result */
       result?:
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
-        | null;
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
+        | null
+        | string;
       /** Startedat */
       startedAt?: number;
       /** Status */
@@ -10891,9 +10891,9 @@ export interface components {
       /** Candidates */
       candidates: components["schemas"]["NativeCandidate"][];
       /** Checkedat */
-      checkedAt?: number | null;
+      checkedAt?: null | number;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       selected?: components["schemas"]["NativeBinary"] | null;
       status: components["schemas"]["NativeRuntimeState"];
     };
@@ -10948,30 +10948,30 @@ export interface components {
     /** NativeSafetyRetryDto */
     NativeSafetyRetryDto: {
       /** Acceptedturnid */
-      acceptedTurnId?: string | null;
+      acceptedTurnId?: null | string;
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       /** Created */
-      created?: number | null;
+      created?: null | number;
       /** Epoch */
       epoch?: number | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Id */
-      id?: string | null;
+      id?: null | string;
       /** Model */
-      model?: string | null;
+      model?: null | string;
       /** Newthreadid */
-      newThreadId?: string | null;
+      newThreadId?: null | string;
       /** Requestid */
-      requestId?: string | null;
+      requestId?: null | string;
       /** Rpcmethod */
-      rpcMethod?: string | null;
+      rpcMethod?: null | string;
       stage?: components["schemas"]["NativeSafetyStage"] | null;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
       /** Updated */
-      updated?: number | null;
+      updated?: null | number;
     };
     /** NativeSafetyRetryViewRecordResponse */
     NativeSafetyRetryViewRecordResponse: {
@@ -10980,25 +10980,25 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Acceptedturnid */
-      acceptedTurnId?: string | null;
+      acceptedTurnId?: null | string;
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       /** Created */
-      created?: number | null;
+      created?: null | number;
       /** Epoch */
       epoch?: number | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Id */
-      id?: string | null;
+      id?: null | string;
       /** Model */
-      model?: string | null;
+      model?: null | string;
       /** Newthreadid */
-      newThreadId?: string | null;
+      newThreadId?: null | string;
       /** Requestid */
-      requestId?: string | null;
+      requestId?: null | string;
       /** Rpcmethod */
-      rpcMethod?: string | null;
+      rpcMethod?: null | string;
       /** Stage */
       stage?:
         | (
@@ -11016,9 +11016,9 @@ export interface components {
           )
         | null;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
       /** Updated */
-      updated?: number | null;
+      updated?: null | number;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -11042,7 +11042,7 @@ export interface components {
     NativeThreadBlockDto: {
       error?: components["schemas"]["NativeProviderError"] | null;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
     };
     /** NativeThreadBlockRecordResponse */
     NativeThreadBlockRecordResponse: {
@@ -11089,7 +11089,7 @@ export interface components {
     NativeTurnErrorDto: {
       error?: components["schemas"]["NativeProviderError"] | null;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
     };
     /** NativeTurnErrorRecordResponse */
     NativeTurnErrorRecordResponse: {
@@ -11108,7 +11108,7 @@ export interface components {
       /** Archived */
       archived?: boolean | null;
       /** Expected Folder */
-      expected_folder?: string | null;
+      expected_folder?: null | string;
       /** Expected Revision */
       expected_revision?: number | null;
       /** Id */
@@ -11116,11 +11116,11 @@ export interface components {
       /** Pinned */
       pinned?: boolean | null;
       /** Project */
-      project?: string | null;
+      project?: null | string;
       /** Project Folder */
-      project_folder?: string | null;
+      project_folder?: null | string;
       /** Project Path */
-      project_path?: string | null;
+      project_path?: null | string;
       read_state?: components["schemas"]["ReadStateBody"] | null;
     };
     /** PairRequest */
@@ -11130,7 +11130,7 @@ export interface components {
       /** Label */
       label: string;
       /** Leadname */
-      leadName?: string | null;
+      leadName?: null | string;
       /** Origin */
       origin: string;
       /**
@@ -11143,9 +11143,9 @@ export interface components {
       /** Stateid */
       stateId: string;
       /** Tailscalestatus */
-      tailscaleStatus?: string | null;
+      tailscaleStatus?: null | string;
       /** Tailscaleuser */
-      tailscaleUser?: string | null;
+      tailscaleUser?: null | string;
       /** Token */
       token: string;
     };
@@ -11164,9 +11164,9 @@ export interface components {
       /** Height */
       height: number;
       /** Lastvisibleheading */
-      lastVisibleHeading?: string | null;
+      lastVisibleHeading?: null | string;
       /** Lastvisibleline */
-      lastVisibleLine?: string | null;
+      lastVisibleLine?: null | string;
       /** Overflowx */
       overflowX?: number | null;
       /** Overflowy */
@@ -11204,9 +11204,9 @@ export interface components {
       /** Height */
       height?: number | null;
       /** Lastvisibleheading */
-      lastVisibleHeading?: string | null;
+      lastVisibleHeading?: null | string;
       /** Lastvisibleline */
-      lastVisibleLine?: string | null;
+      lastVisibleLine?: null | string;
       /** Measuredat */
       measuredAt?: number | null;
       /** Overflowx */
@@ -11218,11 +11218,11 @@ export interface components {
       /** Renderer */
       renderer: string;
       /** Revision */
-      revision?: string | null;
+      revision?: null | string;
       /** Sequence */
       sequence: number;
       /** Sha256 */
-      sha256?: string | null;
+      sha256?: null | string;
       /** Totallines */
       totalLines?: number | null;
       /** Visiblelines */
@@ -11293,10 +11293,10 @@ export interface components {
       /** Cursor */
       cursor: number;
       /** Error */
-      error: string | null;
+      error: null | string;
       status: components["schemas"]["PayloadMigrationState"];
       /** Updated */
-      updated: number | null;
+      updated: null | number;
     };
     /**
      * PayloadMigrationName
@@ -11344,7 +11344,7 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       /** Accountkeys */
       accountKeys?: string[] | null;
       /** Accountrevision */
@@ -11354,7 +11354,7 @@ export interface components {
       /** Folders */
       folders?: components["schemas"]["ProjectFolder"][] | null;
       /** Homeserverid */
-      homeServerId?: string | null;
+      homeServerId?: null | string;
       /** Id */
       id: string;
       /** Locations */
@@ -11375,9 +11375,9 @@ export interface components {
       projectAliases?: components["schemas"]["ProjectAlias"][] | null;
       registration?: components["schemas"]["ProjectRegistration"] | null;
       /** Updated */
-      updated?: number | null;
+      updated?: null | number;
       /** Workerbaseref */
-      workerBaseRef?: string | null;
+      workerBaseRef?: null | string;
       /** Workerbaserevision */
       workerBaseRevision?: number | null;
       /** Workerenvironment */
@@ -11396,17 +11396,17 @@ export interface components {
       /** Eventid */
       eventId: string;
       /** Identity */
-      identity: [string | null, number | null, number];
+      identity: [null | string, number | null, number];
       /** Interruptrequested */
       interruptRequested?: boolean | null;
       /** Questioncontinuationplanned */
       questionContinuationPlanned?: boolean | null;
       /** Threadid */
-      threadId: string | null;
+      threadId: null | string;
       /** Through */
       through: number;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
     };
     /** PeerRadioResponse */
     PeerRadioResponse: {
@@ -11422,7 +11422,7 @@ export interface components {
       /** Direct */
       direct?: boolean | null;
       /** Error */
-      error: string | null;
+      error: null | string;
       /** Next */
       next: string[];
       /** Revision */
@@ -11432,7 +11432,7 @@ export interface components {
         [key: string]: components["schemas"]["RoomRadioSeen"];
       } | null;
       /** Speaker */
-      speaker: string | null;
+      speaker: null | string;
       status: components["schemas"]["RadioStatus"];
       /** Teamid */
       teamId: string;
@@ -11440,9 +11440,9 @@ export interface components {
     /** PeerRoomResponse */
     PeerRoomResponse: {
       /** Created */
-      created?: number | null;
+      created?: null | number;
       /** Customname */
-      customName?: string | null;
+      customName?: null | string;
       /** Id */
       id: string;
       kind?: components["schemas"]["RoomKind"] | null;
@@ -11452,20 +11452,20 @@ export interface components {
       /** Members */
       members: string[];
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Peerlabel */
-      peerLabel?: string | null;
+      peerLabel?: null | string;
       /** Peerteamid */
-      peerTeamId?: string | null;
+      peerTeamId?: null | string;
       /** Peerteamname */
-      peerTeamName?: string | null;
+      peerTeamName?: null | string;
       /** Projectpath */
-      projectPath?: string | null;
+      projectPath?: null | string;
       radio: components["schemas"]["PeerRoomRadio"];
       /** Rootid */
-      rootId?: string | null;
+      rootId?: null | string;
       /** Updated */
-      updated?: number | null;
+      updated?: null | number;
       /** Userhidden */
       userHidden?: boolean | null;
     };
@@ -11529,9 +11529,9 @@ export interface components {
       /** Members */
       members?: string[] | null;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Projectpath */
-      projectPath?: string | null;
+      projectPath?: null | string;
       /** Revision */
       revision?: number | null;
     };
@@ -11551,7 +11551,7 @@ export interface components {
       /** Request Id */
       request_id: string;
       /** Team Id */
-      team_id?: string | null;
+      team_id?: null | string;
     };
     /** PeerTeamRadioCreateRequest */
     PeerTeamRadioCreateRequest: {
@@ -11697,7 +11697,7 @@ export interface components {
       /** Request Id */
       request_id: string;
       /** Team Id */
-      team_id?: string | null;
+      team_id?: null | string;
     };
     /** PendingSettingsRecordResponse */
     PendingSettingsRecordResponse: {
@@ -11708,20 +11708,20 @@ export interface components {
       /** Daybreakenabled */
       daybreakEnabled?: boolean | null;
       /** Effort */
-      effort?: string | null;
+      effort?: null | string;
       /** Fastmode */
       fastMode?: boolean | null;
       /** Model */
-      model?: string | null;
+      model?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
     /** PlanBody */
     PlanBody: {
       /** Agent */
-      agent?: string | null;
+      agent?: null | string;
       /** Id */
-      id?: string | null;
+      id?: null | string;
       /** Text */
       text: string;
       /** Version */
@@ -11831,7 +11831,7 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Epoch */
-      epoch?: (string | number | null)[];
+      epoch?: (number | null | string)[];
       /** Versions */
       versions?: {
         [key: string]: string;
@@ -11901,7 +11901,7 @@ export interface components {
       /** Effort */
       effort?: ("low" | "medium" | "high" | "xhigh" | "max" | "ultra") | null;
       /** Id */
-      id?: string | null;
+      id?: null | string;
       /**
        * Instructions
        * @default
@@ -11936,17 +11936,17 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Deleted */
-      deleted?: string | null;
+      deleted?: null | string;
       /** Effort */
       effort?: ("low" | "medium" | "high" | "xhigh" | "max" | "ultra") | null;
       /** Id */
-      id?: string | null;
+      id?: null | string;
       /** Instructions */
-      instructions?: string | null;
+      instructions?: null | string;
       /** Model */
-      model?: string | null;
+      model?: null | string;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Role */
       role?: ("reviewer" | "implementer") | null;
     };
@@ -11977,7 +11977,7 @@ export interface components {
       /** Agent */
       agent: string;
       /** Error */
-      error: string | null;
+      error: null | string;
       /** Exists */
       exists: boolean;
       /**
@@ -11992,7 +11992,7 @@ export interface components {
       /** Path */
       path: string;
       /** Revision */
-      revision: string | null;
+      revision: null | string;
       /** Updated */
       updated: number | null;
     };
@@ -12002,7 +12002,7 @@ export interface components {
      */
     Project: {
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       /** Accountkeys */
       accountKeys?: string[] | null;
       /** Accountrevision */
@@ -12012,7 +12012,7 @@ export interface components {
       /** Folders */
       folders?: components["schemas"]["ProjectFolder"][] | null;
       /** Homeserverid */
-      homeServerId?: string | null;
+      homeServerId?: null | string;
       /** Id */
       id: string;
       /** Locations */
@@ -12033,9 +12033,9 @@ export interface components {
       projectAliases?: components["schemas"]["ProjectAlias"][] | null;
       registration?: components["schemas"]["ProjectRegistration"] | null;
       /** Updated */
-      updated?: number | null;
+      updated?: null | number;
       /** Workerbaseref */
-      workerBaseRef?: string | null;
+      workerBaseRef?: null | string;
       /** Workerbaserevision */
       workerBaseRevision?: number | null;
       /** Workerenvironment */
@@ -12071,17 +12071,17 @@ export interface components {
     /** ProjectEntityDto */
     ProjectEntityDto: {
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       /** Accountkeys */
       accountKeys?: string[] | null;
       /** Accountrevision */
       accountRevision?: number | null;
       /** Created */
-      created?: number | null;
+      created?: null | number;
       /** Folders */
       folders?: components["schemas"]["ProjectFolder"][] | null;
       /** Homeserverid */
-      homeServerId?: string | null;
+      homeServerId?: null | string;
       /** Id */
       id: string;
       layrReadiness?: components["schemas"]["ProjectLayrReadinessDto"] | null;
@@ -12091,11 +12091,11 @@ export interface components {
       /** Locationsrevision */
       locationsRevision?: number | null;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Organizationrevision */
       organizationRevision?: number | null;
       /** Path */
-      path?: string | null;
+      path?: null | string;
       /** Peerteams */
       peerTeams?: components["schemas"]["ProjectPeerTeamDto"][] | null;
       /** Peerteamsrevision */
@@ -12103,10 +12103,10 @@ export interface components {
       /** Projectaliases */
       projectAliases?: components["schemas"]["ProjectAliasDto"][] | null;
       /** Updated */
-      updated?: number | null;
+      updated?: null | number;
       vault?: components["schemas"]["ProjectVaultDto"] | null;
       /** Workerbaseref */
-      workerBaseRef?: string | null;
+      workerBaseRef?: null | string;
       /** Workerbaserevision */
       workerBaseRevision?: number | null;
       /** Workerenvironment */
@@ -12124,7 +12124,7 @@ export interface components {
       /** Name */
       name: string;
       /** Parentid */
-      parentId?: string | null;
+      parentId?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -12135,9 +12135,9 @@ export interface components {
      */
     ProjectLayrReadinessDto: {
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Projectid */
-      projectId?: string | null;
+      projectId?: null | string;
       /**
        * State
        * @enum {string}
@@ -12161,7 +12161,7 @@ export interface components {
       /** Projectid */
       projectId: string;
       /** Reason */
-      reason?: string | null;
+      reason?: null | string;
       /**
        * State
        * @enum {string}
@@ -12176,13 +12176,13 @@ export interface components {
      */
     ProjectLocation: {
       /** Gitorigin */
-      gitOrigin?: string | null;
+      gitOrigin?: null | string;
       /** Path */
       path: string;
       /** Projectid */
       projectId: string;
       /** Requestedpath */
-      requestedPath?: string | null;
+      requestedPath?: null | string;
       /** Serverid */
       serverId: string;
     } & {
@@ -12191,13 +12191,13 @@ export interface components {
     /** ProjectLocationDto */
     ProjectLocationDto: {
       /** Gitorigin */
-      gitOrigin?: string | null;
+      gitOrigin?: null | string;
       /** Path */
       path: string;
       /** Projectid */
       projectId: string;
       /** Requestedpath */
-      requestedPath?: string | null;
+      requestedPath?: null | string;
       /** Serverid */
       serverId: string;
     };
@@ -12217,9 +12217,9 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Githead */
-      gitHead?: string | null;
+      gitHead?: null | string;
       /** Gitorigin */
-      gitOrigin?: string | null;
+      gitOrigin?: null | string;
       /** Matches */
       matches?: components["schemas"]["ProjectLocationMatch"][];
     };
@@ -12249,7 +12249,7 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       /** Accountkeys */
       accountKeys?: string[] | null;
       /** Accountrevision */
@@ -12259,7 +12259,7 @@ export interface components {
       /** Folders */
       folders?: components["schemas"]["ProjectFolder"][] | null;
       /** Homeserverid */
-      homeServerId?: string | null;
+      homeServerId?: null | string;
       /** Id */
       id: string;
       /** Locations */
@@ -12280,9 +12280,9 @@ export interface components {
       projectAliases?: components["schemas"]["ProjectAlias"][] | null;
       registration?: components["schemas"]["ProjectRegistration"] | null;
       /** Updated */
-      updated?: number | null;
+      updated?: null | number;
       /** Workerbaseref */
-      workerBaseRef?: string | null;
+      workerBaseRef?: null | string;
       /** Workerbaserevision */
       workerBaseRevision?: number | null;
       /** Workerenvironment */
@@ -12397,17 +12397,17 @@ export interface components {
      */
     ProjectVaultDto: {
       /** Disk */
-      disk?: string | null;
+      disk?: null | string;
       /** Lastpush */
-      lastPush?: number | null;
+      lastPush?: null | number;
       /** Prefix */
-      prefix?: string | null;
+      prefix?: null | string;
       /** Projectid */
       projectId: string;
       /** Reason */
-      reason?: string | null;
+      reason?: null | string;
       /** Site */
-      site?: string | null;
+      site?: null | string;
       /**
        * State
        * @enum {string}
@@ -12419,7 +12419,7 @@ export interface components {
     /** ProjectWriteRequest */
     ProjectWriteRequest: {
       /** Account Key */
-      account_key?: string | null;
+      account_key?: null | string;
       /** Account Keys */
       account_keys?: string[] | null;
       /** Action */
@@ -12438,17 +12438,17 @@ export interface components {
           )
         | null;
       /** Base Ref */
-      base_ref?: string | null;
+      base_ref?: null | string;
       /** Environment */
       environment?: ("host" | "linux") | null;
       /** Expected Revision */
       expected_revision?: number | null;
       /** Folder Id */
-      folder_id?: string | null;
+      folder_id?: null | string;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Parent Id */
-      parent_id?: string | null;
+      parent_id?: null | string;
       /** Path */
       path: string;
       /** Request Id */
@@ -12471,29 +12471,29 @@ export interface components {
       /** Accountkey */
       accountKey: string;
       /** At */
-      at: number | null;
+      at: null | number;
       /** Baseline */
-      baseline: string | null;
+      baseline: null | string;
       /** Configuredversion */
-      configuredVersion: string | null;
+      configuredVersion: null | string;
       /** Error */
-      error: string | null;
+      error: null | string;
       /** Id */
       id: string;
       /** Installedversion */
-      installedVersion: string | null;
+      installedVersion: null | string;
       /** Message */
-      message: string | null;
+      message: null | string;
       /** Provider */
       provider: string;
       /** Runningversion */
-      runningVersion: string | null;
+      runningVersion: null | string;
       status: components["schemas"]["ProviderVersionState"];
     };
     /** ProviderVersions */
     ProviderVersions: {
       /** Checkedat */
-      checkedAt: number | null;
+      checkedAt: null | number;
       /** Providers */
       providers: components["schemas"]["ProviderVersion"][];
       /** Warnings */
@@ -12610,15 +12610,15 @@ export interface components {
        */
       action: "cancel";
       /** Agent */
-      agent?: string | null;
+      agent?: null | string;
       /** Expected Revision */
-      expected_revision?: string | null;
+      expected_revision?: null | string;
       /** Expectedtext */
-      expectedText?: string | null;
+      expectedText?: null | string;
       /** Id */
-      id?: string | null;
+      id?: null | string;
       /** Message Id */
-      message_id?: string | null;
+      message_id?: null | string;
       /** Request Id */
       request_id?: string | null;
     };
@@ -12637,15 +12637,15 @@ export interface components {
        */
       action: "edit";
       /** Agent */
-      agent?: string | null;
+      agent?: null | string;
       /** Expected Revision */
-      expected_revision?: string | null;
+      expected_revision?: null | string;
       /** Expectedtext */
-      expectedText?: string | null;
+      expectedText?: null | string;
       /** Id */
-      id?: string | null;
+      id?: null | string;
       /** Message Id */
-      message_id?: string | null;
+      message_id?: null | string;
       /** Request Id */
       request_id?: string | null;
       /** Text */
@@ -12659,15 +12659,15 @@ export interface components {
        */
       action: "first" | "send_now";
       /** Agent */
-      agent?: string | null;
+      agent?: null | string;
       /** Expected Revision */
-      expected_revision?: string | null;
+      expected_revision?: null | string;
       /** Expectedtext */
-      expectedText?: string | null;
+      expectedText?: null | string;
       /** Id */
-      id?: string | null;
+      id?: null | string;
       /** Message Id */
-      message_id?: string | null;
+      message_id?: null | string;
       /** Request Id */
       request_id?: string | null;
     };
@@ -12686,7 +12686,7 @@ export interface components {
        */
       delivery?: "queue" | "steer" | "after_tool" | "after_turn";
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Id */
       id: string;
       /**
@@ -12716,11 +12716,11 @@ export interface components {
        */
       action: "reorder";
       /** Agent */
-      agent?: string | null;
+      agent?: null | string;
       /** Expected Revision */
       expected_revision: string;
       /** Id */
-      id?: string | null;
+      id?: null | string;
       /** Ordered Ids */
       ordered_ids: string[];
       /** Request Id */
@@ -12769,12 +12769,12 @@ export interface components {
         | components["schemas"]["RateLimitIndividualLimit"]
         | null;
       /** Limitid */
-      limitId?: string | null;
+      limitId?: null | string;
       /** Limitname */
-      limitName?: string | null;
+      limitName?: null | string;
       primary?: components["schemas"]["RateLimitWindow"] | null;
       /** Ratelimitreachedtype */
-      rateLimitReachedType?: string | null;
+      rateLimitReachedType?: null | string;
       secondary?: components["schemas"]["RateLimitWindow"] | null;
       /** Spendcontrolreached */
       spendControlReached?: boolean | null;
@@ -12787,14 +12787,14 @@ export interface components {
      */
     RateLimitBucketDto: {
       /** Limitid */
-      limitId?: string | null;
+      limitId?: null | string;
       /** Limitname */
-      limitName?: string | null;
+      limitName?: null | string;
       /** Plantype */
-      planType?: string | null;
+      planType?: null | string;
       primary?: components["schemas"]["RateLimitWindowDto"] | null;
       /** Ratelimitreachedtype */
-      rateLimitReachedType?: string | null;
+      rateLimitReachedType?: null | string;
       secondary?: components["schemas"]["RateLimitWindowDto"] | null;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
@@ -12844,7 +12844,7 @@ export interface components {
      */
     RateLimitsDataDto: {
       /** Accountid */
-      accountId?: string | null;
+      accountId?: null | string;
       /** Ordinaryusageallowed */
       ordinaryUsageAllowed?: boolean | null;
       rateLimitResetCredits?: components["schemas"]["JsonValue"] | null;
@@ -12856,7 +12856,7 @@ export interface components {
       /** Signedin */
       signedIn?: boolean | null;
       /** Status */
-      status?: string | null;
+      status?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -12875,11 +12875,11 @@ export interface components {
      */
     RateLimitWindowDto: {
       /** Resetsat */
-      resetsAt?: number | null;
+      resetsAt?: null | number;
       /** Usedpercent */
-      usedPercent?: number | null;
+      usedPercent?: null | number;
       /** Windowdurationmins */
-      windowDurationMins?: number | null;
+      windowDurationMins?: null | number;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -12944,11 +12944,11 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Attemptid */
-      attemptId?: string | null;
+      attemptId?: null | string;
       /** Checked */
       checked?: boolean | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       outcome?: components["schemas"]["RecoveryOutcome"] | null;
       /** Queuedinputpreserved */
       queuedInputPreserved?: boolean | null;
@@ -12956,7 +12956,7 @@ export interface components {
       requests?: string[] | null;
       status: components["schemas"]["RecoveryStatus"];
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
     };
     /**
      * RecoveryStage
@@ -13013,7 +13013,7 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Outcome */
       outcome: string;
       /** Projectid */
@@ -13028,11 +13028,11 @@ export interface components {
       /** Id */
       id: string;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Role */
-      role?: string | null;
+      role?: null | string;
       /** Status */
-      status?: string | null;
+      status?: null | string;
     };
     /** RemoteWorkerLinkDto */
     RemoteWorkerLinkDto: {
@@ -13059,7 +13059,7 @@ export interface components {
       /** Id */
       id: string;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Request Id */
       request_id?: string | null;
     };
@@ -13070,13 +13070,13 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Id */
       id: string;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Request Id */
-      request_id?: string | null;
+      request_id?: null | string;
       /** Status */
       status?: ("pending" | "applied" | "failed") | null;
     };
@@ -13095,31 +13095,31 @@ export interface components {
       _syncEntitiesAfter?: number | null;
       /** Answer */
       answer?:
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
-        | null;
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
+        | null
+        | string;
       /** Id */
       id?: string;
       /** Issecret */
@@ -13132,41 +13132,41 @@ export interface components {
     /** RequestEntityDto */
     RequestEntityDto: {
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       /** Agent */
-      agent?: string | null;
+      agent?: null | string;
       /** At */
-      at?: number | null;
+      at?: null | number;
       /** Connectionid */
-      connectionId?: string | null;
+      connectionId?: null | string;
       /** Created */
-      created?: number | null;
+      created?: null | number;
       /** Createdat */
-      createdAt?: number | null;
+      createdAt?: null | number;
       /** Deferred */
       deferred?: boolean | null;
       /** Epoch */
       epoch?: number | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Id */
       id: string;
       /** Method */
-      method?: string | null;
+      method?: null | string;
       params?: components["schemas"]["RequestParamsDto"] | null;
       preview?: components["schemas"]["RequestPreviewDto"] | null;
       result?: components["schemas"]["JsonValue"] | null;
       status?: components["schemas"]["RequestStatus"] | null;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
       /** Title */
-      title?: string | null;
+      title?: null | string;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
       /** Updated */
-      updated?: number | null;
+      updated?: null | number;
       /** Updatedat */
-      updatedAt?: number | null;
+      updatedAt?: null | number;
     };
     /** RequestInboxEntry */
     RequestInboxEntry: {
@@ -13196,11 +13196,11 @@ export interface components {
     RequestParamsDto: {
       changes?: components["schemas"]["JsonValue"] | null;
       /** Command */
-      command?: string | string[] | null;
+      command?: string[] | null | string;
       /** Cwd */
-      cwd?: string | null;
+      cwd?: null | string;
       /** Message */
-      message?: string | null;
+      message?: null | string;
       /** Permissions */
       permissions?: {
         [key: string]: components["schemas"]["JsonValue"];
@@ -13208,14 +13208,14 @@ export interface components {
       /** Questions */
       questions?: components["schemas"]["RequestQuestionDto"][] | null;
       /** Reason */
-      reason?: string | null;
+      reason?: null | string;
       requestedSchema?: components["schemas"]["RequestSchemaDto"] | null;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
       /** Url */
-      url?: string | null;
+      url?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -13226,15 +13226,15 @@ export interface components {
     RequestPreviewDto: {
       changes?: components["schemas"]["JsonValue"] | null;
       /** Command */
-      command?: string | string[] | null;
+      command?: string[] | null | string;
       /** Cwd */
-      cwd?: string | null;
+      cwd?: null | string;
       /** Permissions */
       permissions?: {
         [key: string]: components["schemas"]["JsonValue"];
       } | null;
       /** Url */
-      url?: string | null;
+      url?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -13262,9 +13262,9 @@ export interface components {
      */
     RequestQuestionOptionDto: {
       /** Description */
-      description?: string | null;
+      description?: null | string;
       /** Label */
-      label?: string | null;
+      label?: null | string;
       value?: components["schemas"]["JsonValue"] | null;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
@@ -13280,38 +13280,38 @@ export interface components {
       /** Action */
       action?: string;
       /** Agent */
-      agent?: string | null;
+      agent?: null | string;
       /** Answeredat */
       answeredAt?: number;
       /** Answeredby */
       answeredBy?: string;
       /** Answererror */
       answerError?:
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
-        | null;
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
+        | null
+        | string;
       /** Answerhistory */
       answerHistory?: components["schemas"]["RequestAnswerRecordResponse"][];
       /** Answersignature */
@@ -13362,42 +13362,42 @@ export interface components {
       params?: components["schemas"]["JsonObjectResponse"];
       /** Preview */
       preview?:
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
-        | null;
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
+        | null
+        | string;
       /** Resolvedat */
       resolvedAt?: number;
       /** Rpcid */
-      rpcId?: string | number;
+      rpcId?: number | string;
       /** Sequence */
       sequence?: number;
       /** Status */
       status?: string;
       supervisor?: components["schemas"]["JsonObjectResponse"] | null;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -13423,14 +13423,14 @@ export interface components {
       /** Enum */
       enum?: components["schemas"]["JsonValue"][] | null;
       /** Format */
-      format?: string | null;
+      format?: null | string;
       /** Issecret */
       isSecret?: boolean | null;
       items?: components["schemas"]["RequestSchemaPropertyDto"] | null;
       /** Title */
-      title?: string | null;
+      title?: null | string;
       /** Type */
-      type?: string | string[] | null;
+      type?: string[] | null | string;
       /** Writeonly */
       writeOnly?: boolean | null;
     } & {
@@ -13477,7 +13477,7 @@ export interface components {
       /** Count */
       count: number;
       /** Durationms */
-      durationMs?: number | null;
+      durationMs?: null | number;
       /** Logicalreadbytes */
       logicalReadBytes?: number | null;
       operation: components["schemas"]["AttributionOperation"];
@@ -13555,26 +13555,26 @@ export interface components {
      * @description Closed discriminated union of all typed UI resource identities.
      */
     ResourceRef:
+      | components["schemas"]["AccountsResource"]
+      | components["schemas"]["CostsResource"]
+      | components["schemas"]["DesktopResource"]
+      | components["schemas"]["DraftsResource"]
+      | components["schemas"]["LimitsResource"]
+      | components["schemas"]["ModelsResource"]
       | components["schemas"]["PanelResource"]
       | components["schemas"]["QueueResource"]
       | components["schemas"]["ReceiptsResource"]
+      | components["schemas"]["RoomResource"]
+      | components["schemas"]["SessionCostResource"]
+      | components["schemas"]["StateResource"]
+      | components["schemas"]["TaskResource"]
+      | components["schemas"]["TasksResource"]
       | components["schemas"]["TerminalResource"]
       | components["schemas"]["TerminalsResource"]
-      | components["schemas"]["AccountsResource"]
-      | components["schemas"]["LimitsResource"]
-      | components["schemas"]["ModelsResource"]
-      | components["schemas"]["TasksResource"]
-      | components["schemas"]["TaskResource"]
-      | components["schemas"]["WorkspaceResource"]
-      | components["schemas"]["VoiceResource"]
-      | components["schemas"]["SessionCostResource"]
-      | components["schemas"]["CostsResource"]
-      | components["schemas"]["DesktopResource"]
-      | components["schemas"]["RoomResource"]
-      | components["schemas"]["StateResource"]
-      | components["schemas"]["DraftsResource"]
+      | components["schemas"]["TranscriptResource"]
       | components["schemas"]["TranscriptsResource"]
-      | components["schemas"]["TranscriptResource"];
+      | components["schemas"]["VoiceResource"]
+      | components["schemas"]["WorkspaceResource"];
     /**
      * ResourceRevisionEntry
      * @description Per-resource revision; StateResource uses the entity sequence.
@@ -13663,7 +13663,7 @@ export interface components {
       /** Threadid */
       threadId?: string;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -13682,18 +13682,18 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Acceptedturnid */
-      acceptedTurnId?: string | null;
+      acceptedTurnId?: null | string;
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       /** Attempt */
       attempt?: number | null;
       cause?: components["schemas"]["CapacityRetryCause"] | null;
       /** Claimedat */
-      claimedAt?: number | null;
+      claimedAt?: null | number;
       /** Cwd */
-      cwd?: string | null;
+      cwd?: null | string;
       /** Dueat */
-      dueAt?: number | null;
+      dueAt?: null | number;
       /** Epoch */
       epoch?: number | null;
       /** Id */
@@ -13701,19 +13701,19 @@ export interface components {
       /** Maxattempts */
       maxAttempts?: number | null;
       /** Reason */
-      reason?: string | null;
+      reason?: null | string;
       /** Retryat */
-      retryAt?: number | null;
+      retryAt?: null | number;
       settings?: components["schemas"]["CapacityRetrySettingsDto"] | null;
       status: components["schemas"]["CapacityRetryStatus"];
       /** Taskclaims */
       taskClaims?: string[] | null;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
       /** Updatedat */
-      updatedAt?: number | null;
+      updatedAt?: null | number;
       /** Waits */
       waits?: number | null;
     };
@@ -13732,7 +13732,7 @@ export interface components {
       /** Sha */
       sha: string;
       /** Title */
-      title?: string | null;
+      title?: null | string;
       /**
        * @description discriminator enum property added by openapi-typescript
        * @enum {string}
@@ -13759,9 +13759,9 @@ export interface components {
     /** ReviewDefaultsDto */
     ReviewDefaultsDto: {
       /** Effort */
-      effort: string | null;
+      effort: null | string;
       /** Model */
-      model: string | null;
+      model: null | string;
     };
     /** ReviewDefaultsRecordResponse */
     ReviewDefaultsRecordResponse: {
@@ -13770,9 +13770,9 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Effort */
-      effort: string | null;
+      effort: null | string;
       /** Model */
-      model: string | null;
+      model: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -13814,7 +13814,7 @@ export interface components {
     /** RoomDetailDto */
     RoomDetailDto: {
       /** Customname */
-      customName?: string | null;
+      customName?: null | string;
       /** Federated */
       federated?: boolean | null;
       /** Id */
@@ -13830,24 +13830,24 @@ export interface components {
       /** Members */
       members?: string[] | null;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Peerid */
-      peerId?: string | null;
+      peerId?: null | string;
       /** Peerlabel */
-      peerLabel?: string | null;
+      peerLabel?: null | string;
       /** Peerteamid */
-      peerTeamId?: string | null;
+      peerTeamId?: null | string;
       /** Peerteamname */
-      peerTeamName?: string | null;
+      peerTeamName?: null | string;
       /** Projectpath */
-      projectPath?: string | null;
+      projectPath?: null | string;
       radio?: components["schemas"]["RoomRadio"] | null;
       /** Remotemembers */
       remoteMembers?: components["schemas"]["RemoteRoomMemberDto"][] | null;
       /** Rootid */
-      rootId?: string | null;
+      rootId?: null | string;
       /** Updated */
-      updated?: number | null;
+      updated?: null | number;
       /** Userhidden */
       userHidden?: boolean | null;
     };
@@ -13869,20 +13869,20 @@ export interface components {
       /** Members */
       members?: string[] | null;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Peerlabel */
-      peerLabel?: string | null;
+      peerLabel?: null | string;
       /** Peerteamid */
-      peerTeamId?: string | null;
+      peerTeamId?: null | string;
       /** Peerteamname */
-      peerTeamName?: string | null;
+      peerTeamName?: null | string;
       /** Projectpath */
-      projectPath?: string | null;
+      projectPath?: null | string;
       radio?: components["schemas"]["RoomRadio"] | null;
       /** Rootid */
-      rootId?: string | null;
+      rootId?: null | string;
       /** Updated */
-      updated?: number | null;
+      updated?: null | number;
       /** Userhidden */
       userHidden?: boolean | null;
     };
@@ -13919,7 +13919,7 @@ export interface components {
       /** Direct */
       direct?: boolean | null;
       /** Error */
-      error: string | null;
+      error: null | string;
       /** Next */
       next: string[];
       /** Revision */
@@ -13929,7 +13929,7 @@ export interface components {
         [key: string]: components["schemas"]["RoomRadioSeen"];
       } | null;
       /** Speaker */
-      speaker: string | null;
+      speaker: null | string;
       status: components["schemas"]["RadioStatus"];
       /** Teamid */
       teamId: string;
@@ -13943,17 +13943,17 @@ export interface components {
       /** Eventid */
       eventId: string;
       /** Identity */
-      identity: [string | null, number | null, number];
+      identity: [null | string, number | null, number];
       /** Interruptrequested */
       interruptRequested?: boolean | null;
       /** Questioncontinuationplanned */
       questionContinuationPlanned?: boolean | null;
       /** Threadid */
-      threadId: string | null;
+      threadId: null | string;
       /** Through */
       through: number;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
     };
     /**
      * RoomRadioSeen
@@ -13961,7 +13961,7 @@ export interface components {
      */
     RoomRadioSeen: {
       /** Identity */
-      identity: [string | null, number | null, number];
+      identity: [null | string, number | null, number];
       /** Seq */
       seq: number;
     };
@@ -13982,10 +13982,10 @@ export interface components {
     RoomStatus: "pending" | "approved" | "revoked";
     /** RootModel[Annotated[Union[ToolRequestRecordResponse, AmbiguousToolRequestResponse, MissingToolRequestResponse, MovedToolRequestResponse], FieldInfo(annotation=NoneType, required=True, discriminator='stage')]] */
     RootModel_Annotated_Union_ToolRequestRecordResponse__AmbiguousToolRequestResponse__MissingToolRequestResponse__MovedToolRequestResponse___FieldInfo_annotation_NoneType__required_True__discriminator__stage____:
-      | components["schemas"]["ToolRequestRecordResponse"]
       | components["schemas"]["AmbiguousToolRequestResponse"]
       | components["schemas"]["MissingToolRequestResponse"]
-      | components["schemas"]["MovedToolRequestResponse"];
+      | components["schemas"]["MovedToolRequestResponse"]
+      | components["schemas"]["ToolRequestRecordResponse"];
     /** RootModel[ResourceNotifyAck] */
     RootModel_ResourceNotifyAck_: components["schemas"]["ResourceNotifyAck"];
     /** RuleBody */
@@ -14021,7 +14021,7 @@ export interface components {
       /** Epoch */
       epoch?: number | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /**
        * Event
        * @default worker_completed
@@ -14029,7 +14029,7 @@ export interface components {
        */
       event?: "worker_completed" | "monitor_exit" | "work_review" | "complaint";
       /** Eventtext */
-      eventText?: string | null;
+      eventText?: null | string;
       /** Fileactivityat */
       fileActivityAt?: number | null;
       /** Filegeneration */
@@ -14037,7 +14037,7 @@ export interface components {
       /** Fingerprint */
       fingerprint?: number[] | null;
       /** Id */
-      id?: string | null;
+      id?: null | string;
       /** Inflight */
       inFlight?: boolean | null;
       /**
@@ -14056,15 +14056,15 @@ export interface components {
       /** Lastat */
       lastAt?: number | null;
       /** Lastevent */
-      lastEvent?: string | null;
+      lastEvent?: null | string;
       /** Lastexitcode */
       lastExitCode?: number | null;
       /** Lastfinished */
       lastFinished?: number | null;
       /** Lastoutput */
-      lastOutput?: string | null;
+      lastOutput?: null | string;
       /** Laststallerror */
-      lastStallError?: string | null;
+      lastStallError?: null | string;
       /** Laststallexitcode */
       lastStallExitCode?: number | null;
       /** Laststallfinished */
@@ -14088,15 +14088,15 @@ export interface components {
       /** Path */
       path?: string | null;
       /** Rootid */
-      rootId?: string | null;
+      rootId?: null | string;
       /** Stall Timeout Seconds */
       stall_timeout_seconds?: number | null;
       /** Stalleventkey */
-      stallEventKey?: string | null;
+      stallEventKey?: null | string;
       /** Stallprobe */
       stallProbe?: boolean | null;
       /** Stalltext */
-      stallText?: string | null;
+      stallText?: null | string;
       /**
        * Stalltimeoutseconds
        * @default 1800
@@ -14117,15 +14117,15 @@ export interface components {
     /** RuleEntityDto */
     RuleEntityDto: {
       /** Agent */
-      agent?: string | null;
+      agent?: null | string;
       /** Description */
-      description?: string | null;
+      description?: null | string;
       /** Enabled */
       enabled?: boolean | null;
       /** Id */
       id: string;
       /** Name */
-      name?: string | null;
+      name?: null | string;
     };
     /** RuleInboxEntry */
     RuleInboxEntry: {
@@ -14181,7 +14181,7 @@ export interface components {
       /** Epoch */
       epoch?: number;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Event */
       event?: string;
       /** Eventtext */
@@ -14193,31 +14193,31 @@ export interface components {
       /** Fingerprint */
       fingerprint?:
         | (
-            | string
-            | number
-            | boolean
-            | (
-                | string
-                | number
-                | boolean
-                | components["schemas"]["JsonValue"][]
-                | {
-                    [key: string]: components["schemas"]["JsonValue"];
-                  }
-                | null
-              )[]
             | {
                 [key: string]:
-                  | string
-                  | number
-                  | boolean
-                  | components["schemas"]["JsonValue"][]
                   | {
                       [key: string]: components["schemas"]["JsonValue"];
                     }
-                  | null;
+                  | components["schemas"]["JsonValue"][]
+                  | boolean
+                  | number
+                  | null
+                  | string;
               }
+            | (
+                | {
+                    [key: string]: components["schemas"]["JsonValue"];
+                  }
+                | components["schemas"]["JsonValue"][]
+                | boolean
+                | number
+                | null
+                | string
+              )[]
+            | boolean
+            | number
             | null
+            | string
           )[]
         | null;
       /** Id */
@@ -14242,7 +14242,7 @@ export interface components {
       /** Lastoutput */
       lastOutput?: string;
       /** Laststallerror */
-      lastStallError?: string | null;
+      lastStallError?: null | string;
       /** Laststallexitcode */
       lastStallExitCode?: number | null;
       /** Laststallfinished */
@@ -14250,7 +14250,7 @@ export interface components {
       /** Livenesscommand */
       livenessCommand?: string;
       /** Lowsince */
-      lowSince?: number | null;
+      lowSince?: null | number;
       /** Minimumworkers */
       minimumWorkers?: number;
       /** Name */
@@ -14258,7 +14258,7 @@ export interface components {
       /** Nextat */
       nextAt?: number;
       /** Path */
-      path?: string | null;
+      path?: null | string;
       restartCheck?: components["schemas"]["RuleRestartCheckRecordResponse"];
       /** Rootid */
       rootId?: string;
@@ -14314,7 +14314,7 @@ export interface components {
     /** RuntimeLockSample */
     RuntimeLockSample: {
       /** Holder */
-      holder: string | null;
+      holder: null | string;
       /** Waitms */
       waitMs: number;
     };
@@ -14367,27 +14367,27 @@ export interface components {
       /** Assets */
       assets?: components["schemas"]["TranscriptAsset"][] | null;
       /** At */
-      at?: number | string | null;
+      at?: null | number | string;
       /** Author */
-      author?: string | null;
+      author?: null | string;
       /** Authorname */
-      authorName?: string | null;
+      authorName?: null | string;
       /** Blockedby */
       blockedBy?: string[] | null;
       /** Clientmessageid */
-      clientMessageId?: string | null;
+      clientMessageId?: null | string;
       /** Created */
-      created?: number | null;
+      created?: null | number;
       /** Createdby */
-      createdBy?: string | null;
+      createdBy?: null | string;
       /** Cyberaccessprogram */
-      cyberAccessProgram?: string | null;
+      cyberAccessProgram?: null | string;
       /** Decisions */
       decisions?: components["schemas"]["WorkDecisionDto"][] | null;
       /** Deliveries */
-      deliveries?: string | null;
+      deliveries?: null | string;
       /** Deliveryerror */
-      deliveryError?: string | null;
+      deliveryError?: null | string;
       /** Deliverystatus */
       deliveryStatus?:
         | (
@@ -14407,10 +14407,10 @@ export interface components {
       /** Dependencies */
       dependencies?: string[] | null;
       /** Description */
-      description?: string | null;
+      description?: null | string;
       details?: components["schemas"]["JsonValue"] | null;
       /** Displaystatus */
-      displayStatus?: string | null;
+      displayStatus?: null | string;
       /** Id */
       id: string;
       /** Inputs */
@@ -14423,9 +14423,9 @@ export interface components {
       /** Leaddeleted */
       leadDeleted?: boolean | null;
       /** Leadid */
-      leadId?: string | null;
+      leadId?: null | string;
       /** Leadname */
-      leadName?: string | null;
+      leadName?: null | string;
       /** Leadstopped */
       leadStopped?: boolean | null;
       /** Materialized */
@@ -14433,7 +14433,7 @@ export interface components {
       /** Members */
       members?: string[] | null;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** @description Provider-native plan update fields retained for plan display. */
       native?: components["schemas"]["JsonValue"];
       nativeError?: components["schemas"]["JsonValue"] | null;
@@ -14454,24 +14454,24 @@ export interface components {
       /** Observedwait */
       observedWait?: boolean | null;
       /** Owner */
-      owner?: string | null;
+      owner?: null | string;
       /** Pending */
       pending?: boolean | null;
       /** Phase */
-      phase?: string | null;
+      phase?: null | string;
       previousError?: components["schemas"]["JsonValue"] | null;
       /** Projectpath */
-      projectPath?: string | null;
+      projectPath?: null | string;
       /** @description Extensible room radio configuration from the room producer. */
       radio?: components["schemas"]["JsonValue"];
       /** Readat */
-      readAt?: number | null;
+      readAt?: null | number;
       /** Reasoningms */
-      reasoningMs?: number | null;
+      reasoningMs?: null | number;
       /** Reasoningobservedat */
-      reasoningObservedAt?: number | null;
+      reasoningObservedAt?: null | number;
       /** Reasoningsince */
-      reasoningSince?: number | null;
+      reasoningSince?: null | number;
       /** Recipient */
       recipient?: ("user" | "lead") | null;
       /** Requesteddelivery */
@@ -14483,21 +14483,21 @@ export interface components {
       /** Results */
       results?: components["schemas"]["WorkResultDto"][] | null;
       /** Role */
-      role?: string | null;
+      role?: null | string;
       /** Room */
-      room?: string | null;
+      room?: null | string;
       /** Rootid */
-      rootId?: string | null;
+      rootId?: null | string;
       /** Sender */
-      sender?: string | null;
+      sender?: null | string;
       /** Seq */
       seq?: number | null;
       /** Sourceid */
-      sourceId?: string | null;
+      sourceId?: null | string;
       /** Sourcetype */
-      sourceType?: string | null;
+      sourceType?: null | string;
       /** Status */
-      status?: string | null;
+      status?: null | string;
       /** Steps */
       steps?: components["schemas"]["JsonValue"][] | null;
       /** Streaming */
@@ -14505,23 +14505,23 @@ export interface components {
       /** Text */
       text: string;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
       /** Title */
-      title?: string | null;
+      title?: null | string;
       /** Toolstatus */
-      toolStatus?: string | null;
+      toolStatus?: null | string;
       /** Truncated */
       truncated?: boolean | null;
       /** Turnerror */
-      turnError?: string | null;
+      turnError?: null | string;
       /** Turnerrorresolved */
       turnErrorResolved?: boolean | null;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
       /** Turnstatus */
-      turnStatus?: string | null;
+      turnStatus?: null | string;
       /** Updated */
-      updated?: number | null;
+      updated?: null | number;
       /** Userhidden */
       userHidden?: boolean | null;
       /** Version */
@@ -14534,7 +14534,7 @@ export interface components {
       /** Cursor */
       cursor: number;
       /** Error */
-      error: string | null;
+      error: null | string;
       /** Lastbatchbytes */
       lastBatchBytes: number | null;
       phase: components["schemas"]["SearchMigrationPhase"];
@@ -14568,17 +14568,17 @@ export interface components {
       /** Agent */
       agent: string;
       /** Excerpt */
-      excerpt?: string | null;
+      excerpt?: null | string;
       /** Id */
       id: string;
       /** Kind */
-      kind?: string | null;
+      kind?: null | string;
       /** Reference */
-      reference?: string | null;
+      reference?: null | string;
       /** Room */
-      room?: string | null;
+      room?: null | string;
       /** Text */
-      text?: string | null;
+      text?: null | string;
       /** Type */
       type?: ("message" | "work" | "complaint" | "plan" | "room") | null;
     };
@@ -14587,13 +14587,13 @@ export interface components {
       /** Label */
       label: string;
       /** Origin */
-      origin: string | null;
+      origin: null | string;
       /** Publickey */
       publicKey: string;
       /** Serverid */
       serverId: string;
       /** Tailscaleuser */
-      tailscaleUser: string | null;
+      tailscaleUser: null | string;
     };
     /** ServerIdentityResponse */
     ServerIdentityResponse: {
@@ -14604,13 +14604,13 @@ export interface components {
       /** Label */
       label: string;
       /** Origin */
-      origin: string | null;
+      origin: null | string;
       /** Publickey */
       publicKey: string;
       /** Serverid */
       serverId: string;
       /** Tailscaleuser */
-      tailscaleUser: string | null;
+      tailscaleUser: null | string;
     };
     /** ServerOperationRequest */
     ServerOperationRequest: {
@@ -14633,7 +14633,7 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Outcome */
       outcome: string;
       /** Requestid */
@@ -14678,7 +14678,7 @@ export interface components {
       /** Generation */
       generation?: number | null;
       /** Method */
-      method?: string | null;
+      method?: null | string;
       /** Pricedsamples */
       pricedSamples: number;
       /**
@@ -14759,7 +14759,7 @@ export interface components {
       /** Account Key */
       account_key: string;
       /** Effort */
-      effort?: string | null;
+      effort?: null | string;
       /** Model */
       model: string;
     };
@@ -15027,9 +15027,9 @@ export interface components {
     /** SqliteJournal */
     SqliteJournal: {
       /** At */
-      at?: number | null;
+      at?: null | number;
       /** Errortype */
-      errorType?: string | null;
+      errorType?: null | string;
       /** Previoussnapshotavailable */
       previousSnapshotAvailable?: boolean | null;
       status: components["schemas"]["SqliteJournalStatus"];
@@ -15048,9 +15048,9 @@ export interface components {
       /** Longtransactions */
       longTransactions: number;
       /** P50Transactionms */
-      p50TransactionMs?: number | null;
+      p50TransactionMs?: null | number;
       /** P95Transactionms */
-      p95TransactionMs?: number | null;
+      p95TransactionMs?: null | number;
       /** Sites */
       sites?: {
         [key: string]: components["schemas"]["SqliteMetric"];
@@ -15111,7 +15111,7 @@ export interface components {
       /** Durationms */
       durationMs: number;
       /** Finishedat */
-      finishedAt?: number | null;
+      finishedAt?: null | number;
       firstStatement: components["schemas"]["SqliteStatement"];
       /** Frames */
       frames?: components["schemas"]["SqliteFrame"][] | null;
@@ -15203,85 +15203,85 @@ export interface components {
       observedTurnId?: string;
       /** Prepareerror */
       prepareError?:
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
-        | null;
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
+        | null
+        | string;
       /** Responseerror */
       responseError?:
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
-        | null;
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
+        | null
+        | string;
       /** Retiredevents */
       retiredEvents?: (
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
         | null
+        | string
       )[];
       reviewTarget?: components["schemas"]["JsonObjectResponse"];
       /** Settingsfixed */
@@ -15408,17 +15408,17 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Agent */
-      agent?: string | null;
+      agent?: null | string;
       /** At */
       at?: number | null;
       /** Author */
-      author?: string | null;
+      author?: null | string;
       /** Deliveries */
       deliveries?: {
         [key: string]: string;
       } | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Id */
       id: string;
       /**
@@ -15427,9 +15427,9 @@ export interface components {
        */
       materialized?: boolean | null;
       /** Message */
-      message?: string | null;
+      message?: null | string;
       /** Room */
-      room?: string | null;
+      room?: null | string;
       /**
        * Status
        * @enum {string}
@@ -15447,20 +15447,20 @@ export interface components {
         | "cancelled"
         | "stored_only";
       /** Text */
-      text?: string | null;
+      text?: null | string;
       /** Waitingfor */
       waitingFor?: components["schemas"]["JsonValue"][] | null;
     };
     /** SummaryAccount */
     SummaryAccount: {
       /** Email */
-      email?: string | null;
+      email?: null | string;
       /** Isdefault */
       isDefault: boolean;
       /** Label */
       label: string;
       /** Plan */
-      plan?: string | null;
+      plan?: null | string;
       /**
        * Provider
        * @enum {string}
@@ -15484,7 +15484,7 @@ export interface components {
       /** Archived */
       archived: boolean;
       /** Created */
-      created?: number | null;
+      created?: null | number;
       /** Id */
       id: string;
       /**
@@ -15502,13 +15502,13 @@ export interface components {
        */
       pinned?: boolean;
       /** Projectid */
-      projectId?: string | null;
+      projectId?: null | string;
       /** Projectserverid */
-      projectServerId?: string | null;
+      projectServerId?: null | string;
       /** Provider */
-      provider?: string | null;
+      provider?: null | string;
       /** Serverid */
-      serverId?: string | null;
+      serverId?: null | string;
       /** Status */
       status: string;
       /**
@@ -15519,14 +15519,14 @@ export interface components {
       /** Unread */
       unread: boolean;
       /** Updated */
-      updated?: number | null;
+      updated?: null | number;
     };
     /** SummaryProject */
     SummaryProject: {
       /** Homeserverid */
-      homeServerId?: string | null;
+      homeServerId?: null | string;
       /** Id */
-      id?: string | null;
+      id?: null | string;
       /** Locations */
       locations?: components["schemas"]["ProjectLocationDto"][] | null;
       /** Name */
@@ -15541,7 +15541,7 @@ export interface components {
       /** Agentid */
       agentId: string;
       /** Itemid */
-      itemId?: string | null;
+      itemId?: null | string;
       /**
        * Section
        * @default messages
@@ -15554,13 +15554,13 @@ export interface components {
       fallback: boolean;
       /** Health */
       health?:
-        | components["schemas"]["SupervisorHealth"]
         | components["schemas"]["SupervisorError"]
+        | components["schemas"]["SupervisorHealth"]
         | null;
       /** Mode */
       mode: boolean;
       /** Notice */
-      notice: string | null;
+      notice: null | string;
     };
     /** SupervisorError */
     SupervisorError: {
@@ -15588,11 +15588,11 @@ export interface components {
       /** Signature */
       signature: string;
       /** Starttime */
-      startTime: string | null;
+      startTime: null | string;
       /** Stdoutreaderalive */
       stdoutReaderAlive?: boolean | null;
       /** Stdoutreadererror */
-      stdoutReaderError?: string | null;
+      stdoutReaderError?: null | string;
     };
     /** SupervisorHealth */
     SupervisorHealth: {
@@ -15718,20 +15718,20 @@ export interface components {
     };
     SyncEntityPayload:
       | components["schemas"]["SyncAgentEntityPayload"]
-      | components["schemas"]["SyncRoomEntityPayload"]
-      | components["schemas"]["SyncTaskEntityPayload"]
-      | components["schemas"]["SyncMonitorEntityPayload"]
-      | components["schemas"]["SyncComplaintEntityPayload"]
-      | components["schemas"]["SyncRequestEntityPayload"]
-      | components["schemas"]["SyncRuleEntityPayload"]
-      | components["schemas"]["SyncProjectEntityPayload"]
-      | components["schemas"]["SyncPeerTeamEntityPayload"]
       | components["schemas"]["SyncChatEntityPayload"]
+      | components["schemas"]["SyncComplaintEntityPayload"]
       | components["schemas"]["SyncEdgeEntityPayload"]
       | components["schemas"]["SyncEventEntityPayload"]
+      | components["schemas"]["SyncMonitorEntityPayload"]
+      | components["schemas"]["SyncPeerTeamEntityPayload"]
+      | components["schemas"]["SyncProjectEntityPayload"]
+      | components["schemas"]["SyncRequestEntityPayload"]
+      | components["schemas"]["SyncRoomEntityPayload"]
+      | components["schemas"]["SyncRuleEntityPayload"]
+      | components["schemas"]["SyncTaskEntityPayload"]
+      | components["schemas"]["SyncUiPreferencesEntityPayload"]
       | components["schemas"]["SyncWorkEntityPayload"]
-      | components["schemas"]["SyncWorkspaceEntityPayload"]
-      | components["schemas"]["SyncUiPreferencesEntityPayload"];
+      | components["schemas"]["SyncWorkspaceEntityPayload"];
     /** SyncEventEntityPayload */
     SyncEventEntityPayload: {
       /**
@@ -15966,110 +15966,110 @@ export interface components {
       /** Agent */
       agent: string;
       /** Arguments */
-      arguments?: string | null;
+      arguments?: null | string;
       /** Bytes */
       bytes?: number | null;
       /** Cancelrequested */
       cancelRequested?: boolean | null;
       /** Command */
-      command?: string | null;
+      command?: null | string;
       /** Completedatms */
       completedAtMs?: number | null;
       /** Created */
       created: number;
       /** Cwd */
-      cwd?: string | null;
+      cwd?: null | string;
       /** Durationms */
       durationMs?: number | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Exitcode */
       exitCode?: number | null;
       /** Finished */
-      finished?: number | null;
+      finished?: null | number;
       /** Id */
       id: string;
       /** Interactive */
       interactive?: boolean | null;
       /** Itemid */
-      itemId?: string | null;
+      itemId?: null | string;
       kind: components["schemas"]["TaskKind"];
       /** Log */
-      log?: string | null;
+      log?: null | string;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Outputtruncated */
       outputTruncated?: boolean | null;
       /** Processid */
-      processId?: string | null;
+      processId?: null | string;
       /** Query */
-      query?: string | null;
+      query?: null | string;
       /** Server */
-      server?: string | null;
+      server?: null | string;
       /** Startedatms */
       startedAtMs?: number | null;
       status: components["schemas"]["TaskStatus"];
       /** Stdinclosed */
       stdinClosed?: boolean | null;
       /** Stdincloserequested */
-      stdinCloseRequested?: string | null;
+      stdinCloseRequested?: null | string;
       /** Stdinerror */
-      stdinError?: string | null;
+      stdinError?: null | string;
       /** Tail */
-      tail?: string | null;
+      tail?: null | string;
       /** Timeout Ms */
       timeout_ms?: number | null;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
       /** Type */
-      type?: string | null;
+      type?: null | string;
     };
     /** TaskEntityDto */
     TaskEntityDto: {
       /** Agent */
-      agent?: string | null;
+      agent?: null | string;
       /** Bytes */
       bytes?: number | null;
       /** Cancelrequested */
       cancelRequested?: boolean | null;
       /** Command */
-      command?: string | null;
+      command?: null | string;
       /** Created */
-      created?: number | null;
+      created?: null | number;
       /** Cwd */
-      cwd?: string | null;
+      cwd?: null | string;
       /** Durationms */
       durationMs?: number | null;
       /** Exitcode */
       exitCode?: number | null;
       /** Finished */
-      finished?: number | null;
+      finished?: null | number;
       /** Id */
       id: string;
       /** Interactive */
       interactive?: boolean | null;
       kind?: components["schemas"]["TaskKind"] | null;
       /** Log */
-      log?: string | null;
+      log?: null | string;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Outputtruncated */
       outputTruncated?: boolean | null;
       /** Processid */
-      processId?: string | null;
+      processId?: null | string;
       /** Query */
-      query?: string | null;
+      query?: null | string;
       status?: components["schemas"]["TaskStatus"] | null;
       /** Stdinclosed */
       stdinClosed?: boolean | null;
       /** Stdincloserequested */
-      stdinCloseRequested?: string | null;
+      stdinCloseRequested?: null | string;
       /** Stdinerror */
-      stdinError?: string | null;
+      stdinError?: null | string;
       /** Timeout Ms */
       timeout_ms?: number | null;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
     };
     /** TaskHistoryCursor */
     TaskHistoryCursor: {
@@ -16163,7 +16163,7 @@ export interface components {
       _syncEntitiesAfter?: number | null;
       delivery: components["schemas"]["TerminalInputDelivery"];
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Ok */
       ok: boolean;
     };
@@ -16185,7 +16185,7 @@ export interface components {
       /** Availableoffset */
       availableOffset?: number | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Exitcode */
       exitCode?: number | null;
       /** Hasmore */
@@ -16216,7 +16216,7 @@ export interface components {
       /** Cwd */
       cwd: string;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Exitcode */
       exitCode?: number | null;
       /** Id */
@@ -16225,7 +16225,7 @@ export interface components {
       /** Title */
       title: string;
       /** Updated */
-      updated?: number | null;
+      updated?: null | number;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -16314,7 +16314,7 @@ export interface components {
       /** Deleted */
       deleted: number;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Remaining */
       remaining?: number | null;
       status: components["schemas"]["TombstonePruneState"];
@@ -16360,7 +16360,7 @@ export interface components {
       /** Cancelrequested */
       cancelRequested?: boolean;
       /** Connectionid */
-      connectionId?: string | null;
+      connectionId?: null | string;
       /** Created */
       created?: number;
       /** Epoch */
@@ -16387,7 +16387,7 @@ export interface components {
       reservationDelayMs?: number;
       result?: components["schemas"]["JsonObjectResponse"];
       /** Rpcid */
-      rpcId?: string | number;
+      rpcId?: number | string;
       /** Signature */
       signature?: string;
       /**
@@ -16465,7 +16465,7 @@ export interface components {
       /** Inflight */
       inFlight?: boolean | null;
       /** Status */
-      status?: string | null;
+      status?: null | string;
     };
     /**
      * TranscriptAsset
@@ -16509,11 +16509,11 @@ export interface components {
       /** Assets */
       assets?: components["schemas"]["TranscriptAsset"][];
       /** At */
-      at?: number | null;
+      at?: null | number;
       /** Clientmessageid */
-      clientMessageId?: string | null;
+      clientMessageId?: null | string;
       /** Deliveryerror */
-      deliveryError?: string | null;
+      deliveryError?: null | string;
       /** Deliverystatus */
       deliveryStatus?:
         | (
@@ -16531,7 +16531,7 @@ export interface components {
           )
         | null;
       /** Id */
-      id?: string | null;
+      id?: null | string;
       /** Kind */
       kind: string;
       /** Materialized */
@@ -16561,17 +16561,17 @@ export interface components {
       /** Accountwide */
       accountWide?: boolean | null;
       /** Agent */
-      agent?: string | null;
+      agent?: null | string;
       /** Assets */
       assets?: components["schemas"]["TranscriptAsset"][] | null;
       /** At */
-      at?: number | string | null;
+      at?: null | number | string;
       /** Clientmessageid */
-      clientMessageId?: string | null;
+      clientMessageId?: null | string;
       /** Cyberaccessprogram */
-      cyberAccessProgram?: string | null;
+      cyberAccessProgram?: null | string;
       /** Deliveryerror */
-      deliveryError?: string | null;
+      deliveryError?: null | string;
       /** Deliverystatus */
       deliveryStatus?:
         | (
@@ -16594,7 +16594,7 @@ export interface components {
       /** Inputs */
       inputs?: components["schemas"]["TranscriptInput"][] | null;
       /** Kind */
-      kind?: string | null;
+      kind?: null | string;
       /** Materialized */
       materialized?: boolean | null;
       nativeError?: components["schemas"]["JsonValue"] | null;
@@ -16618,14 +16618,14 @@ export interface components {
        */
       pending?: boolean;
       /** Phase */
-      phase?: string | null;
+      phase?: null | string;
       previousError?: components["schemas"]["JsonValue"] | null;
       /** Reasoningms */
-      reasoningMs?: number | null;
+      reasoningMs?: null | number;
       /** Reasoningobservedat */
-      reasoningObservedAt?: number | null;
+      reasoningObservedAt?: null | number;
       /** Reasoningsince */
-      reasoningSince?: number | null;
+      reasoningSince?: null | number;
       /** Requesteddelivery */
       requestedDelivery?:
         | ("queue" | "steer" | "after_tool" | "after_turn")
@@ -16633,30 +16633,30 @@ export interface components {
       /** Role */
       role: string;
       /** Sourceid */
-      sourceId?: string | null;
+      sourceId?: null | string;
       /** Streaming */
       streaming?: boolean | null;
       /** Text */
       text: string;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
       /**
        * Title
        * @default
        */
       title?: string;
       /** Toolstatus */
-      toolStatus?: string | null;
+      toolStatus?: null | string;
       /** Truncated */
       truncated?: boolean | null;
       /** Turnerror */
-      turnError?: string | null;
+      turnError?: null | string;
       /** Turnerrorresolved */
       turnErrorResolved?: boolean | null;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
       /** Turnstatus */
-      turnStatus?: string | null;
+      turnStatus?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -16668,17 +16668,17 @@ export interface components {
       /** Accountwide */
       accountWide?: boolean | null;
       /** Agent */
-      agent?: string | null;
+      agent?: null | string;
       /** Assets */
       assets?: components["schemas"]["TranscriptAsset"][] | null;
       /** At */
-      at?: number | string | null;
+      at?: null | number | string;
       /** Clientmessageid */
-      clientMessageId?: string | null;
+      clientMessageId?: null | string;
       /** Cyberaccessprogram */
-      cyberAccessProgram?: string | null;
+      cyberAccessProgram?: null | string;
       /** Deliveryerror */
-      deliveryError?: string | null;
+      deliveryError?: null | string;
       /** Deliverystatus */
       deliveryStatus?:
         | (
@@ -16701,7 +16701,7 @@ export interface components {
       /** Inputs */
       inputs?: components["schemas"]["TranscriptInput"][] | null;
       /** Kind */
-      kind?: string | null;
+      kind?: null | string;
       /** Materialized */
       materialized?: boolean | null;
       nativeError?: components["schemas"]["JsonValue"] | null;
@@ -16725,14 +16725,14 @@ export interface components {
        */
       pending?: boolean;
       /** Phase */
-      phase?: string | null;
+      phase?: null | string;
       previousError?: components["schemas"]["JsonValue"] | null;
       /** Reasoningms */
-      reasoningMs?: number | null;
+      reasoningMs?: null | number;
       /** Reasoningobservedat */
-      reasoningObservedAt?: number | null;
+      reasoningObservedAt?: null | number;
       /** Reasoningsince */
-      reasoningSince?: number | null;
+      reasoningSince?: null | number;
       /** Requesteddelivery */
       requestedDelivery?:
         | ("queue" | "steer" | "after_tool" | "after_turn")
@@ -16740,30 +16740,30 @@ export interface components {
       /** Role */
       role: string;
       /** Sourceid */
-      sourceId?: string | null;
+      sourceId?: null | string;
       /** Streaming */
       streaming?: boolean | null;
       /** Text */
       text: string;
       /** Threadid */
-      threadId?: string | null;
+      threadId?: null | string;
       /**
        * Title
        * @default
        */
       title?: string;
       /** Toolstatus */
-      toolStatus?: string | null;
+      toolStatus?: null | string;
       /** Truncated */
       truncated?: boolean | null;
       /** Turnerror */
-      turnError?: string | null;
+      turnError?: null | string;
       /** Turnerrorresolved */
       turnErrorResolved?: boolean | null;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
       /** Turnstatus */
-      turnStatus?: string | null;
+      turnStatus?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -16775,19 +16775,19 @@ export interface components {
       _syncEntitiesAfter?: number | null;
       agent?: components["schemas"]["TranscriptAgent"] | null;
       /** Historyversion */
-      historyVersion?: string | null;
+      historyVersion?: null | string;
       /** Items */
       items: components["schemas"]["TranscriptMessageRecord"][];
       /** Nextaftercursor */
-      nextAfterCursor?: string | null;
+      nextAfterCursor?: null | string;
       /** Nextcursor */
-      nextCursor?: string | null;
+      nextCursor?: null | string;
       /** Tail */
-      tail?: string | null;
+      tail?: null | string;
       /** Truncated */
       truncated: boolean;
       /** Unavailable */
-      unavailable?: string | null;
+      unavailable?: null | string;
     };
     /** TranscriptResource */
     TranscriptResource: {
@@ -16815,7 +16815,7 @@ export interface components {
       /** Agent */
       agent: string;
       /** Clientmessageid */
-      clientMessageId?: string | null;
+      clientMessageId?: null | string;
       /** Excerpt */
       excerpt: string;
       /** Id */
@@ -16827,7 +16827,7 @@ export interface components {
       /** Text */
       text: string;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
     };
     /**
      * TranscriptsResource
@@ -16870,11 +16870,11 @@ export interface components {
       /** Id */
       id: string;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Provider */
-      provider?: string | null;
+      provider?: null | string;
       /** Reason */
-      reason?: string | null;
+      reason?: null | string;
     };
     /**
      * TransferMemberPhase
@@ -16903,29 +16903,29 @@ export interface components {
       /** Continueaftertransfer */
       continueAfterTransfer?: boolean | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       interruptOutcome?:
         | components["schemas"]["TransferInterruptOutcome"]
         | null;
       /** Interruptreason */
-      interruptReason?: string | null;
+      interruptReason?: null | string;
       /** Lazy */
       lazy?: boolean | null;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       phase: components["schemas"]["TransferMemberPhase"];
       /** Provider */
-      provider?: string | null;
+      provider?: null | string;
       /** Reason */
-      reason?: string | null;
+      reason?: null | string;
       /** Sourceaccountkey */
-      sourceAccountKey?: string | null;
+      sourceAccountKey?: null | string;
       /** Sourcethreadid */
-      sourceThreadId?: string | null;
+      sourceThreadId?: null | string;
       /** Targetthreadid */
-      targetThreadId?: string | null;
+      targetThreadId?: null | string;
       /** Waiting */
-      waiting?: string | null;
+      waiting?: null | string;
     };
     /** TransferRequestReceipt */
     TransferRequestReceipt: {
@@ -16986,13 +16986,13 @@ export interface components {
       /** Targetaccountkey */
       targetAccountKey: string;
       /** Targetprovider */
-      targetProvider?: string | null;
+      targetProvider?: null | string;
       /** Total */
       total?: number | null;
       /** Updated */
-      updated?: number | null;
+      updated?: null | number;
       /** Waiting */
-      waiting?: string | null;
+      waiting?: null | string;
       /** Waitingcount */
       waitingCount?: number | null;
     };
@@ -17028,13 +17028,13 @@ export interface components {
       /** Attemptid */
       attemptId?: string;
       /** Latestturnid */
-      latestTurnId?: string | null;
+      latestTurnId?: null | string;
       /** Outcome */
       outcome?: string;
       /** Source */
       source?: string;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -17107,7 +17107,7 @@ export interface components {
      */
     UsageLimitsData: {
       /** Accountid */
-      accountId?: string | null;
+      accountId?: null | string;
       /** Ordinaryusageallowed */
       ordinaryUsageAllowed?: boolean | null;
       rateLimitResetCredits?:
@@ -17121,9 +17121,9 @@ export interface components {
       /** Signedin */
       signedIn?: boolean | null;
       /** Source */
-      source?: string | null;
+      source?: null | string;
       /** Status */
-      status?: string | null;
+      status?: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -17136,16 +17136,16 @@ export interface components {
       /** Accountkey */
       accountKey: string;
       /** At */
-      at?: number | null;
+      at?: null | number;
       /** Checkedat */
-      checkedAt?: number | null;
+      checkedAt?: null | number;
       data?: components["schemas"]["UsageLimitsData"] | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Processedat */
-      processedAt?: number | null;
+      processedAt?: null | number;
       /** Readat */
-      readAt?: number | null;
+      readAt?: null | number;
     };
     /**
      * UsageResumeCause
@@ -17163,14 +17163,14 @@ export interface components {
       /** Authattempt */
       authAttempt?: number;
       /** Authrefreshmarker */
-      authRefreshMarker?: string | null;
+      authRefreshMarker?: null | string;
       /**
        * Cause
        * @enum {string}
        */
       cause?: "usage_limit" | "rate_limit" | "auth";
       /** Dueat */
-      dueAt?: number | null;
+      dueAt?: null | number;
       /** Epoch */
       epoch?: number;
       /** Failedat */
@@ -17178,15 +17178,15 @@ export interface components {
       /** Id */
       id?: string;
       /** Lastcheckedat */
-      lastCheckedAt?: number | null;
+      lastCheckedAt?: null | number;
       /** Plannedat */
-      plannedAt?: number | null;
+      plannedAt?: null | number;
       /** Proofat */
       proofAt?: number;
       /** Reason */
-      reason?: string | null;
+      reason?: null | string;
       /** Resetat */
-      resetAt?: number | null;
+      resetAt?: null | number;
       /** Startedat */
       startedAt?: number;
       /**
@@ -17230,10 +17230,10 @@ export interface components {
       /** Authattempt */
       authAttempt?: number | null;
       /** Authrefreshmarker */
-      authRefreshMarker?: string | null;
+      authRefreshMarker?: null | string;
       cause: components["schemas"]["UsageResumeCause"];
       /** Dueat */
-      dueAt?: number | null;
+      dueAt?: null | number;
       /** Epoch */
       epoch: number;
       /** Failedat */
@@ -17241,17 +17241,17 @@ export interface components {
       /** Id */
       id: string;
       /** Lastcheckedat */
-      lastCheckedAt?: number | null;
+      lastCheckedAt?: null | number;
       /** Plannedat */
-      plannedAt?: number | null;
+      plannedAt?: null | number;
       /** Proofat */
-      proofAt?: number | null;
+      proofAt?: null | number;
       /** Reason */
-      reason?: string | null;
+      reason?: null | string;
       /** Resetat */
-      resetAt?: number | null;
+      resetAt?: null | number;
       /** Startedat */
-      startedAt?: number | null;
+      startedAt?: null | number;
       status: components["schemas"]["UsageResumeStatus"];
       /** Taskclaims */
       taskClaims?: string[] | null;
@@ -17260,7 +17260,7 @@ export interface components {
       /** Turnid */
       turnId: string;
       /** Updatedat */
-      updatedAt?: number | null;
+      updatedAt?: null | number;
       /** Waitingforauth */
       waitingForAuth?: boolean | null;
     };
@@ -17279,11 +17279,11 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Name */
       name: string;
       /** Region */
-      region?: string | null;
+      region?: null | string;
       /** Signedin */
       signedIn?: boolean | null;
       /** Sso */
@@ -17309,11 +17309,11 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Code */
-      code?: string | null;
+      code?: null | string;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Page */
-      page?: string | null;
+      page?: null | string;
       /** Requestid */
       requestId: string;
       /**
@@ -17348,7 +17348,7 @@ export interface components {
       /** Bytes */
       bytes?: number | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Files */
       files?: number | null;
       /** Folder */
@@ -17384,7 +17384,7 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Gatewayprofile */
-      gatewayProfile: string | null;
+      gatewayProfile: null | string;
       /** Keys */
       keys: boolean;
       /** Prefix */
@@ -17394,7 +17394,7 @@ export interface components {
       /** Region */
       region: string;
       /** Site */
-      site: string | null;
+      site: null | string;
     };
     /**
      * VaultSetupRequest
@@ -17423,15 +17423,15 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Prefix */
       prefix: string;
       /** Progress */
-      progress?: string | null;
+      progress?: null | string;
       /** Requestid */
       requestId: string;
       /** Site */
-      site?: string | null;
+      site?: null | string;
       /**
        * State
        * @enum {string}
@@ -17467,14 +17467,14 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Error */
-      error: string | null;
+      error: null | string;
       /**
        * Kind
        * @constant
        */
       kind: "vm";
       /** Path */
-      path: string | null;
+      path: null | string;
       /**
        * State
        * @enum {string}
@@ -17552,7 +17552,7 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Error */
-      error?: string | null;
+      error?: null | string;
       /** Id */
       id: string;
       status: components["schemas"]["VoiceDeliveryState"];
@@ -17694,9 +17694,9 @@ export interface components {
       /** Ended */
       ended: number | null;
       /** Error */
-      error: string | null;
+      error: null | string;
       /** Sdp */
-      sdp: string | null;
+      sdp: null | string;
       /** Session Id */
       session_id: string;
       state: components["schemas"]["VoiceSessionState"] | null;
@@ -17731,7 +17731,7 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Error */
-      error: string | null;
+      error: null | string;
       /** Id */
       id: string;
       /** Record Id */
@@ -17784,7 +17784,7 @@ export interface components {
       /** Agent */
       agent: string;
       /** Edited Text */
-      edited_text?: string | null;
+      edited_text?: null | string;
       /** Message Id */
       message_id: string;
       /** Record Ids */
@@ -17813,7 +17813,7 @@ export interface components {
       nextAttemptAt?: number;
       outcome?: components["schemas"]["WorkArchiveRecord"];
       /** Owner */
-      owner?: string | null;
+      owner?: null | string;
       /** Previousid */
       previousId?: string;
       /** Schedulerversion */
@@ -17827,14 +17827,14 @@ export interface components {
       updated?: number;
     } & {
       [key: string]:
-        | string
-        | number
-        | boolean
-        | components["schemas"]["JsonValue"][]
         | {
             [key: string]: components["schemas"]["JsonValue"];
           }
-        | null;
+        | components["schemas"]["JsonValue"][]
+        | boolean
+        | number
+        | null
+        | string;
     };
     /** WorkArchiveIntentRecordResponse */
     WorkArchiveIntentRecordResponse: {
@@ -17853,7 +17853,7 @@ export interface components {
       nextAttemptAt?: number;
       outcome?: components["schemas"]["WorkArchiveRecordResponse"];
       /** Owner */
-      owner?: string | null;
+      owner?: null | string;
       /** Previousid */
       previousId?: string;
       /** Schedulerversion */
@@ -17877,42 +17877,42 @@ export interface components {
       /** Worktree */
       worktree?: {
         [key: string]:
-          | string
-          | number
-          | boolean
-          | (
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
-              | {
-                  [key: string]: components["schemas"]["JsonValue"];
-                }
-              | null
-            )[]
           | {
               [key: string]:
-                | string
-                | number
-                | boolean
-                | components["schemas"]["JsonValue"][]
                 | {
                     [key: string]: components["schemas"]["JsonValue"];
                   }
-                | null;
+                | components["schemas"]["JsonValue"][]
+                | boolean
+                | number
+                | null
+                | string;
             }
-          | null;
+          | (
+              | {
+                  [key: string]: components["schemas"]["JsonValue"];
+                }
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string
+            )[]
+          | boolean
+          | number
+          | null
+          | string;
       };
     } & {
       [key: string]:
-        | string
-        | number
-        | boolean
-        | components["schemas"]["JsonValue"][]
         | {
             [key: string]: components["schemas"]["JsonValue"];
           }
-        | null;
+        | components["schemas"]["JsonValue"][]
+        | boolean
+        | number
+        | null
+        | string;
     };
     /** WorkArchiveRecordResponse */
     WorkArchiveRecordResponse: {
@@ -17944,7 +17944,7 @@ export interface components {
         | "accept"
         | "reject";
       /** Agent */
-      agent?: string | null;
+      agent?: null | string;
       /** Checks */
       checks?: string | null;
       /** Dependencies */
@@ -17954,9 +17954,9 @@ export interface components {
       /** Files */
       files?: string[] | null;
       /** Id */
-      id?: string | null;
+      id?: null | string;
       /** Owner */
-      owner?: string | null;
+      owner?: null | string;
       /** Reason */
       reason?: string | null;
       /** Result */
@@ -17966,7 +17966,7 @@ export interface components {
       /** Status */
       status?: ("ready" | "blocked") | null;
       /** Task Id */
-      task_id?: string | null;
+      task_id?: null | string;
       /** Title */
       title?: string | null;
       /** Version */
@@ -17984,11 +17984,11 @@ export interface components {
        */
       decision: "cancel" | "accept" | "reject";
       /** Owner */
-      owner?: string | null;
+      owner?: null | string;
       /** Reason */
       reason: string;
       /** Resultid */
-      resultId?: string | null;
+      resultId?: null | string;
     };
     /** WorkDecisionRecord */
     WorkDecisionRecord: {
@@ -18002,21 +18002,21 @@ export interface components {
        */
       decision: "cancel" | "accept" | "reject";
       /** Owner */
-      owner?: string | null;
+      owner?: null | string;
       /** Reason */
       reason: string;
       /** Resultid */
       resultId?: string;
     } & {
       [key: string]:
-        | string
-        | number
-        | boolean
-        | components["schemas"]["JsonValue"][]
         | {
             [key: string]: components["schemas"]["JsonValue"];
           }
-        | null;
+        | components["schemas"]["JsonValue"][]
+        | boolean
+        | number
+        | null
+        | string;
     };
     /** WorkDecisionRecordResponse */
     WorkDecisionRecordResponse: {
@@ -18034,7 +18034,7 @@ export interface components {
        */
       decision: "cancel" | "accept" | "reject";
       /** Owner */
-      owner?: string | null;
+      owner?: null | string;
       /** Reason */
       reason: string;
       /** Resultid */
@@ -18045,12 +18045,12 @@ export interface components {
     /** WorkEntityDto */
     WorkEntityDto: {
       /** Agent */
-      agent?: string | null;
+      agent?: null | string;
       archive?: components["schemas"]["JsonValue"] | null;
       /** Id */
       id: string;
       /** Rootid */
-      rootId?: string | null;
+      rootId?: null | string;
       /** Status */
       status?:
         | (
@@ -18063,7 +18063,7 @@ export interface components {
           )
         | null;
       /** Title */
-      title?: string | null;
+      title?: null | string;
     };
     /** WorkerDefaults */
     WorkerDefaults: {
@@ -18081,20 +18081,20 @@ export interface components {
     /** WorkerDefaultsDto */
     WorkerDefaultsDto: {
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       /** Cyberaccessprogram */
-      cyberAccessProgram?: string | null;
+      cyberAccessProgram?: null | string;
       /**
        * Daybreakenabled
        * @default false
        */
       daybreakEnabled?: boolean;
       /** Effort */
-      effort: string | null;
+      effort: null | string;
       /** Fastmode */
       fastMode: boolean;
       /** Model */
-      model: string | null;
+      model: null | string;
     };
     /** WorkerDefaultsRecordResponse */
     WorkerDefaultsRecordResponse: {
@@ -18103,17 +18103,17 @@ export interface components {
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
       /** Accountkey */
-      accountKey?: string | null;
+      accountKey?: null | string;
       /** Cyberaccessprogram */
-      cyberAccessProgram?: string | null;
+      cyberAccessProgram?: null | string;
       /** Daybreakenabled */
       daybreakEnabled?: boolean;
       /** Effort */
-      effort: string | null;
+      effort: null | string;
       /** Fastmode */
       fastMode: boolean;
       /** Model */
-      model: string | null;
+      model: null | string;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -18156,7 +18156,7 @@ export interface components {
       /** Created */
       created: number;
       /** Createdby */
-      createdBy?: string | null;
+      createdBy?: null | string;
       /** Decisions */
       decisions?: components["schemas"]["WorkDecisionRecord"][];
       /** Dependencies */
@@ -18167,11 +18167,11 @@ export interface components {
        */
       description?: string;
       /** Displaystatus */
-      displayStatus?: string | null;
+      displayStatus?: null | string;
       /** Id */
       id: string;
       /** Owner */
-      owner?: string | null;
+      owner?: null | string;
       /** Releases */
       releases?: components["schemas"]["JsonValue"][] | null;
       /** Results */
@@ -18214,7 +18214,7 @@ export interface components {
       /** Agent */
       agent: string;
       /** Attemptid */
-      attemptId?: string | null;
+      attemptId?: null | string;
       /** Checks */
       checks: string;
       /** Created */
@@ -18224,11 +18224,11 @@ export interface components {
       /** Id */
       id: string;
       /** Resultfile */
-      resultFile?: string | null;
+      resultFile?: null | string;
       /** Revision */
       revision: string;
       /** Runid */
-      runId?: string | null;
+      runId?: null | string;
       /** Text */
       text: string;
     };
@@ -18237,7 +18237,7 @@ export interface components {
       /** Agent */
       agent: string;
       /** Attemptid */
-      attemptId?: string | null;
+      attemptId?: null | string;
       /** Checks */
       checks: string;
       /** Created */
@@ -18262,14 +18262,14 @@ export interface components {
       text: string;
     } & {
       [key: string]:
-        | string
-        | number
-        | boolean
-        | components["schemas"]["JsonValue"][]
         | {
             [key: string]: components["schemas"]["JsonValue"];
           }
-        | null;
+        | components["schemas"]["JsonValue"][]
+        | boolean
+        | number
+        | null
+        | string;
     };
     /** WorkResultRecordResponse */
     WorkResultRecordResponse: {
@@ -18280,7 +18280,7 @@ export interface components {
       /** Agent */
       agent: string;
       /** Attemptid */
-      attemptId?: string | null;
+      attemptId?: null | string;
       /** Checks */
       checks: string;
       /** Created */
@@ -18328,7 +18328,7 @@ export interface components {
       } | null;
       sidebarOrder?: components["schemas"]["SidebarOrderDto"] | null;
       /** Statedir */
-      stateDir?: string | null;
+      stateDir?: null | string;
       /** Taskshistorylimit */
       tasksHistoryLimit?: number | null;
     };
@@ -18368,53 +18368,53 @@ export interface components {
       /** Cancelrequested */
       cancelRequested?: boolean | null;
       /** Command */
-      command?: string | null;
+      command?: null | string;
       /** Completedatms */
       completedAtMs?: number | null;
       /** Created */
       created: number;
       /** Cwd */
-      cwd?: string | null;
+      cwd?: null | string;
       /** Durationms */
       durationMs?: number | null;
       /** Exitcode */
       exitCode?: number | null;
       /** Finished */
-      finished?: number | null;
+      finished?: null | number;
       /** Id */
       id: string;
       /** Interactive */
       interactive?: boolean | null;
       /** Itemid */
-      itemId?: string | null;
+      itemId?: null | string;
       kind: components["schemas"]["TaskKind"];
       /** Log */
-      log?: string | null;
+      log?: null | string;
       /** Name */
-      name?: string | null;
+      name?: null | string;
       /** Outputtruncated */
       outputTruncated?: boolean | null;
       /** Processid */
-      processId?: string | null;
+      processId?: null | string;
       /** Query */
-      query?: string | null;
+      query?: null | string;
       /** Server */
-      server?: string | null;
+      server?: null | string;
       /** Startedatms */
       startedAtMs?: number | null;
       status: components["schemas"]["TaskStatus"];
       /** Stdinclosed */
       stdinClosed?: boolean | null;
       /** Stdincloserequested */
-      stdinCloseRequested?: string | null;
+      stdinCloseRequested?: null | string;
       /** Stdinerror */
-      stdinError?: string | null;
+      stdinError?: null | string;
       /** Timeout Ms */
       timeout_ms?: number | null;
       /** Turnid */
-      turnId?: string | null;
+      turnId?: null | string;
       /** Type */
-      type?: string | null;
+      type?: null | string;
     };
     /** WorkspaceView */
     WorkspaceView: {
@@ -18429,12 +18429,12 @@ export interface components {
       /** Inbox */
       inbox?:
         | (
-            | components["schemas"]["RequestInboxEntry"]
-            | components["schemas"]["ComplaintInboxEntry"]
-            | components["schemas"]["WorkInboxEntry"]
             | components["schemas"]["AgentInboxEntry"]
+            | components["schemas"]["ComplaintInboxEntry"]
             | components["schemas"]["MonitorInboxEntry"]
+            | components["schemas"]["RequestInboxEntry"]
             | components["schemas"]["RuleInboxEntry"]
+            | components["schemas"]["WorkInboxEntry"]
           )[]
         | null;
       /** Monitors */
@@ -18462,59 +18462,59 @@ export interface components {
       attemptId?: string;
       /** Blockers */
       blockers?: (
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
         | null
+        | string
       )[];
       /** Events */
       events?: (
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
         | null
+        | string
       )[];
     } & {
       [key: string]: components["schemas"]["JsonValue"];
@@ -18549,19 +18549,19 @@ export interface components {
       /** At */
       at?: number;
       /** Branch */
-      branch?: string | null;
+      branch?: null | string;
       /** Bytes */
       bytes?: number | null;
       /** Error */
       error?:
-        | string
-        | components["schemas"]["WorktreeCleanupErrorRecordResponse"];
+        | components["schemas"]["WorktreeCleanupErrorRecordResponse"]
+        | string;
       /** Gitfile */
       gitFile?: number[];
       /** Head */
-      head?: string | null;
+      head?: null | string;
       /** Identity */
-      identity: (number | string | null)[];
+      identity: (number | null | string)[];
       /** Missing */
       missing?: boolean;
       /** Note */
@@ -18619,6 +18619,7 @@ export interface components {
       description: string;
       /** Displaystatus */
       displayStatus:
+        | "blocked"
         | (
             | "ready"
             | "running"
@@ -18626,39 +18627,38 @@ export interface components {
             | "review"
             | "accepted"
             | "cancelled"
-          )
-        | "blocked";
+          );
       /** Id */
       id: string;
       /** Owner */
-      owner?: string | null;
+      owner?: null | string;
       /** Releases */
       releases?: (
-        | string
-        | number
-        | boolean
-        | (
-            | string
-            | number
-            | boolean
-            | components["schemas"]["JsonValue"][]
-            | {
-                [key: string]: components["schemas"]["JsonValue"];
-              }
-            | null
-          )[]
         | {
             [key: string]:
-              | string
-              | number
-              | boolean
-              | components["schemas"]["JsonValue"][]
               | {
                   [key: string]: components["schemas"]["JsonValue"];
                 }
-              | null;
+              | components["schemas"]["JsonValue"][]
+              | boolean
+              | number
+              | null
+              | string;
           }
+        | (
+            | {
+                [key: string]: components["schemas"]["JsonValue"];
+              }
+            | components["schemas"]["JsonValue"][]
+            | boolean
+            | number
+            | null
+            | string
+          )[]
+        | boolean
+        | number
         | null
+        | string
       )[];
       /** Results */
       results: components["schemas"]["WorkResultRecordResponse"][];
@@ -19139,7 +19139,7 @@ export interface operations {
   claude_login_status_api_accounts_claude_login_get: {
     parameters: {
       query?: {
-        request_id?: string | null;
+        request_id?: null | string;
       };
       header?: never;
       path?: never;
@@ -20220,8 +20220,8 @@ export interface operations {
     requestBody: {
       content: {
         "application/json":
-          | components["schemas"]["TransferStartRequest"]
-          | components["schemas"]["TransferActionRequest"];
+          | components["schemas"]["TransferActionRequest"]
+          | components["schemas"]["TransferStartRequest"];
       };
     };
     responses: {
@@ -20331,21 +20331,21 @@ export interface operations {
   analytics_api_analytics_get: {
     parameters: {
       query?: {
-        agent?: string | null;
-        detail?: string | null;
+        agent?: null | string;
+        detail?: null | string;
         export?: string;
-        from?: string | null;
-        item?: string | null;
-        limit?: string | null;
-        offset?: string | null;
+        from?: null | string;
+        item?: null | string;
+        limit?: null | string;
+        offset?: null | string;
         scope?: "agent" | "team" | "all";
-        thread?: string | null;
-        timing?: string | null;
-        to?: string | null;
-        tool?: string | null;
-        turn?: string | null;
-        turns?: string | null;
-        view?: string | null;
+        thread?: null | string;
+        timing?: null | string;
+        to?: null | string;
+        tool?: null | string;
+        turn?: null | string;
+        turns?: null | string;
+        view?: null | string;
       };
       header?: never;
       path?: never;
@@ -20632,7 +20632,7 @@ export interface operations {
   capabilities_api_capabilities_get: {
     parameters: {
       query?: {
-        agent?: string | null;
+        agent?: null | string;
       };
       header?: never;
       path?: never;
@@ -20768,7 +20768,7 @@ export interface operations {
   changes_api_changes_get: {
     parameters: {
       query?: {
-        agent?: string | null;
+        agent?: null | string;
         scope?: "chat" | null;
       };
       header?: never;
@@ -21045,7 +21045,7 @@ export interface operations {
   checkpoints_api_checkpoints_get: {
     parameters: {
       query?: {
-        agent?: string | null;
+        agent?: null | string;
       };
       header?: never;
       path?: never;
@@ -21158,10 +21158,10 @@ export interface operations {
     requestBody: {
       content: {
         "application/json":
-          | components["schemas"]["ClaudeSessionStateRequest"]
           | components["schemas"]["ClaudeSessionCommandRequest"]
-          | components["schemas"]["ClaudeSessionSettingsRequest"]
           | components["schemas"]["ClaudeSessionRollbackRequest"]
+          | components["schemas"]["ClaudeSessionSettingsRequest"]
+          | components["schemas"]["ClaudeSessionStateRequest"]
           | components["schemas"]["ClaudeSessionStopTaskRequest"];
       };
     };
@@ -21186,12 +21186,12 @@ export interface operations {
         };
         content: {
           "application/json":
-            | components["schemas"]["ClaudeSessionStateResponse"]
-            | components["schemas"]["ClaudeCommand"][]
             | components["schemas"]["ClaudeDeliveryResponse"]
-            | components["schemas"]["ClaudeSettingsResponse"]
             | components["schemas"]["ClaudeRollbackResponse"]
-            | components["schemas"]["ClaudeStopTaskResponse"];
+            | components["schemas"]["ClaudeSessionStateResponse"]
+            | components["schemas"]["ClaudeSettingsResponse"]
+            | components["schemas"]["ClaudeStopTaskResponse"]
+            | components["schemas"]["ClaudeCommand"][];
         };
       };
       /** @description Bad Request */
@@ -21866,9 +21866,9 @@ export interface operations {
   directories_api_directories_get: {
     parameters: {
       query?: {
-        path?: string | null;
+        path?: null | string;
         request_id?: string | null;
-        server?: string | null;
+        server?: null | string;
       };
       header?: never;
       path?: never;
@@ -21946,15 +21946,15 @@ export interface operations {
     requestBody: {
       content: {
         "application/json":
-          | components["schemas"]["StatusActionRequest"]
-          | components["schemas"]["SetEnabledRequest"]
-          | components["schemas"]["CreateInviteRequest"]
           | components["schemas"]["AcceptPeerRequest"]
           | components["schemas"]["ApprovePeerRequest"]
-          | components["schemas"]["RevokePeerRequest"]
-          | components["schemas"]["CreateRoomRequest"]
           | components["schemas"]["ApproveRoomRequest"]
-          | components["schemas"]["RoomOptionsRequest"];
+          | components["schemas"]["CreateInviteRequest"]
+          | components["schemas"]["CreateRoomRequest"]
+          | components["schemas"]["RevokePeerRequest"]
+          | components["schemas"]["RoomOptionsRequest"]
+          | components["schemas"]["SetEnabledRequest"]
+          | components["schemas"]["StatusActionRequest"];
       };
     };
     responses: {
@@ -21978,8 +21978,8 @@ export interface operations {
         };
         content: {
           "application/json":
-            | components["schemas"]["FederationSnapshot"]
-            | components["schemas"]["CreateInviteResponse"];
+            | components["schemas"]["CreateInviteResponse"]
+            | components["schemas"]["FederationSnapshot"];
         };
       };
       /** @description Bad Request */
@@ -22371,9 +22371,9 @@ export interface operations {
   file_content_api_file_get: {
     parameters: {
       query?: {
-        agent?: string | null;
-        asset?: string | null;
-        path?: string | null;
+        agent?: null | string;
+        asset?: null | string;
+        path?: null | string;
       };
       header?: never;
       path?: never;
@@ -22422,9 +22422,9 @@ export interface operations {
   file_info_api_file_info_get: {
     parameters: {
       query?: {
-        agent?: string | null;
-        asset?: string | null;
-        path?: string | null;
+        agent?: null | string;
+        asset?: null | string;
+        path?: null | string;
       };
       header?: never;
       path?: never;
@@ -22474,7 +22474,7 @@ export interface operations {
     parameters: {
       query?: {
         account_key?: string;
-        cursor?: string | null;
+        cursor?: null | string;
       };
       header?: never;
       path?: never;
@@ -22654,7 +22654,7 @@ export interface operations {
     parameters: {
       query?: {
         account_key?: string;
-        cached?: string | null;
+        cached?: null | string;
       };
       header?: never;
       path?: never;
@@ -23116,7 +23116,7 @@ export interface operations {
   message_receipts_api_messages_receipts_get: {
     parameters: {
       query?: {
-        agent?: string | null;
+        agent?: null | string;
         ids?: string;
       };
       header?: never;
@@ -23166,7 +23166,7 @@ export interface operations {
       query?: {
         account_key?: string;
         retry?: "1" | null;
-        workers?: string | null;
+        workers?: null | string;
       };
       header?: never;
       path?: never;
@@ -23341,7 +23341,7 @@ export interface operations {
   monitor_log_api_monitor_log_get: {
     parameters: {
       query?: {
-        id?: string | null;
+        id?: null | string;
       };
       header?: never;
       path?: never;
@@ -23566,15 +23566,15 @@ export interface operations {
     requestBody: {
       content: {
         "application/json":
-          | components["schemas"]["CreateInvite"]
-          | components["schemas"]["RevokeClient"]
           | components["schemas"]["AcceptInvite"]
+          | components["schemas"]["CreateInvite"]
           | components["schemas"]["DiscoverServers"]
-          | components["schemas"]["UiInvite"]
+          | components["schemas"]["RevokeClient"]
           | components["schemas"]["SetAccessSettings"]
-          | components["schemas"]["UnrevokeServer"]
           | components["schemas"]["SetServerAlias"]
-          | components["schemas"]["SetServerName"];
+          | components["schemas"]["SetServerName"]
+          | components["schemas"]["UiInvite"]
+          | components["schemas"]["UnrevokeServer"];
       };
     };
     responses: {
@@ -24579,7 +24579,7 @@ export interface operations {
   panel_api_panel_get: {
     parameters: {
       query?: {
-        agent?: string | null;
+        agent?: null | string;
       };
       header?: never;
       path?: never;
@@ -24696,16 +24696,16 @@ export interface operations {
     requestBody: {
       content: {
         "application/json":
-          | components["schemas"]["PeerTeamSaveRequest"]
+          | components["schemas"]["PeerTeamConvertRequest"]
           | components["schemas"]["PeerTeamDeleteRequest"]
           | components["schemas"]["PeerTeamMoveRequest"]
-          | components["schemas"]["PeerTeamConvertRequest"]
+          | components["schemas"]["PeerTeamSaveRequest"]
           | (
-              | components["schemas"]["PeerTeamRadioOpenRequest"]
-              | components["schemas"]["PeerTeamRadioSendRequest"]
-              | components["schemas"]["PeerTeamRadioPassRequest"]
-              | components["schemas"]["PeerTeamRadioStopRequest"]
               | components["schemas"]["PeerTeamRadioCreateRequest"]
+              | components["schemas"]["PeerTeamRadioOpenRequest"]
+              | components["schemas"]["PeerTeamRadioPassRequest"]
+              | components["schemas"]["PeerTeamRadioSendRequest"]
+              | components["schemas"]["PeerTeamRadioStopRequest"]
             );
       };
     };
@@ -24730,8 +24730,8 @@ export interface operations {
         };
         content: {
           "application/json":
-            | components["schemas"]["PeerProjectResponse"]
             | components["schemas"]["PeerConversionResponse"]
+            | components["schemas"]["PeerProjectResponse"]
             | components["schemas"]["PeerRadioResponse"];
         };
       };
@@ -24768,7 +24768,7 @@ export interface operations {
   plan_api_plan_get: {
     parameters: {
       query?: {
-        agent?: string | null;
+        agent?: null | string;
       };
       header?: never;
       path?: never;
@@ -25310,9 +25310,9 @@ export interface operations {
     requestBody: {
       content: {
         "application/json":
+          | components["schemas"]["ProjectLocationRequest"]
           | components["schemas"]["ProjectWriteRequest"]
-          | components["schemas"]["SidebarReorderRequest"]
-          | components["schemas"]["ProjectLocationRequest"];
+          | components["schemas"]["SidebarReorderRequest"];
       };
     };
     responses: {
@@ -25338,9 +25338,9 @@ export interface operations {
           "application/json":
             | components["schemas"]["ProjectMutationRecord"]
             | components["schemas"]["ProjectRemovalResponse"]
-            | components["schemas"]["SidebarOrderResponse"]
             | components["schemas"]["RemoteProjectRegistrationResponse"]
-            | components["schemas"]["ServerOperationResponse"];
+            | components["schemas"]["ServerOperationResponse"]
+            | components["schemas"]["SidebarOrderResponse"];
         };
       };
       /** @description Bad Request */
@@ -25376,7 +25376,7 @@ export interface operations {
   questions_api_questions_get: {
     parameters: {
       query?: {
-        agent?: string | null;
+        agent?: null | string;
       };
       header?: never;
       path?: never;
@@ -25549,7 +25549,7 @@ export interface operations {
   queue_api_queue_get: {
     parameters: {
       query?: {
-        agent?: string | null;
+        agent?: null | string;
       };
       header?: never;
       path?: never;
@@ -25791,7 +25791,7 @@ export interface operations {
   rules_api_rules_get: {
     parameters: {
       query?: {
-        agent?: string | null;
+        agent?: null | string;
       };
       header?: never;
       path?: never;
@@ -25890,8 +25890,8 @@ export interface operations {
         };
         content: {
           "application/json":
-            | components["schemas"]["RuleRecordResponse"]
-            | components["schemas"]["DeletedRuleReceipt"];
+            | components["schemas"]["DeletedRuleReceipt"]
+            | components["schemas"]["RuleRecordResponse"];
         };
       };
       /** @description Bad Request */
@@ -25926,7 +25926,7 @@ export interface operations {
     parameters: {
       query?: {
         limit?: number | null;
-        q?: string | null;
+        q?: null | string;
       };
       header?: never;
       path?: never;
@@ -25967,8 +25967,8 @@ export interface operations {
   search_item_api_search_item_get: {
     parameters: {
       query?: {
-        id?: string | null;
-        message_id?: string | null;
+        id?: null | string;
+        message_id?: null | string;
       };
       header?: never;
       path?: never;
@@ -26179,7 +26179,7 @@ export interface operations {
   session_cost_api_session_cost_get: {
     parameters: {
       query?: {
-        agent?: string | null;
+        agent?: null | string;
       };
       header?: never;
       path?: never;
@@ -26226,7 +26226,7 @@ export interface operations {
   skills_api_skills_get: {
     parameters: {
       query?: {
-        agent?: string | null;
+        agent?: null | string;
       };
       header?: never;
       path?: never;
@@ -26588,12 +26588,12 @@ export interface operations {
     parameters: {
       query?: {
         after?: number | null;
-        fresh?: string | null;
+        fresh?: null | string;
         initialHigh?: number | null;
         limit?: number | null;
-        priorityId?: string | null;
-        reset?: string | null;
-        scope?: string | null;
+        priorityId?: null | string;
+        reset?: null | string;
+        scope?: null | string;
       };
       header?: never;
       path?: never;
@@ -26621,8 +26621,8 @@ export interface operations {
         };
         content: {
           "application/json":
-            | components["schemas"]["SyncPullResponse"]
-            | components["schemas"]["SyncPullResetResponse"];
+            | components["schemas"]["SyncPullResetResponse"]
+            | components["schemas"]["SyncPullResponse"];
         };
       };
       /** @description Bad Request */
@@ -26639,9 +26639,9 @@ export interface operations {
     parameters: {
       query?: {
         after?: number | null;
-        protocol?: string | null;
-        resources?: string | null;
-        scope?: string | null;
+        protocol?: null | string;
+        resources?: null | string;
+        scope?: null | string;
       };
       header?: never;
       path?: never;
@@ -26966,7 +26966,7 @@ export interface operations {
     parameters: {
       query?: {
         history?: string[];
-        id?: string | null;
+        id?: null | string;
         limit?: string;
         offset?: string;
       };
@@ -27141,8 +27141,8 @@ export interface operations {
   tool_requests_api_tool_requests_get: {
     parameters: {
       query?: {
-        agent?: string | null;
-        request_id?: string | null;
+        agent?: null | string;
+        request_id?: null | string;
       };
       header?: never;
       path?: never;
@@ -27170,8 +27170,8 @@ export interface operations {
         };
         content: {
           "application/json":
-            | components["schemas"]["ToolRequestList"]
-            | components["schemas"]["RootModel_Annotated_Union_ToolRequestRecordResponse__AmbiguousToolRequestResponse__MissingToolRequestResponse__MovedToolRequestResponse___FieldInfo_annotation_NoneType__required_True__discriminator__stage____"];
+            | components["schemas"]["RootModel_Annotated_Union_ToolRequestRecordResponse__AmbiguousToolRequestResponse__MissingToolRequestResponse__MovedToolRequestResponse___FieldInfo_annotation_NoneType__required_True__discriminator__stage____"]
+            | components["schemas"]["ToolRequestList"];
         };
       };
       /** @description Bad Request */
@@ -27221,8 +27221,8 @@ export interface operations {
         };
         content: {
           "application/json":
-            | components["schemas"]["ToolRequestList"]
-            | components["schemas"]["RootModel_Annotated_Union_ToolRequestRecordResponse__AmbiguousToolRequestResponse__MissingToolRequestResponse__MovedToolRequestResponse___FieldInfo_annotation_NoneType__required_True__discriminator__stage____"];
+            | components["schemas"]["RootModel_Annotated_Union_ToolRequestRecordResponse__AmbiguousToolRequestResponse__MissingToolRequestResponse__MovedToolRequestResponse___FieldInfo_annotation_NoneType__required_True__discriminator__stage____"]
+            | components["schemas"]["ToolRequestList"];
         };
       };
       /** @description Bad Request */
@@ -27256,10 +27256,10 @@ export interface operations {
   transcript_api_transcript_get: {
     parameters: {
       query?: {
-        after?: string | null;
-        around?: string | null;
-        before?: string | null;
-        id?: string | null;
+        after?: null | string;
+        around?: null | string;
+        before?: null | string;
+        id?: null | string;
         limit?: number | null;
       };
       header?: never;
@@ -27301,8 +27301,8 @@ export interface operations {
   transcript_item_api_transcript_item_get: {
     parameters: {
       query?: {
-        id?: string | null;
-        message_id?: string | null;
+        id?: null | string;
+        message_id?: null | string;
       };
       header?: never;
       path?: never;
@@ -27343,10 +27343,10 @@ export interface operations {
   transcript_page_api_transcript_page_get: {
     parameters: {
       query?: {
-        after?: string | null;
-        around?: string | null;
-        before?: string | null;
-        id?: string | null;
+        after?: null | string;
+        around?: null | string;
+        before?: null | string;
+        id?: null | string;
         limit?: number | null;
       };
       header?: never;
@@ -27388,9 +27388,9 @@ export interface operations {
   transcript_search_api_transcript_search_get: {
     parameters: {
       query?: {
-        id?: string | null;
+        id?: null | string;
         limit?: number | null;
-        q?: string | null;
+        q?: null | string;
       };
       header?: never;
       path?: never;
@@ -28577,7 +28577,7 @@ export interface operations {
   work_api_work_get: {
     parameters: {
       query?: {
-        agent?: string | null;
+        agent?: null | string;
       };
       header?: never;
       path?: never;
@@ -28689,7 +28689,7 @@ export interface operations {
   workspace_api_workspace_get: {
     parameters: {
       query?: {
-        agent?: string | null;
+        agent?: null | string;
         view?: "full" | "work" | "inbox" | "annotations";
       };
       header?: never;
@@ -28759,9 +28759,9 @@ export interface operations {
   workspace_tasks_api_workspace_tasks_get: {
     parameters: {
       query?: {
-        agent?: string | null;
-        before?: string | null;
-        cursor?: string | null;
+        agent?: null | string;
+        before?: null | string;
+        cursor?: null | string;
         limit?: number;
         timing?: "0" | "1";
       };

@@ -7,11 +7,14 @@ import gzip
 import hashlib
 import json
 import os
+import re
 import sqlite3
 from pathlib import Path
 import tempfile
 import sys
 import asyncio
+import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from types import ModuleType
 from typing import cast
@@ -28,6 +31,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from codex_backend_identity import backend_build
+from codex_layout import SERVER_SOURCE_ROOT, WEB_ROOT
 from studio_api.context import (
     API_SCHEMA_CACHE_DIRECTORY,
     API_SCHEMA_CACHE_FILE,
@@ -126,6 +130,82 @@ class CoreResponseTests(unittest.TestCase):
 
     def test_runtime_property_is_inert_before_runtime_attachment(self) -> None:
         self.assertIsNone(self.context.runtime)
+
+    def test_schema_hash_matches_generated_client_across_import_orders(self) -> None:
+        generated_schema = (WEB_ROOT / "src/generated/apiSchema.ts").read_text(
+            encoding="utf-8"
+        )
+        match = re.search(
+            r'API_SCHEMA_HASH\s*=\s*"([0-9a-f]{64})"', generated_schema
+        )
+        if match is None:
+            self.fail("generated API schema hash is missing")
+        expected_hash = match.group(1)
+
+        source_root = str(SERVER_SOURCE_ROOT)
+        generator_import = """
+import sys
+sys.path.insert(0, sys.argv[1])
+from studio_api.generate_types import openapi_document
+from studio_api.schema import api_schema_hash
+print(api_schema_hash(openapi_document()))
+"""
+        server_import = """
+import sys
+sys.path.insert(0, sys.argv[1])
+from codex_canvas import Canvas
+from codex_runtime import Runtime
+from studio_api.schema import api_schema_hash, openapi_document
+print(api_schema_hash(openapi_document()))
+"""
+        fixture_import = """
+import importlib.util
+import json
+import os
+from pathlib import Path
+import sys
+import time
+import uuid
+sys.path.insert(0, sys.argv[1])
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+sys.dont_write_bytecode = True
+root = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_TESTS_ROOT))
+from test_isolation import isolate_api_schema_cache
+isolate_api_schema_cache()
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
+from codex_canvas import Canvas, make_server
+from codex_runtime import Runtime
+from codex_peer_teams import manage
+from studio_api.context import api_schema_cache_key, read_cached_or_compute_api_schema_hash
+from studio_api.schema import api_schema_hash, openapi_document
+read_cached_or_compute_api_schema_hash(
+    api_schema_cache_key(), lambda: api_schema_hash(openapi_document())
+)
+print(api_schema_hash(openapi_document()))
+"""
+
+        def schema_hash(import_code: str) -> str:
+            environment = os.environ.copy()
+            environment["PYTHONHASHSEED"] = "0"
+            result = subprocess.run(
+                [sys.executable, "-B", "-c", import_code, source_root],
+                cwd=SERVER_SOURCE_ROOT,
+                env=environment,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            return result.stdout.strip()
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            generator_hash = executor.submit(schema_hash, generator_import)
+            fixture_hash = executor.submit(schema_hash, fixture_import)
+            server_hash = executor.submit(schema_hash, server_import)
+            self.assertEqual(generator_hash.result(), expected_hash)
+            self.assertEqual(fixture_hash.result(), expected_hash)
+            self.assertEqual(server_hash.result(), expected_hash)
 
     def test_static_bytes_are_not_treated_as_json(self) -> None:
         response = self.context.send(request_for(), b"image-bytes", content_type="image/png")
@@ -654,6 +734,61 @@ class CoreResponseTests(unittest.TestCase):
                     ),
                     edited_schema_hash,
                 )
+
+    def test_api_schema_cache_key_tracks_the_dependency_lock(self) -> None:
+        from codex_python import requirements_digest
+
+        key = api_schema_cache_key()
+        self.assertEqual(key["requirements"], requirements_digest(SERVER_SOURCE_ROOT))
+        with patch("codex_python.requirements_digest", return_value="changed-lock"):
+            changed_key = api_schema_cache_key()
+        self.assertNotEqual(key, changed_key)
+
+    def test_api_schema_cache_ignores_hash_from_previous_canonicalizer(self) -> None:
+        current_key = api_schema_cache_key()
+        previous_key = dict(current_key, canonicalizer="2")
+        previous_hash = "a" * 64
+        current_hash = "b" * 64
+        with tempfile.TemporaryDirectory(prefix="schema-cache-version-") as cache_home:
+            with patch.dict(os.environ, {"XDG_CACHE_HOME": cache_home}):
+                from studio_api.context import _write_cached_api_schema_hash
+
+                _write_cached_api_schema_hash(previous_key, previous_hash)
+                computations = 0
+
+                def compute() -> str:
+                    nonlocal computations
+                    computations += 1
+                    return current_hash
+
+                self.assertEqual(
+                    read_cached_or_compute_api_schema_hash(current_key, compute),
+                    current_hash,
+                )
+                self.assertEqual(computations, 1)
+
+    def test_schema_hash_ignores_anyof_and_oneof_member_order(self) -> None:
+        document: dict[str, JsonValue] = {
+            "paths": {},
+            "components": {
+                "schemas": {
+                    "Example": {
+                        "anyOf": [
+                            {"type": "string", "description": "text"},
+                            {"type": "integer"},
+                        ],
+                        "oneOf": [
+                            {"type": "object", "properties": {"b": {"type": "boolean"}}},
+                            {"type": "null"},
+                        ],
+                    }
+                }
+            },
+        }
+        original = api_schema_hash(document)
+        document["components"]["schemas"]["Example"]["anyOf"].reverse()
+        document["components"]["schemas"]["Example"]["oneOf"].reverse()
+        self.assertEqual(original, api_schema_hash(document))
 
     def test_schema_hash_failure_is_cached_and_only_gated_requests_get_503(self) -> None:
         context = ApiContext.for_schema()
