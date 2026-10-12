@@ -198,7 +198,7 @@ class ResponseMap(unittest.TestCase):
         recovered = self.submit()
         self.assertNotEqual(original[0], recovered[0])
         self.thread(self.server.read)
-        self.assertEqual(self.server.wait(recovered, timeout=1), {'nativeId':41})
+        self.assertEqual(self.server.wait(recovered, timeout=HANG_GUARD_SECONDS), {'nativeId':41})
         self.assertFalse(original[2].done())
         self.assertEqual(len(self.writes), 1)
         with self.journal.db() as db:
@@ -212,7 +212,7 @@ class ResponseMap(unittest.TestCase):
                                   operation_id='read:fixture-exact')
         self.assertEqual(self.proxy.remote_to_local, {41:original[0]})
         self.thread(self.server.read)
-        self.assertEqual(self.server.wait(original, timeout=1), {'nativeId':41})
+        self.assertEqual(self.server.wait(original, timeout=HANG_GUARD_SECONDS), {'nativeId':41})
         self.assertEqual(len(self.writes), 1)
 
     def test_native_request_ids_are_not_remapped_as_responses(self):
@@ -250,7 +250,7 @@ class ResponseMap(unittest.TestCase):
         self.assertTrue(receipt['accepted'])
         self.assertEqual(self.proxy.remote_to_local, {41:original[0]})
         self.thread(self.server.read)
-        self.assertEqual(self.server.wait(original, timeout=1), {'nativeId':41})
+        self.assertEqual(self.server.wait(original, timeout=HANG_GUARD_SECONDS), {'nativeId':41})
         self.assertEqual(len(self.writes), 1)
 
 

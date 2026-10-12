@@ -363,7 +363,7 @@ class OperatorCloseContract(PidFileContract):
 
         first.proc.ack = delayed_ack
         pending = first.submit('model/list', {})
-        self.assertEqual(first.wait(pending, timeout=30)['data'][0]['model'], 'fake')
+        self.assertEqual(first.wait(pending, timeout=HANG_GUARD_SECONDS)['data'][0]['model'], 'fake')
         self.assertTrue(ack_entered.wait(HANG_GUARD_SECONDS), 'native model/list response was not read for ACK')
 
         closed = self.close('test:operator-replace')

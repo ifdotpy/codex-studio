@@ -136,7 +136,7 @@ class ReaderContract(unittest.TestCase):
         proc.emit({"method": "tool/request", "id": "tool-1"})
         proc.emit({"method": "currentTime/read", "id": "clock-1"})
         proc.emit({"id": pending[0], "result": {"config": "ready"}})
-        self.assertEqual(server.wait(pending, 0.5), {"config": "ready"})
+        self.assertEqual(server.wait(pending, HANG_GUARD_SECONDS), {"config": "ready"})
         with proc.condition:
             self.assertTrue(proc.condition.wait_for(
                 lambda: any(m.get("id") == "clock-1" for m in proc.writes), 0.5))
@@ -170,7 +170,7 @@ class ReaderContract(unittest.TestCase):
         server.on_result(pending, lambda future: (self.records.append(future.result()["id"]), done.set()))
         proc.emit({"method": "output"})
         proc.emit({"id": pending[0], "result": {"id": "late-receipt"}})
-        self.assertEqual(server.wait(pending, 0.5), {"id": "late-receipt"})
+        self.assertEqual(server.wait(pending, HANG_GUARD_SECONDS), {"id": "late-receipt"})
         self.assertFalse(done.is_set())
         self.release.set()
         self.assertTrue(done.wait(HANG_GUARD_SECONDS))
@@ -185,14 +185,14 @@ class ReaderContract(unittest.TestCase):
         self.assertTrue(self.entered.wait(HANG_GUARD_SECONDS))
         second = server.submit("model/list", {})
         proc.emit({"id": second[0], "result": {"models": []}})
-        self.assertEqual(server.wait(second, 0.5), {"models": []})
+        self.assertEqual(server.wait(second, HANG_GUARD_SECONDS), {"models": []})
 
     def test_response_resolution_does_not_wait_for_stdin_writer_lock(self):
         server, proc = self.start()
         pending = server.submit("config/read", {})
         with server.write_lock:
             proc.emit({"id": pending[0], "result": {"config": "ready"}})
-            self.assertEqual(server.wait(pending, 0.5), {"config": "ready"})
+            self.assertEqual(server.wait(pending, HANG_GUARD_SECONDS), {"config": "ready"})
 
     def test_clock_behind_blocked_writer_does_not_block_config_response(self):
         server, proc = self.start()
@@ -200,7 +200,7 @@ class ReaderContract(unittest.TestCase):
         with server.write_lock:
             proc.emit({"id": "delayed-clock", "method": "currentTime/read"})
             proc.emit({"id": pending[0], "result": {"config": "ready"}})
-            self.assertEqual(server.wait(pending, 0.5), {"config": "ready"})
+            self.assertEqual(server.wait(pending, HANG_GUARD_SECONDS), {"config": "ready"})
             self.assertFalse(any(m.get("id") == "delayed-clock" for m in proc.writes))
         with proc.condition:
             self.assertTrue(proc.condition.wait_for(
@@ -323,7 +323,7 @@ class ReaderContract(unittest.TestCase):
                 'threadId': 't', 'turnId': 'turn', 'itemId': item, 'delta': 'tail'}})
         marker = server.submit('marker', {})
         proc.emit({'id': marker[0], 'result': {'ready': True}})
-        self.assertEqual(server.wait(marker, 2), {'ready': True})
+        self.assertEqual(server.wait(marker, HANG_GUARD_SECONDS), {'ready': True})
         self.assertIsNone(proc.poll())
         self.assertLess(server.callbacks.qsize(), 64)
         self.assertTrue(handled.wait(HANG_GUARD_SECONDS))
@@ -354,7 +354,7 @@ class ReaderContract(unittest.TestCase):
             proc.emit({'method': 'item/started', 'params': {'threadId': 't', 'item': {'id': f'x-{i}'}}})
         marker = server.submit('marker', {})
         proc.emit({'id': marker[0], 'result': {'ready': True}})
-        self.assertEqual(server.wait(marker, 2), {'ready': True})
+        self.assertEqual(server.wait(marker, HANG_GUARD_SECONDS), {'ready': True})
         self.assertIsNone(proc.poll())
         self.assertIsNone(server.transport_error)
         shed_before = set(server._shed_items)

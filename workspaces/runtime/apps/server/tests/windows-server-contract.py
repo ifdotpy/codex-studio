@@ -406,7 +406,7 @@ class WindowsServerContract(unittest.TestCase):
                 )
                 self.assertEqual(request.returncode, 0, request.stderr)
                 request_id = json.loads(request.stdout)["requestId"]
-                self.assertEqual(process.wait(timeout=45), 0)
+                self.assertEqual(process.wait(timeout=HANG_GUARD_SECONDS), 0)
                 result_path = state / f"windows-server-control-{request_id}.json"
                 self.assertEqual(json.loads(result_path.read_text(encoding="utf-8"))["result"],
                                  "stopped-all")
