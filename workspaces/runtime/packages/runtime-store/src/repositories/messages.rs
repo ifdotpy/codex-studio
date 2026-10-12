@@ -20,6 +20,9 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
+    bootstrap_tables: &[],
+    bootstrap_triggers: &[],
+    bootstrap_connection_functions: &[],
 };
 
 impl MessageRepository {

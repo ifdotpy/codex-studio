@@ -5,19 +5,20 @@ use crate::records::{AgentId, QueueEvent, QueueEventId, QueueEventRepository};
 use crate::schema::{SchemaRequirements, TableRequirement, TriggerRequirement};
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
-    tables: &[
-        TableRequirement {
-            name: "runtime_events",
-            columns: &[
-                "id", "agent", "kind", "text", "status", "created", "epoch", "turn_id", "error",
-            ],
-        },
-        TableRequirement {
-            name: "sync_entities",
-            columns: &["collection", "id", "seq", "hash", "payload", "deleted"],
-        },
-    ],
-    triggers: &[
+    tables: &[TableRequirement {
+        name: "runtime_events",
+        columns: &[
+            "id", "agent", "kind", "text", "status", "created", "epoch", "turn_id", "error",
+        ],
+    }],
+    triggers: &[],
+    conditional_triggers: &[],
+    connection_functions: &[],
+    bootstrap_tables: &[TableRequirement {
+        name: "sync_entities",
+        columns: &["collection", "id", "seq", "hash", "payload", "deleted"],
+    }],
+    bootstrap_triggers: &[
         TriggerRequirement {
             name: "sync_entity_event_INSERT",
             table: "runtime_events",
@@ -31,8 +32,7 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
             table: "runtime_events",
         },
     ],
-    conditional_triggers: &[],
-    connection_functions: &["sync_entity_payload", "sync_entity_hash"],
+    bootstrap_connection_functions: &["sync_entity_payload", "sync_entity_hash"],
 };
 
 impl QueueEventRepository {
