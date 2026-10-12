@@ -138,16 +138,16 @@ jobs:
     name: "Fast tier: browser smoke"
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - uses: ./.github/actions/fast-tier-setup
-      - name: Select the isolated Python environment for browser fixtures
-        run: echo "CODEX_AGENTS_PYTHON=$(python3 workspaces/runtime/apps/server/src/codex_python.py)" >> "$GITHUB_ENV"
-      - uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9 # v4.2.4
+      - name: Select the isolated Python environment and browser cache
+        run: |
+          echo "CODEX_AGENTS_PYTHON=$(python3 workspaces/runtime/apps/server/src/codex_python.py)" >> "$GITHUB_ENV"
+          echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/ms-playwright" >> "$GITHUB_ENV"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
