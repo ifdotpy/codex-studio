@@ -131,6 +131,9 @@ type SettingsProps = {
 };
 const accountOf = (agent: Pick<Agent, "accountKey">) =>
   agent.accountKey || "default";
+// Codex accounts carry no provider field.
+const providerOf = (account?: Pick<Account, "provider">) =>
+  account ? account.provider || "codex" : undefined;
 const queuedFor = (agent: SettingsAgent) =>
   agent.pendingSettingsAccountKey &&
   agent.pendingSettingsAccountKey !== accountOf(agent)
@@ -416,7 +419,12 @@ function ScopedExecutionSettings({
   );
   const automaticProvider =
     infoFor(catalog, current.model || agent.model || "")?.provider ||
-    activeAccount?.provider ||
+    providerOf(activeAccount) ||
+    agent.provider ||
+    "codex";
+  // The main agent's provider: "Same as main agent" exists only on its tab.
+  const leadProvider =
+    providerOf(accounts.find((account) => account.id === accountOf(agent))) ||
     agent.provider ||
     "codex";
   const [browsedProvider, setBrowsedProvider] = useState<string | null>(null);
@@ -424,7 +432,7 @@ function ScopedExecutionSettings({
     role === "review"
       ? "codex"
       : browsedProvider ||
-        (effectiveAccount ? activeAccount?.provider : automaticProvider) ||
+        (effectiveAccount ? providerOf(activeAccount) : automaticProvider) ||
         "codex";
   const pickerProviders = [
     ...new Set(connectedAccounts.map((account) => account.provider || "codex")),
@@ -1057,14 +1065,18 @@ function ScopedExecutionSettings({
     crossProvider
       ? crossOptions
       : (role === "review" ? reviewOptions : modelOptions).filter((row) => {
-          if (row.value === DEFAULT) return role !== "orchestrator";
+          if (row.value === DEFAULT)
+            return (
+              role === "review" ||
+              (role === "worker" && leadProvider === pickerProvider)
+            );
           const model = infoFor(catalog, row.value);
           return (
             !!model &&
             !model.hidden &&
             (role === "review" ||
               (model.provider ||
-                activeAccount?.provider ||
+                providerOf(activeAccount) ||
                 agent.provider ||
                 "codex") === pickerProvider)
           );
@@ -1361,7 +1373,7 @@ function ScopedExecutionSettings({
     summaryRole === "review"
       ? "codex"
       : summaryInfo?.provider ||
-        activeAccount?.provider ||
+        providerOf(activeAccount) ||
         agent.provider ||
         "codex";
   const summaryEffort =
