@@ -89,11 +89,11 @@ mod tests {
     fn explicit_paths_expand_only_a_leading_tilde() {
         let home = std::env::var_os("HOME").expect("test host has HOME");
         assert_eq!(
-            expand_home(Path::new("~/studio")).unwrap(),
+            expand_home(Path::new("~/studio")).expect("home expansion succeeds"),
             Path::new(&home).join("studio")
         );
         assert_eq!(
-            expand_home(Path::new("/tmp/~studio")).unwrap(),
+            expand_home(Path::new("/tmp/~studio")).expect("absolute path is unchanged"),
             Path::new("/tmp/~studio")
         );
     }

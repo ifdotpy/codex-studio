@@ -297,8 +297,8 @@ mod tests {
             "id":"agent-1", "rootId":"agent-1", "epoch":2, "status":"idle",
             "futureObject":{"number":1.5,"flag":true}, "futureInteger":9007199254740993
         }"#;
-        let record: AgentRecord = serde_json::from_str(source).unwrap();
-        let rewritten = serde_json::to_value(record).unwrap();
+        let record: AgentRecord = serde_json::from_str(source).expect("agent record parses");
+        let rewritten = serde_json::to_value(record).expect("agent record serializes");
         assert_eq!(rewritten["futureObject"]["number"].as_f64(), Some(1.5));
         assert_eq!(rewritten["futureObject"]["flag"].as_bool(), Some(true));
         assert_eq!(rewritten["futureInteger"].as_i64(), Some(9007199254740993));
@@ -312,8 +312,8 @@ mod tests {
             "createdBy":"agent-1", "version":3, "dependencies":[], "decisions":[],
             "results":[], "fixtureFlag":true, "fixtureNumber":1
         }"#;
-        let record: TaskRecord = serde_json::from_str(source).unwrap();
-        let rewritten = serde_json::to_value(record).unwrap();
+        let record: TaskRecord = serde_json::from_str(source).expect("task record parses");
+        let rewritten = serde_json::to_value(record).expect("task record serializes");
         assert_eq!(rewritten["fixtureFlag"].as_bool(), Some(true));
         assert_eq!(rewritten["fixtureNumber"].as_i64(), Some(1));
     }

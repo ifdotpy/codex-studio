@@ -1,7 +1,8 @@
 use std::path::Path;
 
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
-use serde_json::{Value, json};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, functions::FunctionFlags, params};
+use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::{StoreError, StoreResult};
 
@@ -34,6 +35,75 @@ pub(crate) fn verify(canvas_path: &Path, analytics_path: &Path) -> StoreResult<(
         ));
     }
     Ok(())
+}
+
+pub(crate) fn register_python_trigger_functions(connection: &Connection) -> StoreResult<()> {
+    connection.create_scalar_function(
+        "sync_entity_payload",
+        4,
+        FunctionFlags::SQLITE_DETERMINISTIC,
+        |context| {
+            let collection: String = context.get(0)?;
+            if collection != "event" {
+                return Err(rusqlite::Error::UserFunctionError(Box::new(
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "unsupported sync entity trigger collection",
+                    ),
+                )));
+            }
+            let key: String = context.get(1)?;
+            let raw: String = context.get(2)?;
+            let deleted: i64 = context.get(3)?;
+            event_payload(&key, &raw, deleted != 0)
+                .map_err(|error| rusqlite::Error::UserFunctionError(Box::new(error)))
+        },
+    )?;
+    connection.create_scalar_function(
+        "sync_entity_hash",
+        1,
+        FunctionFlags::SQLITE_DETERMINISTIC,
+        |context| {
+            let payload: String = context.get(0)?;
+            Ok(sha256_hex(payload.as_bytes()))
+        },
+    )?;
+    Ok(())
+}
+
+fn sha256_hex(value: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let digest = Sha256::digest(value);
+    let mut result = String::with_capacity(digest.len() * 2);
+    for byte in digest.iter() {
+        result.push(char::from(HEX[usize::from(byte >> 4)]));
+        result.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    result
+}
+
+fn event_payload(key: &str, raw: &str, deleted: bool) -> Result<String, serde_json::Error> {
+    let mut value = if deleted {
+        Map::new()
+    } else {
+        serde_json::from_str::<Value>(raw)
+            .ok()
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default()
+    };
+    if !deleted {
+        value.retain(|name, _| {
+            matches!(
+                name.as_str(),
+                "id" | "agent" | "kind" | "status" | "created" | "error"
+            )
+        });
+    }
+    serde_json::to_string(&json!({
+        "collection": "event",
+        "id": key,
+        "value": value,
+    }))
 }
 
 fn open_read_only(path: &Path) -> StoreResult<Connection> {
@@ -122,7 +192,8 @@ mod tests {
 
     #[test]
     fn committed_snapshot_has_both_database_catalogs_and_expected_markers() {
-        let snapshot: Value = serde_json::from_str(SCHEMA_SNAPSHOT).unwrap();
+        let snapshot: Value =
+            serde_json::from_str(SCHEMA_SNAPSHOT).expect("schema snapshot parses");
         assert_eq!(snapshot["canvas.sqlite3"]["pragma_user_version"], 0);
         assert_eq!(
             snapshot["canvas.sqlite3"]["payload_migrations"],

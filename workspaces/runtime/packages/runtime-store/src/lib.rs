@@ -91,6 +91,7 @@ impl RuntimeStore {
 
         let writer = open_database(&canvas_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         writer.pragma_update(None, "synchronous", "FULL")?;
+        schema::register_python_trigger_functions(&writer)?;
         Ok(Self {
             root,
             _runtime_lock: runtime_lock,
