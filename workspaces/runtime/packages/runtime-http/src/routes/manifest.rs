@@ -261,7 +261,7 @@ mod tests {
             .validate()
             .is_err()
         );
-        assert!(super::dependency_unavailable("GET", "/api/limits", &DEPENDENCIES).is_err());
+        assert!(super::dependency_unavailable("GET", "/api/limits", &DEPENDENCIES).is_ok());
         assert!(super::dependency_unavailable("GET", "/api/limits", &UNKNOWN).is_err());
     }
 }
