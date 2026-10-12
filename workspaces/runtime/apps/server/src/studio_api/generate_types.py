@@ -18,6 +18,7 @@ from studio_api.schema import (
     API_SCHEMA_MISMATCH_HEADER,
     API_SCHEMA_MISMATCH_FIELD,
     api_schema_hash,
+    canonical_openapi_json,
     entity_schema_names,
     normalize_json_value_schema,
     openapi_document,
@@ -31,6 +32,7 @@ from codex_layout import REPOSITORY_ROOT, WEB_ROOT
 ROOT = REPOSITORY_ROOT
 OUTPUT = WEB_ROOT / "src" / "generated" / "api.ts"
 SCHEMA_OUTPUT = WEB_ROOT / "src" / "generated" / "apiSchema.ts"
+OPENAPI_AUTHORITY = ROOT / "workspaces/runtime/packages/runtime-http/openapi.json"
 DEFAULT_CACHE_ROOT = Path.home() / ".cache"
 CACHE_ROOT_ENV = "XDG_CACHE_HOME"
 OPENAPI_TEMP_DIRECTORY = "codex-studio-openapi-types"
@@ -141,12 +143,35 @@ def render_schema_identity(schema_hash: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="fail if generated API types are stale")
+    parser.add_argument(
+        "--write-openapi",
+        action="store_true",
+        help="refresh the canonical OpenAPI authority from the current Python models",
+    )
     options = parser.parse_args(argv)
     try:
-        document = openapi_document()
+        exported = openapi_document()
+        remove_orphan_fastapi_validation_schemas(exported)
+        normalize_json_value_schema(exported)
+        validate_contract_schemas(exported)
+        validate_error_responses(exported)
+        canonical_export = canonical_openapi_json(exported)
+        if options.write_openapi:
+            OPENAPI_AUTHORITY.write_bytes(canonical_export)
+        else:
+            committed = OPENAPI_AUTHORITY.read_bytes()
+            if committed != canonical_export:
+                print(
+                    f"{OPENAPI_AUTHORITY.relative_to(ROOT)} diverges from Python models; "
+                    "review the schema change, then run `python3 workspaces/runtime/apps/server/src/codex_python.py "
+                    "--exec -m studio_api.generate_types --write-openapi`",
+                    file=sys.stderr,
+                )
+                return 1
+        document = json.loads(OPENAPI_AUTHORITY.read_text(encoding="utf-8"))
         schema_hash = api_schema_hash(document)
         expected_files = {
-            OUTPUT: render(document),
+            OUTPUT: render(json.loads(json.dumps(document))),
             SCHEMA_OUTPUT: render_schema_identity(schema_hash),
         }
     except (FileNotFoundError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import inspect
+import json
+from pathlib import Path
 import unittest
 from collections.abc import Iterable
 from typing import ClassVar, cast
@@ -15,149 +17,20 @@ from studio_api.context import ApiContext, HeaderCollection
 from studio_api.core_models import SessionResponse
 
 
-GET_PATHS = frozenset(
-    {
-        "/api/multi-server",
-        "/api/multi-server/audit",
-        "/api/multi-server/v1/identity",
-        "/api/session",
-        "/api/sync/identity",
-        "/api/sync/protocol",
-        "/api/sync/pull",
-        "/api/sync/stream",
-        "/api/costs",
-        "/api/session-cost",
-        "/api/desktop",
-        "/api/diagnostics",
-        "/api/terminals",
-        "/api/terminals/output",
-        "/api/directories",
-        "/api/tool-requests",
-        "/api/analytics",
-        "/api/accounts/claude/login",
-        "/api/accounts",
-        "/api/projects",
-        "/api/questions",
-        "/api/workspace",
-        "/api/workspace/tasks",
-        "/api/work",
-        "/api/queue",
-        "/api/messages/receipts",
-        "/api/changes",
-        "/api/plan",
-        "/api/transcript",
-        "/api/transcript/page",
-        "/api/transcript/item",
-        "/api/transcript/search",
-        "/api/search",
-        "/api/search/item",
-        "/api/checkpoints",
-        "/api/capabilities",
-        "/api/agents/finder-view",
-        "/api/skills",
-        "/api/panel",
-        "/api/profiles",
-        "/api/rules",
-        "/api/monitor/log",
-        "/api/file-info",
-        "/api/file",
-        "/api/limits",
-        "/api/task",
-        "/api/complaint",
-        "/api/agent-chat",
-        "/api/models",
-        "/api/import",
-        "/api/messages",
-    }
-)
+OPENAPI_DOCUMENT = Path(__file__).resolve().parents[6] / "runtime/packages/runtime-http/openapi.json"
+HTTP_METHODS = frozenset({"get", "put", "post", "delete", "options", "head", "patch", "trace"})
 
-POST_PATHS = frozenset(
-    {
-        "/api/multi-server",
-        "/api/multi-server/v1/pair",
-        "/api/multi-server/v1/auto-pair",
-        "/api/servers/orchestration",
-        "/api/federation/v1/pair",
-        "/api/federation/v1/status",
-        "/api/federation/v1/message",
-        "/api/federation/v1/pull",
-        "/api/sync/drafts",
-        "/api/voice/status",
-        "/api/voice/start",
-        "/api/voice/end",
-        "/api/voice/record",
-        "/api/voice/records",
-        "/api/voice/speech",
-        "/api/voice/submit",
-        "/api/voice/audio",
-        "/api/voice/approvals",
-        "/api/voice/approval_speech",
-        "/api/voice/approve",
-        "/api/limits/reset",
-        "/api/terminals/create",
-        "/api/terminals/input",
-        "/api/terminals/resize",
-        "/api/terminals/rename",
-        "/api/terminals/close",
-        "/api/federation",
-        "/api/panel/layout",
-        "/api/peer-teams",
-        "/api/projects",
-        "/api/accounts/claude/login",
-        "/api/accounts/claude/add",
-        "/api/accounts/claude/login/code",
-        "/api/accounts/claude/login/cancel",
-        "/api/accounts/discover",
-        "/api/accounts/register",
-        "/api/accounts/default",
-        "/api/accounts/login/cancel",
-        "/api/accounts/delete",
-        "/api/accounts/disconnect",
-        "/api/accounts/reconnect",
-        "/api/accounts/login",
-        "/api/claude/profiles",
-        "/api/claude/session",
-        "/api/agents/account-transfer",
-        "/api/agents/account",
-        "/api/work",
-        "/api/queue",
-        "/api/plan",
-        "/api/annotation",
-        "/api/organization",
-        "/api/assets",
-        "/api/branch",
-        "/api/checkpoint",
-        "/api/checkpoint/preview",
-        "/api/checkpoint/restore",
-        "/api/tool-requests/cancel",
-        "/api/profiles",
-        "/api/rules",
-        "/api/monitor/input",
-        "/api/native-command",
-        "/api/messages",
-        "/api/rename",
-        "/api/room/delete",
-        "/api/complaints",
-        "/api/conversation/delete",
-        "/api/chats",
-        "/api/connections",
-        "/api/leads",
-        "/api/conversation",
-        "/api/agents",
-        "/api/configure",
-        "/api/connection-recovery",
-        "/api/context-repair",
-        "/api/capacity-retry",
-        "/api/usage-resume",
-        "/api/action",
-        "/api/import",
-        "/api/stop",
-        "/api/monitor/cancel",
-        "/api/questions/delete",
-        "/api/questions/defer",
-        "/api/answer",
+
+def authoritative_api_operations() -> set[tuple[str, str]]:
+    document = json.loads(OPENAPI_DOCUMENT.read_text(encoding="utf-8"))
+    return {
+        (method.upper(), path)
+        for path, item in document["paths"].items()
+        if path.startswith("/api/")
+        for method in item
+        if method in HTTP_METHODS
     }
-)
+
 
 STREAM_OR_FILE_ROUTES = frozenset(
     {
@@ -220,9 +93,8 @@ class ApplicationRouteContract(unittest.TestCase):
             if not path.startswith("/api/"):
                 continue
             declared.update((method, path) for method in route.methods or ())
-        expected = {("GET", path) for path in GET_PATHS}
-        expected.update(("POST", path) for path in POST_PATHS)
-        self.assertEqual(expected - declared, set())
+        expected = authoritative_api_operations() | HIDDEN_COMPATIBILITY_ROUTES
+        self.assertEqual(expected, declared)
 
     def test_api_routes_are_explicit_component_routes_with_response_models(self) -> None:
         for path, route in application_api_routes(self.app):

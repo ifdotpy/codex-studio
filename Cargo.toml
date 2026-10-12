@@ -2,10 +2,12 @@
 resolver = "3"
 members = [
     "workspaces/runtime/apps/diagnostics",
+    "workspaces/runtime/apps/runtime-server",
     "workspaces/runtime/packages/operations",
     "workspaces/runtime/packages/operations-python",
     "workspaces/runtime/packages/runtime-providers",
     "workspaces/runtime/packages/runtime-process",
+    "workspaces/runtime/packages/runtime-http",
 ]
 # The vendored layr and layr-desk sources (scripts update-vm-layr.py) build inside the Linux VM
 # guest with their own lints; they are not part of this workspace.
@@ -32,3 +34,9 @@ serde = { version = "1.0", default-features = false, features = ["std"] }
 serde_json = { version = "1.0", default-features = false, features = ["std", "arbitrary_precision"] }
 thiserror = "=2.0.17"
 pyo3 = { version = "0.29", features = ["abi3-py311", "extension-module"] }
+
+axum = "=0.8.9"
+getrandom = "=0.3.4"
+sha2 = "=0.10.9"
+subtle = "=2.6.1"
+tokio = { version = "=1.53.2", features = ["macros", "net", "rt-multi-thread", "signal", "time"] }

@@ -1,0 +1,15 @@
+[package]
+name = "studio-runtime-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+axum = { workspace = true }
+getrandom = { workspace = true }
+studio-runtime-http = { path = "../../packages/runtime-http" }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

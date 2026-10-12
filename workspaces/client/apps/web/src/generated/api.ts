@@ -11,7 +11,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Accounts */
     get: operations["accounts_api_accounts_get"];
     put?: never;
     post?: never;
@@ -30,7 +29,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Claude Add Start */
     post: operations["claude_add_start_api_accounts_claude_add_post"];
     delete?: never;
     options?: never;
@@ -45,10 +43,8 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Claude Login Status */
     get: operations["claude_login_status_api_accounts_claude_login_get"];
     put?: never;
-    /** Claude Login Start */
     post: operations["claude_login_start_api_accounts_claude_login_post"];
     delete?: never;
     options?: never;
@@ -65,7 +61,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Claude Login Cancel */
     post: operations["claude_login_cancel_api_accounts_claude_login_cancel_post"];
     delete?: never;
     options?: never;
@@ -82,7 +77,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Claude Login Code */
     post: operations["claude_login_code_api_accounts_claude_login_code_post"];
     delete?: never;
     options?: never;
@@ -99,7 +93,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Account Default */
     post: operations["account_default_api_accounts_default_post"];
     delete?: never;
     options?: never;
@@ -116,7 +109,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Account Delete */
     post: operations["account_delete_api_accounts_delete_post"];
     delete?: never;
     options?: never;
@@ -133,7 +125,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Account Disconnect */
     post: operations["account_disconnect_api_accounts_disconnect_post"];
     delete?: never;
     options?: never;
@@ -150,7 +141,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Account Discover */
     post: operations["account_discover_api_accounts_discover_post"];
     delete?: never;
     options?: never;
@@ -167,7 +157,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Account Login */
     post: operations["account_login_api_accounts_login_post"];
     delete?: never;
     options?: never;
@@ -184,7 +173,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Account Login Cancel */
     post: operations["account_login_cancel_api_accounts_login_cancel_post"];
     delete?: never;
     options?: never;
@@ -201,7 +189,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Account Name */
     post: operations["account_name_api_accounts_name_post"];
     delete?: never;
     options?: never;
@@ -218,7 +205,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Account Reconnect */
     post: operations["account_reconnect_api_accounts_reconnect_post"];
     delete?: never;
     options?: never;
@@ -235,7 +221,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Account Register */
     post: operations["account_register_api_accounts_register_post"];
     delete?: never;
     options?: never;
@@ -252,7 +237,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Native Action */
     post: operations["native_action_api_action_post"];
     delete?: never;
     options?: never;
@@ -267,7 +251,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Agent Chat */
     get: operations["agent_chat_api_agent_chat_get"];
     put?: never;
     post?: never;
@@ -286,7 +269,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Create Agent */
     post: operations["create_agent_api_agents_post"];
     delete?: never;
     options?: never;
@@ -303,7 +285,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Select Account */
     post: operations["select_account_api_agents_account_post"];
     delete?: never;
     options?: never;
@@ -320,7 +301,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Account Transfer */
     post: operations["account_transfer_api_agents_account_transfer_post"];
     delete?: never;
     options?: never;
@@ -335,10 +315,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /**
-     * Finder View
-     * @description Where Finder shows the chat's files. Reads saved records only; never mounts or calls the VM.
-     */
     get: operations["finder_view_api_agents_finder_view_get"];
     put?: never;
     post?: never;
@@ -355,7 +331,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Analytics */
     get: operations["analytics_api_analytics_get"];
     put?: never;
     post?: never;
@@ -374,7 +349,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Annotation */
     post: operations["annotation_api_annotation_post"];
     delete?: never;
     options?: never;
@@ -391,7 +365,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Answer */
     post: operations["answer_api_answer_post"];
     delete?: never;
     options?: never;
@@ -408,7 +381,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Upload Asset */
     post: operations["upload_asset_api_assets_post"];
     delete?: never;
     options?: never;
@@ -425,7 +397,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Branch */
     post: operations["branch_api_branch_post"];
     delete?: never;
     options?: never;
@@ -440,7 +411,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Capabilities */
     get: operations["capabilities_api_capabilities_get"];
     put?: never;
     post?: never;
@@ -459,7 +429,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Capacity Retry */
     post: operations["capacity_retry_api_capacity_retry_post"];
     delete?: never;
     options?: never;
@@ -474,7 +443,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Changes */
     get: operations["changes_api_changes_get"];
     put?: never;
     post?: never;
@@ -493,7 +461,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Create Chat */
     post: operations["create_chat_api_chats_post"];
     delete?: never;
     options?: never;
@@ -510,7 +477,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Checkpoint */
     post: operations["checkpoint_api_checkpoint_post"];
     delete?: never;
     options?: never;
@@ -527,7 +493,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Checkpoint Preview */
     post: operations["checkpoint_preview_api_checkpoint_preview_post"];
     delete?: never;
     options?: never;
@@ -544,7 +509,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Checkpoint Restore */
     post: operations["checkpoint_restore_api_checkpoint_restore_post"];
     delete?: never;
     options?: never;
@@ -559,7 +523,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Checkpoints */
     get: operations["checkpoints_api_checkpoints_get"];
     put?: never;
     post?: never;
@@ -578,7 +541,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Claude Profile */
     post: operations["claude_profile_api_claude_profiles_post"];
     delete?: never;
     options?: never;
@@ -595,7 +557,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Claude Session */
     post: operations["claude_session_api_claude_session_post"];
     delete?: never;
     options?: never;
@@ -610,7 +571,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Complaint Detail */
     get: operations["complaint_detail_api_complaint_get"];
     put?: never;
     post?: never;
@@ -629,7 +589,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Complaints */
     post: operations["complaints_api_complaints_post"];
     delete?: never;
     options?: never;
@@ -646,7 +605,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Configure */
     post: operations["configure_api_configure_post"];
     delete?: never;
     options?: never;
@@ -663,7 +621,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Connection Recovery */
     post: operations["connection_recovery_api_connection_recovery_post"];
     delete?: never;
     options?: never;
@@ -680,7 +637,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Connect Chat */
     post: operations["connect_chat_api_connections_post"];
     delete?: never;
     options?: never;
@@ -697,7 +653,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Context Repair */
     post: operations["context_repair_api_context_repair_post"];
     delete?: never;
     options?: never;
@@ -714,7 +669,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Conversation Settings */
     post: operations["conversation_settings_api_conversation_post"];
     delete?: never;
     options?: never;
@@ -731,7 +685,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Delete Conversation */
     post: operations["delete_conversation_api_conversation_delete_post"];
     delete?: never;
     options?: never;
@@ -746,7 +699,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Costs */
     get: operations["costs_api_costs_get"];
     put?: never;
     post?: never;
@@ -763,7 +715,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Desktop */
     get: operations["desktop_api_desktop_get"];
     put?: never;
     post?: never;
@@ -780,7 +731,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Diagnostics */
     get: operations["diagnostics_api_diagnostics_get"];
     put?: never;
     post?: never;
@@ -797,7 +747,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Directories */
     get: operations["directories_api_directories_get"];
     put?: never;
     post?: never;
@@ -814,10 +763,8 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** No Get Counterpart */
     get: operations["no_get_counterpart_api_federation_get"];
     put?: never;
-    /** Manage Federation */
     post: operations["manage_federation_api_federation_post"];
     delete?: never;
     options?: never;
@@ -832,10 +779,8 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** No Get Counterpart */
     get: operations["no_get_counterpart_api_federation_v1_message_get"];
     put?: never;
-    /** Message */
     post: operations["message_api_federation_v1_message_post"];
     delete?: never;
     options?: never;
@@ -850,10 +795,8 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** No Get Counterpart */
     get: operations["no_get_counterpart_api_federation_v1_pair_get"];
     put?: never;
-    /** Pair */
     post: operations["pair_api_federation_v1_pair_post"];
     delete?: never;
     options?: never;
@@ -868,10 +811,8 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** No Get Counterpart */
     get: operations["no_get_counterpart_api_federation_v1_pull_get"];
     put?: never;
-    /** Pull */
     post: operations["pull_api_federation_v1_pull_post"];
     delete?: never;
     options?: never;
@@ -886,10 +827,8 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** No Get Counterpart */
     get: operations["no_get_counterpart_api_federation_v1_status_get"];
     put?: never;
-    /** Status */
     post: operations["status_api_federation_v1_status_post"];
     delete?: never;
     options?: never;
@@ -904,7 +843,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** File Content */
     get: operations["file_content_api_file_get"];
     put?: never;
     post?: never;
@@ -921,7 +859,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** File Info */
     get: operations["file_info_api_file_info_get"];
     put?: never;
     post?: never;
@@ -938,10 +875,8 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Import List */
     get: operations["import_list_api_import_get"];
     put?: never;
-    /** Import Thread */
     post: operations["import_thread_api_import_post"];
     delete?: never;
     options?: never;
@@ -958,7 +893,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Create Lead */
     post: operations["create_lead_api_leads_post"];
     delete?: never;
     options?: never;
@@ -973,7 +907,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Limits */
     get: operations["limits_api_limits_get"];
     put?: never;
     post?: never;
@@ -992,7 +925,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Reset Limits */
     post: operations["reset_limits_api_limits_reset_post"];
     delete?: never;
     options?: never;
@@ -1007,10 +939,8 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Linux Vm Settings */
     get: operations["linux_vm_settings_api_linux_vm_settings_get"];
     put?: never;
-    /** Linux Vm Settings Write */
     post: operations["linux_vm_settings_write_api_linux_vm_settings_post"];
     delete?: never;
     options?: never;
@@ -1027,10 +957,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /**
-     * Mac Sync Config
-     * @description Pause or resume a project's Mac folder sync, or confirm the Mac deletions that paused it.
-     */
     post: operations["mac_sync_config_api_mac_sync_config_post"];
     delete?: never;
     options?: never;
@@ -1047,10 +973,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /**
-     * Mac Sync Resolve
-     * @description Settle one conflicting path of a project's Mac folder sync.
-     */
     post: operations["mac_sync_resolve_api_mac_sync_resolve_post"];
     delete?: never;
     options?: never;
@@ -1065,10 +987,8 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Messages */
     get: operations["messages_api_messages_get"];
     put?: never;
-    /** Post Message */
     post: operations["post_message_api_messages_post"];
     delete?: never;
     options?: never;
@@ -1083,7 +1003,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Message Receipts */
     get: operations["message_receipts_api_messages_receipts_get"];
     put?: never;
     post?: never;
@@ -1100,7 +1019,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Models */
     get: operations["models_api_models_get"];
     put?: never;
     post?: never;
@@ -1119,7 +1037,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Cancel Monitor */
     post: operations["cancel_monitor_api_monitor_cancel_post"];
     delete?: never;
     options?: never;
@@ -1136,7 +1053,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Monitor Input */
     post: operations["monitor_input_api_monitor_input_post"];
     delete?: never;
     options?: never;
@@ -1151,7 +1067,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Monitor Log */
     get: operations["monitor_log_api_monitor_log_get"];
     put?: never;
     post?: never;
@@ -1168,10 +1083,8 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Snapshot */
     get: operations["snapshot_api_multi_server_get"];
     put?: never;
-    /** Manage */
     post: operations["manage_api_multi_server_post"];
     delete?: never;
     options?: never;
@@ -1186,7 +1099,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Audit */
     get: operations["audit_api_multi_server_audit_get"];
     put?: never;
     post?: never;
@@ -1205,7 +1117,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Auto Pair */
     post: operations["auto_pair_api_multi_server_v1_auto_pair_post"];
     delete?: never;
     options?: never;
@@ -1220,7 +1131,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Discovery Identity */
     get: operations["discovery_identity_api_multi_server_v1_identity_get"];
     put?: never;
     post?: never;
@@ -1239,7 +1149,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Rename Server */
     post: operations["rename_server_api_multi_server_v1_name_post"];
     delete?: never;
     options?: never;
@@ -1254,10 +1163,8 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** No Pair Get */
     get: operations["no_pair_get_api_multi_server_v1_pair_get"];
     put?: never;
-    /** Pair */
     post: operations["pair_api_multi_server_v1_pair_post"];
     delete?: never;
     options?: never;
@@ -1272,7 +1179,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Server Status */
     get: operations["server_status_api_multi_server_v1_status_get"];
     put?: never;
     post?: never;
@@ -1291,7 +1197,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Native Command */
     post: operations["native_command_api_native_command_post"];
     delete?: never;
     options?: never;
@@ -1308,7 +1213,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Organization */
     post: operations["organization_api_organization_post"];
     delete?: never;
     options?: never;
@@ -1323,7 +1227,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Panel */
     get: operations["panel_api_panel_get"];
     put?: never;
     post?: never;
@@ -1342,7 +1245,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Save Panel Layout */
     post: operations["save_panel_layout_api_panel_layout_post"];
     delete?: never;
     options?: never;
@@ -1359,7 +1261,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Peer Teams */
     post: operations["peer_teams_api_peer_teams_post"];
     delete?: never;
     options?: never;
@@ -1374,10 +1275,8 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Plan */
     get: operations["plan_api_plan_get"];
     put?: never;
-    /** Save Plan */
     post: operations["save_plan_api_plan_post"];
     delete?: never;
     options?: never;
@@ -1392,10 +1291,8 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Profiles */
     get: operations["profiles_api_profiles_get"];
     put?: never;
-    /** Update Profiles */
     post: operations["update_profiles_api_profiles_post"];
     delete?: never;
     options?: never;
@@ -1410,7 +1307,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Project Location Query */
     get: operations["project_location_query_api_project_locations_get"];
     put?: never;
     post?: never;
@@ -1429,10 +1325,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /**
-     * Project Secrets List
-     * @description The names of the project's secrets.
-     */
     post: operations["project_secrets_list_api_project_secrets_list_post"];
     delete?: never;
     options?: never;
@@ -1449,10 +1341,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /**
-     * Project Secrets Remove
-     * @description Remove one secret of the project.
-     */
     post: operations["project_secrets_remove_api_project_secrets_remove_post"];
     delete?: never;
     options?: never;
@@ -1469,10 +1357,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /**
-     * Project Secrets Set
-     * @description Set one secret of the project; agent processes that start later get it.
-     */
     post: operations["project_secrets_set_api_project_secrets_set_post"];
     delete?: never;
     options?: never;
@@ -1487,10 +1371,8 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Projects */
     get: operations["projects_api_projects_get"];
     put?: never;
-    /** Project Write */
     post: operations["project_write_api_projects_post"];
     delete?: never;
     options?: never;
@@ -1505,7 +1387,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Questions */
     get: operations["questions_api_questions_get"];
     put?: never;
     post?: never;
@@ -1524,7 +1405,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Defer Question */
     post: operations["defer_question_api_questions_defer_post"];
     delete?: never;
     options?: never;
@@ -1541,7 +1421,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Delete Question */
     post: operations["delete_question_api_questions_delete_post"];
     delete?: never;
     options?: never;
@@ -1556,10 +1435,8 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Queue */
     get: operations["queue_api_queue_get"];
     put?: never;
-    /** Queue Action */
     post: operations["queue_action_api_queue_post"];
     delete?: never;
     options?: never;
@@ -1576,7 +1453,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Rename */
     post: operations["rename_api_rename_post"];
     delete?: never;
     options?: never;
@@ -1593,7 +1469,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Delete Room */
     post: operations["delete_room_api_room_delete_post"];
     delete?: never;
     options?: never;
@@ -1608,10 +1483,8 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Rules */
     get: operations["rules_api_rules_get"];
     put?: never;
-    /** Update Rules */
     post: operations["update_rules_api_rules_post"];
     delete?: never;
     options?: never;
@@ -1626,7 +1499,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Search */
     get: operations["search_api_search_get"];
     put?: never;
     post?: never;
@@ -1643,7 +1515,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Search Item */
     get: operations["search_item_api_search_item_get"];
     put?: never;
     post?: never;
@@ -1662,7 +1533,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Orchestration */
     post: operations["orchestration_api_servers_orchestration_post"];
     delete?: never;
     options?: never;
@@ -1677,7 +1547,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Session */
     get: operations["session_api_session_get"];
     put?: never;
     post?: never;
@@ -1694,7 +1563,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Session Cost */
     get: operations["session_cost_api_session_cost_get"];
     put?: never;
     post?: never;
@@ -1711,7 +1579,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Skills */
     get: operations["skills_api_skills_get"];
     put?: never;
     post?: never;
@@ -1730,7 +1597,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Stop */
     post: operations["stop_api_stop_post"];
     delete?: never;
     options?: never;
@@ -1747,7 +1613,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Push Drafts */
     post: operations["push_drafts_api_sync_drafts_post"];
     delete?: never;
     options?: never;
@@ -1762,7 +1627,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Identity */
     get: operations["identity_api_sync_identity_get"];
     put?: never;
     post?: never;
@@ -1781,7 +1645,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Notify */
     post: operations["notify_api_sync_notify_post"];
     delete?: never;
     options?: never;
@@ -1798,7 +1661,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Push Preferences */
     post: operations["push_preferences_api_sync_preferences_post"];
     delete?: never;
     options?: never;
@@ -1813,7 +1675,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Protocol */
     get: operations["protocol_api_sync_protocol_get"];
     put?: never;
     post?: never;
@@ -1830,7 +1691,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Pull */
     get: operations["pull_api_sync_pull_get"];
     put?: never;
     post?: never;
@@ -1847,7 +1707,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Sync Stream */
     get: operations["sync_stream_api_sync_stream_get"];
     put?: never;
     post?: never;
@@ -1864,7 +1723,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Task Detail */
     get: operations["task_detail_api_task_get"];
     put?: never;
     post?: never;
@@ -1881,7 +1739,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** List Terminals */
     get: operations["list_terminals_api_terminals_get"];
     put?: never;
     post?: never;
@@ -1900,7 +1757,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Close Terminal */
     post: operations["close_terminal_api_terminals_close_post"];
     delete?: never;
     options?: never;
@@ -1917,7 +1773,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Create Terminal */
     post: operations["create_terminal_api_terminals_create_post"];
     delete?: never;
     options?: never;
@@ -1934,7 +1789,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Terminal Input */
     post: operations["terminal_input_api_terminals_input_post"];
     delete?: never;
     options?: never;
@@ -1949,7 +1803,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Terminal Output */
     get: operations["terminal_output_api_terminals_output_get"];
     put?: never;
     post?: never;
@@ -1968,7 +1821,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Rename Terminal */
     post: operations["rename_terminal_api_terminals_rename_post"];
     delete?: never;
     options?: never;
@@ -1985,7 +1837,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Resize Terminal */
     post: operations["resize_terminal_api_terminals_resize_post"];
     delete?: never;
     options?: never;
@@ -2000,7 +1851,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Tool Requests */
     get: operations["tool_requests_api_tool_requests_get"];
     put?: never;
     post?: never;
@@ -2019,7 +1869,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Cancel Tool Request */
     post: operations["cancel_tool_request_api_tool_requests_cancel_post"];
     delete?: never;
     options?: never;
@@ -2034,7 +1883,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Transcript */
     get: operations["transcript_api_transcript_get"];
     put?: never;
     post?: never;
@@ -2051,7 +1899,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Transcript Item */
     get: operations["transcript_item_api_transcript_item_get"];
     put?: never;
     post?: never;
@@ -2068,7 +1915,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Transcript Page */
     get: operations["transcript_page_api_transcript_page_get"];
     put?: never;
     post?: never;
@@ -2085,7 +1931,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Transcript Search */
     get: operations["transcript_search_api_transcript_search_get"];
     put?: never;
     post?: never;
@@ -2102,7 +1947,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Ui Summary */
     get: operations["ui_summary_api_ui_summary_get"];
     put?: never;
     post?: never;
@@ -2121,7 +1965,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Usage Resume */
     post: operations["usage_resume_api_usage_resume_post"];
     delete?: never;
     options?: never;
@@ -2138,11 +1981,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /**
-     * Vault Aws Login
-     * @description Start a sign-in to an AWS profile, or report the sign-in that this requestId
-     *     started.
-     */
     post: operations["vault_aws_login_api_vault_aws_login_post"];
     delete?: never;
     options?: never;
@@ -2159,11 +1997,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /**
-     * Vault Pull
-     * @description Start a pull of the project's latest vault state into a new Mac folder, or report
-     *     the pull that this requestId started.
-     */
     post: operations["vault_pull_api_vault_pull_post"];
     delete?: never;
     options?: never;
@@ -2180,11 +2013,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /**
-     * Vault Setup
-     * @description Start the setup of the project's vault, or report the setup that this requestId
-     *     started.
-     */
     post: operations["vault_setup_api_vault_setup_post"];
     delete?: never;
     options?: never;
@@ -2201,11 +2029,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /**
-     * Vault Setup Facts
-     * @description What the vault setup dialog needs: the vault name, the keys on this Mac, the Desk
-     *     site and the AWS profiles.
-     */
     post: operations["vault_setup_facts_api_vault_setup_facts_post"];
     delete?: never;
     options?: never;
@@ -2222,10 +2045,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /**
-     * Vault Unlock
-     * @description Keep the vault key on this Mac from the paper words; the words reach only layr-desk.
-     */
     post: operations["vault_unlock_api_vault_unlock_post"];
     delete?: never;
     options?: never;
@@ -2242,7 +2061,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Approval Speech */
     post: operations["approval_speech_api_voice_approval_speech_post"];
     delete?: never;
     options?: never;
@@ -2259,7 +2077,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Approvals */
     post: operations["approvals_api_voice_approvals_post"];
     delete?: never;
     options?: never;
@@ -2276,7 +2093,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Approve */
     post: operations["approve_api_voice_approve_post"];
     delete?: never;
     options?: never;
@@ -2293,7 +2109,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Audio */
     post: operations["audio_api_voice_audio_post"];
     delete?: never;
     options?: never;
@@ -2310,7 +2125,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** End */
     post: operations["end_api_voice_end_post"];
     delete?: never;
     options?: never;
@@ -2327,7 +2141,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Record */
     post: operations["record_api_voice_record_post"];
     delete?: never;
     options?: never;
@@ -2344,7 +2157,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Records */
     post: operations["records_api_voice_records_post"];
     delete?: never;
     options?: never;
@@ -2361,7 +2173,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Speech */
     post: operations["speech_api_voice_speech_post"];
     delete?: never;
     options?: never;
@@ -2378,7 +2189,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Start */
     post: operations["start_api_voice_start_post"];
     delete?: never;
     options?: never;
@@ -2395,7 +2205,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Status */
     post: operations["status_api_voice_status_post"];
     delete?: never;
     options?: never;
@@ -2412,7 +2221,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Submit */
     post: operations["submit_api_voice_submit_post"];
     delete?: never;
     options?: never;
@@ -2427,10 +2235,8 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Work */
     get: operations["work_api_work_get"];
     put?: never;
-    /** Work Action */
     post: operations["work_action_api_work_post"];
     delete?: never;
     options?: never;
@@ -2445,7 +2251,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Workspace */
     get: operations["workspace_api_workspace_get"];
     put?: never;
     post?: never;
@@ -2462,7 +2267,6 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** Workspace Tasks */
     get: operations["workspace_tasks_api_workspace_tasks_get"];
     put?: never;
     post?: never;
@@ -2624,10 +2428,7 @@ export interface components {
       servers: components["schemas"]["DiscoveredServer"][];
       settings: components["schemas"]["AccessSettings"];
     };
-    /**
-     * Account
-     * @description Known profile fields; AccountStore._public passes public stored fields through.
-     */
+    /** Account */
     Account: {
       /** Accountid */
       accountId?: null | string;
@@ -2722,10 +2523,7 @@ export interface components {
       /** Stale */
       stale: boolean;
     };
-    /**
-     * AccountDiscoverRequest
-     * @description The legacy discover operation accepts an empty JSON object or no body.
-     */
+    /** AccountDiscoverRequest */
     AccountDiscoverRequest: Record<string, never>;
     /** AccountHistoryRecordResponse */
     AccountHistoryRecordResponse: {
@@ -2817,10 +2615,7 @@ export interface components {
       /** Request Id */
       request_id: string;
     };
-    /**
-     * AccountRateLimitsDto
-     * @description Account-specific read envelope; provider rate-limit data stays JSON.
-     */
+    /** AccountRateLimitsDto */
     AccountRateLimitsDto: {
       /** Accountkey */
       accountKey: string;
@@ -2969,10 +2764,7 @@ export interface components {
      * @enum {string}
      */
     AccountTransferStatus: "pending" | "completed" | "cancelled";
-    /**
-     * AccountTransferSummaryDto
-     * @description Public summary projected onto an agent by AccountTransfers.save.
-     */
+    /** AccountTransferSummaryDto */
     AccountTransferSummaryDto: {
       /** Blocked */
       blocked?: components["schemas"]["AccountTransferBlockedDto"][] | null;
@@ -3241,10 +3033,7 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
-    /**
-     * AgentEntityCapacityRetryDto
-     * @description Capacity retry state consumed by the entity-backed renderer.
-     */
+    /** AgentEntityCapacityRetryDto */
     AgentEntityCapacityRetryDto: {
       /** Acceptedturnid */
       acceptedTurnId?: null | string;
@@ -3267,10 +3056,7 @@ export interface components {
       /** Updatedat */
       updatedAt: number;
     };
-    /**
-     * AgentEntityContextRepairWaitDto
-     * @description Context repair wait fields rendered in native notices.
-     */
+    /** AgentEntityContextRepairWaitDto */
     AgentEntityContextRepairWaitDto: {
       /** Error */
       error: string;
@@ -3509,10 +3295,7 @@ export interface components {
       /** Yolomode */
       yoloMode?: boolean | null;
     };
-    /**
-     * AgentEntityUsageResumeDto
-     * @description Usage resume fields rendered in notices and recovery controls.
-     */
+    /** AgentEntityUsageResumeDto */
     AgentEntityUsageResumeDto: {
       /** Cause */
       cause: string;
@@ -4236,10 +4019,7 @@ export interface components {
         | "declined"
         | "failed";
     };
-    /**
-     * AgentResponse
-     * @description Agent entity response that also accepts the HTTP sync envelope.
-     */
+    /** AgentResponse */
     AgentResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -5083,10 +4863,7 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
-    /**
-     * AnalyticsProviderTokens
-     * @description Known token fields plus versioned keys from provider usage payloads.
-     */
+    /** AnalyticsProviderTokens */
     AnalyticsProviderTokens: {
       /** Cachedinputtokens */
       cachedInputTokens?: number | null;
@@ -5522,10 +5299,7 @@ export interface components {
       /** Turnid */
       turnId?: null | string;
     };
-    /**
-     * AnswerBody
-     * @description Provider question answers may carry provider-specific answer fields.
-     */
+    /** AnswerBody */
     AnswerBody: {
       /** Answers */
       answers?: {
@@ -5568,10 +5342,7 @@ export interface components {
        */
       status: "answered";
     };
-    /**
-     * ApiSchemaEvent
-     * @description Schema identity emitted before a resource stream when requested.
-     */
+    /** ApiSchemaEvent */
     ApiSchemaEvent: {
       /** Hash */
       hash: string;
@@ -5582,10 +5353,7 @@ export interface components {
        */
       mismatch?: true;
     };
-    /**
-     * AppearancePreferences
-     * @description Known appearance fields and their strict acceptance domains.
-     */
+    /** AppearancePreferences */
     AppearancePreferences: {
       /**
        * Checkproviderupdates
@@ -5684,10 +5452,7 @@ export interface components {
        */
       share_status?: boolean;
     };
-    /**
-     * AssetRecord
-     * @description Known fields; asset_view removes path and passes every other stored field.
-     */
+    /** AssetRecord */
     AssetRecord: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -5789,10 +5554,7 @@ export interface components {
       /** Message Id */
       message_id: string;
     };
-    /**
-     * BranchResponse
-     * @description Canonical public agent projection plus the branch draft payload.
-     */
+    /** BranchResponse */
     BranchResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -6317,10 +6079,7 @@ export interface components {
       /** Retry Id */
       retry_id: string;
     };
-    /**
-     * CapacityRetrySettingsDto
-     * @description Settings captured by Runtime.preparation_settings for a retry receipt.
-     */
+    /** CapacityRetrySettingsDto */
     CapacityRetrySettingsDto: {
       /** Accountkey */
       accountKey?: null | string;
@@ -6483,10 +6242,7 @@ export interface components {
        */
       label?: string;
     };
-    /**
-     * CheckpointCaptureResponse
-     * @description Flat checkpoint summary returned by the legacy capture endpoint.
-     */
+    /** CheckpointCaptureResponse */
     CheckpointCaptureResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -6598,10 +6354,7 @@ export interface components {
       /** Checkpoints */
       checkpoints: components["schemas"]["CheckpointSummary"][];
     };
-    /**
-     * CheckpointSummary
-     * @description Checkpoint summary; other stored keys pass through after payload removal.
-     */
+    /** CheckpointSummary */
     CheckpointSummary: {
       /** Agent */
       agent: string;
@@ -6707,10 +6460,7 @@ export interface components {
       /** Turnid */
       turnId?: null | string;
     };
-    /**
-     * ClaudeCustomModel
-     * @description Custom model records are nested in the stored account passthrough.
-     */
+    /** ClaudeCustomModel */
     ClaudeCustomModel: {
       /** Id */
       id: string;
@@ -6744,10 +6494,7 @@ export interface components {
         | "cancelled"
         | "failed";
     };
-    /**
-     * ClaudeLoginResponse
-     * @description Known receipt fields; LoginManager returns its saved receipt directly.
-     */
+    /** ClaudeLoginResponse */
     ClaudeLoginResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -6777,10 +6524,7 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
-    /**
-     * ClaudeOptions
-     * @description Stored account options are returned through AccountStore._public.
-     */
+    /** ClaudeOptions */
     ClaudeOptions: {
       /** Autocompactwindow */
       autoCompactWindow?: number | null;
@@ -7037,10 +6781,7 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
-    /**
-     * CodexLoginReceipt
-     * @description Known fields; AccountStore.login_receipts() passes persisted receipts through.
-     */
+    /** CodexLoginReceipt */
     CodexLoginReceipt: {
       /** Accountkey */
       accountKey: string;
@@ -7877,10 +7618,7 @@ export interface components {
       /** Yolo Mode */
       yolo_mode?: boolean | null;
     };
-    /**
-     * ConvertedFromLeadDto
-     * @description User conversion provenance persisted when a peer lead becomes a worker.
-     */
+    /** ConvertedFromLeadDto */
     ConvertedFromLeadDto: {
       /** At */
       at: number;
@@ -8300,10 +8038,7 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
-    /**
-     * DiscoveredServer
-     * @description Stored discovery record; ``ServerDiscovery.servers`` passes it through.
-     */
+    /** DiscoveredServer */
     DiscoveredServer: {
       /** Alias */
       alias?: null | string;
@@ -8531,10 +8266,7 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
-    /**
-     * EntityChangeBatch
-     * @description Complete state changes in one durable (after, through] interval.
-     */
+    /** EntityChangeBatch */
     EntityChangeBatch: {
       /** After */
       after: number;
@@ -8543,10 +8275,7 @@ export interface components {
       /** Through */
       through: number;
     };
-    /**
-     * ErrorResponse
-     * @description Existing API error shape plus explicitly documented optional metadata.
-     */
+    /** ErrorResponse */
     ErrorResponse: {
       /**
        * Syncentities
@@ -9083,10 +8812,7 @@ export interface components {
       /** Name */
       name?: string | null;
       role: components["schemas"]["ParticipantRole"];
-      /**
-       * Status
-       * @description Extensible agent runtime status copied into approved room membership.
-       */
+      /** Status */
       status?: string | null;
     };
     /** FederationPeer */
@@ -9641,10 +9367,7 @@ export interface components {
       /** State */
       state: string;
     };
-    /**
-     * LinuxVMStatus
-     * @description Known local status fields plus unprojected host and guest status data.
-     */
+    /** LinuxVMStatus */
     LinuxVMStatus: {
       /** Allocateddiskbytes */
       allocatedDiskBytes?: number | null;
@@ -9665,10 +9388,7 @@ export interface components {
      * @enum {string}
      */
     LiveUpdateState: "idle" | "applying" | "applied" | "waiting" | "failed";
-    /**
-     * LiveUpdateStatus
-     * @description Stable status and receipt written by the local live-patch manager.
-     */
+    /** LiveUpdateStatus */
     LiveUpdateStatus: {
       /** Appliedat */
       appliedAt?: null | number;
@@ -9730,10 +9450,7 @@ export interface components {
       /** Login Id */
       login_id: string;
     };
-    /**
-     * MacSyncConfigRequest
-     * @description Pause or resume the sync, or let Mac deletions that paused it go to the VM.
-     */
+    /** MacSyncConfigRequest */
     MacSyncConfigRequest: {
       /**
        * Allowdeletes
@@ -9745,10 +9462,7 @@ export interface components {
       /** Projectid */
       projectId: string;
     };
-    /**
-     * MacSyncResolveRequest
-     * @description Keep the Mac version, keep the VM version, or ask the lead to combine them.
-     */
+    /** MacSyncResolveRequest */
     MacSyncResolveRequest: {
       /**
        * Choice
@@ -9785,11 +9499,7 @@ export interface components {
       stateId?: null | string;
       status: components["schemas"]["MacSyncStatusResponse"] | null;
     };
-    /**
-     * MacSyncStatusResponse
-     * @description A project's Mac folder sync. conflicts and choices wait for the user; withAgent waits
-     *     for the lead; deletes counts Mac deletions that wait for a confirmation.
-     */
+    /** MacSyncStatusResponse */
     MacSyncStatusResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -10238,10 +9948,7 @@ export interface components {
      * @enum {string}
      */
     NativeAction: "compact" | "review";
-    /**
-     * NativeActionOutcome
-     * @description Persisted execution outcome returned directly on native-action replay.
-     */
+    /** NativeActionOutcome */
     NativeActionOutcome: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -10262,10 +9969,7 @@ export interface components {
       | "acknowledged"
       | "unknown"
       | "failed";
-    /**
-     * NativeActionReceipt
-     * @description Persisted admission receipt returned directly on native-action replay.
-     */
+    /** NativeActionReceipt */
     NativeActionReceipt: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -10475,10 +10179,7 @@ export interface components {
       /** Error */
       error: string;
     };
-    /**
-     * NativeFinderViewResponse
-     * @description A native chat works in its Mac folder.
-     */
+    /** NativeFinderViewResponse */
     NativeFinderViewResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -10603,10 +10304,7 @@ export interface components {
       /** Message */
       message: string;
     };
-    /**
-     * NativePlanPayload
-     * @description Known fields plus provider-specific fields from native plan notifications.
-     */
+    /** NativePlanPayload */
     NativePlanPayload: {
       /** Explanation */
       explanation?: null | string;
@@ -10619,13 +10317,7 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
-    /**
-     * NativeProviderError
-     * @description Known app-server fields plus pass-through provider error extensions.
-     *
-     *     The native provider owns the remaining JSON object fields; the stored
-     *     ``codex_records`` shapes likewise type these errors as ``JsonObject``.
-     */
+    /** NativeProviderError */
     NativeProviderError: {
       /** Additionaldetails */
       additionalDetails?:
@@ -11349,10 +11041,7 @@ export interface components {
       /** Rootid */
       rootId: string;
     };
-    /**
-     * PeerProjectResponse
-     * @description Project record returned by peer team save/delete/move operations.
-     */
+    /** PeerProjectResponse */
     PeerProjectResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -11489,10 +11178,7 @@ export interface components {
      * @enum {string}
      */
     PeerStatus: "pending" | "approved" | "revoked";
-    /**
-     * PeerTeam
-     * @description Peer-team records are nested in the stored project passthrough.
-     */
+    /** PeerTeam */
     PeerTeam: {
       /** Id */
       id: string;
@@ -11742,10 +11428,7 @@ export interface components {
       /** Version */
       version: number;
     };
-    /**
-     * PlanView
-     * @description Known fields; runtime_plans records are returned without projection.
-     */
+    /** PlanView */
     PlanView: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -12011,10 +11694,7 @@ export interface components {
       /** Updated */
       updated: number | null;
     };
-    /**
-     * Project
-     * @description Known project fields; records(db, "projects") passes stored records through.
-     */
+    /** Project */
     Project: {
       /** Accountkey */
       accountKey?: null | string;
@@ -12060,10 +11740,7 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
-    /**
-     * ProjectAlias
-     * @description Alias records are nested in the stored project passthrough.
-     */
+    /** ProjectAlias */
     ProjectAlias: {
       /** Name */
       name: string;
@@ -12129,10 +11806,7 @@ export interface components {
       /** Workerenvironmentrevision */
       workerEnvironmentRevision?: number | null;
     };
-    /**
-     * ProjectFolder
-     * @description Folder records are nested in the stored project passthrough.
-     */
+    /** ProjectFolder */
     ProjectFolder: {
       /** Id */
       id: string;
@@ -12143,11 +11817,7 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
-    /**
-     * ProjectLayrReadinessDto
-     * @description Whether a new layr chat of the project starts without an import (docs/vm-layr.md).
-     *     A ready project has the ID of its layr project.
-     */
+    /** ProjectLayrReadinessDto */
     ProjectLayrReadinessDto: {
       /** Error */
       error?: null | string;
@@ -12159,11 +11829,7 @@ export interface components {
        */
       state: "ready" | "importing" | "not_imported" | "failed";
     };
-    /**
-     * ProjectLayrSyncDto
-     * @description The Mac folder sync of the project's layr project (docs/vm-mac-sync.md). conflicts and
-     *     choices wait for the user, withAgent for the lead, deletes for a confirmation.
-     */
+    /** ProjectLayrSyncDto */
     ProjectLayrSyncDto: {
       /** Choices */
       choices: string[];
@@ -12185,10 +11851,7 @@ export interface components {
       /** Withagent */
       withAgent: string[];
     };
-    /**
-     * ProjectLocation
-     * @description Location records are nested in the stored project passthrough.
-     */
+    /** ProjectLocation */
     ProjectLocation: {
       /** Gitorigin */
       gitOrigin?: null | string;
@@ -12254,10 +11917,7 @@ export interface components {
       /** Server */
       server: string;
     };
-    /**
-     * ProjectMutationRecord
-     * @description A project record returned directly by successful project writes.
-     */
+    /** ProjectMutationRecord */
     ProjectMutationRecord: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -12325,10 +11985,7 @@ export interface components {
       /** Items */
       items: components["schemas"]["Project"][];
     };
-    /**
-     * ProjectRegistration
-     * @description Registration records are nested in the stored project passthrough.
-     */
+    /** ProjectRegistration */
     ProjectRegistration: {
       /**
        * Action
@@ -12355,10 +12012,7 @@ export interface components {
       /** Removed */
       removed: boolean;
     };
-    /**
-     * ProjectSecretRemoveRequest
-     * @description Remove one secret. A repeated requestId returns the saved reply and changes nothing.
-     */
+    /** ProjectSecretRemoveRequest */
     ProjectSecretRemoveRequest: {
       /** Name */
       name: string;
@@ -12367,11 +12021,7 @@ export interface components {
       /** Requestid */
       requestId: string;
     };
-    /**
-     * ProjectSecretSetRequest
-     * @description Set one secret. The VM keeps the value; no response returns it. A repeated requestId
-     *     returns the saved reply and sets nothing.
-     */
+    /** ProjectSecretSetRequest */
     ProjectSecretSetRequest: {
       /** Name */
       name: string;
@@ -12382,18 +12032,12 @@ export interface components {
       /** Value */
       value: string;
     };
-    /**
-     * ProjectSecretsListRequest
-     * @description The names of a layr project's secrets (docs/project-secrets.md).
-     */
+    /** ProjectSecretsListRequest */
     ProjectSecretsListRequest: {
       /** Projectid */
       projectId: string;
     };
-    /**
-     * ProjectSecretsResponse
-     * @description The secret names of a layr project, never a value.
-     */
+    /** ProjectSecretsResponse */
     ProjectSecretsResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -12404,12 +12048,7 @@ export interface components {
       /** Projectid */
       projectId: string;
     };
-    /**
-     * ProjectVaultDto
-     * @description The project vault of the project's layr project (docs/vault.md): the VM writer's last
-     *     report. state none: no vault; error: the last push failed (reason). site and prefix make
-     *     the Desk link of the vault.
-     */
+    /** ProjectVaultDto */
     ProjectVaultDto: {
       /** Disk */
       disk?: null | string;
@@ -12471,10 +12110,7 @@ export interface components {
       /** Server */
       server?: string | null;
     };
-    /**
-     * ProviderModel
-     * @description One extensible provider catalog entry; names remain provider-owned strings.
-     */
+    /** ProviderModel */
     ProviderModel: {
       /** Model */
       model: string;
@@ -12562,10 +12198,7 @@ export interface components {
       /** Version */
       version: string;
     };
-    /**
-     * ProviderVersionWarningDto
-     * @description Closed warning projection emitted by ``codex_provider_versions.status()``.
-     */
+    /** ProviderVersionWarningDto */
     ProviderVersionWarningDto: {
       /** Accountkey */
       accountKey: string;
@@ -12777,10 +12410,7 @@ export interface components {
        */
       kind: "queue";
     };
-    /**
-     * QueueSizes
-     * @description Queue labels include generated account aliases and queue names.
-     */
+    /** QueueSizes */
     QueueSizes: {
       [key: string]: number | null;
     };
@@ -12801,10 +12431,7 @@ export interface components {
      * @enum {string}
      */
     RadioStatus: "idle" | "waiting" | "speaking" | "stopping" | "blocked";
-    /**
-     * RateLimitBucket
-     * @description Known rate-limit fields plus provider-owned fields passed through unchanged.
-     */
+    /** RateLimitBucket */
     RateLimitBucket: {
       individualLimit?:
         | components["schemas"]["RateLimitIndividualLimit"]
@@ -12822,10 +12449,7 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
-    /**
-     * RateLimitBucketDto
-     * @description Known rate-limit fields plus fields owned by the active provider.
-     */
+    /** RateLimitBucketDto */
     RateLimitBucketDto: {
       /** Limitid */
       limitId?: null | string;
@@ -12845,10 +12469,7 @@ export interface components {
       /** Remainingpercent */
       remainingPercent?: number | null;
     };
-    /**
-     * RateLimitResetCredit
-     * @description A provider reset-credit record; native service fields remain extensible.
-     */
+    /** RateLimitResetCredit */
     RateLimitResetCredit: {
       /** Expiresat */
       expiresAt?: number | null;
@@ -12863,10 +12484,7 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
-    /**
-     * RateLimitResetCredits
-     * @description Provider-owned reset-credit summary with the known count and credit fields.
-     */
+    /** RateLimitResetCredits */
     RateLimitResetCredits: {
       /** Availablecount */
       availableCount?: number | null;
@@ -12875,14 +12493,7 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
-    /**
-     * RateLimitsDataDto
-     * @description Known renderer-facing fields with provider JSON extension payloads.
-     *
-     *     ``codex_records.RateLimitDataRecord`` describes the storage projection, but
-     *     rate-limit snapshots also pass through provider reset-credit data whose
-     *     complete provider-owned shape is not fixed by this repository.
-     */
+    /** RateLimitsDataDto */
     RateLimitsDataDto: {
       /** Accountid */
       accountId?: null | string;
@@ -12910,10 +12521,7 @@ export interface components {
       /** Windowdurationmins */
       windowDurationMins?: number | null;
     };
-    /**
-     * RateLimitWindowDto
-     * @description Known usage window fields plus provider-specific window metadata.
-     */
+    /** RateLimitWindowDto */
     RateLimitWindowDto: {
       /** Resetsat */
       resetsAt?: null | number;
@@ -13061,7 +12669,6 @@ export interface components {
       projectId: string;
       /** Requestid */
       requestId: string;
-      /** @description The action-specific result from cross-server orchestration. */
       value?: components["schemas"]["JsonValue"] | null;
     };
     /** RemoteRoomMemberDto */
@@ -13230,10 +12837,7 @@ export interface components {
       /** Title */
       title: string;
     };
-    /**
-     * RequestParamsDto
-     * @description Known request UI fields and typed JSON-safe native protocol extensions.
-     */
+    /** RequestParamsDto */
     RequestParamsDto: {
       changes?: components["schemas"]["JsonValue"] | null;
       /** Command */
@@ -13260,10 +12864,7 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
-    /**
-     * RequestPreviewDto
-     * @description Known preview fields plus the native tool's provider-specific preview metadata.
-     */
+    /** RequestPreviewDto */
     RequestPreviewDto: {
       changes?: components["schemas"]["JsonValue"] | null;
       /** Command */
@@ -13279,10 +12880,7 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
-    /**
-     * RequestQuestionDto
-     * @description Known question UI fields plus future native question protocol fields.
-     */
+    /** RequestQuestionDto */
     RequestQuestionDto: {
       /** Id */
       id: string;
@@ -13297,10 +12895,7 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
-    /**
-     * RequestQuestionOptionDto
-     * @description Known labels plus provider-owned option metadata passed through verbatim.
-     */
+    /** RequestQuestionOptionDto */
     RequestQuestionOptionDto: {
       /** Description */
       description?: null | string;
@@ -13442,10 +13037,7 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
-    /**
-     * RequestSchemaDto
-     * @description A JSON Schema request; provider-defined top-level keywords pass through.
-     */
+    /** RequestSchemaDto */
     RequestSchemaDto: {
       /** Properties */
       properties: {
@@ -13456,10 +13048,7 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
-    /**
-     * RequestSchemaPropertyDto
-     * @description A JSON Schema property; arbitrary standard and future schema keywords pass through.
-     */
+    /** RequestSchemaPropertyDto */
     RequestSchemaPropertyDto: {
       /** Enum */
       enum?: components["schemas"]["JsonValue"][] | null;
@@ -13525,10 +13114,7 @@ export interface components {
       /** Residentbytes */
       residentBytes?: number | null;
     };
-    /**
-     * ResourceChangeEvent
-     * @description Named `resources` SSE payload with optional bounded state data.
-     */
+    /** ResourceChangeEvent */
     ResourceChangeEvent: {
       /** Epoch */
       epoch: string;
@@ -13551,10 +13137,7 @@ export interface components {
       /** Workspaceid */
       workspaceId: string;
     };
-    /**
-     * ResourceHeartbeatEvent
-     * @description Named `heartbeat` SSE payload; it never requests a resource read.
-     */
+    /** ResourceHeartbeatEvent */
     ResourceHeartbeatEvent: {
       /** Epoch */
       epoch: string;
@@ -13568,10 +13151,7 @@ export interface components {
       /** Workspaceid */
       workspaceId: string;
     };
-    /**
-     * ResourceNotifyAck
-     * @description Acknowledgement for a newly published or exactly deduplicated request.
-     */
+    /** ResourceNotifyAck */
     ResourceNotifyAck: {
       /**
        * Accepted
@@ -13581,20 +13161,14 @@ export interface components {
       /** Requestid */
       requestId: string;
     };
-    /**
-     * ResourceNotifyRequest
-     * @description One post-commit invalidation request from an external process.
-     */
+    /** ResourceNotifyRequest */
     ResourceNotifyRequest: {
       /** Requestid */
       requestId: string;
       /** Resources */
       resources: components["schemas"]["ResourceRef"][];
     };
-    /**
-     * ResourceRef
-     * @description Closed discriminated union of all typed UI resource identities.
-     */
+    /** ResourceRef */
     ResourceRef:
       | components["schemas"]["AccountsResource"]
       | components["schemas"]["CostsResource"]
@@ -13616,10 +13190,7 @@ export interface components {
       | components["schemas"]["TranscriptsResource"]
       | components["schemas"]["VoiceResource"]
       | components["schemas"]["WorkspaceResource"];
-    /**
-     * ResourceRevisionEntry
-     * @description Per-resource revision; StateResource uses the entity sequence.
-     */
+    /** ResourceRevisionEntry */
     ResourceRevisionEntry: {
       entityChanges?: components["schemas"]["EntityChangeBatch"] | null;
       /** Entitysequencereset */
@@ -13630,10 +13201,7 @@ export interface components {
       /** Revision */
       revision: number;
     };
-    /**
-     * ResourceTokenRatesEvent
-     * @description Named `token-rates` SSE payload; values come from workspace_snapshot().
-     */
+    /** ResourceTokenRatesEvent */
     ResourceTokenRatesEvent: {
       /** Epoch */
       epoch: string;
@@ -13713,10 +13281,7 @@ export interface components {
      * @enum {string}
      */
     RetryAction: "retry" | "cancel";
-    /**
-     * RetryResponse
-     * @description Capacity retry endpoint DTO using the canonical sync receipt fields.
-     */
+    /** RetryResponse */
     RetryResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -13996,10 +13561,7 @@ export interface components {
       /** Turnid */
       turnId?: null | string;
     };
-    /**
-     * RoomRadioSeen
-     * @description Per-agent transcript cursor persisted by the shared-radio runtime.
-     */
+    /** RoomRadioSeen */
     RoomRadioSeen: {
       /** Identity */
       identity: [null | string, number | null, number];
@@ -14387,15 +13949,7 @@ export interface components {
       | "failed"
       | "cancelled"
       | "unknown";
-    /**
-     * SearchItemResponse
-     * @description Named producer fields for message, room, work, plan, and complaint items.
-     *
-     *     ``native`` is the provider protocol's extensible plan update payload; all
-     *     other known returned fields have explicit application-owned types. Runtime
-     *     search spreads stored records, and room search spreads provider-owned rows,
-     *     so unknown source fields pass through.
-     */
+    /** SearchItemResponse */
     SearchItemResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -14475,7 +14029,6 @@ export interface components {
       members?: string[] | null;
       /** Name */
       name?: null | string;
-      /** @description Provider-native plan update fields retained for plan display. */
       native?: components["schemas"]["JsonValue"];
       nativeError?: components["schemas"]["JsonValue"] | null;
       /** Nativehook */
@@ -14503,7 +14056,6 @@ export interface components {
       previousError?: components["schemas"]["JsonValue"] | null;
       /** Projectpath */
       projectPath?: null | string;
-      /** @description Extensible room radio configuration from the room producer. */
       radio?: components["schemas"]["JsonValue"];
       /** Readat */
       readAt?: null | number;
@@ -14657,10 +14209,7 @@ export interface components {
     ServerOperationRequest: {
       /** Action */
       action: string;
-      /**
-       * Payload
-       * @description The cross-server service validates the action-specific payload.
-       */
+      /** Payload */
       payload: {
         [key: string]: components["schemas"]["JsonValue"];
       };
@@ -14679,7 +14228,6 @@ export interface components {
       outcome: string;
       /** Requestid */
       requestId: string;
-      /** @description The action-specific result from cross-server orchestration. */
       value?: components["schemas"]["JsonValue"] | null;
     };
     /** SessionCacheStats */
@@ -14853,7 +14401,6 @@ export interface components {
       kind: components["schemas"]["MessageKind"];
       /** Nonce */
       nonce: string;
-      /** @description Kind-specific extensible payload covered by the envelope signature; the federation service validates it before storing. */
       payload: components["schemas"]["JsonValue"];
       /**
        * Protocol
@@ -15462,10 +15009,7 @@ export interface components {
       error?: null | string;
       /** Id */
       id: string;
-      /**
-       * Materialized
-       * @description The exact user input exists in the saved transcript.
-       */
+      /** Materialized */
       materialized?: boolean | null;
       /** Message */
       message?: null | string;
@@ -15743,10 +15287,7 @@ export interface components {
       id: string;
       value: components["schemas"]["EdgeEntityDto"];
     };
-    /**
-     * SyncEntity
-     * @description One durable sync entity change attached to a successful response.
-     */
+    /** SyncEntity */
     SyncEntity: {
       /** Deleted */
       _deleted: boolean;
@@ -16241,10 +15782,7 @@ export interface components {
       /** Truncated */
       truncated: boolean;
     };
-    /**
-     * TerminalRecord
-     * @description Known fields; terminal actions return the persisted user_terminal record.
-     */
+    /** TerminalRecord */
     TerminalRecord: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -16315,10 +15853,7 @@ export interface components {
      * @enum {string}
      */
     TerminalState: "running" | "exited" | "closed";
-    /**
-     * TokenRateValue
-     * @description One active or completed agent turn's volatile token-rate snapshot.
-     */
+    /** TokenRateValue */
     TokenRateValue: {
       /** Active */
       active: boolean;
@@ -16508,10 +16043,7 @@ export interface components {
       /** Status */
       status?: null | string;
     };
-    /**
-     * TranscriptAsset
-     * @description Path-free attachment projection returned by the workspace service.
-     */
+    /** TranscriptAsset */
     TranscriptAsset: {
       /** Agent */
       agent: string;
@@ -16530,10 +16062,7 @@ export interface components {
       /** Size */
       size: number;
     };
-    /**
-     * TranscriptContextUsage
-     * @description Runtime token usage shape published by tokenUsage notifications.
-     */
+    /** TranscriptContextUsage */
     TranscriptContextUsage: {
       /** At */
       at: number;
@@ -16542,10 +16071,7 @@ export interface components {
       /** Window */
       window?: number | null;
     };
-    /**
-     * TranscriptInput
-     * @description One native/runtime input batch entry shown inside a transcript item.
-     */
+    /** TranscriptInput */
     TranscriptInput: {
       /** Assets */
       assets?: components["schemas"]["TranscriptAsset"][];
@@ -16590,10 +16116,7 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
-    /**
-     * TranscriptItemResponse
-     * @description Full transcript item projection, including its canonical sync envelope.
-     */
+    /** TranscriptItemResponse */
     TranscriptItemResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -16701,10 +16224,7 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
-    /**
-     * TranscriptMessageRecord
-     * @description Transcript rows always carry their runtime role and display text.
-     */
+    /** TranscriptMessageRecord */
     TranscriptMessageRecord: {
       /** Accountwide */
       accountWide?: boolean | null;
@@ -16870,10 +16390,7 @@ export interface components {
       /** Turnid */
       turnId?: null | string;
     };
-    /**
-     * TranscriptsResource
-     * @description Legacy collection-wide transcript subscription retained for clients.
-     */
+    /** TranscriptsResource */
     TranscriptsResource: {
       /**
        * @description discriminator enum property added by openapi-typescript
@@ -17142,10 +16659,7 @@ export interface components {
       /** Requestid */
       requestId: string;
     };
-    /**
-     * UsageLimitsData
-     * @description Known usage projection plus account-service fields passed through unchanged.
-     */
+    /** UsageLimitsData */
     UsageLimitsData: {
       /** Accountid */
       accountId?: null | string;
@@ -17257,10 +16771,7 @@ export interface components {
       /** Resume Id */
       resume_id: string;
     };
-    /**
-     * UsageResumeResponse
-     * @description Usage resume endpoint DTO using the canonical sync receipt fields.
-     */
+    /** UsageResumeResponse */
     UsageResumeResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -17310,10 +16821,7 @@ export interface components {
      * @enum {string}
      */
     UsageResumeStatus: "scheduled" | "started" | "cancelled" | "unknown";
-    /**
-     * VaultAwsProfileDto
-     * @description An AWS profile of this Mac: signedIn says whether it has keys or a usable sign-in.
-     */
+    /** VaultAwsProfileDto */
     VaultAwsProfileDto: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -17330,20 +16838,14 @@ export interface components {
       /** Sso */
       sso?: boolean | null;
     };
-    /**
-     * VaultLoginRequest
-     * @description Sign in to an AWS profile. A repeated requestId returns the same sign-in.
-     */
+    /** VaultLoginRequest */
     VaultLoginRequest: {
       /** Profile */
       profile: string;
       /** Requestid */
       requestId: string;
     };
-    /**
-     * VaultLoginResponse
-     * @description One AWS sign-in: running (page and code once AWS gives them), done or failed.
-     */
+    /** VaultLoginResponse */
     VaultLoginResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -17363,11 +16865,7 @@ export interface components {
        */
       state: "running" | "done" | "failed";
     };
-    /**
-     * VaultPullRequest
-     * @description Pull the latest vault state into a new folder below `to` (Downloads when left out).
-     *     A repeated requestId returns the same pull.
-     */
+    /** VaultPullRequest */
     VaultPullRequest: {
       /** Projectid */
       projectId: string;
@@ -17376,11 +16874,7 @@ export interface components {
       /** To */
       to?: string | null;
     };
-    /**
-     * VaultPullResponse
-     * @description One pull of a vault state into a Mac folder: running, done (seq, files, bytes) or
-     *     failed (error).
-     */
+    /** VaultPullResponse */
     VaultPullResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -17404,21 +16898,14 @@ export interface components {
        */
       state: "running" | "done" | "failed";
     };
-    /**
-     * VaultSetupFactsRequest
-     * @description The facts for the vault setup dialog; prefix replaces the name from the folder.
-     */
+    /** VaultSetupFactsRequest */
     VaultSetupFactsRequest: {
       /** Prefix */
       prefix?: string | null;
       /** Projectid */
       projectId: string;
     };
-    /**
-     * VaultSetupFactsResponse
-     * @description The vault name, whether this Mac has its keys, the gateway's Desk site and account, and
-     *     the AWS profiles.
-     */
+    /** VaultSetupFactsResponse */
     VaultSetupFactsResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -17437,10 +16924,7 @@ export interface components {
       /** Site */
       site: null | string;
     };
-    /**
-     * VaultSetupRequest
-     * @description Make the project's vault with an AWS profile. A repeated requestId returns the same job.
-     */
+    /** VaultSetupRequest */
     VaultSetupRequest: {
       /** Prefix */
       prefix: string;
@@ -17453,11 +16937,7 @@ export interface components {
       /** Requestid */
       requestId: string;
     };
-    /**
-     * VaultSetupResponse
-     * @description One vault setup: running (progress), done (site), failed (error), or signin when the
-     *     AWS profile needs a sign-in first.
-     */
+    /** VaultSetupResponse */
     VaultSetupResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -17479,10 +16959,7 @@ export interface components {
        */
       state: "running" | "done" | "failed" | "signin";
     };
-    /**
-     * VaultUnlockRequest
-     * @description The paper words of the project's vault, to keep its key on this Mac.
-     */
+    /** VaultUnlockRequest */
     VaultUnlockRequest: {
       /** Projectid */
       projectId: string;
@@ -17498,10 +16975,7 @@ export interface components {
       /** Unlocked */
       unlocked: boolean;
     };
-    /**
-     * VmFinderViewResponse
-     * @description A VM chat: the read-only ~/Studio view of its layr project. The path is set only when mounted.
-     */
+    /** VmFinderViewResponse */
     VmFinderViewResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -18191,10 +17665,7 @@ export interface components {
       title: string;
       work: components["schemas"]["WorkViewRecordResponse"];
     };
-    /**
-     * WorkItem
-     * @description work_view spreads stored records; retain their unknown top-level and nested fields.
-     */
+    /** WorkItem */
     WorkItem: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
@@ -18739,7 +18210,6 @@ export interface components {
     };
   };
   responses: {
-    /** @description Invalid request */
     ApiError400: {
       headers: {
         "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -18761,7 +18231,6 @@ export interface components {
         "application/json": components["schemas"]["ErrorResponse"];
       };
     };
-    /** @description Unauthorized */
     ApiError401: {
       headers: {
         "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -18783,7 +18252,6 @@ export interface components {
         "application/json": components["schemas"]["ErrorResponse"];
       };
     };
-    /** @description Local origin and session token required */
     ApiError403: {
       headers: {
         "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -18805,7 +18273,6 @@ export interface components {
         "application/json": components["schemas"]["ErrorResponse"];
       };
     };
-    /** @description Not found */
     ApiError404: {
       headers: {
         "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -18827,7 +18294,6 @@ export interface components {
         "application/json": components["schemas"]["ErrorResponse"];
       };
     };
-    /** @description Request body timed out */
     ApiError408: {
       headers: {
         "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -18849,7 +18315,6 @@ export interface components {
         "application/json": components["schemas"]["ErrorResponse"];
       };
     };
-    /** @description The server workspace changed. Reload before sending. */
     ApiError409: {
       headers: {
         "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -18871,7 +18336,6 @@ export interface components {
         "application/json": components["schemas"]["ErrorResponse"];
       };
     };
-    /** @description Gone */
     ApiError410: {
       headers: {
         "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -18893,7 +18357,6 @@ export interface components {
         "application/json": components["schemas"]["ErrorResponse"];
       };
     };
-    /** @description Invalid request size */
     ApiError413: {
       headers: {
         "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -18915,7 +18378,6 @@ export interface components {
         "application/json": components["schemas"]["ErrorResponse"];
       };
     };
-    /** @description JSON required */
     ApiError415: {
       headers: {
         "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -18937,7 +18399,6 @@ export interface components {
         "application/json": components["schemas"]["ErrorResponse"];
       };
     };
-    /** @description API schema mismatch */
     ApiError426: {
       headers: {
         "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -18960,7 +18421,6 @@ export interface components {
         "application/json": components["schemas"]["ErrorResponse"];
       };
     };
-    /** @description Too many requests */
     ApiError429: {
       headers: {
         "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -18982,7 +18442,6 @@ export interface components {
         "application/json": components["schemas"]["ErrorResponse"];
       };
     };
-    /** @description Internal server error */
     ApiError500: {
       headers: {
         "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -19004,7 +18463,6 @@ export interface components {
         "application/json": components["schemas"]["ErrorResponse"];
       };
     };
-    /** @description Bad gateway */
     ApiError502: {
       headers: {
         "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -19026,7 +18484,6 @@ export interface components {
         "application/json": components["schemas"]["ErrorResponse"];
       };
     };
-    /** @description Service unavailable */
     ApiError503: {
       headers: {
         "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -19086,7 +18543,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -19108,19 +18564,12 @@ export interface operations {
           "application/json": components["schemas"]["AccountsResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -19137,7 +18586,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -19159,33 +18607,19 @@ export interface operations {
           "application/json": components["schemas"]["ClaudeLoginResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -19200,7 +18634,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -19222,19 +18655,12 @@ export interface operations {
           "application/json": components["schemas"]["ClaudeLoginResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -19251,7 +18677,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -19273,33 +18698,19 @@ export interface operations {
           "application/json": components["schemas"]["ClaudeLoginResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -19316,7 +18727,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -19338,33 +18748,19 @@ export interface operations {
           "application/json": components["schemas"]["ClaudeLoginResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -19381,7 +18777,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -19403,33 +18798,19 @@ export interface operations {
           "application/json": components["schemas"]["ClaudeLoginResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -19446,7 +18827,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -19468,33 +18848,19 @@ export interface operations {
           "application/json": components["schemas"]["AccountsResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -19511,7 +18877,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -19533,33 +18898,19 @@ export interface operations {
           "application/json": components["schemas"]["AccountsResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -19576,7 +18927,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -19598,33 +18948,19 @@ export interface operations {
           "application/json": components["schemas"]["AccountsResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -19641,7 +18977,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -19663,33 +18998,19 @@ export interface operations {
           "application/json": components["schemas"]["AccountsResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -19706,7 +19027,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -19728,33 +19048,19 @@ export interface operations {
           "application/json": components["schemas"]["AccountLoginResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -19771,7 +19077,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -19793,33 +19098,19 @@ export interface operations {
           "application/json": components["schemas"]["AccountLoginResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -19836,7 +19127,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -19858,33 +19148,19 @@ export interface operations {
           "application/json": components["schemas"]["AccountsResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -19901,7 +19177,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -19923,33 +19198,19 @@ export interface operations {
           "application/json": components["schemas"]["AccountsResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -19966,7 +19227,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -19988,33 +19248,19 @@ export interface operations {
           "application/json": components["schemas"]["AccountsResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -20031,7 +19277,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -20053,33 +19298,19 @@ export interface operations {
           "application/json": components["schemas"]["NativeActionResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -20097,7 +19328,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -20119,17 +19349,11 @@ export interface operations {
           "application/json": components["schemas"]["ChatRead"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -20146,7 +19370,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -20168,33 +19391,19 @@ export interface operations {
           "application/json": components["schemas"]["AgentResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -20211,7 +19420,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -20233,33 +19441,19 @@ export interface operations {
           "application/json": components["schemas"]["AgentResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -20278,7 +19472,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -20300,33 +19493,19 @@ export interface operations {
           "application/json": components["schemas"]["TransferResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -20341,7 +19520,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -20365,19 +19543,12 @@ export interface operations {
             | components["schemas"]["VmFinderViewResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -20406,7 +19577,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -20429,19 +19599,12 @@ export interface operations {
           "application/json": components["schemas"]["AnalyticsResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -20458,7 +19621,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -20480,31 +19642,18 @@ export interface operations {
           "application/json": components["schemas"]["AnnotationReceipt"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -20521,7 +19670,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -20543,31 +19691,18 @@ export interface operations {
           "application/json": components["schemas"]["AnswerResult"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -20584,7 +19719,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -20606,31 +19740,18 @@ export interface operations {
           "application/json": components["schemas"]["AssetRecord"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -20647,7 +19768,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           [name: string]: unknown;
@@ -20656,7 +19776,6 @@ export interface operations {
           "application/json": components["schemas"]["BranchResponse"];
         };
       };
-      /** @description Bad Request */
       400: {
         headers: {
           [name: string]: unknown;
@@ -20666,7 +19785,6 @@ export interface operations {
         };
       };
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: {
         headers: {
           [name: string]: unknown;
@@ -20677,7 +19795,6 @@ export interface operations {
       };
       408: components["responses"]["ApiError408"];
       409: components["responses"]["ApiError409"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
       415: components["responses"]["ApiError415"];
     };
@@ -20693,7 +19810,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -20716,7 +19832,6 @@ export interface operations {
           "application/json": components["schemas"]["CapabilitiesResponse"];
         };
       };
-      /** @description Not Modified */
       304: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -20737,19 +19852,12 @@ export interface operations {
         };
         content?: never;
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -20766,7 +19874,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -20788,33 +19895,19 @@ export interface operations {
           "application/json": components["schemas"]["RetryResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -20830,7 +19923,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -20853,7 +19945,6 @@ export interface operations {
           "application/json": components["schemas"]["ChangesResponse"];
         };
       };
-      /** @description Not Modified */
       304: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -20874,17 +19965,11 @@ export interface operations {
         };
         content?: never;
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -20901,7 +19986,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -20923,31 +20007,18 @@ export interface operations {
           "application/json": components["schemas"]["ChatCreated"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -20964,7 +20035,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           [name: string]: unknown;
@@ -20973,7 +20043,6 @@ export interface operations {
           "application/json": components["schemas"]["CheckpointCaptureResponse"];
         };
       };
-      /** @description Bad Request */
       400: {
         headers: {
           [name: string]: unknown;
@@ -20983,7 +20052,6 @@ export interface operations {
         };
       };
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: {
         headers: {
           [name: string]: unknown;
@@ -20994,7 +20062,6 @@ export interface operations {
       };
       408: components["responses"]["ApiError408"];
       409: components["responses"]["ApiError409"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
       415: components["responses"]["ApiError415"];
     };
@@ -21012,7 +20079,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           [name: string]: unknown;
@@ -21021,7 +20087,6 @@ export interface operations {
           "application/json": components["schemas"]["CheckpointPreviewResponse"];
         };
       };
-      /** @description Bad Request */
       400: {
         headers: {
           [name: string]: unknown;
@@ -21031,7 +20096,6 @@ export interface operations {
         };
       };
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: {
         headers: {
           [name: string]: unknown;
@@ -21042,7 +20106,6 @@ export interface operations {
       };
       408: components["responses"]["ApiError408"];
       409: components["responses"]["ApiError409"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
       415: components["responses"]["ApiError415"];
     };
@@ -21060,7 +20123,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           [name: string]: unknown;
@@ -21069,7 +20131,6 @@ export interface operations {
           "application/json": components["schemas"]["CheckpointRestoreResponse"];
         };
       };
-      /** @description Bad Request */
       400: {
         headers: {
           [name: string]: unknown;
@@ -21079,7 +20140,6 @@ export interface operations {
         };
       };
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: {
         headers: {
           [name: string]: unknown;
@@ -21090,7 +20150,6 @@ export interface operations {
       };
       408: components["responses"]["ApiError408"];
       409: components["responses"]["ApiError409"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
       415: components["responses"]["ApiError415"];
     };
@@ -21106,7 +20165,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           [name: string]: unknown;
@@ -21115,7 +20173,6 @@ export interface operations {
           "application/json": components["schemas"]["CheckpointsResponse"];
         };
       };
-      /** @description Bad Request */
       400: {
         headers: {
           [name: string]: unknown;
@@ -21125,7 +20182,6 @@ export interface operations {
         };
       };
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: {
         headers: {
           [name: string]: unknown;
@@ -21149,7 +20205,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -21171,33 +20226,19 @@ export interface operations {
           "application/json": components["schemas"]["AccountsResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -21219,7 +20260,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -21247,33 +20287,19 @@ export interface operations {
             | components["schemas"]["ClaudeCommand"][];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -21288,7 +20314,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -21310,17 +20335,11 @@ export interface operations {
           "application/json": components["schemas"]["ComplaintDetailResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -21337,7 +20356,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -21359,31 +20377,18 @@ export interface operations {
           "application/json": components["schemas"]["ComplaintRecordResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -21400,7 +20405,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -21422,33 +20426,19 @@ export interface operations {
           "application/json": components["schemas"]["ConfigureResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -21465,7 +20455,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -21487,33 +20476,19 @@ export interface operations {
           "application/json": components["schemas"]["RecoveryResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -21530,7 +20505,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -21552,31 +20526,18 @@ export interface operations {
           "application/json": components["schemas"]["ChatReceipt"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -21593,7 +20554,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -21615,33 +20575,19 @@ export interface operations {
           "application/json": components["schemas"]["ContextRepairResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -21658,7 +20604,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -21680,33 +20625,19 @@ export interface operations {
           "application/json": components["schemas"]["AgentResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -21723,7 +20654,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -21745,33 +20675,19 @@ export interface operations {
           "application/json": components["schemas"]["DeletedResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -21786,7 +20702,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -21808,17 +20723,11 @@ export interface operations {
           "application/json": components["schemas"]["AccountCostResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -21833,7 +20742,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -21855,17 +20763,11 @@ export interface operations {
           "application/json": components["schemas"]["DesktopResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -21878,7 +20780,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -21900,19 +20801,12 @@ export interface operations {
           "application/json": components["schemas"]["DiagnosticsResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -21929,7 +20823,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -21951,17 +20844,11 @@ export interface operations {
           "application/json": components["schemas"]["DirectoriesResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -21975,17 +20862,11 @@ export interface operations {
     requestBody?: never;
     responses: {
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Successful Response */
       404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -22011,7 +20892,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -22035,33 +20915,19 @@ export interface operations {
             | components["schemas"]["FederationSnapshot"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -22075,17 +20941,11 @@ export interface operations {
     requestBody?: never;
     responses: {
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Successful Response */
       404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -22102,7 +20962,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -22124,33 +20983,19 @@ export interface operations {
           "application/json": components["schemas"]["SignedMessageResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -22164,17 +21009,11 @@ export interface operations {
     requestBody?: never;
     responses: {
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Successful Response */
       404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -22191,7 +21030,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -22213,33 +21051,19 @@ export interface operations {
           "application/json": components["schemas"]["SignedPairResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -22253,17 +21077,11 @@ export interface operations {
     requestBody?: never;
     responses: {
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Successful Response */
       404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -22280,7 +21098,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -22302,33 +21119,19 @@ export interface operations {
           "application/json": components["schemas"]["SignedPullResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -22342,17 +21145,11 @@ export interface operations {
     requestBody?: never;
     responses: {
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Successful Response */
       404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -22369,7 +21166,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -22391,33 +21187,19 @@ export interface operations {
           "application/json": components["schemas"]["SignedStatusResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -22434,7 +21216,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -22456,19 +21237,12 @@ export interface operations {
           "application/json": components["schemas"]["FileContent"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -22485,7 +21259,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -22507,19 +21280,12 @@ export interface operations {
           "application/json": components["schemas"]["FileInfo"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -22535,7 +21301,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -22557,19 +21322,12 @@ export interface operations {
           "application/json": components["schemas"]["ImportListResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -22586,7 +21344,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -22608,33 +21365,19 @@ export interface operations {
           "application/json": components["schemas"]["AgentResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -22651,7 +21394,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -22673,33 +21415,19 @@ export interface operations {
           "application/json": components["schemas"]["AgentResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -22715,7 +21443,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -22737,19 +21464,12 @@ export interface operations {
           "application/json": components["schemas"]["UsageLimitsResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -22766,7 +21486,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -22788,33 +21507,19 @@ export interface operations {
           "application/json": components["schemas"]["LimitResetResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -22827,7 +21532,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -22849,17 +21553,11 @@ export interface operations {
           "application/json": components["schemas"]["LinuxVMSettingsResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -22876,7 +21574,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -22898,31 +21595,18 @@ export interface operations {
           "application/json": components["schemas"]["LinuxVMSettingsResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -22939,7 +21623,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -22961,33 +21644,19 @@ export interface operations {
           "application/json": components["schemas"]["MacSyncStatusResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -23004,7 +21673,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -23026,33 +21694,19 @@ export interface operations {
           "application/json": components["schemas"]["MacSyncResolveResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -23067,7 +21721,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -23089,17 +21742,11 @@ export interface operations {
           "application/json": components["schemas"]["MessageHistory"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -23116,7 +21763,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -23138,31 +21784,18 @@ export interface operations {
           "application/json": components["schemas"]["studio_api__work__models__MessageReceipt"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -23178,7 +21811,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -23200,17 +21832,11 @@ export interface operations {
           "application/json": components["schemas"]["MessageReceipts"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -23227,7 +21853,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -23249,19 +21874,12 @@ export interface operations {
           "application/json": components["schemas"]["ModelCatalogResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -23278,7 +21896,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -23300,31 +21917,18 @@ export interface operations {
           "application/json": components["schemas"]["MonitorActionResult"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -23341,7 +21945,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -23363,31 +21966,18 @@ export interface operations {
           "application/json": components["schemas"]["JsonValue"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -23402,7 +21992,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Accept-Ranges": components["headers"]["AcceptRanges"];
@@ -23427,7 +22016,6 @@ export interface operations {
           "text/plain": string;
         };
       };
-      /** @description Partial Content */
       206: {
         headers: {
           "Accept-Ranges": components["headers"]["AcceptRanges"];
@@ -23453,15 +22041,10 @@ export interface operations {
           "text/plain": string;
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Requested byte range is not satisfiable */
       416: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -23482,11 +22065,8 @@ export interface operations {
         };
         content?: never;
       };
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -23499,7 +22079,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           [name: string]: unknown;
@@ -23508,7 +22087,6 @@ export interface operations {
           "application/json": components["schemas"]["AccessSnapshot"];
         };
       };
-      /** @description Bad Request */
       400: {
         headers: {
           [name: string]: unknown;
@@ -23517,7 +22095,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Unauthorized */
       401: {
         headers: {
           [name: string]: unknown;
@@ -23526,7 +22103,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Forbidden */
       403: {
         headers: {
           [name: string]: unknown;
@@ -23535,7 +22111,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Not Found */
       404: {
         headers: {
           [name: string]: unknown;
@@ -23544,7 +22119,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Conflict */
       409: {
         headers: {
           [name: string]: unknown;
@@ -23553,7 +22127,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Gone */
       410: {
         headers: {
           [name: string]: unknown;
@@ -23562,7 +22135,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Content Too Large */
       413: {
         headers: {
           [name: string]: unknown;
@@ -23571,7 +22143,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Too Many Requests */
       429: {
         headers: {
           [name: string]: unknown;
@@ -23580,7 +22151,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Bad Gateway */
       502: {
         headers: {
           [name: string]: unknown;
@@ -23589,7 +22159,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Service Unavailable */
       503: {
         headers: {
           [name: string]: unknown;
@@ -23598,7 +22167,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Gateway Timeout */
       504: {
         headers: {
           [name: string]: unknown;
@@ -23631,7 +22199,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           [name: string]: unknown;
@@ -23642,7 +22209,6 @@ export interface operations {
             | components["schemas"]["InvitationResponse"];
         };
       };
-      /** @description Bad Request */
       400: {
         headers: {
           [name: string]: unknown;
@@ -23651,7 +22217,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Unauthorized */
       401: {
         headers: {
           [name: string]: unknown;
@@ -23660,7 +22225,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Forbidden */
       403: {
         headers: {
           [name: string]: unknown;
@@ -23669,7 +22233,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Not Found */
       404: {
         headers: {
           [name: string]: unknown;
@@ -23679,7 +22242,6 @@ export interface operations {
         };
       };
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: {
         headers: {
           [name: string]: unknown;
@@ -23688,7 +22250,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Gone */
       410: {
         headers: {
           [name: string]: unknown;
@@ -23697,7 +22258,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Content Too Large */
       413: {
         headers: {
           [name: string]: unknown;
@@ -23707,7 +22267,6 @@ export interface operations {
         };
       };
       415: components["responses"]["ApiError415"];
-      /** @description Too Many Requests */
       429: {
         headers: {
           [name: string]: unknown;
@@ -23716,7 +22275,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Bad Gateway */
       502: {
         headers: {
           [name: string]: unknown;
@@ -23725,7 +22283,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Service Unavailable */
       503: {
         headers: {
           [name: string]: unknown;
@@ -23734,7 +22291,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Gateway Timeout */
       504: {
         headers: {
           [name: string]: unknown;
@@ -23754,7 +22310,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           [name: string]: unknown;
@@ -23763,7 +22318,6 @@ export interface operations {
           "application/json": components["schemas"]["AccessAuditResponse"];
         };
       };
-      /** @description Bad Request */
       400: {
         headers: {
           [name: string]: unknown;
@@ -23772,7 +22326,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Unauthorized */
       401: {
         headers: {
           [name: string]: unknown;
@@ -23781,7 +22334,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Forbidden */
       403: {
         headers: {
           [name: string]: unknown;
@@ -23790,7 +22342,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Not Found */
       404: {
         headers: {
           [name: string]: unknown;
@@ -23799,7 +22350,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Conflict */
       409: {
         headers: {
           [name: string]: unknown;
@@ -23808,7 +22358,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Gone */
       410: {
         headers: {
           [name: string]: unknown;
@@ -23817,7 +22366,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Content Too Large */
       413: {
         headers: {
           [name: string]: unknown;
@@ -23826,7 +22374,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Too Many Requests */
       429: {
         headers: {
           [name: string]: unknown;
@@ -23835,7 +22382,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Bad Gateway */
       502: {
         headers: {
           [name: string]: unknown;
@@ -23844,7 +22390,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Service Unavailable */
       503: {
         headers: {
           [name: string]: unknown;
@@ -23853,7 +22398,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Gateway Timeout */
       504: {
         headers: {
           [name: string]: unknown;
@@ -23877,7 +22421,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           [name: string]: unknown;
@@ -23886,7 +22429,6 @@ export interface operations {
           "application/json": components["schemas"]["DevicePairResponse"];
         };
       };
-      /** @description Bad Request */
       400: {
         headers: {
           [name: string]: unknown;
@@ -23895,7 +22437,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Unauthorized */
       401: {
         headers: {
           [name: string]: unknown;
@@ -23904,7 +22445,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Forbidden */
       403: {
         headers: {
           [name: string]: unknown;
@@ -23913,7 +22453,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Not Found */
       404: {
         headers: {
           [name: string]: unknown;
@@ -23923,7 +22462,6 @@ export interface operations {
         };
       };
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: {
         headers: {
           [name: string]: unknown;
@@ -23932,7 +22470,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Gone */
       410: {
         headers: {
           [name: string]: unknown;
@@ -23941,7 +22478,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Content Too Large */
       413: {
         headers: {
           [name: string]: unknown;
@@ -23951,7 +22487,6 @@ export interface operations {
         };
       };
       415: components["responses"]["ApiError415"];
-      /** @description Too Many Requests */
       429: {
         headers: {
           [name: string]: unknown;
@@ -23960,7 +22495,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Bad Gateway */
       502: {
         headers: {
           [name: string]: unknown;
@@ -23969,7 +22503,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Service Unavailable */
       503: {
         headers: {
           [name: string]: unknown;
@@ -23978,7 +22511,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Gateway Timeout */
       504: {
         headers: {
           [name: string]: unknown;
@@ -23998,7 +22530,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           [name: string]: unknown;
@@ -24007,7 +22538,6 @@ export interface operations {
           "application/json": components["schemas"]["DiscoveryIdentity"];
         };
       };
-      /** @description Bad Request */
       400: {
         headers: {
           [name: string]: unknown;
@@ -24016,7 +22546,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Unauthorized */
       401: {
         headers: {
           [name: string]: unknown;
@@ -24025,7 +22554,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Forbidden */
       403: {
         headers: {
           [name: string]: unknown;
@@ -24034,7 +22562,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Not Found */
       404: {
         headers: {
           [name: string]: unknown;
@@ -24043,7 +22570,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Conflict */
       409: {
         headers: {
           [name: string]: unknown;
@@ -24052,7 +22578,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Gone */
       410: {
         headers: {
           [name: string]: unknown;
@@ -24061,7 +22586,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Content Too Large */
       413: {
         headers: {
           [name: string]: unknown;
@@ -24070,7 +22594,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Too Many Requests */
       429: {
         headers: {
           [name: string]: unknown;
@@ -24079,7 +22602,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Bad Gateway */
       502: {
         headers: {
           [name: string]: unknown;
@@ -24088,7 +22610,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Service Unavailable */
       503: {
         headers: {
           [name: string]: unknown;
@@ -24097,7 +22618,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Gateway Timeout */
       504: {
         headers: {
           [name: string]: unknown;
@@ -24121,7 +22641,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           [name: string]: unknown;
@@ -24130,7 +22649,6 @@ export interface operations {
           "application/json": components["schemas"]["ServerIdentityResponse"];
         };
       };
-      /** @description Bad Request */
       400: {
         headers: {
           [name: string]: unknown;
@@ -24139,7 +22657,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Unauthorized */
       401: {
         headers: {
           [name: string]: unknown;
@@ -24148,7 +22665,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Forbidden */
       403: {
         headers: {
           [name: string]: unknown;
@@ -24157,7 +22673,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Not Found */
       404: {
         headers: {
           [name: string]: unknown;
@@ -24167,7 +22682,6 @@ export interface operations {
         };
       };
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: {
         headers: {
           [name: string]: unknown;
@@ -24176,7 +22690,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Gone */
       410: {
         headers: {
           [name: string]: unknown;
@@ -24185,7 +22698,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Content Too Large */
       413: {
         headers: {
           [name: string]: unknown;
@@ -24195,7 +22707,6 @@ export interface operations {
         };
       };
       415: components["responses"]["ApiError415"];
-      /** @description Too Many Requests */
       429: {
         headers: {
           [name: string]: unknown;
@@ -24204,7 +22715,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Bad Gateway */
       502: {
         headers: {
           [name: string]: unknown;
@@ -24213,7 +22723,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Service Unavailable */
       503: {
         headers: {
           [name: string]: unknown;
@@ -24222,7 +22731,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Gateway Timeout */
       504: {
         headers: {
           [name: string]: unknown;
@@ -24244,7 +22752,6 @@ export interface operations {
     responses: {
       400: components["responses"]["ApiError400"];
       403: components["responses"]["ApiError403"];
-      /** @description Successful Response */
       404: {
         headers: {
           [name: string]: unknown;
@@ -24268,7 +22775,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           [name: string]: unknown;
@@ -24277,7 +22783,6 @@ export interface operations {
           "application/json": components["schemas"]["DevicePairResponse"];
         };
       };
-      /** @description Bad Request */
       400: {
         headers: {
           [name: string]: unknown;
@@ -24286,7 +22791,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Unauthorized */
       401: {
         headers: {
           [name: string]: unknown;
@@ -24295,7 +22799,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Forbidden */
       403: {
         headers: {
           [name: string]: unknown;
@@ -24304,7 +22807,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Not Found */
       404: {
         headers: {
           [name: string]: unknown;
@@ -24314,7 +22816,6 @@ export interface operations {
         };
       };
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: {
         headers: {
           [name: string]: unknown;
@@ -24323,7 +22824,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Gone */
       410: {
         headers: {
           [name: string]: unknown;
@@ -24332,7 +22832,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Content Too Large */
       413: {
         headers: {
           [name: string]: unknown;
@@ -24342,7 +22841,6 @@ export interface operations {
         };
       };
       415: components["responses"]["ApiError415"];
-      /** @description Too Many Requests */
       429: {
         headers: {
           [name: string]: unknown;
@@ -24351,7 +22849,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Bad Gateway */
       502: {
         headers: {
           [name: string]: unknown;
@@ -24360,7 +22857,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Service Unavailable */
       503: {
         headers: {
           [name: string]: unknown;
@@ -24369,7 +22865,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Gateway Timeout */
       504: {
         headers: {
           [name: string]: unknown;
@@ -24389,7 +22884,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           [name: string]: unknown;
@@ -24398,7 +22892,6 @@ export interface operations {
           "application/json": components["schemas"]["ServerIdentityResponse"];
         };
       };
-      /** @description Bad Request */
       400: {
         headers: {
           [name: string]: unknown;
@@ -24407,7 +22900,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Unauthorized */
       401: {
         headers: {
           [name: string]: unknown;
@@ -24416,7 +22908,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Forbidden */
       403: {
         headers: {
           [name: string]: unknown;
@@ -24425,7 +22916,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Not Found */
       404: {
         headers: {
           [name: string]: unknown;
@@ -24434,7 +22924,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Conflict */
       409: {
         headers: {
           [name: string]: unknown;
@@ -24443,7 +22932,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Gone */
       410: {
         headers: {
           [name: string]: unknown;
@@ -24452,7 +22940,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Content Too Large */
       413: {
         headers: {
           [name: string]: unknown;
@@ -24461,7 +22948,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Too Many Requests */
       429: {
         headers: {
           [name: string]: unknown;
@@ -24470,7 +22956,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Bad Gateway */
       502: {
         headers: {
           [name: string]: unknown;
@@ -24479,7 +22964,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Service Unavailable */
       503: {
         headers: {
           [name: string]: unknown;
@@ -24488,7 +22972,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Gateway Timeout */
       504: {
         headers: {
           [name: string]: unknown;
@@ -24512,7 +22995,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -24536,33 +23018,19 @@ export interface operations {
             | null;
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -24579,7 +23047,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -24601,31 +23068,18 @@ export interface operations {
           "application/json": components["schemas"]["AgentRecordResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -24640,7 +23094,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -24662,17 +23115,11 @@ export interface operations {
           "application/json": components["schemas"]["ProgressPanel"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -24689,7 +23136,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -24711,31 +23157,18 @@ export interface operations {
           "application/json": components["schemas"]["PanelLayoutResult"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -24763,7 +23196,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -24788,33 +23220,19 @@ export interface operations {
             | components["schemas"]["PeerRadioResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -24829,7 +23247,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -24852,7 +23269,6 @@ export interface operations {
           "application/json": components["schemas"]["PlanView"];
         };
       };
-      /** @description Not Modified */
       304: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -24873,17 +23289,11 @@ export interface operations {
         };
         content?: never;
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -24900,7 +23310,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -24922,31 +23331,18 @@ export interface operations {
           "application/json": components["schemas"]["PlanView"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -24959,7 +23355,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -24981,17 +23376,11 @@ export interface operations {
           "application/json": components["schemas"]["ProfileList"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -25008,7 +23397,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -25030,31 +23418,18 @@ export interface operations {
           "application/json": components["schemas"]["ProfileMutation"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -25073,7 +23448,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -25095,19 +23469,12 @@ export interface operations {
           "application/json": components["schemas"]["ProjectLocationQueryResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -25124,7 +23491,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -25146,33 +23512,19 @@ export interface operations {
           "application/json": components["schemas"]["ProjectSecretsResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -25189,7 +23541,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -25211,33 +23562,19 @@ export interface operations {
           "application/json": components["schemas"]["ProjectSecretsResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -25254,7 +23591,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -25276,33 +23612,19 @@ export interface operations {
           "application/json": components["schemas"]["ProjectSecretsResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -25315,7 +23637,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -25337,19 +23658,12 @@ export interface operations {
           "application/json": components["schemas"]["ProjectReadResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -25369,7 +23683,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -25396,33 +23709,19 @@ export interface operations {
             | components["schemas"]["SidebarOrderResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -25437,7 +23736,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -25459,17 +23757,11 @@ export interface operations {
           "application/json": components["schemas"]["QuestionHistory"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -25486,7 +23778,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -25508,31 +23799,18 @@ export interface operations {
           "application/json": components["schemas"]["MutationReceipt"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -25549,7 +23827,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -25571,31 +23848,18 @@ export interface operations {
           "application/json": components["schemas"]["MutationReceipt"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -25610,7 +23874,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -25632,17 +23895,11 @@ export interface operations {
           "application/json": components["schemas"]["QueueView"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -25663,7 +23920,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -25685,31 +23941,18 @@ export interface operations {
           "application/json": components["schemas"]["MutationReceipt"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -25726,7 +23969,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -25748,33 +23990,19 @@ export interface operations {
           "application/json": components["schemas"]["RenameResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -25791,7 +24019,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -25813,31 +24040,18 @@ export interface operations {
           "application/json": components["schemas"]["MutationReceipt"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -25852,7 +24066,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -25875,7 +24088,6 @@ export interface operations {
           "application/json": components["schemas"]["RuleList"];
         };
       };
-      /** @description Not Modified */
       304: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -25896,17 +24108,11 @@ export interface operations {
         };
         content?: never;
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -25923,7 +24129,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -25947,31 +24152,18 @@ export interface operations {
             | components["schemas"]["RuleRecordResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -25987,7 +24179,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           [name: string]: unknown;
@@ -25996,7 +24187,6 @@ export interface operations {
           "application/json": components["schemas"]["SearchResponse"];
         };
       };
-      /** @description Bad Request */
       400: {
         headers: {
           [name: string]: unknown;
@@ -26006,7 +24196,6 @@ export interface operations {
         };
       };
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: {
         headers: {
           [name: string]: unknown;
@@ -26029,7 +24218,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           [name: string]: unknown;
@@ -26038,7 +24226,6 @@ export interface operations {
           "application/json": components["schemas"]["SearchItemResponse"];
         };
       };
-      /** @description Bad Request */
       400: {
         headers: {
           [name: string]: unknown;
@@ -26048,7 +24235,6 @@ export interface operations {
         };
       };
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: {
         headers: {
           [name: string]: unknown;
@@ -26072,7 +24258,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           [name: string]: unknown;
@@ -26081,7 +24266,6 @@ export interface operations {
           "application/json": components["schemas"]["ServerOperationResponse"];
         };
       };
-      /** @description Bad Request */
       400: {
         headers: {
           [name: string]: unknown;
@@ -26090,7 +24274,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Unauthorized */
       401: {
         headers: {
           [name: string]: unknown;
@@ -26099,7 +24282,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Forbidden */
       403: {
         headers: {
           [name: string]: unknown;
@@ -26108,7 +24290,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Not Found */
       404: {
         headers: {
           [name: string]: unknown;
@@ -26118,7 +24299,6 @@ export interface operations {
         };
       };
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: {
         headers: {
           [name: string]: unknown;
@@ -26127,7 +24307,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Gone */
       410: {
         headers: {
           [name: string]: unknown;
@@ -26136,7 +24315,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Content Too Large */
       413: {
         headers: {
           [name: string]: unknown;
@@ -26146,7 +24324,6 @@ export interface operations {
         };
       };
       415: components["responses"]["ApiError415"];
-      /** @description Too Many Requests */
       429: {
         headers: {
           [name: string]: unknown;
@@ -26155,7 +24332,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Bad Gateway */
       502: {
         headers: {
           [name: string]: unknown;
@@ -26164,7 +24340,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Service Unavailable */
       503: {
         headers: {
           [name: string]: unknown;
@@ -26173,7 +24348,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Gateway Timeout */
       504: {
         headers: {
           [name: string]: unknown;
@@ -26193,7 +24367,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -26215,17 +24388,11 @@ export interface operations {
           "application/json": components["schemas"]["SessionResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -26240,7 +24407,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -26262,17 +24428,11 @@ export interface operations {
           "application/json": components["schemas"]["SessionCostResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -26287,7 +24447,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -26309,19 +24468,12 @@ export interface operations {
           "application/json": components["schemas"]["SkillsResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -26338,7 +24490,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -26360,33 +24511,19 @@ export interface operations {
           "application/json": components["schemas"]["StopResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -26403,7 +24540,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -26425,23 +24561,14 @@ export interface operations {
           "application/json": components["schemas"]["SyncDocument"][];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -26454,7 +24581,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -26476,13 +24602,9 @@ export interface operations {
           "application/json": components["schemas"]["SyncIdentityResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -26499,7 +24621,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -26521,23 +24642,14 @@ export interface operations {
           "application/json": components["schemas"]["RootModel_ResourceNotifyAck_"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -26554,7 +24666,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -26576,23 +24687,14 @@ export interface operations {
           "application/json": components["schemas"]["PreferencePushResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -26605,7 +24707,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -26627,13 +24728,9 @@ export interface operations {
           "application/json": components["schemas"]["SyncProtocolResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -26654,7 +24751,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -26678,13 +24774,9 @@ export interface operations {
             | components["schemas"]["SyncPullResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -26702,7 +24794,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Server-sent sync updates */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -26722,15 +24813,10 @@ export interface operations {
             | components["schemas"]["ResourceTokenRatesEvent"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -26745,7 +24831,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -26767,17 +24852,11 @@ export interface operations {
           "application/json": components["schemas"]["TaskDetailResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -26790,7 +24869,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -26812,17 +24890,11 @@ export interface operations {
           "application/json": components["schemas"]["TerminalList"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -26839,7 +24911,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -26861,31 +24932,18 @@ export interface operations {
           "application/json": components["schemas"]["TerminalRecord"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -26902,7 +24960,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -26924,31 +24981,18 @@ export interface operations {
           "application/json": components["schemas"]["TerminalRecord"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -26965,7 +25009,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -26987,31 +25030,18 @@ export interface operations {
           "application/json": components["schemas"]["TerminalInputResult"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -27029,7 +25059,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -27051,17 +25080,11 @@ export interface operations {
           "application/json": components["schemas"]["TerminalOutput"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -27078,7 +25101,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -27100,31 +25122,18 @@ export interface operations {
           "application/json": components["schemas"]["TerminalRecord"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -27141,7 +25150,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -27163,31 +25171,18 @@ export interface operations {
           "application/json": components["schemas"]["TerminalRecord"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -27203,7 +25198,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -27227,17 +25221,11 @@ export interface operations {
             | components["schemas"]["ToolRequestList"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -27254,7 +25242,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -27278,31 +25265,18 @@ export interface operations {
             | components["schemas"]["ToolRequestList"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -27321,7 +25295,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           [name: string]: unknown;
@@ -27330,7 +25303,6 @@ export interface operations {
           "application/json": components["schemas"]["TranscriptPageResponse"];
         };
       };
-      /** @description Bad Request */
       400: {
         headers: {
           [name: string]: unknown;
@@ -27340,7 +25312,6 @@ export interface operations {
         };
       };
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: {
         headers: {
           [name: string]: unknown;
@@ -27363,7 +25334,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           [name: string]: unknown;
@@ -27372,7 +25342,6 @@ export interface operations {
           "application/json": components["schemas"]["TranscriptItemResponse"];
         };
       };
-      /** @description Bad Request */
       400: {
         headers: {
           [name: string]: unknown;
@@ -27382,7 +25351,6 @@ export interface operations {
         };
       };
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: {
         headers: {
           [name: string]: unknown;
@@ -27408,7 +25376,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           [name: string]: unknown;
@@ -27417,7 +25384,6 @@ export interface operations {
           "application/json": components["schemas"]["TranscriptPageResponse"];
         };
       };
-      /** @description Bad Request */
       400: {
         headers: {
           [name: string]: unknown;
@@ -27427,7 +25393,6 @@ export interface operations {
         };
       };
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: {
         headers: {
           [name: string]: unknown;
@@ -27451,7 +25416,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           [name: string]: unknown;
@@ -27460,7 +25424,6 @@ export interface operations {
           "application/json": components["schemas"]["TranscriptSearchResponse"];
         };
       };
-      /** @description Bad Request */
       400: {
         headers: {
           [name: string]: unknown;
@@ -27470,7 +25433,6 @@ export interface operations {
         };
       };
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: {
         headers: {
           [name: string]: unknown;
@@ -27490,7 +25452,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -27512,17 +25473,11 @@ export interface operations {
           "application/json": components["schemas"]["UiSummaryResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -27539,7 +25494,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -27563,33 +25517,19 @@ export interface operations {
             | null;
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -27606,7 +25546,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -27628,31 +25567,18 @@ export interface operations {
           "application/json": components["schemas"]["VaultLoginResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -27669,7 +25595,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -27691,33 +25616,19 @@ export interface operations {
           "application/json": components["schemas"]["VaultPullResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -27734,7 +25645,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -27756,31 +25666,18 @@ export interface operations {
           "application/json": components["schemas"]["VaultSetupResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -27797,7 +25694,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -27819,31 +25715,18 @@ export interface operations {
           "application/json": components["schemas"]["VaultSetupFactsResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -27860,7 +25743,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -27882,31 +25764,18 @@ export interface operations {
           "application/json": components["schemas"]["VaultUnlockResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -27923,7 +25792,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -27945,33 +25813,19 @@ export interface operations {
           "application/json": components["schemas"]["VoiceRecordResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -27988,7 +25842,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -28010,33 +25863,19 @@ export interface operations {
           "application/json": components["schemas"]["VoiceApprovalsResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -28053,7 +25892,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -28075,33 +25913,19 @@ export interface operations {
           "application/json": components["schemas"]["VoiceApprovalResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -28118,7 +25942,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -28140,33 +25963,19 @@ export interface operations {
           "application/json": components["schemas"]["VoiceRecordResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -28183,7 +25992,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -28205,33 +26013,19 @@ export interface operations {
           "application/json": components["schemas"]["VoiceSessionResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -28248,7 +26042,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -28270,33 +26063,19 @@ export interface operations {
           "application/json": components["schemas"]["VoiceRecordResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -28313,7 +26092,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -28335,33 +26113,19 @@ export interface operations {
           "application/json": components["schemas"]["VoiceRecordsResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -28378,7 +26142,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -28402,33 +26165,19 @@ export interface operations {
             | components["schemas"]["VoiceSpeechReceiptResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -28445,7 +26194,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -28467,33 +26215,19 @@ export interface operations {
           "application/json": components["schemas"]["VoiceSessionResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -28510,7 +26244,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -28532,33 +26265,19 @@ export interface operations {
           "application/json": components["schemas"]["VoiceStatusResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -28575,7 +26294,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -28597,33 +26315,19 @@ export interface operations {
           "application/json": components["schemas"]["VoiceDeliveryResponse"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Not Found */
       404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -28638,7 +26342,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -28660,17 +26363,11 @@ export interface operations {
           "application/json": components["schemas"]["WorkList"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -28687,7 +26384,6 @@ export interface operations {
       };
     };
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -28711,31 +26407,18 @@ export interface operations {
             | components["schemas"]["WorkList"];
         };
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
       408: components["responses"]["ApiError408"];
-      /** @description Conflict */
       409: components["responses"]["ApiError409"];
-      /** @description Gone */
       410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
       415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
       426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
       502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -28751,7 +26434,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -28774,7 +26456,6 @@ export interface operations {
           "application/json": components["schemas"]["WorkspaceView"];
         };
       };
-      /** @description Not Modified */
       304: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -28795,17 +26476,11 @@ export interface operations {
         };
         content?: never;
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };
@@ -28824,7 +26499,6 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Successful Response */
       200: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -28847,7 +26521,6 @@ export interface operations {
           "application/json": components["schemas"]["WorkspaceTaskFeed"];
         };
       };
-      /** @description Not Modified */
       304: {
         headers: {
           "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
@@ -28868,17 +26541,11 @@ export interface operations {
         };
         content?: never;
       };
-      /** @description Bad Request */
       400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
       401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
       403: components["responses"]["ApiError403"];
-      /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
   };

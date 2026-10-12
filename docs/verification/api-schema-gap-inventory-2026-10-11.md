@@ -359,13 +359,30 @@ The supervisor handle `signature` is a SHA-256 digest of sorted JSON `{command, 
 
 ## M-06 final route accounting
 
-The route-table census contains 163 effective method/path entries: 156 under `/api/` and seven documentation/static routes. Each entry has been compared with its handler, middleware and declared response. The former two public API routes without response models now describe their existing stream/range bodies; the session route references shared boundary responses; five federation GET fallbacks and the voice catch-all document their existing errors. Framework documentation and static-asset routes are marked complete as framework/file contracts, rather than as JSON API operations.
+The route-table census originally contained 163 effective method/path entries: 156 under `/api/` and seven documentation/static routes. The schema reconciliation below supersedes that API count. Each inventoried entry was compared with its handler, middleware and declared response. The former two public API routes without response models now describe their existing stream/range bodies; the session route references shared boundary responses; five federation GET fallbacks and the voice catch-all document their existing errors. Framework documentation and static-asset routes are marked complete as framework/file contracts, rather than as JSON API operations.
 
 | Final verdict                            | Route entries | Meaning                                                                                                                                      |
 | ---------------------------------------- | ------------: | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| Complete, closed or explicitly projected |           111 | Handler outputs, error variants, headers and known fields are described; responses use explicit projections, fixed values, or closed unions. |
+| Complete, closed or explicitly projected |           115 | Handler outputs, error variants, headers and known fields are described; responses use explicit projections, fixed values, or closed unions. |
 | Complete, open by design                 |            51 | Known fields are typed; documented stored/provider/protocol extensions or generated key maps remain open to preserve pass-through data.      |
 | Open as a real schema gap                |             1 | The native monitor wait result is forwarded from the provider and its successful variants are not established by source or test producers.   |
+
+### Canonical operation-set reconciliation — 2026-10-12
+
+`workspaces/runtime/packages/runtime-http/openapi.json` is the authority for
+documented API methods and paths. It contains 159 `/api/` operations. The
+earlier 156-entry `/api/` census omitted these four existing, schema-documented
+POST routes: `/api/vault/aws-login`, `/api/vault/setup`,
+`/api/vault/setup/facts`, and `/api/vault/unlock`. It also included the
+intentionally hidden `POST /api/voice/{action:path}` compatibility fallback,
+which is implemented but excluded from OpenAPI. Therefore the effective FastAPI
+route table has 160 `/api/` method/path entries (the 159 canonical operations
+plus that one compatibility exception), and 167 total entries including the
+seven documentation/static routes. The route-table guard now derives its
+expected set from the committed OpenAPI document and adds only the named hidden
+voice compatibility route. The four vault handlers already have typed request
+and response models and route tests; their omission was in the census lists,
+not in implementation or schema.
 
 ### Disposition of the seven inventoried response-shape gaps
 
@@ -379,7 +396,7 @@ The route-table census contains 163 effective method/path entries: 156 under `/a
 | `POST /api/complaints`           | Closed as a schema gap: response derives from canonical `ComplaintRecord`, whose stored record passes through and remains open for extensions.                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `POST /api/monitor/input`        | The route forwards the raw `AppServer.wait()` result. `RulesRuntime.monitor_input` sends either `command/exec/write` (`processId`, `deltaBase64`, `closeStdin`) or `command/exec/resize` (`processId`, `size.rows`, `size.cols`); `AppServer.wait` returns the matching JSON-RPC future result without projection. The Claude bridge fixture returns `{}` for these methods, while the IO route unit double returns `{processId: string}`. Those doubles do not establish the native provider's full result variants; keep this response open as `JsonValue`. |
 
-The six formerly partly known persisted or runtime variants now use canonical record-backed response models and the discriminators their writers set. Census results are one installation only; optionality and type variation remain grounded in code writers, with census counts as supporting evidence. These routes preserve unknown stored extensions where records pass through. They are included among the 51 complete, open-by-design routes in the M-06 accounting; the inventory still totals 163 route entries, with 111 complete closed/projected routes and one genuine schema gap. `POST /api/monitor/input` returns `AppServer.wait()`'s raw provider future result. The source and fixtures establish the two request methods but not the native provider's complete response variants, so it remains open as `JsonValue`.
+The six formerly partly known persisted or runtime variants now use canonical record-backed response models and the discriminators their writers set. Census results are one installation only; optionality and type variation remain grounded in code writers, with census counts as supporting evidence. These routes preserve unknown stored extensions where records pass through. They are included among the 51 complete, open-by-design routes in the M-06 accounting. After adding the four omitted vault route entries, the reconciled inventory totals 167 route entries, with 115 complete closed/projected routes and one genuine schema gap. `POST /api/monitor/input` returns `AppServer.wait()`'s raw provider future result. The source and fixtures establish the two request methods but not the native provider's complete response variants, so it remains open as `JsonValue`.
 
 This record-unions increment starts from fresh main commit `e758926c` (schema hash `46ee4b02527833dbc4ad9d86083e032a8bcc39340dc08c00ee78c637b4160236`) and regenerates `adb834163686e5253c5628348e7f54f04439bd926b1f5f4e9b2485a383658789`. It tightens response declarations and nested contract recognition; no JSON field, status, or header is renamed, removed, or changed on the wire. The TypeScript tightening requires lifecycle `stage` and record `id` for tool-request records; `kind` and `id` for rule records; `id`, `rootId`, `epoch`, and `status` for organization AgentRecords; and `id`, `leadId`, `author`, `text`, `status`, and `created` for complaint records. The monitor-input result remains `JsonValue` because its producer is not known. `rpcId` remains `number | string`.
 
