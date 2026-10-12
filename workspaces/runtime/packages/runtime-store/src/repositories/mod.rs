@@ -7,6 +7,7 @@ pub(crate) mod rules;
 pub(crate) mod sync_documents;
 pub(crate) mod tasks;
 pub(crate) mod work_items;
+pub(crate) mod workspace_views;
 
 use crate::schema::SchemaRequirements;
 
@@ -20,6 +21,7 @@ pub(crate) const REQUIREMENTS: &[&SchemaRequirements] = &[
     &rules::REQUIREMENTS,
     &sync_documents::REQUIREMENTS,
     &work_items::REQUIREMENTS,
+    &workspace_views::REQUIREMENTS,
 ];
 
 #[cfg(test)]

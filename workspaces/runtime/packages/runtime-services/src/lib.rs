@@ -13,3 +13,4 @@ pub mod progress_panel;
 pub mod rules;
 pub mod sync_policy;
 pub mod work_policy;
+pub mod workspace_views;
