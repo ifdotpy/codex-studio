@@ -19,8 +19,7 @@ const KNOWN_DEPENDENCIES: &[&str] = &[
     "transcript-service/pull",
     "event-driver/work-items",
     "event-driver/queue-mutations",
-    "event-driver/plan-updates",
-    "event-driver/annotations",
+    "rule-driver/event-rules",
     "workspace-state/organization-effects",
 ];
 

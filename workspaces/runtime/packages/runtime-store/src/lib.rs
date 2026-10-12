@@ -8,8 +8,8 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-pub use rusqlite::Connection;
-use rusqlite::{OpenFlags, Transaction, TransactionBehavior};
+pub use rusqlite::{Connection, Transaction};
+use rusqlite::{OpenFlags, TransactionBehavior};
 use thiserror::Error;
 
 pub use path::resolve_state_dir;
@@ -18,6 +18,7 @@ pub use records::{
     MessageRepository, QueueEvent, QueueEventId, QueueEventRepository, TaskId, TaskRecord,
     TaskRepository, WorkStatus,
 };
+pub use repositories::event_write::{EventWriteReceipt, EventWriteRepository};
 pub use repositories::rules::{RulesRepository, StoredAgent, StoredRule};
 pub use repositories::sync_documents::{EntityRow, SyncDocument, SyncDocumentsRepository};
 pub use repositories::work_items::{StoredQueueEvent, StoredRecord, WorkItemsRepository};
@@ -131,8 +132,23 @@ impl RuntimeStore {
         &self,
         operation: impl FnOnce(&Transaction<'_>) -> StoreResult<T>,
     ) -> StoreResult<T> {
+        self.transaction_with_error(operation)
+    }
+
+    /// Run one durable transaction with a domain error type that preserves
+    /// operation refusals while still reporting store and commit failures.
+    pub fn transaction_with_error<T, E>(
+        &self,
+        operation: impl FnOnce(&Transaction<'_>) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<StoreError>,
+    {
         let mut writer = self.writer.lock().map_err(|_| StoreError::WriterPoisoned)?;
-        let transaction = writer.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let transaction = writer
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(StoreError::from)
+            .map_err(E::from)?;
         match operation(&transaction) {
             Ok(value) => {
                 transaction
