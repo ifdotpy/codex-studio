@@ -436,6 +436,9 @@ test("Account Transfer Ui", async ({
       )
       .toBe(1);
     assert.ok(notifySync, "the real fixture resource stream is connected");
+    const syncedTransferWaiting =
+      "Waiting for the current turn (fixture stream applied)";
+    agents[0].accountTransfer.waiting = syncedTransferWaiting;
     notifySync([{ kind: "state" }]);
     await page
       .getByRole("dialog", { name: "Chat settings", exact: true })
@@ -456,7 +459,7 @@ test("Account Transfer Ui", async ({
     );
     assert.equal(await accountGroup.getAttribute("data-value"), "default");
     await transferStatus
-      .getByText("Waiting for the current turn", { exact: true })
+      .getByText(syncedTransferWaiting, { exact: true })
       .waitFor();
     await transferStatus
       .getByText("Moved 1 subagents to work@example.com.", { exact: true })
