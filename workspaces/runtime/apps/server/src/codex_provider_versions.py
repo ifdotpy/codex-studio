@@ -1,10 +1,11 @@
 """Nonblocking, account-scoped CLI version diagnostics and advisories."""
 from __future__ import annotations
 
-import re
 import subprocess
 import threading
 import time
+
+from codex_provider_update_notice import compare_versions, parse_version
 
 
 # Lowest real CLI versions recorded by repository verification. These are
@@ -13,19 +14,6 @@ TESTED_BASELINES = {"codex": "0.153.4", "claude": "2.1.278"}
 PROVIDER_LABELS = {"codex": "Codex CLI", "claude": "Claude Code"}
 CHECK_INTERVAL = 300
 _MONITOR_CREATION_LOCK = threading.Lock()
-VERSION_PATTERN = re.compile(r"(?<![0-9])([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([0-9A-Za-z.-]+))?")
-
-
-def parse_version(value):
-    if not isinstance(value, str):
-        return None
-    match = VERSION_PATTERN.search(value)
-    if not match:
-        return None
-    prerelease = match[4]
-    parts = tuple((0, int(part)) if part.isdigit() else (1, part)
-                  for part in (prerelease or "").split("."))
-    return (*map(int, match.group(1, 2, 3)), prerelease is None, parts)
 
 
 def version_warning(provider, version, *, source="running"):
@@ -53,10 +41,23 @@ def version_warning(provider, version, *, source="running"):
     }
 
 
-def _codex_version(server, _account):
+def _codex_version(server, _account, runtime=None):
     from codex_native_runtime import _version
     version = _version(server)
-    return {"runningVersion": version, "installedVersion": version}
+    available = None
+    updates = getattr(runtime, "native_runtime_updates", None)
+    if updates is not None:
+        try:
+            selected = updates.selected()
+            available = selected.get("version") if isinstance(selected, dict) else None
+        except (OSError, TypeError, ValueError):
+            pass
+    return {
+        "runningVersion": version,
+        "installedVersion": version,
+        "availableVersion": available,
+        "availableSource": "installed",
+    }
 
 
 def _read_claude_executable(profile):
@@ -90,6 +91,8 @@ def _claude_version(server, account):
         "runningVersion": None,
         "installedVersion": installed,
         "configuredVersion": configured,
+        "availableVersion": configured,
+        "availableSource": "installed",
         "error": launched_error or configured_error,
         "runningNote": "The exact version already running in Claude sessions is unknown.",
     }
@@ -104,6 +107,12 @@ def _diagnostic(account_key, provider, versions):
     running = versions.get("runningVersion")
     installed = versions.get("installedVersion")
     configured = versions.get("configuredVersion")
+    update_notice = compare_versions(
+        provider,
+        installed,
+        versions.get("availableVersion"),
+        source=versions.get("availableSource") or "installed",
+    )
     warning = version_warning(provider, running) if running else None
     if warning is None and installed:
         warning = version_warning(provider, installed, source="launchedExecutable")
@@ -126,6 +135,7 @@ def _diagnostic(account_key, provider, versions):
         "runningVersion": running,
         "installedVersion": installed,
         "configuredVersion": configured,
+        "updateNotice": update_notice.as_api_value() if update_notice else None,
         "baseline": baseline,
         "error": versions.get("error"),
         "message": warning["message"] if warning else versions.get("runningNote") or
@@ -255,7 +265,7 @@ class ProviderVersionMonitor:
                     providers.append(_unknown_provider(account_key, provider))
                     continue
                 versions = (self.read_version(provider, server, account) if self.read_version
-                            else VERSION_READERS[provider](server, account))
+                            else VERSION_READERS[provider](server, account, runtime))
                 if not isinstance(versions, dict):
                     raise ValueError("Provider version reader returned no status object")
                 diagnostic = _diagnostic(account_key, provider, versions)

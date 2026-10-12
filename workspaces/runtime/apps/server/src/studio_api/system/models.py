@@ -142,10 +142,21 @@ class ProviderVersion(ContractModel):
     runningVersion: str | None
     installedVersion: str | None
     configuredVersion: str | None
+    updateNotice: ProviderUpdateNotice | None = None
     baseline: str | None
     error: str | None
     message: str | None
     at: float | None
+
+
+class ProviderUpdateNotice(ContractModel):
+    """A newer installed version is available but is not in use yet."""
+
+    provider: str
+    installedVersion: str
+    availableVersion: str
+    # Keep sources extensible for a future upstream release check.
+    source: str
 
 
 class ProviderVersionWarning(ContractModel):

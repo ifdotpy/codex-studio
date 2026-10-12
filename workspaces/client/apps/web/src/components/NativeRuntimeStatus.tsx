@@ -2,6 +2,7 @@ import { localDateTime } from "../local-time";
 import { useEffect, useState } from "react";
 import { get, type GetResult, errorText } from "../api";
 import type { Account } from "./Accounts";
+import ProviderUpdateNotice from "./ProviderUpdateNotice";
 import { watchResourceReads } from "./watchResourceReads";
 import "./native-runtime-status.css";
 
@@ -238,6 +239,7 @@ export default function NativeRuntimeStatus({
                         {providerStatus[provider.status]}
                       </span>
                     </div>
+                    <ProviderUpdateNotice notice={provider.updateNotice} />
                     <small>
                       Running version: {provider.runningVersion || "Unknown"}
                     </small>

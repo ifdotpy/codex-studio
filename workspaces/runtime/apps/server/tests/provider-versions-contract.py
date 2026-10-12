@@ -26,6 +26,7 @@ from codex_provider_versions import (
     parse_version,
     version_warning,
 )
+from codex_provider_update_notice import compare_versions
 
 
 class Accounts:
@@ -68,6 +69,34 @@ class SnapshotLock:
 
 
 class ProviderVersionContract(unittest.TestCase):
+    def test_update_notice_requires_a_newer_readable_installed_candidate(self):
+        cases = (
+            ("newer", "2.0.0", "2.1.0", True),
+            ("equal", "2.1.0", "2.1.0", False),
+            ("older", "2.2.0", "2.1.0", False),
+            ("unparsable", "unknown", "2.2.0", False),
+            ("missing installed", None, "2.2.0", False),
+            ("missing", "2.1.0", None, False),
+        )
+        for provider in ("codex", "claude"):
+            for case, installed, available, expected in cases:
+                with self.subTest(provider=provider, case=case):
+                    notice = compare_versions(provider, installed, available)
+                    self.assertEqual(notice is not None, expected)
+                    if notice:
+                        self.assertEqual(notice.provider, provider)
+                        self.assertEqual(notice.installed_version, installed)
+                        self.assertEqual(notice.available_version, available)
+                        self.assertEqual(notice.source, "installed")
+
+    def test_unavailable_codex_candidate_produces_no_notice(self):
+        from codex_provider_versions import _codex_version
+
+        with patch("codex_native_runtime._version", return_value="1.0.0"):
+            versions = _codex_version(Server(), {}, Runtime())
+        self.assertIsNone(versions["availableVersion"])
+        self.assertIsNone(_diagnostic("work", "codex", versions)["updateNotice"])
+
     def test_baseline_means_lowest_version_recorded_in_repo_evidence(self):
         self.assertIsNone(version_warning("codex", "codex-cli 0.153.4"))
         self.assertIsNone(version_warning("claude", "Claude Code 2.1.278"))
