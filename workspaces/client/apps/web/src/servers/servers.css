@@ -340,3 +340,68 @@ html[data-server-view] .workspace {
 .multi-server-shell[data-navigation="classic"] .server-views {
   min-height: 0;
 }
+
+/* Terminal under the sidebar. The selected server view reports its terminal
+   panel. Closed: the shell draws the bar under its sidebar, at the sidebar's
+   width. Open: the server view spans the whole window under the sidebar, the
+   sidebar ends above the panel, and the panel uses the full width
+   (terminal-dock.css keeps the view's content clear of the sidebar). */
+.shell-terminal-bar {
+  display: none;
+}
+@media (min-width: 761px) {
+  .multi-server-shell[data-shell-terminal] > #sidebar {
+    position: relative;
+    z-index: 2;
+  }
+  .multi-server-shell[data-shell-terminal="closed"] > #sidebar {
+    height: calc(100% - 38px);
+  }
+  .multi-server-shell[data-shell-terminal="open"] > #sidebar {
+    height: calc(100% - var(--shell-terminal-height));
+  }
+  .multi-server-shell[data-shell-terminal="open"] > .server-views {
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+  }
+  .multi-server-shell[data-shell-terminal="closed"] .shell-terminal-bar {
+    position: fixed;
+    left: 0;
+    bottom: 0;
+    z-index: 3;
+    box-sizing: border-box;
+    width: var(--shell-sidebar-width);
+    height: 38px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-inline: 16px;
+    border-top: 1px solid var(--line);
+    border-right: 1px solid var(--line);
+    background: var(--sidebar);
+    color: var(--text);
+    font-size: 12px;
+  }
+}
+.shell-terminal-toggle {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.shell-terminal-toggle strong {
+  font-size: 12px;
+  font-weight: 550;
+}
+.shell-terminal-bar .terminal-dock-count {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}

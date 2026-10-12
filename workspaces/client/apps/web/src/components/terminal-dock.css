@@ -404,3 +404,30 @@
     opacity: 1;
   }
 }
+
+/* The combined window: the shell draws the closed bar under its own sidebar
+   (servers.css "Terminal under the sidebar"). While the panel is open, this
+   view spans the whole window under the shell sidebar, so the content keeps
+   clear of the sidebar and the panel uses the full width. */
+@media (min-width: 761px) {
+  html[data-server-view]:not(
+      [data-server-navigation="classic"]
+    )[data-shell-sidebar]
+    .terminal-dock:not(.is-open) {
+    display: none;
+  }
+  html[data-server-view]:not(
+      [data-server-navigation="classic"]
+    )[data-shell-sidebar]
+    body
+    #root:has(.terminal-dock:not(.is-open)) {
+    height: 100dvh;
+  }
+  html[data-server-view]:not(
+      [data-server-navigation="classic"]
+    )[data-shell-sidebar]
+    #root:has(.terminal-dock.is-open) {
+    box-sizing: border-box;
+    padding-left: var(--shell-sidebar-width, 0px);
+  }
+}

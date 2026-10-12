@@ -63,6 +63,7 @@ export type ServerCommand =
     }
   | { action: "add-project" }
   | { action: "refresh" }
+  | { action: "terminal"; operation: "toggle" | "new" }
   | { action: "prepare-chat"; id: string }
   | { action: "mark-unread"; id: string; threadId: string; turnId: string }
   | { action: "remove-chat"; id: string; room: boolean }
@@ -194,6 +195,8 @@ export function isServerCommand(value: unknown): value is ServerCommand {
   if (!value || typeof value !== "object") return false;
   const command = value as Record<string, unknown>;
   if (command.action === "refresh") return true;
+  if (command.action === "terminal")
+    return command.operation === "toggle" || command.operation === "new";
   if (command.action === "prepare-chat" || command.action === "change-project")
     return typeof command.id === "string";
   if (command.action === "mark-unread")

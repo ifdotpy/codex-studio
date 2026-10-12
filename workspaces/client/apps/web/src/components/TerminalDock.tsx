@@ -25,11 +25,24 @@ import type { Agent, Snapshot } from "../types";
 import "./terminal-dock.css";
 import { copyText } from "../clipboard/clipboard";
 import { watchResourceReads } from "./watchResourceReads";
+import {
+  isClassicServerView,
+  isServerView,
+  serverParentOrigin,
+  serverViewId,
+} from "../servers/environment";
 
 type Shell = GetResult<"/api/terminals">["items"][number];
 type Entry = Shell & { key: string };
 const running = (status: string) =>
   ["running", "starting", "approval"].includes(status);
+// In the combined window the shell draws the closed bar under its sidebar and makes room
+// for the open panel across the whole window (docs: servers.css "Terminal under the sidebar").
+const shellTerminal =
+  isServerView &&
+  !isClassicServerView &&
+  typeof window !== "undefined" &&
+  window.parent !== window;
 const inputUncertaintyNotice =
   "Previous input delivery is uncertain. Check the terminal output before you enter it again. Buffered input was not sent.";
 
@@ -173,6 +186,37 @@ export default function TerminalDock({
       setCreating(false);
     }
   };
+  const createRef = useRef(create);
+  createRef.current = create;
+  const activeCount = entries.filter((entry) => running(entry.status)).length;
+  const shownHeight = opened
+    ? Math.min(height, Math.max(0, window.innerHeight - 100))
+    : 38;
+  useEffect(() => {
+    if (!shellTerminal) return;
+    window.parent.postMessage(
+      {
+        kind: "studio-server-terminal",
+        serverId: serverViewId,
+        opened,
+        height: shownHeight,
+        count: entries.length,
+        active: activeCount,
+        canCreate: !!agent,
+      },
+      serverParentOrigin,
+    );
+  }, [opened, shownHeight, entries.length, activeCount, !!agent]);
+  useEffect(() => {
+    if (!shellTerminal) return;
+    const command = (event: Event) => {
+      const operation = (event as CustomEvent<string>).detail;
+      if (operation === "toggle") setOpened((value: boolean) => !value);
+      else if (operation === "new") void createRef.current();
+    };
+    window.addEventListener("studio-terminal-command", command);
+    return () => window.removeEventListener("studio-terminal-command", command);
+  }, []);
   const action = async <
     Path extends "/api/terminals/rename" | "/api/terminals/close",
   >(
