@@ -1,0 +1,628 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "TranscriptAsset": {
+      "additionalProperties": false,
+      "description": "Path-free attachment projection returned by the workspace service.",
+      "properties": {
+        "agent": {
+          "title": "Agent",
+          "type": "string"
+        },
+        "created": {
+          "title": "Created",
+          "type": "number"
+        },
+        "hash": {
+          "title": "Hash",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "image": {
+          "title": "Image",
+          "type": "boolean"
+        },
+        "mime": {
+          "title": "Mime",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "size": {
+          "title": "Size",
+          "type": "integer",
+          "x-safe-integer": "unsigned"
+        }
+      },
+      "required": [
+        "id",
+        "agent",
+        "name",
+        "mime",
+        "image",
+        "size",
+        "hash",
+        "created"
+      ],
+      "title": "TranscriptAsset",
+      "type": "object"
+    },
+    "TranscriptInput": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "One native/runtime input batch entry shown inside a transcript item.",
+      "properties": {
+        "assets": {
+          "items": {
+            "$ref": "#/$defs/TranscriptAsset"
+          },
+          "title": "Assets",
+          "type": "array"
+        },
+        "at": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "At"
+        },
+        "clientMessageId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Clientmessageid"
+        },
+        "deliveryError": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Deliveryerror"
+        },
+        "deliveryStatus": {
+          "anyOf": [
+            {
+              "enum": [
+                "pending",
+                "reserved",
+                "dispatching",
+                "uncertain",
+                "failed",
+                "cancelled",
+                "delivered",
+                "stored_only",
+                "queued",
+                "accepted",
+                "sent"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Deliverystatus"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Id"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "materialized": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Materialized"
+        },
+        "pending": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Pending"
+        },
+        "requestedDelivery": {
+          "anyOf": [
+            {
+              "enum": ["queue", "steer", "after_tool", "after_turn"],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Requesteddelivery"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "truncated": {
+          "title": "Truncated",
+          "type": "boolean"
+        }
+      },
+      "required": ["kind", "text", "truncated"],
+      "title": "TranscriptInput",
+      "type": "object"
+    }
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "description": "Persisted transcript row shape used by the runtime_items table.",
+  "properties": {
+    "accountWide": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Accountwide"
+    },
+    "agent": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Agent"
+    },
+    "assets": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/TranscriptAsset"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Assets"
+    },
+    "at": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "At"
+    },
+    "clientMessageId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Clientmessageid"
+    },
+    "cyberAccessProgram": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Cyberaccessprogram"
+    },
+    "deliveryError": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Deliveryerror"
+    },
+    "deliveryStatus": {
+      "anyOf": [
+        {
+          "enum": [
+            "pending",
+            "reserved",
+            "dispatching",
+            "uncertain",
+            "failed",
+            "cancelled",
+            "delivered",
+            "stored_only",
+            "queued",
+            "accepted",
+            "sent"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Deliverystatus"
+    },
+    "details": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JsonValue"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "inputs": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/TranscriptInput"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Inputs"
+    },
+    "kind": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Kind"
+    },
+    "materialized": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Materialized"
+    },
+    "nativeError": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JsonValue"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nativeHook": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Nativehook"
+    },
+    "nativeHookQuiet": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Nativehookquiet"
+    },
+    "nativeNotice": {
+      "anyOf": [
+        {
+          "enum": ["info", "warning", "error"],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Nativenotice"
+    },
+    "nativeReview": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Nativereview"
+    },
+    "observedWait": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Observedwait"
+    },
+    "pending": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Pending"
+    },
+    "phase": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Phase"
+    },
+    "previousError": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JsonValue"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "reasoningMs": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Reasoningms"
+    },
+    "reasoningObservedAt": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Reasoningobservedat"
+    },
+    "reasoningSince": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Reasoningsince"
+    },
+    "requestedDelivery": {
+      "anyOf": [
+        {
+          "enum": ["queue", "steer", "after_tool", "after_turn"],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Requesteddelivery"
+    },
+    "role": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Role"
+    },
+    "sourceId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Sourceid"
+    },
+    "streaming": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Streaming"
+    },
+    "text": {
+      "title": "Text",
+      "type": "string"
+    },
+    "threadId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Threadid"
+    },
+    "title": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Title"
+    },
+    "toolStatus": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Toolstatus"
+    },
+    "truncated": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Truncated"
+    },
+    "turnError": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Turnerror"
+    },
+    "turnErrorResolved": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Turnerrorresolved"
+    },
+    "turnId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Turnid"
+    },
+    "turnStatus": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Turnstatus"
+    }
+  },
+  "required": ["id", "text"],
+  "title": "PersistedTranscriptRecord",
+  "type": "object"
+}

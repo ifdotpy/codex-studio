@@ -121,8 +121,8 @@ SQLite reads only the existing `sync_entities` workspace row. The storage
 format is `AccountRateLimitsDto` and its nested models in
 `studio_api/sync/models.py:1070-1117`; Python API restoration then validates
 `UsageLimitsResponse` (`studio_api/accounts/models.py:362-369`). The reader
-consumes the exported schemas in `runtime-http/account-registry.schema.json`
-and `runtime-http/workspace-usage-limits.schema.json`; the latter validates
+consumes the exported schemas in `runtime-schema/src/schemas/account-registry.schema.json`
+and `runtime-schema/src/schemas/workspace-usage-limits.schema.json`; the latter validates
 selected entries through its `UsageLimitsResponse` model.
 
 | `GET /api/limits` field                             | Source                                                                                                                                 | Absent, malformed, or refresh behavior                                                                                                                                                                                      |
@@ -140,7 +140,7 @@ diagnostic; persisted documents share the store-owned 64 MiB and 128-level
 bounds, with one iterative depth scanner before recursive parsing. No debug
 formatter retains or prints registry or limits values.
 
-The exported `runtime-http/account-registry.schema.json` is the registry
+The exported `runtime-schema/src/schemas/account-registry.schema.json` is the registry
 authority. The registry is one fail-closed authority:
 invalid JSON or a schema violation stops startup with the path and first
 location, without field contents. A literal unpaired surrogate produced by
@@ -150,7 +150,7 @@ read-only pre-cutover state check is the guard; if it finds one, the lead owns
 the one-time state upgrade. No Python truthiness or malformed-file
 compatibility rules are reproduced.
 
-`runtime-http/workspace-usage-limits.schema.json` is a projection schema: it
+`runtime-schema/src/schemas/workspace-usage-limits.schema.json` is a projection schema: it
 validates the workspace usage fields this slice reads, while intentionally
 ignoring unrelated workspace fields. It is not an allow-list for the complete
 workspace format.

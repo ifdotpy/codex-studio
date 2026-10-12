@@ -18,9 +18,11 @@ use thiserror::Error;
 
 pub use path::resolve_state_dir;
 pub use records::{
-    AgentId, AgentRecord, AgentRepository, AgentStatus, ChatMessage, ChatMessageId, JsonRecord,
-    MessageRepository, QueueEvent, QueueEventId, QueueEventRepository, RecordPage, Table, TaskId,
-    TaskRecord, TaskRepository, WorkStatus,
+    AgentId, AgentRecord, AgentRepository, AgentStatus, ChatMessage, ChatMessageId,
+    EventMetadataRecord, JsonRecord, MessageRepository, QueueEvent, QueueEventId,
+    QueueEventRepository, RecordKeyMode, RecordOrder, RecordPredicate, RecordQueryShape,
+    RuleRecord, Table, TaskId, TaskRecord, TaskRepository, TranscriptAssetId,
+    TranscriptAssetRecord, TranscriptItemId, TranscriptItemRecord, WorkItemRecord, WorkStatus,
 };
 pub use repositories::coordination::{CanvasMessage, ChatGroup, CoordinationRepository};
 pub use repositories::event_write::{EventWriteReceipt, EventWriteRepository};
@@ -71,6 +73,8 @@ pub enum StoreError {
     InvalidStoredObject { table: &'static str, id: String },
     #[error("persisted JSON schema validation failed: {0}")]
     SchemaValidation(String),
+    #[error("invalid JSON-record table contract: {0}")]
+    RecordContract(&'static str),
     #[error("runtime store writer mutex was poisoned")]
     WriterPoisoned,
 }

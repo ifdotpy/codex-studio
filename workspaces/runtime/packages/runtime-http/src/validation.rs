@@ -7,11 +7,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
-use jsonschema::{Draft, Registry as SchemaRegistry, Validator};
+use jsonschema::Validator;
 use serde_json::{Map, Value, json};
+use studio_runtime_schema::{
+    JsonSchemaRegistry as SchemaRegistry, OPENAPI_URI, registry_for_document,
+};
 
 const OPENAPI: &[u8] = include_bytes!("../openapi.json");
-const OPENAPI_URI: &str = "https://codex-studio.invalid/openapi.json";
 const MAX_SAFE_INTEGER: i128 = 9_007_199_254_740_991;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -60,7 +62,6 @@ struct OperationValidator {
 pub(crate) struct Registry {
     operations: Arc<BTreeMap<String, OperationValidator>>,
     preference_field: Option<Validator>,
-    stored_schemas: Arc<BTreeMap<String, Validator>>,
 }
 
 #[derive(Debug)]
@@ -109,29 +110,6 @@ impl Registry {
                 operation_id: "push_preferences_api_sync_preferences_post".to_owned(),
                 message: error.to_string(),
             })?;
-        let mut stored_schemas = BTreeMap::new();
-        for name in [
-            "AgentRecordResponse",
-            "AnnotationReceipt",
-            "CheckpointSummary",
-            "ComplaintRecordResponse",
-            "PlanView",
-            "QueueItem",
-            "RequestRecordResponse",
-            "TaskDetailResponse",
-            "TranscriptAsset",
-            "WorkItem",
-        ] {
-            let validator = jsonschema::options()
-                .with_registry(&schema_registry)
-                .with_pattern_options(jsonschema::PatternOptions::regex())
-                .build(&json!({"$ref": format!("{OPENAPI_URI}#/components/schemas/{name}")}))
-                .map_err(|error| CompileError {
-                    operation_id: name.to_owned(),
-                    message: error.to_string(),
-                })?;
-            stored_schemas.insert(name.to_owned(), validator);
-        }
         let mut compiled = BTreeMap::new();
         for (method, path) in registered {
             let operation = document.pointer(&format!(
@@ -162,8 +140,17 @@ impl Registry {
         Ok(Self {
             operations: Arc::new(compiled),
             preference_field: Some(preference_field),
-            stored_schemas: Arc::new(stored_schemas),
         })
+    }
+
+    /// Compatibility adapter for callers migrating persisted-object checks to `Table<R>`.
+    #[allow(
+        dead_code,
+        reason = "remove after open slice branches migrate to Table<R>"
+    )]
+    pub(crate) fn validate_stored(&self, schema: &str, value: &Value) -> bool {
+        studio_runtime_schema::validate(schema, value)
+            .expect("stored schema registry configuration is valid")
     }
 
     pub(crate) fn validate(
@@ -312,17 +299,6 @@ impl Registry {
         self.preference_field
             .as_ref()
             .is_some_and(|validator| validator.is_valid(value))
-    }
-
-    pub(crate) fn validate_stored(&self, schema: &str, value: &Value) -> bool {
-        self.stored_schemas
-            .get(schema)
-            .is_some_and(|validator| validator.is_valid(value))
-    }
-
-    pub(crate) fn validated_stored(&self, schema: &str, raw: &str) -> Option<Value> {
-        let value = serde_json::from_str(raw).ok()?;
-        self.validate_stored(schema, &value).then_some(value)
     }
 }
 
@@ -778,15 +754,7 @@ fn body_schema_uri(method: &str, path: &str) -> String {
 }
 
 fn schema_registry(document: &Value) -> Result<SchemaRegistry<'_>, String> {
-    SchemaRegistry::new()
-        .draft(Draft::Draft202012)
-        .add(
-            OPENAPI_URI,
-            jsonschema::Resource::from_contents(document.clone()),
-        )
-        .map_err(|error| error.to_string())?
-        .prepare()
-        .map_err(|error| error.to_string())
+    registry_for_document(document)
 }
 
 fn validate_part(part: &Part, value: &mut Value) -> Result<(), LocatedError> {
@@ -958,6 +926,19 @@ mod tests {
     use axum::http::{HeaderMap, HeaderValue};
     use serde_json::{Map, Value, json};
 
+    #[test]
+    fn shared_registry_exposes_stored_validation_for_migrating_callers() {
+        let registry = Registry::compile(&[]).expect("request and record schemas compile");
+        assert!(registry.validate_stored(
+            "WorkItem",
+            &json!({
+                "id":"task-1","rootId":"agent-1","title":"T",
+                "status":"ready","created":1,"updated":1,"version":1
+            })
+        ));
+        assert!(!registry.validate_stored("WorkItem", &json!([])));
+    }
+
     fn compile_for_test(
         document: &Value,
         path: &str,
@@ -993,7 +974,6 @@ mod tests {
         let registry = Registry {
             operations: Arc::new(BTreeMap::from([("GET /x".to_owned(), compiled)])),
             preference_field: None,
-            stored_schemas: Arc::new(BTreeMap::new()),
         };
         for alongside_valid in [false, true] {
             let mut actual_headers = HeaderMap::new();
@@ -1217,7 +1197,6 @@ mod tests {
                 },
             )])),
             preference_field: None,
-            stored_schemas: Arc::new(BTreeMap::new()),
         };
         let valid = registry
             .validate_route(
@@ -1409,7 +1388,6 @@ mod tests {
         let arrays = Registry {
             operations: Arc::new(BTreeMap::from([("GET /x".to_owned(), compiled)])),
             preference_field: None,
-            stored_schemas: Arc::new(BTreeMap::new()),
         };
         let validated = arrays
             .validate(
@@ -1526,23 +1504,6 @@ mod tests {
         );
         let opaque = json!({"$ref":"#/components/schemas/JsonValue"});
         assert!(check_safe_integer_bounds(&document, &opaque, "/body/payload", "send").is_ok());
-    }
-
-    #[test]
-    fn persisted_record_schemas_validate_full_values_without_number_coercion() {
-        let registry = Registry::compile(&[]).expect("stored schemas compile");
-        let complaint = r#"{"id":"c","leadId":"lead","author":"user","text":"review","status":"open","created":1,"version":9007199254740992}"#;
-        assert!(
-            registry
-                .validated_stored("ComplaintRecordResponse", complaint)
-                .is_none()
-        );
-
-        let checkpoint = r#"{"id":"p","agent":"lead","created":1,"extension":9007199254740993}"#;
-        let value = registry
-            .validated_stored("CheckpointSummary", checkpoint)
-            .expect("valid extension record retains its integer");
-        assert_eq!(value["extension"].as_i64(), Some(9_007_199_254_740_993));
     }
 
     #[test]

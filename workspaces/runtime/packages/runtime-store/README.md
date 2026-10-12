@@ -7,29 +7,35 @@
   requirements, prepare the sync schema family, and provide synchronous typed
   reads and writes.
 - **Public interface:** `RuntimeStore::open`, `RuntimeStore::read`, and
-  `RuntimeStore::transaction`; `JsonRecord`, `Table<R>`, and `RecordPage<R>`
+  `RuntimeStore::transaction`; `JsonRecord` and `Table<R>`
   for JSON-record tables; repositories for agents, tasks, queue events, and
   chat messages.
 - **Boundaries:** No Tokio, Python, general schema migration, or state
   directory creation. Sync DDL is sourced only from `src/sync_schema.sql`.
-  The root OpenAPI document owns HTTP DTOs; the Python
-  `codex_records.py` declarations are the current source for persisted record
-  fields until storage DTO generation is introduced.
+  Python persisted models and the OpenAPI document own the schemas.
 - **Invariants:** One exclusive runtime lock, one serialized writer using
   `BEGIN IMMEDIATE`, independent query-only read connections, WAL and FULL
   synchronous writes, and fail-closed checks for required tables, columns,
   triggers and migration-marker meaning. `Table<R>` validates records against
-  their named schemas on reads and writes, checks that each JSON `id` matches
-  its SQLite key, and reports invalid records with one table/key error while
-  preserving schema-permitted extension fields. Optional feature tables are
-  ignored until a Rust repository depends on them.
+  their named schemas on reads and writes, checks declared key modes, and
+  reports invalid records with one table/key error while preserving extension
+  fields. Optional feature tables are read only when present.
 - **Configuration owner:** `codex_state.py` currently defines state path
   resolution; this crate mirrors its environment and platform rules. The
-  committed `runtime-state-schema.json` is the only schema snapshot.
+  committed `runtime-state-schema.json` describes SQLite catalog requirements;
+  JSON-record schemas are generated under `runtime-schema/src/schemas`.
 - **Focused check:** with the isolated Python environment prepared, run
   `XDG_CACHE_HOME=/var/tmp/cs-rust-store/cache XDG_STATE_HOME=/var/tmp/cs-rust-store/state TMPDIR=/var/tmp/cs-rust-store/tests CARGO_TARGET_DIR=/var/tmp/cs-rust-store/target PYTHON="$(XDG_CACHE_HOME=/var/tmp/cs-rust-store/cache python3 workspaces/runtime/apps/server/src/codex_python.py)" cargo nextest run -p studio-runtime-store`.
   Python subprocesses create disposable state under the system temporary
   directory (the command sets it to `/var/tmp/cs-rust-store/tests`).
+
+## JSON-record table scope
+
+- Covers only records stored as one `id` key and one JSON `record` value.
+- Validates named schemas, row identity, optional tables and external keys.
+- Offers ID access, fixed agent filters and declared deterministic orderings.
+- Keeps composite-cursor paging and response shaping in their repositories and routes.
+- Keeps normalized tables, joins, projections, counts, FTS and sync SQL specialized.
 
 Python connection behavior reproduced in this slice:
 

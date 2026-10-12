@@ -93,10 +93,8 @@ mod tests {
 
         let db = database_with(&tasks::REQUIREMENTS);
         let task = TaskRecord::from_value(json!({
-            "id":"t", "rootId":"a", "status":"ready", "title":"",
-            "description":"", "owner":null, "created":0, "updated":0,
-            "createdBy":"a", "version":0, "dependencies":[], "decisions":[],
-            "results":[]
+            "id":"t", "agent":"a", "kind":"command", "status":"completed",
+            "created":0, "interactive":false, "exitCode":0
         }))
         .expect("task JSON has a string id");
         TaskRepository::put(&db, &task).expect("task write uses declared objects");

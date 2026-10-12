@@ -63,7 +63,7 @@ fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
 
             let mut task = TaskRepository::get(tx, &TaskId::from("fixture-task"))?
                 .expect("seeded task exists");
-            task.set("rustWrite", json!(true));
+            task.set("status", json!("running"));
             TaskRepository::put(tx, &task)?;
 
             QueueEventRepository::put(
@@ -848,9 +848,14 @@ fn seed_records(path: &Path) {
     .expect("agent fixture inserts");
     db.execute(
         "INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)",
-        params!["fixture-task", r#"{"id":"fixture-task","rootId":"fixture-agent","status":"ready","title":"t","description":"","owner":null,"created":1.0,"updated":2.0,"createdBy":"fixture-agent","version":1,"dependencies":[],"decisions":[],"results":[],"futureField":true}"#],
+        params!["fixture-task", r#"{"id":"fixture-task","agent":"fixture-agent","kind":"command","status":"completed","created":1.0}"#],
     )
-    .expect("task fixture inserts");
+    .expect("runtime task fixture inserts");
+    db.execute(
+        "INSERT INTO runtime_work(id,record) VALUES(?1,?2)",
+        params!["fixture-work", r#"{"id":"fixture-work","rootId":"fixture-agent","status":"ready","title":"t","created":1.0,"updated":2.0,"version":1,"futureField":true}"#],
+    )
+    .expect("work-board fixture inserts");
     db.execute(
         "INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES('fixture-message','fixture-room','fixture-agent','hello',1.0,'{}')",
         [],

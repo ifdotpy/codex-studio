@@ -32,6 +32,7 @@ with runtime.lock, runtime.db() as db:
     runtime.put(db, "tasks", task)
     work = {"id":"cross-work", "rootId":agent["id"], "status":"ready", "title":"fixture",
             "description":"", "created":1e-7, "updated":1e21, "version":1,
+            "description":"", "created":1e-7, "updated":1e21, "version":1,
             "futureField":{"fixtureFlag":True}, "fixtureFlag":True, "fixtureInteger":7}
     runtime.put(db, "work", work)
     runtime.enqueue(db, agent, "work_review", json.dumps({"fixture": True}), key="cross-event")
@@ -456,8 +457,10 @@ fn python_fixture_round_trips_through_rust_and_python_write_rollback_gate() {
     );
     let task = TaskRepository::get(&reader, &TaskId::from("cross-task"))
         .expect("cross-runtime test operation succeeds")
-        .expect("cross-runtime test operation succeeds");
+        .expect("Python fixture contains the task");
     assert_eq!(task.value()["kind"], json!("command"));
+    assert_eq!(task.value()["interactive"], json!(true));
+    assert_eq!(task.value()["exitCode"].as_i64(), Some(7));
     assert_eq!(task.value()["created"].as_f64(), Some(1e-7));
     let work = Table::<WorkItemRecord>::new(&reader)
         .get(&TaskId::from("cross-work"))
@@ -467,6 +470,8 @@ fn python_fixture_round_trips_through_rust_and_python_write_rollback_gate() {
     assert_eq!(work.value()["fixtureInteger"].as_i64(), Some(7));
     assert_eq!(work.value()["created"].as_f64(), Some(1e-7));
     assert_eq!(work.value()["updated"].as_f64(), Some(1e21));
+    assert_eq!(work.value()["futureField"]["fixtureFlag"], json!(true));
+
     let event = QueueEventRepository::get(&reader, &QueueEventId::from("cross-event"))
         .expect("cross-runtime test operation succeeds")
         .expect("cross-runtime test operation succeeds");
@@ -496,6 +501,16 @@ fn python_fixture_round_trips_through_rust_and_python_write_rollback_gate() {
 
     store
         .transaction(|transaction| {
+            let mut agent = AgentRepository::get(transaction, &AgentId::from(agent_id.as_str()))?
+                .expect("Python fixture contains the agent");
+            agent.set("rustAgentFlag", json!(true));
+            AgentRepository::put(transaction, &agent)?;
+
+            let mut task = TaskRepository::get(transaction, &TaskId::from("cross-task"))?
+                .expect("Python fixture contains the task");
+            task.set("status", json!("running"));
+            TaskRepository::put(transaction, &task)?;
+
             let mut event =
                 QueueEventRepository::get(transaction, &QueueEventId::from("cross-event"))?
                     .expect("Python fixture contains the event");
@@ -574,6 +589,42 @@ fn python_fixture_round_trips_through_rust_and_python_write_rollback_gate() {
             })
             .expect("Rust SQLite JSON function is available")
     };
+    let agent = AgentRepository::get(&reader, &AgentId::from(agent_id.as_str()))
+        .expect("cross-runtime test operation succeeds")
+        .expect("Rust-written agent remains readable in Rust");
+    assert_eq!(agent.value()["fixtureFlag"], json!(true));
+    assert_eq!(agent.value()["rustAgentFlag"], json!(true));
+
+    let task = TaskRepository::get(&reader, &TaskId::from("cross-task"))
+        .expect("cross-runtime test operation succeeds")
+        .expect("Rust-written task remains readable in Rust");
+    assert_eq!(task.value()["exitCode"], json!(7));
+    assert_eq!(task.value()["status"], json!("running"));
+    let work = Table::<WorkItemRecord>::new(&reader)
+        .get(&TaskId::from("cross-work"))
+        .expect("work-board read succeeds")
+        .expect("Rust-written work remains readable in Rust");
+    assert_eq!(work.value()["fixtureFlag"], json!(true));
+    assert_eq!(work.value()["rustFlag"], json!(true));
+
+    let event = QueueEventRepository::get(&reader, &QueueEventId::from("cross-event"))
+        .expect("cross-runtime test operation succeeds")
+        .expect("Rust-written event remains readable in Rust");
+    assert_eq!(event.status, "running");
+    assert_eq!(
+        serde_json::from_str::<Value>(&event.text).expect("event text is JSON")["rust"],
+        true
+    );
+
+    let message = MessageRepository::get(
+        &reader,
+        &studio_runtime_store::ChatMessageId::from("cross-message"),
+    )
+    .expect("cross-runtime test operation succeeds")
+    .expect("Rust-written message remains readable in Rust");
+    assert_eq!(message.deliveries["delivery"], true);
+    assert_eq!(message.deliveries["rustReceipt"], true);
+
     drop(reader);
     drop(store);
 
