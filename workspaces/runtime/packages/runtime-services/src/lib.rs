@@ -8,4 +8,5 @@
 //! services; services never depend on HTTP types.
 
 pub mod panels;
+pub mod progress_panel;
 pub mod sync_policy;

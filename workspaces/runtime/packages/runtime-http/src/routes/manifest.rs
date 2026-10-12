@@ -15,6 +15,7 @@ const KNOWN_DEPENDENCIES: &[&str] = &[
     "resource-policy/publish-drafts",
     "resource-policy/read-progress-panel",
     "resource-policy/write-progress-layout",
+    "resource-policy/windows-file-identity",
     "store-bootstrap/workspace-profiles-schema",
     "sync-policy/entity-seeding",
     "sync-policy/entity-window-maintenance",
