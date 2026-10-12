@@ -219,7 +219,7 @@ class Journal:
             raise OSError("Insufficient free disk space for a durable supervisor receipt")
 
 
-def process_start_time(pid):
+def process_start_time(pid, *, allow_zombie=False):
     if type(pid) is not int or pid < 1:
         return None
     import sys
@@ -308,7 +308,9 @@ def process_start_time(pid):
         raise RuntimeError(f"Cannot verify process identity for PID {pid}") from error
     except (OSError, subprocess.SubprocessError) as error:
         raise RuntimeError(f"Cannot verify process identity for PID {pid}") from error
-    return value if value and not state.startswith("Z") else None
+    if state.startswith("Z"):
+        return value if value and allow_zombie and sys.platform.startswith("linux") else None
+    return value or None
 
 
 def process_start_matches(pid, expected, *, allow_legacy=False):
@@ -613,7 +615,7 @@ class Supervisor:
                     creationflags=creationflags)
                 if job is not None:
                     assign_process(proc, job)
-                started = process_start_time(proc.pid)
+                started = process_start_time(proc.pid, allow_zombie=sys.platform.startswith("linux"))
                 if started is None:
                     raise RuntimeError("Cannot prove the native child process identity")
                 with self.journal.db() as db:
