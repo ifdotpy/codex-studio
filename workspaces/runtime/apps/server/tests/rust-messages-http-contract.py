@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import sqlite3
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -53,13 +54,70 @@ def seed_agent(backend) -> str:
 def coordination_snapshot(path: Path):
     with sqlite3.connect(path) as database:
         result = {}
-        for table in ("groups", "graph_edges", "messages"):
+        for table in (
+            "groups", "graph_edges", "messages", "sync_entities", "sync_documents",
+            "sync_versions", "sync_entity_meta",
+        ):
+            exists = database.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone()
+            if not exists:
+                continue
             result[table] = sorted(database.execute(f'SELECT * FROM "{table}"').fetchall(), key=repr)
-        result["sync_entities"] = sorted(database.execute(
-            "SELECT collection,id,seq,hash,payload,deleted FROM sync_entities "
-            "WHERE collection IN ('chat','edge') ORDER BY collection,id"
-        ).fetchall(), key=repr)
         return result
+
+
+def without_timestamps(value):
+    if isinstance(value, dict):
+        return {
+            key: without_timestamps(item)
+            for key, item in value.items()
+            if key not in {"lastMessageAt", "updated", "at"}
+        }
+    if isinstance(value, list):
+        return [without_timestamps(item) for item in value]
+    return value
+
+
+def parsed_coordination_snapshot(path: Path):
+    with sqlite3.connect(path) as database:
+        groups = [(id, name, json.loads(members)) for id, name, members in database.execute(
+            "SELECT id,name,members FROM groups ORDER BY id"
+        )]
+        edges = sorted(database.execute(
+            "SELECT id,source,target,kind FROM graph_edges ORDER BY id"
+        ).fetchall())
+        messages = [
+            (id, room, author, text, json.loads(deliveries))
+            for id, room, author, text, _at, deliveries in database.execute(
+                "SELECT id,room,author,text,at,deliveries FROM messages ORDER BY id"
+            )
+        ]
+        entities = [
+            (collection, id, without_timestamps(json.loads(payload)), deleted)
+            for collection, id, payload, deleted in database.execute(
+                "SELECT collection,id,payload,deleted FROM sync_entities "
+                "WHERE collection IN ('chat','edge') ORDER BY collection,id"
+            )
+        ]
+        documents = [
+            (scope, id, without_timestamps(json.loads(payload)), deleted)
+            for scope, id, payload, deleted in database.execute(
+                "SELECT scope,id,payload,deleted FROM sync_documents "
+                "WHERE scope IN ('chat','edge') ORDER BY scope,id"
+            )
+        ]
+        versions = sorted(database.execute(
+            "SELECT scope,deleted FROM sync_versions WHERE scope IN ('chat','edge')"
+        ).fetchall())
+        return {
+            "groups": groups,
+            "graph_edges": edges,
+            "messages": messages,
+            "sync_entities": entities,
+            "sync_documents": documents,
+            "sync_versions": versions,
+        }
 
 
 class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
@@ -102,8 +160,30 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(coordination_snapshot(self.backend.state / "canvas.sqlite3"), first)
 
         refusal = self.backend.request("POST", "/api/chats", body={**body, "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "members": ["missing-agent"]}, headers=self.headers())
-        self.assertEqual(refusal.status, 400, refusal.body[:1000])
+        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.assertEqual(refusal.status, 501, refusal.body[:1000])
+            self.assertIn("agent-discovery/launcher-status", refusal.json()["error"])
+        else:
+            self.assertEqual(refusal.status, 400, refusal.body[:1000])
         self.assertEqual(coordination_snapshot(self.backend.state / "canvas.sqlite3"), first)
+
+    def test_request_ids_use_the_python_schema_pattern(self):
+        room = "a" * 36
+        created = self.backend.request("POST", "/api/chats", body={
+            "id": room, "name": "Pattern room", "members": [],
+        }, headers=self.headers())
+        self.assertEqual(created.status, 200, created.body[:1000])
+        message = self.backend.request("POST", "/api/messages", body={
+            "id": "b" * 36, "room": room, "text": "Pattern message",
+        }, headers=self.headers())
+        self.assertEqual(message.status, 200, message.body[:1000])
+        before = coordination_snapshot(self.backend.state / "canvas.sqlite3")
+        for invalid in ("A" * 36, "a" * 35, "g" * 36):
+            response = self.backend.request("POST", "/api/chats", body={
+                "id": invalid, "name": "Invalid identity", "members": [],
+            }, headers=self.headers())
+            self.assertEqual(response.status, 400, response.body[:1000])
+            self.assertEqual(coordination_snapshot(self.backend.state / "canvas.sqlite3"), before)
 
     def test_connections_keep_stable_identity_and_refusal_has_no_write(self):
         chat = self.create_chat()
@@ -146,6 +226,154 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         conflict = self.backend.request("POST", "/api/messages", body={**body, "text": "Changed"}, headers=self.headers())
         self.assertEqual(conflict.status, 400, conflict.body[:1000])
         self.assertEqual(coordination_snapshot(self.backend.state / "canvas.sqlite3"), before)
+
+    def test_parsed_write_set_matches_python_canvas(self):
+        from codex_canvas import Canvas
+
+        room = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+        message = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+        with tempfile.TemporaryDirectory(prefix="rust-messages-python-reference-") as directory:
+            reference_root = Path(directory)
+            with sqlite3.connect(self.backend.state / "canvas.sqlite3") as source, sqlite3.connect(
+                reference_root / "canvas.sqlite3"
+            ) as destination:
+                source.backup(destination)
+            reference = Canvas(reference_root)
+            try:
+                reference.create_chat("Parity room", [], room)
+                reference.post(room, "Same request", message, notify=False)
+            finally:
+                del reference
+
+            create = self.backend.request("POST", "/api/chats", body={
+                "id": room, "name": "Parity room", "members": [],
+            }, headers=self.headers())
+            self.assertEqual(create.status, 200, create.body[:1000])
+            post = self.backend.request("POST", "/api/messages", body={
+                "id": message, "room": room, "text": "Same request",
+            }, headers=self.headers())
+            self.assertEqual(post.status, 200, post.body[:1000])
+            self.assertEqual(
+                parsed_coordination_snapshot(self.backend.state / "canvas.sqlite3"),
+                parsed_coordination_snapshot(reference_root / "canvas.sqlite3"),
+            )
+
+    def test_historical_room_cannot_be_taken_over_by_another_team(self):
+        self.backend.stop()
+        path = self.backend.state / "canvas.sqlite3"
+        room = "12121212-1212-1212-1212-121212121212"
+        with sqlite3.connect(path) as database:
+            other = json.loads(database.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)
+            ).fetchone()[0])
+            other.update({"id": "other-team", "rootId": "other-team", "parentId": None})
+            database.execute(
+                "INSERT INTO runtime_agents(id,record) VALUES(?,?)",
+                ("other-team", json.dumps(other)),
+            )
+            database.execute(
+                "INSERT INTO messages(id,room,author,text,at,deliveries) VALUES(?,?,?,?,?,?)",
+                ("13131313-1313-1313-1313-131313131313", room, "other-team", "old", 1.0, "{}"),
+            )
+        self.backend.start()
+        before = coordination_snapshot(path)
+        response = self.backend.request("POST", "/api/chats", body={
+            "id": room, "name": "Takeover", "members": [self.agent_id],
+        }, headers=self.headers())
+        self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertIn("another team", response.json()["error"])
+        self.assertEqual(coordination_snapshot(path), before)
+
+    def test_registered_child_inherits_parent_team_and_managed_alias_is_hidden(self):
+        self.backend.stop()
+        path = self.backend.state / "canvas.sqlite3"
+        with sqlite3.connect(path) as database:
+            agent = json.loads(database.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)
+            ).fetchone()[0])
+            agent["threadId"] = "same-managed-thread"
+            database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(agent), self.agent_id))
+            database.execute("INSERT INTO graph_agents(id,record) VALUES(?,?)", (
+                "registered-child", json.dumps({"id": "registered-child", "parentId": self.agent_id}),
+            ))
+            database.execute("INSERT INTO graph_agents(id,record) VALUES(?,?)", (
+                "managed-alias", json.dumps({"id": "managed-alias", "threadId": "same-managed-thread"}),
+            ))
+        self.backend.start()
+        inherited = self.backend.request("POST", "/api/chats", body={
+            "id": "14141414-1414-1414-1414-141414141414",
+            "name": "Inherited team", "members": [self.agent_id, "registered-child"],
+        }, headers=self.headers())
+        self.assertEqual(inherited.status, 200, inherited.body[:1000])
+        before = coordination_snapshot(path)
+        alias = self.backend.request("POST", "/api/chats", body={
+            "id": "15151515-1515-1515-1515-151515151515",
+            "name": "Hidden alias", "members": ["managed-alias"],
+        }, headers=self.headers())
+        self.assertEqual(alias.status, 400, alias.body[:1000])
+        self.assertEqual(coordination_snapshot(path), before)
+
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_federation_and_managed_send_routes_refuse_before_canvas_writes(self):
+        self.backend.stop()
+        path = self.backend.state / "canvas.sqlite3"
+        with sqlite3.connect(path) as database:
+            database.execute("CREATE TABLE IF NOT EXISTS runtime_federation_rooms(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            database.execute("INSERT OR REPLACE INTO runtime_federation_rooms(id,record) VALUES(?,?)", (
+                "federated:peer:room", json.dumps({"id": "federated:peer:room", "status": "approved"}),
+            ))
+        self.backend.start()
+        before = coordination_snapshot(path)
+        federation = self.backend.request("POST", "/api/messages", body={
+            "id": "16161616-1616-1616-1616-161616161616",
+            "room": "federated:peer:room", "text": "",
+        }, headers=self.headers())
+        self.assertEqual(federation.status, 501, federation.body[:1000])
+        self.assertIn("federation-driver/rooms", federation.json()["error"])
+        direct = self.backend.request("POST", "/api/messages", body={
+            "id": "17171717-1717-1717-1717-171717171717",
+            "room": self.agent_id, "text": "x" * 32_000, "assets": [{"attachment": "x"}],
+        }, headers=self.headers())
+        self.assertEqual(direct.status, 501, direct.body[:1000])
+        self.assertIn("event-driver/message-send", direct.json()["error"])
+        self.assertEqual(coordination_snapshot(path), before)
+
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_long_and_empty_python_written_messages_are_read_and_bad_deliveries_name_row(self):
+        self.backend.stop()
+        room = "18181818-1818-1818-1818-181818181818"
+        long_id = "19191919-1919-1919-1919-191919191919"
+        bad_id = "20202020-2020-2020-2020-202020202020"
+        empty_id = "21212121-2121-2121-2121-212121212121"
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            database.execute("INSERT INTO groups(id,name,members) VALUES(?,?,?)", (room, "History", "[]"))
+            database.execute("INSERT INTO messages VALUES(?,?,?,?,?,?)", (
+                long_id, room, "user", "x" * 32_000, 1.0, json.dumps({"agent": "sent"}),
+            ))
+            database.execute("INSERT INTO messages VALUES(?,?,?,?,?,?)", (
+                bad_id, room, "user", "", 2.0, "not-json",
+            ))
+            database.execute("INSERT INTO messages VALUES(?,?,?,?,?,?)", (
+                empty_id, room, "user", "", 3.0, json.dumps({"agent": "delivered"}),
+            ))
+        self.backend.start()
+        history = self.backend.request("GET", f"/api/messages?room={room}", headers=self.headers())
+        self.assertEqual(history.status, 500, history.body[:1000])
+        self.assertIn(f"messages/{bad_id}", history.json()["error"])
+        self.assertNotIn(f"messages/{room}", history.json()["error"])
+        takeover = self.backend.request("POST", "/api/chats", body={
+            "id": room, "name": "History", "members": [],
+        }, headers=self.headers())
+        self.assertEqual(takeover.status, 500, takeover.body[:1000])
+        self.assertIn(f"messages/{bad_id}", takeover.json()["error"])
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            database.execute("DELETE FROM messages WHERE id=?", (bad_id,))
+        history = self.backend.request("GET", f"/api/messages?room={room}", headers=self.headers())
+        self.assertEqual(history.status, 200, history.body[:1000])
+        rows = {row["id"]: row for row in history.json()}
+        self.assertEqual(len(rows[long_id]["text"]), 32_000)
+        self.assertEqual(rows[long_id]["deliveries"], {"agent": "sent"})
+        self.assertEqual(rows[empty_id]["text"], "")
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_agent_send_refuses_without_event_driver_and_writes_nothing(self):

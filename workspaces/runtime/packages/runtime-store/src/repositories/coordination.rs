@@ -1,7 +1,7 @@
 //! Durable Canvas chat, edge and message rows.
 
 use rusqlite::{OptionalExtension, Transaction, params};
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::StoreResult;
 use crate::repositories::sync_documents::SyncDocumentsRepository;
@@ -59,7 +59,14 @@ pub struct CanvasMessage {
     pub author: String,
     pub text: String,
     pub at: f64,
-    pub deliveries: Value,
+    pub deliveries: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HistoricalParticipant {
+    pub id: String,
+    pub author: String,
+    pub deliveries: String,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -105,34 +112,11 @@ impl CoordinationRepository {
         .transpose()
     }
 
-    pub fn groups(connection: &rusqlite::Connection) -> StoreResult<Vec<ChatGroup>> {
-        let mut statement = connection.prepare("SELECT id,name,members FROM groups ORDER BY id")?;
-        let rows = statement.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })?;
-        let stored = rows.collect::<Result<Vec<_>, _>>()?;
-        stored
-            .into_iter()
-            .map(|(id, name, original_members)| {
-                Ok(ChatGroup {
-                    members: members(connection, &id)?,
-                    id,
-                    name,
-                    original_members,
-                })
-            })
-            .collect()
-    }
-
-    pub fn agents(connection: &rusqlite::Connection) -> StoreResult<Vec<(String, String)>> {
+    pub fn agents(connection: &rusqlite::Connection) -> StoreResult<Vec<(String, String, bool)>> {
         let mut result = Vec::new();
         let mut statement = connection.prepare("SELECT id,record FROM runtime_agents")?;
         for item in statement.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, false))
         })? {
             result.push(item?);
         }
@@ -144,12 +128,39 @@ impl CoordinationRepository {
         if exists {
             let mut statement = connection.prepare("SELECT id,record FROM graph_agents")?;
             for item in statement.query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, true))
             })? {
                 result.push(item?);
             }
         }
         Ok(result)
+    }
+
+    pub fn agent_exists(connection: &rusqlite::Connection, id: &str) -> StoreResult<bool> {
+        Ok(connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE id=?1)",
+            [id],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn federated_room_exists(connection: &rusqlite::Connection, id: &str) -> StoreResult<bool> {
+        if !id.starts_with("federated:") {
+            return Ok(false);
+        }
+        let table: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_federation_rooms')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !table {
+            return Ok(false);
+        }
+        Ok(connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM runtime_federation_rooms WHERE id=?1)",
+            [id],
+            |row| row.get(0),
+        )?)
     }
 
     pub fn messages(
@@ -158,21 +169,13 @@ impl CoordinationRepository {
     ) -> StoreResult<Vec<CanvasMessage>> {
         let mut statement = connection.prepare("SELECT id,room,author,text,at,deliveries FROM messages WHERE room=?1 ORDER BY at DESC LIMIT 200")?;
         let rows = statement.query_map([room], |row| {
-            let deliveries: String = row.get(5)?;
-            let deliveries = serde_json::from_str(&deliveries).map_err(|error| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    5,
-                    rusqlite::types::Type::Text,
-                    Box::new(error),
-                )
-            })?;
             Ok(CanvasMessage {
                 id: row.get(0)?,
                 room: row.get(1)?,
                 author: row.get(2)?,
                 text: row.get(3)?,
                 at: row.get(4)?,
-                deliveries,
+                deliveries: row.get(5)?,
             })
         })?;
         let mut values = rows.collect::<Result<Vec<_>, _>>()?;
@@ -183,20 +186,15 @@ impl CoordinationRepository {
     pub fn participants(
         connection: &rusqlite::Connection,
         room: &str,
-    ) -> StoreResult<Vec<(String, Value)>> {
+    ) -> StoreResult<Vec<HistoricalParticipant>> {
         let mut statement =
-            connection.prepare("SELECT author,deliveries FROM messages WHERE room=?1")?;
+            connection.prepare("SELECT id,author,deliveries FROM messages WHERE room=?1")?;
         let rows = statement.query_map([room], |row| {
-            let author: String = row.get(0)?;
-            let deliveries: String = row.get(1)?;
-            let deliveries = serde_json::from_str(&deliveries).map_err(|error| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    1,
-                    rusqlite::types::Type::Text,
-                    Box::new(error),
-                )
-            })?;
-            Ok((author, deliveries))
+            Ok(HistoricalParticipant {
+                id: row.get(0)?,
+                author: row.get(1)?,
+                deliveries: row.get(2)?,
+            })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
@@ -210,21 +208,13 @@ impl CoordinationRepository {
                 "SELECT id,room,author,text,at,deliveries FROM messages WHERE id=?1",
                 [id],
                 |row| {
-                    let deliveries: String = row.get(5)?;
-                    let deliveries = serde_json::from_str(&deliveries).map_err(|error| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            5,
-                            rusqlite::types::Type::Text,
-                            Box::new(error),
-                        )
-                    })?;
                     Ok(CanvasMessage {
                         id: row.get(0)?,
                         room: row.get(1)?,
                         author: row.get(2)?,
                         text: row.get(3)?,
                         at: row.get(4)?,
-                        deliveries,
+                        deliveries: row.get(5)?,
                     })
                 },
             )
@@ -257,14 +247,6 @@ impl CoordinationRepository {
         Ok(())
     }
 
-    pub fn edge_exists(connection: &rusqlite::Connection, id: &str) -> StoreResult<bool> {
-        Ok(connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM graph_edges WHERE id=?1)",
-            [id],
-            |row| row.get(0),
-        )?)
-    }
-
     pub fn put_message(transaction: &Transaction<'_>, message: &CanvasMessage) -> StoreResult<()> {
         transaction.execute(
             "INSERT INTO messages(id,room,author,text,at,deliveries) VALUES(?1,?2,?3,?4,?5,?6)",
@@ -274,7 +256,7 @@ impl CoordinationRepository {
                 message.author,
                 message.text,
                 message.at,
-                serde_json::to_string(&message.deliveries)?
+                message.deliveries
             ],
         )?;
         Ok(())
@@ -306,7 +288,11 @@ impl CoordinationRepository {
                 [id],
                 |row| row.get(0),
             )?;
-            json!({"id":id,"name":group.name,"members":members,"kind":"chat","messageCount":count,"tail":last.as_ref().map_or("", |item| item.0.as_str()),"lastMessageAt":last.map(|item| item.1)})
+            let tail = last
+                .as_ref()
+                .map(|item| item.0.chars().take(2_000).collect::<String>())
+                .unwrap_or_default();
+            json!({"id":id,"name":group.name,"members":members,"kind":"chat","messageCount":count,"tail":tail,"lastMessageAt":last.map(|item| item.1)})
         };
         SyncDocumentsRepository::put_entity(transaction, "chat", id, value, deleted)?;
         Ok(())

@@ -17598,6 +17598,7 @@
         "additionalProperties": false,
         "properties": {
           "id": {
+            "pattern": "^[a-f0-9-]{36}$",
             "title": "Id",
             "type": "string"
           },
@@ -29356,6 +29357,7 @@
             "type": "string"
           },
           "id": {
+            "pattern": "^[a-f0-9-]{36}$",
             "title": "Id",
             "type": "string"
           },
