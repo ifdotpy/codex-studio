@@ -17,6 +17,7 @@ pub use records::{
     MessageRepository, QueueEvent, QueueEventId, QueueEventRepository, TaskId, TaskRecord,
     TaskRepository, WorkStatus,
 };
+pub use repositories::rules::{RulesRepository, StoredAgent, StoredRule};
 pub use repositories::sync_documents::{EntityRow, SyncDocument, SyncDocumentsRepository};
 
 const DATABASE_BUSY_TIMEOUT_MS: u32 = 15_000;
