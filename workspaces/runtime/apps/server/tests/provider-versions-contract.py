@@ -110,6 +110,54 @@ class ProviderVersionContract(unittest.TestCase):
             {"availableVersion": "0.154.0", "source": "installed"},
         )
 
+    def test_monitor_production_reader_path_reports_codex_version_and_notice(self):
+        class Updates:
+            def selected(self):
+                return {"version": "0.154.0"}
+
+        runtime = Runtime()
+        runtime.native_runtime_updates = Updates()
+        monitor = ProviderVersionMonitor()
+        with (
+            patch("codex_native_runtime._version", return_value="0.153.4"),
+            patch(
+                "codex_provider_versions._read_claude_executable",
+                return_value=("Claude Code 2.1.278", None),
+            ),
+        ):
+            monitor.tick(runtime)
+            monitor.worker.join(HANG_GUARD_SECONDS)
+
+        providers = {row["provider"]: row for row in monitor.status()["providers"]}
+        self.assertEqual(providers["codex"]["runningVersion"], "0.153.4")
+        self.assertEqual(
+            providers["codex"]["updateNotice"],
+            {"availableVersion": "0.154.0", "source": "installed"},
+        )
+        self.assertEqual(
+            providers["claude"]["installedVersion"], "Claude Code 2.1.278"
+        )
+        self.assertNotEqual(providers["codex"]["status"], "error")
+        self.assertNotEqual(providers["claude"]["status"], "error")
+
+    def test_monitor_does_not_swallow_programming_errors_from_reader(self):
+        runtime = Runtime()
+
+        def fail(*_args):
+            raise TypeError("reader programming error")
+
+        connected = [
+            (key, server, runtime.connection_ids.get(key))
+            for key, server in runtime.servers.items()
+        ]
+        signature = tuple(
+            (key, id(server), connection_id)
+            for key, server, connection_id in connected
+        )
+        monitor = ProviderVersionMonitor(read_version=fail)
+        with self.assertRaisesRegex(TypeError, "reader programming error"):
+            monitor._check(runtime, connected, signature, monitor.generation)
+
     def test_unreadable_selected_codex_candidate_produces_no_notice(self):
         from codex_provider_versions import _codex_version
 

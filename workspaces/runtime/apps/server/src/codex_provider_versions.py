@@ -259,15 +259,15 @@ class ProviderVersionMonitor:
                 if provider not in TESTED_BASELINES or provider not in VERSION_READERS:
                     providers.append(_unknown_provider(account_key, provider))
                     continue
-                versions = (self.read_version(provider, server, account, runtime) if self.read_version
-                            else VERSION_READERS[provider](server, account, runtime))
+                reader = self.read_version or VERSION_READERS[provider]
+                versions = reader(provider, server, account, runtime)
                 if not isinstance(versions, dict):
                     raise ValueError("Provider version reader returned no status object")
                 diagnostic = _diagnostic(account_key, provider, versions)
                 if not self._is_current(runtime, signature, generation):
                     return
                 providers.append(diagnostic)
-            except (KeyError, OSError, ValueError, TypeError, subprocess.SubprocessError):
+            except (OSError, ValueError, subprocess.SubprocessError):
                 if self._is_current(runtime, signature, generation):
                     provider = getattr(server, "provider", "codex")
                     if provider in TESTED_BASELINES:
