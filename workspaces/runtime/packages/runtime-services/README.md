@@ -31,5 +31,13 @@ Dependency direction:
 operations ← store, providers, process ← services ← http ← runtime-server
 ```
 
+The workspace file service resolves relative paths under the agent's `cwd`.
+It also accepts absolute paths and follows symlinks without checking that the
+resolved file stays inside `cwd`, matching Python's existing
+[`workspace_path`](../../apps/server/src/codex_workspace.py#L567-L572)
+rule. Keep this behavior deliberate; tightening it requires a separate
+compatibility decision. The service pins it in
+`workspace_files::tests::local_file_metadata_and_content_follow_symlinks`.
+
 The plan that assigns services to slices is
 [`docs/plans/rust-runtime-work-breakdown.md`](../../../../docs/plans/rust-runtime-work-breakdown.md).
