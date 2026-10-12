@@ -1027,38 +1027,65 @@ class RuntimeContract(unittest.TestCase):
             {'prompt': 'Do the work', 'role': 'implementer', 'cwd': str(self.root)},
             parent=lead['id'], defer=True)
         from codex_worker_accounts import ExcludedAccountError
-        attempt_id = 'queued-exclusion-attempt'
         event_id = 'queued-before-exclusion'
-        with self.runtime.lock, self.runtime.db() as db:
-            root = self.runtime.agent(lead['id'], db)
-            root.update(accountKey='second', excludedAccountKeys=['default'])
-            self.runtime.put(db, 'agents', root)
-            agent = self.runtime.agent(worker['id'], db)
-            agent['autoWake'] = True
-            self.runtime.enqueue(db, agent, 'user', 'Already queued', event_id)
-            agent.update(status='running', inFlight=True, turnId='active-turn',
-                         startAttempt={'id': attempt_id, 'epoch': agent['epoch'],
-                                       'activeAtReservation': True, 'events': [event_id],
-                                       'submitted': False, 'accountKey': 'default'})
-            self.runtime.put(db, 'agents', agent)
-        with self.assertRaisesRegex(ValueError, 'disabled for this chat'):
-            self.runtime.send(worker['id'], 'A later worker turn')
-        self.runtime.start_error(worker['id'], attempt_id,
-                                 ExcludedAccountError('Account default is disabled for this chat'))
-        failed = self.runtime.agent(worker['id'])
-        self.assertEqual(failed['status'], 'running')
-        self.assertTrue(failed['inFlight'])
-        self.assertEqual(failed['turnId'], 'active-turn')
-        with self.runtime.db() as db:
-            event = db.execute('SELECT status, error FROM runtime_events WHERE id=?', (event_id,)).fetchone()
-            self.assertEqual(event['status'], 'failed')
+        failure_entered = threading.Event()
+        release_failure = threading.Event()
+        original_start_error = self.runtime.start_error
+
+        def gate_excluded_start_error(agent_id, attempt_id, error, **kwargs):
+            if isinstance(error, ExcludedAccountError):
+                # The dispatch reservation is durable before delivery reports
+                # the exclusion failure and settles that exact event.
+                failure_entered.set()
+                if not release_failure.wait(HANG_GUARD_SECONDS):
+                    raise AssertionError('test did not release the gated exclusion failure')
+            return original_start_error(agent_id, attempt_id, error, **kwargs)
+
+        with patch.object(self.runtime, 'start_error', side_effect=gate_excluded_start_error):
+            starts_balanced = self.track_delivery_starts()
+            with self.runtime.lock, self.runtime.db() as db:
+                root = self.runtime.agent(lead['id'], db)
+                root.update(accountKey='second', excludedAccountKeys=['default'])
+                self.runtime.put(db, 'agents', root)
+                agent = self.runtime.agent(worker['id'], db)
+                agent['autoWake'] = True
+                self.runtime.enqueue(db, agent, 'user', 'Already queued', event_id)
+                agent.update(status='running', inFlight=True, turnId='active-turn')
+                self.runtime.put(db, 'agents', agent)
+            with self.assertRaisesRegex(ValueError, 'disabled for this chat'):
+                self.runtime.send(worker['id'], 'A later worker turn')
+            self.runtime.dispatch(worker['id'])
+            try:
+                wait_for_condition(failure_entered.is_set, 'excluded queued-input failure reached start_error')
+                with self.runtime.db() as db:
+                    event = db.execute(
+                        'SELECT status FROM runtime_events WHERE id=?', (event_id,)).fetchone()
+                self.assertEqual(event['status'], 'reserved')
+            finally:
+                release_failure.set()
+
+            def excluded_event_failed():
+                with self.runtime.db() as db:
+                    event = db.execute(
+                        'SELECT status, error FROM runtime_events WHERE id=?', (event_id,)).fetchone()
+                    if event and event['status'] == 'failed':
+                        return event
+                return None
+
+            event = wait_for_condition(excluded_event_failed, 'excluded queued input failure persistence')
+            self.assertTrue(starts_balanced(), 'queued-input start did not finish after failure persistence')
+            failed = self.runtime.agent(worker['id'])
+            self.assertEqual(failed['status'], 'running')
+            self.assertTrue(failed['inFlight'])
+            self.assertEqual(failed['turnId'], 'active-turn')
             self.assertIn('disabled for this chat', event['error'])
-            self.assertFalse(db.execute("SELECT 1 FROM runtime_events WHERE id=? AND status='pending'",
-                                        (event_id,)).fetchone())
-            parent_notified = db.execute(
-                "SELECT 1 FROM runtime_events WHERE agent=? AND kind='child_result' AND text LIKE '%disabled for this chat%'",
-                (lead['id'],)).fetchone()
-            self.assertTrue(parent_notified)
+            with self.runtime.db() as db:
+                self.assertFalse(db.execute("SELECT 1 FROM runtime_events WHERE id=? AND status='pending'",
+                                            (event_id,)).fetchone())
+                parent_notified = db.execute(
+                    "SELECT 1 FROM runtime_events WHERE agent=? AND kind='child_result' "
+                    "AND text LIKE '%disabled for this chat%'", (lead['id'],)).fetchone()
+                self.assertTrue(parent_notified)
 
     def test_worker_spawn_uses_another_chat_enabled_account(self):
         lead = self.runtime.new_lead({'cwd': str(self.root)})
