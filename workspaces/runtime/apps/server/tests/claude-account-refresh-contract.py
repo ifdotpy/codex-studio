@@ -26,7 +26,13 @@ SDK = SDK.replace("return {email:fs.existsSync(options.cwd+'/.wrong-account')?'d
 SDK = SDK.replace('initializationResult:async()=>', r'''reinitialize:async()=>{
   fs.appendFileSync(options.cwd+'/.account-refreshes','fresh\n');
   if(fs.existsSync(options.cwd+'/.refresh-hang'))return new Promise(()=>{});
-  if(fs.existsSync(options.cwd+'/.refresh-gate')){
+  if(fs.existsSync(options.cwd+'/.refresh-gate-counted')){
+   const refreshCount=fs.readFileSync(options.cwd+'/.account-refreshes','utf8').trim().split('\n').length;
+   if(refreshCount===2||refreshCount===3){
+    fs.writeFileSync(options.cwd+`/.refresh-entered-${refreshCount}`,'yes');
+    while(!fs.existsSync(options.cwd+`/.refresh-release-${refreshCount}`))await new Promise(resolve=>setTimeout(resolve,5));
+   }
+  }else if(fs.existsSync(options.cwd+'/.refresh-gate')){
    fs.writeFileSync(options.cwd+'/.refresh-entered','yes');
    while(!fs.existsSync(options.cwd+'/.refresh-release'))await new Promise(resolve=>setTimeout(resolve,5));
   }
@@ -58,18 +64,23 @@ class FreshAccount(f.PreAdmission):
         self.call('model/list', {})
         self.assertEqual(self.call('account/read', {'passive': True})['account']['email'], NORMAL['email'])
         self.accounts({key: value for key, value in NORMAL.items() if key != 'email'}, NORMAL)
+        (self.root / '.refresh-gate-counted').touch()
         self.turn('steer', 'held-input')
         self.wait_file(self.root / '.admitted-inputs')
         self.wait_file(self.root / '.account-refreshes')
         wait_for_condition(lambda: len(self.refreshes()) >= 2, 'second Claude account refresh')
+        self.wait_file(self.root / '.refresh-entered-2')
         self.assertEqual(len((self.root / '.all-queries').read_text().splitlines()), 1)
         self.assertEqual(len((self.root / 'state' / '.all-queries').read_text().splitlines()), 1)
         self.assertEqual(self.call('account/read', {'passive': True})['account']['email'], NORMAL['email'])
+        (self.root / '.refresh-release-2').touch()
+        # The next timer refresh starts only after this refresh is applied.
+        self.wait_file(self.root / '.refresh-entered-3')
         self.assertEqual(self.call('model/list', {})['data'][0]['resolvedModel'], 'claude-haiku-fixture')
         self.assertEqual(len(self.admissions()), 1)
         (self.root / '.fresh-account.json').write_text(json.dumps({**NORMAL, 'email': 'foreign@example.test'}))
         self.call('account/read', {'passive': True})
-        wait_for_condition(lambda: len(self.refreshes()) >= 3, 'third Claude account refresh')
+        (self.root / '.refresh-release-3').touch()
         # The refresh is counted before its result is applied, so wait for the
         # refusal itself rather than reading once right after the count changes.
         def refused():
