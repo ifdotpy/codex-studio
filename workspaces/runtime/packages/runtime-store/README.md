@@ -3,8 +3,9 @@
 ## Change Contract
 
 - **Responsibility:** Open an existing Studio state directory in place, exclude
-  other runtime processes with `runtime.lock`, validate the committed SQLite
-  schema snapshot, and provide synchronous typed reads and writes.
+  other runtime processes with `runtime.lock`, validate the persisted schema
+  requirements of supported repositories, and provide synchronous typed reads
+  and writes.
 - **Public interface:** `RuntimeStore::open`, `RuntimeStore::read`, and
   `RuntimeStore::transaction`; repositories for agents, tasks, queue events,
   and chat messages.
@@ -14,7 +15,9 @@
   fields until storage DTO generation is introduced.
 - **Invariants:** One exclusive runtime lock, one serialized writer using
   `BEGIN IMMEDIATE`, independent query-only read connections, WAL and FULL
-  synchronous writes, exact SQLite schema and migration-marker agreement.
+  synchronous writes, and fail-closed checks for required tables, columns,
+  triggers and migration-marker meaning. Optional feature tables are ignored
+  until a Rust repository depends on them.
 - **Configuration owner:** `codex_state.py` currently defines state path
   resolution; this crate mirrors its environment and platform rules. The
   committed `runtime-state-schema.json` is the only schema snapshot.
@@ -25,15 +28,15 @@
 
 Python connection behavior reproduced in this slice:
 
-| Behavior                                                                                                             | Python source                                                                  |
-| -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Main DB connection timeout of 15 seconds (`busy_timeout=15000`)                                                      | `codex_runtime.py:2017`                                                        |
-| Read-only `read_db()` connection and `PRAGMA query_only=ON`                                                          | `codex_runtime.py:2661-2665`                                                   |
-| Analytics connection timeout and `PRAGMA journal_mode=WAL`                                                           | `codex_runtime.py:2686-2690`                                                   |
-| Analytics read `PRAGMA query_only=ON`                                                                                | `codex_runtime.py:2699-2702`                                                   |
-| Temporary connection `PRAGMA busy_timeout` changes                                                                   | `codex_runtime.py:2184-2185, 2878-2881`                                        |
-| Startup WAL setup for the primary DB                                                                                 | `codex_runtime.py:1597`                                                        |
-| `synchronous=FULL` observed on both DBs by the snapshot; Python does not explicitly set it in these connection paths | `codex_runtime.py:2017, 2686`; `codex_analytics.py` has no SQLite PRAGMA calls |
+| Behavior                                                                                                                         | Python source                                                                  |
+| -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Main DB connection timeout of 15 seconds (`busy_timeout=15000`)                                                                  | `codex_runtime.py:2017`                                                        |
+| Read-only `read_db()` connection and `PRAGMA query_only=ON`                                                                      | `codex_runtime.py:2661-2665`                                                   |
+| Analytics connection timeout and `PRAGMA journal_mode=WAL`                                                                       | `codex_runtime.py:2686-2690`                                                   |
+| Analytics read `PRAGMA query_only=ON`                                                                                            | `codex_runtime.py:2699-2702`                                                   |
+| Temporary connection `PRAGMA busy_timeout` changes                                                                               | `codex_runtime.py:2184-2185, 2878-2881`                                        |
+| Startup WAL setup for the primary DB                                                                                             | `codex_runtime.py:1597`                                                        |
+| `synchronous=FULL` observed on both DBs by the fresh-start snapshot; Python does not explicitly set it in these connection paths | `codex_runtime.py:2017, 2686`; `codex_analytics.py` has no SQLite PRAGMA calls |
 
 Rust checks the expected WAL/FULL values before opening the writer, then sets
 `synchronous=FULL` on that connection. Reads are opened read-only and set
@@ -216,7 +219,19 @@ fresh state directory without Python does not get provisioned by this crate;
 the schema snapshot's SQL is the candidate source for a separately owned
 bootstrap step. This crate deliberately never executes that SQL.
 
-The schema is included directly from
-`workspaces/runtime/apps/server/tests/fixtures/runtime-state-schema.json`;
-do not copy or edit it here. When the Python runtime and its tests are removed,
-move the snapshot under this crate and keep it as the same single authority.
+The Python schema-drift guard owns the fresh-start snapshot at
+`workspaces/runtime/apps/server/tests/fixtures/runtime-state-schema.json`.
+Runtime-store's crate tests reference that same file; the opener does not
+compare the entire catalog. See [the state-format inventory](../../../../docs/runtime-state-formats.md#feature-and-migration-schema-beyond-a-fresh-start)
+for optional creator families and observed migration differences. When the
+Python runtime is removed, move the snapshot under this crate and update the
+guard in that cutover; do not move it in this slice.
+
+The payload migration marker is optional. No table or no
+`payload-v1:tasks` row means `NotStarted`; `complete=0` means `InProgress`,
+and `complete=1` with a coherent status means `Complete`. The store reads but
+never runs this migration. Task records remain inline JSON in every phase;
+completed retention may replace an old large `tail` with a preview and
+`outputTruncated` / `outputPreviewOnly` flags. Rust preserves either record
+shape. `analytics_meta.fileMigrationV1` is accepted only when its JSON phase is
+`complete`; an absent marker is `NotStarted`.

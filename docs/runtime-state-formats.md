@@ -6,11 +6,11 @@ This inventory is for M-07.3 of [issue #37](https://github.com/ifdotpy/codex-stu
 
 - **The state identity is the directory, not a database filename.** `CODEX_AGENTS_STATE_DIR` selects it; otherwise the platform state root is used by [`codex_state.py`](../workspaces/runtime/apps/server/src/codex_state.py). The runtime acquires an exclusive OS lock at `runtime.lock` before opening either database. Preserve the same directory and do not start two owners.
 - The runtime owns `canvas.sqlite3` and `analytics.sqlite3`. Both use WAL and `synchronous=FULL` on their serving connections (observed `journal_mode=wal`, `synchronous=2`). The full fresh-start schema is checked into [`runtime-state-schema.json`](../workspaces/runtime/apps/server/tests/fixtures/runtime-state-schema.json) as one ordered `sqlite_master` entry per user object, retaining each object's SQL statement as stored by SQLite.
-- Both databases have `PRAGMA user_version=0` on a fresh start. There is **no database-wide monotonic schema version**. Schema setup is additive (`CREATE ... IF NOT EXISTS` and targeted `ALTER TABLE` checks). Feature migration state lives in feature tables/keys: `runtime_payload_migrations` tracks the task-payload externalization cursor and completion, while `analytics_meta.fileMigrationV1` gates the old analytics-file migration. A Rust opener must inspect and continue those markers; it must not invent a single version number from `user_version`.
+- Both databases have `PRAGMA user_version=0` on a fresh start. There is **no database-wide monotonic schema version**. Schema setup is additive (`CREATE ... IF NOT EXISTS` and targeted `ALTER TABLE` checks). Feature migration state lives in feature tables/keys: `runtime_payload_migrations` tracks task-tail retention progress, while `analytics_meta.fileMigrationV1` gates the old analytics-file migration. A Rust opener must interpret those markers and refuse an unfinished analytics-file migration; it must not invent a single version number from `user_version` or run a Python migration.
 - SQLite's own `schema_version` cookie changes with DDL and is used by the Python runtime to invalidate schema-dependent caches; it is not an application migration marker.
 - Most structured records are UTF-8 JSON in SQLite `TEXT` columns (`record`, `text`, `result`, or `deliveries`). Timestamps in SQL columns such as `created`, `at`, `updated`, and `finished` are Unix seconds stored as `REAL`; JSON records use numbers for the corresponding times. SQL boolean flags are `INTEGER` values `0`/`1`; booleans inside JSON are JSON `false`/`true`. JSON object key order is not a compatibility contract. The Rust reader must accept JSON independent of key order and preserve number-vs-boolean distinctions where code tests their types.
 - Source review found no persisted `pickle`, `marshal`, or `repr` payloads. The independent reader below parses representative JSON records without importing server code. Format semantics still live in runtime record/protocol definitions: raw JSON alone does not explain lifecycle states, migration decisions, or the identity rules.
-- No SQLite crate is present in the current `Cargo.lock`, so the open-in-place proof uses a separate Python process with only the standard-library `sqlite3` and `json` modules. This is independent of the server implementation; it is not a Rust implementation test.
+- The Rust runtime-store crate uses bundled SQLite and has separate disposable fixtures for Python-written records and the schema-only initialized state inventory. This is distinct from the original Python-only reader proof below.
 
 ## Owned artifacts
 
@@ -40,9 +40,9 @@ This inventory is for M-07.3 of [issue #37](https://github.com/ifdotpy/codex-stu
 
 The snapshot is generated from a new `Runtime` fixture after all synchronous runtime initialization, and includes both SQLite catalogs as one ordered entry per user object with the object's stored SQL, `PRAGMA user_version`, migration markers, and observed journal/synchronous pragmas. The SQL is the sole schema representation and contains column declarations, constraints, index and trigger definitions, and view definitions. It intentionally excludes SQLite's internal `sqlite_%` objects. The snapshot test is `runtime-state-schema-contract.py`.
 
-The schema is assembled by `Runtime.__init__` and the focused owners (`codex_execution.py`, `codex_federation.py`, `codex_sync_entities.py`, `codex_analytics.py`, `codex_analytics_history.py`, `codex_payloads.py`, and others). Fresh startup observed 89 user tables in `canvas.sqlite3` and 13 in `analytics.sqlite3`. The JSON snapshot is the exhaustive table/column/type/index/trigger listing; this page avoids duplicating that list by hand.
+The schema is assembled by `Runtime.__init__` and the focused owners (`codex_execution.py`, `codex_federation.py`, `codex_sync_entities.py`, `codex_analytics.py`, `codex_analytics_history.py`, `codex_payloads.py`, and others). A fresh startup observed 89 user tables in `canvas.sqlite3` and 13 in `analytics.sqlite3`. The committed JSON snapshot is the authoritative fresh-start schema and the Python schema-drift guard input; it is not a catalog of every optional table or migration phase.
 
-`runtime_payload_migrations` is a progress record, not a universal schema version. It contains `name TEXT PRIMARY KEY`, `cursor INTEGER`, `complete INTEGER`, `status TEXT`, `updated REAL`, and nullable `error TEXT`; key `payload-v1:tasks` tracks bounded externalization from `runtime_tasks.record` into content-addressed blobs. The analytics legacy-file gate checks for legacy `analytics_*` tables in `canvas.sqlite3` and `analytics_meta.fileMigrationV1` in `analytics.sqlite3`. On a fresh disposable start `PRAGMA user_version` was zero for both files and both feature markers were absent/empty.
+`runtime_payload_migrations` is a progress record, not a universal schema version. It contains `name TEXT PRIMARY KEY`, `cursor INTEGER`, `complete INTEGER`, `status TEXT`, `updated REAL`, and nullable `error TEXT`; key `payload-v1:tasks` tracks bounded retention of old task tails in `runtime_tasks.record` by replacing oversized tails with a preview and truncation flags. It does not externalize task tails to blobs. The analytics legacy-file gate checks for legacy `analytics_*` tables in `canvas.sqlite3` and `analytics_meta.fileMigrationV1` in `analytics.sqlite3`. On a fresh disposable start `PRAGMA user_version` was zero for both files and both feature markers were absent/empty.
 
 The disposable `UsageIndex` has no migration version and may be deleted/rebuilt. Its schema from `codex_cost_usage.py` is `meta(key TEXT PRIMARY KEY,value TEXT)`, `rows(id TEXT PRIMARY KEY,seq,agent,thread,turn,at,record_agent,record_thread,record_turn,has_response,model,account_key,input_tokens,cached_tokens,write_tokens,output_tokens,input_uncached,log_account TEXT,response_id TEXT,excluded INTEGER NOT NULL DEFAULT 0,group_key TEXT)`, `groups(key TEXT PRIMARY KEY,model,account_key,input_tokens,cached_tokens,write_tokens,output_tokens,input_uncached,count INTEGER NOT NULL)`, and `receipts(account_key TEXT,thread_id TEXT,response_id TEXT,PRIMARY KEY(account_key,thread_id,response_id)) WITHOUT ROWID`. Unspecified declarations intentionally use SQLite's dynamic typing. Named indexes: `rows_turn(agent,thread,turn)`, `rows_record_turn(record_agent,record_turn,at DESC,seq DESC)`, `rows_record_thread(record_agent,record_thread,at DESC,seq DESC)`, partial `rows_model_turn(record_agent,record_turn,at DESC,seq DESC) WHERE model IS NOT NULL AND NOT excluded`, partial `rows_model_thread(record_agent,record_thread,at DESC,seq DESC) WHERE model IS NOT NULL AND NOT excluded`, and `rows_receipt(log_account,thread,response_id)`. It sets `cache_size=-8192` and `temp_store=FILE`; its default journal is SQLite's non-WAL mode. These are cache implementation details, not an in-place migration promise.
 
@@ -90,3 +90,129 @@ just test server workspaces/runtime/apps/server/tests/runtime-state-schema-contr
 ```
 
 The first command writes the snapshot from a fresh disposable runtime start. Review the diff before accepting it. Without the variable, an unannounced schema or migration-marker change fails with a unified diff.
+
+## Feature and migration schema beyond a fresh start
+
+The Rust store includes the committed fresh-start snapshot by path for Python's
+drift guard and uses a separate, code-declared compatibility contract when it
+opens databases. A Python-created optional table or an obsolete search object
+does not make the store reject unrelated supported records. The store checks
+the columns its repositories read/write, the sync-event and agent-generation
+triggers those writes rely on, and migration gates that affect interpretation.
+Tables and triggers outside those dependencies are ignored until Rust owns that
+repository. A missing required table, column, or trigger is a typed refusal
+naming the object. The schema snapshot stays in the Python server tests tree
+for this slice; when Python is removed, move it under runtime-store and update
+the Python guard in the same cutover.
+
+The following differences are present in the supplied schema-only initialized
+state compared with the fresh-start snapshot. This inventory is source
+inspection of the current Python creators, plus a source-wide search for the
+objects that have no production creator. No user row data was used.
+
+| Object(s) outside fresh snapshot                                                                                                                                                     | Python creator and condition                                                                                                                                                                                                                                                                              |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `voice_sessions`, `voice_records`, `voice_approvals`, `voice_deliveries`, `voice_speech_requests`, `voice_records_agent`                                                             | `VoiceStore.__init__` in `codex_voice.py` creates the voice tables and index when the voice subsystem is first accessed. The speech-request table is created by `NativeVoice.init_native` in `codex_native_voice.py` during that same lazy setup. No provider request is needed to create these objects.  |
+| `user_terminals`, `user_terminal_output`, `user_terminal_receipts`, `user_terminal_event_cursor`, `user_terminal_decoder_state`, `user_terminal_output_end`                          | `TerminalManager.__init__` in `codex_terminals.py` creates the terminal tables and output index when the terminal subsystem is initialized. This does not require launching a process.                                                                                                                    |
+| `runtime_access_settings`, `runtime_access_discovered`, `runtime_access_auto_attempts`, `runtime_access_unrevokes`                                                                   | `ServerDiscovery.__init__` in `codex_server_discovery.py` creates these on first server-discovery initialization. The constructor only creates schema; network discovery is started separately.                                                                                                           |
+| `runtime_model_modes`                                                                                                                                                                | `tool_mode_context` in `codex_agent_modes.py` creates it when a keyed model-mode request has guidance to persist.                                                                                                                                                                                         |
+| `runtime_model_status`                                                                                                                                                               | `model_work` in `codex_efficiency.py` creates it when that model-status path calculates and caches a revision.                                                                                                                                                                                            |
+| `runtime_native_catalog_updates`                                                                                                                                                     | `_schema` in `codex_native_tools.py` creates the table on the first native-tool catalog update/fork operation.                                                                                                                                                                                            |
+| `runtime_native_limit_refreshes`                                                                                                                                                     | `refresh_native_limits` in `codex_native_errors.py` creates it when an eligible native account limit refresh is first scheduled.                                                                                                                                                                          |
+| `runtime_native_notices`                                                                                                                                                             | `account_notice` in `native_notifications/dispatch.py` (also the compatibility implementation in `codex_native_errors.py`) creates it when an account notice arrives.                                                                                                                                     |
+| `sync_generation`, `sync_identity`                                                                                                                                                   | `SyncStore.__init__` in `codex_sync.py` creates these on first sync-store construction and seeds the generation singleton / workspace identity.                                                                                                                                                           |
+| `runtime_transcript_revisions`, `sync_transcript_revision_runtime_agents_insert`, `sync_transcript_revision_runtime_agents_update`, `sync_transcript_revision_runtime_agents_delete` | `SyncStore._ensure_versions` in `codex_sync.py` creates the revision table and runtime-agent triggers when version tracking initializes and `runtime_agents` exists.                                                                                                                                      |
+| `sync_transcript_revision_runtime_items_insert`, `sync_transcript_revision_runtime_items_update`, `sync_transcript_revision_runtime_items_delete`                                    | The same `_ensure_versions` path creates these only when `runtime_items` exists.                                                                                                                                                                                                                          |
+| `runtime_search_next`                                                                                                                                                                | `Runtime._search_migration_run` in `codex_work.py` creates the replacement FTS5 virtual table while the persisted rollout phase is `building` or `waiting_for_space`, after checking disk headroom and SQLite FTS support.                                                                                |
+| `runtime_search_next_config`, `runtime_search_next_data`, `runtime_search_next_docsize`, `runtime_search_next_idx`                                                                   | SQLite FTS5 creates these shadow tables as part of `CREATE VIRTUAL TABLE runtime_search_next`. They are engine-owned parts of that feature table and must not be independently created or dropped.                                                                                                        |
+| `runtime_agent_sweep_busy`, `runtime_agent_sweep_cleanup`                                                                                                                            | `_account_busy` in `codex_native_sweep.py` creates these partial expression indexes on the first native sweep check.                                                                                                                                                                                      |
+| `runtime_item_turn_scope`                                                                                                                                                            | No production creator is present in the current source tree. Its only matching DDL is the `turn-completion-scope-contract.py` test fixture. It is a rebuildable index on `runtime_items`; this schema-only occurrence is treated as an unowned legacy/test-created index and is ignored by runtime-store. |
+| `graph_agents`, `graph_edges`, `groups`, `messages`, `messages_room`                                                                                                                 | `Canvas.__init__` in `codex_canvas.py` still executes `CREATE TABLE/INDEX IF NOT EXISTS` for these tables on startup. Their data model is older than the `runtime_*` records, but they are not abandoned schema objects: Python still owns their creation and compatibility lifecycle.                    |
+
+The live schema has 43 objects absent from the snapshot: 31 tables, 6 indexes
+and 6 triggers, itemized above. Its 9 absent snapshot objects are the previous
+search generation: `runtime_search`, `runtime_search_config`,
+`runtime_search_content`, `runtime_search_data`, `runtime_search_docsize`,
+`runtime_search_idx`, `runtime_search_indexed`, `runtime_search_rows`, and
+`runtime_search_rows_rollout`. In `codex_work.py`, the rollout creates the
+`runtime_search_next` FTS index, verifies its row mapping, and enters `dropping`;
+`_search_cleanup_batch` then drops `runtime_search`, `runtime_search_rows`,
+and `runtime_search_indexed`. Dropping the old virtual table removes its FTS
+shadow tables (`runtime_search_config/content/data/docsize/idx`), and the
+rollout drops `runtime_search_rows_rollout` after copying has completed. The
+next-generation virtual table, metadata, and rollout record remain when phase
+is complete. These are the expected results of a successful search migration,
+not schema corruption.
+
+The live `runtime_work_archive_due` index has different whitespace from the
+snapshot SQL because `codex_work.py` declares the same partial index in both
+`setup_work` and `setup_accepted_archive`. Its columns, expression and predicate
+are semantically identical. Runtime-store does not compare complete SQL text.
+The `runtime_item_turn_scope` index is the one extra with no current production
+creator located by the source search; it carries no row data and can be rebuilt.
+
+There is no `runtime_payload_migrations` table in the observed state. In
+`codex_payload_migrate.py`, `_connect` creates it only when payload externalizing
+work starts; the normal runtime does not eagerly initialize the marker table.
+An absent table or absent `payload-v1:tasks` row means **NotStarted**, distinct
+from a row with `complete=1` (**Complete**). A coherent row with `complete=0`
+means **InProgress**. Runtime-store reads these states, accepts all three
+coherent states because task records remain JSON text in every phase, and never
+runs the migration. A malformed marker is refused. NotStarted means old task
+tails may still be full; Complete means an eligible old tail may have been
+replaced by `outputPreviewOnly`/`outputTruncated` fields. Rust must preserve
+either shape, and must not infer full output from the marker alone.
+
+For `analytics_meta.fileMigrationV1`, an absent marker means NotStarted. A
+present marker is accepted only when its JSON `phase` is `complete`; Python's
+`require_file_migration_complete` already refuses an unfinished marker or
+legacy `analytics_*` tables left in `canvas.sqlite3`, so Rust follows that gate.
+The real analytics catalog matches the fresh-start snapshot and has no pending
+file-migration marker. The supplied initialized schema also reports
+`PRAGMA user_version=0` for both databases. This change does not require
+feature-initialized snapshot variants: the snapshot remains a fresh-start drift
+guard, and optional families are verified by their own repository contracts
+when Rust implements them.
+
+No current production creator was found for the legacy search objects after
+cleanup or for the extra `runtime_item_turn_scope` index; search objects are
+removed by the migration and the index is test-only/rebuildable. The graph and
+groups/messages tables are sometimes called legacy in code review, but source
+inspection shows `Canvas.__init__` still creates them, so this inventory keeps
+their active ownership explicit.
+
+Other production cleanup/replacement paths found by scanning every server
+`DROP TABLE`, `DROP INDEX`, and `DROP TRIGGER` statement are:
+
+- `SyncStore._ensure_versions` removes every persistent `sync_watch_*` trigger.
+  Those row-level watches were replaced by `sync_entities` publication and
+  `PRAGMA data_version` for old-client event streams.
+- `Runtime.install_scheduler_change_tracking` in `codex_runtime.py` replaces
+  the three `runtime_agent_record_generation_{insert,update,delete}` triggers
+  when their SQL differs from the current scheduler journal contract. It
+  accepts the older simple generation-counter trigger bodies, clears the
+  scheduler change journal, establishes a new coverage floor, then installs the
+  current triggers. The trigger names remain; their bodies are replaced.
+- `_search_cleanup_batch` removes each old search row and then the old FTS
+  table, `runtime_search_rows`, and `runtime_search_indexed`; FTS removes its
+  shadow tables. `_check_search_rows_batch` drops `runtime_search_rows_rollout`
+  after the row mapping scan completes. This replaces the old search generation
+  with `runtime_search_next` and its metadata.
+- `codex_cost_usage.py` drops invalid or stale disposable `UsageIndex` cache
+  tables before rebuilding that cache. These tables are in per-session cache
+  databases, not either compatibility database.
+- The `studio_resource_event_*` and `studio_resource_item_*` triggers dropped
+  by `Runtime` are connection-local TEMP triggers used only while synchronizing
+  a resource transaction; they are not persistent `sqlite_master` objects.
+- `codex_session_costs.py` drops a TEMP Claude-message staging table. It is
+  connection-local and not part of the state catalog.
+
+The schema-only compatibility fixture under
+`workspaces/runtime/packages/runtime-store/tests/fixtures/live-state-schema.json`
+is derived from the supplied initialized DDL inventory and contains no rows or
+machine paths. Integration tests recreate that catalog in a unique temporary
+directory, then prove repository reads/writes preserve its `sqlite_master`
+catalog. Feature tests also initialize voice, terminal, access and completed
+search-next families through the Python runtime and reopen that same state with
+Rust. The fresh-start snapshot does not need feature variants: the Python
+contract continues to compare only fresh startup with that snapshot.
