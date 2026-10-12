@@ -59,7 +59,15 @@ class ShortLivedChildContract(unittest.TestCase):
                         "env": {}, "cwd": str(root),
                     })
 
-                self.assertEqual(opened["returnCode"], 0)
+                def recorded_exit_status():
+                    status = instance.handle({
+                        "action": "status", "handle": "short-lived-contract",
+                    })
+                    return status if status["returnCode"] is not None else None
+
+                exited = wait_for_condition(recorded_exit_status, "short-lived child exit status")
+                self.assertEqual(opened["pid"], started_processes[0].pid)
+                self.assertEqual(exited["returnCode"], 0)
                 with instance.journal.db() as db:
                     saved_start = db.execute(
                         "SELECT start_time FROM child_identities WHERE handle=?",
