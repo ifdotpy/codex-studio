@@ -479,6 +479,56 @@ test("Vitest summaries count test cases rather than test files", () => {
     parseCounts(item, "No test files found, exiting with code 1").executed,
     0,
   );
+  assert.deepEqual(
+    parseCounts(
+      item,
+      "\u001b[2m Test Files \u001b[22m \u001b[1m\u001b[32m8 passed\u001b[39m\u001b[22m\u001b[90m (8)\u001b[39m\n" +
+        "\u001b[2m      Tests \u001b[22m\u001b[1m\u001b[32m58 passed\u001b[39m\u001b[22m\u001b[90m (58)\u001b[39m",
+    ),
+    {
+      passed: 58,
+      failed: 0,
+      skipped: 0,
+      executed: 58,
+      summaryFound: true,
+    },
+  );
+  assert.deepEqual(
+    parseCounts(item, "14 failed\n11 skipped\n301 passed (9.1m)"),
+    { passed: 301, failed: 14, skipped: 11, executed: 315, summaryFound: true },
+  );
+  assert.deepEqual(
+    parseCounts(
+      item,
+      "\u001b[31m14 failed\u001b[39m\n" +
+        "\u001b[33m11 skipped\u001b[39m\n" +
+        "\u001b[32m301 passed (9.1m)\u001b[39m",
+    ),
+    { passed: 301, failed: 14, skipped: 11, executed: 315, summaryFound: true },
+  );
+  assert.deepEqual(parseCounts(item, "315 passed (9.1m)"), {
+    passed: 315,
+    failed: 0,
+    skipped: 0,
+    executed: 315,
+    summaryFound: true,
+  });
+});
+
+test("zero-test package command is a failure unless explicitly allowed", async () => {
+  const result = await execute(
+    process.cwd(),
+    { name: "fixture", ecosystem: "pnpm", dir: ".", manifest: null },
+    "",
+    false,
+    {
+      commands: [
+        ["node", ["-e", "process.stdout.write('No test files found')"]],
+      ],
+    },
+  );
+  assert.equal(result.exitCode, 1);
+  assert.ok(result.errors.includes("native runner executed zero tests"));
 });
 
 test("composed runs name and log a failed constituent step", async () => {
