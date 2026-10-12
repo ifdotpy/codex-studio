@@ -215,6 +215,7 @@ describe("paired server preference replication", () => {
         expect(b.fields[theme]?.value).toBe("dark");
       });
       b.online = false;
+      window.dispatchEvent(new Event("offline"));
       capturePreferenceWrite(
         "codex-studio-preferences-v1",
         '{"mainFontSize":20}',
@@ -223,6 +224,10 @@ describe("paired server preference replication", () => {
       await vi.waitFor(() => expect(a.fields[size]?.value).toBe(20));
       b.online = true;
       window.dispatchEvent(new Event("online"));
+      emitStateFrame(
+        "https://b.invalid",
+        initialFrame("https://b.invalid", b.sequence),
+      );
       await vi.waitFor(() => expect(b.fields[size]).toEqual(a.fields[size]));
       expect(b.fields[theme].value).toBe("dark");
       expect(
@@ -484,6 +489,126 @@ describe("paired server preference replication", () => {
     }
   });
 
+  it("does not repeat a pull for a baseline covered by the in-flight response", async () => {
+    vi.useFakeTimers();
+    const server = backend("https://in-flight-baseline.invalid", {});
+    let releasePull!: () => void;
+    const heldPull = new Promise<void>((resolve) => {
+      releasePull = resolve;
+    });
+    let pullStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      pullStarted = resolve;
+    });
+    let pullRequests = 0;
+    const fetch = async (request: Request) => {
+      if (new URL(request.url).pathname === "/api/sync/pull") {
+        pullRequests++;
+        if (pullRequests === 1) {
+          pullStarted();
+          await heldPull;
+        }
+      }
+      return server.fetch(request);
+    };
+    const stop = connectUiPreferences(
+      "https://in-flight-baseline.invalid",
+      fetch,
+      localStorage,
+    );
+    try {
+      await vi.waitFor(() =>
+        expect(streams.has("https://in-flight-baseline.invalid")).toBe(true),
+      );
+      const marker = server.seedBaseline();
+      emitStateFrame(
+        "https://in-flight-baseline.invalid",
+        initialFrame("https://in-flight-baseline.invalid", server.sequence),
+      );
+      await started;
+      // A reopened state stream can replay the same initial baseline while
+      // reconciliation is still in flight.
+      emitStateFrame(
+        "https://in-flight-baseline.invalid",
+        initialFrame("https://in-flight-baseline.invalid", server.sequence),
+      );
+      releasePull();
+      await waitForAppliedBaselineMarker(marker);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(server.pullReads).toBe(1);
+      expect(pullRequests).toBe(1);
+    } finally {
+      releasePull();
+      stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    { responseSequence: 2, expectedPulls: 1 },
+    { responseSequence: 1, expectedPulls: 2 },
+  ])(
+    "reconciles an in-flight state change after the response checkpoint ($responseSequence)",
+    async ({ responseSequence, expectedPulls }) => {
+      const origin = "https://in-flight-change.invalid";
+      const server = backend(origin, {});
+      let releasePull!: () => void;
+      const heldPull = new Promise<void>((resolve) => {
+        releasePull = resolve;
+      });
+      let pullRequests = 0;
+      let firstStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        firstStarted = resolve;
+      });
+      const fetch = async (request: Request) => {
+        if (new URL(request.url).pathname === "/api/sync/pull") {
+          pullRequests++;
+          if (pullRequests === 1) {
+            firstStarted();
+            await heldPull;
+          }
+        }
+        return server.fetch(request);
+      };
+      const stop = connectUiPreferences(origin, fetch, localStorage);
+      try {
+        await vi.waitFor(() => expect(streams.has(origin)).toBe(true));
+        const marker = server.seedBaseline();
+        emitStateFrame(origin, initialFrame(origin, server.sequence));
+        await started;
+
+        emitStateFrame(origin, {
+          protocol: 3,
+          workspaceId: origin,
+          epoch: "epoch-one",
+          reason: "change",
+          resources: [{ kind: "state" }],
+          resourceVersions: [
+            {
+              revision: 2,
+              entitySequences: [2],
+              entityChanges: {
+                after: 1,
+                through: 2,
+                documents: [],
+              },
+            },
+          ],
+        });
+        // Choose whether the held response already sees the frame's sequence.
+        server.sequence = responseSequence;
+        releasePull();
+        await waitForAppliedBaselineMarker(marker);
+        await vi.waitFor(() => expect(pullRequests).toBe(expectedPulls));
+        expect(server.pullReads).toBe(expectedPulls);
+      } finally {
+        releasePull();
+        stop();
+      }
+    },
+  );
+
   it("pulls directly when the state stream cannot be opened", async () => {
     vi.useFakeTimers();
     failedStreamOrigins.add("https://no-stream.invalid");
@@ -501,6 +626,124 @@ describe("paired server preference replication", () => {
       stop();
       vi.useRealTimers();
     }
+  });
+
+  it("does not pull on focus while the state stream is healthy", async () => {
+    const origin = "https://focus-healthy.invalid";
+    const server = backend(origin, {});
+    const stop = connectUiPreferences(origin, server.fetch, localStorage);
+    try {
+      await waitForBaseline(origin, server);
+      expect(server.pullReads).toBe(1);
+      const stream = streams.get(origin);
+      window.dispatchEvent(new Event("focus"));
+      expect(streams.get(origin)).toBe(stream);
+      expect(server.pullReads).toBe(1);
+    } finally {
+      stop();
+    }
+  });
+
+  it("reopens and reconciles from a baseline after returning online", async () => {
+    const origin = "https://focus-online.invalid";
+    const server = backend(origin, {});
+    const stop = connectUiPreferences(origin, server.fetch, localStorage);
+    try {
+      await waitForBaseline(origin, server);
+      const previousStream = streams.get(origin);
+      window.dispatchEvent(new Event("offline"));
+      window.dispatchEvent(new Event("online"));
+      const reopenedStream = streams.get(origin);
+      expect(reopenedStream).toBeDefined();
+      expect(reopenedStream).not.toBe(previousStream);
+      emitStateFrame(origin, initialFrame(origin, server.sequence));
+      expect(server.pullReads).toBe(1);
+      server.sequence = 2;
+      emitStateFrame(origin, initialFrame(origin, server.sequence));
+      await vi.waitFor(() => expect(server.pullReads).toBe(2));
+    } finally {
+      stop();
+    }
+  });
+
+  it("reopens a stream that is still connecting when focus returns", async () => {
+    const origin = "https://focus-connecting.invalid";
+    const server = backend(origin, {});
+    const stop = connectUiPreferences(origin, server.fetch, localStorage);
+    try {
+      const connectingStream = streams.get(origin);
+      expect(connectingStream).toBeDefined();
+      window.dispatchEvent(new Event("focus"));
+      expect(streams.get(origin)).toBeDefined();
+      expect(streams.get(origin)).not.toBe(connectingStream);
+      emitStateFrame(origin, initialFrame(origin, server.sequence));
+      await vi.waitFor(() => expect(server.pullReads).toBe(1));
+    } finally {
+      stop();
+    }
+  });
+
+  it("reconciles a dropped stream from its reopened baseline", async () => {
+    const origin = "https://reconnect.invalid";
+    const server = backend(origin, {});
+    const stop = connectUiPreferences(origin, server.fetch, localStorage);
+    try {
+      await waitForBaseline(origin, server);
+      expect(server.pullReads).toBe(1);
+      vi.useFakeTimers();
+      const stream = streams.get(origin) as
+        | (EventTarget & { onerror?: (() => void) | null })
+        | undefined;
+      expect(stream?.onerror).toBeTypeOf("function");
+      stream?.onerror?.();
+      expect(server.pullReads).toBe(1);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(streams.has(origin)).toBe(true);
+      emitStateFrame(origin, initialFrame(origin, server.sequence));
+      expect(server.pullReads).toBe(1);
+      server.sequence = 2;
+      emitStateFrame(origin, initialFrame(origin, server.sequence));
+      await vi.waitFor(() => expect(server.pullReads).toBe(2));
+    } finally {
+      stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("pulls when a failed stream cannot be reopened", async () => {
+    const origin = "https://reopen-fails.invalid";
+    const server = backend(origin, {});
+    const stop = connectUiPreferences(origin, server.fetch, localStorage);
+    try {
+      await waitForBaseline(origin, server);
+      vi.useFakeTimers();
+      failedStreamOrigins.add(origin);
+      const stream = streams.get(origin) as
+        | (EventTarget & { onerror?: (() => void) | null })
+        | undefined;
+      stream?.onerror?.();
+      expect(server.pullReads).toBe(1);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(server.pullReads).toBe(2);
+      expect(streams.has(origin)).toBe(false);
+    } finally {
+      stop();
+      failedStreamOrigins.delete(origin);
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores an error delivered after the connector closes its stream", async () => {
+    const origin = "https://closed-stream.invalid";
+    const server = backend(origin, {});
+    const stop = connectUiPreferences(origin, server.fetch, localStorage);
+    await waitForBaseline(origin, server);
+    const stream = streams.get(origin) as
+      | (EventTarget & { onerror?: (() => void) | null })
+      | undefined;
+    stop();
+    stream?.onerror?.();
+    expect(server.pullReads).toBe(1);
   });
 
   it("does not request or retry after the API schema gate is raised", async () => {

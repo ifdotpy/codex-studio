@@ -277,6 +277,77 @@ describe("entity pull dispatch gate", () => {
     stop();
   });
 
+  it("skips a reconfiguration baseline already covered by the durable checkpoint", async () => {
+    const { entitySequence, rows, stop } = await setup();
+    const checkpoint = entitySequence.getEntitySequenceCheckpoint(
+      "state:entities:v1",
+      API_SCHEMA_HASH,
+    );
+    checkpoint.observeEpoch("server-epoch-a");
+    // Another tab advanced the shared durable row, while this page's valid
+    // in-memory checkpoint still reflects its earlier pull.
+    rows.set("state:entities:checkpoint", {
+      id: "state:entities:checkpoint",
+      payload: "{}",
+      seq: 1027,
+      _deleted: false,
+    });
+    const pulls: number[] = [];
+    mocks.pulls = pulls;
+    expect(checkpoint.value).toBe(100);
+    expect(mocks.invalidate).toBeTypeOf("function");
+
+    // Reconfiguring a live stream replays its current state baseline as an
+    // initial frame. Its entity sequence is already covered locally.
+    mocks.invalidate?.({ epoch: "server-epoch-a", entitySequence: 1027 });
+    await vi.waitFor(() => expect(checkpoint.value).toBe(1027));
+
+    expect(pulls).toEqual([]);
+    stop();
+  });
+
+  it("does not repeat an in-flight pull when its checkpoint covers a reconfiguration baseline", async () => {
+    const { client, rows, storageInstance, stop, workspaceId } = await setup();
+    const pulls: number[] = [];
+    mocks.pulls = pulls;
+    configurePulls(workspaceId, pulls);
+    let releaseCheckpointWrite!: () => void;
+    const heldCheckpointWrite = new Promise<void>((resolve) => {
+      releaseCheckpointWrite = resolve;
+    });
+    let checkpointWriteStarted!: () => void;
+    const checkpointWrite = new Promise<void>((resolve) => {
+      checkpointWriteStarted = resolve;
+    });
+    storageInstance.bulkWrite.mockImplementation(async (writes) => {
+      if (
+        writes.some(
+          ({ document }) => document.id === "state:entities:checkpoint",
+        )
+      ) {
+        checkpointWriteStarted();
+        await heldCheckpointWrite;
+      }
+      for (const { document } of writes)
+        rows.set(String(document.id), document);
+      return { error: [] };
+    });
+
+    const refresh = client.refreshProjection();
+    await vi.waitFor(() => expect(pulls).toEqual([100]));
+    await checkpointWrite;
+
+    // The pull response has arrived, but its checkpoint write has not. The
+    // initial frame will be covered once that in-flight write commits.
+    mocks.invalidate?.({ epoch: "server-epoch-a", entitySequence: 101 });
+    releaseCheckpointWrite();
+    await refresh;
+    await Promise.resolve();
+
+    expect(pulls).toEqual([100]);
+    stop();
+  });
+
   it("pulls from a reset baseline when the server epoch changes", async () => {
     const { entitySequence, rows, stop, workspaceId } = await setup();
     const checkpoint = entitySequence.getEntitySequenceCheckpoint(

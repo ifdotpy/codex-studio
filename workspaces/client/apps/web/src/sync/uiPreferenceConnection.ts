@@ -52,9 +52,20 @@ export function connectUiPreferences(
   let workspaceId: string | undefined;
   let pulling = false;
   let pullAgain = false;
+  let pendingBaseline: { sequence: number; mustPull: boolean } | undefined;
+  const queuePendingBaseline = (sequence: number, mustPull: boolean) => {
+    pendingBaseline = pendingBaseline
+      ? {
+          sequence: Math.max(pendingBaseline.sequence, sequence),
+          mustPull: pendingBaseline.mustPull || mustPull,
+        }
+      : { sequence, mustPull };
+  };
   let sending = false;
   let sendAgain = false;
   let stream: SignedEventSource | undefined;
+  let streamOpen = false;
+  let wasOffline = false;
   let retry: ReturnType<typeof setTimeout> | undefined;
   const controller = new AbortController();
   let stopWrites = () => {};
@@ -72,6 +83,7 @@ export function connectUiPreferences(
     stopGateListener();
     window.removeEventListener("online", resume);
     window.removeEventListener("focus", resume);
+    window.removeEventListener("offline", markOffline);
   };
   const stopForSchemaMismatch = () => {
     if (stopped) return;
@@ -226,6 +238,14 @@ export function connectUiPreferences(
           cursor.assign(response.checkpoint.seq);
           more = cursor.value < (response.maxSeq ?? cursor.value);
         } while (more && !stopped);
+        if (pendingBaseline) {
+          if (
+            pendingBaseline.mustPull ||
+            !cursor.covers(pendingBaseline.sequence)
+          )
+            pullAgain = true;
+          pendingBaseline = undefined;
+        }
       } while (pullAgain && !stopped);
       ready = true;
       await send();
@@ -240,11 +260,16 @@ export function connectUiPreferences(
       resources: JSON.stringify([{ kind: "state" }]),
       [API_SCHEMA_HASH_PARAM]: API_SCHEMA_HASH,
     });
+    let openedStream: SignedEventSource;
     try {
-      stream = new SignedEventSource(
+      openedStream = new SignedEventSource(
         origin + `/api/sync/stream?${query}`,
         fetchWithSchemaGate,
       );
+      stream = openedStream;
+      openedStream.onopen = () => {
+        if (stream === openedStream) streamOpen = true;
+      };
     } catch {
       void pull().catch(scheduleRetry);
       scheduleRetry();
@@ -279,6 +304,7 @@ export function connectUiPreferences(
         return;
       }
       const change = payload as PreferenceChangeEvent;
+      streamOpen = true;
       if (change.reason !== "change") {
         if (
           typeof change.workspaceId !== "string" ||
@@ -319,6 +345,15 @@ export function connectUiPreferences(
           void send();
           return;
         }
+        if (pulling) {
+          queuePendingBaseline(
+            baselineSequence,
+            workspaceChanged ||
+              epochChanged ||
+              stateVersion.entitySequenceReset === true,
+          );
+          return;
+        }
         void pull().catch(scheduleRetry);
         return;
       }
@@ -350,6 +385,15 @@ export function connectUiPreferences(
           batch.after !== nextCursor ||
           batch.through !== version.revision
         ) {
+          if (pulling && batch && Number.isSafeInteger(batch.through)) {
+            // The pull in flight is already reconciling this cursor. Recheck
+            // after it assigns its checkpoint before scheduling another pull.
+            queuePendingBaseline(
+              batch.through,
+              version.entitySequenceReset === true,
+            );
+            return;
+          }
           void pull().catch(scheduleRetry);
           return;
         }
@@ -390,23 +434,40 @@ export function connectUiPreferences(
       cursor.assign(nextCursor);
     });
     stream.onerror = () => {
-      stream?.close();
+      if (stopped || stream !== openedStream) {
+        return;
+      }
+      openedStream.close();
       stream = undefined;
-      // Without a live stream, reconcile directly. Reopening the stream then
-      // waits for its baseline, which will be skipped if this pull caught up.
-      void pull().catch(scheduleRetry);
+      streamOpen = false;
+      // Reconcile from the reopened stream's baseline; its sequence tells us
+      // whether a pull is needed and avoids rereading an already-covered cursor.
       scheduleRetry();
     };
   };
   stopWrites = watchPreferenceWrites(() => {
     void send();
   });
+  const markOffline = () => {
+    wasOffline = true;
+  };
   resume = () => {
-    if (stream) void pull().catch(scheduleRetry);
-    else openStream();
+    if (stopped) return;
+    if (retry && !wasOffline) return;
+    if (retry) {
+      clearTimeout(retry);
+      retry = undefined;
+    }
+    if (stream && streamOpen && !wasOffline) return;
+    stream?.close();
+    stream = undefined;
+    streamOpen = false;
+    wasOffline = false;
+    openStream();
   };
   window.addEventListener("online", resume);
   window.addEventListener("focus", resume);
+  window.addEventListener("offline", markOffline);
   if (new URL(origin).origin === apiOrigin()) {
     stopGateListener = onApiSchemaMismatch(stopForSchemaMismatch);
     if (stopped) stopGateListener();
