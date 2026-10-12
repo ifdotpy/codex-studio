@@ -13,8 +13,7 @@ import sys
 import tempfile
 import unittest
 
-SERVER_SOURCE = Path(__file__).resolve().parents[1] / "src"
-sys.path.insert(0, str(SERVER_SOURCE))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 
 from codex_runtime import Runtime  # noqa: E402
 
