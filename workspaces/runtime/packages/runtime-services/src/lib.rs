@@ -20,6 +20,7 @@ pub mod queue_write;
 pub mod rules;
 pub mod scheduler;
 pub mod sync_policy;
+pub mod system_reads;
 pub mod terminal_driver;
 pub mod transcript;
 pub mod work_policy;

@@ -15,7 +15,9 @@ mod rules;
 mod session;
 mod sync;
 mod sync_documents;
+mod system_reads;
 mod terminals;
+mod tool_requests;
 mod transcript;
 mod work_items;
 mod work_write;
@@ -38,21 +40,23 @@ fn generated_json<T: DeserializeOwned + Serialize>(
 pub(crate) fn groups() -> Vec<RouteGroup> {
     vec![
         agents_create::routes(),
-        session::routes(),
-        rules::routes(),
-        questions_reads::routes(),
-        sync::routes(),
-        sync_documents::routes(),
-        terminals::routes(),
+        catalog::routes(),
+        desktop::routes(),
+        messages::routes(),
         monitors::routes(),
         panels::routes(),
+        questions_reads::routes(),
+        rules::routes(),
+        session::routes(),
+        sync::routes(),
+        sync_documents::routes(),
+        system_reads::routes(),
+        terminals::routes(),
+        tool_requests::routes(),
         transcript::routes(),
         work_items::routes(),
-        messages::routes(),
         work_write::routes(),
         workspace_files::routes(),
         workspace_views::routes(),
-        desktop::routes(),
-        catalog::routes(),
     ]
 }
