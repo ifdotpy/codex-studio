@@ -11,8 +11,64 @@ def account_order(runtime, parent_account):
                 (key == parent_account or rows[key].get('status') == 'ready' or rows[key].get('canAttemptNativeProof') is True)))
 
 
-def resolve(runtime, parent, data, *, catalogs=None):
-    """Return one account and its catalog. Never retry a model request elsewhere."""
+def model_provider(model):
+    return ('codex' if model.startswith('gpt-') else
+            'claude' if model in {'default', 'sonnet', 'opus', 'haiku'} or model.startswith('claude-') else None)
+
+
+def _price_list(runtime):
+    """The cached public price list, or None before the first download. This read never
+    starts a download; the cost readers keep the cache fresh."""
+    from codex_pricing import PricingCatalog
+    pricing = getattr(runtime, '_worker_pricing', None)
+    if pricing is None and getattr(runtime, 'root', None) is not None:
+        pricing = runtime._worker_pricing = PricingCatalog(runtime.root)
+    return pricing.snapshot(ttl=float('inf')) if pricing is not None else None
+
+
+def _rates(snapshot, model, catalogs):
+    """Input and output prices of a model per million tokens, or None when unknown."""
+    from codex_pricing import lookup
+    # A catalog alias such as Claude "default" is priced as the model it resolves to.
+    resolved = next((row['resolvedModel'] for value in catalogs.values() for row in (value or {}).get('data', [])
+                     if row.get('model') == model and row.get('resolvedModel')), model)
+    provider = model_provider(resolved) or model_provider(model)
+    if provider is None:
+        return None
+    rates = lookup(snapshot, 'openai' if provider == 'codex' else 'anthropic', resolved)
+    return (rates['input'], rates['output']) if rates else None
+
+
+def check_provider(requested, default):
+    wanted = model_provider(default)
+    if requested != default and wanted and model_provider(requested) != wanted:
+        raise ValueError(f'Choose a {wanted.title()} model for subagents, as set in chat settings')
+
+
+def check_choice(runtime, requested, default, catalogs):
+    """An agent may choose a subagent model of the default's provider that costs no more
+    per token than the default the person chose. With a price list, a model without a
+    known price is refused unless it is the default; before the first list the choice stands."""
+    if requested == default:
+        return
+    check_provider(requested, default)
+    snapshot = _price_list(runtime)
+    if snapshot is None:
+        return
+    rates, limit = _rates(snapshot, requested, catalogs), _rates(snapshot, default, catalogs)
+    if rates is None or limit is None:
+        raise ValueError(f'Studio cannot compare the price of {requested} with the default subagent model {default}. '
+                         'Omit model to use the default')
+    if rates[0] > limit[0] or rates[1] > limit[1]:
+        raise ValueError(f'{requested} costs more than the default subagent model {default} '
+                         f'(input {rates[0]:g} > {limit[0]:g} or output {rates[1]:g} > {limit[1]:g} per million tokens). '
+                         'Choose a model that costs no more, or omit model')
+
+
+def resolve(runtime, parent, data, *, catalogs=None, limit_choice=True):
+    """Return one account and its catalog. Never retry a model request elsewhere.
+    limit_choice holds a subagent model that an agent chose to check_choice; a native
+    review has its own default (review_defaults) and passes False."""
     root = runtime.agent(parent['rootId'])
     defaults = runtime.worker_defaults(root)
     model = data.get('model')
@@ -23,7 +79,9 @@ def resolve(runtime, parent, data, *, catalogs=None):
         if row is None:
             raise ValueError('Unknown worker profile')
         model = json.loads(row[0]).get('model')
-    model = model or defaults['model'] or root['model']
+    requested = model
+    default_model = defaults['model'] or root['model']
+    model = model or default_model
     if not isinstance(model, str) or not model.strip():
         raise ValueError('Select an available model')
     project_accounts = None
@@ -54,8 +112,10 @@ def resolve(runtime, parent, data, *, catalogs=None):
             candidates = [key for key in candidates if key in project_accounts]
     # Native catalogs are provider-specific. Do not depend on the parent's
     # provider when the requested model identifies the other provider.
-    provider = ('codex' if model.startswith('gpt-') else
-                'claude' if model in {'default', 'sonnet', 'opus', 'haiku'} or model.startswith('claude-') else None)
+    provider = model_provider(model)
+    limited = limit_choice and requested and isinstance(default_model, str) and default_model
+    if limited:
+        check_provider(requested, default_model)
     if explicit is None and provider:
         candidates = [key for key in candidates
                       if runtime.accounts.get(key).get('provider', 'codex') == provider]
@@ -75,6 +135,8 @@ def resolve(runtime, parent, data, *, catalogs=None):
         catalog = catalogs[key]
         if any(model in (row.get('model'), row.get('resolvedModel')) and not row.get('hidden')
                for row in catalog.get('data', [])):
+            if limited:
+                check_choice(runtime, requested, default_model, catalogs)
             return key, catalog
     # Agents have no catalog tool; name the valid choices so the next call can succeed.
     names = []
