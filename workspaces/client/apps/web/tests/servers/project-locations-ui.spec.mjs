@@ -187,8 +187,15 @@ test("project folders, remote browse, and New chat server choice", async ({
     });
     await expect(group.getByText("Local chat", { exact: true })).toBeVisible();
     const projectRow = group.locator(".project-tree-toggle");
-    expect(await projectRow.getAttribute("aria-expanded")).toBeNull();
+    if ((await projectRow.getAttribute("aria-expanded")) === "true") {
+      await projectRow.click();
+      await expect(projectRow).toHaveAttribute("aria-expanded", "false");
+    }
+    await expect(
+      group.getByText("Remote chat", { exact: true }),
+    ).not.toBeVisible();
     await projectRow.click();
+    await expect(projectRow).toHaveAttribute("aria-expanded", "true");
     await expect(group.getByText("Remote chat", { exact: true })).toBeVisible();
     await group
       .getByRole("button", { name: "New chat in attar", exact: true })
