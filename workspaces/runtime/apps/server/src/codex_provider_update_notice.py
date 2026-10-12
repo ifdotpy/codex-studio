@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from studio_api.system.models import ProviderUpdateNotice
 
@@ -33,13 +34,10 @@ def parse_version(value: object) -> VersionKey | None:
 
 
 def compare_versions(
-    provider: str,
     installed_version: str | None,
     available_version: str | None,
 ) -> ProviderUpdateNotice | None:
     """Return a notice only when a readable installed candidate is newer."""
-    if provider not in {"codex", "claude"}:
-        return None
     if installed_version is None or available_version is None:
         return None
     installed = parse_version(installed_version)
@@ -47,3 +45,36 @@ def compare_versions(
     if installed is None or available is None or available <= installed:
         return None
     return ProviderUpdateNotice(availableVersion=available_version, source="installed")
+
+
+def update_warnings(
+    providers: list[dict[str, Any]], labels: dict[str, str]
+) -> list[dict[str, Any]]:
+    """Project installed update notices into the existing informational tray."""
+    warnings = []
+    for row in providers:
+        notice = row.get("updateNotice")
+        if not notice:
+            continue
+        current = row.get("installedVersion") or "unknown"
+        available = notice["availableVersion"]
+        label = labels.get(row["provider"], row["provider"])
+        message = (
+            f"A newer installed {label} version is selected for runtime updates, "
+            f"but this connection is still using {current}. Available: {available}."
+            if row["provider"] == "codex" else
+            f"A newer installed {label} version is not in use on this connection yet. "
+            f"Current: {current} · Available: {available}."
+        )
+        warnings.append({
+            "id": f"provider-update:{row['accountKey']}",
+            "accountKey": row["accountKey"],
+            "provider": row["provider"],
+            "version": available,
+            # Keep this field's established meaning: the tested minimum.
+            "baseline": row["baseline"],
+            "message": message,
+            "at": row["at"],
+            "level": "info",
+        })
+    return warnings

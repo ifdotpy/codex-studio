@@ -2,10 +2,21 @@ import { useState } from "react";
 import { ActionIcon, Modal } from "@mantine/core";
 import { CircleAlert, Info } from "lucide-react";
 import { displayError, errorDetails } from "../errorPresentation";
-import type { Json, Message } from "../types";
+import type { components } from "../generated/api";
+import type { Message } from "../types";
 import ErrorDescription from "./ErrorDescription";
 import { isNonBlockingWarning } from "./NativeNotice";
 import "./conversation-warnings.css";
+
+type NativeNotice =
+  | components["schemas"]["NativeNoticeRecord"]
+  | components["schemas"]["ProviderVersionWarningDto"];
+
+function isInfoNotice(
+  notice: NativeNotice,
+): notice is components["schemas"]["ProviderVersionWarningDto"] {
+  return "level" in notice && notice.level === "info";
+}
 
 function warningTitle(value: unknown, fallback: string) {
   const text = displayError(value);
@@ -30,7 +41,7 @@ export default function ConversationWarnings({
   messages,
 }: {
   scope: string;
-  notices?: Json[];
+  notices?: NativeNotice[];
   accountKey: string;
   messages: Message[];
 }) {
@@ -38,12 +49,6 @@ export default function ConversationWarnings({
   const accountNotices =
     notices?.filter((notice) => notice.accountKey === accountKey) || [];
   const chatWarnings = messages.filter(isNonBlockingWarning);
-  const isInfoNotice = (notice: Json) =>
-    typeof notice === "object" &&
-    notice !== null &&
-    !Array.isArray(notice) &&
-    "level" in notice &&
-    notice.level === "info";
   const hasWarning =
     accountNotices.some((notice) => !isInfoNotice(notice)) ||
     chatWarnings.length > 0;
@@ -83,13 +88,15 @@ export default function ConversationWarnings({
             <article key={`account:${notice.id}`}>
               <h3>
                 {isInfoNotice(notice)
-                  ? "Provider update available"
+                  ? notice.id.startsWith("provider-update:")
+                    ? "Provider update available"
+                    : "Information"
                   : warningTitle(notice.message, "Account notice")}
               </h3>
               <p>
                 <ErrorDescription value={notice.message} role="status" />
               </p>
-              {notice.details != null && (
+              {"details" in notice && notice.details != null && (
                 <details>
                   <summary>Details</summary>
                   <pre>{errorDetails(notice.details)}</pre>

@@ -5,7 +5,7 @@ import subprocess
 import threading
 import time
 
-from codex_provider_update_notice import compare_versions, parse_version
+from codex_provider_update_notice import compare_versions, parse_version, update_warnings
 
 
 # Lowest real CLI versions recorded by repository verification. These are
@@ -52,13 +52,12 @@ def _codex_version(_provider, server, _account, runtime):
             # will try to apply to Codex connections when safe rotation permits.
             selected = updates.selected()
             available = selected.get("version") if isinstance(selected, dict) else None
-        except Exception:
+        except (OSError, TypeError, ValueError):
             pass
     return {
         "runningVersion": version,
         "installedVersion": version,
         "availableVersion": available,
-        "availableSource": "installed",
     }
 
 
@@ -94,7 +93,6 @@ def _claude_version(_provider, server, account, _runtime):
         "installedVersion": installed,
         "configuredVersion": configured,
         "availableVersion": configured,
-        "availableSource": "installed",
         "error": launched_error or configured_error,
         "runningNote": "The exact version already running in Claude sessions is unknown.",
     }
@@ -109,7 +107,7 @@ def _diagnostic(account_key, provider, versions):
     running = versions.get("runningVersion")
     installed = versions.get("installedVersion")
     configured = versions.get("configuredVersion")
-    update_notice = compare_versions(provider, installed, versions.get("availableVersion"))
+    update_notice = compare_versions(installed, versions.get("availableVersion"))
     warning = version_warning(provider, running) if running else None
     if warning is None and installed:
         warning = version_warning(provider, installed, source="launchedExecutable")
@@ -323,30 +321,7 @@ class ProviderVersionMonitor:
                 for row in providers
                 if row["status"] == "outdated" and row.get("message")
             ]
-            for row in providers:
-                notice = row.get("updateNotice")
-                if not notice:
-                    continue
-                current = row.get("installedVersion") or "unknown"
-                available = notice["availableVersion"]
-                label = PROVIDER_LABELS.get(row["provider"], row["provider"])
-                message = (
-                    f"A newer installed {label} version is selected for runtime updates, "
-                    f"but this connection is still using {current}. Available: {available}."
-                    if row["provider"] == "codex" else
-                    f"A newer installed {label} version is not in use on this connection yet. "
-                    f"Current: {current} · Available: {available}."
-                )
-                warnings.append({
-                    "id": f"provider-update:{row['accountKey']}",
-                    "accountKey": row["accountKey"],
-                    "provider": row["provider"],
-                    "version": available,
-                    "baseline": current,
-                    "message": message,
-                    "at": row["at"],
-                    "level": "info",
-                })
+            warnings.extend(update_warnings(providers, PROVIDER_LABELS))
             return {
                 "checkedAt": self.checked_at,
                 "providers": providers,

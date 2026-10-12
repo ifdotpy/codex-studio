@@ -78,14 +78,13 @@ class ProviderVersionContract(unittest.TestCase):
             ("missing installed", None, "2.2.0", False),
             ("missing", "2.1.0", None, False),
         )
-        for provider in ("codex", "claude"):
-            for case, installed, available, expected in cases:
-                with self.subTest(provider=provider, case=case):
-                    notice = compare_versions(provider, installed, available)
-                    self.assertEqual(notice is not None, expected)
-                    if notice:
-                        self.assertEqual(notice.availableVersion, available)
-                        self.assertEqual(notice.source, "installed")
+        for case, installed, available, expected in cases:
+            with self.subTest(case=case):
+                notice = compare_versions(installed, available)
+                self.assertEqual(notice is not None, expected)
+                if notice:
+                    self.assertEqual(notice.availableVersion, available)
+                    self.assertEqual(notice.source, "installed")
 
     def test_unavailable_codex_candidate_produces_no_notice(self):
         from codex_provider_versions import _codex_version
@@ -116,7 +115,7 @@ class ProviderVersionContract(unittest.TestCase):
 
         class Updates:
             def selected(self):
-                raise RuntimeError("candidate store unavailable")
+                raise OSError("candidate store unavailable")
 
         runtime = Runtime()
         runtime.native_runtime_updates = Updates()
@@ -171,6 +170,10 @@ class ProviderVersionContract(unittest.TestCase):
         self.assertEqual(versions["configuredVersion"], "Claude Code 2.2.0")
         diagnostic = _diagnostic("work", "claude", versions)
         self.assertEqual(diagnostic["status"], "outdated")
+        self.assertEqual(
+            diagnostic["updateNotice"],
+            {"availableVersion": "Claude Code 2.2.0", "source": "installed"},
+        )
         self.assertIn("exact version already running may be different", diagnostic["message"])
 
     def test_unknown_and_failed_running_versions_are_visible(self):
