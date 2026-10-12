@@ -48,6 +48,35 @@ def _write_item(path, agent: str, identity: str, record: dict, created: float) -
         database.commit()
 
 
+def _write_legacy_search(database, agent: str, record: dict, body: str) -> None:
+    """Seed a pre-migration search body using the active runtime schema."""
+    identity = record["id"]
+    columns = {row[1] for row in database.execute("PRAGMA table_info(runtime_search)")}
+    values = {
+        "id": identity,
+        "agent": agent,
+        "kind": record.get("title") or record.get("role") or "message",
+        "body": body,
+    }
+    names = [name for name in values if name in columns]
+    if not {"id", "body"}.issubset(names):
+        raise AssertionError("runtime_search is missing its id/body columns")
+    fields = ",".join(names)
+    placeholders = ",".join("?" for _ in names)
+    cursor = database.execute(
+        f"INSERT INTO runtime_search ({fields}) VALUES ({placeholders})",
+        [values[name] for name in names],
+    )
+    if database.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_search_rows'"
+    ).fetchone():
+        database.execute(
+            "INSERT INTO runtime_search_rows (id,search_rowid) VALUES (?,?) "
+            "ON CONFLICT(id) DO UPDATE SET search_rowid=excluded.search_rowid",
+            (identity, cursor.lastrowid),
+        )
+
+
 class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -127,13 +156,11 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_search'"
                 ).fetchone() is None:
                     database.execute("CREATE TABLE runtime_search (id TEXT, body TEXT)")
-                database.execute(
-                    "INSERT INTO runtime_search (id,body) VALUES (?,?)",
-                    (cls.case_items["legacy"]["id"], "obsolete phrase"),
+                _write_legacy_search(
+                    database, cls.agent, cls.case_items["legacy"], "obsolete phrase"
                 )
-                database.execute(
-                    "INSERT INTO runtime_search (id,body) VALUES (?,?)",
-                    (cls.case_items["legacy-truncated"]["id"], "legacy archive phrase"),
+                _write_legacy_search(
+                    database, cls.agent, cls.case_items["legacy-truncated"], "legacy archive phrase"
                 )
                 database.commit()
             cls.bad_records = {
@@ -301,7 +328,6 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         for field in ("id", "text", "role", "turnId"):
             self.assertEqual(candidate[field], item_response.json().get(field), field)
 
-    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_full_text_resolution_and_legacy_fallback(self) -> None:
         path = "/api/transcript/item?" + urlencode({"id": self.agent, "message_id": self.case_items["fulltext"]["id"]})
         full = self.backend.request("GET", path, headers=self.headers)
