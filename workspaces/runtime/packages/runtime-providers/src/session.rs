@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{Method, RequestId};
 use thiserror::Error;
@@ -46,6 +46,7 @@ struct Entry {
 pub struct PendingBook {
     next_numeric_id: u64,
     entries: BTreeMap<RequestId, Entry>,
+    used_ids: BTreeSet<RequestId>,
     closed: bool,
 }
 
@@ -75,7 +76,7 @@ impl PendingBook {
         if self.closed {
             return Err(BookError::ConnectionClosed);
         }
-        if self.entries.contains_key(&id) {
+        if !self.used_ids.insert(id.clone()) {
             return Err(BookError::DuplicateId);
         }
         self.entries.insert(
@@ -103,6 +104,17 @@ impl PendingBook {
         };
         entry.state = RequestState::Replied;
         Ok(matched)
+    }
+
+    /// Remove a canceled request entirely. A later response is then an orphan
+    /// and is silently ignored by the connection reader, like the Python bridge.
+    pub fn cancel(&mut self, id: &RequestId) -> Result<Method, BookError> {
+        let entry = self.entries.remove(id).ok_or(BookError::UnknownId)?;
+        if entry.state != RequestState::Pending {
+            self.entries.insert(id.clone(), entry);
+            return Err(BookError::DuplicateResponse);
+        }
+        Ok(entry.method)
     }
 
     /// Mark every request without an observed response as unknown after EOF,

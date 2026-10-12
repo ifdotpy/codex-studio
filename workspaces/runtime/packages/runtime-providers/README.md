@@ -2,11 +2,11 @@
 
 ## Change Contract
 
-- **Responsibility:** Synchronous JSON-line framing and per-connection request/response bookkeeping for Codex app-server and the Claude bridge.
-- **Public interface:** `LineDecoder`, `encode_line`, typed `Frame`/`Method`/`RequestId`, and pure `PendingBook` state transitions.
-- **Boundaries:** No process spawning, Tokio, HTTP, SQLite, account discovery, or Claude Node bridge implementation. Callers own byte I/O, deadlines, and provider lifecycle.
-- **Invariants:** Incomplete input is buffered; malformed, oversized, and truncated frames are distinct errors; unknown methods and extension fields survive round trips; IDs are not reused within a connection; lost replies remain unknown and are never retried by this crate.
-- **Configuration owner:** The provider process owner supplies byte streams and chooses connection boundaries. The 16 MiB maximum line size is owned by `src/codec.rs`.
+- **Responsibility:** Synchronous JSON-line framing, per-connection lifecycle, request tracking, and ordered handoff of provider callbacks for Codex app-server and the Claude bridge.
+- **Public interface:** Pure `SessionState` events/actions, split-I/O `ConnectionDriver<R, W, H>`, `Handler`, `CallbackDispatcher`, `LineDecoder`, `encode_line`, typed `Frame`/`Method`/`RequestId`, and `PendingBook` state transitions.
+- **Boundaries:** No process spawning, Tokio, HTTP, SQLite, account discovery, turn orchestration, repair, or Claude Node bridge implementation. The caller owns the transport halves and supplies monotonic deadline values.
+- **Invariants:** Initialize is written first and `initialized` follows its reply; each connection has a unique generation; IDs are registered before writes; deadlines and transport loss make unresolved requests unknown without retries; late matched replies remain evidence; callback delivery is FIFO and bounded.
+- **Configuration owner:** The provider process owner supplies the duplex byte stream and timeout clock. The frame-size maximum is owned by `src/codec.rs`.
 - **Focused check:** `cargo nextest run -p studio-runtime-providers`.
 
 ## Python wire inventory
@@ -122,3 +122,27 @@ do not prove behavior against a live CLI.
   and [commands.mjs](../../../providers/apps/claude-bridge/commands.mjs#L1).
 - Turn logic and runtime event handling remain in [codex_runtime.py](../../apps/server/src/codex_runtime.py#L7526)
   and the focused modules under `workspaces/runtime/apps/server/src/`.
+
+### Synchronous connection service
+
+`SessionState` is the deterministic event/action layer. It writes initialization
+first, emits `initialized` after the matching response, routes responses by
+generation and ID, and emits unknown outcomes on deadlines or transport loss.
+The caller supplies `now_ms` to `expire`, so timeout decisions need no sleeps.
+Late replies for timed-out IDs remain evidence; canceled Claude IDs are removed
+from `PendingBook`, and their later orphan replies are silently ignored.
+
+`ConnectionDriver<R, W, H>` owns separate read and write halves. A dedicated
+reader decodes frames, a write mutex serializes complete encoded lines, and a
+bounded callback worker drains provider requests and notifications in FIFO order.
+The reader does not execute user handlers. Claude requests use `claude:` IDs;
+`turn/start`, `turn/steer`, `thread/resume`, `thread/fork`, and non-lightweight
+`thread/read` are queued per thread, while independent threads proceed. The
+driver's owner calls `pump_next` to apply incoming frames and deliver callback
+work; it calls `close` after its transport owner has ended the read half.
+
+The vertical caller tests cover the request shapes used by Python for turn start
+and interrupt ([runtime](../../apps/server/src/codex_runtime.py#L7129),
+[interrupt](../../apps/server/src/codex_runtime.py#L10690)), account read
+([runtime](../../apps/server/src/codex_runtime.py#L3712)), and model list
+([catalog](../../apps/server/src/codex_catalog.py#L147)).
