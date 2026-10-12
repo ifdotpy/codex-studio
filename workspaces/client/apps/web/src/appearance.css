@@ -768,7 +768,7 @@
 }
 .chat-settings-rows .ui-row-control {
   min-width: 0;
-  max-width: calc(100% - 86px);
+  max-width: calc(100% - 98px);
 }
 .chat-settings-rows .execution-menu {
   max-width: 100%;

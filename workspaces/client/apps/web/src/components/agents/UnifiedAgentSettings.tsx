@@ -2,12 +2,13 @@ import { post } from "../../api";
 import Accounts, { type useAccounts } from "../Accounts";
 import { ExecutionSettings } from "./ExecutionSettings";
 import { AccountExclusionsControl } from "./AccountExclusionsControl";
-import type { ComponentProps } from "react";
+import { useCallback, useState, type ComponentProps } from "react";
 
 export function UnifiedAgentSettings({
   state,
   notify,
   onAccountModalOpenChange,
+  showAccountExclusions = false,
   ...settings
 }: Omit<
   ComponentProps<typeof ExecutionSettings>,
@@ -16,11 +17,20 @@ export function UnifiedAgentSettings({
   state: ReturnType<typeof useAccounts>;
   notify: (message: string) => void;
   onAccountModalOpenChange?: (opened: boolean) => void;
+  showAccountExclusions?: boolean;
 }) {
+  const [accountModalOpen, setAccountModalOpen] = useState(false);
+  const updateAccountModalOpen = useCallback(
+    (opened: boolean) => {
+      setAccountModalOpen(opened);
+      onAccountModalOpenChange?.(opened);
+    },
+    [onAccountModalOpenChange],
+  );
   return (
     <Accounts
       state={state}
-      onModalOpenChange={onAccountModalOpenChange}
+      onModalOpenChange={updateAccountModalOpen}
       agent={settings.agent}
       accountKey={settings.agent.accountKey || "default"}
       onError={notify}
@@ -38,13 +48,16 @@ export function UnifiedAgentSettings({
             accounts={state.data.accounts}
             onAccountChange={selectAccount}
             accountDisabled={disabled}
+            accountModalOpen={accountModalOpen}
           />
-          <AccountExclusionsControl
-            lead={settings.agent}
-            accounts={state.data}
-            refresh={settings.refresh}
-            onError={notify}
-          />
+          {showAccountExclusions && (
+            <AccountExclusionsControl
+              lead={settings.agent}
+              accounts={state.data}
+              refresh={settings.refresh}
+              onError={notify}
+            />
+          )}
         </>
       )}
     />

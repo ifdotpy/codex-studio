@@ -33,6 +33,7 @@ import {
   type WorkerModelInfo,
 } from "./WorkerModelPicker";
 import { AccountTransferStatus, type Account } from "../Accounts";
+import { layerZIndex } from "../../theme";
 import type { ModelOption } from "../ModelPicker";
 import { ProviderMark, setupAccountName } from "../AccountTiles";
 import { useMediaQuery } from "@mantine/hooks";
@@ -126,6 +127,7 @@ type SettingsProps = {
   permissionsTargetId?: string;
   onAccountChange?: (key: string) => void;
   accountDisabled?: boolean;
+  accountModalOpen?: boolean;
   onDraftChange?: (patch: Partial<ConversationBody>) => void;
 };
 const accountOf = (agent: Pick<Agent, "accountKey">) =>
@@ -267,6 +269,7 @@ function ScopedExecutionSettings({
   permissionsTargetId,
   onAccountChange,
   accountDisabled = false,
+  accountModalOpen = false,
   onDraftChange,
   role,
   onRole,
@@ -309,9 +312,17 @@ function ScopedExecutionSettings({
   useEffect(() => {
     if (!opened) return;
     const close = (event: KeyboardEvent) => {
-      // An open model list handles its own Escape first.
+      const cameFromModal = event
+        .composedPath()
+        .some(
+          (target) =>
+            target instanceof Element &&
+            target.classList.contains("mantine-Modal-content"),
+        );
       if (
         event.key === "Escape" &&
+        !cameFromModal &&
+        !accountModalOpen &&
         (event.target as HTMLElement | null)?.getAttribute(
           "data-mantine-stop-propagation",
         ) !== "true"
@@ -321,9 +332,9 @@ function ScopedExecutionSettings({
         setOpened(false);
       }
     };
-    document.addEventListener("keydown", close);
-    return () => document.removeEventListener("keydown", close);
-  }, [opened]);
+    document.addEventListener("keydown", close, true);
+    return () => document.removeEventListener("keydown", close, true);
+  }, [accountModalOpen, opened]);
   const [saving, setSaving] = useState(false);
   const saveLock = useRef(false);
   const refreshGeneration = useRef(0);
@@ -1456,12 +1467,14 @@ function ScopedExecutionSettings({
       <Popover
         opened={opened}
         onChange={setOpened}
+        closeOnClickOutside={!accountModalOpen}
+        trapFocus={!accountModalOpen}
+        zIndex={layerZIndex.popover}
         position="top-start"
         width={340}
         shadow="md"
         middlewares={{ flip: true, shift: true, size: true }}
         closeOnEscape={false}
-        trapFocus
         returnFocus
       >
         <Popover.Target>{trigger}</Popover.Target>

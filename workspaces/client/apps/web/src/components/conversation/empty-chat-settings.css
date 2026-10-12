@@ -28,6 +28,18 @@
   max-width: 100%;
 }
 
+.empty-chat-setting .execution-menu .mantine-Button-label {
+  min-width: 0;
+}
+
+.empty-chat-setting .execution-selected {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
 @media (max-width: 760px) {
   .empty-chat-settings {
     width: calc(100% - 28px);

@@ -88,10 +88,9 @@ export default defineConfig({
     [
       "json",
       {
-        outputFile: resolve(
-          outputDirectory || playwrightScratch.root,
-          "results.json",
-        ),
+        outputFile:
+          process.env.CODEX_STUDIO_PLAYWRIGHT_JSON_REPORT ??
+          resolve(outputDirectory || playwrightScratch.root, "results.json"),
       },
     ],
   ],

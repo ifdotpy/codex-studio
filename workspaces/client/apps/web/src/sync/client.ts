@@ -58,6 +58,7 @@ import {
 import {
   deleteOtherEntityProjectionDatabases,
   entityProjectionDatabaseName,
+  holdEntityProjectionDatabaseLock,
 } from "./entityCacheStorage";
 
 export { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
@@ -121,6 +122,7 @@ async function open() {
   let grace: ReturnType<typeof setTimeout> | undefined;
   let identity: Awaited<ReturnType<typeof identify>> | null = null;
   let cleanupScheduled = false;
+  let projectionDatabaseLockHeld = false;
   let stopSchemaMatchCleanup = () => {};
   try {
     identity = await (hasCache
@@ -145,7 +147,12 @@ async function open() {
   setEntitySequenceProjection(workspaceId, API_SCHEMA_HASH);
   if (identity) save("codex-sync-workspace", workspaceId);
   const cleanupOtherSchemaCaches = () => {
-    if (cleanupScheduled || isApiSchemaMismatch()) return;
+    if (
+      cleanupScheduled ||
+      !projectionDatabaseLockHeld ||
+      isApiSchemaMismatch()
+    )
+      return;
     cleanupScheduled = true;
     stopSchemaMatchCleanup();
     deleteOtherEntityProjectionDatabases(
@@ -190,6 +197,9 @@ async function open() {
     workspaceId,
     API_SCHEMA_HASH,
     serverDatabaseSuffix,
+  );
+  projectionDatabaseLockHeld = await holdEntityProjectionDatabaseLock(
+    currentProjectionDatabase,
   );
   const projectionDb = await createRxDatabase({
     name: currentProjectionDatabase,

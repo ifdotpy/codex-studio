@@ -75,11 +75,19 @@ test.describe("legacy schema mismatch", () => {
     });
     let activeHash = oldHash;
     let pendingEntitySequence;
+    let pendingEntityChanges;
+    let pendingEntityDeliveriesRemaining = 0;
+    let pendingChangeEventResolve;
+    let allowPendingChangeEventResolve;
+    let allowPendingChangeEventPromise;
+    let allowPendingChangeEvent = false;
     let firstPullFails = false;
     let pullFailureCount = 0;
     const rendererHashes = [];
     const apiRequests = [];
     const statePulls = [];
+    let validProjectionDatabaseNames = [];
+    const entityChangePages = new WeakSet();
     const confirmedResources = new Set();
     const transcriptRows = [];
     const errors = [];
@@ -109,6 +117,7 @@ test.describe("legacy schema mismatch", () => {
         statePulls.push({
           page: route.request().frame().page(),
           after: requestUrl.searchParams.get("after"),
+          query: Object.fromEntries(requestUrl.searchParams),
         });
       }
       if (requestUrl.pathname === "/api/sync/stream") {
@@ -124,11 +133,14 @@ test.describe("legacy schema mismatch", () => {
           return true;
         });
         let body = "";
+        let workspaceId;
+        let injectedEntitySequence;
+        let resolveChangeEvent;
         if (initialResources.length > 0) {
           const identity = await fetch(
             new URL("/api/sync/identity", requestUrl),
           );
-          const { workspaceId } = await identity.json();
+          ({ workspaceId } = await identity.json());
           body = protocol3SseEvent("resources", {
             protocol: 3,
             workspaceId,
@@ -137,33 +149,58 @@ test.describe("legacy schema mismatch", () => {
             reason: "initial",
             resources: initialResources,
           });
-          if (streamHash === nextHash && pendingEntitySequence !== undefined) {
-            body += protocol3SseEvent("resources", {
-              protocol: 3,
-              workspaceId,
-              epoch: "schema-cache-test",
-              revision: 2,
-              reason: "change",
-              resources: [{ kind: "state" }],
-              resourceVersions: [
-                {
-                  resource: { kind: "state" },
-                  revision: 2,
-                  entitySequences: [pendingEntitySequence],
-                },
-              ],
-            });
-            pendingEntitySequence = undefined;
-          }
         }
-        return route.fulfill({
+        if (
+          streamHash === nextHash &&
+          pendingEntitySequence !== undefined &&
+          pendingEntityDeliveriesRemaining > 0
+        ) {
+          const entityChanges = pendingEntityChanges;
+          const entitySequence = pendingEntitySequence;
+          if (!allowPendingChangeEvent) await allowPendingChangeEventPromise;
+          if (!workspaceId) {
+            const identity = await fetch(
+              new URL("/api/sync/identity", requestUrl),
+            );
+            ({ workspaceId } = await identity.json());
+          }
+          body += protocol3SseEvent("resources", {
+            protocol: 3,
+            workspaceId,
+            epoch: "schema-cache-test",
+            revision: 2,
+            reason: "change",
+            resources: [{ kind: "state" }],
+            resourceVersions: [
+              {
+                resource: { kind: "state" },
+                revision: entityChanges.through,
+                entityChanges,
+              },
+            ],
+          });
+          pendingEntityDeliveriesRemaining--;
+          if (pendingEntityDeliveriesRemaining === 0) {
+            injectedEntitySequence = entitySequence;
+            resolveChangeEvent = pendingChangeEventResolve;
+            pendingChangeEventResolve = undefined;
+            pendingEntitySequence = undefined;
+            pendingEntityChanges = undefined;
+          }
+          entityChangePages.add(route.request().frame().page());
+        }
+        const response = await route.fulfill({
           status: 200,
           headers: { "content-type": "text/event-stream" },
           body: apiSchemaHandshakeSse(body, { hash: activeHash }),
         });
+        if (injectedEntitySequence !== undefined)
+          resolveChangeEvent?.(injectedEntitySequence);
+        return response;
       }
       if (
         requestUrl.pathname === "/api/sync/pull" &&
+        requestUrl.searchParams.get("reset") === "1" &&
         requestUrl.searchParams.get("after") === "0" &&
         firstPullFails
       ) {
@@ -337,14 +374,20 @@ test.describe("legacy schema mismatch", () => {
         ).length,
         transcripts: transcriptRows.length,
       });
-      const staleNames = [
+      const oldBuildNames = [
         `rxdb-dexie-studio-entity-projection-${workspaceId}-${oldHash}--0--projections`,
         `rxdb-dexie-studio-entity-projection-${workspaceId}-${oldHash}--0--_rxdb_internal`,
         `rxdb-dexie-studio-entity-projection-${workspaceId}-${oldHash}--0--rx-replication-meta-${"a".repeat(64)}`,
       ];
+      const reclaimableHash = "c".repeat(64);
+      const staleNames = [
+        `rxdb-dexie-studio-entity-projection-${workspaceId}-${reclaimableHash}--0--projections`,
+        `rxdb-dexie-studio-entity-projection-${workspaceId}-${reclaimableHash}--0--_rxdb_internal`,
+        `rxdb-dexie-studio-entity-projection-${workspaceId}-${reclaimableHash}--0--rx-replication-meta-${"a".repeat(64)}`,
+      ];
       const legacyName = `rxdb-dexie-studio${workspaceId}--0--projections`;
       await page.evaluate(
-        async ({ staleNames, legacyName }) => {
+        async ({ oldBuildNames, staleNames, legacyName }) => {
           const open = (name) =>
             new Promise((resolve, reject) => {
               const request = indexedDB.open(name);
@@ -354,9 +397,11 @@ test.describe("legacy schema mismatch", () => {
               };
               request.onerror = () => reject(request.error);
             });
-          await Promise.all([...staleNames, legacyName].map(open));
+          await Promise.all(
+            [...oldBuildNames, ...staleNames, legacyName].map(open),
+          );
         },
-        { staleNames, legacyName },
+        { oldBuildNames, staleNames, legacyName },
       );
 
       activeHash = nextHash;
@@ -379,10 +424,22 @@ test.describe("legacy schema mismatch", () => {
       firstPullFails = true;
       const newPageSession = await context.newCDPSession(newPage);
       await newPageSession.send("Network.enable");
+      await newPageSession.send("Page.enable");
       await newPageSession.send("Network.setCacheDisabled", {
         cacheDisabled: true,
       });
+      const newPageResetPull = newPage.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return (
+          url.pathname === "/api/sync/pull" &&
+          url.searchParams.get("scope") === "state:entities:v1" &&
+          url.searchParams.get("reset") === "1" &&
+          url.searchParams.get("after") === "0" &&
+          response.status() === 200
+        );
+      });
       await newPage.goto(origin);
+      await newPageResetPull;
       await expect(newPage.locator(".startup")).toBeVisible({
         timeout: 10_000,
       });
@@ -399,7 +456,7 @@ test.describe("legacy schema mismatch", () => {
       await expect(newPage.locator("#message")).toHaveValue(
         "Draft kept across the schema update",
       );
-      const validProjectionDatabaseNames = await newPage.evaluate(
+      validProjectionDatabaseNames = await newPage.evaluate(
         async ({ workspaceId, schemaHash }) =>
           (await indexedDB.databases())
             .map(({ name }) => name)
@@ -415,6 +472,38 @@ test.describe("legacy schema mismatch", () => {
         validProjectionDatabaseNames.length > 0,
         "the valid new-build tab has a populated projection cache",
       );
+      const readNewPageStateCheckpoint = () =>
+        newPage.evaluate(async (names) => {
+          const name = names.find((databaseName) =>
+            databaseName.endsWith("--0--projections"),
+          );
+          if (!name) return {};
+          const db = await new Promise((resolve, reject) => {
+            const request = indexedDB.open(name);
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+          });
+          const read = (id) =>
+            new Promise((resolve, reject) => {
+              const request = db
+                .transaction("docs", "readonly")
+                .objectStore("docs")
+                .get(id);
+              request.onsuccess = () => resolve(request.result);
+              request.onerror = () => reject(request.error);
+            });
+          const [ready, checkpoint, complete] = await Promise.all([
+            read("state:entities:ready"),
+            read("state:entities:checkpoint"),
+            read("state:entities:complete"),
+          ]);
+          db.close();
+          return {
+            ready: ready?.payload,
+            checkpoint: checkpoint?.seq,
+            complete: complete?.payload === "complete",
+          };
+        }, validProjectionDatabaseNames);
       assert.deepEqual(
         errors,
         [],
@@ -436,6 +525,15 @@ test.describe("legacy schema mismatch", () => {
         )
         .toEqual([]);
       assert.ok(
+        await newPage.evaluate(async (names) => {
+          const existing = new Set(
+            (await indexedDB.databases()).map(({ name }) => name),
+          );
+          return names.every((name) => existing.has(name));
+        }, oldBuildNames),
+        "cleanup preserves the stale-hash database held by the old-build tab",
+      );
+      assert.ok(
         await newPage.evaluate(
           async (name) =>
             (await indexedDB.databases()).some(
@@ -454,7 +552,6 @@ test.describe("legacy schema mismatch", () => {
           hasText: "Studio has been updated. Update this tab",
         }),
       ).toBeVisible({ timeout: 20_000 });
-      await oldPage.waitForTimeout(1_500);
       await expect
         .poll(() =>
           newPage.evaluate(async (expected) => {
@@ -465,6 +562,15 @@ test.describe("legacy schema mismatch", () => {
           }, validProjectionDatabaseNames),
         )
         .toEqual(validProjectionDatabaseNames);
+      await expect
+        .poll(readNewPageStateCheckpoint)
+        .toMatchObject({ ready: "ready", complete: true });
+      const newPageStateCheckpoint = await readNewPageStateCheckpoint();
+      assert.ok(
+        Number.isSafeInteger(newPageStateCheckpoint.checkpoint) &&
+          newPageStateCheckpoint.checkpoint > 0,
+        `the valid tab has a durable nonzero checkpoint: ${JSON.stringify(newPageStateCheckpoint)}`,
+      );
 
       const { token } = await fetch(`${origin}/api/session`).then((r) =>
         r.json(),
@@ -482,51 +588,99 @@ test.describe("legacy schema mismatch", () => {
       });
       assert.equal(mutation.status, 200);
       const mutationBody = await mutation.json();
-      const mutationEntity = mutationBody._syncEntities?.find((row) =>
-        row.id.startsWith("entity:"),
+      const mutationEntity = mutationBody._syncEntities?.find(
+        (row) => row.id === `entity:agent:${createdId}`,
       );
       assert.ok(mutationEntity, "fixture mutation returns a sequenced entity");
-      const pullsBeforeMutationEvent = statePulls.filter(
-        (pull) => pull.page === newPage,
-      ).length;
-      pendingEntitySequence = mutationEntity.seq;
-      confirmedResources.clear();
-      await newPage.reload();
-      await expect
-        .poll(() => statePulls.filter((pull) => pull.page === newPage).length)
-        .toBeGreaterThan(pullsBeforeMutationEvent);
-      const checkpointPulls = statePulls.filter(
-        (pull) => pull.page === newPage,
+      assert.ok(
+        Number(mutationEntity.seq) > 0,
+        "fixture entity has a sequence",
       );
       assert.ok(
-        checkpointPulls.some((pull) => Number(pull.after) > 0),
-        "the valid tab pulls the fixture change from its retained checkpoint",
+        mutationEntity.seq > newPageStateCheckpoint.checkpoint,
+        `the fixture change is beyond the applied checkpoint: event=${mutationEntity.seq}, checkpoint=${newPageStateCheckpoint.checkpoint}`,
       );
+      pendingEntitySequence = mutationEntity.seq;
+      const entityChangeDocuments = [];
+      let entityChangeCursor = newPageStateCheckpoint.checkpoint;
+      while (entityChangeCursor < mutationEntity.seq) {
+        const pageResponse = await fetch(
+          `${origin}/api/sync/pull?scope=state%3Aentities%3Av1&after=${entityChangeCursor}&limit=500`,
+          {
+            headers: {
+              "X-Canvas-Token": token,
+              [API_SCHEMA_HASH_HEADER]: oldHash,
+            },
+          },
+        );
+        assert.equal(pageResponse.status, 200);
+        const entityPage = await pageResponse.json();
+        assert.notEqual(entityPage.reset, true);
+        entityChangeDocuments.push(
+          ...entityPage.documents.filter(
+            (document) => Number(document.seq) <= Number(mutationEntity.seq),
+          ),
+        );
+        assert.ok(entityPage.checkpoint.seq > entityChangeCursor);
+        entityChangeCursor = Math.min(
+          entityPage.checkpoint.seq,
+          Number(mutationEntity.seq),
+        );
+      }
+      assert.equal(entityChangeCursor, mutationEntity.seq);
+      pendingEntityChanges = {
+        after: newPageStateCheckpoint.checkpoint,
+        through: entityChangeCursor,
+        documents: entityChangeDocuments,
+      };
+      pendingEntityDeliveriesRemaining = 2;
+      allowPendingChangeEvent = false;
+      allowPendingChangeEventPromise = new Promise((resolve) => {
+        allowPendingChangeEventResolve = resolve;
+      });
+      const changeEventInjected = new Promise((resolve) => {
+        pendingChangeEventResolve = resolve;
+      });
+      await newPage.reload();
+      await expect(
+        newPage.getByRole("button", { name: /^Release lead/ }).first(),
+      ).toBeVisible();
+      await expect(newPage.locator("#message")).toBeVisible();
+      await expect
+        .poll(readNewPageStateCheckpoint)
+        .toMatchObject({ ready: "ready", complete: true });
+      allowPendingChangeEvent = true;
+      allowPendingChangeEventResolve?.();
+      allowPendingChangeEventResolve = undefined;
+      await changeEventInjected;
+      await expect
+        .poll(readNewPageStateCheckpoint)
+        .toMatchObject(newPageStateCheckpoint);
+      assert.ok(
+        entityChangePages.has(newPage),
+        "the valid tab receives the fixture's separate entity change event",
+      );
+      await expect
+        .poll(readNewPageStateCheckpoint)
+        .toMatchObject({ checkpoint: Number(mutationEntity.seq) });
       await expect(newPage.locator(`[data-chat="${createdId}"]`)).toBeVisible({
         timeout: 30_000,
       });
 
-      const pulls = await newPage.evaluate(() =>
-        performance
-          .getEntriesByType("resource")
-          .filter((entry) => entry.name.includes("/api/sync/pull"))
-          .map((entry) => new URL(entry.name))
-          .filter(
-            (url) => url.searchParams.get("scope") === "state:entities:v1",
-          )
-          .map((url) => url.searchParams.get("after")),
+      const resetBootstrapPull = statePulls.find(
+        (pull) => pull.page === newPage && pull.query.reset === "1",
       );
       console.log("Schema variant observed:", {
         sameHashCachedReloadMs: Math.round(cachedReloadMs),
         rendererHashes: [...new Set(rendererHashes)],
-        pulls,
+        resetBootstrapQuery: resetBootstrapPull?.query,
         distAssetsSha256: distAssetsDigest(),
       });
-      assert.ok(pulls.length > 0);
+      assert.ok(resetBootstrapPull, "the new schema starts a reset bootstrap");
       assert.equal(
-        statePulls.find((pull) => pull.page === newPage)?.after,
+        resetBootstrapPull.after,
         "0",
-        "the new schema cache's first pull starts at zero",
+        "the new schema cache's main-client bootstrap starts at zero",
       );
     } finally {
       fixture.kill();

@@ -1,5 +1,6 @@
 import { Button, Modal, Stack, TextInput } from "@mantine/core";
 import { useEffect, useState } from "react";
+import { layerZIndex } from "../theme";
 import type { useAccounts } from "./Accounts";
 import AccountSignIn from "./AccountSignIn";
 import ClaudeAddSignIn from "./ClaudeAddSignIn";
@@ -42,6 +43,7 @@ export default function AccountAddDialog({
     <>
       <Modal
         opened={opened && !flow}
+        zIndex={layerZIndex.modalAbovePopover}
         onClose={close}
         title="Add account"
         centered
@@ -102,6 +104,7 @@ export default function AccountAddDialog({
       {opened && flow && provider === "codex" && (
         <Modal
           opened={opened}
+          zIndex={layerZIndex.modalAbovePopover}
           onClose={close}
           title={`Sign in to Codex · ${label || "Codex"}`}
           centered

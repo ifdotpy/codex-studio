@@ -382,6 +382,42 @@ test("Account Transfer Ui", async ({
       exact: true,
     });
     await confirmation.waitFor();
+    const [confirmationZIndex, popoverZIndex] = await confirmation.evaluate(
+      (dialog) => {
+        const modal = dialog.closest(".mantine-Modal-inner");
+        const popover = document.querySelector(".execution-dropdown");
+        return [
+          modal ? getComputedStyle(modal).zIndex : null,
+          getComputedStyle(popover).zIndex,
+        ];
+      },
+    );
+    assert.ok(
+      Number(confirmationZIndex) > Number(popoverZIndex),
+      `confirmation layer ${confirmationZIndex} must exceed popover layer ${popoverZIndex}`,
+    );
+    assert.equal(
+      await confirmation.evaluate((dialog) =>
+        dialog.contains(document.activeElement),
+      ),
+      true,
+      "the transfer confirmation owns focus above the settings popover",
+    );
+    await page.keyboard.press("Escape");
+    await confirmation.waitFor({ state: "hidden" });
+    await confirmation.waitFor({ state: "detached" });
+    await expect(page.locator(".mantine-Modal-overlay")).toHaveCount(1);
+    const chatSettingsAfterEscape = page.getByRole("dialog", {
+      name: "Chat settings",
+      exact: true,
+    });
+    await expect(chatSettingsAfterEscape).toBeVisible();
+    if (!(await page.locator(".execution-dropdown").isVisible()))
+      await chatSettingsAfterEscape
+        .getByRole("button", { name: "Main agent settings", exact: true })
+        .click();
+    await accountTileButton(page, "Main agent account", "Work").click();
+    await confirmation.waitFor();
     assert.equal(
       bodies.filter((b) => b.path === "/api/agents/account-transfer").length,
       0,
@@ -391,6 +427,7 @@ test("Account Transfer Ui", async ({
       .getByRole("button", { name: "Transfer chat", exact: true })
       .click();
     await confirmation.waitFor({ state: "hidden" });
+    await confirmation.waitFor({ state: "detached" });
     await expect
       .poll(
         () =>
@@ -399,12 +436,17 @@ test("Account Transfer Ui", async ({
       )
       .toBe(1);
     assert.ok(notifySync, "the real fixture resource stream is connected");
+    const syncedTransferWaiting =
+      "Waiting for the current turn (fixture stream applied)";
+    agents[0].accountTransfer.waiting = syncedTransferWaiting;
     notifySync([{ kind: "state" }]);
-    await page
-      .getByRole("dialog", { name: "Chat settings", exact: true })
-      .getByRole("button", { name: "Main agent settings", exact: true })
-      .click();
     const agentSettings = page.locator(".execution-dropdown");
+    if (!(await agentSettings.isVisible()))
+      await page
+        .getByRole("dialog", { name: "Chat settings", exact: true })
+        .getByRole("button", { name: "Main agent settings", exact: true })
+        .click();
+    await agentSettings.waitFor();
     const transferStatus = agentSettings.locator(
       ".account-menu-note[role=status]",
     );
@@ -419,7 +461,7 @@ test("Account Transfer Ui", async ({
     );
     assert.equal(await accountGroup.getAttribute("data-value"), "default");
     await transferStatus
-      .getByText("Waiting for the current turn", { exact: true })
+      .getByText(syncedTransferWaiting, { exact: true })
       .waitFor();
     await transferStatus
       .getByText("Moved 1 subagents to work@example.com.", { exact: true })
@@ -449,6 +491,8 @@ test("Account Transfer Ui", async ({
       .getByRole("button", { name: "Add agents", exact: true })
       .click();
     await extension.waitFor({ state: "hidden" });
+    await extension.waitFor({ state: "detached" });
+    await expect(page.locator(".mantine-Modal-overlay")).toHaveCount(1);
     const requestIds = bodies
       .filter((b) => b.path === "/api/agents/account-transfer")
       .map((b) => b.body.request_id);
@@ -459,6 +503,10 @@ test("Account Transfer Ui", async ({
       requestIds[1],
       "a transfer extension gets its own stable request id",
     );
+    if (!(await page.locator(".execution-dropdown").isVisible()))
+      await chatSettingsAfterEscape
+        .getByRole("button", { name: "Main agent settings", exact: true })
+        .click();
     assert.equal(
       await accountTileButton(
         page,
@@ -468,7 +516,7 @@ test("Account Transfer Ui", async ({
       true,
     );
     await page.keyboard.press("Escape");
-    await page.waitForTimeout(180);
+    await expect(chatSettingsAfterEscape).toBeVisible();
     await page.screenshot({
       path: join(evidence, "transfer-pending.png"),
       animations: "disabled",
@@ -723,6 +771,10 @@ test("Account Transfer Ui", async ({
       .waitFor();
     await page.keyboard.press("Escape");
     await page.keyboard.press("Escape");
+    await page
+      .getByRole("dialog", { name: "Chat settings", exact: true })
+      .waitFor({ state: "hidden" });
+    await expect(page.locator(".mantine-Modal-overlay")).toHaveCount(0);
     await page.locator('[data-chat="empty"]').click();
     await page
       .getByRole("button", { name: "Chat settings", exact: true })

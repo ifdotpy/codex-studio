@@ -3473,7 +3473,10 @@ export default function App() {
           !workerSettingsOpen &&
           !reviewSettingsOpen
         }
-        onClose={() => setSettingsOpen(false)}
+        onClose={() => {
+          if (accountModalOpenRef.current) return;
+          setSettingsOpen(false);
+        }}
         title="Chat settings"
         size={modalSizes.settings}
       >
@@ -3489,7 +3492,8 @@ export default function App() {
                   permissionsTargetId="chat-settings-permissions"
                   extrasTargetId="chat-settings-modes"
                   onOpenChange={setMainSettingsOpen}
-                  onAccountModalOpenChange={setAccountModalOpen}
+                  onAccountModalOpenChange={updateAccountModalOpen}
+                  showAccountExclusions
                   agent={agent}
                   catalog={agentModels}
                   team={data?.runtime?.agents || []}

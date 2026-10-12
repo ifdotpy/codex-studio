@@ -84,6 +84,45 @@ test("Questions overflow", async ({ browser }) => {
     await card.getByRole("button", { name: "Answer" }).click();
     const messageScroller = view.locator("#messages");
     const requestsScroller = view.locator("#requests");
+    const waitForVisualLayout = async () => {
+      await view.evaluate(async () => {
+        await document.fonts.ready;
+        await Promise.all(
+          Array.from(document.images, (image) =>
+            image.decode().catch(() => undefined),
+          ),
+        );
+      });
+      let previous;
+      let stableSamples = 0;
+      await expect
+        .poll(
+          async () => {
+            const current = await messageScroller.evaluate((node) => ({
+              clientHeight: node.clientHeight,
+              scrollHeight: node.scrollHeight,
+              requestHeight: document.querySelector("#requests").clientHeight,
+              requestScrollHeight:
+                document.querySelector("#requests").scrollHeight,
+            }));
+            if (
+              previous &&
+              current.clientHeight === previous.clientHeight &&
+              current.scrollHeight === previous.scrollHeight &&
+              current.requestHeight === previous.requestHeight &&
+              current.requestScrollHeight === previous.requestScrollHeight
+            ) {
+              stableSamples += 1;
+            } else {
+              stableSamples = 0;
+            }
+            previous = current;
+            return stableSamples;
+          },
+          { message: "Transcript and question layout has settled" },
+        )
+        .toBeGreaterThanOrEqual(2);
+    };
     await expect
       .poll(() =>
         card.evaluate((node) => {
@@ -372,14 +411,13 @@ test("Questions overflow", async ({ browser }) => {
       .evaluate((node) => node.remove());
     await view.setViewportSize({ width: 1280, height: 800 });
     await view.evaluate(() => window.setTestViewport({ height: 800 }));
-    await expect
-      .poll(() => messageScroller.evaluate((node) => node.clientHeight))
-      .toBeGreaterThan(0);
+    await waitForVisualLayout();
     const scrollBeforeReload = await messageScroller.evaluate(
       (node) => node.scrollTop,
     );
     await view.reload();
     await view.locator('[data-request="overflow-question"]').waitFor();
+    await waitForVisualLayout();
     await expect
       .poll(() =>
         messageScroller.evaluate(

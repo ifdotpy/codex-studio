@@ -11,6 +11,7 @@ import { watchResourceReads } from "./watchResourceReads";
 import { useAccountLimits } from "../usage/useAccountLimits";
 import { accountLimits } from "../usage/accountUsage";
 import { Button, Group, Menu, Modal, Stack, TextInput } from "@mantine/core";
+import { layerZIndex } from "../theme";
 import {
   Check,
   ArrowRightLeft,
@@ -22,6 +23,7 @@ import {
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useMemo,
   useState,
@@ -495,6 +497,7 @@ export function AccountTransferConfirmation({
   return (
     <Modal
       opened={opened}
+      zIndex={layerZIndex.modalAbovePopover}
       onClose={() => {
         if (!pending) onClose();
       }}
@@ -622,7 +625,7 @@ export default function Accounts({
     !!deleteChoice ||
     !!claudeLogin ||
     !!codexLogin;
-  useEffect(() => {
+  useLayoutEffect(() => {
     onModalOpenChange?.(
       managerOnly
         ? !!addOpen ||
@@ -783,7 +786,8 @@ export default function Accounts({
     const extendTransfer =
       transferring && account.id === teamTransfer?.targetAccountKey;
     if (account.id === accountKey && !extendTransfer) return;
-    if (pinned && owner)
+    if (pinned && owner) {
+      onModalOpenChange?.(true);
       setTransferChoice({
         target: account,
         sourceProvider: selected?.provider || owner.provider || "codex",
@@ -791,7 +795,7 @@ export default function Accounts({
         requestId: crypto.randomUUID(),
         extend: !!extendTransfer,
       });
-    else if (!pinned)
+    } else if (!pinned)
       void action(account.id, async () => {
         await changeAccount?.(account.id);
       });
@@ -1218,6 +1222,7 @@ export default function Accounts({
       />
       <Modal
         opened={!!renameChoice}
+        zIndex={layerZIndex.modalAbovePopover}
         onClose={() => setRenameChoice(null)}
         title={`Rename ${renameChoice?.email || renameChoice?.label || "account"}`}
         centered
@@ -1263,6 +1268,7 @@ export default function Accounts({
       </Modal>
       <Modal
         opened={!!claudeProfileChoice}
+        zIndex={layerZIndex.modalAbovePopover}
         onClose={() => setClaudeProfileChoice(null)}
         title="Configure Claude"
         centered
@@ -1282,7 +1288,10 @@ export default function Accounts({
         target={transferChoice?.target || null}
         sourceProvider={transferChoice?.sourceProvider || "codex"}
         extend={transferChoice?.extend}
-        onClose={() => setTransferChoice(null)}
+        onClose={() => {
+          setTransferChoice(null);
+          onModalOpenChange?.(false);
+        }}
         onConfirm={async () => {
           if (!transferChoice) return;
           await post("/api/agents/account-transfer", {
@@ -1294,6 +1303,7 @@ export default function Accounts({
       />
       <Modal
         opened={!!disconnectChoice}
+        zIndex={layerZIndex.modalAbovePopover}
         onClose={() => {
           if (!pending) setDisconnectChoice(null);
         }}
@@ -1353,6 +1363,7 @@ export default function Accounts({
       </Modal>
       <Modal
         opened={!!deleteChoice}
+        zIndex={layerZIndex.modalAbovePopover}
         onClose={() => {
           if (!pending) {
             setDeleteChoice(null);

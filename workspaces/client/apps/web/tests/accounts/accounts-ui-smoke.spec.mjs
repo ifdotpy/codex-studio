@@ -567,10 +567,11 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       let login = page.getByRole("dialog", {
         name: /Sign in to Codex.*personal@example\.com/,
       });
+      let lostLoginAttempt;
       await page.route(
         "**/api/accounts/login",
         async (route) => {
-          await route.fetch();
+          lostLoginAttempt = route.request().postDataJSON();
           await route.abort();
         },
         { times: 1 },
@@ -579,9 +580,9 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         .getByRole("button", { name: "Start sign-in", exact: true })
         .click();
       await login.getByRole("alert").waitFor();
-      const id = logins[0].requestId;
+      const id = lostLoginAttempt.login_id;
       assert.equal(
-        logins[0].reauthAccountKey,
+        lostLoginAttempt.account_key,
         "default",
         "A Claude lead must restore its Codex worker account",
       );

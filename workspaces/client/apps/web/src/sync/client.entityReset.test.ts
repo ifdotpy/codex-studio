@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   watchResourceChanges: vi.fn(),
   registerPersister: vi.fn(),
   deleteOtherCaches: vi.fn(),
+  holdProjectionDatabaseLock: vi.fn(async () => true),
   isApiSchemaMismatch: vi.fn(() => false),
   cachedWorkspace: "",
   schemaHash: "a".repeat(64),
@@ -73,6 +74,7 @@ vi.mock("./resourceEvents", () => ({
 vi.mock("./resume", () => ({ onResume: vi.fn(() => () => {}) }));
 vi.mock("./entityCacheStorage", () => ({
   deleteOtherEntityProjectionDatabases: mocks.deleteOtherCaches,
+  holdEntityProjectionDatabaseLock: mocks.holdProjectionDatabaseLock,
   entityProjectionDatabaseName: (workspace: string, hash: string) =>
     `studio-entity-projection-${workspace}-${hash}`,
 }));
@@ -87,6 +89,8 @@ describe("entity pull reset wiring", () => {
     mocks.watchResourceChanges.mockReset();
     mocks.registerPersister.mockReset();
     mocks.deleteOtherCaches.mockReset();
+    mocks.holdProjectionDatabaseLock.mockReset();
+    mocks.holdProjectionDatabaseLock.mockResolvedValue(true);
     mocks.isApiSchemaMismatch.mockReset();
     mocks.isApiSchemaMismatch.mockReturnValue(false);
     mocks.cachedWorkspace = "";

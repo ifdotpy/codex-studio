@@ -568,6 +568,7 @@ function reportPlan(value, json) {
 function browserTestOptions() {
   return {
     script: "test:browser",
+    playwrightJsonReport: true,
     selector: "full client browser project",
     reason:
       "Run the web package's isolated browser launcher with its 900 s global cap.",
@@ -934,21 +935,6 @@ export function parseCounts(item, output) {
       summaryFound: Boolean(suite),
     };
   }
-  const playwright = normalizedOutput.match(
-    /^\s*(?:(\d+) failed[ \t]*\n)?[ \t]*(?:(\d+) skipped[ \t]*\n)?[ \t]*(?:(\d+) passed(?: \([^\n]+\))?)?\s*$/m,
-  );
-  if (playwright?.slice(1).some((count) => count !== undefined)) {
-    const failed = +(playwright[1] ?? 0);
-    const skipped = +(playwright[2] ?? 0);
-    const passed = +(playwright[3] ?? 0);
-    return {
-      passed,
-      failed,
-      skipped,
-      executed: passed + failed,
-      summaryFound: true,
-    };
-  }
   const testLines = normalizedOutput
     .split("\n")
     .filter((line) => /^\s*Tests\s+/.test(line));
@@ -1001,6 +987,66 @@ export function parseCounts(item, output) {
       summaryFound: true,
     };
   return { passed: 0, failed: 0, skipped: 0, executed: 0, summaryFound: false };
+}
+
+export function evaluatePlaywrightReport(reportText, processExitCode) {
+  const errors = [];
+  if (processExitCode !== 0)
+    errors.push(`Playwright exited with code ${processExitCode}`);
+  let report;
+  try {
+    if (reportText === null || reportText === undefined)
+      throw new Error("Playwright JSON report is missing");
+    report =
+      typeof reportText === "string" ? JSON.parse(reportText) : reportText;
+  } catch (error) {
+    errors.push(
+      error.message === "Playwright JSON report is missing"
+        ? error.message
+        : `Playwright JSON report is invalid: ${error.message}`,
+    );
+  }
+  const stats = report?.stats;
+  const statNames = ["expected", "unexpected", "flaky", "skipped"];
+  if (
+    !stats ||
+    statNames.some(
+      (name) => !Number.isSafeInteger(stats[name]) || stats[name] < 0,
+    )
+  ) {
+    if (report)
+      errors.push("Playwright JSON report has invalid or missing stats");
+    return {
+      counts: {
+        passed: null,
+        failed: null,
+        flaky: null,
+        skipped: null,
+        executed: null,
+        summaryFound: false,
+      },
+      errors,
+      exitCode: 1,
+    };
+  }
+  const counts = {
+    passed: stats.expected,
+    failed: stats.unexpected,
+    flaky: stats.flaky,
+    skipped: stats.skipped,
+    executed: stats.expected + stats.unexpected + stats.flaky,
+    summaryFound: true,
+  };
+  if (stats.unexpected > 0)
+    errors.push(`Playwright reported ${stats.unexpected} unexpected test(s)`);
+  if (stats.flaky > 0)
+    errors.push(`Playwright reported ${stats.flaky} flaky test(s)`);
+  if (counts.executed === 0) errors.push("Playwright executed zero tests");
+  return {
+    counts,
+    errors,
+    exitCode: errors.length ? 1 : 0,
+  };
 }
 
 function runLogged(command, args, cwd, log, environment = process.env) {
@@ -1073,16 +1119,25 @@ export async function execute(
   const run = plan(root, item, "test", caseName, commands, options);
   const logDir = makeLogDirectory();
   const logPath = path.join(logDir, "full.log");
+  const playwrightReportPath = options.playwrightJsonReport
+    ? path.join(logDir, "playwright-results.json")
+    : null;
   mkdirSync(logDir, { recursive: true });
   appendFileSync(logPath, "");
   const started = performance.now();
-  let counts = { passed: null, failed: null, skipped: null, executed: null };
+  let counts = {
+    passed: null,
+    failed: null,
+    flaky: null,
+    skipped: null,
+    executed: null,
+  };
   let exitCode = 0;
   let signal = null;
   let output = "";
   const errors = [];
   for (const [bin, args] of commands) {
-    const env =
+    const baseEnv =
       bin === "cargo"
         ? {
             ...process.env,
@@ -1092,6 +1147,12 @@ export async function execute(
               : {}),
           }
         : process.env;
+    const env = playwrightReportPath
+      ? {
+          ...baseEnv,
+          CODEX_STUDIO_PLAYWRIGHT_JSON_REPORT: playwrightReportPath,
+        }
+      : baseEnv;
     const child = await runLogged(bin, args, root, logPath, env);
     const missingNextest =
       bin === "cargo" && args[0] === "nextest"
@@ -1117,7 +1178,16 @@ export async function execute(
   const durationSeconds = Number(
     ((performance.now() - started) / 1000).toFixed(3),
   );
-  counts = parseCounts(item, output);
+  if (playwrightReportPath) {
+    const reportText = existsSync(playwrightReportPath)
+      ? readFileSync(playwrightReportPath, "utf8")
+      : null;
+    const reportResult = evaluatePlaywrightReport(reportText, exitCode);
+    counts = reportResult.counts;
+    errors.push(...reportResult.errors);
+  } else {
+    counts = parseCounts(item, output);
+  }
   const selectionError = nextestSelectionError(exitCode);
   if (selectionError) errors.push(selectionError);
   if (nextestError(output) && !errors.includes(NEXTTEST_MISSING))
@@ -1126,9 +1196,14 @@ export async function execute(
     errors.push(
       "native runner summary was missing; refusing to report success",
     );
-  if (exitCode === 0 && counts.executed === 0 && !options.allowZeroTests)
+  if (
+    exitCode === 0 &&
+    counts.executed === 0 &&
+    !options.allowZeroTests &&
+    !playwrightReportPath
+  )
     errors.push("native runner executed zero tests");
-  if (errors.length) exitCode = 1;
+  if (errors.length && (!playwrightReportPath || exitCode === 0)) exitCode = 1;
   const result = {
     package: item.name,
     case: caseName || null,
@@ -1140,6 +1215,7 @@ export async function execute(
     workingDirectory: run.workingDirectory,
     invocationDirectory: root,
     logPath,
+    ...(playwrightReportPath ? { reportPath: playwrightReportPath } : {}),
     requiredSetup: run.requiredSetup,
     costCategory: run.costCategory,
     notStarted: run.notStarted,
@@ -1154,7 +1230,7 @@ export async function execute(
   if (asJson) process.stdout.write(`${JSON.stringify(result)}\n`);
   else
     process.stdout.write(
-      `${options.label ?? item.name}${caseName ? ` / ${caseName}` : ""}: ${result.status}${counts.passed === null ? "" : ` — ${counts.passed} passed, ${counts.failed} failed, ${counts.skipped} skipped`}${counts.executed === 0 && !options.allowZeroTests ? " — zero tests executed" : ""}; ${durationSeconds}s\nCommand: ${run.command}\nFull log: ${logPath}\n${item.ecosystem === "server" ? formatServerRunDiagnostics(output) : ""}${serverFailures.length ? `Failing server suites:\n${serverFailures.join("\n")}\n` : ""}`,
+      `${options.label ?? item.name}${caseName ? ` / ${caseName}` : ""}: ${result.status}${counts.passed === null ? "" : ` — ${counts.passed} passed, ${counts.failed} failed${counts.flaky === null || counts.flaky === undefined ? "" : `, ${counts.flaky} flaky`}, ${counts.skipped} skipped`}${counts.executed === 0 && !options.allowZeroTests ? " — zero tests executed" : ""}; ${durationSeconds}s\nCommand: ${run.command}\nFull log: ${logPath}${playwrightReportPath ? `\nPlaywright JSON report: ${playwrightReportPath}` : ""}\n${item.ecosystem === "server" ? formatServerRunDiagnostics(output) : ""}${serverFailures.length ? `Failing server suites:\n${serverFailures.join("\n")}\n` : ""}`,
     );
   return result;
 }
