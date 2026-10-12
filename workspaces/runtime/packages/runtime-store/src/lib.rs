@@ -25,6 +25,7 @@ pub use records::{
 pub use repositories::event_write::{EventWriteReceipt, EventWriteRepository};
 pub use repositories::monitors::{MonitorsRepository, StoredMonitor};
 pub use repositories::profiles::{ProfileRecord, ProfileRepository, ProfileRole, ReasoningEffort};
+pub use repositories::questions_reads::{QuestionsReadsRecord, QuestionsReadsRepository};
 pub use repositories::rules::{RulesRepository, StoredAgent, StoredRule};
 pub use repositories::sync_documents::{EntityRow, SyncDocument, SyncDocumentsRepository};
 pub use repositories::transcript::{
@@ -195,6 +196,18 @@ impl RuntimeStore {
         )?;
         connection.pragma_update(None, "query_only", "ON")?;
         Ok(connection)
+    }
+
+    /// Run related reads in one SQLite snapshot.
+    pub fn read_transaction<T>(
+        &self,
+        operation: impl FnOnce(&Transaction<'_>) -> StoreResult<T>,
+    ) -> StoreResult<T> {
+        let mut connection = self.read()?;
+        let transaction = connection.transaction()?;
+        let value = operation(&transaction)?;
+        transaction.commit()?;
+        Ok(value)
     }
 
     /// Return SQLite's connection-local generation, advanced by commits made

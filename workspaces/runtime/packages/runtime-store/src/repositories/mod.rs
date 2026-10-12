@@ -5,6 +5,7 @@ pub(crate) mod events;
 pub(crate) mod messages;
 pub(crate) mod monitors;
 pub(crate) mod profiles;
+pub(crate) mod questions_reads;
 pub(crate) mod rules;
 pub(crate) mod sync_documents;
 pub(crate) mod tasks;
@@ -25,6 +26,7 @@ pub(crate) const REQUIREMENTS: &[&SchemaRequirements] = &[
     &monitors::REQUIREMENTS,
     &profiles::REQUIREMENTS,
     &rules::REQUIREMENTS,
+    &questions_reads::REQUIREMENTS,
     &sync_documents::REQUIREMENTS,
     &transcript::REQUIREMENTS,
     &work_items::REQUIREMENTS,
