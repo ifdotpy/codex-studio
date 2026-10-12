@@ -1766,8 +1766,8 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("BroadcastChannel", Channel);
 
     const transport = await loadTransport();
-    const local = { kind: "state" } as const;
-    const latePeerRef = { kind: "panel", agentId: "late-panel" } as const;
+    const local = { kind: "drafts" } as const;
+    const latePeerRef = { kind: "state" } as const;
     const localChanges = vi.fn();
     const stop = transport.watchResourceChanges(local, localChanges);
     await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
@@ -1779,6 +1779,10 @@ describe("shared resource event transport", () => {
       revision: 7,
       reason: "initial",
       resources: [local, latePeerRef],
+      resourceVersions: [
+        { resource: local, revision: 7 },
+        { resource: latePeerRef, revision: 7, entitySequences: [42] },
+      ],
     });
     await new Promise((resolve) => setTimeout(resolve, 30));
 
@@ -1804,9 +1808,9 @@ describe("shared resource event transport", () => {
           (message: any) =>
             message.kind === "resource-event" &&
             message.event.resources.some(
-              (resource: any) =>
-                resource.kind === "panel" && resource.agentId === "late-panel",
-            ),
+              (resource: any) => resource.kind === "state",
+            ) &&
+            message.event.resourceVersions[0]?.entitySequences?.[0] === 42,
         ),
     ).toBe(true);
     stop();
