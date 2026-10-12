@@ -91,7 +91,7 @@ class StateFixtureResponseTests(unittest.TestCase):
 
     def get(self, path: str) -> tuple[int, dict[str, object]]:
         try:
-            response = urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=20)
+            response = urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=HANG_GUARD_SECONDS)
         except HTTPError as error:
             response = error
         with response:
@@ -157,7 +157,7 @@ class RenamedAgentStateFixtureTests(StateFixtureResponseTests):
                          "Origin": f"http://127.0.0.1:{self.port}"},
                 method="POST",
             )
-            with urlopen(request, timeout=20) as response:
+            with urlopen(request, timeout=HANG_GUARD_SECONDS) as response:
                 self.assertEqual(response.status, 200)
 
         post("/api/projects", {"path": project_path})

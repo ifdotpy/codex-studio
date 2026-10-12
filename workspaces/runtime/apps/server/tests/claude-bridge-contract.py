@@ -22,7 +22,7 @@ import threading
 import time
 import unittest
 
-from server_test_waits import wait_for_condition
+from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
 
 ROOT = REPOSITORY_ROOT
 SDK = r'''
@@ -424,7 +424,7 @@ class Bridge(unittest.TestCase):
 
     def close(self):
         self.proc.stdin.close()
-        self.proc.wait(timeout=10)
+        self.proc.wait(timeout=HANG_GUARD_SECONDS)
         self.proc.stdout.close()
         self.proc.stderr.close()
 

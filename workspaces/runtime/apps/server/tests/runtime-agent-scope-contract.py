@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from server_test_waits import HANG_GUARD_SECONDS
 
 sys.dont_write_bytecode = True
 ROOT = REPOSITORY_ROOT
@@ -44,7 +45,8 @@ class RuntimeAgentRoomScope(unittest.TestCase):
                 with self.subTest(scenario=scenario):
                     result = subprocess.run(
                         [sys.executable, str(RUNNER), scenario],
-                        cwd=ROOT, env=env, capture_output=True, text=True, check=True, timeout=60)
+                        cwd=ROOT, env=env, capture_output=True, text=True, check=True,
+                        timeout=HANG_GUARD_SECONDS)
                     actual = json.loads(result.stdout.strip().splitlines()[-1])
                     if scenario == "legacy-workspace-operation-recovery":
                         self.assertEqual(actual["result"], expected_workspace_recovery)
