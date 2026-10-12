@@ -74,14 +74,14 @@ function wireOrderItem(
   }
 }
 
-// This window's own visual edits, kept per server backend until that server's snapshot
-// carries them. A model rebuilt before the network round trip would otherwise show the old
-// value for a moment ("jerky" collapse). The snapshot still wins once it moves.
+// This window's own visual edits, kept per server backend for a short time. A model rebuilt
+// before the network round trip, or from a late echo of an earlier edit, would otherwise show
+// an old value for a moment ("jerky" collapse). After that time the snapshot rules again.
 const pendingVisual = new WeakMap<
   SidebarBackend,
   Map<string, { value: boolean | undefined; at: number }>
 >();
-const PENDING_VISUAL_MS = 30_000;
+const PENDING_VISUAL_MS = 10_000;
 const pendingFor = (backend: SidebarBackend) => {
   let pending = pendingVisual.get(backend);
   if (!pending) pendingVisual.set(backend, (pending = new Map()));
@@ -131,11 +131,7 @@ export function mergedSidebarPreferences(
         for (const [field, edit] of pending) {
           const [editKey, name] = JSON.parse(field) as [string, string];
           if (editKey !== key) continue;
-          // Only the server's snapshot confirms an edit; this window's store has it at once.
-          if (
-            source.sidebar[kind][name] === edit.value ||
-            Date.now() - edit.at > PENDING_VISUAL_MS
-          ) {
+          if (Date.now() - edit.at > PENDING_VISUAL_MS) {
             pending.delete(field);
             continue;
           }
