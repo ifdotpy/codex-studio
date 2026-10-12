@@ -337,4 +337,26 @@ mod tests {
             r#"{"collection":"event","id":"fixture","value":{"created":9007199254740992.0,"id":"fixture"}}"#,
         );
     }
+
+    #[test]
+    fn high_precision_event_projection_keeps_the_stored_binary64_value() {
+        assert_eq!(
+            event_payload(
+                "fixture",
+                r#"{"id":"fixture","created":1791788985.5209818}"#,
+                false,
+            )
+            .expect("event payload encodes"),
+            r#"{"collection":"event","id":"fixture","value":{"created":1791788985.5209818,"id":"fixture"}}"#,
+        );
+        assert_eq!(
+            event_payload(
+                "fixture",
+                r#"{"id":"fixture","created":1.2345678901234567}"#,
+                false,
+            )
+            .expect("event payload encodes"),
+            r#"{"collection":"event","id":"fixture","value":{"created":1.2345678901234567,"id":"fixture"}}"#,
+        );
+    }
 }

@@ -33,6 +33,7 @@ with runtime.lock, runtime.db() as db:
             "fixtureFlag":True, "fixtureInteger":7}
     runtime.put(db, "tasks", task)
     runtime.enqueue(db, agent, "work_review", json.dumps({"fixture": True}), key="cross-event")
+    db.execute("UPDATE runtime_events SET created=1720000000.5 WHERE id='cross-event'")
     db.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES(?,?,?,?,?,?)",
                ("cross-message", "room-fixture", agent["id"], "Python message", 1720000000.5,
                 json.dumps({"delivery": True, "attempt": 1})))
@@ -40,6 +41,7 @@ with runtime.lock, runtime.db() as db:
         ("numeric-created-precision", 1791788985.5209818),
         ("numeric-created-tenth", 0.1),
         ("numeric-created-large-exponent", 1e21),
+        ("numeric-created-integer", 7),
         ("numeric-created-integer-real", 5.0),
         ("numeric-created-large-integer-real", 1791788985.0),
         ("numeric-created-17-digits", 1.2345678901234567),
@@ -75,6 +77,19 @@ class QuietRuntime(Runtime):
 root = pathlib.Path(sys.argv[1])
 agent_id = sys.argv[3]
 reference_root = pathlib.Path(sys.argv[4])
+rust_sqlite_version = sys.argv[5]
+rust_json_object = sys.argv[6]
+with sqlite3.connect(":memory:") as db:
+    python_json_object = db.execute("SELECT json_object('x', 1791788985.5209818)").fetchone()[0]
+diagnostics = {
+    "python_sqlite_version": sqlite3.sqlite_version,
+    "rust_sqlite_version": rust_sqlite_version,
+    "python_json_object": python_json_object,
+    "rust_json_object": rust_json_object,
+}
+def check(condition, description):
+    if not condition:
+        raise AssertionError(f"{description}; SQLite diagnostics={json.dumps(diagnostics, sort_keys=True)}")
 with sqlite3.connect(root / "canvas.sqlite3") as raw_db:
     persisted_agent_record = raw_db.execute(
         "SELECT record FROM runtime_agents WHERE id=?", (agent_id,)
@@ -91,17 +106,17 @@ with sqlite3.connect(reference_root / "canvas.sqlite3") as raw_db:
     ).fetchone()[0]
 runtime = QuietRuntime(root, lambda *_args, **_kwargs: None)
 agent = runtime.agent(agent_id)
-assert agent["fixtureFlag"] is True and type(agent["fixtureInteger"]) is int
-assert agent["rustAgentFlag"] is True
-assert agent["fixtureUnicode"] == "Zażółć 東京\n\u0000"
-assert agent["fixtureNested"] == {"items":[0.1,5.0,9007199254740993,True,{"text":"🦀\t"}]}
-assert json.loads(persisted_agent_record) == agent
-assert ": " in python_agent_record and ": " not in persisted_agent_record
-assert r"\u6771\u4eac" in python_agent_record and "東京" in persisted_agent_record
-assert r"\n\u0000" in python_agent_record and r"\n\u0000" in persisted_agent_record
-assert python_agent_record.index('"fixtureUnicode"') < python_agent_record.index('"fixtureNested"')
-assert persisted_agent_record.index('"fixtureNested"') < persisted_agent_record.index('"fixtureUnicode"')
-assert r"\ud83e\udd80" in python_agent_record and "🦀" in persisted_agent_record
+check(agent["fixtureFlag"] is True and type(agent["fixtureInteger"]) is int, "agent boolean and integer distinctions survive")
+check(agent["rustAgentFlag"] is True, "Rust agent field survives Python read")
+check(agent["fixtureUnicode"] == "Zażółć 東京\n\u0000", "agent Unicode/control text survives")
+check(agent["fixtureNested"] == {"items":[0.1,5.0,9007199254740993,True,{"text":"🦀\t"}]}, "nested value survives")
+check(json.loads(persisted_agent_record) == agent, "agent record parses to the same value")
+check(": " in python_agent_record and ": " not in persisted_agent_record, "record JSON spacing is intentionally different")
+check(r"\u6771\u4eac" in python_agent_record and "東京" in persisted_agent_record, "record Unicode escaping is intentionally different")
+check(r"\n\u0000" in python_agent_record and r"\n\u0000" in persisted_agent_record, "record control escaping agrees")
+check(python_agent_record.index('"fixtureUnicode"') < python_agent_record.index('"fixtureNested"'), "Python record preserves insertion order")
+check(persisted_agent_record.index('"fixtureNested"') < persisted_agent_record.index('"fixtureUnicode"'), "Rust record uses map key ordering")
+check(r"\ud83e\udd80" in python_agent_record and "🦀" in persisted_agent_record, "emoji escaping is intentionally different")
 with runtime.read_db() as db:
     tasks = runtime.records(db, "tasks")
     task = next(row for row in tasks if row["id"] == "cross-task")
@@ -110,24 +125,25 @@ with runtime.read_db() as db:
         "SELECT seq, payload, hash, deleted FROM sync_entities WHERE collection='event' AND id='cross-event'"
     ).fetchone()
     message = db.execute("SELECT deliveries FROM runtime_chat_messages WHERE id='cross-message'").fetchone()[0]
-assert task["rustFlag"] is True and task["fixtureInteger"] == 7
-assert task["created"] == 1e-7 and task["updated"] == 1e21
-assert json.loads(persisted_task_record) == task
+check(task["rustFlag"] is True and task["fixtureInteger"] == 7, "task fields survive Python read")
+check(task["created"] == 1e-7 and task["updated"] == 1e21, "task numeric values survive Python read")
+check(json.loads(persisted_task_record) == task, "task record parses to the same value")
 rust_task_created_token = persisted_task_record.split('"created":', 1)[1].split(',', 1)[0]
 python_task_created_token = python_task_record.split('"created": ', 1)[1].split(',', 1)[0]
-assert rust_task_created_token == "1e-7" and python_task_created_token == "1e-07"
-assert json.loads(event)["rust"] is True
+check(rust_task_created_token == "1e-7" and python_task_created_token == "1e-07", "record float exponent spellings differ by design")
+check(json.loads(event)["rust"] is True, "Python reads Rust event queue JSON")
 entity = json.loads(rust_event_row[1])
-assert entity["collection"] == "event" and entity["id"] == "cross-event"
-assert entity["value"]["id"] == "cross-event" and "rust" not in entity["value"]
-assert hashlib.sha256(rust_event_row[1].encode("utf-8")).hexdigest() == rust_event_row[2]
-assert json.loads(message)["delivery"] is True and json.loads(message)["rustReceipt"] is True
+check(entity["collection"] == "event" and entity["id"] == "cross-event", "sync event envelope identifies the event")
+check(entity["value"]["id"] == "cross-event" and "rust" not in entity["value"], "sync projection filters queue-only fields")
+check(hashlib.sha256(rust_event_row[1].encode("utf-8")).hexdigest() == rust_event_row[2], "Rust sync hash matches payload bytes")
+check(json.loads(message)["delivery"] is True and json.loads(message)["rustReceipt"] is True, "Python reads Rust message JSON")
 with sqlite3.connect(reference_root / "canvas.sqlite3") as db:
     register_functions(db)
     db.execute("BEGIN IMMEDIATE")
     db.execute("UPDATE runtime_events SET status='running' WHERE id='cross-event'")
     numeric_event_ids = (
         "numeric-created-precision", "numeric-created-tenth", "numeric-created-large-exponent",
+        "numeric-created-integer",
         "numeric-created-integer-real", "numeric-created-large-integer-real",
         "numeric-created-17-digits", "numeric-created-over-2pow53", "numeric-created-negative",
         "numeric-created-negative-exponent",
@@ -141,14 +157,17 @@ with sqlite3.connect(reference_root / "canvas.sqlite3") as db:
     python_event_row = db.execute(
         "SELECT seq, payload, hash, deleted FROM sync_entities WHERE collection='event' AND id='cross-event'"
     ).fetchone()
-assert tuple(rust_event_row) == tuple(python_event_row), (tuple(rust_event_row), tuple(python_event_row))
+check(tuple(rust_event_row) == tuple(python_event_row), "stable event payload/hash agrees across runtimes")
+for row in python_numeric_rows:
+    check(hashlib.sha256(row[1].encode("utf-8")).hexdigest() == row[2], f"Python numeric row hash is valid: {row[1]}")
 task["pythonRollbackGate"] = True
 with runtime.lock, runtime.db() as db:
     runtime.put(db, "tasks", task)
 runtime.close()
 print(json.dumps({"task": task, "message": json.loads(message), "numeric_rows": python_numeric_rows,
                   "rust_task_created_token": rust_task_created_token,
-                  "python_task_created_token": python_task_created_token}))
+                  "python_task_created_token": python_task_created_token,
+                  "diagnostics": diagnostics}))
 "#;
 
 #[test]
@@ -251,6 +270,7 @@ fn python_fixture_round_trips_through_rust_and_python_write_rollback_gate() {
                 "numeric-created-precision",
                 "numeric-created-tenth",
                 "numeric-created-large-exponent",
+                "numeric-created-integer",
                 "numeric-created-integer-real",
                 "numeric-created-large-integer-real",
                 "numeric-created-17-digits",
@@ -303,6 +323,15 @@ fn python_fixture_round_trips_through_rust_and_python_write_rollback_gate() {
             .collect::<Result<Vec<_>, _>>()
             .expect("cross-runtime test operation succeeds")
     };
+    let rust_sqlite_version = rusqlite::version().to_owned();
+    let rust_json_object: String = {
+        let reader = store.read().expect("cross-runtime test operation succeeds");
+        reader
+            .query_row("SELECT json_object('x', 1791788985.5209818)", [], |row| {
+                row.get(0)
+            })
+            .expect("Rust SQLite JSON function is available")
+    };
     drop(reader);
     drop(store);
 
@@ -312,6 +341,8 @@ fn python_fixture_round_trips_through_rust_and_python_write_rollback_gate() {
         &[
             agent_id.as_str(),
             python_reference.to_str().expect("temporary path is UTF-8"),
+            rust_sqlite_version.as_str(),
+            rust_json_object.as_str(),
         ],
     );
     let python_output =
@@ -319,24 +350,80 @@ fn python_fixture_round_trips_through_rust_and_python_write_rollback_gate() {
     assert_eq!(python_output["task"]["rustFlag"], true);
     assert_eq!(python_output["rust_task_created_token"], "1e-7");
     assert_eq!(python_output["python_task_created_token"], "1e-07");
+    let diagnostic = format!("SQLite diagnostics: {}", python_output["diagnostics"]);
     let python_numeric_rows = python_output["numeric_rows"]
         .as_array()
         .expect("Python helper returns numeric event rows");
-    assert_eq!(rust_numeric_rows.len(), 9);
-    assert_eq!(python_numeric_rows.len(), 9);
-    for (rust_row, python_row) in rust_numeric_rows.iter().zip(python_numeric_rows) {
-        assert_eq!(rust_row.0, python_row[0]);
+    assert_eq!(rust_numeric_rows.len(), 10, "{diagnostic}");
+    assert_eq!(python_numeric_rows.len(), 10, "{diagnostic}");
+    let exact_payload_ids = [
+        "numeric-created-tenth",
+        "numeric-created-large-exponent",
+        "numeric-created-integer",
+        "numeric-created-integer-real",
+        "numeric-created-large-integer-real",
+        "numeric-created-negative",
+        "numeric-created-negative-exponent",
+    ];
+    let high_precision_ids = [
+        "numeric-created-precision",
+        "numeric-created-17-digits",
+        "numeric-created-over-2pow53",
+    ];
+    let mut rust_by_id = std::collections::BTreeMap::new();
+    for row in &rust_numeric_rows {
+        let payload: Value = serde_json::from_str(&row.1).expect("Rust payload is JSON");
+        rust_by_id.insert(payload["id"].as_str().unwrap_or_default().to_owned(), row);
+    }
+    let mut python_by_id = std::collections::BTreeMap::new();
+    for row in python_numeric_rows {
+        let payload_text = row[1].as_str().expect("Python sync payload is JSON text");
+        let payload: Value = serde_json::from_str(payload_text).expect("Python payload is JSON");
+        python_by_id.insert(payload["id"].as_str().unwrap_or_default().to_owned(), row);
+    }
+    for event_id in exact_payload_ids {
+        let rust_row = rust_by_id[event_id];
+        let python_row = python_by_id[event_id];
         assert_eq!(
             rust_row.1,
-            python_row[1]
-                .as_str()
-                .expect("Python sync payload is JSON text")
+            python_row[1].as_str().expect("Python payload is text"),
+            "{event_id}: {diagnostic}"
         );
         assert_eq!(
             rust_row.2,
-            python_row[2].as_str().expect("Python sync hash is text")
+            python_row[2].as_str().expect("Python hash is text"),
+            "{event_id}: {diagnostic}"
         );
-        assert_eq!(rust_row.3, python_row[3]);
+    }
+    for event_id in high_precision_ids {
+        let rust_row = rust_by_id[event_id];
+        let python_row = python_by_id[event_id];
+        let rust_value: Value = serde_json::from_str(&rust_row.1).expect("Rust payload is JSON");
+        let python_value: Value =
+            serde_json::from_str(python_row[1].as_str().expect("Python payload is text"))
+                .expect("Python payload is JSON");
+        let rust_number = rust_value["value"]["created"]
+            .as_f64()
+            .expect("Rust created is numeric");
+        let python_number = python_value["value"]["created"]
+            .as_f64()
+            .expect("Python created is numeric");
+        let sqlite_15_digit_rounding_bound = rust_number.abs().max(1.0) * 5.1e-15;
+        assert!(
+            (rust_number - python_number).abs() <= sqlite_15_digit_rounding_bound,
+            "{event_id}: values differ beyond SQLite's documented 15-significant-digit rendering; {diagnostic}; Rust payload={}, Python payload={}",
+            rust_row.1,
+            python_row[1]
+        );
+        let expected = match event_id {
+            "numeric-created-precision" => 1_791_788_985.520_981_8,
+            "numeric-created-17-digits" => 1.234_567_890_123_456_7,
+            _ => 9_007_199_254_740_992.0,
+        };
+        assert_eq!(
+            rust_number, expected,
+            "Rust projection must preserve the stored binary64 value; {diagnostic}"
+        );
     }
 
     let reopened = RuntimeStore::open(Some(&root)).expect("cross-runtime test operation succeeds");

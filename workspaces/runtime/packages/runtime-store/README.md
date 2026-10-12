@@ -49,37 +49,54 @@ recheck when either runtime upgrades.
 The event triggers depend on Python's connection-local `sync_entity_payload`
 and `sync_entity_hash` functions (`codex_sync_entities.py:437-449`). The payload
 function JSON-decodes its raw argument and projects it at
-`codex_sync_entities.py:437-449`. The event trigger supplies that argument from
-SQLite `json_object` (`codex_sync_entities.py:456-467`); it is not a direct
-`CAST(REAL AS TEXT)`. `project` validates `EventEntityDto` and dumps it at
-`codex_sync_entities.py:151-239`; that DTO has one numeric field, `created:
-float | None` (`studio_api/sync/models.py:1021-1028`). Thus JSON integers in
-`created` become binary64 floats, while strings and booleans are not valid
-numeric substitutes. The projection removes non-finite values
-(`codex_sync_entities.py:141-148, 187-191`). Python's JSON encoder then writes
-the sorted, compact, UTF-8 collection/id/value envelope
-(`codex_sync_entities.py:371-374`); its shortest float representation includes
-a signed, zero-padded exponent (for example `-1e-07`). The hash function is
-lowercase SHA-256 over those exact bytes.
+`codex_sync_entities.py:437-449`. The trigger constructs that argument with
+SQLite `json_object` (`codex_sync_entities.py:456-467`), not a direct
+`CAST(REAL AS TEXT)` and not `json.dumps` over the original database value.
+`json_object` formats a REAL using the SQLite library linked into that Python
+interpreter. Python then parses the JSON text, validates `EventEntityDto`, and
+serializes the projected object with `json.dumps` (`codex_sync_entities.py:151-239,
+371-374`). The DTO's only numeric field is `created: float | None`
+(`studio_api/sync/models.py:1021-1028`); integers accepted there become binary64
+floats, while strings and booleans are not numeric substitutes. Non-finite
+values are removed (`codex_sync_entities.py:141-148, 187-191`). Python emits a
+sorted, compact, UTF-8 collection/id/value envelope with shortest float spelling
+and signed, zero-padded exponents such as `-1e-07`; SHA-256 is over those exact
+bytes.
 
-Rust registers equivalents on its sole writer connection. Its event encoder
-uses Python's binary64 coercion and float notation for `created`, and emits the
-same sorted compact envelope. The integration test
+SQLite changed its default REAL-to-text rounding from 15 to 17 significant
+digits in 3.53.0. The 3.52.0 release was withdrawn and its changes were moved
+forward; the [3.53.0 release notes](https://sqlite.org/releaselog/3_53_0.html)
+and [SQLite floating-point documentation](https://sqlite.org/floatingpoint.html)
+describe the change. Therefore Python's event projection and hash can vary with
+the SQLite library linked to Python, before Python sees the number. The Python
+host used for this crate reports SQLite 3.53.4; Rust's bundled SQLite is 3.53.2.
+The cross-runtime test reports both versions and each side's raw
+`SELECT json_object('x', 1791788985.5209818)` result on failure.
+
+The Rust contract is to preserve the stored binary64 value and format its REAL
+with the shortest round-trip decimal and Python `json.dumps` exponent spelling.
+This matches Python when its SQLite produces the full-precision JSON number.
+Against a Python runtime linked to SQLite older than 3.53.0, SQLite can round a
+REAL to 15 significant digits before Python parses it. When Rust rewrites that
+event, its payload/hash can consequently differ once; sync clients observe an
+entity change, with no loss of the stored REAL value. This does not create a
+hash loop: the event trigger updates a row only when its hash or deleted flag
+changes (`codex_sync_entities.py:467`), and subsequent identical writes produce
+the same Rust payload/hash. `put()` likewise returns unchanged when the
+projected hash and deleted flag already match (`codex_sync_entities.py:485-499`).
+
+The cross-runtime test
 `python_fixture_round_trips_through_rust_and_python_write_rollback_gate`
-compares payload text and hash, plus the full sync row, after equivalent writes
-through Rust and Python for fixed adversarial timestamps: the reported
-`1791788985.5209818`, `0.1`, `1e21`, `5.0`, an integer-valued real, a
-17-significant-digit value, a value above 2^53, and negative/exponent values.
-It also covers non-ASCII/control text. Locally, the reported timestamp is
-serialized identically by both SQLite builds; the reproducible byte mismatch
-was exponent spelling (`-1e-7` versus `-1e-07`), now covered and fixed.
-SQLite's JSON1 supplies the numeric token before either UDF runs, so the
-deterministic cross-version fixture must be rerun when either SQLite build
-changes. The checked-in Python projection contains no explicit 15-significant-
-digit formatting step; the fixed timestamp reaches both projections as
-`1791788985.5209818` locally. The reported `.52098` output was not
-reproducible on this host, and the committed adversarial comparison will expose
-that difference if the hosted interpreter or SQLite JSON1 emits it.
+compares exact payload text and hash only for fixed values expected to render
+identically across SQLite versions (including `0.1`, `1e21`, `5.0`, an
+integer converted by REAL affinity, an integer-valued REAL, negative values,
+and exponent spelling). It separately
+checks that Rust preserves the binary64 values for `1791788985.5209818`, a
+17-significant-digit value, and the value rounded into REAL affinity above
+2^53; Python's numeric result may be rounded to 15 significant digits. The
+unit test `high_precision_event_projection_keeps_the_stored_binary64_value`
+pins the Rust output independently. No assertion uses the current time.
+Non-ASCII/control text and nested values are also covered.
 
 Other record JSON has a semantic, not byte-level, compatibility contract.
 Python `Runtime._put` stores `json.dumps(record)` (`codex_runtime.py:3333-3350`);
@@ -90,10 +107,19 @@ spaces, escapes non-ASCII by default, and keeps dict insertion order; Rust
 emits compact JSON with literal UTF-8, and flattened extra fields are ordered
 by `BTreeMap`. Rust's typed task `created` float also writes `1e-7` where
 Python's `json.dumps` writes `1e-07`. Consumers must parse these record
-columns as JSON; byte comparisons, signatures, or hashes over raw record JSON
-are not compatible. Event sync payload bytes remain a separate exact
-compatibility contract.
+columns as JSON; raw record serialization is not a canonical byte format.
+Event sync payload bytes remain a separate exact compatibility contract.
 
+The consumer check searched the server runtime and Rust store for SQL selecting
+raw `record` values followed by byte equality or hashing. Ordinary `_put`
+change detection compares decoded Python objects (`codex_runtime.py:3333-3350`),
+and query/index consumers use parsed JSON fields. One deliberate raw-text
+comparison exists in the task payload migration: `codex_payload_migrate.py:139-142`
+compares the current record bytes with the staged source bytes as an optimistic
+concurrency guard. It does not hash or serve raw record serialization. A
+concurrent Rust rewrite that changes only JSON formatting could make that guard
+report a conflict and retry the migration; record readers and API consumers
+still parse JSON.
 SQLite functions are connection-local, so a connection that changes
 `runtime_events` without registering them fails with `no such function:
 sync_entity_payload` or `no such function: sync_entity_hash`.
