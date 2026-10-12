@@ -69,6 +69,8 @@ pub enum StoreError {
     Json(#[from] serde_json::Error),
     #[error("invalid stored object {table}/{id}")]
     InvalidStoredObject { table: &'static str, id: String },
+    #[error("persisted JSON schema validation failed: {0}")]
+    SchemaValidation(String),
     #[error("runtime store writer mutex was poisoned")]
     WriterPoisoned,
 }

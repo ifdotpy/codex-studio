@@ -386,27 +386,26 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
     }
 
     pub fn put(&self, record: &R) -> StoreResult<()> {
+        let encoded = encode_record(record)?;
         let sql = format!(
             "INSERT INTO {}(id,record) VALUES (?1,?2) \
              ON CONFLICT(id) DO UPDATE SET record=excluded.record",
             quoted_table::<R>()
         );
-        self.connection.execute(
-            &sql,
-            params![record.id().as_ref(), serde_json::to_string(record)?],
-        )?;
+        self.connection
+            .execute(&sql, params![record.id().as_ref(), encoded])?;
         Ok(())
     }
 
     pub fn insert_new(&self, record: &R) -> StoreResult<bool> {
+        let encoded = encode_record(record)?;
         let sql = format!(
             "INSERT OR IGNORE INTO {}(id,record) VALUES (?1,?2)",
             quoted_table::<R>()
         );
-        let inserted = self.connection.execute(
-            &sql,
-            params![record.id().as_ref(), serde_json::to_string(record)?],
-        )?;
+        let inserted = self
+            .connection
+            .execute(&sql, params![record.id().as_ref(), encoded])?;
         Ok(inserted == 1)
     }
 }
@@ -416,18 +415,36 @@ fn quoted_table<R: JsonRecord>() -> String {
 }
 
 fn decode_record<R: JsonRecord>(row_id: &str, encoded: &str) -> StoreResult<R> {
-    let record =
-        serde_json::from_str::<R>(encoded).map_err(|_| crate::StoreError::InvalidStoredObject {
-            table: R::TABLE,
-            id: row_id.to_owned(),
-        })?;
+    let invalid = || crate::StoreError::InvalidStoredObject {
+        table: R::TABLE,
+        id: row_id.to_owned(),
+    };
+    let value: Value = serde_json::from_str(encoded).map_err(|_| invalid())?;
+    if !studio_runtime_schema::validate(R::SCHEMA, &value)
+        .map_err(crate::StoreError::SchemaValidation)?
+    {
+        return Err(invalid());
+    }
+    let record = serde_json::from_value::<R>(value).map_err(|_| invalid())?;
     if record.id().as_ref() != row_id {
-        return Err(crate::StoreError::InvalidStoredObject {
-            table: R::TABLE,
-            id: row_id.to_owned(),
-        });
+        return Err(invalid());
     }
     Ok(record)
+}
+
+fn encode_record<R: JsonRecord>(record: &R) -> StoreResult<String> {
+    let value = serde_json::to_value(record)?;
+    let invalid = || crate::StoreError::InvalidStoredObject {
+        table: R::TABLE,
+        id: record.id().as_ref().to_owned(),
+    };
+    if value.get("id").and_then(Value::as_str) != Some(record.id().as_ref())
+        || !studio_runtime_schema::validate(R::SCHEMA, &value)
+            .map_err(crate::StoreError::SchemaValidation)?
+    {
+        return Err(invalid());
+    }
+    Ok(serde_json::to_string(&value)?)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -599,7 +616,7 @@ mod tests {
             .expect("malformed fixture inserts");
         connection
             .execute(
-                "INSERT INTO runtime_agents(id,record) VALUES ('outer-id','{\"id\":\"inner-id\"}')",
+                "INSERT INTO runtime_agents(id,record) VALUES ('outer-id','{\"id\":\"inner-id\",\"rootId\":\"inner-id\",\"epoch\":0,\"status\":\"idle\"}')",
                 [],
             )
             .expect("mismatched fixture inserts");
@@ -612,5 +629,41 @@ mod tests {
                     if bad_id == id
             ));
         }
+    }
+
+    #[test]
+    fn table_rejects_schema_invalid_reads_and_writes_with_table_and_id() {
+        let connection = database();
+        let table = Table::<AgentRecord>::new(&connection);
+        let invalid = agent(json!({
+            "id":"invalid-status","rootId":"invalid-status","epoch":0,
+            "status":"future-agent-state"
+        }));
+        assert!(matches!(
+            table.put(&invalid).expect_err("invalid record is not written"),
+            StoreError::InvalidStoredObject { table: "runtime_agents", id }
+                if id == "invalid-status"
+        ));
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM runtime_agents", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("table count reads"),
+            0
+        );
+
+        connection
+            .execute(
+                "INSERT INTO runtime_agents(id,record) VALUES ('invalid-status','{\"id\":\"invalid-status\",\"rootId\":\"invalid-status\",\"epoch\":0,\"status\":\"future-agent-state\"}')",
+                [],
+            )
+            .expect("invalid record fixture inserts");
+        assert!(matches!(
+            table
+                .list()
+                .expect_err("schema-invalid record is not returned"),
+            StoreError::InvalidStoredObject { table: "runtime_agents", id }
+                if id == "invalid-status"
+        ));
     }
 }

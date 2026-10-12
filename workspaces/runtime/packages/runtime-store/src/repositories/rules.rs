@@ -187,7 +187,7 @@ mod tests {
              CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              INSERT INTO runtime_rules VALUES('r2','{\"id\":\"r2\"}');
              INSERT INTO runtime_rules VALUES('r1','{\"id\":\"r1\"}');
-             INSERT INTO runtime_agents VALUES('a1','{\"id\":\"a1\"}');",
+             INSERT INTO runtime_agents VALUES('a1','{\"id\":\"a1\",\"rootId\":\"a1\",\"epoch\":0,\"status\":\"idle\"}');",
         )
         .expect("declared tables create");
 
