@@ -26,6 +26,8 @@ const EVENT_META: &[TableRequirement] = &[TableRequirement {
     columns: &["id", "record"],
 }];
 
+pub type SubmittedStartRequest = (String, i64, String, String, String);
+
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: TABLES,
     conditional_tables: &[ConditionalTableRequirement {
@@ -127,7 +129,7 @@ impl SchedulerRepository {
         connection: &Connection,
         account_key: &str,
         generation: u64,
-    ) -> StoreResult<Vec<(String, i64, String, String, String)>> {
+    ) -> StoreResult<Vec<SubmittedStartRequest>> {
         let generation = i64::try_from(generation).map_err(|_| {
             StoreError::SchemaMismatch("provider generation exceeds SQLite integer range".into())
         })?;
@@ -558,6 +560,7 @@ impl SchedulerRepository {
     }
 
     /// Record durable provider correlation before `turn/start` is written.
+    #[allow(clippy::too_many_arguments)]
     pub fn mark_submitted_identity(
         transaction: &Transaction<'_>,
         agent_id: &str,
@@ -945,6 +948,7 @@ impl SchedulerRepository {
     }
 
     /// Bind a provider turn to the exact submitted scheduler attempt.
+    #[allow(clippy::too_many_arguments)]
     pub fn settle_started_provider(
         transaction: &Transaction<'_>,
         agent_id: &str,
@@ -974,6 +978,7 @@ impl SchedulerRepository {
         Self::settle_started(transaction, agent_id, epoch, attempt_id, turn_id)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn settle_start_rejected_provider(
         transaction: &Transaction<'_>,
         agent_id: &str,
@@ -2118,7 +2123,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_event_policy_kind_is_not_claimed_or_changed() {
+    fn unsupported_event_kind_is_held_with_a_named_refusal() {
         let mut connection = database();
         connection
             .execute(
@@ -2126,19 +2131,12 @@ mod tests {
                 [],
             )
             .expect("sensitive event writes");
-        let before: String = connection
-            .query_row(
-                "SELECT record FROM runtime_agents WHERE id='agent'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("agent snapshot reads");
         let transaction = connection
             .transaction()
             .expect("refusal transaction begins");
         assert!(
             SchedulerRepository::claim(&transaction, "agent", 4, "attempt", 10.0, 32)
-                .expect("unsupported policy kind is refused")
+                .expect("unsupported kind is refused")
                 .is_none()
         );
         transaction.commit().expect("refusal commits");
@@ -2156,7 +2154,13 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("event status reads");
-        assert_eq!(after, before);
+        let after: serde_json::Value = serde_json::from_str(&after).expect("agent record parses");
+        assert_eq!(after["status"], "waiting");
+        assert_eq!(
+            after["error"],
+            "event kind is not supported by the Rust turn driver."
+        );
+        assert_eq!(after["nativeFailureHold"], true);
         assert_eq!(status, "pending");
     }
 

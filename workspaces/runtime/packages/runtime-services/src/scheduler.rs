@@ -366,7 +366,7 @@ pub fn consume_wake(
         {
             return Err(StoreError::SchemaMismatch(
                 "provider returned an unknown outcome without a committed request identity".into(),
-            ).into());
+            ));
         }
         if matches!(outcome, TurnStart::Unknown)
             && agent.epoch == epoch

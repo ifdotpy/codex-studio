@@ -182,7 +182,7 @@ struct ManagedSession {
 }
 
 enum SessionCommand {
-    StartTurn(TurnIntent, Sender<TurnStart>),
+    StartTurn(Box<TurnIntent>, Sender<TurnStart>),
     Shutdown,
 }
 
@@ -231,7 +231,7 @@ impl SessionRegistry {
         };
         let (reply, result) = mpsc::channel();
         if sender
-            .send(SessionCommand::StartTurn(intent, reply))
+            .send(SessionCommand::StartTurn(Box::new(intent), reply))
             .is_err()
         {
             return TurnStart::NotSubmitted;
@@ -319,6 +319,7 @@ enum PendingStartStage {
     Turn,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn provider_session_loop(
     mut session: ProviderSession,
     store: Arc<RuntimeStore>,
@@ -334,6 +335,7 @@ fn provider_session_loop(
         loop {
             match commands.try_recv() {
                 Ok(SessionCommand::StartTurn(intent, reply)) => {
+                    let intent = *intent;
                     match attempt_can_prepare(&store, &intent) {
                         Ok(true) => {}
                         Ok(false) => {
@@ -442,11 +444,11 @@ fn provider_session_loop(
                         }
                     }
                 }
-                if let Some(cursor) = cursor {
-                    if session.acknowledge_handled(cursor).is_err() {
-                        let _ignored = session.close();
-                        return true;
-                    }
+                if let Some(cursor) = cursor
+                    && session.acknowledge_handled(cursor).is_err()
+                {
+                    let _ignored = session.close();
+                    return true;
                 }
             }
             Ok(None) => {}
@@ -624,6 +626,7 @@ fn submit_turn_start(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_provider_event(
     store: &RuntimeStore,
     handle: &ProviderHandle,
@@ -1795,7 +1798,7 @@ runtime.close()
             .expect("agent exists");
         assert_eq!(agent.status, AgentStatus::Running);
         assert_eq!(agent.extra["inFlight"], true);
-        assert!(agent.extra.get("lastCompletedTurnStatus").is_none());
+        assert!(!agent.extra.contains_key("lastCompletedTurnStatus"));
     }
 
     #[test]
@@ -1840,7 +1843,7 @@ runtime.close()
             .expect("agent exists");
         assert_eq!(agent.status, AgentStatus::Running);
         assert_eq!(agent.extra["inFlight"], true);
-        assert!(agent.extra.get("lastCompletedTurnStatus").is_none());
+        assert!(!agent.extra.contains_key("lastCompletedTurnStatus"));
     }
 
     #[test]

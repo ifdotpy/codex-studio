@@ -205,6 +205,7 @@ impl SessionState {
     }
 
     /// Submit a request with a durable caller allocated identity.
+    #[allow(clippy::too_many_arguments)]
     pub fn submit_with_id(
         &mut self,
         id: RequestId,
@@ -226,6 +227,7 @@ impl SessionState {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn submit_with_id_inner(
         &mut self,
         request_id: Option<RequestId>,
@@ -270,6 +272,7 @@ impl SessionState {
         Ok((ticket, actions))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn register(
         &mut self,
         method: Method,
