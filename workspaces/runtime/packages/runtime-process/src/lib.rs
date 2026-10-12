@@ -10,8 +10,8 @@ pub use client::SupervisorClient;
 pub use ports::{ProgressWatch, PtyHost};
 pub use protocol::*;
 pub use provider_process::{
-    ProviderFactoryError, ProviderHandle, ProviderProcess, ProviderProcessFactory,
-    SupervisorProviderProcess, SupervisorProviderProcessFactory,
+    ProviderFactoryError, ProviderHandle, ProviderLaunchResolver, ProviderLaunchSpec,
+    ProviderProcessFactory, SupervisorProviderProcess, SupervisorProviderProcessFactory,
 };
 pub use transport::SupervisorTransport;
 
