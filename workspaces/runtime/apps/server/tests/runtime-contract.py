@@ -27,6 +27,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from studio_api.testing import read_runtime_state
 from codex_runtime import Runtime
+from test_waits import wait_for_condition as eventually
 
 # Keep general protocol fixtures independent of host image support. Dedicated
 # image workspace contracts exercise the supported path with explicit mocks.
@@ -43,15 +44,6 @@ Runtime.runtime_maintenance_tick = lambda _runtime: None
 
 def run_runtime_maintenance_tick(runtime):
     return _runtime_maintenance_tick(runtime)
-
-
-def eventually(predicate, timeout=8):
-    end = time.monotonic() + timeout
-    while time.monotonic() < end:
-        if predicate():
-            return
-        time.sleep(.01)
-    raise AssertionError('Condition did not become true')
 
 
 class FakeServer:
