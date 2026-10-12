@@ -1304,7 +1304,7 @@ print(store.path)
         for (index, auth) in [
             serde_json::json!({"status":"ready", "accountId":"stable", "_credentialIdentity":"chatgpt:stable", "email":"fixture@example.invalid", "plan":"plus"}),
             serde_json::json!({"status":"signedOut", "accountId":null, "_credentialIdentity":null, "email":null, "plan":null}),
-            serde_json::json!({"status":"error", "error":"Cannot read this account's authentication"}),
+            serde_json::json!({"status":"error", "error":"Cannot read this profile's authentication"}),
         ].into_iter().enumerate() {
             fs::write(&py_registry, serde_json::to_vec(&base).expect("Python registry bytes")).expect("write Python fixture");
             let home_dir = fixture.0.join(format!("py-home-{index}"));
