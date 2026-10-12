@@ -1,4 +1,10 @@
-"""Compare OpenAPI constraints without discarding validation keywords."""
+"""Compare the OpenAPI constraints used by the schema contract tests.
+
+This is a deliberately small checker, not a JSON Schema subsumption engine. It
+handles local references and common structural constraints; remote references,
+dynamic references, and full interactions among arbitrary JSON Schema keywords
+remain outside its scope. Unclassified keyword changes are reported for review.
+"""
 from __future__ import annotations
 
 import json
@@ -36,6 +42,25 @@ def resolve_ref(document: JsonValue, value: JsonValue) -> JsonValue:
     if not isinstance(target, dict):
         return value
     return {**target, **{key: child for key, child in value.items() if key != "$ref"}}
+
+
+def _resolve_schema_content(
+    document: JsonValue, value: JsonValue, ref_stack: frozenset[str] = frozenset()
+) -> JsonValue:
+    """Expand local schema refs recursively while leaving cycles as refs."""
+    if isinstance(value, list):
+        return [_resolve_schema_content(document, child, ref_stack) for child in value]
+    if not isinstance(value, dict):
+        return value
+    ref = value.get("$ref")
+    if isinstance(ref, str) and ref.startswith("#/") and ref not in ref_stack:
+        expanded = resolve_ref(document, value)
+        if expanded is not value:
+            return _resolve_schema_content(document, expanded, ref_stack | {ref})
+    return {
+        key: _resolve_schema_content(document, child, ref_stack)
+        for key, child in value.items()
+    }
 
 
 def _canonical(value: JsonValue) -> str:
@@ -106,7 +131,9 @@ def constraint_snapshot(document: JsonValue) -> dict[str, dict[str, JsonValue]]:
             if isinstance(branches, list):
                 union_branches: list[JsonValue] = []
                 for branch in branches:
-                    resolved_branch = resolve_ref(document, branch) if expand_refs else branch
+                    resolved_branch = (
+                        _resolve_schema_content(document, branch) if expand_refs else branch
+                    )
                     union_branches.append(_canonical(resolved_branch))
                 union_branches.sort(key=str)
                 constraints[f"@{keyword}"] = union_branches
@@ -130,7 +157,13 @@ def constraint_snapshot(document: JsonValue) -> dict[str, dict[str, JsonValue]]:
             visit_schema(additional, pointer(path, "additionalProperties"), ref_stack,
                          expand_refs=expand_refs)
 
-    def media(value: JsonValue, path: str, *, expand_refs: bool = True) -> None:
+    def media(
+        value: JsonValue,
+        path: str,
+        *,
+        expand_refs: bool = True,
+        response_schema: bool = False,
+    ) -> None:
         entry = resolve_ref(document, value)
         if not isinstance(entry, dict):
             return
@@ -138,10 +171,24 @@ def constraint_snapshot(document: JsonValue) -> dict[str, dict[str, JsonValue]]:
         if isinstance(content, dict):
             for media_type, media_value in content.items():
                 if isinstance(media_value, dict):
+                    schema = media_value.get("schema")
+                    schema_path = pointer(pointer(path, "content"), media_type) + "/schema"
+                    if (
+                        response_schema
+                        and isinstance(schema, dict)
+                        and isinstance(schema.get("$ref"), str)
+                    ):
+                        snapshot[schema_path] = {
+                            "@responseRef": schema["$ref"],
+                            "@responseSchema": _canonical(
+                                _resolve_schema_content(document, schema)
+                            ),
+                        }
+                        continue
                     visit_schema(
-                        media_value.get("schema"),
-                        pointer(pointer(path, "content"), media_type) + "/schema",
-                        expand_refs=expand_refs,
+                        schema,
+                        schema_path,
+                        expand_refs=expand_refs and not response_schema,
                     )
 
     if not isinstance(document, dict):
@@ -179,20 +226,37 @@ def constraint_snapshot(document: JsonValue) -> dict[str, dict[str, JsonValue]]:
                 for scope, entries in (("pathParameters", path_item.get("parameters")),
                                        ("operationParameters", operation.get("parameters"))):
                     if isinstance(entries, list):
-                        for index, value in enumerate(entries):
+                        for value in entries:
                             parameter = resolve_ref(document, value)
                             if isinstance(parameter, dict):
-                                parameter_path = pointer(pointer(base, scope), index)
-                                visit_schema(parameter.get("schema"), pointer(parameter_path, "schema"))
-                if isinstance(operation.get("requestBody"), dict):
-                    media(operation["requestBody"], pointer(base, "requestBody"))
+                                location = parameter.get("in")
+                                parameter_name = parameter.get("name")
+                                if isinstance(location, str) and isinstance(parameter_name, str):
+                                    parameter_path = pointer(
+                                        pointer(pointer(base, scope), location), parameter_name
+                                    )
+                                    snapshot[parameter_path] = {
+                                        "@parameterPresent": True,
+                                        "required": parameter.get("required") is True,
+                                    }
+                                    visit_schema(
+                                        parameter.get("schema"),
+                                        pointer(parameter_path, "schema"),
+                                    )
+                request_body = operation.get("requestBody")
+                if isinstance(request_body, dict):
+                    resolved_request_body = resolve_ref(document, request_body)
+                    if isinstance(resolved_request_body, dict):
+                        body_path = pointer(base, "requestBody")
+                        snapshot[body_path] = {
+                            "required": resolved_request_body.get("required") is True
+                        }
+                        media(resolved_request_body, body_path)
                 responses = operation.get("responses")
                 if isinstance(responses, dict):
                     for status, response in responses.items():
-                        # Inline response wrappers are indexed, but referenced
-                        # DTOs are compared once under components.schemas.
                         media(response, pointer(pointer(base, "responses"), status),
-                              expand_refs=False)
+                              response_schema=True)
     return snapshot
 
 
@@ -224,13 +288,21 @@ def constraint_changes(
             before, after = old_value.get(key), new_value.get(key)
             if before == after:
                 continue
-            if key in {"minimum", "exclusiveMinimum", "minLength", "minItems", "minProperties"}:
-                if after is None or before is None or isinstance(before, (int, float)) and isinstance(after, (int, float)) and after > before:
+            if key in {"minimum", "exclusiveMinimum", "minLength", "minItems", "minProperties", "minContains"}:
+                if after is None:
+                    directions.append("loosening")
+                elif before is None:
+                    directions.append("tightening")
+                elif isinstance(before, (int, float)) and isinstance(after, (int, float)) and after > before:
                     directions.append("tightening")
                 else:
                     directions.append("loosening")
             elif key in {"maximum", "exclusiveMaximum", "maxLength", "maxItems", "maxProperties"}:
-                if before is None or isinstance(before, (int, float)) and isinstance(after, (int, float)) and after < before:
+                if after is None:
+                    directions.append("loosening")
+                elif before is None:
+                    directions.append("tightening")
+                elif isinstance(before, (int, float)) and isinstance(after, (int, float)) and after < before:
                     directions.append("tightening")
                 else:
                     directions.append("loosening")
@@ -254,16 +326,22 @@ def constraint_changes(
                 # child pointer; its ref factoring must not change this node.
             elif key == "uniqueItems":
                 directions.append("tightening" if after is True else "loosening")
-            elif key in {"items", "properties", "patternProperties"}:
-                # Nested schemas are separately visited under stable property,
-                # item and additionalProperties pointers. Treat reference
-                # factoring here as representation-only.
-                continue
-            elif key == "properties" and isinstance(before, dict) and isinstance(after, dict):
+            elif key in {"properties", "patternProperties"} and isinstance(before, dict) and isinstance(after, dict):
                 for name in set(before) & set(after):
                     nested = branch_direction(before[name], after[name])
                     if nested:
                         directions.append(nested)
+            elif key in {"items", "contains", "propertyNames", "not", "if", "then", "else"}:
+                # These nodes are indexed separately outside serialized union
+                # branches; their arbitrary nested interactions are out of scope.
+                continue
+            elif key in {"anyOf", "oneOf", "allOf"} and isinstance(before, list) and isinstance(after, list):
+                nested = union_direction(
+                    [_canonical(branch) for branch in before],
+                    [_canonical(branch) for branch in after],
+                )
+                if nested:
+                    directions.append(nested)
             else:
                 directions.append("loosening")
         if "loosening" in directions:
@@ -314,6 +392,12 @@ def constraint_changes(
                 return "loosening"
             if new is None:
                 return "tightening"
+        if key == "@responseSchema" and isinstance(old, str) and isinstance(new, str):
+            return branch_direction(json.loads(old), json.loads(new))
+        if key == "required" and isinstance(old, bool) and isinstance(new, bool):
+            return "loosening" if old and not new else "tightening" if new and not old else None
+        if key == "@parameterPresent":
+            return "loosening" if old is True and new is not True else "tightening"
         if old is None:
             return "tightening"
         if new is None:
@@ -381,6 +465,30 @@ def constraint_changes(
     for path in sorted(set(baseline) | set(candidate)):
         old_schema = baseline.get(path, {})
         new_schema = candidate.get(path, {})
+        if path.endswith("/schema") and (
+            "/operationParameters/" in path or "/pathParameters/" in path
+        ):
+            parameter_path = path[:-len("/schema")]
+            if baseline.get(parameter_path, {}).get("@parameterPresent") != candidate.get(
+                parameter_path, {}
+            ).get("@parameterPresent"):
+                continue
+        old_parameter = old_schema.get("@parameterPresent") is True
+        new_parameter = new_schema.get("@parameterPresent") is True
+        if old_parameter != new_parameter:
+            required = old_schema.get("required") is True if old_parameter else new_schema.get("required") is True
+            parameter_direction = (
+                "loosening" if required else "tightening"
+            ) if old_parameter else (
+                "tightening" if required else "loosening"
+            )
+            record(
+                loosenings if parameter_direction == "loosening" else tightenings,
+                path,
+                "parameter",
+                "present" if old_parameter else "absent",
+                "present" if new_parameter else "absent",
+            )
         removed_closed_property = False
         if not old_schema and new_schema:
             # Adding an optional property to a closed object expands its
@@ -413,13 +521,28 @@ def constraint_changes(
                 })
         if removed_closed_property:
             continue
-        for key in sorted((set(old_schema) | set(new_schema)) - {"@schemaPresent"}):
+        for key in sorted(
+            (set(old_schema) | set(new_schema))
+            - {"@schemaPresent", "@parameterPresent", "@responseRef"}
+        ):
             old = old_schema.get(key)
             new = new_schema.get(key)
-            direction = classify(key, old, new)
-            if direction == "loosening":
+            if key == "@responseSchema" and old_schema.get("@responseRef") == new_schema.get("@responseRef"):
+                continue
+            if key == "required" and (old_parameter != new_parameter):
+                continue
+            if key == "enum" and isinstance(old, list) and isinstance(new, list):
+                added = set(new) - set(old)
+                removed = set(old) - set(new)
+                if added:
+                    record(loosenings, path, key, sorted(old, key=repr), sorted(new, key=repr))
+                if removed:
+                    record(tightenings, path, key, sorted(old, key=repr), sorted(new, key=repr))
+                continue
+            constraint_direction = classify(key, old, new)
+            if constraint_direction == "loosening":
                 record(loosenings, path, key, old, new)
-            elif direction == "tightening":
+            elif constraint_direction == "tightening":
                 record(tightenings, path, key, old, new)
     return loosenings, tightenings
 

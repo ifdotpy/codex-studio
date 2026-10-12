@@ -7,6 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import cast
 
+from codex_layout import REPOSITORY_ROOT
 from codex_sync_entities import _DTO_MODELS
 from studio_api.models import JsonValue
 from studio_api.generate_types import render
@@ -99,19 +100,30 @@ class SchemaContractTests(unittest.TestCase):
         baseline_document = manifest["document"]
         self.assertIsInstance(baseline_document, dict)
         baseline = constraint_snapshot(baseline_document)
-        candidate = constraint_snapshot(openapi_document())
+        committed_document = json.loads(
+            (REPOSITORY_ROOT / manifest["sourcePath"]).read_text(encoding="utf-8")
+        )
+        candidate = constraint_snapshot(committed_document)
         loosenings, _tightenings = constraint_changes(baseline, candidate)
+        accepted_loosenings = {
+            ("/components/schemas/DraftDocumentInput/properties/deleted", "property"):
+                "Adds the deleted state to the draft input DTO.",
+            ("/components/schemas/DraftPushRequest/properties/rows/items/properties/newDocumentState/properties/deleted", "property"):
+                "Adds the deleted state to the nested draft push DTO.",
+            ("/components/schemas/DraftPushRow/properties/newDocumentState/properties/deleted", "property"):
+                "Adds the deleted state to the draft push row DTO.",
+            ("/components/schemas/ErrorResponse/properties/location", "property"):
+                "Adds the optional error location field.",
+            ("/components/schemas/ErrorResponse/properties/location", "@nullable"):
+                "Allows a null error location.",
+            ("/components/schemas/ErrorResponse/properties/location", "@nullableBranch"):
+                "Adds the nullable branch for the error location field.",
+            ("/paths/~1api~1sync~1drafts/post/requestBody/content/application~1json/schema/properties/rows/items/properties/newDocumentState/properties/deleted", "property"):
+                "Publishes the deleted state in the sync drafts request schema.",
+        }
         self.assertEqual(
             {(item["pointer"], item["constraint"]) for item in loosenings},
-            {
-                ("/components/schemas/DraftDocumentInput/properties/deleted", "property"),
-                ("/components/schemas/DraftPushRequest/properties/rows/items/properties/newDocumentState/properties/deleted", "property"),
-                ("/components/schemas/DraftPushRow/properties/newDocumentState/properties/deleted", "property"),
-                ("/components/schemas/ErrorResponse/properties/location", "property"),
-                ("/components/schemas/ErrorResponse/properties/location", "@nullable"),
-                ("/components/schemas/ErrorResponse/properties/location", "@nullableBranch"),
-                ("/paths/~1api~1sync~1drafts/post/requestBody/content/application~1json/schema/properties/rows/items/properties/newDocumentState/properties/deleted", "property"),
-            },
+            set(accepted_loosenings),
         )
 
     def test_constraint_diff_detects_five_removed_constraints(self) -> None:
@@ -145,17 +157,148 @@ class SchemaContractTests(unittest.TestCase):
         baseline = constraint_snapshot(baseline_doc)
         candidate = constraint_snapshot(candidate_doc)
         loosenings, tightenings = constraint_changes(baseline, candidate)
-        changes = loosenings + tightenings
         self.assertEqual(
-            {(item["constraint"], item["pointer"]) for item in changes},
+            {(item["constraint"], item["pointer"]) for item in loosenings},
             {
                 ("maximum", "/paths/~1example/post/requestBody/content/application~1json/schema/properties/count"),
-                ("pattern", "/paths/~1example/post/operationParameters/0/schema"),
-                ("enum", "/paths/~1example/post/operationParameters/1/schema"),
+                ("pattern", "/paths/~1example/post/operationParameters/query/q/schema"),
                 ("required", "/components/schemas/Nested"),
                 ("additionalProperties", "/components/schemas/Nested"),
             },
         )
+        self.assertEqual(
+            {(item["constraint"], item["pointer"]) for item in tightenings},
+            {("enum", "/paths/~1example/post/operationParameters/header/X-Mode/schema")},
+        )
+
+    def test_constraint_diff_detects_operation_and_union_loosenings(self) -> None:
+        baseline_doc: dict[str, JsonValue] = {
+            "paths": {
+                "/example": {
+                    "get": {
+                        "parameters": [{
+                            "in": "query", "name": "agent", "required": True,
+                            "schema": {"type": "string"},
+                        }],
+                        "responses": {"200": {"description": "ok", "content": {
+                            "application/json": {"schema": {
+                                "$ref": "#/components/schemas/SessionResponse",
+                            }},
+                        }}},
+                    },
+                    "post": {
+                        "requestBody": {"required": True, "content": {
+                            "application/json": {"schema": {"type": "string"}},
+                        }},
+                        "responses": {},
+                    },
+                },
+            },
+            "components": {"schemas": {
+                "SessionResponse": {
+                    "type": "object", "required": ["token"],
+                    "properties": {"token": {"type": "string"}},
+                    "additionalProperties": False,
+                },
+                "JsonValue": {},
+                "Branch": {"anyOf": [
+                    {"type": "integer", "minimum": 1},
+                    {"type": "string"},
+                ]},
+                "NestedBranch": {"anyOf": [
+                    {"type": "object", "properties": {
+                        "item": {"type": "integer", "maximum": 3},
+                    }},
+                    {"type": "string"},
+                ]},
+                "EnumValue": {"type": "string", "enum": ["a", "b"]},
+            }},
+        }
+
+        actual: dict[str, tuple[set[tuple[str, str]], set[tuple[str, str]]]] = {}
+        expected: dict[str, tuple[set[tuple[str, str]], set[tuple[str, str]]]] = {}
+
+        def record_mutation(
+            label: str,
+            candidate_doc: dict[str, JsonValue],
+            expected_loosenings: set[tuple[str, str]],
+            expected_tightenings: set[tuple[str, str]] = set(),
+        ) -> None:
+            loosenings, tightenings = constraint_changes(
+                constraint_snapshot(baseline_doc), constraint_snapshot(candidate_doc)
+            )
+            actual[label] = (
+                {(item["constraint"], item["pointer"]) for item in loosenings},
+                {(item["constraint"], item["pointer"]) for item in tightenings},
+            )
+            expected[label] = (expected_loosenings, expected_tightenings)
+
+        optional_parameter = json.loads(json.dumps(baseline_doc))
+        optional_parameter["paths"]["/example"]["get"]["parameters"][0]["required"] = False
+        record_mutation("required query parameter made optional", optional_parameter, {
+            ("required", "/paths/~1example/get/operationParameters/query/agent"),
+        })
+
+        replacement_response = json.loads(json.dumps(baseline_doc))
+        replacement_response["paths"]["/example"]["get"]["responses"]["200"]["content"][
+            "application/json"
+        ]["schema"] = {"$ref": "#/components/schemas/JsonValue"}
+        record_mutation("response reference replaced by looser schema", replacement_response, {
+            ("@responseSchema", "/paths/~1example/get/responses/200/content/application~1json/schema"),
+        })
+
+        replaced_enum = json.loads(json.dumps(baseline_doc))
+        replaced_enum["components"]["schemas"]["EnumValue"]["enum"] = ["a", "c"]
+        record_mutation("enum value replaced", replaced_enum, {
+            ("enum", "/components/schemas/EnumValue"),
+        }, {
+            ("enum", "/components/schemas/EnumValue"),
+        })
+
+        relaxed_minimum = json.loads(json.dumps(baseline_doc))
+        relaxed_minimum["components"]["schemas"]["Branch"]["anyOf"][0].pop("minimum")
+        record_mutation("minimum removed in union branch", relaxed_minimum, {
+            ("@anyOf", "/components/schemas/Branch"),
+        })
+
+        relaxed_maximum = json.loads(json.dumps(baseline_doc))
+        relaxed_maximum["components"]["schemas"]["NestedBranch"]["anyOf"][0][
+            "properties"
+        ]["item"].pop("maximum")
+        record_mutation("nested maximum removed in union branch", relaxed_maximum, {
+            ("@anyOf", "/components/schemas/NestedBranch"),
+        })
+
+        optional_body = json.loads(json.dumps(baseline_doc))
+        optional_body["paths"]["/example"]["post"]["requestBody"]["required"] = False
+        record_mutation("request body made optional", optional_body, {
+            ("required", "/paths/~1example/post/requestBody"),
+        })
+
+        renamed_parameter = json.loads(json.dumps(baseline_doc))
+        renamed_parameter["paths"]["/example"]["get"]["parameters"][0]["name"] = "subject"
+        record_mutation("parameter identity changed", renamed_parameter, {
+            ("parameter", "/paths/~1example/get/operationParameters/query/agent"),
+        }, {
+            ("parameter", "/paths/~1example/get/operationParameters/query/subject"),
+        })
+        self.assertEqual(actual, expected, msg=repr(actual))
+
+    def test_constraint_diff_resolves_recursive_response_refs_cycle_safely(self) -> None:
+        document: dict[str, JsonValue] = {
+            "paths": {"/recursive": {"get": {"responses": {"200": {
+                "description": "ok",
+                "content": {"application/json": {"schema": {
+                    "$ref": "#/components/schemas/Recursive",
+                }}},
+            }}}}},
+            "components": {"schemas": {"Recursive": {
+                "type": "object",
+                "properties": {"next": {"$ref": "#/components/schemas/Recursive"}},
+            }}},
+        }
+        snapshot = constraint_snapshot(document)
+        self.assertEqual(constraint_changes(snapshot, snapshot), ([], []))
 
     def test_optional_query_and_header_parameters_are_absent_not_nullable(self) -> None:
         document: dict[str, JsonValue] = {
