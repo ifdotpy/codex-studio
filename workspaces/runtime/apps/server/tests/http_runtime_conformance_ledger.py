@@ -220,7 +220,60 @@ def sample_value(schema: dict[str, Any], document: dict[str, Any], active: froze
     return {}
 
 
-def valid_probe(method: str, template: str) -> tuple[str, Any | None]:
+def seed_python_probe_state(backend: Any) -> dict[str, str]:
+    """Seed the disposable backend with records written by the Python runtime."""
+    agent_id = "ledger-probe-agent"
+    task_id = "ledger-probe-task"
+    work_id = "ledger-probe-work"
+    source = Path(__file__).resolve().parents[1] / "src"
+    seed = f"""
+import os, sys
+from pathlib import Path
+sys.path.insert(0, {str(source)!r})
+from codex_runtime import Runtime
+
+runtime = Runtime(Path(os.environ["CODEX_AGENTS_STATE_DIR"]))
+try:
+    agent = {{
+        "id": {agent_id!r}, "rootId": {agent_id!r}, "epoch": 0,
+        "status": "idle", "name": "HTTP ledger probe owner", "role": "orchestrator",
+        "cwd": os.environ["CODEX_CANVAS_CWD"], "isLead": True,
+        "autoWake": True, "approvalPolicy": "never", "sandbox": "workspace-write",
+    }}
+    with runtime.lock, runtime.db() as db:
+        runtime.put(db, "agents", agent, sync_rooms=False)
+        runtime.put(db, "tasks", {{
+            "id": {task_id!r}, "agent": {agent_id!r}, "kind": "command",
+            "status": "completed",
+            "created": 1.0, "finished": 2.0,
+        }}, sync_rooms=False)
+        runtime.put(db, "work", {{
+            "id": {work_id!r}, "rootId": {agent_id!r}, "owner": {agent_id!r},
+            "status": "ready", "title": "HTTP ledger probe work", "description": "",
+            "created": 1.0, "updated": 1.0, "createdBy": {agent_id!r},
+            "version": 1, "dependencies": [], "decisions": [], "results": [],
+        }}, sync_rooms=False)
+        runtime.put(db, "plans", {{
+            "id": {agent_id!r}, "rootId": {agent_id!r}, "text": "HTTP ledger probe plan",
+            "version": 1, "updated": 1.0, "steps": [],
+        }}, sync_rooms=False)
+finally:
+    runtime.close()
+"""
+    python = os.environ.get("CODEX_AGENTS_PYTHON", sys.executable)
+    subprocess.run(
+        [python, "-B", "-c", seed],
+        cwd=backend.cwd,
+        env=backend._environment(),
+        check=True,
+        timeout=30,
+    )
+    return {"agent": agent_id, "task": task_id}
+
+
+def valid_probe(
+    method: str, template: str, identifiers: dict[str, str] | None = None
+) -> tuple[str, Any | None]:
     document = json.loads(SPEC.read_text(encoding="utf-8"))
     operation = document["paths"][template][method.lower()]
     path_values: dict[str, Any] = {}
@@ -228,10 +281,21 @@ def valid_probe(method: str, template: str) -> tuple[str, Any | None]:
     for parameter in operation.get("parameters", []):
         schema = resolve_schema(parameter.get("schema", {}), document)
         value = sample_value(schema, document)
+        name = parameter["name"]
+        if identifiers and parameter.get("in") in {"path", "query"}:
+            if name in {"agent", "agentId", "agent_id"}:
+                value = identifiers["agent"]
+            elif (
+                name in {"task", "taskId", "task_id"}
+                or (name == "id" and template == "/api/task")
+            ):
+                value = identifiers["task"]
+            elif name == "scope" and template == "/api/sync/pull":
+                value = f"transcript:{identifiers['agent']}"
         if parameter.get("in") == "path":
-            path_values[parameter["name"]] = value
+            path_values[name] = value
         elif parameter.get("in") == "query":
-            query_values.append((parameter["name"], str(value).lower() if isinstance(value, bool) else str(value)))
+            query_values.append((name, str(value).lower() if isinstance(value, bool) else str(value)))
     path = re.sub(r"\{([^}:]+)(?::[^}]+)?\}", lambda match: urllib.parse.quote(str(path_values.get(match.group(1), "probe")), safe=""), template)
     if query_values:
         path += "?" + urllib.parse.urlencode(query_values)
@@ -258,10 +322,13 @@ def probe_operations(
         try:
             backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
             backend.start()
+            backend.stop()
+            identifiers = seed_python_probe_state(backend)
+            backend.start()
             token = backend.session["token"]
             rows = []
             for method, template in operations():
-                path, body = valid_probe(method, template)
+                path, body = valid_probe(method, template, identifiers)
                 headers = {
                     "X-Canvas-Token": token,
                     "X-Studio-API-Schema": backend.schema_hash,
@@ -545,13 +612,13 @@ def classify_observation(
     if implementation == "implemented":
         if status >= 500:
             return "unexpected"
-        return "implemented" if status < 400 else "unverified"
+        return "implemented" if 200 <= status < 300 else "unverified"
     if implementation == "partial":
         if status == 501:
             return "partial"
         if status >= 500:
             return "unexpected"
-        return "partial" if status < 400 else "unverified"
+        return "partial" if 200 <= status < 300 else "unverified"
     return "unexpected"
 
 
