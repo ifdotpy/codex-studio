@@ -72,6 +72,16 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                         "status": "completed",
                         "created": 500.0,
                     })
+                    source = db.execute(
+                        "SELECT record FROM runtime_tasks WHERE id=?",
+                        ("workspace-views-other-task",),
+                    ).fetchone()[0]
+                    malformed = json.loads(source)
+                    malformed["unexpectedStoredProperty"] = True
+                    db.execute(
+                        "UPDATE runtime_tasks SET record=? WHERE id=?",
+                        (json.dumps(malformed), "workspace-views-other-task"),
+                    )
                 cls.lead_id = lead["id"]
                 cls.worker_id = worker["id"]
             finally:
@@ -141,6 +151,17 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(response.json()["location"], ["query", "cursor"])
         self.assertNotIn("not-json", response.body.decode())
         self.assertEqual(after, before)
+
+    def test_unknown_persisted_property_is_refused_by_rust(self) -> None:
+        response = self.backend.request(
+            "GET", "/api/task?" + urlencode({"id": "workspace-views-other-task"}),
+        )
+        if self.rust_backend:
+            self.assertEqual(response.status, 500, response.body[:1000])
+            self.assertIn("Invalid stored object runtime_tasks", response.json()["error"])
+            self.assertNotIn("unexpectedStoredProperty", response.body.decode())
+        else:
+            self.assertEqual(response.status, 200, response.body[:1000])
 
     def test_workspace_and_changes_report_their_unavailable_services(self) -> None:
         workspace = self.backend.request("GET", "/api/workspace")

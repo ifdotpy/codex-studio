@@ -193,8 +193,27 @@ fn generated_json<T>(value: Value) -> Result<Value, ApiError>
 where
     T: DeserializeOwned + Serialize,
 {
-    let dto = serde_json::from_value::<T>(value).map_err(|_| ApiError::internal())?;
-    serde_json::to_value(dto).map_err(|_| ApiError::internal())
+    let dto = serde_json::from_value::<T>(value.clone()).map_err(|_| ApiError::internal())?;
+    let normalized = serde_json::to_value(dto).map_err(|_| ApiError::internal())?;
+    if has_unknown_keys(&value, &normalized) {
+        return Err(ApiError::internal());
+    }
+    Ok(normalized)
+}
+
+fn has_unknown_keys(value: &Value, normalized: &Value) -> bool {
+    match (value, normalized) {
+        (Value::Object(value), Value::Object(normalized)) => value.iter().any(|(key, child)| {
+            normalized
+                .get(key)
+                .is_none_or(|normalized_child| has_unknown_keys(child, normalized_child))
+        }),
+        (Value::Array(value), Value::Array(normalized)) => value
+            .iter()
+            .zip(normalized)
+            .any(|(child, normalized_child)| has_unknown_keys(child, normalized_child)),
+        _ => false,
+    }
 }
 
 fn is_false(value: &Value) -> bool {
