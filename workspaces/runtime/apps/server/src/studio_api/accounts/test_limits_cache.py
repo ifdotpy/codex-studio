@@ -28,7 +28,9 @@ class LimitsCacheTests(unittest.TestCase):
         with sqlite3.connect(":memory:") as db:
             db.execute("CREATE TABLE sync_entities(collection TEXT,id TEXT,payload TEXT,deleted INTEGER)")
             db.execute("INSERT INTO sync_entities VALUES('workspace','current',?,0)",
-                       (json.dumps({"value": {"rateLimitsByAccount": {"a": snapshot}}}),))
+                       (json.dumps({"value": {"rateLimitsByAccount": {
+                           "invalid": {"accountKey": False}, "a": snapshot,
+                       }}}),))
             runtime = SimpleNamespace(rate_limits_by_account={}, rate_limits={})
             cast(Callable[..., None], Runtime.restore_rate_limits)(runtime, db)
         self.assertEqual(runtime.rate_limits_by_account["a"], snapshot)

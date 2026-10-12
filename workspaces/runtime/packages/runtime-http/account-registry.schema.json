@@ -1,0 +1,498 @@
+{
+  "$defs": {
+    "AccountRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "_authErrorKind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Autherrorkind"
+        },
+        "_credentialIdentity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Credentialidentity"
+        },
+        "accountId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Accountid"
+        },
+        "claudeOptions": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClaudeOptionsRecord"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deleted": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Deleted"
+        },
+        "disconnected": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Disconnected"
+        },
+        "duplicateOf": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Duplicateof"
+        },
+        "email": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Email"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Error"
+        },
+        "home": {
+          "title": "Home",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "plan": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Plan"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "enum": ["codex", "claude"],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Provider"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "ready",
+            "signedOut",
+            "pending",
+            "error",
+            "changed",
+            "duplicate"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": ["id", "home", "label", "source", "status"],
+      "title": "AccountRecord",
+      "type": "object"
+    },
+    "ClaudeCustomModelRecord": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": ["id", "label"],
+      "title": "ClaudeCustomModelRecord",
+      "type": "object"
+    },
+    "ClaudeOptionsRecord": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "autoCompactWindow": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "x-safe-integer": "unsigned"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Autocompactwindow"
+        },
+        "binaryPath": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Binarypath"
+        },
+        "configDir": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Configdir"
+        },
+        "customModels": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ClaudeCustomModelRecord"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Custommodels"
+        },
+        "launchArgs": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Launchargs"
+        }
+      },
+      "title": "ClaudeOptionsRecord",
+      "type": "object"
+    },
+    "CodexLoginReceiptRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "accountKey": {
+          "title": "Accountkey",
+          "type": "string"
+        },
+        "createdAt": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Createdat"
+        },
+        "email": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Email"
+        },
+        "emailHint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Emailhint"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Error"
+        },
+        "expectedAccountId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Expectedaccountid"
+        },
+        "expiresAt": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Expiresat"
+        },
+        "loginId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Loginid"
+        },
+        "nativeCompleted": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Nativecompleted"
+        },
+        "reauthAccountKey": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reauthaccountkey"
+        },
+        "requestId": {
+          "title": "Requestid",
+          "type": "string"
+        },
+        "requestedLabel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Requestedlabel"
+        },
+        "resolvedAccountKey": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Resolvedaccountkey"
+        },
+        "status": {
+          "enum": [
+            "starting",
+            "pending",
+            "ready",
+            "duplicate",
+            "cancelled",
+            "error",
+            "uncertain"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "userCode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Usercode"
+        },
+        "verificationUrl": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Verificationurl"
+        }
+      },
+      "required": ["requestId", "accountKey", "status"],
+      "title": "CodexLoginReceiptRecord",
+      "type": "object"
+    },
+    "DeleteReceiptRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "accountKey": {
+          "title": "Accountkey",
+          "type": "string"
+        },
+        "deletedAt": {
+          "title": "Deletedat",
+          "type": "number"
+        }
+      },
+      "required": ["accountKey", "deletedAt"],
+      "title": "DeleteReceiptRecord",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "NameReceiptRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "accountKey": {
+          "title": "Accountkey",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": ["accountKey", "label"],
+      "title": "NameReceiptRecord",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "accounts": {
+      "additionalProperties": {
+        "$ref": "#/$defs/AccountRecord"
+      },
+      "title": "Accounts",
+      "type": "object"
+    },
+    "defaultAccountKey": {
+      "title": "Defaultaccountkey",
+      "type": "string"
+    },
+    "deleteReceipts": {
+      "additionalProperties": {
+        "$ref": "#/$defs/DeleteReceiptRecord"
+      },
+      "title": "Deletereceipts",
+      "type": "object"
+    },
+    "logins": {
+      "additionalProperties": {
+        "$ref": "#/$defs/CodexLoginReceiptRecord"
+      },
+      "title": "Logins",
+      "type": "object"
+    },
+    "nameReceipts": {
+      "additionalProperties": {
+        "$ref": "#/$defs/NameReceiptRecord"
+      },
+      "title": "Namereceipts",
+      "type": "object"
+    },
+    "version": {
+      "const": 1,
+      "title": "Version",
+      "type": "integer"
+    }
+  },
+  "required": ["version", "defaultAccountKey", "accounts"],
+  "title": "AccountRegistryRecord",
+  "type": "object"
+}

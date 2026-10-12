@@ -9135,7 +9135,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 snapshots["default"] = payload["rateLimits"]
             from studio_api.accounts.models import UsageLimitsResponse
             for key, value in snapshots.items():
-                snapshot = UsageLimitsResponse.model_validate(value).model_dump(exclude_unset=True)
+                try:
+                    snapshot = UsageLimitsResponse.model_validate(value).model_dump(exclude_unset=True)
+                except (ValueError, TypeError, AttributeError):
+                    continue
                 if snapshot.get("accountKey") == key and snapshot.get("data") is not None:
                     self.rate_limits_by_account[key] = snapshot
             if "default" in self.rate_limits_by_account:

@@ -1,0 +1,498 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "RateLimitBucket": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "Known rate-limit fields plus provider-owned fields passed through unchanged.",
+      "properties": {
+        "individualLimit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RateLimitIndividualLimit"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limitId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Limitid"
+        },
+        "limitName": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Limitname"
+        },
+        "primary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RateLimitWindow"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rateLimitReachedType": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Ratelimitreachedtype"
+        },
+        "secondary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RateLimitWindow"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "spendControlReached": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Spendcontrolreached"
+        }
+      },
+      "title": "RateLimitBucket",
+      "type": "object"
+    },
+    "RateLimitIndividualLimit": {
+      "additionalProperties": false,
+      "properties": {
+        "remainingPercent": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "x-safe-integer": "unsigned"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Remainingpercent"
+        }
+      },
+      "title": "RateLimitIndividualLimit",
+      "type": "object"
+    },
+    "RateLimitResetCredit": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "A provider reset-credit record; native service fields remain extensible.",
+      "properties": {
+        "expiresAt": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "x-safe-integer": "unsigned"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Expiresat"
+        },
+        "grantedAt": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "x-safe-integer": "unsigned"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Grantedat"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "resetType": {
+          "title": "Resettype",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": ["id", "status", "resetType"],
+      "title": "RateLimitResetCredit",
+      "type": "object"
+    },
+    "RateLimitResetCredits": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "Provider-owned reset-credit summary with the known count and credit fields.",
+      "properties": {
+        "availableCount": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "x-safe-integer": "unsigned"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Availablecount"
+        },
+        "credits": {
+          "items": {
+            "$ref": "#/$defs/RateLimitResetCredit"
+          },
+          "title": "Credits",
+          "type": "array"
+        }
+      },
+      "title": "RateLimitResetCredits",
+      "type": "object"
+    },
+    "RateLimitWindow": {
+      "additionalProperties": false,
+      "properties": {
+        "resetsAt": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "x-safe-integer": "unsigned"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Resetsat"
+        },
+        "usedPercent": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "x-safe-integer": "unsigned"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Usedpercent"
+        },
+        "windowDurationMins": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "x-safe-integer": "unsigned"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Windowdurationmins"
+        }
+      },
+      "title": "RateLimitWindow",
+      "type": "object"
+    },
+    "SyncEntity": {
+      "additionalProperties": false,
+      "description": "One durable sync entity change attached to a successful response.",
+      "properties": {
+        "_deleted": {
+          "title": "Deleted",
+          "type": "boolean"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "payload": {
+          "title": "Payload",
+          "type": "string"
+        },
+        "seq": {
+          "title": "Seq",
+          "type": "integer",
+          "x-safe-integer": "unsigned"
+        }
+      },
+      "required": ["id", "seq", "payload", "_deleted"],
+      "title": "SyncEntity",
+      "type": "object"
+    },
+    "UsageLimitsData": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "Known usage projection plus account-service fields passed through unchanged.",
+      "properties": {
+        "accountId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Accountid"
+        },
+        "ordinaryUsageAllowed": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Ordinaryusageallowed"
+        },
+        "rateLimitResetCredits": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RateLimitResetCredits"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rateLimits": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RateLimitBucket"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rateLimitsByLimitId": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/RateLimitBucket"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Ratelimitsbylimitid"
+        },
+        "signedIn": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Signedin"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Source"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Status"
+        }
+      },
+      "title": "UsageLimitsData",
+      "type": "object"
+    },
+    "UsageLimitsResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "_syncEntities": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/SyncEntity"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Syncentities"
+        },
+        "_syncEntitiesAfter": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "x-safe-integer": "unsigned"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Syncentitiesafter"
+        },
+        "accountKey": {
+          "title": "Accountkey",
+          "type": "string"
+        },
+        "at": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "At"
+        },
+        "checkedAt": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Checkedat"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UsageLimitsData"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Error"
+        },
+        "processedAt": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Processedat"
+        },
+        "readAt": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Readat"
+        }
+      },
+      "required": ["accountKey"],
+      "title": "UsageLimitsResponse",
+      "type": "object"
+    }
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "description": "Workspace storage projection; usage snapshot values share the API model.",
+  "properties": {
+    "rateLimits": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UsageLimitsResponse"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "rateLimitsByAccount": {
+      "additionalProperties": {
+        "$ref": "#/$defs/UsageLimitsResponse"
+      },
+      "title": "Ratelimitsbyaccount",
+      "type": "object"
+    }
+  },
+  "title": "UsageLimitsWorkspaceEnvelope",
+  "type": "object"
+}

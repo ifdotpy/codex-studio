@@ -547,7 +547,7 @@ class AccountsRouterTests(unittest.TestCase):
                     self.assertEqual(cleared.status_code, 200, cleared.text)
                     self.assertEqual(next(row for row in cleared.json()["accounts"] if row["id"] == key)["label"], "")
                     # An old receipt must not restore the old label after a later edit.
-                    retry = self.client.post("/api/accounts/name", json=body)
+                    retry = self.client.post("/api/accounts/name", json={**body, "label": "Work 1"})
                     self.assertEqual(retry.status_code, 200)
                     self.assertEqual(next(row for row in retry.json()["accounts"] if row["id"] == key)["label"], "")
                     with self.assertRaisesRegex(ValueError, "different content"):
