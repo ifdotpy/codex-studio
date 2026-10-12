@@ -149,7 +149,7 @@ class WorkItemsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_partial_writes_refuse_without_writing(self):
         cases = (
-            ("POST", "/api/work", {"agent": self.agent_id, "action": "create", "title": "No write"}, "event-driver/work-items"),
+            ("POST", "/api/work", {"agent": self.agent_id, "action": "claim", "task_id": "assignment-required"}, "worker-driver/work-assignment"),
             ("POST", "/api/queue", {"agent": self.agent_id, "action": "cancel", "message_id": "python-queue-1"}, "event-driver/queue-mutations"),
             ("POST", "/api/organization", {"id": self.agent_id, "pinned": True}, "workspace-state/organization-effects"),
         )
