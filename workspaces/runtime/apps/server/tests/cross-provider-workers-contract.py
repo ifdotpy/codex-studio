@@ -104,8 +104,13 @@ class CrossProviderWorkers(unittest.TestCase):
         return self.rt.servers["claude-fixture"].responses[-1]["result"]
 
     def select_worker_account(self, key):
-        return self.rt.conversation_settings(self.lead["id"], {"worker_defaults": {
-            "model": "gpt-6-luna", "effort": "high", "fast_mode": False, "account_key": key}})
+        return self.select_worker_defaults("gpt-6-luna", "high", account_key=key)
+
+    def select_worker_defaults(self, model, effort="medium", *, account_key=None):
+        defaults = {"model": model, "effort": effort, "fast_mode": False}
+        if account_key is not None:
+            defaults["account_key"] = account_key
+        return self.rt.conversation_settings(self.lead["id"], {"worker_defaults": defaults})
 
     def test_user_selected_account_routes_future_workers_and_preserves_existing(self):
         previous = self.child()
@@ -159,9 +164,14 @@ class CrossProviderWorkers(unittest.TestCase):
 
     def test_orchestrator_selects_model_reasoning_and_account(self):
         codex = self.child(model="gpt-6-sol", effort="xhigh", account_key="default")
-        claude = self.child(model="claude-opus-4-6", effort="medium")
         self.assertEqual((codex["accountKey"], codex["model"], codex["effort"]),
                          ("default", "gpt-6-sol", "xhigh"))
+
+        self.lead = self.rt.create({"name": "Claude-default lead", "prompt": "",
+            "cwd": str(self.root), "account_key": "claude-fixture",
+            "model": "claude-sonnet-4-6"}, draft=True)
+        self.select_worker_defaults("claude-opus-4-6", "medium")
+        claude = self.child(model="claude-opus-4-6", effort="medium")
         self.assertEqual((claude["accountKey"], claude["provider"], claude["model"], claude["effort"]),
                          ("claude-fixture", "claude", "claude-opus-4-6", "medium"))
 
@@ -176,6 +186,7 @@ class CrossProviderWorkers(unittest.TestCase):
     def test_codex_lead_can_select_claude_worker(self):
         self.lead = self.rt.create({"name": "Codex lead", "prompt": "",
             "cwd": str(self.root), "account_key": "default", "model": "gpt-6-astra"}, draft=True)
+        self.select_worker_defaults("claude-opus-4-6", "medium")
         child = self.child(model="claude-opus-4-6", effort="medium")
         self.assertEqual((child["accountKey"], child["provider"], child["model"]),
                          ("claude-fixture", "claude", "claude-opus-4-6"))
@@ -183,6 +194,7 @@ class CrossProviderWorkers(unittest.TestCase):
     def test_codex_lead_can_select_claude_alias_or_its_resolved_model(self):
         self.lead = self.rt.create({"name": "Codex lead", "prompt": "",
             "cwd": str(self.root), "account_key": "default", "model": "gpt-6-astra"}, draft=True)
+        self.select_worker_defaults("claude-sonnet-4-6", "high")
         for model in ("sonnet", "claude-sonnet-5-5"):
             child = self.child(model=model, effort="high")
             self.assertEqual((child["accountKey"], child["provider"], child["model"]),
@@ -235,37 +247,45 @@ class CrossProviderWorkers(unittest.TestCase):
                 with patch.object(self.rt.accounts, "get", side_effect=get), patch.object(self.rt, "catalog", side_effect=catalog):
                     result = self.spawn([
                         {"name": "Claude", "prompt": "Review fixture", "role": "reviewer",
-                         "model": "claude-opus-4-6", "account_key": "claude-fixture"},
+                         "model": "gpt-6-luna", "account_key": "default"},
                         {"name": "Codex", "prompt": "Review fixture", "role": "reviewer",
-                         "account_key": "default"}])
+                         "model": "gpt-6-sol", "account_key": "default"}])
                 self.assertFalse(result["success"], result)
                 self.assertEqual(self.workers(), [])
 
-    def test_mixed_account_batch_is_atomic_and_dispatches_to_each_provider(self):
+    def test_mixed_account_batch_is_atomic_and_dispatches_to_each_account(self):
+        secondary_home = self.root / "codex-secondary-home"
+        secondary_home.mkdir()
+        (secondary_home / "auth.json").write_text(json.dumps({"tokens": {
+            "account_id": "fixture-codex-secondary", "access_token": "fixture"}}))
+        self.rt.accounts.data["accounts"]["codex-secondary"] = {
+            "id": "codex-secondary", "provider": "codex", "status": "ready",
+            "home": str(secondary_home), "accountId": "fixture-codex-secondary"}
         good = {"name": "Codex worker", "prompt": "Review fixture", "role": "reviewer"}
-        bad = {**good, "name": "Claude worker", "account_key": "claude-fixture",
-               "model": "claude-opus-4-6", "effort": "impossible"}
+        bad = {**good, "name": "Second Codex worker", "account_key": "codex-secondary",
+               "model": "gpt-6-sol", "effort": "impossible"}
         result = self.spawn([good, bad])
         self.assertFalse(result["success"], result)
         self.assertEqual(self.workers(), [])
         result = self.spawn([good, {**bad, "effort": "medium"}])
         self.assertTrue(result["success"], result)
         workers = self.workers()
-        self.assertEqual({a["accountKey"] for a in workers}, {"default", "claude-fixture"})
+        self.assertEqual({a["accountKey"] for a in workers}, {"default", "codex-secondary"})
         self.rt.dispatch()
         f.f.eventually(lambda: all(self.rt.agent(a["id"])["status"] == "running" for a in workers))
-        for key, expected in (("default", "gpt-6-luna"), ("claude-fixture", "claude-opus-4-6")):
+        for key, expected in (("default", "gpt-6-luna"), ("codex-secondary", "gpt-6-sol")):
             turns = [params for method, params in self.rt.servers[key].calls if method == "turn/start"]
             self.assertEqual(len(turns), 1)
             self.assertEqual(turns[0]["model"], expected)
 
     def test_spawn_routes_profile_model_and_explicit_override(self):
+        self.select_worker_defaults("claude-opus-4-6", "medium")
         profile = self.rt.profiles({"name": "Claude review", "model": "claude-opus-4-6",
                                     "role": "reviewer", "effort": "medium"})
         result = self.spawn([
             {"name": "Profile worker", "prompt": "Review fixture", "role": "reviewer", "profile_id": profile["id"]},
             {"name": "Override worker", "prompt": "Review fixture", "role": "reviewer", "profile_id": profile["id"],
-             "model": "gpt-6-sol", "effort": "xhigh"}])
+             "model": "claude-sonnet-4-6", "effort": "high"}])
         self.assertTrue(result["success"], result)
         workers = {worker["name"]: worker for worker in self.workers()}
         self.assertEqual((workers["Profile worker"]["accountKey"], workers["Profile worker"]["model"],
@@ -273,7 +293,15 @@ class CrossProviderWorkers(unittest.TestCase):
                          ("claude-fixture", "claude-opus-4-6", "medium"))
         self.assertEqual((workers["Override worker"]["accountKey"], workers["Override worker"]["model"],
                           workers["Override worker"]["effort"]),
-                         ("default", "gpt-6-sol", "xhigh"))
+                         ("claude-fixture", "claude-sonnet-4-6", "high"))
+
+    def test_per_worker_model_from_another_provider_is_refused_without_creation(self):
+        before = self.workers()
+        with self.assertRaisesRegex(
+            ValueError, "Choose a Codex model for subagents, as set in chat settings"
+        ):
+            self.child(model="claude-opus-4-6", effort="medium")
+        self.assertEqual(self.workers(), before)
 
     def test_codex_result_wakes_claude_and_both_can_send_messages(self):
         result = self.spawn([{"name": "Worker", "prompt": "Review fixture", "role": "implementer"}])
