@@ -12,10 +12,11 @@ import stat
 import tempfile
 import time
 import unittest
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
 
 import codex_vm_vault as vault
+from server_test_waits import wait_for_condition
 from codex_linux_vm import LinuxVMError
 
 
@@ -151,12 +152,13 @@ class Pulls(unittest.TestCase):
         self.temp.cleanup()
 
     def wait(self, request_id: str) -> dict[str, Any]:
-        for _ in range(200):
+        def completed_job() -> dict[str, Any] | None:
             job = vault.start_pull(self.runtime, 'p', request_id, str(self.downloads))
-            if job['state'] != 'running':
-                return job
-            time.sleep(0.02)
-        raise AssertionError('the pull did not end')
+            return job if job['state'] != 'running' else None
+        return wait_for_condition(
+            completed_job,
+            f'vault pull {request_id} completion',
+        )
 
     def test_a_repeated_request_reports_the_same_pull(self) -> None:
         first = vault.start_pull(self.runtime, 'p', 'pull-1', str(self.downloads))
@@ -354,12 +356,13 @@ class Setup(unittest.TestCase):
         (self.settings / prefix / "recipient.txt").write_text("age1x\n")
 
     def wait(self, start: Any, *args: Any) -> dict[str, Any]:
-        for _ in range(300):
-            job: dict[str, Any] = start(self.runtime, *args)
-            if job["state"] != "running":
-                return job
-            time.sleep(0.02)
-        raise AssertionError("the job did not end")
+        def completed_job() -> dict[str, Any] | None:
+            job = cast(dict[str, Any], start(self.runtime, *args))
+            return job if job["state"] != "running" else None
+        return wait_for_condition(
+            completed_job,
+            'vault job completion',
+        )
 
     def test_the_facts_name_the_vault_after_the_folder_and_show_the_keys_and_profiles(self) -> None:
         facts = vault.setup_facts(self.runtime, "p")

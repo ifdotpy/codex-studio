@@ -26,6 +26,7 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from starlette.types import ASGIApp
 
+from server_test_waits import wait_for_condition
 from studio_api.context import ApiContext
 from studio_api.middleware import RequestBoundary
 from studio_api.sync.resources.hub import ResourceHub
@@ -322,9 +323,7 @@ class ExternalCliSseTests(unittest.TestCase):
             proxy_thread = threading.Thread(target=proxy.serve_forever, daemon=True)
             proxy_thread.start()
             try:
-                deadline = time.monotonic() + 5
-                while not server.server.started and time.monotonic() < deadline:
-                    time.sleep(0.01)
+                wait_for_condition(lambda: server.server.started, "relay API server startup")
                 self.assertTrue(server.server.started, "isolated API server did not start")
                 origin = f"http://127.0.0.1:{server.server_port}"
                 stream = self._start_stream(origin, [
@@ -502,9 +501,7 @@ class ExternalCliSseTests(unittest.TestCase):
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:
-                deadline = time.monotonic() + 5
-                while not server.server.started and time.monotonic() < deadline:
-                    time.sleep(0.01)
+                wait_for_condition(lambda: server.server.started, "relay API server startup")
                 self.assertTrue(server.server.started)
                 env = {
                     **os.environ,
@@ -557,9 +554,7 @@ class ExternalCliSseTests(unittest.TestCase):
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:
-                deadline = time.monotonic() + 5
-                while not server.server.started and time.monotonic() < deadline:
-                    time.sleep(0.01)
+                wait_for_condition(lambda: server.server.started, "relay API server startup")
                 self.assertTrue(server.server.started)
                 before_revision = server._context.resource_hub()._revision
                 env = {

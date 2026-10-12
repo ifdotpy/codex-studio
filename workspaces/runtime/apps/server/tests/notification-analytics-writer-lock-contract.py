@@ -5,7 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from server_test_waits import HANG_GUARD_SECONDS
+from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -251,9 +251,10 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
         with self.writer(self.runtime.analytics_db_path), \
                 patch.object(StreamBuffer, 'enqueue', return_value=False):
             self.runtime.notification(self.batch_notice(self.batch_samples()))
-            until = time.monotonic() + 2
-            while not self.runtime.analytics_capture_status()['active'] and time.monotonic() < until:
-                time.sleep(.01)
+            wait_for_condition(
+                lambda: self.runtime.analytics_capture_status()['active'],
+                'analytics capture start',
+            )
             start = time.monotonic()
             self.runtime.close()
             self.assertLess(time.monotonic() - start, 1)
@@ -502,10 +503,7 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
                 db.execute("INSERT INTO fixture_receipts VALUES ('healthy-close')")
             self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             worker, finished, errors = self.run_callback(self.runtime.close)
-            until = time.monotonic() + 2
-            while not self.runtime.closed and time.monotonic() < until:
-                time.sleep(.01)
-            self.assertTrue(self.runtime.closed)
+            wait_for_condition(lambda: self.runtime.closed, 'runtime close completion')
             release.set()
             self.assertTrue(finished.wait(HANG_GUARD_SECONDS))
             worker.join(3)
@@ -590,9 +588,10 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
             with closing(sqlite3.connect(self.runtime.db_path)) as db:
                 self.assertEqual(db.execute("SELECT sequence FROM runtime_supervisor_cursor WHERE handle='exact-handle'").fetchone()[0], 70)
             now[0] = 61.0
-            until = time.monotonic() + 2
-            while self.runtime.analytics_capture_status()['failed'] == 6 and time.monotonic() < until:
-                time.sleep(.01)
+            wait_for_condition(
+                lambda: self.runtime.analytics_capture_status()['failed'] > 6,
+                'analytics capture failure count',
+            )
             self.assertGreater(self.runtime.analytics_capture_status()['failed'], 6)
             self.assert_main_available()
         self.drain()
@@ -606,9 +605,10 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
                 for number in range(limit):
                     self.runtime.analytics_safe(db, self.sample, number)
                 db.execute("INSERT INTO fixture_receipts VALUES ('close-full-queue')")
-            until = time.monotonic() + 2
-            while self.runtime.analytics_capture_status()['active'] == 0 and time.monotonic() < until:
-                time.sleep(.01)
+            wait_for_condition(
+                lambda: self.runtime.analytics_capture_status()['active'] > 0,
+                'analytics capture start',
+            )
             start = time.monotonic()
             self.runtime.close()
             self.assertLess(time.monotonic() - start, 5)

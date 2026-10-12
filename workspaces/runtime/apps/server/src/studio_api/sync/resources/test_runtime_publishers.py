@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from server_test_waits import HANG_GUARD_SECONDS
+from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
 
 import asyncio
 import json
@@ -790,10 +790,11 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                 disconnected.set()
 
             try:
-                deadline = time.monotonic() + 10
                 socket_path = state_dir / "supervisor.sock"
-                while not socket_path.exists() and supervisor.poll() is None and time.monotonic() < deadline:
-                    time.sleep(0.02)
+                wait_for_condition(
+                    lambda: socket_path.exists() or supervisor.poll() is not None,
+                    "separate supervisor IPC socket or process exit",
+                )
                 self.assertTrue(socket_path.exists(), "separate supervisor did not create its IPC socket")
                 account_root = state_dir / "account-server"
                 account_root.mkdir()

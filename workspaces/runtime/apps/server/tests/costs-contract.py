@@ -23,6 +23,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_costs import CostReader, normalize
+from server_test_waits import wait_for_condition
 
 
 def report(day=None):
@@ -52,10 +53,7 @@ def report(day=None):
 
 
 def wait(reader):
-    end = time.monotonic() + 5
-    while reader.busy and time.monotonic() < end:
-        time.sleep(0.01)
-    assert not reader.busy
+    wait_for_condition(lambda: not reader.busy, 'cost reader completion')
     return reader.snapshot()
 
 

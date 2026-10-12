@@ -4,6 +4,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import wait_for_condition
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -179,18 +180,17 @@ main()
         return connections
 
     @staticmethod
-    def wait_marker(marker: Path, process: subprocess.Popen[str], timeout: float = 20) -> None:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if marker.exists():
-                return
-            if process.poll() is not None:
-                stderr = process.stderr.read() if process.stderr else ""
-                raise AssertionError(
-                    f"backend exited before reaching marker: {process.returncode}\nstderr: {stderr}"
-                )
-            time.sleep(0.01)
-        raise AssertionError(f"backend did not reach marker: {marker}")
+    def wait_marker(marker: Path, process: subprocess.Popen[str]) -> None:
+        wait_for_condition(
+            lambda: marker.exists() or process.poll() is not None,
+            f"backend marker {marker} or early process exit",
+        )
+        if marker.exists():
+            return
+        stderr = process.stderr.read() if process.stderr else ""
+        raise AssertionError(
+            f"backend exited before reaching marker: {process.returncode}\nstderr: {stderr}"
+        )
 
     def run_shutdown(
         self,

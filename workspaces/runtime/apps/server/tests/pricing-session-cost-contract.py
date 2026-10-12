@@ -589,9 +589,7 @@ class PricingSessionCostContract(unittest.TestCase):
             for worker in workers:
                 worker.start()
             self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
-            deadline = time.monotonic() + 3
-            while len(reader.inflight) != 1 and time.monotonic() < deadline:
-                time.sleep(0.005)
+            wait_for_condition(lambda: len(reader.inflight) == 1, 'shared cold-cost computation')
             release.set()
             for worker in workers:
                 worker.join(3)
@@ -653,20 +651,17 @@ class PricingSessionCostContract(unittest.TestCase):
                 self.assertEqual(read("other")["pricingState"], "loading")
                 self.assertEqual(calls, ["lead"], "Only one heavy history job runs across chats")
                 release.set()
-                deadline = time.monotonic() + 3
-                while time.monotonic() < deadline:
+                def lead_ready():
                     value = read("lead")
-                    if value["pricingState"] == "ready":
-                        break
-                    time.sleep(0.01)
+                    return value if value["pricingState"] == "ready" else None
+                value = wait_for_condition(lead_ready, 'lead session cost computation')
                 self.assertEqual(value["pricingState"], "ready")
                 self.assertEqual(value["pricedSamples"], 1)
                 self.assertEqual(value["totalUSD"], price_usage(catalog(), "openai", "gpt-6-luna", usage)[0])
-                other = read("other")
-                deadline = time.monotonic() + 3
-                while other["pricingState"] != "ready" and time.monotonic() < deadline:
-                    time.sleep(0.01)
-                    other = read("other")
+                def other_ready():
+                    result = read("other")
+                    return result if result["pricingState"] == "ready" else None
+                other = wait_for_condition(other_ready, 'other session cost computation')
                 self.assertEqual(other["pricingState"], "ready")
                 self.assertEqual(calls, ["lead", "other"])
                 self.assertEqual(history_jobs["peak"], 1)
@@ -691,21 +686,16 @@ class PricingSessionCostContract(unittest.TestCase):
         reader = SessionCostReader(db_path, FixedPricing(), clock=lambda: clock[0])
         with patch.object(reader, "_compute", side_effect=ValueError("Invalid cost data")) as failed_compute:
             self.assertEqual(reader.snapshot("lead")["pricingState"], "loading")
-            deadline = time.monotonic() + 2
-            while reader.refreshing and time.monotonic() < deadline:
-                time.sleep(0.005)
+            wait_for_condition(lambda: not reader.refreshing, 'failed cost refresh completion')
             with self.assertRaisesRegex(ValueError, "Invalid cost data"):
                 reader.snapshot("lead")
-            while reader.refreshing and time.monotonic() < deadline:
-                time.sleep(0.005)
+            wait_for_condition(lambda: not reader.refreshing, 'failed cost refresh worker cleanup')
             failed_compute.assert_called_once()
         # The reader permits a new cold retry after 10 seconds.
         clock[0] += 10
         with self.assertRaisesRegex(ValueError, "Invalid cost data"):
             reader.snapshot("lead")
-        deadline = time.monotonic() + 2
-        while reader.refreshing and time.monotonic() < deadline:
-            time.sleep(0.005)
+        wait_for_condition(lambda: not reader.refreshing, 'retried cost refresh completion')
         self.assertEqual(reader.snapshot("lead")["pricingState"], "ready")
 
     def test_failed_catalog_refresh_keeps_last_good_copy(self):
@@ -740,10 +730,7 @@ class PricingSessionCostContract(unittest.TestCase):
         now[0] += 31 * 60
         pricing.refresh_missing()
         self.assertTrue(done.wait(HANG_GUARD_SECONDS))
-        for _ in range(100):
-            if not pricing.refreshing:
-                break
-            time.sleep(0.02)
+        wait_for_condition(lambda: not pricing.refreshing, 'pricing catalog refresh completion')
         pricing.refresh_missing()
         self.assertEqual(len(calls), 1)
 

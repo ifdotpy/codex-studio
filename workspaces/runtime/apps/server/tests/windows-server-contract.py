@@ -5,7 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from server_test_waits import HANG_GUARD_SECONDS
+from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition as _wait_until
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -126,16 +126,6 @@ class ControlRequestPosixContract(unittest.TestCase):
             first = _read_control_request(state, None)
             second = _read_control_request(state, first["requestId"])
             self.assertEqual([first["requestId"], second["requestId"]], [stop_id, restart_id])
-
-
-def _wait_until(check, timeout=60):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        value = check()
-        if value:
-            return value
-        time.sleep(0.25)
-    raise AssertionError("The Windows server did not reach the expected state")
 
 
 def _base_python() -> tuple[str, dict[str, str]]:

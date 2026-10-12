@@ -30,6 +30,7 @@ import urllib.error
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 import codex_claude
 from codex_claude_login import LoginManager, verification_url
+from server_test_waits import wait_for_condition
 
 
 class Accounts:
@@ -141,10 +142,13 @@ email = 'wrong@example.com' if code == 'wrong' else 'expected@example.com'
     def tearDown(self):
         for rid in self.ids:
             self.login.cancel(rid)
-        end = time.monotonic() + 4
-        while any(job.get('process') and job['process'].poll() is None for job in self.login.jobs.values()) and time.monotonic() < end:
-            time.sleep(.02)
-        time.sleep(.05)
+        wait_for_condition(
+            lambda: not any(
+                job.get('process') and job['process'].poll() is None
+                for job in self.login.jobs.values()
+            ),
+            'Claude login child cleanup',
+        )
         self.temp.cleanup()
         self.installed.stop()
         self.auth_reader.stop()
@@ -156,13 +160,13 @@ email = 'wrong@example.com' if code == 'wrong' else 'expected@example.com'
         return rid
 
     def await_status(self, rid, states):
-        end = time.monotonic() + 35
-        while time.monotonic() < end:
+        def status_in_states():
             result = self.login.status(rid)
-            if result['status'] in states:
-                return result
-            time.sleep(.02)
-        self.fail(str(result))
+            return result if result['status'] in states else None
+        return wait_for_condition(
+            status_in_states,
+            f'Claude login status for {rid} in {sorted(states)}',
+        )
 
     def test_success_profile_environment_code_once_and_receipt_replay(self):
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY':'not-allowed'}):
@@ -317,25 +321,23 @@ email = 'wrong@example.com' if code == 'wrong' else 'expected@example.com'
         self.await_status(rid, {'pending'})
         config = self.root / 'claude-logins' / ('config-' + rid)
         self.assertEqual(self.login.cancel(rid)['status'], 'cancelled')
-        end = time.monotonic() + 3
-        while config.exists() and time.monotonic() < end:
-            time.sleep(.02)
+        wait_for_condition(lambda: not config.exists(), 'cancelled Claude config cleanup')
         self.assertFalse(config.exists())
         self.assertEqual(LoginManager(self.rt).start_add(None, 'Cancelled', rid)['status'], 'cancelled')
 
     def test_add_restart_marks_active_request_without_relaunch(self):
         rid = str(uuid.uuid4())
         script = """
-import os, time
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from codex_claude_login import LoginManager
+from server_test_waits import wait_for_condition
 runtime = SimpleNamespace(root=Path(os.environ['FIXTURE_ROOT']), accounts=SimpleNamespace())
 manager = LoginManager(runtime, deadline=10)
 rid = os.environ['FIXTURE_REQUEST']
 manager.start_add('expected@example.com', 'Restart', rid)
-while manager.status(rid)['status'] == 'starting':
-    time.sleep(.02)
+wait_for_condition(lambda: manager.status(rid)['status'] != 'starting', 'add login fixture startup')
 os._exit(0)
 """
         env = {**os.environ, 'PYTHONPATH':str(SERVER_SOURCE_ROOT),
@@ -343,15 +345,13 @@ os._exit(0)
         subprocess.run([sys.executable, '-B', '-c', script], env=env, check=True, timeout=20)
         config = self.root / 'claude-logins' / ('config-' + rid)
         pid = int((config / 'native-pid').read_text())
-        end = time.monotonic() + 3
-        while time.monotonic() < end:
+        def child_gone():
             try:
                 os.kill(pid, 0)
             except ProcessLookupError:
-                break
-            time.sleep(.03)
-        else:
-            self.fail('Native add login survived backend exit')
+                return True
+            return None
+        wait_for_condition(child_gone, 'native add login exit after backend shutdown')
         restarted = LoginManager(self.rt)
         result = restarted.status(rid)
         self.assertEqual(result['status'], 'error')
@@ -410,46 +410,43 @@ os._exit(0)
         self.await_status(rid, {'pending'})
         pid = int((self.config / 'native-pid').read_text())
         self.login.cancel(rid)
-        end = time.monotonic() + 3
-        while time.monotonic() < end:
+        def child_gone():
             try:
                 os.kill(pid, 0)
             except ProcessLookupError:
-                break
-            time.sleep(.03)
-        else:
-            self.fail('Native login survived cancellation')
+                return True
+            return None
+        wait_for_condition(child_gone, 'native login exit after cancellation')
         self.assertEqual(self.login.status(rid)['status'], 'cancelled')
 
     def test_backend_exit_stops_native_child_and_preserves_receipt(self):
         rid = str(uuid.uuid4())
         script = """
-import os, json, threading, time
+import os, json, threading
 from pathlib import Path
 from types import SimpleNamespace
 from codex_claude_login import LoginManager
+from server_test_waits import wait_for_condition
 profile = json.loads(os.environ['FIXTURE_PROFILE'])
 rt = SimpleNamespace(root=Path(os.environ['FIXTURE_ROOT']), accounts=SimpleNamespace(
     lock=threading.RLock(), _row=lambda key: profile))
 manager = LoginManager(rt, deadline=10)
 rid = os.environ['FIXTURE_REQUEST']
 manager.start('claude-test',rid)
-while manager.status(rid)['status'] == 'starting': time.sleep(.02)
+wait_for_condition(lambda: manager.status(rid)['status'] != 'starting', 'login fixture startup')
 os._exit(0)
 """
         env = {**os.environ, 'PYTHONPATH':str(SERVER_SOURCE_ROOT),
                'FIXTURE_PROFILE':json.dumps(self.profile), 'FIXTURE_ROOT':str(self.root), 'FIXTURE_REQUEST':rid}
         subprocess.run([sys.executable,'-B','-c',script],env=env,check=True,timeout=20)
         pid = int((self.config / 'native-pid').read_text())
-        end = time.monotonic() + 3
-        while time.monotonic() < end:
+        def child_gone():
             try:
                 os.kill(pid,0)
             except ProcessLookupError:
-                break
-            time.sleep(.03)
-        else:
-            self.fail('Native login survived backend exit')
+                return True
+            return None
+        wait_for_condition(child_gone, 'native login exit after backend shutdown')
         self.assertEqual(self.login.status(rid)['status'],'error')
         self.assertIn('restarted',self.login.status(rid)['error'])
 
@@ -457,22 +454,21 @@ os._exit(0)
         (self.config / 'status-block').touch()
         rid = str(uuid.uuid4())
         script = """
-import os, json, threading, time
+import os, json, threading
 from pathlib import Path
 from types import SimpleNamespace
 from codex_claude_login import LoginManager
+from server_test_waits import wait_for_condition
 profile = json.loads(os.environ['FIXTURE_PROFILE'])
 rt = SimpleNamespace(root=Path(os.environ['FIXTURE_ROOT']), accounts=SimpleNamespace(
     lock=threading.RLock(), _row=lambda key: profile))
 manager = LoginManager(rt, deadline=10)
 rid = os.environ['FIXTURE_REQUEST']
 manager.start('claude-test', rid)
-while manager.status(rid)['status'] == 'starting': time.sleep(.02)
+wait_for_condition(lambda: manager.status(rid)['status'] != 'starting', 'login fixture startup')
 manager.code(rid, 'valid-code')
 status_pid = Path(profile['claudeOptions']['configDir']) / 'status-pid'
-end = time.monotonic() + 12
-while not status_pid.exists() and time.monotonic() < end: time.sleep(.02)
-if not status_pid.exists(): raise SystemExit('status process did not start')
+wait_for_condition(status_pid.exists, 'supervised auth status fixture process start')
 os._exit(0)
 """
         env = {**os.environ, 'PYTHONPATH':str(SERVER_SOURCE_ROOT),
@@ -480,15 +476,13 @@ os._exit(0)
                'FIXTURE_ROOT':str(self.root), 'FIXTURE_REQUEST':rid}
         subprocess.run([sys.executable, '-B', '-c', script], env=env, check=True, timeout=60)
         pid = int((self.config / 'status-pid').read_text())
-        end = time.monotonic() + 3
-        while time.monotonic() < end:
+        def child_gone():
             try:
                 os.kill(pid, 0)
             except ProcessLookupError:
-                break
-            time.sleep(.03)
-        else:
-            self.fail('Supervised auth status survived backend exit')
+                return True
+            return None
+        wait_for_condition(child_gone, 'supervised auth status process exit')
 
     def test_configuration_lock_and_restart_receipt(self):
         rid = self.start()

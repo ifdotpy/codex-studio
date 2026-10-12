@@ -15,6 +15,7 @@ from typing import Any
 from unittest.mock import patch
 
 import codex_vm_mac_sync as sync
+from server_test_waits import wait_for_condition
 
 
 def sha(data: bytes) -> str:
@@ -639,7 +640,7 @@ class FileEvents(unittest.TestCase):
         helper = self.root / 'helper'
         helper.write_text('#!/bin/sh\n'
                           f'echo \'{{"ready": ["{self.root}"]}}\'\n'
-                          'sleep 1\n'
+                          'read release\n'
                           f'echo \'{{"path": "{self.root}/a.txt"}}\'\n'
                           f'echo \'{{"path": "{self.root}/sub/b.txt"}}\'\n'
                           f'echo \'{{"rescan": "{other}"}}\'\n'
@@ -651,11 +652,16 @@ class FileEvents(unittest.TestCase):
             self.assertTrue(watcher.available())
             # The first take after a start scans in full: nothing was watched before.
             self.assertEqual(watcher.take(self.root), (True, None))
-            import time as clock
-            deadline = clock.monotonic() + 5
-            while clock.monotonic() < deadline and not watcher.pending.get(self.root):
-                clock.sleep(0.05)
-            clock.sleep(0.2)
+            assert watcher.process is not None and watcher.process.stdin is not None
+            watcher.process.stdin.write(b"release\n")
+            watcher.process.stdin.flush()
+            def events_collected() -> bool:
+                with watcher.guard:
+                    return (
+                        watcher.pending.get(self.root) == {"a.txt", "sub/b.txt"}
+                        and other in watcher.pending
+                    )
+            wait_for_condition(events_collected, "file watcher fixture events")
             self.assertEqual(watcher.take(self.root), (True, {'a.txt', 'sub/b.txt'}))
             self.assertEqual(watcher.take(other), (True, None))
             self.assertEqual(watcher.take(self.root), (False, set()))
@@ -678,12 +684,13 @@ class FileEvents(unittest.TestCase):
             clock.sleep(1.0)
             (folder / 'sub').mkdir()
             (folder / 'sub/new.txt').write_text('x')
-            deadline, found = clock.monotonic() + 10, set()
-            while clock.monotonic() < deadline and 'sub/new.txt' not in found:
-                clock.sleep(0.4)
+            found: set[str] = set()
+            def collect_changed_path() -> bool | None:
                 changed, paths = watcher.take(folder)
                 if changed and paths is not None:
-                    found |= paths
+                    found.update(paths)
+                return True if 'sub/new.txt' in found else None
+            wait_for_condition(collect_changed_path, 'signed file event helper notification')
         watcher.stop()
         self.assertIn('sub/new.txt', found)
 

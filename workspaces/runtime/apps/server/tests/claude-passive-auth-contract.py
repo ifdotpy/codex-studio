@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+from server_test_waits import wait_for_condition
 
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
@@ -152,13 +153,10 @@ class PassiveAuth(unittest.TestCase):
             self.assertEqual(result['status'], 'error')
             self.assertEqual(result['_authErrorKind'], 'timeout')
             child = int(child_path.read_text())
-            for _ in range(40):
+            def child_reaped():
                 status = subprocess.run(['ps', '-o', 'stat=', '-p', str(child)], capture_output=True, text=True)
-                if status.returncode or status.stdout.strip().startswith('Z'):
-                    break
-                time.sleep(.05)
-            else:
-                self.fail('The credential reader survived the auth probe timeout')
+                return True if status.returncode or status.stdout.strip().startswith('Z') else None
+            wait_for_condition(child_reaped, 'credential reader exit after auth timeout')
 
 
 if __name__ == '__main__':

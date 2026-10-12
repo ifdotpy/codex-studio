@@ -21,7 +21,7 @@ from unittest import mock
 SERVER_APP_BOOTSTRAP = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SERVER_APP_BOOTSTRAP / "src"))
 
-from server_test_waits import HANG_GUARD_SECONDS
+from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
 ROOT = REPOSITORY_ROOT
@@ -723,7 +723,10 @@ class ServerSuiteRunner(unittest.TestCase):
                 a = threading.Thread(target=first); a.start()
                 self.assertTrue(entered.wait(timeout=HANG_GUARD_SECONDS))
                 b = threading.Thread(target=second); b.start()
-                time.sleep(0.1)
+                wait_for_condition(
+                    lambda: "waiting for another test run to finish" in output.getvalue(),
+                    "runner lock contention announcement",
+                )
                 self.assertFalse(acquired.is_set())
                 release.set(); a.join(timeout=2); b.join(timeout=2)
             self.assertTrue(acquired.is_set())

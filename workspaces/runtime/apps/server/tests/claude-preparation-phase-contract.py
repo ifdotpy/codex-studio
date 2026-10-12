@@ -6,13 +6,16 @@ isolate_supervisor_environment()
 import importlib.util
 import json
 from pathlib import Path
+import sys
 import time
 import unittest
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 spec = importlib.util.spec_from_file_location(
     'claude_phase_fixture', Path(__file__).with_name('claude-bridge-contract.py'))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
+from server_test_waits import wait_for_condition
 
 SDK = fixture.SDK.replace(
     ' let abort=new AbortController();',
@@ -135,9 +138,7 @@ class PreparationPhase(fixture.Bridge):
     def test_active_turn_refreshes_original_catalog_without_another_turn(self):
         self.turn('wait', 'active-native-work')
         path = self.root / '.catalog-reinitializations'
-        deadline = time.monotonic() + 2
-        while not path.exists() and time.monotonic() < deadline:
-            time.sleep(.005)
+        wait_for_condition(path.exists, 'Claude catalog reinitialization marker')
         self.assertEqual(len(path.read_text().splitlines()), 1)
         self.assertTrue(self.call('model/list', {})['data'])
         self.assertEqual(len((self.root / '.queries').read_text().splitlines()), 1)

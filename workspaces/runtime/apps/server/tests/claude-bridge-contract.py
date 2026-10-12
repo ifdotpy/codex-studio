@@ -22,6 +22,8 @@ import threading
 import time
 import unittest
 
+from server_test_waits import wait_for_condition
+
 ROOT = REPOSITORY_ROOT
 SDK = r'''
 import fs from 'node:fs';
@@ -513,10 +515,10 @@ class Bridge(unittest.TestCase):
         self.turn('hello', 'first')
         self.assertEqual(self.completed()['status'], 'completed')
         self.assertEqual(self.call('claude/diagnostics', {})['liveQueries'], 1)
-        deadline = time.monotonic() + 4
-        while self.call('claude/diagnostics', {})['liveQueries'] and time.monotonic() < deadline:
-            time.sleep(.1)
-        self.assertEqual(self.call('claude/diagnostics', {})['liveQueries'], 0)
+        wait_for_condition(
+            lambda: self.call('claude/diagnostics', {})['liveQueries'] == 0,
+            'idle Claude query cleanup',
+        )
         self.assertEqual(self.call('claude/diagnostics', {})['sessionCache']['cachedSessions'], 0)
         self.turn('hello', 'second')
         self.assertEqual(self.completed()['status'], 'completed')
@@ -558,9 +560,10 @@ class Bridge(unittest.TestCase):
         state = self.call('claude/diagnostics', {})
         self.assertEqual((state['liveQueries'], state['backgroundQueries']), (1, 1))
         (self.root / '.release-background').write_text('done')
-        deadline = time.monotonic() + 4
-        while self.call('claude/diagnostics', {})['liveQueries'] and time.monotonic() < deadline:
-            time.sleep(.1)
+        wait_for_condition(
+            lambda: self.call('claude/diagnostics', {})['liveQueries'] == 0,
+            'released Claude background query cleanup',
+        )
         self.assertEqual(self.call('claude/diagnostics', {})['liveQueries'], 0)
 
     def test_resume_keeps_the_current_turn_and_delivers_one_steer(self):
@@ -1074,9 +1077,10 @@ class Bridge(unittest.TestCase):
         self.write({'id': pending, 'method': 'turn/start', 'params': {
             'threadId': self.thread, 'clientUserMessageId': 'stalled-input',
             'input': [{'type': 'text', 'text': 'second'}]}})
-        deadline = time.monotonic() + 3
-        while not (self.root / '.preparation-entered').exists() and time.monotonic() < deadline:
-            time.sleep(.01)
+        wait_for_condition(
+            lambda: (self.root / '.preparation-entered').exists(),
+            'Claude preparation fixture entry',
+        )
         self.assertTrue((self.root / '.preparation-entered').exists())
         start = time.monotonic()
         metadata = self.call('thread/read', {'threadId': self.thread, 'includeTurns': False})
@@ -1125,9 +1129,10 @@ class Bridge(unittest.TestCase):
         self.write({'id': pending, 'method': 'turn/start', 'params': {
             'threadId': self.thread, 'clientUserMessageId': 'race-input',
             'input': [{'type': 'text', 'text': 'never submitted'}]}})
-        deadline = time.monotonic() + 3
-        while not (self.root / 'state' / 'held-persist').exists() and time.monotonic() < deadline:
-            time.sleep(.01)
+        wait_for_condition(
+            lambda: (self.root / 'state' / 'held-persist').exists(),
+            'held transcript persistence fixture',
+        )
         self.assertTrue((self.root / 'state' / 'held-persist').exists())
         return pending
 

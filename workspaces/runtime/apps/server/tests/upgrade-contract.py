@@ -6,6 +6,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import wait_for_condition
 from codex_layout import DESKTOP_ROOT, REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 import importlib.util
@@ -199,13 +200,11 @@ class UpgradeContract(unittest.TestCase):
 
                     with patch.object(codex_work.shutil, "disk_usage", return_value=Usage()):
                         runtime.search_migration_start()
-                        deadline = time.monotonic() + 30
-                        while time.monotonic() < deadline:
+                        def rollout_phase():
                             with runtime.db() as db:
                                 phase = db.execute("SELECT phase FROM runtime_search_rollout WHERE id=1").fetchone()[0]
-                            if phase == "complete":
-                                break
-                            time.sleep(.02)
+                            return phase if phase == "complete" else None
+                        phase = wait_for_condition(rollout_phase, "search rollout completion")
                         self.assertEqual(phase, "complete")
                     origin = f"http://127.0.0.1:{server.server_address[1]}"
                     def get(path):

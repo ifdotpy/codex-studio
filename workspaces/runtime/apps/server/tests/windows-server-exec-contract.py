@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import wait_for_condition
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -61,15 +62,13 @@ class WindowsExecContract(unittest.TestCase):
         finally:
             kernel32.CloseHandle(handle)
 
-    def wait_for_output(self, handle, marker, timeout=8):
-        deadline = time.monotonic() + timeout
-        value = None
-        while time.monotonic() < deadline:
+    def wait_for_output(self, handle, marker):
+        def output_or_exit():
             value = self.read(handle)
-            if marker in value['stdout']:
-                return value
-            time.sleep(.05)
-        self.fail(f'Command output did not contain {marker!r}: {value!r}')
+            return value if marker in value['stdout'] or value['status'] not in {'starting', 'running'} else None
+        value = wait_for_condition(output_or_exit, f'command output {marker!r}')
+        self.assertIn(marker, value['stdout'], f'Command output did not contain {marker!r}: {value!r}')
+        return value
 
     def test_exec_read_input_close_and_cancel(self):
         source = ('import sys;print("READY",flush=True);'
@@ -167,20 +166,17 @@ class WindowsExecContract(unittest.TestCase):
         self.assertIn('value', result, result)
         value = result['value']
         handle = value['handle']
-        deadline = time.monotonic() + 12
-        while value['status'] in {'starting', 'running'} and not marker.exists():
-            self.assertLess(time.monotonic(), deadline, value)
-            time.sleep(.1)
-            value = self.read(handle)
+        def output_or_marker_or_exit():
+            latest = self.read(handle)
+            return latest if marker.exists() or latest['status'] not in {'starting', 'running'} else None
+        value = wait_for_condition(output_or_marker_or_exit, 'Windows command completion marker')
         if value['status'] in {'starting', 'running'}:
             value = self.finish(handle, timeout=20)
         self.assertTrue(value['timedOut'], value)
         self.assertEqual(value['status'], 'completed')
         self.assertGreaterEqual(value['stoppedDescendants'], 1, value)
         pid = int(marker.read_text(encoding='ascii'))
-        deadline = time.monotonic() + 5
-        while self.process_active(pid) and time.monotonic() < deadline:
-            time.sleep(.05)
+        wait_for_condition(lambda: not self.process_active(pid), f'job descendant {pid} exit')
         self.assertFalse(self.process_active(pid), f'job descendant {pid} is still active')
 
 

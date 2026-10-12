@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import wait_for_condition
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -107,11 +108,7 @@ class NativeVoiceContract(unittest.TestCase):
         self.folder.cleanup()
 
     def until(self, condition):
-        deadline = time.monotonic() + 3
-        while not condition():
-            if time.monotonic() > deadline:
-                self.fail("Fixture deadline")
-            time.sleep(.005)
+        wait_for_condition(condition, "native voice fixture state")
 
     def start(self, sid="session"):
         self.voice.start("lead", sid, "v=0\noffer")

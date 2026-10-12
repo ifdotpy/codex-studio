@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import SERVER_TESTS_ROOT, VM_GUEST_ROOT  # noqa: E402
+from server_test_waits import wait_for_condition  # noqa: E402
 
 sys.path.insert(0, str(VM_GUEST_ROOT))
 from codex_host_exec_server import HostService
@@ -198,11 +199,19 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((self.line / "edit").read_text(), "before timeout")
 
     async def test_cancel_retains_source_changes(self):
-        task = asyncio.create_task(self.execute("cancel", 'import time,pathlib;pathlib.Path("edit").write_text("before cancel");time.sleep(20)'))
-        deadline = asyncio.get_running_loop().time() + 5
-        while not self.host.children and asyncio.get_running_loop().time() < deadline:
-            await asyncio.sleep(0.01)
-        await asyncio.sleep(0.1)
+        edited = self.line / "edit"
+        edit_started = self.line / "edit-started"
+        script = (
+            'import pathlib,time;pathlib.Path("edit").write_text("before cancel");'
+            f'pathlib.Path({str(edit_started)!r}).write_text("ready");time.sleep(20)'
+        )
+        task = asyncio.create_task(self.execute("cancel", script))
+        await asyncio.to_thread(wait_for_condition, lambda: bool(self.host.children), 'host exec child start')
+        await asyncio.to_thread(
+            wait_for_condition,
+            lambda: edit_started.read_text() if edit_started.exists() else None,
+            'host exec child edit before cancellation',
+        )
         await self.guest.handle("cancel-request", {"action": "cancel", "agentId": "agent", "operationId": "cancel"}, self.emit)
         result = await task
         self.assertEqual(result["reason"], "cancelled")

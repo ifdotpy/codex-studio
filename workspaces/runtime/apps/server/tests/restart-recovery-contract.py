@@ -5,7 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from server_test_waits import HANG_GUARD_SECONDS
+from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -608,14 +608,13 @@ class RestartContract(fixture.ConnectionRecoveryContract):
                 ('pending', None))
         with patch('codex_native_tools.gate', return_value=True):
             self.runtime.dispatch()
-        deadline = time.monotonic() + 5
         starts = []
-        while time.monotonic() < deadline:
+        def provider_start():
+            nonlocal starts
             starts = [params for method, params in self.server.calls
                       if method == 'turn/start' and params.get('clientUserMessageId') == 'preparation-input']
-            if starts:
-                break
-            time.sleep(.02)
+            return starts or None
+        wait_for_condition(provider_start, 'provider start for preparation input')
         self.assertEqual(len(starts), 1)
 
     def test_scenario_4_disconnect_after_thread_preparation_keeps_one_input(self):
@@ -642,12 +641,10 @@ class RestartContract(fixture.ConnectionRecoveryContract):
         self.assertEqual(a['connectionRecovery']['attemptId'], 'prepared-attempt')
         with patch('codex_native_tools.gate', return_value=True):
             self.runtime.dispatch()
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
+        def provider_start():
             starts = [params for method, params in self.server.calls if method == 'turn/start']
-            if starts:
-                break
-            time.sleep(.02)
+            return starts or None
+        starts = wait_for_condition(provider_start, 'provider start after thread preparation')
         self.assertEqual(len(starts), 1)
         self.assertEqual(starts[0]['clientUserMessageId'], 'prepared-input')
         with self.runtime.db() as db:
@@ -670,11 +667,10 @@ class RestartContract(fixture.ConnectionRecoveryContract):
         self.assertEqual(a['restartRecovery']['stage'], 'held')
         self.assertEqual(a['contextRepairWait']['events'], ['exact-native-input'])
         self.runtime.dispatch()
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            if self.runtime.agent(self.key).get('restartRecovery', {}).get('stage') == 'finished':
-                break
-            time.sleep(.02)
+        wait_for_condition(
+            lambda: self.runtime.agent(self.key).get('restartRecovery', {}).get('stage') == 'finished',
+            'restart recovery completion',
+        )
         self.assertEqual(self.runtime.agent(self.key)['restartRecovery']['stage'], 'finished')
         with self.runtime.db() as db:
             self.assertEqual(tuple(db.execute(

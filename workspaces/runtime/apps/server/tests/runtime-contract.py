@@ -5,7 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from server_test_waits import HANG_GUARD_SECONDS
+from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 import base64
@@ -190,10 +190,10 @@ class RuntimeContract(unittest.TestCase):
         self.addCleanup(submit_patch.stop)
 
         def wait_until_balanced():
-            with condition:
-                return condition.wait_for(
-                    lambda: counts['submitted'] == counts['completed'], timeout=30
-                )
+            def balanced():
+                with condition:
+                    return counts['submitted'] == counts['completed']
+            return wait_for_condition(balanced, 'runtime start delivery completion')
 
         return wait_until_balanced
 
@@ -1464,10 +1464,11 @@ class RuntimeContract(unittest.TestCase):
             self.runtime.answer(r['id'], {'decision': 'accept'})
 
     def test_completion_before_rpc_response_stays_terminal(self):
+        wait_for_starts = self.track_delivery_starts()
         self.runtime.connect().finish_before_reply = True
         a = self.runtime.create({'name': 'Lead', 'cwd': str(self.root), 'prompt': 'Finish'})
+        wait_for_starts()
         eventually(lambda: self.runtime.agent(a['id'])['status'] == 'completed')
-        time.sleep(.1)
         self.assertEqual(self.runtime.agent(a['id'])['status'], 'completed')
 
     def test_budget_stops_team_and_new_budget_allows_explicit_resume(self):

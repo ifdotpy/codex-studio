@@ -4,6 +4,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import wait_for_condition
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -121,11 +122,10 @@ class CanvasChatSeedContract(unittest.TestCase):
                     store = context.sync()
                 first = store.pull("state:entities:v1", fresh=True, reset_support=True)
                 self.assertTrue(first["documents"])
-                deadline = time.monotonic() + 10
-                while store.entity_prune_status["status"] in {"running", "waitingForLock"}:
-                    if time.monotonic() >= deadline:
-                        self.fail("tombstone pruner did not finish")
-                    time.sleep(0.01)
+                wait_for_condition(
+                    lambda: store.entity_prune_status["status"] not in {"running", "waitingForLock"},
+                    "tombstone pruning completion",
+                )
                 with runtime.db() as db:
                     self.assertIsNone(db.execute(
                         "SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'").fetchone())

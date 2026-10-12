@@ -40,7 +40,10 @@ def runner_fixture(state, port, protocol, source):
         if protocol == 2:
             server._advertise_control_protocol(state)
         backend = subprocess.Popen([sys.executable, "-B", __file__, "--backend-fixture", str(source), str(port)])
-        while not (state / "fixture-stop").exists():
+        def process_control_or_stop():
+            nonlocal backend, previous
+            if (state / "fixture-stop").exists():
+                return True
             if protocol == 1:
                 request = None
                 path = state / "windows-server-control.json"
@@ -64,7 +67,8 @@ def runner_fixture(state, port, protocol, source):
                 server._write_control_result(state, previous, "backend-restarted")
                 if protocol == 2:
                     Path(request["claimPath"]).unlink()
-            time.sleep(.05)
+            return None
+        wait_until(process_control_or_stop, "Windows upgrade fixture stop request")
     finally:
         if backend is not None:
             backend.terminate()
