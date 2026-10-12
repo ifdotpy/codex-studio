@@ -12,6 +12,74 @@ use thiserror::Error;
 
 static GENERATED_ANNOTATION_ID: AtomicU64 = AtomicU64::new(0);
 
+/// Match Python's default JSON string escaping for durable operation signatures.
+pub fn python_json(value: &Value) -> String {
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) => value.to_string(),
+        Value::String(value) => python_quote(value),
+        Value::Array(values) => format!(
+            "[{}]",
+            values
+                .iter()
+                .map(python_json)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Value::Object(values) => {
+            let mut keys = values.keys().collect::<Vec<_>>();
+            keys.sort();
+            format!(
+                "{{{}}}",
+                keys.into_iter()
+                    .map(|key| format!("{}: {}", python_quote(key), python_json(&values[key])))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+    }
+}
+
+/// Python `str.strip()` includes four ASCII separators Rust's whitespace predicate omits.
+pub fn python_strip(value: &str) -> &str {
+    value.trim_matches(|character: char| {
+        character.is_whitespace() || matches!(character, '\u{1c}'..='\u{1f}')
+    })
+}
+
+fn python_quote(value: &str) -> String {
+    let mut output = String::from("\"");
+    for character in value.chars() {
+        match character {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\u{8}' => output.push_str("\\b"),
+            '\u{c}' => output.push_str("\\f"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            c if c < ' ' || c == '\u{7f}' => {
+                output.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c if c as u32 > 0x7f => {
+                let n = c as u32;
+                if n <= 0xffff {
+                    output.push_str(&format!("\\u{n:04x}"));
+                } else {
+                    let n = n - 0x10000;
+                    output.push_str(&format!(
+                        "\\u{:04x}\\u{:04x}",
+                        0xd800 + (n >> 10),
+                        0xdc00 + (n & 0x3ff)
+                    ));
+                }
+            }
+            c => output.push(c),
+        }
+    }
+    output.push('"');
+    output
+}
+
 #[derive(Debug, Error)]
 pub enum EventWriteError {
     #[error("invalid request: {0}")]
@@ -70,7 +138,7 @@ pub fn save_plan_validated(
 ) -> Result<WriteResult, EventWriteError> {
     let agent = checked_agent(connection, &input.agent_id)?;
     refuse_remote(&agent)?;
-    let text = input.text.trim().to_owned();
+    let text = python_strip(&input.text).to_owned();
     let requested_version = input.expected_version;
     let version = requested_version + 1;
     let event_id = format!("plan:{}:{version}", input.agent_id);
@@ -179,8 +247,8 @@ pub fn annotate_validated(
 ) -> Result<WriteResult, EventWriteError> {
     let agent = checked_agent(connection, &input.agent_id)?;
     refuse_remote(&agent)?;
-    let path = input.path.trim().to_owned();
-    let text = input.text.trim().to_owned();
+    let path = python_strip(&input.path).to_owned();
+    let text = python_strip(&input.text).to_owned();
     if path.is_empty() || path.contains('\0') || text.is_empty() {
         return Err(EventWriteError::InvalidRequest("Invalid annotation"));
     }
