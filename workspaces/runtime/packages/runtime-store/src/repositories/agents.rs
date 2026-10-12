@@ -61,6 +61,9 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
         triggers: TRANSCRIPT_TRIGGERS,
     }],
     connection_functions: &[],
+    bootstrap_tables: &[],
+    bootstrap_triggers: &[],
+    bootstrap_connection_functions: &[],
 };
 
 impl AgentRepository {

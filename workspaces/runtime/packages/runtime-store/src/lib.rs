@@ -79,7 +79,7 @@ pub struct RuntimeStore {
 }
 
 impl RuntimeStore {
-    /// Open an existing state directory without creating databases or tables.
+    /// Open an existing state directory, bootstrapping the sync family on first open.
     pub fn open(state_dir: Option<&Path>) -> StoreResult<Self> {
         let root = match state_dir {
             Some(path) => path::resolve_explicit_state_dir(path)?,
@@ -94,16 +94,21 @@ impl RuntimeStore {
                 return Err(StoreError::MissingDatabase(database.clone()));
             }
         }
-        schema::verify(&canvas_path, &analytics_path)?;
+        schema::verify_core(&canvas_path, &analytics_path)?;
 
         let writer = open_database(&canvas_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         writer.pragma_update(None, "synchronous", "FULL")?;
         schema::register_python_trigger_functions(&writer)?;
-        Ok(Self {
+        let store = Self {
             root,
             _runtime_lock: runtime_lock,
             writer: Mutex::new(writer),
-        })
+        };
+        store.transaction(|transaction| {
+            bootstrap::prepare_sync_schema(transaction)?;
+            schema::verify_bootstrap(transaction)
+        })?;
+        Ok(store)
     }
 
     pub fn root(&self) -> &Path {

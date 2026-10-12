@@ -11,6 +11,11 @@ const SCHEMA_SNAPSHOT: &str =
     include_str!("../../../apps/server/tests/fixtures/runtime-state-schema.json");
 
 pub(crate) fn verify(canvas_path: &Path, analytics_path: &Path) -> StoreResult<()> {
+    verify_core(canvas_path, analytics_path)?;
+    verify_bootstrap(&open_read_only(canvas_path)?)
+}
+
+pub(crate) fn verify_core(canvas_path: &Path, analytics_path: &Path) -> StoreResult<()> {
     let canvas = open_read_only(canvas_path)?;
     let analytics = open_read_only(analytics_path)?;
     for requirements in crate::repositories::REQUIREMENTS {
@@ -27,13 +32,6 @@ pub(crate) fn verify(canvas_path: &Path, analytics_path: &Path) -> StoreResult<(
                     function,
                     "repository requires an unregistered connection-local SQL function",
                 ));
-            }
-        }
-        for conditional in requirements.conditional_triggers {
-            if table_exists(&canvas, conditional.table_exists)? {
-                for trigger in conditional.triggers {
-                    require_trigger(&canvas, "canvas.sqlite3", trigger.name, trigger.table)?;
-                }
             }
         }
     }
@@ -63,6 +61,36 @@ pub(crate) fn verify(canvas_path: &Path, analytics_path: &Path) -> StoreResult<(
     Ok(())
 }
 
+pub(crate) fn verify_bootstrap(canvas: &Connection) -> StoreResult<()> {
+    for requirements in crate::repositories::REQUIREMENTS {
+        for table in requirements.bootstrap_tables {
+            require_columns(canvas, "canvas.sqlite3", table.name, table.columns)?;
+        }
+        for trigger in requirements.bootstrap_triggers {
+            require_trigger(canvas, "canvas.sqlite3", trigger.name, trigger.table)?;
+        }
+        for function in requirements.bootstrap_connection_functions {
+            if !SUPPORTED_CONNECTION_FUNCTIONS.contains(function) {
+                return Err(object_mismatch(
+                    "canvas.sqlite3",
+                    function,
+                    "repository requires an unregistered connection-local SQL function",
+                ));
+            }
+        }
+    }
+    for requirements in crate::repositories::REQUIREMENTS {
+        for conditional in requirements.conditional_triggers {
+            if table_exists(canvas, conditional.table_exists)? {
+                for trigger in conditional.triggers {
+                    require_trigger(canvas, "canvas.sqlite3", trigger.name, trigger.table)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct TableRequirement {
     pub name: &'static str,
@@ -86,6 +114,9 @@ pub(crate) struct SchemaRequirements {
     pub triggers: &'static [TriggerRequirement],
     pub conditional_triggers: &'static [ConditionalTriggerRequirement],
     pub connection_functions: &'static [&'static str],
+    pub bootstrap_tables: &'static [TableRequirement],
+    pub bootstrap_triggers: &'static [TriggerRequirement],
+    pub bootstrap_connection_functions: &'static [&'static str],
 }
 
 const SUPPORTED_CONNECTION_FUNCTIONS: &[&str] = &["sync_entity_payload", "sync_entity_hash"];

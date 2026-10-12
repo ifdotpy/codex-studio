@@ -3,14 +3,15 @@
 ## Change Contract
 
 - **Responsibility:** Open an existing Studio state directory in place, exclude
-  other runtime processes with `runtime.lock`, validate the persisted schema
-  requirements of supported repositories, and provide synchronous typed reads
-  and writes.
+  other runtime processes with `runtime.lock`, validate supported repository
+  requirements, prepare the sync schema family, and provide synchronous typed
+  reads and writes.
 - **Public interface:** `RuntimeStore::open`, `RuntimeStore::read`, and
   `RuntimeStore::transaction`; repositories for agents, tasks, queue events,
   and chat messages.
-- **Boundaries:** No Tokio, Python, schema creation, schema migration, or state
-  directory creation. The root OpenAPI document owns HTTP DTOs; the Python
+- **Boundaries:** No Tokio, Python, general schema migration, or state
+  directory creation. Sync DDL is sourced only from `src/sync_schema.sql`.
+  The root OpenAPI document owns HTTP DTOs; the Python
   `codex_records.py` declarations are the current source for persisted record
   fields until storage DTO generation is introduced.
 - **Invariants:** One exclusive runtime lock, one serialized writer using
@@ -231,10 +232,64 @@ change: capture the canonical snapshot after full server startup, including
 `Canvas`; keep a separately named Runtime-only fixture only if focused tests
 need it. This slice does not change the Python guard or snapshot.
 
-The initial state directory schema is created by the Python runtime today. A
-fresh state directory without Python does not get provisioned by this crate;
-the schema snapshot's SQL is the candidate source for a separately owned
-bootstrap step. This crate deliberately never executes that SQL.
+`RuntimeStore::open` verifies the Python-owned core schema, then prepares the
+sync schema family in one immediate transaction, and finally verifies the
+repository requirements that bootstrap provides. The Rust store owns this
+family from first open onward (one-way move). Callers can rely on a successful
+`RuntimeStore::open`; no separate preparation call or prepared-state gate is
+needed. Its only DDL source is
+`src/sync_schema.sql`; bootstrap builds a scratch catalog from that file.
+Existing sync tables are compared structurally using `table_xinfo` and
+`table_list`, plus the automatic `UNIQUE` and `PRIMARY KEY` indexes reported by
+`index_list` and `index_xinfo`; a mismatch identifies the table and differing
+column or constraint. Explicit indexes and triggers whose stored SQL differs
+from the scratch catalog are replaced inside the bootstrap transaction. No
+owned sync table currently has a `CHECK`, foreign key, or generated column;
+`table_xinfo` reports generated columns, and a test guards against adding
+`CHECK` or `REFERENCES` clauses before extending structural comparison. The
+committed live-state fixture has the expected table structures. Existing sync
+rows are preserved; absent identity, generation, and tombstone-count seed rows
+are inserted only when missing. Only
+`runtime_items` is optional: `runtime_events` and `runtime_agents` are checked
+by the core schema before bootstrap. Transcript item triggers are created when
+`runtime_items` exists. Event triggers use the registered
+`sync_entity_payload` and `sync_entity_hash` connection functions. Legacy
+triggers with the literal, case-sensitive `sync_watch_` prefix are removed.
+The DDL text matches the current Python producer's stored index and trigger
+SQL; first opens of both a Python-prepared database and the committed live-state
+fixture replace zero derived objects.
+
+### What the table check does and does not establish
+
+The table signature supports sync tables created by the product's historical
+Python writers or by this Rust bootstrap. It detects a different column layout
+and missing or extra primary-key and unique constraints; it is not a proof of
+full SQLite table equivalence. Equivalent declarations such as `VARCHAR` in
+place of `TEXT`, `DEFAULT '0'`, `DEFAULT +0`, or `DEFAULT ((0))` in place of
+`DEFAULT 0`, and reordered columns are refused. These forms can arise from a
+manual rebuild; no historical product writer creates them, and this code does
+not normalize type or default spellings.
+
+The signature does not detect a removed `AUTOINCREMENT`, `ON CONFLICT REPLACE`,
+a non-key column collation, or added `CHECK`/foreign-key clauses. No product
+version creates those alternatives, and they are outside this deliberately
+limited check. The source guard prevents adding `CHECK` or `REFERENCES` to the
+owned DDL until comparison is extended. A database refused by the structural
+check is intended to be reported by the pre-cutover state check, which can call
+the read-only `bootstrap::inspect_sync_tables` function to get all findings;
+the pre-cutover command is outside this change. The function builds the
+comparison from `sync_schema.sql` and does not write to its connection.
+
+Opening can write this schema on its first run. The store has no read-only open
+path today; if a future read-only state checker is added, it must report an
+unprepared sync family without invoking bootstrap.
+
+This bootstrap owns only sync tables and related indexes/triggers. Other
+lazily created families (including Canvas graph tables, analytics projections,
+execution state, and search indexes) remain owned by their existing creators;
+the feature and migration inventory is in
+[the state-format inventory](../../../../docs/runtime-state-formats.md#feature-and-migration-schema-beyond-a-fresh-start).
+The one-time cutover upgrade is not part of this crate method.
 
 The Python schema-drift guard owns the fresh-start snapshot at
 `workspaces/runtime/apps/server/tests/fixtures/runtime-state-schema.json`.
