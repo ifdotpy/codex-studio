@@ -649,6 +649,60 @@ describe("paired server preference replication", () => {
     },
   );
 
+  it.each([
+    { responseSequence: 2, expectedPulls: 1 },
+    { responseSequence: 1, expectedPulls: 2 },
+  ])(
+    "reconciles an in-flight sequence-only hint against checkpoint $responseSequence",
+    async ({ responseSequence, expectedPulls }) => {
+      const origin = "https://in-flight-sequence-only.invalid";
+      const server = backend(origin, {});
+      let releasePull!: () => void;
+      const heldPull = new Promise<void>((resolve) => {
+        releasePull = resolve;
+      });
+      let pullRequests = 0;
+      let firstStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        firstStarted = resolve;
+      });
+      const fetch = async (request: Request) => {
+        if (new URL(request.url).pathname === "/api/sync/pull") {
+          pullRequests++;
+          if (pullRequests === 1) {
+            firstStarted();
+            await heldPull;
+          }
+        }
+        return server.fetch(request);
+      };
+      const stop = connectUiPreferences(origin, fetch, localStorage);
+      try {
+        await vi.waitFor(() => expect(streams.has(origin)).toBe(true));
+        const marker = server.seedBaseline();
+        emitStateFrame(origin, initialFrame(origin, server.sequence));
+        await started;
+
+        emitStateFrame(origin, {
+          protocol: 3,
+          workspaceId: origin,
+          epoch: "epoch-one",
+          reason: "change",
+          resources: [{ kind: "state" }],
+          resourceVersions: [{ revision: 2, entitySequences: [2] }],
+        });
+        server.sequence = responseSequence;
+        releasePull();
+        await waitForAppliedBaselineMarker(marker);
+        await vi.waitFor(() => expect(pullRequests).toBe(expectedPulls));
+        expect(server.pullReads).toBe(expectedPulls);
+      } finally {
+        releasePull();
+        stop();
+      }
+    },
+  );
+
   it("pulls directly when the state stream cannot be opened", async () => {
     vi.useFakeTimers();
     failedStreamOrigins.add("https://no-stream.invalid");

@@ -389,6 +389,15 @@ export function connectUiPreferences(
           batch.after !== nextCursor ||
           batch.through !== version.revision
         ) {
+          if (
+            pulling &&
+            !version.entitySequenceReset &&
+            version.entitySequences?.length
+          ) {
+            // Sequence-only hints are reconciled against the in-flight pull too.
+            queuePendingBaseline(Math.max(...version.entitySequences), false);
+            return;
+          }
           if (pulling && batch && Number.isSafeInteger(batch.through)) {
             // The pull in flight is already reconciling this cursor. Recheck
             // after it assigns its checkpoint before scheduling another pull.
