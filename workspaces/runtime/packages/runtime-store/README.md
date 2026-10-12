@@ -45,6 +45,36 @@ Cross-runtime tests exercise Python opening and writing databases after Rust
 writes, but the two SQLite patch versions remain a compatibility surface to
 recheck when either runtime upgrades.
 
+The event triggers depend on Python's connection-local `sync_entity_payload`
+and `sync_entity_hash` functions (`codex_sync_entities.py:437-449`). The payload
+function JSON-decodes the event projection, keeps `EventEntityDto` fields from
+`codex_sync_entities.py:151-271`, and encodes the collection/id/value envelope
+as sorted compact UTF-8 JSON in `codex_sync_entities.py:371-374`; the hash
+function is lowercase SHA-256 over those UTF-8 bytes. Rust registers equivalents
+on its sole writer connection. SQLite functions are connection-local, so a
+connection that changes `runtime_events` without registering them fails with
+`no such function: sync_entity_payload` or `no such function: sync_entity_hash`.
+The integration test
+`python_fixture_round_trips_through_rust_and_python_write_rollback_gate`
+compares the full sync row (sequence, payload, hash, deleted flag) after the
+same event status update through Rust and Python. The projection normalizes its
+floating `created` value through `f64` to match Python's `json.loads`/`json.dumps`
+round trip, despite the Rust and Python SQLite patch versions differing.
+
+CI runs that integration test in **Fast tier: remaining checks** because that
+job's `fast-tier-setup` action builds the native module and prepares the server
+Python dependencies before `test-fast-rest` runs workspace nextest. The **Rust
+checks** job runs fmt, clippy, and doctests only; it does not run nextest or this
+Python-dependent integration test. The test is never silently skipped: Python
+runtime or native module setup failures produce an explicit failing import
+probe with setup instructions.
+
+`Cargo.lock` pins `rusqlite` 0.40.2 and its `libsqlite3-sys` 0.38.2 bundled
+SQLite source (3.53.2). Bump the bundled SQLite deliberately by updating the
+rusqlite/libsqlite3-sys lock selection, checking the compiled `SQLITE_VERSION`,
+and rerunning cross-runtime trigger/hash and rollback tests against the host
+Python SQLite before accepting the lockfile update.
+
 New crates, checked against the registry on 2026-10-12:
 
 | Crate       | Version | License           | Purpose and removal                                                                                                                  |

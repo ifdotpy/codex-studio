@@ -31,25 +31,58 @@ string_id!(TaskId);
 string_id!(QueueEventId);
 string_id!(ChatMessageId);
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AgentStatus {
-    Unknown,
-    Idle,
-    Queued,
-    Starting,
-    Running,
-    Waiting,
-    Approval,
-    Completed,
-    Interrupted,
-    Failed,
-    Blocked,
-    Paused,
-    Parked,
-    Abandoned,
-    CapacityRetry,
+macro_rules! stored_string_enum {
+    ($name:ident { $($variant:ident => $value:literal),+ $(,)? }) => {
+        #[derive(Clone, Debug, Eq, PartialEq)]
+        pub enum $name {
+            $($variant,)+
+            Other(String),
+        }
+
+        impl Serialize for $name {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                match self {
+                    $(Self::$variant => serializer.serialize_str($value),)+
+                    Self::Other(value) => serializer.serialize_str(value),
+                }
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                let value = String::deserialize(deserializer)?;
+                Ok(match value.as_str() {
+                    $($value => Self::$variant,)+
+                    _ => Self::Other(value),
+                })
+            }
+        }
+    };
 }
+
+stored_string_enum!(AgentStatus {
+    Unknown => "unknown",
+    Idle => "idle",
+    Queued => "queued",
+    Starting => "starting",
+    Running => "running",
+    Waiting => "waiting",
+    Approval => "approval",
+    Completed => "completed",
+    Interrupted => "interrupted",
+    Failed => "failed",
+    Blocked => "blocked",
+    Paused => "paused",
+    Parked => "parked",
+    Abandoned => "abandoned",
+    CapacityRetry => "capacity-retry",
+});
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -62,16 +95,14 @@ pub struct AgentRecord {
     pub extra: BTreeMap<String, Value>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkStatus {
-    Ready,
-    Running,
-    Blocked,
-    Review,
-    Accepted,
-    Cancelled,
-}
+stored_string_enum!(WorkStatus {
+    Ready => "ready",
+    Running => "running",
+    Blocked => "blocked",
+    Review => "review",
+    Accepted => "accepted",
+    Cancelled => "cancelled",
+});
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -316,5 +347,31 @@ mod tests {
         let rewritten = serde_json::to_value(record).expect("task record serializes");
         assert_eq!(rewritten["fixtureFlag"].as_bool(), Some(true));
         assert_eq!(rewritten["fixtureNumber"].as_i64(), Some(1));
+    }
+
+    #[test]
+    fn unknown_agent_status_and_fields_survive_rewrite() {
+        let source = r#"{"id":"agent-1","rootId":"agent-1","epoch":4,
+            "status":"future-agent-state","future":{"enabled":true,"count":9007199254740993}}"#;
+        let record: AgentRecord = serde_json::from_str(source).expect("agent record parses");
+        let rewritten = serde_json::to_value(record).expect("agent record serializes");
+        assert_eq!(
+            rewritten,
+            serde_json::from_str::<serde_json::Value>(source).expect("json parses")
+        );
+    }
+
+    #[test]
+    fn unknown_work_status_and_fields_survive_rewrite() {
+        let source = r#"{"id":"task-1","rootId":"agent-1","status":"future_work_state",
+            "title":"T","description":"","owner":null,"created":1.25,"updated":1.5,
+            "createdBy":"agent-1","version":3,"dependencies":[],"decisions":[],"results":[],
+            "future":{"enabled":false,"count":9007199254740993}}"#;
+        let record: TaskRecord = serde_json::from_str(source).expect("task record parses");
+        let rewritten = serde_json::to_value(record).expect("task record serializes");
+        assert_eq!(
+            rewritten,
+            serde_json::from_str::<serde_json::Value>(source).expect("json parses")
+        );
     }
 }

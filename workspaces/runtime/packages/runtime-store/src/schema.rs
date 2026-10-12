@@ -98,6 +98,12 @@ fn event_payload(key: &str, raw: &str, deleted: bool) -> Result<String, serde_js
                 "id" | "agent" | "kind" | "status" | "created" | "error"
             )
         });
+        if let Some(Value::Number(number)) = value.get_mut("created")
+            && number.is_f64()
+            && let Some(normalized) = number.as_f64().and_then(serde_json::Number::from_f64)
+        {
+            *number = normalized;
+        }
     }
     serde_json::to_string(&json!({
         "collection": "event",

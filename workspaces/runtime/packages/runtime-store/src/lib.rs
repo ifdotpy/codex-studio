@@ -118,7 +118,9 @@ impl RuntimeStore {
                 Ok(value)
             }
             Err(error) => {
-                transaction.rollback()?;
+                // Dropping rolls back best-effort. Preserve the operation's
+                // error if SQLite also reports a rollback failure.
+                drop(transaction);
                 Err(error)
             }
         }
