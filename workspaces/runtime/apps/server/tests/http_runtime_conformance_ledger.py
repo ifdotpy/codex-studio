@@ -238,7 +238,7 @@ try:
         "id": {agent_id!r}, "rootId": {agent_id!r}, "epoch": 0,
         "status": "idle", "name": "HTTP ledger probe owner", "role": "orchestrator",
         "cwd": os.environ["CODEX_CANVAS_CWD"], "isLead": True,
-        "autoWake": True, "approvalPolicy": "never", "sandbox": "workspace-write",
+        "autoWake": True, "approvalPolicy": "never",
     }}
     with runtime.lock, runtime.db() as db:
         runtime.put(db, "agents", agent, sync_rooms=False)
