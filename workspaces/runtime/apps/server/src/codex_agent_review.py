@@ -165,7 +165,7 @@ def request(rt: "Runtime", actor: "AgentRecord", args: dict[str, Any], key: str)
         raise ValueError('Native review cannot select Daybreak. Delegate a review task to a subagent instead')
     require_repository(directory)
     from codex_worker_accounts import resolve
-    review_account, catalog = resolve(rt, actor, {'model': model})
+    review_account, catalog = resolve(rt, actor, {'model': model}, limit_choice=False)
     with rt.lock, rt.db() as db:
         previous = _existing(rt, db, key, actor, target, directory, requested)
         if previous is not None:
