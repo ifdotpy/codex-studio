@@ -13,6 +13,10 @@ import sys
 import tempfile
 import unittest
 
+from test_isolation import isolate_supervisor_environment
+
+isolate_supervisor_environment()
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 
 from codex_runtime import Runtime  # noqa: E402
