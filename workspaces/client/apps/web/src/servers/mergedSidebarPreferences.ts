@@ -74,6 +74,20 @@ function wireOrderItem(
   }
 }
 
+// This window's own visual edits, kept per server backend until that server's snapshot
+// carries them. A model rebuilt before the network round trip would otherwise show the old
+// value for a moment ("jerky" collapse). The snapshot still wins once it moves.
+const pendingVisual = new WeakMap<
+  SidebarBackend,
+  Map<string, { value: boolean | undefined; at: number }>
+>();
+const PENDING_VISUAL_MS = 30_000;
+const pendingFor = (backend: SidebarBackend) => {
+  let pending = pendingVisual.get(backend);
+  if (!pending) pendingVisual.set(backend, (pending = new Map()));
+  return pending;
+};
+
 /** Read original server keys. Write only fields changed by a visible control. */
 export function mergedSidebarPreferences(
   model: MergedSidebar,
@@ -131,6 +145,17 @@ export function mergedSidebarPreferences(
           } catch {
             return [source.id, values];
           }
+        }
+        const pending = pendingFor(backendFor(source.id));
+        for (const [field, edit] of pending) {
+          const [editKey, name] = JSON.parse(field) as [string, string];
+          if (editKey !== key) continue;
+          if (Date.now() - edit.at > PENDING_VISUAL_MS) {
+            pending.delete(field);
+            continue;
+          }
+          if (edit.value === undefined) delete values[name];
+          else values[name] = edit.value;
         }
         return [source.id, values];
       }),
@@ -229,6 +254,16 @@ export function mergedSidebarPreferences(
         update.previous,
         update.next,
       );
+      const pending = pendingFor(backendFor(update.source.id));
+      for (const name of new Set([
+        ...Object.keys(update.previous),
+        ...Object.keys(update.next),
+      ]))
+        if (update.previous[name] !== update.next[name])
+          pending.set(
+            JSON.stringify([originalKey(prefix, update.source), name]),
+            { value: update.next[name], at: Date.now() },
+          );
       visualEdits.set(
         update.source.id + ":" + originalKey(prefix, update.source),
         accepted,
