@@ -299,7 +299,7 @@ class CatalogRuntimeContract(unittest.TestCase):
         self.assertNotEqual(one["id"], two["id"])
         self.assertEqual(len(self.server.metadata.requests), 1)
         with self.assertRaisesRegex(ValueError, "not available for the selected worker accounts"):
-            self.runtime.create({"name": "Other", "prompt": "Check", "model": "invented"}, self.lead["id"], defer=True)
+            self.runtime.create({"name": "Other", "prompt": "Check", "model": "gpt-99-unavailable"}, self.lead["id"], defer=True)
 
     def test_native_wait_does_not_hold_runtime_or_connection_lock(self):
         self.runtime._catalog_cache.wait_seconds = .2
