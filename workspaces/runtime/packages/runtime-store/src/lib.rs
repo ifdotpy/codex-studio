@@ -1,3 +1,4 @@
+mod bootstrap;
 mod path;
 mod records;
 mod repositories;
