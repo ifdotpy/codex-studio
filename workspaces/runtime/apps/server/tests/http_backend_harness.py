@@ -233,13 +233,15 @@ class BackendProcess:
                 )
         return environment
 
-    def start(self) -> float:
+    def start(self, *, allow_sync_unavailable: bool = False) -> float:
         if self._process is not None:
             raise RuntimeError("Backend is already running")
         if getattr(self, "_provider_executable", None) is None:
             raise RuntimeError("HTTP backend harness requires an explicit replay provider")
         command = self._command()
         environment = self._environment()
+        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") and not (self.state / "canvas.sqlite3").is_file():
+            self._bootstrap_python_state(environment)
         if self.supervisor_protocol and self._supervisor_process is None:
             self._supervisor_log = (self.root / "supervisor.log").open("w", encoding="utf-8")
             self._supervisor_process = subprocess.Popen(
@@ -333,6 +335,10 @@ class BackendProcess:
                     self.identity = identity.json()
                     self.schema_hash = identity.headers["x-studio-api-schema"]
                     break
+                if identity.status == 501 and allow_sync_unavailable:
+                    self.identity = {}
+                    self.schema_hash = identity.headers["x-studio-api-schema"]
+                    break
                 last_identity_error = RuntimeError(
                     f"contract identity returned HTTP {identity.status}"
                 )
@@ -395,6 +401,44 @@ class BackendProcess:
             "totalReadySeconds": round(self.ready_seconds, 4),
         })
         return self.ready_seconds
+
+    def _bootstrap_python_state(self, environment: dict[str, str]) -> None:
+        """Initialize a disposable state before a read-only Rust backend opens it."""
+        python = os.environ.get("STUDIO_HTTP_BACKEND_PYTHON", sys.executable)
+        bootstrap_environment = environment.copy()
+        bootstrap_environment["CODEX_AGENTS_PYTHON"] = python
+        bootstrap_environment["PYTHONUNBUFFERED"] = "1"
+        log_path = self.root / "python-state-bootstrap.log"
+        with log_path.open("w", encoding="utf-8") as log:
+            process = subprocess.Popen(
+                [python, "-B", str(SERVER_SCRIPT), "--port", "0"],
+                cwd=self.cwd,
+                env=bootstrap_environment,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=(os.name != "nt"),
+            )
+            try:
+                wait_for_condition(
+                    lambda: "Codex Canvas: http://127.0.0.1:" in log_path.read_text(encoding="utf-8")
+                    or process.poll() is not None,
+                    "Python runtime did not initialize disposable state",
+                    retry_exceptions=(OSError,),
+                    timeout_exception=TimeoutError,
+                )
+                if process.poll() is not None:
+                    raise RuntimeError(
+                        "Python state bootstrap exited early: "
+                        + log_path.read_text(encoding="utf-8")[-4000:]
+                    )
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                try:
+                    process.wait(timeout=STOP_TIMEOUT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=2)
 
     def _raise_backend_not_ready(self, reason: str, exit_status: int | None) -> None:
         stderr_tail = self.stderr or "<empty>"

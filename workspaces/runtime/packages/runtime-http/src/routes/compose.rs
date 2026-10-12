@@ -191,6 +191,7 @@ mod tests {
             "state".to_owned(),
             1,
             None,
+            None,
         );
         let app = router.with_state(state);
         for (method, expected) in [(Method::GET, 200), (Method::POST, 200)] {

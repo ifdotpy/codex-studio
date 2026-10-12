@@ -9,6 +9,7 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
         name: "runtime_tasks",
         columns: &["id", "record"],
     }],
+    conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],

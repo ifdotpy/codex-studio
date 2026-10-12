@@ -9,6 +9,7 @@ publish.workspace = true
 axum = { workspace = true }
 getrandom = { workspace = true }
 studio-runtime-http = { path = "../../packages/runtime-http" }
+studio-runtime-store = { path = "../../packages/runtime-store" }
 tokio = { workspace = true }
 
 [lints]

@@ -55,6 +55,7 @@ const TRANSCRIPT_TRIGGERS: &[TriggerRequirement] = &[
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: TABLES,
+    conditional_tables: &[],
     triggers: TRIGGERS,
     conditional_triggers: &[ConditionalTriggerRequirement {
         table_exists: "runtime_transcript_revisions",

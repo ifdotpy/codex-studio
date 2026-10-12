@@ -8,6 +8,7 @@ _module_import_started = _clock.monotonic()
 
 import json
 import os
+import os
 from pathlib import Path
 import statistics
 import time
@@ -24,6 +25,7 @@ from http_backend_harness import (
     BackendProcess,
     HttpResult,
 )
+from sync_http_contract_support import prepare_sync_store_for_rust_contract
 
 _module_import_finished = time.monotonic()
 
@@ -95,6 +97,7 @@ class BoundaryContractTests(TimedBoundaryTest):
     def setUpClass(cls) -> None:
         started = time.monotonic()
         cls.backend = create_backend(cls)
+        prepare_sync_store_for_rust_contract(cls.backend)
         cls.backend.class_setup_seconds = time.monotonic() - started
 
     def test_session_schema_identity_and_mismatching_write(self) -> None:
@@ -130,10 +133,17 @@ class BoundaryContractTests(TimedBoundaryTest):
         assert_status(identity, 200)
         workspace = identity.json()["workspaceId"]
         protocol = backend.request("GET", "/api/sync/protocol", headers=headers)
-        assert_status(protocol, 200)
-        self.assertEqual(protocol.json()["protocolVersion"], 3)
-        self.assertEqual(protocol.json()["supportedVersions"], [3])
-        self.assertEqual(protocol.json()["pullEndpoint"], "/api/sync/pull")
+        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.assertEqual(protocol.status, 501, protocol.body[:1000])
+            self.assertEqual(
+                protocol.json()["error"],
+                "Not implemented: requires sync-policy/runtime-capabilities",
+            )
+        else:
+            assert_status(protocol, 200)
+            self.assertEqual(protocol.json()["protocolVersion"], 3)
+            self.assertEqual(protocol.json()["supportedVersions"], [3])
+            self.assertEqual(protocol.json()["pullEndpoint"], "/api/sync/pull")
         snapshot = backend.request("GET", "/api/sync/pull?scope=drafts&after=0")
         assert_status(snapshot, 200)
         self.assertEqual(snapshot.json()["documents"], [])
@@ -149,6 +159,16 @@ class BoundaryContractTests(TimedBoundaryTest):
             "POST", "/api/sync/drafts", body={"rows": [row]},
             headers={**common, "X-Canvas-Workspace": workspace},
         )
+        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.assertEqual(written.status, 501, written.body[:1000])
+            self.assertEqual(
+                written.json()["error"],
+                "Not implemented: requires resource-policy/publish-drafts",
+            )
+            delta = backend.request("GET", f"/api/sync/pull?scope=drafts&after={checkpoint}")
+            assert_status(delta, 200)
+            self.assertEqual(delta.json()["documents"], [])
+            return
         assert_status(written, 200)
         delta = backend.request("GET", f"/api/sync/pull?scope=drafts&after={checkpoint}")
         assert_status(delta, 200)
@@ -164,6 +184,11 @@ class BoundaryContractTests(TimedBoundaryTest):
             "apiSchema": backend.schema_hash,
             "resources": json.dumps([{"kind": "drafts"}], separators=(",", ":")),
         })
+        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            unavailable = backend.request("GET", "/api/sync/stream?" + query)
+            self.assertEqual(unavailable.status, 501, unavailable.body[:1000])
+            self.assertEqual(unavailable.json()["error"], "Not implemented")
+            return
         started = time.monotonic()
         with urlopen(Request(backend.origin + "/api/sync/stream?" + query),
                      timeout=HTTP_WAIT_GUARD_SECONDS) as response:
@@ -275,6 +300,7 @@ class RestartContractTests(TimedBoundaryTest):
     def setUpClass(cls) -> None:
         started = time.monotonic()
         cls.backend = create_backend(cls)
+        prepare_sync_store_for_rust_contract(cls.backend)
         cls.backend.class_setup_seconds = time.monotonic() - started
 
     def test_restart_serves_sync_receipt_and_provider_facts(self) -> None:
@@ -287,8 +313,16 @@ class RestartContractTests(TimedBoundaryTest):
         workspace_id = identity.json()["workspaceId"]
         protocol = backend.request("GET", "/api/sync/protocol",
                                    headers={"X-Studio-API-Schema": backend.schema_hash})
-        assert_status(protocol, 200)
-        self.assertEqual(protocol.json()["protocolVersion"], 3)
+        rust_backend_configured = bool(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"))
+        if rust_backend_configured:
+            self.assertEqual(protocol.status, 501, protocol.body[:1000])
+            self.assertEqual(
+                protocol.json()["error"],
+                "Not implemented: requires sync-policy/runtime-capabilities",
+            )
+        else:
+            assert_status(protocol, 200)
+            self.assertEqual(protocol.json()["protocolVersion"], 3)
         snapshot = backend.request("GET", "/api/sync/pull?scope=drafts&after=0")
         assert_status(snapshot, 200)
         checkpoint = snapshot.json()["checkpoint"]["seq"]
@@ -299,10 +333,17 @@ class RestartContractTests(TimedBoundaryTest):
             "POST", "/api/sync/drafts", body={"rows": [draft]},
             headers={**headers, "X-Canvas-Workspace": workspace_id},
         )
-        assert_status(draft_response, 200)
-        delta = backend.request("GET", f"/api/sync/pull?scope=drafts&after={checkpoint}")
-        assert_status(delta, 200)
-        self.assertEqual(delta.json()["documents"][0]["id"], draft["newDocumentState"]["id"])
+        if rust_backend_configured:
+            self.assertEqual(draft_response.status, 501, draft_response.body[:1000])
+            self.assertEqual(
+                draft_response.json()["error"],
+                "Not implemented: requires resource-policy/publish-drafts",
+            )
+        else:
+            assert_status(draft_response, 200)
+            delta = backend.request("GET", f"/api/sync/pull?scope=drafts&after={checkpoint}")
+            assert_status(delta, 200)
+            self.assertEqual(delta.json()["documents"][0]["id"], draft["newDocumentState"]["id"])
 
         room_id = "20000000-0000-4000-8000-000000000001"
         room = backend.request("POST", "/api/chats", body={"id": room_id,
@@ -354,8 +395,12 @@ class RestartContractTests(TimedBoundaryTest):
         backend.session = restarted_session.json()
         pulled = backend.request("GET", "/api/sync/pull?scope=drafts&after=0")
         assert_status(pulled, 200)
-        self.assertTrue(any(document["id"] == draft["newDocumentState"]["id"]
-                            for document in pulled.json()["documents"]))
+        if rust_backend_configured:
+            self.assertFalse(any(document["id"] == draft["newDocumentState"]["id"]
+                                 for document in pulled.json()["documents"]))
+        else:
+            self.assertTrue(any(document["id"] == draft["newDocumentState"]["id"]
+                                for document in pulled.json()["documents"]))
         restarted_identity = backend.request(
             "GET", "/api/sync/identity", headers={"X-Studio-API-Schema": backend.schema_hash}
         )
@@ -364,8 +409,15 @@ class RestartContractTests(TimedBoundaryTest):
         restarted_protocol = backend.request(
             "GET", "/api/sync/protocol", headers={"X-Studio-API-Schema": backend.schema_hash}
         )
-        assert_status(restarted_protocol, 200)
-        self.assertEqual(restarted_protocol.json()["protocolVersion"], 3)
+        if rust_backend_configured:
+            self.assertEqual(restarted_protocol.status, 501, restarted_protocol.body[:1000])
+            self.assertEqual(
+                restarted_protocol.json()["error"],
+                "Not implemented: requires sync-policy/runtime-capabilities",
+            )
+        else:
+            assert_status(restarted_protocol, 200)
+            self.assertEqual(restarted_protocol.json()["protocolVersion"], 3)
         headers = {"Origin": backend.origin or "", "X-Canvas-Token": backend.session["token"],
                    "X-Studio-API-Schema": backend.schema_hash}
         replay = backend.request("POST", "/api/messages", body=body, headers=headers)

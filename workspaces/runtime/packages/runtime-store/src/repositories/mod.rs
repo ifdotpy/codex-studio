@@ -1,6 +1,7 @@
 pub(crate) mod agents;
 pub(crate) mod events;
 pub(crate) mod messages;
+pub(crate) mod sync_documents;
 pub(crate) mod tasks;
 
 use crate::schema::SchemaRequirements;
@@ -10,11 +11,12 @@ pub(crate) const REQUIREMENTS: &[&SchemaRequirements] = &[
     &tasks::REQUIREMENTS,
     &events::REQUIREMENTS,
     &messages::REQUIREMENTS,
+    &sync_documents::REQUIREMENTS,
 ];
 
 #[cfg(test)]
 mod tests {
-    use super::{agents, events, messages, tasks};
+    use super::{agents, events, messages, sync_documents, tasks};
     use crate::records::{
         AgentId, AgentRecord, AgentRepository, AgentStatus, ChatMessage, ChatMessageId,
         MessageRepository, QueueEvent, QueueEventId, QueueEventRepository, TaskId, TaskRecord,
@@ -23,6 +25,7 @@ mod tests {
     use rusqlite::Connection;
     use serde_json::Value;
     use std::collections::BTreeMap;
+    use sync_documents::SyncDocumentsRepository;
 
     fn database_with(requirements: &crate::schema::SchemaRequirements) -> Connection {
         let connection = Connection::open_in_memory().expect("memory SQLite opens");
@@ -108,5 +111,57 @@ mod tests {
         };
         MessageRepository::put(&db, &message).expect("message write uses declared objects");
         MessageRepository::get(&db, &message.id).expect("message read uses declared objects");
+    }
+
+    #[test]
+    fn sync_repository_sql_uses_only_declared_tables() {
+        let mut db = Connection::open_in_memory().expect("memory SQLite opens");
+        db.execute_batch(
+            "CREATE TABLE sync_identity (id TEXT PRIMARY KEY);
+             CREATE TABLE sync_generation (id INTEGER PRIMARY KEY, value INTEGER NOT NULL);
+             CREATE TABLE sync_documents (
+                 seq INTEGER PRIMARY KEY, scope TEXT NOT NULL, id TEXT NOT NULL,
+                 payload TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0,
+                 UNIQUE(scope,id));
+             CREATE TABLE sync_entities (
+                 collection TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL,
+                 hash TEXT NOT NULL, payload TEXT, deleted INTEGER NOT NULL DEFAULT 0,
+                 PRIMARY KEY(collection,id));
+             CREATE TABLE sync_entity_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             CREATE TABLE sync_versions (
+                 seq INTEGER PRIMARY KEY, scope TEXT NOT NULL UNIQUE,
+                 hash TEXT NOT NULL, deleted INTEGER NOT NULL, updated REAL NOT NULL);
+             INSERT INTO sync_identity(id) VALUES ('workspace-a');
+             INSERT INTO sync_entity_meta(key,value) VALUES ('entity_tombstone_floor','0');",
+        )
+        .expect("only declared sync tables create");
+        assert_eq!(
+            SyncDocumentsRepository::workspace_id(&db).expect("identity reads"),
+            "workspace-a"
+        );
+
+        db.execute(
+            "INSERT INTO sync_documents(seq,scope,id,payload,deleted) VALUES (1,'drafts','phone:chat',?1,0)",
+            ["{\"device\":\"phone\",\"session\":\"chat\"}"],
+        )
+        .expect("draft fixture inserts");
+        let drafts = SyncDocumentsRepository::pull_drafts(&db, 0, 100).expect("drafts read");
+        assert_eq!(drafts.len(), 1);
+        assert_eq!(drafts[0].id, "phone:chat");
+        let transaction = db.transaction().expect("preference transaction begins");
+        assert!(
+            SyncDocumentsRepository::put_preferences(
+                &transaction,
+                "user",
+                "{\"collection\":\"uiPreferences\",\"id\":\"user\",\"value\":{\"fields\":{}}}",
+            )
+            .expect("preferences write")
+        );
+        transaction.commit().expect("preference commits");
+        assert!(
+            SyncDocumentsRepository::preference_payload(&db, "user")
+                .expect("preferences read")
+                .is_some()
+        );
     }
 }

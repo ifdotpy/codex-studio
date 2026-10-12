@@ -276,6 +276,7 @@ mod tests {
             "state".to_owned(),
             12345,
             None,
+            None,
         ))
         .expect("composed router compiles its validators");
         let peer = ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 42)));

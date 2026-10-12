@@ -4,6 +4,8 @@ use axum::http::{Request, StatusCode};
 use axum::middleware as axum_middleware;
 use axum::response::Response;
 use axum::routing::any;
+use std::sync::Arc;
+use studio_runtime_store::RuntimeStore;
 
 use crate::error::error_response;
 use crate::middleware;
@@ -20,6 +22,7 @@ pub struct HttpState {
     pub(crate) port: u16,
     pub(crate) public_origin: Option<String>,
     pub(crate) validators: Registry,
+    pub(crate) store: Option<Arc<RuntimeStore>>,
 }
 
 impl HttpState {
@@ -30,6 +33,7 @@ impl HttpState {
         state_dir: String,
         port: u16,
         public_origin: Option<String>,
+        store: Option<Arc<RuntimeStore>>,
     ) -> Self {
         Self {
             token,
@@ -39,6 +43,7 @@ impl HttpState {
             port,
             public_origin,
             validators: Registry::default(),
+            store,
         }
     }
 }
@@ -269,6 +274,7 @@ mod tests {
             None,
             "state".to_owned(),
             4620,
+            None,
             None,
         )
     }
