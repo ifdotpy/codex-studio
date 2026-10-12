@@ -1,5 +1,6 @@
 """Regression tests for server test discovery and isolated subprocess execution."""
 
+import ast
 import builtins
 import contextlib
 import ctypes
@@ -278,6 +279,53 @@ class ServerSuiteRunner(unittest.TestCase):
                 if (RUNNER.is_unittest_suite(path) and relative not in RUNNER.NON_TESTS
                         and f"{RUNNER.TESTS_REL}/fixtures/" not in relative):
                     self.assertIn(relative, paths, f"AST unittest suite omitted: {relative}")
+
+    def test_shared_wait_calls_match_the_guard_signature(self):
+        helper_path = SERVER_SOURCE_ROOT / "server_test_waits.py"
+        helper_tree = ast.parse(helper_path.read_text(encoding="utf-8"))
+        helper = next(
+            node for node in helper_tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "wait_for_condition"
+        )
+        parameters = {
+            argument.arg
+            for argument in (*helper.args.posonlyargs, *helper.args.args, *helper.args.kwonlyargs)
+        }
+        self.assertNotIn("timeout", parameters)
+
+        wait_names = {"eventually", "wait_for_condition"}
+        violations = []
+        for path in SERVER_TESTS_ROOT.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            local_wait_names = set(wait_names)
+            for node in tree.body:
+                if isinstance(node, ast.ImportFrom) and node.module == "server_test_waits":
+                    local_wait_names.update(
+                        alias.asname or alias.name
+                        for alias in node.names
+                        if alias.name == "wait_for_condition"
+                    )
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                function = node.func
+                name = (
+                    function.id if isinstance(function, ast.Name)
+                    else function.attr if isinstance(function, ast.Attribute)
+                    else ""
+                )
+                if name not in local_wait_names:
+                    continue
+                unsupported = {
+                    keyword.arg for keyword in node.keywords
+                    if keyword.arg is not None and keyword.arg not in parameters
+                }
+                violations.extend(
+                    f"{path}:{node.lineno}: unsupported {name} keyword {keyword}"
+                    for keyword in sorted(unsupported)
+                )
+        self.assertEqual(violations, [])
 
     def test_exact_path_selection_does_not_walk_or_inventory_the_suite_tree(self):
         relative = f"{RUNNER.TESTS_REL}/turn-item-links-contract.py"
