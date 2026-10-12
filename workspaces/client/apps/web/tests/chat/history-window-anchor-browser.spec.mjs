@@ -5,10 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "../playwright.mjs";
 
-test("forward paging keeps the reading row mounted and at its viewport offset", async ({
-  browser,
-}) => {
-  test.setTimeout(90_000);
+async function createHarness(browser, start, count) {
   const root = fileURLToPath(new URL("../..", import.meta.url));
   const require = createRequire(join(root, "package.json"));
   const cacheDir = await mkdtemp(join(tmpdir(), "history-window-anchor-vite-"));
@@ -54,8 +51,24 @@ const makeRows = (start, count) => Array.from({length: count}, (_, n) => {
   return {id, items: [{id, role: "user", text: "A short fixed-height transcript row", turnId: id}]};
 });
 function Harness() {
-  const [rows, setRows] = useState(() => makeRows(0, 160));
+  const [rows, setRows] = useState(() => makeRows(${start}, ${count}));
   const scroll = useRef(null);
+  window.scrollToTopAsUser = () => {
+    const root = scroll.current;
+    root.dispatchEvent(new WheelEvent("wheel", {deltaY: -1}));
+    const holdScroll = event => event.stopImmediatePropagation();
+    root.addEventListener("scroll", holdScroll, true);
+    root.scrollTop = 0;
+    root.dispatchEvent(new Event("scroll"));
+    root.removeEventListener("scroll", holdScroll, true);
+  };
+  window.scrollToMessage = (index) => {
+    const root = scroll.current;
+    root.scrollTop = index * 72 - 16;
+    root.dispatchEvent(new Event("scroll"));
+  };
+  window.commitViewportAnchor = () => scroll.current.dispatchEvent(new Event("scroll"));
+  window.prependPage = (start) => flushSync(() => setRows(current => [...makeRows(start, 120), ...current]));
   window.appendForwardPage = () => {
     const root = scroll.current;
     const holdScroll = event => event.stopImmediatePropagation();
@@ -64,11 +77,23 @@ function Harness() {
     root.scrollTop = root.scrollHeight;
     window.releaseScroll = () => root.removeEventListener("scroll", holdScroll, true);
   };
-  return <div id="messages" ref={scroll} style={{height: 500, overflow: "auto", position: "relative"}}>
-    <HistoryWindow rows={rows} scrollContainer={scroll} storageKey="history-window-anchor-audit" render={row => <article data-message={row.items[0].id} style={{height: 72, minHeight: 72, boxSizing: "border-box"}}>{row.items[0].text}</article>} />
+  window.jumpToOldest = () => {
+    const root = scroll.current;
+    root.dispatchEvent(new Event("studio-history-reset-anchor"));
+    const holdScroll = event => event.stopImmediatePropagation();
+    root.addEventListener("scroll", holdScroll, true);
+    root.scrollTop = 0;
+    root.dispatchEvent(new Event("scroll"));
+    root.removeEventListener("scroll", holdScroll, true);
+    flushSync(() => setRows(current => [...makeRows(0, 120), ...current]));
+  };
+  return <div id="messages" ref={scroll} style={{height: 500, overflow: "auto", overflowAnchor: "none", position: "relative"}}>
+    <HistoryWindow rows={rows} scrollContainer={scroll} hasRecentScrollInput={() => performance.now() - (window.__lastInput ?? -Infinity) < 600} storageKey="history-window-anchor-audit" render={row => <article data-message={row.items[0].id} style={{height: 72, minHeight: 72, boxSizing: "border-box"}}>{row.items[0].text}</article>} />
   </div>;
 }
-createRoot(document.getElementById("root")).render(<Harness/>);`;
+const root = document.querySelector("#root");
+createRoot(root).render(<Harness/>);
+document.querySelector("#messages").addEventListener("wheel", () => { window.__lastInput = performance.now(); });`;
         },
       },
     ],
@@ -77,27 +102,62 @@ createRoot(document.getElementById("root")).render(<Harness/>);`;
     viewport: { width: 900, height: 700 },
   });
   const page = await context.newPage();
-  try {
-    await server.listen();
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/audit`,
-    );
-    const anchor = page.locator('[data-message="message-20"]');
-    const rootNode = page.locator("#messages");
-    await rootNode.evaluate((root) => {
-      root.scrollTop = 20 * 72 - 16;
-      root.dispatchEvent(new Event("scroll"));
-    });
-    await expect(anchor).toBeAttached();
-    await page.waitForFunction(() => {
+  await server.listen();
+  await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/audit`);
+  await page.locator(`[data-message="message-${start}"]`).waitFor();
+  return {
+    page,
+    async close() {
+      await context.close();
+      await server.close();
+      await rm(cacheDir, { recursive: true, force: true });
+    },
+  };
+}
+
+async function waitForFrames(page, count = 4) {
+  await page.evaluate(
+    (frames) =>
+      new Promise((resolve) => {
+        const next = () =>
+          frames-- > 0 ? requestAnimationFrame(next) : resolve();
+        requestAnimationFrame(next);
+      }),
+    count,
+  );
+}
+
+async function expectMessageInViewport(page, id) {
+  await page.waitForFunction(
+    (messageId) => {
       const root = document.querySelector("#messages");
-      const target = document.querySelector('[data-message="message-20"]');
-      if (!target) return false;
+      const message = Array.from(root.querySelectorAll("[data-message]")).find(
+        (candidate) => candidate.dataset.message === messageId,
+      );
+      if (!message) return false;
       const bounds = root.getBoundingClientRect();
-      const box = target.getBoundingClientRect();
-      return box.top >= bounds.top && box.top < bounds.bottom;
-    });
-    await rootNode.evaluate((root) => root.dispatchEvent(new Event("scroll")));
+      const box = message.getBoundingClientRect();
+      return (
+        box.height > 0 && box.bottom > bounds.top && box.top < bounds.bottom
+      );
+    },
+    id,
+    { timeout: 5_000 },
+  );
+}
+
+test("forward paging keeps the reading row mounted and at its viewport offset", async ({
+  browser,
+}) => {
+  test.setTimeout(90_000);
+  const { page, close } = await createHarness(browser, 0, 160);
+  try {
+    const anchor = page.locator('[data-message="message-20"]');
+    await page.evaluate(() => window.scrollToMessage(20));
+    await expect(anchor).toBeAttached();
+    await waitForFrames(page);
+    await page.evaluate(() => window.commitViewportAnchor());
+    await waitForFrames(page, 2);
     const originalOffset = await anchor.evaluate(
       (node) =>
         node.getBoundingClientRect().top -
@@ -131,8 +191,43 @@ createRoot(document.getElementById("root")).render(<Harness/>);`;
       "the anchor returns to its viewport offset",
     ).toBeLessThan(2);
   } finally {
-    await context.close();
-    await server.close();
-    await rm(cacheDir, { recursive: true, force: true });
+    await close();
+  }
+});
+
+test("upward scrolling through prepends reaches the oldest row", async ({
+  browser,
+}) => {
+  const { page, close } = await createHarness(browser, 240, 120);
+  try {
+    await page.evaluate(() => window.scrollToMessage(10));
+    await waitForFrames(page);
+    await page.evaluate(() => window.commitViewportAnchor());
+    await waitForFrames(page, 2);
+    await page.evaluate(() => window.scrollToTopAsUser());
+    await page.evaluate(() => window.prependPage(120));
+    await waitForFrames(page);
+    await page.evaluate(() => window.scrollToTopAsUser());
+    await page.evaluate(() => window.prependPage(0));
+    await expectMessageInViewport(page, "message-0");
+  } finally {
+    await close();
+  }
+});
+
+test("an explicit jump to the oldest row is not undone by a prepend", async ({
+  browser,
+}) => {
+  const { page, close } = await createHarness(browser, 120, 120);
+  try {
+    await page.evaluate(() => window.scrollToMessage(20));
+    await waitForFrames(page);
+    await page.evaluate(() => window.commitViewportAnchor());
+    await waitForFrames(page, 2);
+    await page.evaluate(() => window.jumpToOldest());
+    await waitForFrames(page, 25);
+    await expectMessageInViewport(page, "message-0");
+  } finally {
+    await close();
   }
 });
