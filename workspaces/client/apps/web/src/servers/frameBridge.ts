@@ -87,6 +87,19 @@ export function useServerFrame(
         );
         return;
       }
+      if (event.data.kind === "studio-server-shell-layout") {
+        // The shell's sidebar covers the left of this view while its terminal is open.
+        const width = event.data.sidebarWidth;
+        if (typeof width !== "number" || !(width >= 0) || width > 2000) return;
+        const root = document.documentElement;
+        root.style.setProperty(
+          "--shell-sidebar-width",
+          `${Math.round(width)}px`,
+        );
+        if (width > 0) root.dataset.shellSidebar = "true";
+        else delete root.dataset.shellSidebar;
+        return;
+      }
       if (event.data.kind === "studio-server-preferences") {
         const aliases = event.data.aliases;
         if (
@@ -119,6 +132,14 @@ export function useServerFrame(
       )
         return;
       const command = event.data.command as ServerCommand;
+      if (command.action === "terminal") {
+        window.dispatchEvent(
+          new CustomEvent("studio-terminal-command", {
+            detail: command.operation,
+          }),
+        );
+        return;
+      }
       if (command.action === "search") {
         void get("/api/search", { query: { q: command.query } })
           .then((value) => {

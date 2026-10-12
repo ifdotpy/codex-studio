@@ -17,8 +17,20 @@ import {
   NativeSelect,
   ActionIcon,
 } from "@mantine/core";
-import { Settings } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ChevronUp,
+  Plus,
+  Settings,
+  Terminal as TerminalIcon,
+} from "lucide-react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import App from "../App";
 import { DEFAULT_LOCAL_SERVER_ALIAS } from "./serverAliases";
 import CombinedServerSidebar from "./CombinedServerSidebar";
@@ -138,6 +150,23 @@ export default function MultiServerApp() {
   const searchRequest = useRef("");
   const notificationState = useRef(new Map<string, Set<string>>());
   const [sidebarHidden, setSidebarHidden] = useState(false);
+  // Each server view reports its terminal panel; the shell draws the closed bar under
+  // its sidebar and makes room for the open panel (servers.css "Terminal under the sidebar").
+  const [terminals, setTerminals] = useState<
+    Record<
+      string,
+      {
+        opened: boolean;
+        height: number;
+        count: number;
+        active: number;
+        canCreate: boolean;
+      }
+    >
+  >({});
+  const [shellSidebarWidth, setShellSidebarWidth] = useState(0);
+  const shellSidebarWidthRef = useRef(0);
+  shellSidebarWidthRef.current = shellSidebarWidth;
   const toggleSidebar = useCallback(() => {
     if (window.matchMedia("(max-width: 760px)").matches)
       setMobileOpen((old) => !old);
@@ -711,6 +740,34 @@ export default function MultiServerApp() {
           setPreferences(next);
           publishPreferences(next);
         } catch {}
+      } else if (event.data.kind === "studio-server-terminal") {
+        const value = event.data;
+        if (
+          typeof value.opened !== "boolean" ||
+          !Number.isFinite(value.height) ||
+          !Number.isInteger(value.count) ||
+          !Number.isInteger(value.active) ||
+          typeof value.canCreate !== "boolean"
+        )
+          return;
+        setTerminals((old) => ({
+          ...old,
+          [id]: {
+            opened: value.opened,
+            height: Math.max(0, Math.min(4000, value.height)),
+            count: value.count,
+            active: value.active,
+            canCreate: value.canCreate,
+          },
+        }));
+        frames.current.get(id)?.contentWindow?.postMessage(
+          {
+            kind: "studio-server-shell-layout",
+            serverId: id,
+            sidebarWidth: shellSidebarWidthRef.current,
+          },
+          targetOrigin(id),
+        );
       } else if (event.data.kind === "studio-server-toggle-sidebar") {
         toggleSidebar();
       } else if (event.data.kind === "studio-server-search")
@@ -902,6 +959,40 @@ export default function MultiServerApp() {
       </div>
     </Modal>
   );
+  useEffect(() => {
+    if (!combinedNavigation) return;
+    const narrow = window.matchMedia("(max-width: 760px)");
+    let observed: Element | null = null;
+    const measure = () => {
+      const sidebar = document.querySelector(".multi-server-shell > #sidebar");
+      if (sidebar !== observed) {
+        if (observed) observer.unobserve(observed);
+        if (sidebar) observer.observe(sidebar);
+        observed = sidebar;
+      }
+      const width =
+        sidebarHidden || narrow.matches || !sidebar
+          ? 0
+          : Math.round(sidebar.getBoundingClientRect().width);
+      setShellSidebarWidth(width);
+      for (const [id, frame] of frames.current)
+        frame.contentWindow?.postMessage(
+          {
+            kind: "studio-server-shell-layout",
+            serverId: id,
+            sidebarWidth: width,
+          },
+          targetOrigin(id),
+        );
+    };
+    const observer = new ResizeObserver(measure);
+    measure();
+    narrow.addEventListener("change", measure);
+    return () => {
+      observer.disconnect();
+      narrow.removeEventListener("change", measure);
+    };
+  }, [sidebarHidden, mergedSidebar?.sources.length, servers.length]);
   if (!uiOnly && !paired.length && accountsServers.length === servers.length)
     return (
       <ServerSettingsContext.Provider
@@ -919,10 +1010,24 @@ export default function MultiServerApp() {
         <App />
       </ServerSettingsContext.Provider>
     );
+  const terminal = combinedNavigation ? terminals[current] : undefined;
+  const terminalLayout =
+    terminal && shellSidebarWidth > 0
+      ? terminal.opened
+        ? "open"
+        : "closed"
+      : undefined;
   return (
     <div
       className={`multi-server-shell ${sidebarHidden ? "server-sidebar-hidden" : ""}`}
       data-navigation={combinedNavigation ? "combined" : "classic"}
+      data-shell-terminal={terminalLayout}
+      style={
+        {
+          "--shell-sidebar-width": `${shellSidebarWidth}px`,
+          "--shell-terminal-height": `${terminal?.height || 0}px`,
+        } as CSSProperties
+      }
     >
       {!combinedNavigation && (
         <div className="server-switcher">
@@ -999,6 +1104,38 @@ export default function MultiServerApp() {
             </aside>
           )}
         </>
+      )}
+      {terminalLayout === "closed" && terminal && (
+        <div className="shell-terminal-bar">
+          <button
+            type="button"
+            className="shell-terminal-toggle"
+            aria-expanded={false}
+            aria-label="Show terminals"
+            onClick={() =>
+              send(current, { action: "terminal", operation: "toggle" })
+            }
+          >
+            <TerminalIcon size={15} />
+            <strong>Terminals</strong>
+            {terminal.count > 0 && (
+              <span className="terminal-dock-count">{terminal.count}</span>
+            )}
+            <ChevronUp size={14} />
+          </button>
+          <ActionIcon
+            variant="filled"
+            size={28}
+            aria-label="New terminal"
+            title="New terminal"
+            disabled={!terminal.canCreate}
+            onClick={() =>
+              send(current, { action: "terminal", operation: "new" })
+            }
+          >
+            <Plus size={13} />
+          </ActionIcon>
+        </div>
       )}
       <main className="server-views">
         {!servers.length && (
