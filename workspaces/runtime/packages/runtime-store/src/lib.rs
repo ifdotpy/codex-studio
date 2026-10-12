@@ -18,6 +18,7 @@ pub use records::{
     MessageRepository, QueueEvent, QueueEventId, QueueEventRepository, TaskId, TaskRecord,
     TaskRepository, WorkStatus,
 };
+pub use repositories::coordination::{CanvasMessage, ChatGroup, CoordinationRepository};
 pub use repositories::event_write::{EventWriteReceipt, EventWriteRepository};
 pub use repositories::rules::{RulesRepository, StoredAgent, StoredRule};
 pub use repositories::sync_documents::{EntityRow, SyncDocument, SyncDocumentsRepository};

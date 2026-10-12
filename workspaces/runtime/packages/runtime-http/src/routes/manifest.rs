@@ -22,6 +22,9 @@ const KNOWN_DEPENDENCIES: &[&str] = &[
     "rule-driver/event-rules",
     "cross-server/remote-events",
     "workspace-state/organization-effects",
+    "coordination-policy/chat-history",
+    "coordination-policy/room-visibility",
+    "event-driver/message-receipts",
 ];
 
 impl Dependency {

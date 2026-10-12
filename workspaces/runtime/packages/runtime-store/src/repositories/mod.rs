@@ -1,4 +1,5 @@
 pub(crate) mod agents;
+pub(crate) mod coordination;
 pub(crate) mod event_write;
 pub(crate) mod events;
 pub(crate) mod messages;
@@ -11,6 +12,7 @@ use crate::schema::SchemaRequirements;
 
 pub(crate) const REQUIREMENTS: &[&SchemaRequirements] = &[
     &agents::REQUIREMENTS,
+    &coordination::REQUIREMENTS,
     &tasks::REQUIREMENTS,
     &events::REQUIREMENTS,
     &event_write::REQUIREMENTS,

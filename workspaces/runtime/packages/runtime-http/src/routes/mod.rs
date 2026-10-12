@@ -3,6 +3,7 @@ pub(crate) mod extractors;
 pub(crate) mod manifest;
 
 mod desktop;
+mod messages;
 mod rules;
 mod session;
 mod sync;
@@ -18,6 +19,7 @@ pub(crate) fn groups() -> Vec<RouteGroup> {
         sync::routes(),
         sync_documents::routes(),
         work_items::routes(),
+        messages::routes(),
         desktop::routes(),
     ]
 }
