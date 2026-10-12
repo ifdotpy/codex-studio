@@ -343,11 +343,19 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
     await accepted("timeout-fresh");
     await reply("timeout-old");
 
-    // Reconnect before the deadline fences every old outcome and queued callback.
+    // The stalled write must time out before the reconnect control can appear.
+    // Reconnect then fences every late old outcome and queued callback.
     for (const outcome of ["success", "error", "uncertain"]) {
       await mount();
       await accepted(`${outcome}-old`, true);
       await input(`discard-${outcome}`);
+      await page.evaluate(() => {
+        window.advance += 16000;
+        window.dispatchEvent(new Event("pageshow"));
+      });
+      await page
+        .getByText(/Input paused\. Reconnect before you continue\./)
+        .waitFor();
       await page.evaluate(
         () => (window.retiredTerminal = window.currentTerminal),
       );
