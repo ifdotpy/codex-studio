@@ -6,13 +6,17 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 import unittest
 import uuid
+from pathlib import Path
 from unittest.mock import patch
 
 from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 
 from http_backend_harness import TimedHTTPContractTest, start_contract_backend
 from codex_progress import provision_progress

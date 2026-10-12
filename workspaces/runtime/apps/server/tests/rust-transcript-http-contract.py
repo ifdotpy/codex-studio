@@ -123,7 +123,10 @@ class TranscriptHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     "INSERT INTO runtime_item_fulltext (id,body) VALUES (?,?)",
                     (cls.case_items["fulltext"]["id"], "resolved archive phrase"),
                 )
-                database.execute("CREATE TABLE runtime_search (id TEXT, body TEXT)")
+                if database.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_search'"
+                ).fetchone() is None:
+                    database.execute("CREATE TABLE runtime_search (id TEXT, body TEXT)")
                 database.execute(
                     "INSERT INTO runtime_search (id,body) VALUES (?,?)",
                     (cls.case_items["legacy"]["id"], "obsolete phrase"),
