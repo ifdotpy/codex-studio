@@ -667,27 +667,18 @@ test.describe("legacy schema mismatch", () => {
         timeout: 30_000,
       });
 
-      const pulls = await newPage.evaluate(() =>
-        performance
-          .getEntriesByType("resource")
-          .filter((entry) => entry.name.includes("/api/sync/pull"))
-          .map((entry) => new URL(entry.name))
-          .filter(
-            (url) => url.searchParams.get("scope") === "state:entities:v1",
-          )
-          .map((url) => url.searchParams.get("after")),
+      const resetBootstrapPull = statePulls.find(
+        (pull) => pull.page === newPage && pull.query.reset === "1",
       );
       console.log("Schema variant observed:", {
         sameHashCachedReloadMs: Math.round(cachedReloadMs),
         rendererHashes: [...new Set(rendererHashes)],
-        pulls,
+        resetBootstrapQuery: resetBootstrapPull?.query,
         distAssetsSha256: distAssetsDigest(),
       });
-      assert.ok(pulls.length > 0);
+      assert.ok(resetBootstrapPull, "the new schema starts a reset bootstrap");
       assert.equal(
-        statePulls.find(
-          (pull) => pull.page === newPage && pull.query.reset === "1",
-        )?.after,
+        resetBootstrapPull.after,
         "0",
         "the new schema cache's main-client bootstrap starts at zero",
       );

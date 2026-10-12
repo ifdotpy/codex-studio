@@ -6,6 +6,7 @@ import {
   commandFor,
   execute,
   executeRecipe,
+  evaluatePlaywrightReport,
   nextestError,
   nextestSelectionError,
   packageTarget,
@@ -528,33 +529,155 @@ test("Vitest summaries count test cases rather than test files", () => {
       summaryFound: true,
     },
   );
-  assert.deepEqual(
-    parseCounts(item, "14 failed\n11 skipped\n301 passed (9.1m)"),
-    { passed: 301, failed: 14, skipped: 11, executed: 315, summaryFound: true },
-  );
-  assert.deepEqual(
-    parseCounts(
-      item,
-      "Earlier output\n\n  11 skipped\n  322 passed (7.1m)\nPlaywright output: /tmp/results",
-    ),
-    { passed: 322, failed: 0, skipped: 11, executed: 322, summaryFound: true },
-  );
-  assert.deepEqual(
-    parseCounts(
-      item,
-      "\u001b[31m14 failed\u001b[39m\n" +
-        "\u001b[33m11 skipped\u001b[39m\n" +
-        "\u001b[32m301 passed (9.1m)\u001b[39m",
-    ),
-    { passed: 301, failed: 14, skipped: 11, executed: 315, summaryFound: true },
-  );
-  assert.deepEqual(parseCounts(item, "315 passed (9.1m)"), {
-    passed: 315,
+});
+
+test("Playwright JSON reports enforce process and test outcome status", () => {
+  const evaluate = (stats, exitCode = 0) =>
+    evaluatePlaywrightReport(JSON.stringify({ stats }), exitCode);
+  const passed = evaluate({ expected: 4, unexpected: 0, flaky: 0, skipped: 1 });
+  assert.equal(passed.exitCode, 0);
+  assert.deepEqual(passed.counts, {
+    passed: 4,
     failed: 0,
-    skipped: 0,
-    executed: 315,
+    flaky: 0,
+    skipped: 1,
+    executed: 4,
     summaryFound: true,
   });
+
+  const processFailure = evaluate(
+    { expected: 4, unexpected: 0, flaky: 0, skipped: 1 },
+    1,
+  );
+  assert.equal(processFailure.exitCode, 1);
+  assert.ok(processFailure.errors.includes("Playwright exited with code 1"));
+
+  const unexpected = evaluate({
+    expected: 322,
+    unexpected: 1,
+    flaky: 0,
+    skipped: 11,
+  });
+  assert.equal(unexpected.exitCode, 1);
+  assert.deepEqual(
+    [
+      unexpected.counts.passed,
+      unexpected.counts.failed,
+      unexpected.counts.flaky,
+      unexpected.counts.skipped,
+    ],
+    [322, 1, 0, 11],
+  );
+  assert.ok(
+    unexpected.errors.includes("Playwright reported 1 unexpected test(s)"),
+  );
+
+  const flaky = evaluate({ expected: 4, unexpected: 0, flaky: 1, skipped: 0 });
+  assert.equal(flaky.exitCode, 1);
+  assert.ok(flaky.errors.includes("Playwright reported 1 flaky test(s)"));
+
+  const empty = evaluate({ expected: 0, unexpected: 0, flaky: 0, skipped: 0 });
+  assert.equal(empty.exitCode, 1);
+  assert.ok(empty.errors.includes("Playwright executed zero tests"));
+
+  const allSkipped = evaluate({
+    expected: 0,
+    unexpected: 0,
+    flaky: 0,
+    skipped: 3,
+  });
+  assert.equal(allSkipped.exitCode, 1);
+  assert.ok(allSkipped.errors.includes("Playwright executed zero tests"));
+
+  const missing = evaluatePlaywrightReport(null, 0);
+  assert.equal(missing.exitCode, 1);
+  assert.ok(missing.errors.includes("Playwright JSON report is missing"));
+
+  const malformed = evaluatePlaywrightReport("{bad json", 0);
+  assert.equal(malformed.exitCode, 1);
+  assert.match(malformed.errors[0], /^Playwright JSON report is invalid:/);
+
+  const invalidStats = evaluatePlaywrightReport(
+    JSON.stringify({ stats: { expected: -1 } }),
+    1,
+  );
+  assert.equal(invalidStats.exitCode, 1);
+  assert.ok(invalidStats.errors.includes("Playwright exited with code 1"));
+  assert.ok(
+    invalidStats.errors.includes(
+      "Playwright JSON report has invalid or missing stats",
+    ),
+  );
+});
+
+test("browser wrapper trusts JSON stats, not human summary text", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-browser-report-"));
+  const originalCache = process.env.CODEX_STUDIO_CHECKS_CACHE;
+  const originalWrite = process.stdout.write;
+  process.env.CODEX_STUDIO_CHECKS_CACHE = path.join(root, "cache");
+  process.stdout.write = () => true;
+  const report = {
+    stats: { expected: 322, unexpected: 1, flaky: 0, skipped: 11 },
+  };
+  const source = `import { writeFileSync } from 'node:fs';
+writeFileSync(process.env.CODEX_STUDIO_PLAYWRIGHT_JSON_REPORT, ${JSON.stringify(JSON.stringify(report))});
+process.stdout.write('322 passed (7.1m)\\n');
+process.exit(1);`;
+  try {
+    const result = await execute(
+      root,
+      { name: "codex-agents-web", ecosystem: "pnpm" },
+      "",
+      true,
+      {
+        playwrightJsonReport: true,
+        commands: [["node", ["--input-type=module", "-e", source]]],
+      },
+    );
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.failed, 1);
+    assert.equal(result.flaky, 0);
+    assert.equal(result.passed, 322);
+    assert.equal(result.skipped, 11);
+    assert.ok(
+      readFileSync(result.reportPath, "utf8").includes('"unexpected":1'),
+    );
+    assert.match(result.errors.join(" "), /Playwright exited with code 1/);
+  } finally {
+    process.stdout.write = originalWrite;
+    if (originalCache === undefined)
+      delete process.env.CODEX_STUDIO_CHECKS_CACHE;
+    else process.env.CODEX_STUDIO_CHECKS_CACHE = originalCache;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("browser wrapper rejects a missing JSON report even after process success", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-browser-no-report-"));
+  const originalCache = process.env.CODEX_STUDIO_CHECKS_CACHE;
+  const originalWrite = process.stdout.write;
+  process.env.CODEX_STUDIO_CHECKS_CACHE = path.join(root, "cache");
+  process.stdout.write = () => true;
+  try {
+    const result = await execute(
+      root,
+      { name: "codex-agents-web", ecosystem: "pnpm" },
+      "",
+      true,
+      {
+        playwrightJsonReport: true,
+        commands: [["node", ["-e", "process.exit(0)"]]],
+      },
+    );
+    assert.equal(result.exitCode, 1);
+    assert.ok(result.errors.includes("Playwright JSON report is missing"));
+  } finally {
+    process.stdout.write = originalWrite;
+    if (originalCache === undefined)
+      delete process.env.CODEX_STUDIO_CHECKS_CACHE;
+    else process.env.CODEX_STUDIO_CHECKS_CACHE = originalCache;
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("zero-test package command is a failure unless explicitly allowed", async () => {
