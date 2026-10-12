@@ -32,7 +32,7 @@ from starlette.responses import Response
 
 from codex_backend_identity import backend_build
 from codex_layout import SERVER_SOURCE_ROOT, WEB_ROOT
-from server_test_waits import wait_for_condition
+from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
 from studio_api.context import (
     API_SCHEMA_CACHE_DIRECTORY,
     API_SCHEMA_CACHE_FILE,
@@ -197,7 +197,8 @@ print(api_schema_hash(openapi_document()))
                 check=True,
                 capture_output=True,
                 text=True,
-                timeout=30,
+                # Three cold schema builds run at once; the bound only stops a hang.
+                timeout=3 * HANG_GUARD_SECONDS,
             )
             return result.stdout.strip()
 
