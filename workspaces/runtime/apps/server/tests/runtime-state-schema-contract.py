@@ -32,25 +32,12 @@ class QuietRuntime(Runtime):
 def schema_snapshot(runtime: Runtime) -> dict[str, object]:
     def snapshot_database(db: sqlite3.Connection, schema: str) -> dict[str, object]:
         objects = [
-            {"type": kind, "name": name, "table": table, "sql": sql.strip() if sql else None}
+            {"type": kind, "name": name, "table": table, "sql": sql}
             for kind, name, table, sql in db.execute(
                 f"SELECT type,name,tbl_name,sql FROM {schema}.sqlite_master "
                 "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
             )
         ]
-        tables = []
-        for _kind, name in db.execute(
-            f"SELECT type,name FROM {schema}.sqlite_master "
-            "WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY name"
-        ):
-            quoted = '"' + name.replace('"', '""') + '"'
-            columns = [
-                {"cid": cid, "name": column, "type": declaration, "notnull": required,
-                 "default": default, "primary_key_position": primary_key}
-                for cid, column, declaration, required, default, primary_key
-                in db.execute(f"PRAGMA {schema}.table_info({quoted})")
-            ]
-            tables.append({"name": name, "columns": columns})
         user_version = db.execute(f"PRAGMA {schema}.user_version").fetchone()[0]
         migration_table = db.execute(
             f"SELECT 1 FROM {schema}.sqlite_master WHERE type='table' AND name='runtime_payload_migrations'"
@@ -77,7 +64,6 @@ def schema_snapshot(runtime: Runtime) -> dict[str, object]:
             "pragma_user_version": user_version,
             "payload_migrations": payload_migrations,
             "file_migration_v1": file_migration,
-            "tables_and_columns": tables,
             "sqlite_master": objects,
         }
 
