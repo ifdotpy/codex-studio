@@ -19,6 +19,9 @@ pub use records::{
 };
 pub use repositories::rules::{RulesRepository, StoredAgent, StoredRule};
 pub use repositories::sync_documents::{EntityRow, SyncDocument, SyncDocumentsRepository};
+pub use repositories::transcript::{
+    TranscriptItem, TranscriptRepository, TranscriptStoreError, TranscriptStoreResult,
+};
 
 const DATABASE_BUSY_TIMEOUT_MS: u32 = 15_000;
 
