@@ -229,3 +229,70 @@ test("without the connector token the account's connector catalog stands; local 
     /anarlog/,
   );
 });
+
+test("a move carries a credential-free MCP transport and the target starts the same server", async () => {
+  const transport = { type: "stdio", command: "node", args: ["catalog.mjs"] };
+  const source = await externalCatalog(statuses, "/source", ["anarlog"], {
+    localConfigs: async () => ({ anarlog: { ...transport, env: {} } }),
+    listTools: async () => tools,
+  });
+  assert.deepEqual(source.transports, { anarlog: transport });
+  let started;
+  const target = await targetExternalCatalog("/target", source.catalogs, {
+    localConfigs: async () => ({}),
+    transports: structuredClone(source.transports),
+    listTools: async (value) => {
+      started = value;
+      return tools;
+    },
+  });
+  assert.deepEqual(started, transport);
+  assert.deepEqual(target.catalogs, source.catalogs);
+  assert.deepEqual(target.configs.anarlog, transport);
+  // Without the carried transport the missing entry still refuses.
+  await assert.rejects(
+    targetExternalCatalog("/target", source.catalogs, {
+      localConfigs: async () => ({}),
+      listTools: async () => tools,
+    }),
+    /anarlog/,
+  );
+});
+
+test("a server with credentials sends no transport, and only the proved transport starts", async () => {
+  const withSecret = await externalCatalog(
+    statuses,
+    "/source",
+    ["anarlog"],
+    dependencies,
+  );
+  assert.deepEqual(withSecret.transports, {});
+  assert.ok(
+    !JSON.stringify(withSecret.transports).includes("credential-secret"),
+  );
+  // A carried transport that differs from the proved one is not started.
+  const other = { type: "stdio", command: "node", args: ["other.mjs"] };
+  let started = 0;
+  await assert.rejects(
+    targetExternalCatalog("/target", withSecret.catalogs, {
+      localConfigs: async () => ({}),
+      transports: { anarlog: other },
+      listTools: async () => {
+        started++;
+        return tools;
+      },
+    }),
+    /anarlog/,
+  );
+  assert.equal(started, 0);
+  // The target's own entry with the same transport and its own credentials serves.
+  const own = await targetExternalCatalog("/target", withSecret.catalogs, {
+    localConfigs: async () => ({ anarlog: config }),
+    transports: {},
+    listTools: async (value) => {
+      assert.deepEqual(value, config);
+      return tools;
+    },
+  });
+  assert.deepEqual(own.catalogs, withSecret.catalogs);
+});

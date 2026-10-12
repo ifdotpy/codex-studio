@@ -221,6 +221,35 @@ export async function listExternalTools(config) {
 export async function readExternalInstructions(config) {
   return (await readExternalServer(config, true)).instructions;
 }
+// The transport of an MCP server: what Claude Code starts or connects to. Auth headers and
+// the process environment stay local, so they are not part of it.
+export function transportIdentity(config) {
+  return Object.fromEntries(
+    (config.type === "claudeai-proxy"
+      ? ["type", "id"]
+      : ["type", "command", "args", "url"]
+    )
+      .filter((key) => config[key] !== undefined)
+      .map((key) => [key, config[key]]),
+  );
+}
+const credentialFree = (config) =>
+  config.type !== "claudeai-proxy" &&
+  !Object.keys(config.env || {}).length &&
+  !Object.keys(config.headers || {}).length;
+// A moved chat keeps the MCP servers of its source. The target's own entry serves when it has
+// the same transport; otherwise the source's transport, which carries no credential, starts
+// the same server on the target.
+function movedConfig(server, own, source) {
+  if (own && hash(transportIdentity(own)) === server.configHash) return own;
+  if (
+    source &&
+    credentialFree(source) &&
+    hash(transportIdentity(source)) === server.configHash
+  )
+    return transportIdentity(source);
+  return own;
+}
 export async function externalCatalog(
   statuses,
   cwd,
@@ -244,15 +273,12 @@ export async function externalCatalog(
     if (!config) throw externalRefusal(aliases, [row.name], [row.name]);
     // Keep auth headers and process environment local. Compare the transport
     // identity and the actual ordered tools, rather than credential values.
-    const identity = Object.fromEntries(
-      (config.type === "claudeai-proxy"
-        ? ["type", "id"]
-        : ["type", "command", "args", "url"]
-      )
-        .filter((key) => config[key] !== undefined)
-        .map((key) => [key, config[key]]),
-    );
-    return { name: row.name, alias, config, configHash: hash(identity) };
+    return {
+      name: row.name,
+      alias,
+      config,
+      configHash: hash(transportIdentity(config)),
+    };
   });
   const results = await Promise.allSettled(
     selected.map(async (server) => {
@@ -297,6 +323,12 @@ export async function externalCatalog(
     configs: Object.fromEntries(
       selected.map((server) => [server.name, server.config]),
     ),
+    // What a move carries so that the target starts the same servers.
+    transports: Object.fromEntries(
+      selected
+        .filter((server) => credentialFree(server.config))
+        .map((server) => [server.name, transportIdentity(server.config)]),
+    ),
   };
 }
 export function verifyExternalCatalog(source, target) {
@@ -321,6 +353,7 @@ export function verifyExternalCatalog(source, target) {
 // account's explicitly selected cloud connector ids. Do not load target settings.
 export async function targetExternalCatalog(cwd, expected, dependencies = {}) {
   const local = await (dependencies.localConfigs || localConfigs)(cwd);
+  const transports = dependencies.transports || {};
   // claude.ai connectors belong to the account, and Studio moves a Claude chat only to the same
   // account and organization. A Mac without a person at it cannot open the account's Keychain
   // entry for the connector proxy, while its CLI loads the connectors itself; there the
@@ -338,7 +371,7 @@ export async function targetExternalCatalog(cwd, expected, dependencies = {}) {
           ...dependencies,
           localConfigs: async () => local,
         })
-      : { catalogs: [], configs: {} };
+      : { catalogs: [], configs: {}, transports: {} };
     const catalogs = expected.map((server) =>
       server.claudeAI
         ? structuredClone(server)
@@ -351,7 +384,21 @@ export async function targetExternalCatalog(cwd, expected, dependencies = {}) {
         id: server.proxyId,
         url: "https://mcp-proxy.anthropic.com/v1/mcp/" + server.proxyId,
       };
-    return { catalogs, configs, accountConnectors: true };
+    return {
+      catalogs,
+      configs,
+      transports: read.transports,
+      accountConnectors: true,
+    };
+  }
+  const configured = { ...local };
+  for (const server of expected.filter((row) => !row.claudeAI)) {
+    const config = movedConfig(
+      server,
+      local[server.name],
+      transports[server.name],
+    );
+    if (config) configured[server.name] = config;
   }
   const statuses = expected.map((server) => ({
     name: server.name,
@@ -363,13 +410,13 @@ export async function targetExternalCatalog(cwd, expected, dependencies = {}) {
           id: server.proxyId,
           url: "https://mcp-proxy.anthropic.com/v1/mcp/" + server.proxyId,
         }
-      : local[server.name],
+      : configured[server.name],
   }));
   const result = await externalCatalog(
     statuses,
     cwd,
     expected.map((server) => server.alias),
-    { ...dependencies, localConfigs: async () => local },
+    { ...dependencies, localConfigs: async () => configured },
   );
   verifyExternalCatalog(expected, result.catalogs);
   return result;
