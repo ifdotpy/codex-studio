@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 from collections import defaultdict
 from typing import Any
 
@@ -17,11 +19,6 @@ ROOT = Path(__file__).resolve().parents[5]
 TESTS = ROOT / "workspaces/runtime/apps/server/tests"
 SPEC = ROOT / "workspaces/runtime/packages/runtime-http/openapi.json"
 HARNESS = TESTS / "http_backend_harness.py"
-IMPLEMENTED = {
-    ("GET", "/api/session"),
-    ("GET", "/api/sync/identity"),
-    ("GET", "/api/desktop"),
-}
 JSON_METHODS = {"POST", "PUT", "PATCH"}
 DEFAULT_CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
 DEFAULT_LEDGER = DEFAULT_CACHE / "codex-studio" / "rust-runtime-http-conformance-ledger.json"
@@ -49,11 +46,213 @@ def operations() -> list[tuple[str, str]]:
     )
 
 
-def probe_operations() -> list[dict[str, Any]]:
+def appendix_http_assertions(
+    known_operations: set[str],
+) -> dict[str, set[str]]:
+    """Resolve the plan's 23 H witnesses to named test methods."""
+    plan = ROOT / "docs/plans/rust-runtime-work-breakdown.md"
+    text = plan.read_text(encoding="utf-8").split("<!-- operation-map -->", 1)[1]
+    witnesses: dict[str, set[str]] = defaultdict(set)
+    for line in text.splitlines():
+        if not line.startswith("| `"):
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if len(cells) < 8 or cells[6] != "H":
+            continue
+        operation = cells[0].strip("`")
+        if operation not in known_operations:
+            continue
+        witness = cells[7].strip("`")
+        match = re.fullmatch(r"T/([^:]+):(\d+)", witness)
+        if match is None:
+            continue
+        relative, line_number_text = match.groups()
+        source_path = TESTS / relative
+        module = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+        source_tests: set[str] = set()
+
+        def collect_test_ids(node: ast.AST, ancestors: list[str]) -> None:
+            current = ancestors
+            if isinstance(node, ast.ClassDef):
+                current = [*ancestors, node.name]
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name.startswith("test_"):
+                    source_tests.add(f"workspaces/runtime/apps/server/tests/{relative}::__main__.{'.'.join([*ancestors, node.name])}")
+                current = [*ancestors, node.name]
+            for child in ast.iter_child_nodes(node):
+                collect_test_ids(child, current)
+
+        collect_test_ids(module, [])
+        line_number = int(line_number_text)
+        candidates: list[tuple[list[str], int]] = []
+        enclosing_functions: list[str] = []
+
+        def find_test(node: ast.AST, ancestors: list[str]) -> None:
+            start = getattr(node, "lineno", 0)
+            end = getattr(node, "end_lineno", start)
+            if not isinstance(node, ast.Module) and not start <= line_number <= end:
+                return
+            current = ancestors
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                current = [*ancestors, node.name]
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    enclosing_functions.append(node.name)
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
+                    candidates.append((current, end - start))
+            for child in ast.iter_child_nodes(node):
+                find_test(child, current)
+
+        find_test(module, [])
+        selected = [min(candidates, key=lambda candidate: candidate[1])[0]] if candidates else []
+        helper = enclosing_functions[-1] if enclosing_functions else None
+        if not selected and helper is not None:
+            def find_helper_callers(node: ast.AST, ancestors: list[str]) -> None:
+                current = ancestors
+                if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                    current = [*ancestors, node.name]
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
+                        calls_helper = any(
+                            isinstance(call, ast.Call)
+                            and ((isinstance(call.func, ast.Name) and call.func.id == helper)
+                                 or (isinstance(call.func, ast.Attribute) and call.func.attr == helper))
+                            for call in ast.walk(node)
+                        )
+                        if calls_helper:
+                            selected.append(current)
+                for child in ast.iter_child_nodes(node):
+                    find_helper_callers(child, current)
+            find_helper_callers(module, [])
+        if not selected:
+            raise ValueError(f"plan witness {witness} does not resolve to a named test")
+        resolved = {
+            f"workspaces/runtime/apps/server/tests/{relative}::__main__.{'.'.join(names)}"
+            for names in selected
+        }
+        missing = resolved - source_tests
+        if missing:
+            raise ValueError(f"plan witness {witness} resolves to missing test IDs: {sorted(missing)}")
+        witnesses[operation].update(resolved)
+    return witnesses
+
+
+def rust_operation_manifest() -> dict[tuple[str, str], dict[str, Any]]:
+    process = subprocess.run(
+        [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "studio-runtime-http",
+            "print_operation_manifest",
+            "--",
+            "--nocapture",
+        ],
+        cwd=ROOT,
+        env=os.environ.copy(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if process.returncode:
+        raise RuntimeError(
+            "could not read the Rust route manifest:\n"
+            + (process.stderr + process.stdout)[-4000:]
+        )
+    marker = "RUST_HTTP_OPERATION_MANIFEST="
+    for line in process.stdout.splitlines():
+        if line.startswith(marker):
+            return {
+                (item["method"], item["path"]): item
+                for item in json.loads(line[len(marker):])
+            }
+    raise RuntimeError("Rust route manifest test did not print its operation manifest")
+
+
+def resolve_schema(schema: dict[str, Any], document: dict[str, Any]) -> dict[str, Any]:
+    reference = schema.get("$ref")
+    if not reference:
+        return schema
+    if not reference.startswith("#/components/schemas/"):
+        raise ValueError(f"unsupported OpenAPI reference in probe fixture: {reference}")
+    value: Any = document
+    for part in reference[2:].split("/"):
+        value = value[part.replace("~1", "/").replace("~0", "~")]
+    return value
+
+
+def sample_value(schema: dict[str, Any], document: dict[str, Any], active: frozenset[str] = frozenset()) -> Any:
+    reference = schema.get("$ref")
+    if reference in active:
+        return {}
+    schema = resolve_schema(schema, document)
+    active = active | ({reference} if reference else set())
+    for union_key in ("anyOf", "oneOf"):
+        if union_key in schema:
+            for member in schema[union_key]:
+                try:
+                    return sample_value(member, document, active)
+                except (ValueError, KeyError):
+                    continue
+    if "const" in schema:
+        return schema["const"]
+    if "enum" in schema:
+        return schema["enum"][0]
+    if "default" in schema:
+        return schema["default"]
+    kind = schema.get("type")
+    if kind == "object" or "properties" in schema:
+        properties = schema.get("properties", {})
+        required = schema.get("required", list(properties))
+        return {name: sample_value(properties[name], document, active) for name in required if name in properties}
+    if kind == "array":
+        minimum = schema.get("minItems", 0)
+        return [sample_value(schema.get("items", {}), document, active) for _ in range(minimum)]
+    if kind == "string":
+        return "x" * schema.get("minLength", 1)
+    if kind == "integer":
+        return max(1, int(schema.get("minimum", schema.get("exclusiveMinimum", 0) + 1)))
+    if kind == "number":
+        return max(1.0, float(schema.get("minimum", 0)))
+    if kind == "boolean":
+        return True
+    if kind == "null":
+        return None
+    return {}
+
+
+def valid_probe(method: str, template: str) -> tuple[str, Any | None]:
+    document = json.loads(SPEC.read_text(encoding="utf-8"))
+    operation = document["paths"][template][method.lower()]
+    path_values: dict[str, Any] = {}
+    query_values: list[tuple[str, str]] = []
+    for parameter in operation.get("parameters", []):
+        schema = resolve_schema(parameter.get("schema", {}), document)
+        value = sample_value(schema, document)
+        if parameter.get("in") == "path":
+            path_values[parameter["name"]] = value
+        elif parameter.get("in") == "query":
+            query_values.append((parameter["name"], str(value).lower() if isinstance(value, bool) else str(value)))
+    path = re.sub(r"\{([^}:]+)(?::[^}]+)?\}", lambda match: urllib.parse.quote(str(path_values.get(match.group(1), "probe")), safe=""), template)
+    if query_values:
+        path += "?" + urllib.parse.urlencode(query_values)
+    body = None
+    body_schema = operation.get("requestBody", {}).get("content", {}).get("application/json", {}).get("schema")
+    if body_schema:
+        body = sample_value(body_schema, document)
+    return path, body
+
+
+def probe_operations(
+    manifest: dict[tuple[str, str], dict[str, Any]],
+    planned_assertions: dict[str, set[str]],
+    successful_assertions: dict[str, set[str]],
+) -> list[dict[str, Any]]:
     sys.path.insert(0, str(TESTS))
     from http_backend_harness import BackendProcess
 
-    with tempfile.TemporaryDirectory(prefix="rust-http-ledger-") as scratch_name:
+    with tempfile.TemporaryDirectory(
+        prefix="rust-http-ledger-", dir=DEFAULT_CACHE
+    ) as scratch_name:
         scratch = Path(scratch_name).resolve(strict=True)
         backend = BackendProcess(scratch)
         try:
@@ -62,7 +261,7 @@ def probe_operations() -> list[dict[str, Any]]:
             token = backend.session["token"]
             rows = []
             for method, template in operations():
-                path = re.sub(r"\{[^}]+\}", "ledger-probe", template)
+                path, body = valid_probe(method, template)
                 headers = {
                     "X-Canvas-Token": token,
                     "X-Studio-API-Schema": backend.schema_hash,
@@ -72,26 +271,56 @@ def probe_operations() -> list[dict[str, Any]]:
                 result = backend.request(
                     method,
                     path,
-                    body={} if method in JSON_METHODS else None,
+                    body=body if method in JSON_METHODS else None,
                     headers=headers,
                     timeout=2.0,
                 )
-                declared_implementation = (method, template) in IMPLEMENTED
-                expected_status = 200 if declared_implementation else 501
+                operation_manifest = manifest.get((method, template))
+                implementation = operation_manifest["status"] if operation_manifest else "unimplemented"
+                dependencies = (
+                    operation_manifest.get("dependencies", [])
+                    if operation_manifest
+                    else []
+                )
                 schema_header = result.headers.get("x-studio-api-schema")
                 schema_header_matches = schema_header == backend.schema_hash
+                try:
+                    response_body = json.loads(result.body)
+                except (ValueError, TypeError):
+                    response_body = None
+                operation_key = f"{method} {template}"
+                probe_event = {"operation": operation_key, "body": response_body}
+                standard_501_envelope = result.status != 501 or valid_501_envelope(probe_event, manifest)
+                dependency_response_matches = implementation != "partial" or result.status != 501 or standard_501_envelope
+                classification = classify_observation(
+                    result.status,
+                    implementation,
+                    schema_header_matches,
+                    standard_501_envelope,
+                    dependency_response_matches,
+                )
                 rows.append({
                     "method": method,
                     "path": template,
                     "status": result.status,
-                    "classification": (
-                        "implemented" if declared_implementation and result.status == 200 and schema_header_matches
-                        else "not_implemented" if not declared_implementation and result.status == 501 and schema_header_matches
-                        else "unexpected"
+                    "implementation": implementation,
+                    "observedStatus": result.status,
+                    "classification": classification,
+                    "covered": bool(successful_assertions.get(operation_key)),
+                    "expectedStatus": (
+                        "not_501"
+                        if implementation == "implemented"
+                        else "any"
+                        if implementation == "partial"
+                        else 501
                     ),
-                    "expectedStatus": expected_status,
+                    "dependencies": dependencies,
                     "schemaHeader": schema_header,
                     "schemaHeaderMatches": schema_header_matches,
+                    "standard501Envelope": standard_501_envelope,
+                    "dependencyResponseMatches": dependency_response_matches,
+                    "httpAssertions": sorted(planned_assertions.get(operation_key, set())),
+                    "observedSuccessfulAssertions": sorted(successful_assertions.get(operation_key, set())),
                 })
             return rows
         finally:
@@ -102,16 +331,17 @@ def case_results(log_text: str) -> list[dict[str, Any]]:
     cases: list[dict[str, Any]] = []
     current: str | None = None
     for line in log_text.splitlines():
-        start = re.match(r"^(test_[\w]+)\s+\([^)]*\)\s+\.\.\.\s*(.*)$", line)
+        start = re.match(r"^(test_[\w]+)\s+\(([^)]*)\)\s+\.\.\.\s*(.*)$", line)
         if start:
             current = start.group(1)
-            tail = start.group(2).strip()
+            full_id = start.group(2)
+            tail = start.group(3).strip()
             if tail in {"ok", "FAIL", "ERROR"} or tail.startswith("skipped"):
-                cases.append({"test": current, "status": tail.split()[0].lower()})
+                cases.append({"test": current, "testId": full_id, "status": tail.split()[0].lower()})
                 current = None
             continue
         if current is not None and line.strip() in {"ok", "FAIL", "ERROR"}:
-            cases.append({"test": current, "status": line.strip().lower()})
+            cases.append({"test": current, "testId": full_id, "status": line.strip().lower()})
             current = None
     return cases
 
@@ -174,8 +404,7 @@ def _urlopen(request, *args, **kwargs):
     except HTTPError as error:
         body = error.read()
         _record(request, error.code, body)
-        error.fp = io.BytesIO(body)
-        raise
+        raise HTTPError(error.url, error.code, error.msg, error.headers, io.BytesIO(body))
     _record(request, response.status)
     return response
 
@@ -188,9 +417,6 @@ urllib.request.urlopen = _urlopen
 
 
 def canonical_operation(method: str, path: str, known: list[tuple[str, str]]) -> str | None:
-    hidden_voice = ("POST", "/api/voice/{action:path}")
-    if method == hidden_voice[0] and path.startswith("/api/voice/") and len(path) > len("/api/voice/"):
-        return f"{hidden_voice[0]} {hidden_voice[1]}"
     parts = path.split("/")
     for expected_method, template in known:
         expected_parts = template.split("/")
@@ -199,6 +425,9 @@ def canonical_operation(method: str, path: str, known: list[tuple[str, str]]) ->
             for want, actual in zip(expected_parts, parts)
         ):
             return f"{method} {template}"
+    hidden_voice = ("POST", "/api/voice/{action:path}")
+    if method == hidden_voice[0] and path.startswith("/api/voice/") and len(path) > len("/api/voice/"):
+        return f"{hidden_voice[0]} {hidden_voice[1]}"
     return None
 
 
@@ -207,6 +436,7 @@ def run_suite(
     environment: dict[str, str],
     trace_root: Path,
     known_operations: list[tuple[str, str]],
+    manifest: dict[tuple[str, str], dict[str, Any]],
 ) -> dict[str, Any]:
     relative = str(path.relative_to(ROOT))
     trace_path = trace_root / f"{path.stem}.jsonl"
@@ -240,38 +470,39 @@ def run_suite(
         for line in trace_path.read_text(encoding="utf-8").splitlines():
             event = json.loads(line)
             event["operation"] = canonical_operation(event["method"], event["path"], known_operations)
+            event["assertion"] = (
+                f"{relative}::{event['test']}" if event.get("test") else None
+            )
             requests.append(event)
     by_test: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for event in requests:
         if event["test"]:
-            by_test[event["test"].rsplit(".", 1)[-1]].append(event)
+            by_test[event["test"]].append(event)
         else:
             by_test[None].append(event)
     unattributed = by_test.get(None, [])
     failures = []
     for failure in failure_headings(log_text):
-        evidence = unattributed if failure["test"] == "setUpClass" else by_test.get(failure["test"], [])
+        test_id = failure["context"]
+        evidence = unattributed if failure["test"] == "setUpClass" else by_test.get(test_id, [])
         blockers = sorted({event["operation"] for event in evidence if event["status"] == 501 and event["operation"]})
         failure.update({
             "requests": evidence,
             "blocking501": blockers,
             "standard501Envelope": all(
-                event.get("body") == {"error": "Not implemented"}
+                valid_501_envelope(event, manifest)
                 for event in evidence if event["status"] == 501
             ),
         })
         failures.append(failure)
     for case in cases:
-        case_requests = by_test.get(case["test"], [])
+        case_requests = by_test.get(case["testId"], [])
         case["requests"] = case_requests
         case["blocking501"] = [
             event["operation"] for event in case_requests
             if event["status"] == 501 and event["operation"]
         ]
-        case["standard501Envelope"] = all(
-            event.get("body") == {"error": "Not implemented"}
-            for event in case_requests if event["status"] == 501
-        )
+        case["standard501Envelope"] = all(valid_501_envelope(event, manifest) for event in case_requests if event["status"] == 501)
     return {
         "suite": relative,
         "status": result.get("status", "failed"),
@@ -281,9 +512,47 @@ def run_suite(
         "exitCode": result.get("exitCode", process.returncode),
         "tests": cases,
         "failures": failures,
+        "requests": requests,
         "unattributedRequests": unattributed,
         **({"diagnostic": result["diagnostic"]} if "diagnostic" in result else {}),
     }
+
+
+def valid_501_envelope(event: dict[str, Any], manifest: dict[tuple[str, str], dict[str, Any]]) -> bool:
+    operation = event.get("operation")
+    if operation:
+        method, path = operation.split(" ", 1)
+        declared = manifest.get((method, path))
+        if declared and declared.get("status") == "partial":
+            dependencies = declared.get("dependencies", [])
+            return bool(dependencies) and event.get("body") == {
+                "error": f"Not implemented: requires {', '.join(dependencies)}"
+            }
+    return event.get("body") == {"error": "Not implemented"}
+
+
+def classify_observation(
+    status: int,
+    implementation: str,
+    schema_header_matches: bool,
+    standard_501_envelope: bool,
+    dependency_response_matches: bool,
+) -> str:
+    if not schema_header_matches or not standard_501_envelope or not dependency_response_matches:
+        return "unexpected"
+    if implementation == "unimplemented":
+        return "not_implemented" if status == 501 else "unexpected"
+    if implementation == "implemented":
+        if status >= 500:
+            return "unexpected"
+        return "implemented" if status < 400 else "unverified"
+    if implementation == "partial":
+        if status == 501:
+            return "partial"
+        if status >= 500:
+            return "unexpected"
+        return "partial" if status < 400 else "unverified"
+    return "unexpected"
 
 
 def main() -> int:
@@ -295,7 +564,27 @@ def main() -> int:
         parser.error("STUDIO_HTTP_BACKEND_COMMAND must name the Rust server executable")
 
     environment = os.environ.copy()
+    differential = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "workspaces/runtime/apps/server/src/codex_python.py"),
+            "--exec",
+            str(TESTS / "http_runtime_extractor_differential.py"),
+        ],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+    )
+    if differential.returncode:
+        raise RuntimeError("HTTP extractor differential contract failed")
+    trace_regression = subprocess.run(
+        [sys.executable, str(TESTS / "http_runtime_conformance_ledger_test.py")],
+        cwd=ROOT, env=environment, check=False,
+    )
+    if trace_regression.returncode:
+        raise RuntimeError("HTTP ledger error-body trace regression failed")
     routes = operations()
+    manifest = rust_operation_manifest()
     DEFAULT_CACHE.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="rust-http-traces-", dir=DEFAULT_CACHE) as trace_dir_name:
         trace_root = Path(trace_dir_name)
@@ -305,10 +594,23 @@ def main() -> int:
             os.pathsep + existing_pythonpath if existing_pythonpath else ""
         )
         suites = [
-            run_suite(path, environment, trace_root, routes)
+            run_suite(path, environment, trace_root, routes, manifest)
             for path in consumer_suites()
         ]
-    operations_result = probe_operations()
+    planned_assertions: dict[str, set[str]] = defaultdict(set)
+    known_operations = {f"{method} {path}" for method, path in operations()}
+    for operation, assertions in appendix_http_assertions(known_operations).items():
+        planned_assertions[operation].update(assertions)
+    successful_assertions: dict[str, set[str]] = defaultdict(set)
+    for suite in suites:
+        passing = {
+            f"{suite['suite']}::{test['testId']}"
+            for test in suite.get("tests", []) if test.get("status") == "ok"
+        }
+        for event in suite.get("requests", []):
+            if event.get("operation") and event.get("assertion") in passing and 200 <= event["status"] < 300:
+                successful_assertions[event["operation"]].add(event["assertion"])
+    operations_result = probe_operations(manifest, planned_assertions, successful_assertions)
     operation_tests: dict[str, set[str]] = defaultdict(set)
     failures_without_501: list[str] = []
     envelope_mismatches: list[str] = []
@@ -335,7 +637,10 @@ def main() -> int:
     totals = {
         "operations": len(operations_result),
         "implemented": sum(row["classification"] == "implemented" for row in operations_result),
+        "partial": sum(row["classification"] == "partial" for row in operations_result),
         "notImplemented": sum(row["classification"] == "not_implemented" for row in operations_result),
+        "unverified": sum(row["classification"] == "unverified" for row in operations_result),
+        "uncovered": sum(not row["covered"] for row in operations_result),
         "unexpected": sum(row["classification"] == "unexpected" for row in operations_result),
         "schemaHeaderMismatches": sum(not row["schemaHeaderMatches"] for row in operations_result),
         "suites": len(suites),
@@ -358,7 +663,7 @@ def main() -> int:
     }
     options.output.parent.mkdir(parents=True, exist_ok=True)
     options.output.write_text(json.dumps(ledger, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"totals": totals, "blockingOperationRanking": blocker_ranking}, sort_keys=True))
+    print(json.dumps({"totals": totals}, sort_keys=True))
     return 0
 
 

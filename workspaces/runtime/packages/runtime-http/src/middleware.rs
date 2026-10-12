@@ -1,5 +1,6 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, SocketAddr};
+use std::panic::AssertUnwindSafe;
 use std::time::Duration;
 
 use axum::body::{Body, to_bytes};
@@ -7,12 +8,13 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use serde_json::Value;
+use futures_util::FutureExt;
 use subtle::ConstantTimeEq;
 
-use crate::error::{error_response, with_api_headers};
+use crate::error::{ApiError, error_response, with_api_headers};
 use crate::router::HttpState;
 use crate::schema::{API_SCHEMA_HASH_HEADER, API_SCHEMA_MISMATCH_HEADER, api_schema_hash};
+use crate::validation::RawRequest;
 
 const DEFAULT_BODY_LIMIT: usize = 262_144;
 const ASSET_BODY_LIMIT: usize = 28 * 1024 * 1024;
@@ -30,7 +32,7 @@ pub(crate) async fn boundary(
     let api = path.starts_with("/api/");
     let write = !matches!(method, Method::GET | Method::HEAD | Method::OPTIONS);
     let headers = request.headers();
-    let request_id = headers.get("x-studio-request-id").cloned();
+    let mut parsed_body = None;
 
     let peer_loopback = request
         .extensions()
@@ -111,6 +113,13 @@ pub(crate) async fn boundary(
         };
         return error_response(StatusCode::FORBIDDEN, message);
     }
+    if api
+        && method == Method::HEAD
+        && !has_operation(Some("HEAD"), &path)
+        && has_operation(None, &path)
+    {
+        return error_response(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed");
+    }
     let renderer_hash = headers
         .get(API_SCHEMA_HASH_HEADER)
         .and_then(|value| value.to_str().ok());
@@ -122,123 +131,173 @@ pub(crate) async fn boundary(
         response
             .headers_mut()
             .insert(API_SCHEMA_MISMATCH_HEADER, HeaderValue::from_static("1"));
-        return with_api_headers(response, headers.get("x-studio-request-id"));
+        return response;
     }
     if write && matches!(method, Method::POST | Method::PUT | Method::PATCH) {
+        let has_json_schema = state
+            .validators
+            .has_body_schema(method.as_str(), &path)
+            .unwrap_or(false);
         let content_type = headers
             .get(header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        if !content_type
-            .split(';')
-            .next()
             .unwrap_or("")
-            .trim()
-            .eq_ignore_ascii_case("application/json")
-        {
-            return with_api_headers(
-                error_response(StatusCode::UNSUPPORTED_MEDIA_TYPE, "JSON required"),
-                headers.get("x-studio-request-id"),
-            );
-        }
+            .to_owned();
         let limit = request_limit(&path);
         let declared = match headers.get(header::CONTENT_LENGTH) {
-            None => {
-                return with_api_headers(
-                    error_response(StatusCode::PAYLOAD_TOO_LARGE, "Invalid request size"),
-                    headers.get("x-studio-request-id"),
-                );
-            }
+            None => None,
             Some(value) => match value
                 .to_str()
                 .ok()
                 .and_then(|text| text.parse::<usize>().ok())
             {
-                Some(size) => size,
+                Some(size) => Some(size),
                 None => {
-                    return with_api_headers(
-                        error_response(StatusCode::BAD_REQUEST, "Invalid request size"),
-                        headers.get("x-studio-request-id"),
-                    );
+                    return error_response(StatusCode::BAD_REQUEST, "Invalid request size");
                 }
             },
         };
-        if declared == 0 || declared > limit {
-            return with_api_headers(
-                error_response(StatusCode::PAYLOAD_TOO_LARGE, "Invalid request size"),
-                headers.get("x-studio-request-id"),
-            );
+        if declared.is_some_and(|size| size > limit) {
+            return error_response(StatusCode::PAYLOAD_TOO_LARGE, "Invalid request size");
         }
         let (parts, body) = request.into_parts();
         let bytes = match tokio::time::timeout(REQUEST_READ_TIMEOUT, to_bytes(body, limit)).await {
             Err(_) => {
-                return with_api_headers(
-                    error_response(StatusCode::REQUEST_TIMEOUT, "Request body timed out"),
-                    parts.headers.get("x-studio-request-id"),
-                );
+                return error_response(StatusCode::REQUEST_TIMEOUT, "Request body timed out");
             }
             Ok(Err(_)) => {
-                return with_api_headers(
-                    error_response(StatusCode::PAYLOAD_TOO_LARGE, "Invalid request size"),
-                    parts.headers.get("x-studio-request-id"),
-                );
+                return error_response(StatusCode::PAYLOAD_TOO_LARGE, "Invalid request size");
             }
             Ok(Ok(bytes)) => bytes,
         };
-        if bytes.is_empty() {
-            return with_api_headers(
-                error_response(StatusCode::PAYLOAD_TOO_LARGE, "Invalid request size"),
-                parts.headers.get("x-studio-request-id"),
-            );
+        if declared.is_some_and(|declared| bytes.len() != declared) {
+            return error_response(StatusCode::BAD_REQUEST, "Incomplete request");
         }
-        if bytes.len() != declared {
-            return with_api_headers(
-                error_response(StatusCode::BAD_REQUEST, "Incomplete request"),
-                parts.headers.get("x-studio-request-id"),
-            );
+        if !bytes.is_empty()
+            && !content_type
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .eq_ignore_ascii_case("application/json")
+        {
+            return ApiError::json_transport(StatusCode::UNSUPPORTED_MEDIA_TYPE, "JSON required")
+                .into_response();
         }
-        let federation = is_federation_path(&path);
-        if !federation {
-            match serde_json::from_slice::<Value>(&bytes) {
+        if has_json_schema && !bytes.is_empty() {
+            match crate::json_body::parse_bounded(&bytes, limit) {
                 Err(_) => {
-                    return with_api_headers(
-                        error_response(StatusCode::BAD_REQUEST, "Invalid JSON"),
-                        parts.headers.get("x-studio-request-id"),
-                    );
+                    return ApiError::validation(vec![serde_json::Value::String(
+                        "body".to_owned(),
+                    )])
+                    .into_response();
                 }
-                Ok(value) if !value.is_object() => {
-                    return with_api_headers(
-                        error_response(StatusCode::BAD_REQUEST, "JSON object required"),
-                        parts.headers.get("x-studio-request-id"),
-                    );
+                Ok(value) => {
+                    parsed_body = Some(value);
                 }
-                _ => {}
             }
         }
         request = Request::from_parts(parts, Body::from(bytes));
-        if !federation
-            && (path == "/api/sync/drafts" || request.headers().contains_key("x-canvas-workspace"))
+        if (path == "/api/sync/drafts" || request.headers().contains_key("x-canvas-workspace"))
             && request
                 .headers()
                 .get("x-canvas-workspace")
                 .and_then(|value| value.to_str().ok())
                 != Some(state.workspace_id.as_str())
         {
-            return with_api_headers(
-                error_response(
-                    StatusCode::CONFLICT,
-                    "The server workspace changed. Reload before sending.",
-                ),
-                request.headers().get("x-studio-request-id"),
+            return error_response(
+                StatusCode::CONFLICT,
+                "The server workspace changed. Reload before sending.",
             );
         }
     }
 
-    let mut response = next.run(request).await;
+    if api {
+        if let Some(template) = state.validators.template_for(method.as_str(), &path) {
+            let query = query_values(request.uri().query().unwrap_or_default());
+            let (header_values, invalid_headers) = validated_header_values(request.headers());
+            let raw = RawRequest {
+                body: parsed_body,
+                query,
+                headers: header_values,
+                invalid_headers,
+            };
+            match state
+                .validators
+                .validate_route(method.as_str(), &template, raw)
+            {
+                Ok(validated) => {
+                    request.extensions_mut().insert(validated);
+                }
+                Err(errors) => {
+                    return ApiError::validation(errors.location).into_response();
+                }
+            }
+        } else if method != Method::GET
+            && has_operation(None, &path)
+            && !has_operation(Some(method.as_str()), &path)
+        {
+            return error_response(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed");
+        }
+    }
+
+    next.run(request).await
+}
+
+pub(crate) fn validated_header_values(
+    source: &HeaderMap,
+) -> (BTreeMap<String, Vec<String>>, BTreeSet<String>) {
+    let mut values = BTreeMap::<String, Vec<String>>::new();
+    let mut invalid = BTreeSet::new();
+    for (name, value) in source {
+        let name = name.as_str().to_ascii_lowercase();
+        match value.to_str() {
+            Ok(value) => values.entry(name).or_default().push(value.to_owned()),
+            Err(_) => {
+                invalid.insert(name);
+            }
+        }
+    }
+    (values, invalid)
+}
+
+fn has_operation(method: Option<&str>, path: &str) -> bool {
+    crate::schema::operations().is_ok_and(|operations| {
+        crate::schema::matching_template(
+            operations
+                .iter()
+                .map(|(operation_method, template)| (operation_method.as_str(), template.as_str())),
+            method,
+            path,
+        )
+        .is_some()
+    })
+}
+
+pub(crate) async fn response_safety(request: Request<Body>, next: Next) -> Response {
+    let api = request.uri().path().starts_with("/api/");
+    let request_id = request.headers().get("x-studio-request-id").cloned();
+    let mut response = AssertUnwindSafe(next.run(request))
+        .catch_unwind()
+        .await
+        .unwrap_or_else(|_| {
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
+        });
     if api {
         response = with_api_headers(response, request_id.as_ref());
     }
     response
+}
+
+fn query_values(query: &str) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut values = std::collections::BTreeMap::<String, Vec<String>>::new();
+    for (name, value) in form_urlencoded::parse(query.as_bytes()) {
+        values
+            .entry(name.into_owned())
+            .or_default()
+            .push(value.into_owned());
+    }
+    values
 }
 
 pub(crate) fn trusted(
@@ -432,7 +491,7 @@ fn frame_account_origin(headers: &HeaderMap, host: &str, port: u16) -> bool {
     true
 }
 
-fn request_limit(path: &str) -> usize {
+pub(crate) fn request_limit(path: &str) -> usize {
     match path {
         "/api/assets" => ASSET_BODY_LIMIT,
         "/api/voice/audio" | "/api/projects" => VOICE_BODY_LIMIT,
@@ -441,5 +500,49 @@ fn request_limit(path: &str) -> usize {
         | "/api/federation/v1/message"
         | "/api/federation/v1/pull" => FEDERATION_BODY_LIMIT,
         _ => DEFAULT_BODY_LIMIT,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::Router;
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Request, StatusCode};
+    use axum::middleware::from_fn;
+    use axum::routing::get;
+    use serde_json::Value;
+    use tower::ServiceExt;
+
+    use super::response_safety;
+
+    async fn panic_handler() -> &'static str {
+        panic!("test handler panic")
+    }
+
+    #[tokio::test]
+    async fn panic_is_converted_to_the_common_server_error_envelope() {
+        let app = Router::new()
+            .route("/api/panic", get(panic_handler))
+            .layer(from_fn(response_safety));
+        let request = Request::builder()
+            .uri("/api/panic")
+            .header("x-studio-request-id", "request-1")
+            .body(Body::empty())
+            .expect("request builds");
+        let response = app.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.headers()["x-studio-request-id"], "request-1");
+        assert!(
+            response
+                .headers()
+                .contains_key(crate::schema::API_SCHEMA_HASH_HEADER)
+        );
+        let body: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 1024)
+                .await
+                .expect("body reads"),
+        )
+        .expect("JSON error envelope");
+        assert_eq!(body, serde_json::json!({"error":"Internal server error"}));
     }
 }

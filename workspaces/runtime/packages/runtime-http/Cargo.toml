@@ -7,8 +7,12 @@ publish.workspace = true
 
 [dependencies]
 axum = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
+form_urlencoded = { workspace = true }
+jsonschema = { workspace = true }
+futures-util = { workspace = true }
 serde_json = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_path_to_error = { workspace = true }
 sha2 = { workspace = true }
 studio-runtime-services = { path = "../runtime-services" }
 subtle = { workspace = true }
@@ -17,6 +21,9 @@ tokio = { workspace = true }
 [build-dependencies]
 openapi-to-rust = { version = "=0.22.0", default-features = false }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true }
 
 [lints]
 workspace = true

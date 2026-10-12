@@ -4,7 +4,6 @@ use std::fs;
 use std::path::PathBuf;
 
 use openapi_to_rust::{CodeGenerator, GeneratorConfig, SchemaAnalyzer};
-
 fn main() -> Result<(), Box<dyn Error>> {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
     let spec_path = manifest_dir.join("openapi.json");

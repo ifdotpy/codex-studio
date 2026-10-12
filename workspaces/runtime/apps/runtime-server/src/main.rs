@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         state_dir,
         address.port(),
         public_origin,
-    ));
+    ))?;
     println!("Codex Canvas: http://{}:{}", address.ip(), address.port());
     axum::serve(
         listener,

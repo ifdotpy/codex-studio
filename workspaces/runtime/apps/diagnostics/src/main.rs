@@ -18,11 +18,13 @@ fn main() {
     };
 
     match fetch_diagnostics(port) {
-        Ok(value) => {
-            let mut output = String::new();
-            format_python_json(&value, 0, &mut output);
-            println!("{output}");
-        }
+        Ok(value) => match serde_json::to_string_pretty(&value) {
+            Ok(output) => println!("{output}"),
+            Err(error) => {
+                eprintln!("codex-diagnostics: invalid JSON response: {error}");
+                std::process::exit(1);
+            }
+        },
         Err(error) => {
             eprintln!("codex-diagnostics: {error}");
             std::process::exit(1);
@@ -209,187 +211,39 @@ fn format_http_error(error: &io::Error) -> String {
     }
 }
 
-fn format_python_json(value: &Value, depth: usize, output: &mut String) {
-    match value {
-        Value::Null => output.push_str("null"),
-        Value::Bool(value) => output.push_str(if *value { "true" } else { "false" }),
-        Value::Number(number) => {
-            let raw = number.to_string();
-            if raw.contains(['.', 'e', 'E']) {
-                if let Ok(float) = raw.parse::<f64>() {
-                    output.push_str(&python_float(float));
-                } else {
-                    output.push_str(&raw);
-                }
-            } else if raw == "-0" {
-                output.push('0');
-            } else {
-                output.push_str(&raw);
-            }
-        }
-        Value::String(value) => format_string(value, output),
-        Value::Array(values) => {
-            if values.is_empty() {
-                output.push_str("[]");
-            } else {
-                output.push_str("[\n");
-                for (index, value) in values.iter().enumerate() {
-                    indent(depth + 1, output);
-                    format_python_json(value, depth + 1, output);
-                    if index + 1 < values.len() {
-                        output.push(',');
-                    }
-                    output.push('\n');
-                }
-                indent(depth, output);
-                output.push(']');
-            }
-        }
-        Value::Object(values) => {
-            if values.is_empty() {
-                output.push_str("{}");
-            } else {
-                output.push_str("{\n");
-                for (index, (key, value)) in values.iter().enumerate() {
-                    indent(depth + 1, output);
-                    format_string(key, output);
-                    output.push_str(": ");
-                    format_python_json(value, depth + 1, output);
-                    if index + 1 < values.len() {
-                        output.push(',');
-                    }
-                    output.push('\n');
-                }
-                indent(depth, output);
-                output.push('}');
-            }
-        }
-    }
-}
-
-fn indent(depth: usize, output: &mut String) {
-    for _ in 0..depth * 2 {
-        output.push(' ');
-    }
-}
-
-fn format_string(value: &str, output: &mut String) {
-    output.push('"');
-    for character in value.chars() {
-        match character {
-            '"' => output.push_str("\\\""),
-            '\\' => output.push_str("\\\\"),
-            '\u{08}' => output.push_str("\\b"),
-            '\u{0c}' => output.push_str("\\f"),
-            '\n' => output.push_str("\\n"),
-            '\r' => output.push_str("\\r"),
-            '\t' => output.push_str("\\t"),
-            character
-                if (character as u32) <= 0x1f || (0x7f..=0xff).contains(&(character as u32)) =>
-            {
-                output.push_str(&format!("\\u{:04x}", character as u32));
-            }
-            character if character.is_ascii() => output.push(character),
-            character if (character as u32) <= 0xffff => {
-                output.push_str(&format!("\\u{:04x}", character as u32));
-            }
-            character => {
-                let scalar = character as u32 - 0x1_0000;
-                let high = 0xd800 + (scalar >> 10);
-                let low = 0xdc00 + (scalar & 0x3ff);
-                output.push_str(&format!("\\u{high:04x}\\u{low:04x}"));
-            }
-        }
-    }
-    output.push('"');
-}
-
-fn python_float(value: f64) -> String {
-    if value.is_nan() {
-        return "NaN".to_owned();
-    }
-    if value == f64::INFINITY {
-        return "Infinity".to_owned();
-    }
-    if value == f64::NEG_INFINITY {
-        return "-Infinity".to_owned();
-    }
-    if value == 0.0 {
-        return if value.is_sign_negative() {
-            "-0.0"
-        } else {
-            "0.0"
-        }
-        .to_owned();
-    }
-    let absolute = value.abs();
-    let mut rendered = if !(1e-4..1e16).contains(&absolute) {
-        format!("{value:?}")
-    } else {
-        let decimal = value.to_string();
-        if decimal.contains(['.', 'e', 'E']) {
-            decimal
-        } else {
-            format!("{decimal}.0")
-        }
-    };
-    rendered = normalize_exponent(rendered);
-    rendered
-}
-
-fn normalize_exponent(mut rendered: String) -> String {
-    let Some(index) = rendered.find('e') else {
-        return rendered;
-    };
-    let exponent = rendered[index + 1..].parse::<i32>().unwrap_or(0);
-    rendered.truncate(index);
-    rendered.push('e');
-    if exponent >= 0 {
-        rendered.push('+');
-    } else {
-        rendered.push('-');
-    }
-    let digits = exponent.unsigned_abs();
-    if digits < 10 {
-        rendered.push('0');
-    }
-    rendered.push_str(&digits.to_string());
-    rendered
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{format_python_json, parse_port, python_float};
+    use super::parse_port;
     use serde_json::Value;
     use std::io::{BufRead, Write};
     use std::time::Duration;
 
     #[test]
-    fn formatter_matches_python_json_dump_golden() {
+    fn formatter_matches_json_golden() {
         let input = include_str!("../tests/fixtures/formatter-input.json");
         let expected = include_str!("../tests/fixtures/formatter-output.txt");
         let parsed: Value = serde_json::from_str(input).expect("test fixture is valid JSON");
-        let mut actual = String::new();
-        format_python_json(&parsed, 0, &mut actual);
-        assert_eq!(format!("{actual}\n"), expected);
-    }
-
-    #[test]
-    fn formatter_preserves_python_float_spellings() {
-        for (input, expected) in [
-            ("1.0", "1.0"),
-            ("-0.0", "-0.0"),
-            ("1e+06", "1000000.0"),
-            ("1e+16", "1e+16"),
-            ("1e-05", "1e-05"),
-            ("1e-04", "0.0001"),
-            ("1e400", "Infinity"),
-            ("-1e400", "-Infinity"),
-            ("1e-4000", "0.0"),
-        ] {
-            let value = input.parse::<f64>().expect("valid float literal");
-            assert_eq!(python_float(value), expected, "{input}");
-        }
+        assert_eq!(
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&parsed).expect("fixture serializes")
+            ),
+            expected
+        );
+        assert_eq!(parsed["i64-min"].as_i64(), Some(i64::MIN));
+        assert_eq!(parsed["u64-max"].as_u64(), Some(u64::MAX));
+        assert_eq!(
+            parsed["u64-overflow"].as_f64(),
+            Some(18_446_744_073_709_551_616_f64)
+        );
+        assert_eq!(
+            parsed["u64-overflow-plus-one"].as_f64(),
+            Some(18_446_744_073_709_551_616_f64)
+        );
+        assert_eq!(
+            parsed["i64-underflow"].as_f64(),
+            Some(-9_223_372_036_854_775_809_f64)
+        );
     }
 
     #[test]

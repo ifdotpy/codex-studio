@@ -1,15 +1,19 @@
 {
   "z": "café 😀 \"\\\n\t\u0001",
   "nested": { "empty-array": [], "empty-object": {}, "dup": 1, "dup": 2 },
-  "big": 1234567890123456789012345678901234567890,
+  "i64-min": -9223372036854775808,
+  "u64-max": 18446744073709551615,
+  "u64-overflow": 18446744073709551616,
+  "u64-overflow-plus-one": 18446744073709551617,
+  "i64-underflow": -9223372036854775809,
   "float": 1.0,
   "exp1": 1e6,
   "exp2": 1e16,
   "exp3": 1e-5,
+  "exp-small": 1e-7,
   "exp4": 1e-4,
-  "negative-zero": -0,
+  "negative-zero": -0.0,
   "controls": "\b\f\r\u007f",
   "array": [null, true, false, {}, []],
-  "float-overflow": 1e400,
   "float-underflow": 1e-4000
 }

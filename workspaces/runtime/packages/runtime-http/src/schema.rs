@@ -40,40 +40,38 @@ static OPERATIONS: OnceLock<Result<BTreeSet<(String, String)>, serde_json::Error
 pub const API_SCHEMA_HASH_HEADER: &str = "X-Studio-API-Schema";
 pub const API_SCHEMA_MISMATCH_HEADER: &str = "X-Studio-API-Schema-Mismatch";
 
+pub(crate) fn path_matches(template: &str, path: &str) -> bool {
+    let mut expected = template.split('/');
+    let mut actual = path.split('/');
+    loop {
+        match (expected.next(), actual.next()) {
+            (Some(expected), Some(actual)) if expected.starts_with('{') || expected == actual => {}
+            (Some(_), Some(_)) => return false,
+            (None, None) => return true,
+            _ => return false,
+        }
+    }
+}
+
+pub(crate) fn matching_template<'a>(
+    operations: impl Iterator<Item = (&'a str, &'a str)>,
+    method: Option<&str>,
+    path: &str,
+) -> Option<&'a str> {
+    operations
+        .filter(|(candidate, _)| method.is_none_or(|method| *candidate == method))
+        .find_map(|(_, template)| path_matches(template, path).then_some(template))
+}
+
 fn document() -> &'static Value {
     DOCUMENT.get_or_init(|| {
         serde_json::from_slice(OPENAPI_DOCUMENT).expect("committed OpenAPI document is valid JSON")
     })
 }
 
-fn strip_documentation(value: &Value) -> Value {
-    match value {
-        Value::Array(items) => Value::Array(items.iter().map(strip_documentation).collect()),
-        Value::Object(object) => {
-            let mut canonical = Map::new();
-            for (key, item) in object {
-                if DOCUMENTATION_KEYS.contains(&key.as_str()) {
-                    continue;
-                }
-                let mut child = match key.as_str() {
-                    "default" => item.clone(),
-                    "components" => strip_components(item),
-                    name if NAME_KEYED_MAPS.contains(&name) => strip_named_map(item),
-                    _ => strip_documentation(item),
-                };
-                if matches!(key.as_str(), "anyOf" | "oneOf")
-                    && let Value::Array(members) = &mut child
-                {
-                    members.sort_by_cached_key(|member| {
-                        serde_json::to_string(member).expect("JSON value serializes")
-                    });
-                }
-                canonical.insert(key.clone(), child);
-            }
-            Value::Object(canonical)
-        }
-        _ => value.clone(),
-    }
+#[cfg(test)]
+pub(crate) fn openapi_document() -> &'static Value {
+    document()
 }
 
 fn strip_named_map(value: &Value) -> Value {
@@ -105,6 +103,36 @@ fn strip_components(value: &Value) -> Value {
             })
             .collect(),
     )
+}
+
+fn strip_documentation(value: &Value) -> Value {
+    match value {
+        Value::Array(items) => Value::Array(items.iter().map(strip_documentation).collect()),
+        Value::Object(object) => {
+            let mut canonical = Map::new();
+            for (key, item) in object {
+                if DOCUMENTATION_KEYS.contains(&key.as_str()) {
+                    continue;
+                }
+                let mut child = match key.as_str() {
+                    "default" => item.clone(),
+                    "components" => strip_components(item),
+                    name if NAME_KEYED_MAPS.contains(&name) => strip_named_map(item),
+                    _ => strip_documentation(item),
+                };
+                if matches!(key.as_str(), "anyOf" | "oneOf")
+                    && let Value::Array(members) = &mut child
+                {
+                    members.sort_by_cached_key(|member| {
+                        serde_json::to_string(member).expect("JSON value serializes")
+                    });
+                }
+                canonical.insert(key.clone(), child);
+            }
+            Value::Object(canonical)
+        }
+        _ => value.clone(),
+    }
 }
 
 /// Canonicalizer-v3 byte representation used by the Python exporter.

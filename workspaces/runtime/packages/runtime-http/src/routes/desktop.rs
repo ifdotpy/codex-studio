@@ -4,6 +4,16 @@ use serde_json::{Value, json};
 
 use crate::router::HttpState;
 
+use super::manifest::{OperationStatus, RouteGroup, get as register_get};
+
+pub(crate) fn routes() -> RouteGroup {
+    RouteGroup::new(vec![register_get(
+        "/api/desktop",
+        OperationStatus::Implemented,
+        get,
+    )])
+}
+
 pub(crate) async fn get(State(state): State<HttpState>) -> Json<Value> {
     Json(status(&state))
 }

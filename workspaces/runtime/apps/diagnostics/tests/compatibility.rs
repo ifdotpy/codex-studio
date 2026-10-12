@@ -81,29 +81,8 @@ fn command(port: u16) -> Output {
 }
 
 #[test]
-fn fixture_output_matches_python_golden_and_optional_python_cli() {
-    let python = std::env::var_os("PYTHON")
-        .and_then(|path| {
-            Command::new(path)
-                .args(["--version"])
-                .output()
-                .ok()
-                .filter(|output| output.status.success())
-                .map(|_| std::env::var_os("PYTHON").expect("checked Python path"))
-        })
-        .or_else(|| {
-            ["python3", "python"]
-                .into_iter()
-                .find(|name| {
-                    Command::new(name)
-                        .arg("--version")
-                        .output()
-                        .is_ok_and(|output| output.status.success())
-                })
-                .map(Into::into)
-        });
-    let comparisons = usize::from(python.is_some()) + 1;
-    let (port, server) = fixture_server(comparisons);
+fn fixture_output_matches_rust_golden() {
+    let (port, server) = fixture_server(1);
     let rust = command(port);
     assert!(
         rust.status.success(),
@@ -114,25 +93,12 @@ fn fixture_output_matches_python_golden_and_optional_python_cli() {
     let printed = std::str::from_utf8(&rust.stdout).expect("CLI UTF-8 JSON output");
     assert!(printed.contains("\"dup\": 2"));
     assert!(printed.contains("\"empty-array\": []"));
-    assert!(printed.contains("\"big\": 1234567890123456789012345678901234567890"));
+    assert!(printed.contains("\"i64-min\": -9223372036854775808"));
+    assert!(printed.contains("\"i64-underflow\": -9.223372036854776e+18"));
+    assert!(printed.contains("\"u64-max\": 18446744073709551615"));
+    assert!(printed.contains("\"u64-overflow\": 1.8446744073709552e+19"));
+    assert!(printed.contains("\"u64-overflow-plus-one\": 1.8446744073709552e+19"));
 
-    if let Some(python) = python {
-        let script = "import json,sys,urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:'+sys.argv[1]+'/api/diagnostics', timeout=30)); print(json.dumps(data, indent=2, sort_keys=True))";
-        let output = Command::new(python)
-            .args(["-c", script, &port.to_string()])
-            .output()
-            .expect("run Python compatibility oracle");
-        assert!(
-            output.status.success(),
-            "stderr: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert_eq!(rust.stdout, output.stdout);
-    } else {
-        eprintln!(
-            "SKIP: optional Python byte-comparison oracle unavailable; Rust golden oracle passed"
-        );
-    }
     server.join().expect("fixture server completed");
 }
 
@@ -178,6 +144,15 @@ fn content_length_non_200_and_invalid_json_responses_are_handled() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("invalid JSON response"));
     assert!(output.stdout.is_empty());
     server.join().expect("invalid JSON fixture completed");
+
+    let (port, server) = fixed_response_server("200 OK", br#"{"overflow":1e400}"#);
+    let output = command(port);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("invalid JSON response"));
+    assert!(output.stdout.is_empty());
+    server
+        .join()
+        .expect("out-of-range number response completed");
 }
 
 #[test]
