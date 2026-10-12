@@ -1,0 +1,150 @@
+mod path;
+mod records;
+mod schema;
+
+use std::fs::{File, OpenOptions};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior};
+use thiserror::Error;
+
+pub use path::resolve_state_dir;
+pub use records::{
+    AgentId, AgentRecord, AgentRepository, AgentStatus, ChatMessage, ChatMessageId,
+    MessageRepository, QueueEvent, QueueEventId, QueueEventRepository, TaskId, TaskRecord,
+    TaskRepository, WorkStatus,
+};
+
+const DATABASE_BUSY_TIMEOUT_MS: u32 = 15_000;
+
+#[derive(Debug, Error)]
+pub enum StoreError {
+    #[error("state directory is unavailable: {0}")]
+    StateDirectory(#[from] std::io::Error),
+    #[error("another runtime owns the state directory")]
+    AlreadyOwned,
+    #[error("state database is missing: {0}")]
+    MissingDatabase(PathBuf),
+    #[error("state directory cannot be inside .claude")]
+    UnsafeStateDirectory,
+    #[error("database schema or migration markers do not match the committed snapshot: {0}")]
+    SchemaMismatch(String),
+    #[error("SQLite operation failed: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+    #[error("SQLite commit outcome is unknown: {0}")]
+    CommitOutcomeUnknown(rusqlite::Error),
+    #[error("stored JSON record is invalid: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("runtime store writer mutex was poisoned")]
+    WriterPoisoned,
+}
+
+pub type StoreResult<T> = Result<T, StoreError>;
+
+/// Exclusive process lease compatible with Python's runtime lock on Unix.
+pub struct RuntimeLock {
+    _file: File,
+}
+
+impl RuntimeLock {
+    pub fn acquire(state_dir: &Path) -> StoreResult<Self> {
+        let lock_path = state_dir.join("runtime.lock");
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(lock_path)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Self { _file: file }),
+            Err(std::fs::TryLockError::WouldBlock) => Err(StoreError::AlreadyOwned),
+            Err(std::fs::TryLockError::Error(error)) => Err(StoreError::StateDirectory(error)),
+        }
+    }
+}
+
+/// Owns the runtime process lock and serializes all Rust writes.
+pub struct RuntimeStore {
+    root: PathBuf,
+    _runtime_lock: RuntimeLock,
+    writer: Mutex<Connection>,
+}
+
+impl RuntimeStore {
+    /// Open an existing state directory without creating databases or tables.
+    pub fn open(state_dir: Option<&Path>) -> StoreResult<Self> {
+        let root = match state_dir {
+            Some(path) => path::resolve_explicit_state_dir(path)?,
+            None => resolve_state_dir()?,
+        };
+        let runtime_lock = RuntimeLock::acquire(&root)?;
+
+        let canvas_path = root.join("canvas.sqlite3");
+        let analytics_path = root.join("analytics.sqlite3");
+        for database in [&canvas_path, &analytics_path] {
+            if !database.is_file() {
+                return Err(StoreError::MissingDatabase(database.clone()));
+            }
+        }
+        schema::verify(&canvas_path, &analytics_path)?;
+
+        let writer = open_database(&canvas_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        writer.pragma_update(None, "synchronous", "FULL")?;
+        Ok(Self {
+            root,
+            _runtime_lock: runtime_lock,
+            writer: Mutex::new(writer),
+        })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Run one durable transaction while holding the sole serialized writer.
+    pub fn transaction<T>(
+        &self,
+        operation: impl FnOnce(&Transaction<'_>) -> StoreResult<T>,
+    ) -> StoreResult<T> {
+        let mut writer = self.writer.lock().map_err(|_| StoreError::WriterPoisoned)?;
+        let transaction = writer.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        match operation(&transaction) {
+            Ok(value) => {
+                transaction
+                    .commit()
+                    .map_err(StoreError::CommitOutcomeUnknown)?;
+                Ok(value)
+            }
+            Err(error) => {
+                transaction.rollback()?;
+                Err(error)
+            }
+        }
+    }
+
+    /// Open an independent read-only, query-only connection to the main DB.
+    pub fn read(&self) -> StoreResult<Connection> {
+        let connection = open_database(
+            &self.root.join("canvas.sqlite3"),
+            OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        connection.pragma_update(None, "query_only", "ON")?;
+        Ok(connection)
+    }
+
+    pub fn verify_schema(&self) -> StoreResult<()> {
+        schema::verify(
+            &self.root.join("canvas.sqlite3"),
+            &self.root.join("analytics.sqlite3"),
+        )
+    }
+}
+
+fn open_database(path: &Path, flags: OpenFlags) -> StoreResult<Connection> {
+    let connection = Connection::open_with_flags(path, flags)?;
+    connection.busy_timeout(std::time::Duration::from_millis(u64::from(
+        DATABASE_BUSY_TIMEOUT_MS,
+    )))?;
+    Ok(connection)
+}
