@@ -1,5 +1,6 @@
 //! Read and update durable rule records.
 
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -10,9 +11,9 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use serde_json::{Map, Number, Value, json};
+use serde_json::{Number, Value, json};
 use studio_runtime_services::rules::{self, RulesError};
-use studio_runtime_store::RulesRepository;
+use studio_runtime_store::{RulesRepository, StoreError};
 
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -43,7 +44,7 @@ pub(crate) async fn list(State(state): State<HttpState>) -> Result<Json<Value>, 
             .map(|mut rule| {
                 let dto =
                     serde_json::from_str::<crate::generated::RuleRecordResponse>(&rule.record)
-                        .map_err(|_| invalid_stored_rule(&rule.id))?;
+                        .map_err(|_| invalid_rule(&rule.id))?;
                 rule.record = serde_json::to_string(&dto).map_err(|_| ApiError::internal())?;
                 Ok(rule)
             })
@@ -70,237 +71,157 @@ async fn update(
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let now = now_seconds()?;
     let action = string(&body, "action").unwrap_or("save").to_owned();
-    let agent_id = string(&body, "agent")
-        .ok_or_else(|| located("agent"))?
-        .to_owned();
+    let agent_id = string(&body, "agent").unwrap_or_default().to_owned();
     let supplied_id = string(&body, "id").map(str::to_owned);
     let rule_id = supplied_id.unwrap_or_else(new_rule_id);
     let result = store
         .transaction(|transaction| {
-            let result = (|| {
-                let agent = RulesRepository::agent(transaction, &agent_id)
-                    .map_err(store_api_error)?
-                    .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown agent"))?;
-                let agent_value = serde_json::from_str::<Value>(&agent.record)
-                    .map_err(|_| invalid_agent(&agent.id))?;
-                validate_agent(&agent.id, &agent_value)?;
-                let old = RulesRepository::get(transaction, &rule_id).map_err(store_api_error)?;
-                if let Some(old) = &old {
-                    let old_value = serde_json::from_str::<Value>(&old.record)
-                        .map_err(|_| invalid_rule(&old.id))?;
-                    if string(&old_value, "id") != Some(old.id.as_str()) {
-                        return Err(invalid_rule(&old.id));
-                    }
-                    if string(&old_value, "agent") != Some(agent_id.as_str()) {
-                        return Err(ApiError::new(
-                            StatusCode::BAD_REQUEST,
-                            "This rule belongs to another agent",
-                        ));
-                    }
-                    if old_value.get("inFlight").and_then(Value::as_bool) == Some(true)
-                        || RulesRepository::has_active_check(transaction, &rule_id)
-                            .map_err(store_api_error)?
-                    {
-                        return Err(active_check_error());
-                    }
+            let agent = RulesRepository::agent(transaction, &agent_id)
+                .map_err(store_api_error)?
+                .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown agent"))?;
+            let agent_value = serde_json::from_str::<Value>(&agent.record)
+                .map_err(|_| invalid_agent(&agent.id))?;
+            validate_agent(&agent.id, &agent_value)?;
+            let old = RulesRepository::get(transaction, &rule_id).map_err(store_api_error)?;
+            let old_value = old
+                .as_ref()
+                .map(|old| serde_json::from_str::<Value>(&old.record).map_err(|_| invalid_rule(&old.id)))
+                .transpose()?;
+            if let (Some(old), Some(value)) = (&old, &old_value) {
+                if string(value, "id") != Some(old.id.as_str()) {
+                    return Err(invalid_rule(&old.id));
                 }
-
-                match action.as_str() {
-                    "delete" | "pause" | "resume" => {
-                        let Some(old) = old else {
-                            return Err(ApiError::new(StatusCode::BAD_REQUEST, "Unknown rule"));
-                        };
-                        let mut value = serde_json::from_str::<Value>(&old.record)
-                            .map_err(|_| invalid_rule(&old.id))?;
-                        if action == "delete" {
-                            RulesRepository::delete(transaction, &rule_id)
-                                .map_err(store_api_error)?;
-                            return Ok(json!({"deleted": rule_id}));
+                if string(value, "agent") != Some(agent_id.as_str()) {
+                    return Err(ApiError::new(StatusCode::BAD_REQUEST, "This rule belongs to another agent"));
+                }
+            }
+            if action == "save" && old_value.as_ref().and_then(|v| v.get("inFlight")).and_then(Value::as_bool) == Some(true) {
+                return Err(ApiError::new(StatusCode::BAD_REQUEST, "Pause the rule and wait for its current check before editing"));
+            }
+            if action == "resume" && old_value.as_ref().and_then(|v| v.get("inFlight")).and_then(Value::as_bool) == Some(true) {
+                return Err(ApiError::new(StatusCode::BAD_REQUEST, "Wait for the current rule check before resuming"));
+            }
+            let result = match action.as_str() {
+                "delete" | "pause" | "resume" => {
+                    let (Some(old), Some(mut value)) = (old, old_value) else {
+                        return Err(ApiError::new(StatusCode::BAD_REQUEST, "Unknown rule"));
+                    };
+                    if action == "delete" {
+                        if RulesRepository::has_active_check(transaction, &rule_id).map_err(store_api_error)? {
+                            return Err(active_check_error());
                         }
-                        if action == "resume"
-                            && agent_value.get("autoWake").and_then(Value::as_bool) != Some(true)
+                        RulesRepository::delete(transaction, &rule_id).map_err(store_api_error)?;
+                        json!({"deleted": rule_id})
+                    } else {
+                        if action == "resume" && agent_value.get("autoWake").and_then(Value::as_bool) != Some(true) {
+                            return Err(ApiError::new(StatusCode::BAD_REQUEST, "Resume the agent before its rules"));
+                        }
+                        if let Some(object) = value.as_object_mut() { object.remove("restartCheck"); }
+                        let desired = if action == "resume" { "active" } else { "paused" };
+                        if string(&value, "kind") == Some("low_workers")
+                            && string(&value, "status") == Some(desired)
+                            && value.get("epoch") == agent_value.get("epoch")
                         {
-                            return Err(ApiError::new(
-                                StatusCode::BAD_REQUEST,
-                                "Resume the agent before its rules",
-                            ));
-                        }
-                        let interval = value
-                            .get("intervalSeconds")
-                            .and_then(Value::as_f64)
-                            .unwrap_or(60.0);
-                        let low_workers = string(&value, "kind") == Some("low_workers");
-                        if let Some(object) = value.as_object_mut() {
-                            object.remove("restartCheck");
-                            object.insert(
-                                "status".to_owned(),
-                                Value::String(if action == "resume" {
-                                    "active".to_owned()
-                                } else {
-                                    "paused".to_owned()
-                                }),
-                            );
-                            object.insert("epoch".to_owned(), agent_value["epoch"].clone());
-                            object.insert("nextAt".to_owned(), number(now + interval)?);
-                            object.insert("error".to_owned(), Value::Null);
-                            if low_workers {
-                                object.insert("lowSince".to_owned(), Value::Null);
-                                object.insert("alerted".to_owned(), Value::Bool(false));
-                            }
-                        }
-                        let stored =
-                            serde_json::to_string(&value).map_err(|_| ApiError::internal())?;
-                        RulesRepository::put(transaction, &rule_id, &stored)
-                            .map_err(store_api_error)?;
-                        Ok(value)
-                    }
-                    "save" => {
-                        let kind = string(&body, "kind").unwrap_or("interval");
-                        let command = string(&body, "command").unwrap_or("");
-                        let path = string(&body, "path");
-                        let liveness = string(&body, "livenessCommand").unwrap_or("");
-                        if kind == "low_workers" && !command.is_empty() {
-                            return Err(located("command"));
-                        }
-                        if kind == "file" && path.is_none_or(|path| path.trim().is_empty()) {
-                            return Err(located("path"));
-                        }
-                        if !liveness.is_empty() && kind != "file" {
-                            return Err(located("livenessCommand"));
-                        }
-                        if kind == "low_workers"
-                            && agent_value.get("isLead").and_then(Value::as_bool) != Some(true)
-                        {
-                            return Err(ApiError::new(
-                                StatusCode::BAD_REQUEST,
-                                "Only an orchestrator can own a low-worker alert",
-                            ));
-                        }
-                        let interval = body
-                            .get("intervalSeconds")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(60);
-                        let at = body
-                            .get("at")
-                            .and_then(Value::as_f64)
-                            .unwrap_or(now + interval as f64);
-                        if !(now - 1.0..=now + 31_536_000.0).contains(&at) {
-                            return Err(located("at"));
-                        }
-                        let stall_timeout = body
-                            .get("stallTimeoutSeconds")
-                            .or_else(|| body.get("stall_timeout_seconds"))
-                            .and_then(Value::as_u64)
-                            .unwrap_or(1800);
-                        let text = string(&body, "text")
-                            .unwrap_or("Check this event and continue the original task.")
-                            .trim();
-                        if text.is_empty() {
-                            return Err(located("text"));
-                        }
-                        let mut record = match &old {
-                            Some(old) => serde_json::from_str::<Value>(&old.record)
-                                .map_err(|_| invalid_rule(&old.id))?
-                                .as_object()
-                                .cloned()
-                                .ok_or_else(|| invalid_rule(&old.id))?,
-                            None => Map::new(),
-                        };
-                        record.insert("id".to_owned(), Value::String(rule_id.clone()));
-                        record.insert("agent".to_owned(), Value::String(agent_id.clone()));
-                        record.insert(
-                            "rootId".to_owned(),
-                            agent_value
-                                .get("rootId")
-                                .cloned()
-                                .unwrap_or_else(|| Value::String(agent_id.clone())),
-                        );
-                        record.insert("epoch".to_owned(), agent_value["epoch"].clone());
-                        record.insert("name".to_owned(), trimmed_text(&body, "name")?);
-                        record.insert("kind".to_owned(), Value::String(kind.to_owned()));
-                        record.insert("intervalSeconds".to_owned(), json!(interval));
-                        record.insert("nextAt".to_owned(), number(at)?);
-                        record.insert("at".to_owned(), number(at)?);
-                        record.insert(
-                            "path".to_owned(),
-                            if kind == "file" {
-                                path.map_or(Value::Null, |v| json!(v.trim()))
-                            } else {
-                                Value::Null
-                            },
-                        );
-                        record.insert(
-                            "event".to_owned(),
-                            json!(string(&body, "event").unwrap_or("worker_completed")),
-                        );
-                        record.insert("command".to_owned(), json!(command.trim()));
-                        record.insert(
-                            "stallTimeoutSeconds".to_owned(),
-                            json!(if kind == "file" { stall_timeout } else { 0 }),
-                        );
-                        record.insert("livenessCommand".to_owned(), json!(liveness.trim()));
-                        record
-                            .entry("fileActivityAt".to_owned())
-                            .or_insert(number(now)?);
-                        record
-                            .entry("fileGeneration".to_owned())
-                            .or_insert(json!(0));
-                        record
-                            .entry("stallWakeGeneration".to_owned())
-                            .or_insert(json!(-1));
-                        record.insert("text".to_owned(), json!(text));
-                        record.insert(
-                            "status".to_owned(),
-                            json!(if agent_value.get("autoWake").and_then(Value::as_bool)
-                                == Some(true)
+                            value
+                        } else {
+                            if action == "pause"
+                                && RulesRepository::has_active_check(transaction, &rule_id).map_err(store_api_error)?
                             {
-                                "active"
-                            } else {
-                                "paused"
-                            }),
-                        );
-                        record.entry("created".to_owned()).or_insert(number(now)?);
-                        record.insert("inFlight".to_owned(), Value::Bool(false));
-                        record.entry("checks".to_owned()).or_insert(json!(0));
-                        record.entry("wakes".to_owned()).or_insert(json!(0));
-                        record.insert("fingerprint".to_owned(), Value::Null);
-                        if kind == "low_workers" {
-                            record.insert(
-                                "minimumWorkers".to_owned(),
-                                body.get("minimumWorkers").cloned().unwrap_or(json!(8)),
-                            );
-                            record.insert(
-                                "durationMinutes".to_owned(),
-                                body.get("durationMinutes").cloned().unwrap_or(json!(30)),
-                            );
-                            record.insert("lowSince".to_owned(), Value::Null);
-                            record.insert("alerted".to_owned(), Value::Bool(false));
-                            record.insert("nextAt".to_owned(), number(now)?);
+                                return Err(active_check_error());
+                            }
+                            let interval = value.get("intervalSeconds").and_then(Value::as_f64).unwrap_or(60.0);
+                            let kind = string(&value, "kind").unwrap_or("").to_owned();
+                            let file_update = (action == "resume" && kind == "file").then(|| {
+                                file_resume(
+                                    string(&value, "path").unwrap_or(""),
+                                    now,
+                                    value.get("fileGeneration").and_then(Value::as_u64).unwrap_or(0),
+                                )
+                            });
+                            if let Some(object) = value.as_object_mut() {
+                                object.insert("status".into(), json!(desired));
+                                object.insert("epoch".into(), agent_value["epoch"].clone());
+                                object.insert("nextAt".into(), number(now + interval)?);
+                                object.insert("error".into(), Value::Null);
+                                if let Some((activity, fingerprint, generation)) = file_update {
+                                    object.insert("fileActivityAt".into(), number(activity)?);
+                                    object.insert("fingerprint".into(), fingerprint);
+                                    object.insert("fileGeneration".into(), json!(generation));
+                                    object.insert("stallWakeGeneration".into(), json!(generation.saturating_sub(1)));
+                                }
+                                if kind == "low_workers" {
+                                    object.insert("lowSince".into(), Value::Null);
+                                    object.insert("alerted".into(), Value::Bool(false));
+                                }
+                            }
+                            let stored = serde_json::to_string(&value).map_err(|_| ApiError::internal())?;
+                            RulesRepository::put(transaction, &old.id, &stored).map_err(store_api_error)?;
+                            value
                         }
-                        let value = Value::Object(record);
-                        let stored =
-                            serde_json::to_string(&value).map_err(|_| ApiError::internal())?;
-                        RulesRepository::put(transaction, &rule_id, &stored)
-                            .map_err(store_api_error)?;
-                        Ok(value)
                     }
-                    _ => Err(ApiError::new(
-                        StatusCode::BAD_REQUEST,
-                        "Unknown rule action",
-                    )),
                 }
-            })();
-            Ok(result)
-        })
-        .map_err(|_| ApiError::internal())??;
-    if result.get("deleted").is_some() {
-        return Ok(Json(
-            generated_json::<crate::generated::DeletedRuleReceipt>(result)?,
-        ));
-    }
-    Ok(Json(
-        generated_json::<crate::generated::RuleRecordResponse>(result)?,
-    ))
+                _ => {
+                    let kind = string(&body, "kind").unwrap_or("interval");
+                    let command = string(&body, "command").unwrap_or("");
+                    let raw_path = string(&body, "path");
+                    let liveness = string(&body, "livenessCommand").unwrap_or("").trim();
+                    if kind == "low_workers" && !command.is_empty() { return Err(located("command")); }
+                    if kind == "file" && raw_path.is_none_or(|path| path.trim().is_empty()) { return Err(located("path")); }
+                    if !liveness.is_empty() && kind != "file" { return Err(located("livenessCommand")); }
+                    if kind == "low_workers" && agent_value.get("isLead").and_then(Value::as_bool) != Some(true) {
+                        return Err(ApiError::new(StatusCode::BAD_REQUEST, "Only an orchestrator can own a low-worker alert"));
+                    }
+                    let interval = body.get("intervalSeconds").and_then(Value::as_u64).unwrap_or(60);
+                    let at = body.get("at").and_then(Value::as_f64).unwrap_or(now + interval as f64);
+                    if !(now - 1.0..=now + 31_536_000.0).contains(&at) { return Err(located("at")); }
+                    let stall = body.get("stallTimeoutSeconds").or_else(|| body.get("stall_timeout_seconds")).and_then(Value::as_u64).unwrap_or(1800);
+                    let text = string(&body, "text").unwrap_or("Check this event and continue the original task.").trim();
+                    if text.is_empty() { return Err(located("text")); }
+                    let name = trimmed_text(&body, "name")?;
+                    let path = if kind == "file" { Some(resolve_workspace_path(&agent_value, raw_path.unwrap_or(""))?) } else { None };
+                    let fingerprint = path
+                        .as_deref()
+                        .and_then(|path| file_fingerprint(Path::new(path)));
+                    let old_record = old_value.as_ref();
+                    let value = json!({
+                        "id": rule_id, "agent": agent_id,
+                        "rootId": agent_value.get("rootId").cloned().unwrap_or_else(|| json!(agent_id)),
+                        "epoch": agent_value["epoch"], "name": name, "kind": kind,
+                        "intervalSeconds": interval, "nextAt": at, "at": at,
+                        "path": path, "event": string(&body, "event").unwrap_or("worker_completed"),
+                        "command": command.trim(), "stallTimeoutSeconds": if kind == "file" { stall } else { 0 },
+                        "livenessCommand": liveness, "fileActivityAt": old_record.and_then(|v| v.get("fileActivityAt")).cloned().unwrap_or(json!(now)),
+                        "fileGeneration": old_record.and_then(|v| v.get("fileGeneration")).cloned().unwrap_or(json!(0)),
+                        "stallWakeGeneration": old_record.and_then(|v| v.get("stallWakeGeneration")).cloned().unwrap_or(json!(-1)),
+                        "text": text, "status": if agent_value.get("autoWake").and_then(Value::as_bool) == Some(true) { "active" } else { "paused" },
+                        "created": old_record.and_then(|v| v.get("created")).cloned().unwrap_or(json!(now)),
+                        "inFlight": false, "checks": old_record.and_then(|v| v.get("checks")).cloned().unwrap_or(json!(0)),
+                        "wakes": old_record.and_then(|v| v.get("wakes")).cloned().unwrap_or(json!(0)),
+                        "fingerprint": fingerprint,
+                        "minimumWorkers": if kind == "low_workers" { body.get("minimumWorkers").cloned().unwrap_or(json!(8)) } else { Value::Null },
+                        "durationMinutes": if kind == "low_workers" { body.get("durationMinutes").cloned().unwrap_or(json!(30)) } else { Value::Null },
+                        "lowSince": if kind == "low_workers" { Value::Null } else { Value::Null },
+                        "alerted": if kind == "low_workers" { json!(false) } else { Value::Null },
+                    });
+                    let value = strip_null_low_worker_fields(value, kind);
+                    if kind == "low_workers" && old_record.is_some_and(|old| low_worker_rule_unchanged(old, &value)) {
+                        old_record.unwrap().clone()
+                    } else {
+                        let mut value = value;
+                        if kind == "low_workers" { value["nextAt"] = json!(now); }
+                        let stored = serde_json::to_string(&value).map_err(|_| ApiError::internal())?;
+                        RulesRepository::put(transaction, &rule_id, &stored).map_err(store_api_error)?;
+                        value
+                    }
+                }
+            };
+            if result.get("deleted").is_some() {
+                generated_json::<crate::generated::DeletedRuleReceipt>(result)
+            } else {
+                generated_json::<crate::generated::RuleRecordResponse>(result)
+            }
+        })?;
+    Ok(Json(result))
 }
 
 fn rules_error(error: RulesError) -> ApiError {
@@ -310,13 +231,6 @@ fn rules_error(error: RulesError) -> ApiError {
             format!("Invalid stored object {object}/{id}"),
         ),
     }
-}
-
-fn invalid_stored_rule(id: &str) -> ApiError {
-    ApiError::new(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        format!("Invalid stored object rules/{id}"),
-    )
 }
 
 fn string<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
@@ -349,6 +263,12 @@ fn store_api_error(_error: impl std::fmt::Debug) -> ApiError {
     ApiError::internal()
 }
 
+impl From<StoreError> for ApiError {
+    fn from(_: StoreError) -> Self {
+        Self::internal()
+    }
+}
+
 fn invalid_agent(id: &str) -> ApiError {
     ApiError::new(
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -373,6 +293,86 @@ fn validate_agent(id: &str, value: &Value) -> Result<(), ApiError> {
         return Err(invalid_agent(id));
     }
     Ok(())
+}
+
+fn strip_null_low_worker_fields(mut value: Value, kind: &str) -> Value {
+    if kind != "low_workers" {
+        if let Some(object) = value.as_object_mut() {
+            for key in ["minimumWorkers", "durationMinutes", "lowSince", "alerted"] {
+                object.remove(key);
+            }
+        }
+    }
+    value
+}
+
+fn low_worker_rule_unchanged(old: &Value, new: &Value) -> bool {
+    [
+        "kind",
+        "name",
+        "text",
+        "minimumWorkers",
+        "durationMinutes",
+        "epoch",
+    ]
+    .into_iter()
+    .all(|key| old.get(key) == new.get(key))
+}
+
+fn file_resume(path: &str, now: f64, previous_generation: u64) -> (f64, Value, u64) {
+    let fingerprint = file_fingerprint(Path::new(path));
+    (
+        now,
+        fingerprint.unwrap_or(Value::Null),
+        previous_generation.saturating_add(1),
+    )
+}
+
+fn file_fingerprint(path: &Path) -> Option<Value> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let modified = metadata
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_nanos() as u64;
+    #[cfg(unix)]
+    let inode = {
+        use std::os::unix::fs::MetadataExt;
+        metadata.ino()
+    };
+    #[cfg(not(unix))]
+    let inode = 0_u64;
+    Some(json!([modified, metadata.len(), inode]))
+}
+
+fn resolve_workspace_path(agent: &Value, input: &str) -> Result<String, ApiError> {
+    let cwd = string(agent, "cwd").ok_or_else(|| ApiError::internal())?;
+    let mut path = PathBuf::from(input.trim());
+    if path == Path::new("~") || path.starts_with("~/") {
+        let home = std::env::var_os("HOME").ok_or_else(|| located("path"))?;
+        let remainder = path.strip_prefix("~").map_err(|_| located("path"))?;
+        path = PathBuf::from(home).join(remainder.strip_prefix("/").unwrap_or(remainder));
+    } else if !path.is_absolute() {
+        path = Path::new(cwd).join(path);
+    }
+    weakly_canonicalize(&path)
+        .map(|path| path.to_string_lossy().into_owned())
+        .map_err(|_| located("path"))
+}
+
+fn weakly_canonicalize(path: &Path) -> std::io::Result<PathBuf> {
+    match std::fs::canonicalize(path) {
+        Ok(path) => Ok(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let Some(name) = path.file_name() else {
+                return Err(error);
+            };
+            let parent = path.parent().ok_or(error)?;
+            Ok(weakly_canonicalize(parent)?.join(name))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn now_seconds() -> Result<f64, ApiError> {

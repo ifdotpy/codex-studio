@@ -2,8 +2,8 @@
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
+use crate::repositories::sync_documents::SyncDocumentsRepository;
 use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult};
 
@@ -94,7 +94,7 @@ impl RulesRepository {
                 "rule record identity does not match its key".to_owned(),
             ));
         }
-        put_sync_entity(
+        put_rule_entity(
             transaction,
             id,
             value.get("agent"),
@@ -110,7 +110,7 @@ impl RulesRepository {
     }
 
     pub fn delete(transaction: &Transaction<'_>, id: &str) -> StoreResult<()> {
-        put_sync_entity(transaction, id, None, None, true)?;
+        put_rule_entity(transaction, id, None, None, true)?;
         transaction.execute("DELETE FROM runtime_rules WHERE id=?1", [id])?;
         Ok(())
     }
@@ -136,7 +136,7 @@ impl RulesRepository {
     }
 }
 
-fn put_sync_entity(
+fn put_rule_entity(
     transaction: &Transaction<'_>,
     id: &str,
     agent: Option<&Value>,
@@ -158,47 +158,8 @@ fn put_sync_entity(
         "id": id,
         "value": value,
     }))?;
-    let hash = sha256_hex(payload.as_bytes());
-    let current = transaction
-        .query_row(
-            "SELECT hash,deleted FROM sync_entities WHERE collection='rule' AND id=?1",
-            [id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0)),
-        )
-        .optional()?;
-    if current
-        .as_ref()
-        .is_some_and(|(old_hash, old_deleted)| old_hash == &hash && *old_deleted == deleted)
-    {
-        return Ok(());
-    }
-    let sequence: i64 = transaction.query_row(
-        "SELECT MAX(entity_seq,document_seq,version_seq)+1 FROM ( \
-         SELECT COALESCE(MAX(seq),0) AS entity_seq FROM sync_entities), \
-         (SELECT COALESCE(MAX(seq),0) AS document_seq FROM sync_documents), \
-         (SELECT COALESCE(MAX(seq),0) AS version_seq FROM sync_versions)",
-        [],
-        |row| row.get(0),
-    )?;
-    transaction.execute(
-        "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) \
-         VALUES ('rule',?1,?2,?3,?4,?5) \
-         ON CONFLICT(collection,id) DO UPDATE SET seq=excluded.seq,hash=excluded.hash, \
-         payload=excluded.payload,deleted=excluded.deleted",
-        params![id, sequence, hash, payload, i64::from(deleted)],
-    )?;
+    SyncDocumentsRepository::put_entity(transaction, "rule", id, &payload, deleted)?;
     Ok(())
-}
-
-fn sha256_hex(value: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let digest = Sha256::digest(value);
-    let mut hash = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        hash.push(char::from(HEX[usize::from(byte >> 4)]));
-        hash.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    hash
 }
 
 fn read_records(connection: &Connection, table: &str) -> StoreResult<Vec<(String, String)>> {

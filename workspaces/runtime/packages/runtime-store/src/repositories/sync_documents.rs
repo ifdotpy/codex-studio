@@ -2,6 +2,7 @@
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::schema::{SchemaRequirements, TableRequirement, TriggerRequirement};
 use crate::{StoreError, StoreResult};
@@ -178,39 +179,57 @@ impl SyncDocumentsRepository {
         scope: &str,
         payload: &str,
     ) -> StoreResult<bool> {
-        use sha2::{Digest, Sha256};
+        Self::put_entity(transaction, "uiPreferences", scope, payload, false)
+    }
 
-        let digest = Sha256::digest(payload.as_bytes());
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let mut hash = String::with_capacity(digest.len() * 2);
-        for byte in digest {
-            hash.push(char::from(HEX[usize::from(byte >> 4)]));
-            hash.push(char::from(HEX[usize::from(byte & 0x0f)]));
-        }
+    pub fn put_entity(
+        transaction: &Transaction<'_>,
+        collection: &str,
+        id: &str,
+        payload: &str,
+        deleted: bool,
+    ) -> StoreResult<bool> {
+        let hash = sha256_hex(payload.as_bytes());
         let current = transaction
             .query_row(
-                "SELECT hash,deleted FROM sync_entities \
-                 WHERE collection='uiPreferences' AND id=?1",
-                [scope],
+                "SELECT hash,deleted FROM sync_entities WHERE collection=?1 AND id=?2",
+                params![collection, id],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0)),
             )
             .optional()?;
         if current
             .as_ref()
-            .is_some_and(|(old_hash, deleted)| old_hash == &hash && !deleted)
+            .is_some_and(|(old_hash, old_deleted)| old_hash == &hash && *old_deleted == deleted)
         {
             return Ok(false);
         }
-        let sequence = next_sequence(transaction)?;
         transaction.execute(
             "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) \
-             VALUES ('uiPreferences',?1,?2,?3,?4,0) \
+             VALUES (?1,?2,?3,?4,?5,?6) \
              ON CONFLICT(collection,id) DO UPDATE SET seq=excluded.seq,hash=excluded.hash, \
-             payload=excluded.payload,deleted=0",
-            params![scope, sequence, hash, payload],
+             payload=excluded.payload,deleted=excluded.deleted",
+            params![
+                collection,
+                id,
+                next_sequence(transaction)?,
+                hash,
+                payload,
+                i64::from(deleted)
+            ],
         )?;
         Ok(true)
     }
+}
+
+fn sha256_hex(value: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    Sha256::digest(value)
+        .iter()
+        .fold(String::with_capacity(64), |mut hash, byte| {
+            hash.push(char::from(HEX[usize::from(byte >> 4)]));
+            hash.push(char::from(HEX[usize::from(byte & 0x0f)]));
+            hash
+        })
 }
 
 fn next_sequence(connection: &Connection) -> StoreResult<i64> {

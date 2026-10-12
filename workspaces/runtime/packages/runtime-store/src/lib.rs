@@ -131,17 +131,27 @@ impl RuntimeStore {
     }
 
     /// Run one durable transaction while holding the sole serialized writer.
-    pub fn transaction<T>(
+    pub fn transaction<T, E>(
         &self,
-        operation: impl FnOnce(&Transaction<'_>) -> StoreResult<T>,
-    ) -> StoreResult<T> {
-        let mut writer = self.writer.lock().map_err(|_| StoreError::WriterPoisoned)?;
-        let transaction = writer.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        operation: impl FnOnce(&Transaction<'_>) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<StoreError>,
+    {
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| E::from(StoreError::WriterPoisoned))?;
+        let transaction = writer
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(StoreError::from)
+            .map_err(E::from)?;
         match operation(&transaction) {
             Ok(value) => {
                 transaction
                     .commit()
-                    .map_err(StoreError::CommitOutcomeUnknown)?;
+                    .map_err(StoreError::CommitOutcomeUnknown)
+                    .map_err(E::from)?;
                 Ok(value)
             }
             Err(error) => {
