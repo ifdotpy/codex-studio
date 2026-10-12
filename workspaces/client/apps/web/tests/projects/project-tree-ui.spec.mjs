@@ -145,7 +145,7 @@ test("project pointer and keyboard order persist, and a click collapses the proj
       await page.waitForURL(url + "/");
       await page.locator("#message").waitFor();
     } else {
-      await page.goto(url);
+      await page.goto(url, { waitUntil: "domcontentloaded" });
     }
     const state = async () => (await readTestState(url)).runtime.agents;
     const waitFor = async (predicate) => {
