@@ -13,6 +13,7 @@ from studio_api.models import (
     MAX_SAFE_INTEGER,
     MIN_INT64,
     MIN_SAFE_INTEGER,
+    document_model_defaults,
 )
 
 
@@ -57,11 +58,12 @@ _CACHED_API_SCHEMA_HASH: str | None = None
 
 def openapi_document() -> dict[str, JsonValue]:
     """Build OpenAPI using the inert schema context; never opens runtime state."""
-    from studio_api.app import create_app
+    from studio_api.app import create_app, route_models
     from studio_api.context import ApiContext
 
     app = create_app(ApiContext.for_schema())
     document = cast(dict[str, JsonValue], json.loads(json.dumps(app.openapi())))
+    document_model_defaults(document, route_models(app.routes))
     remove_orphan_fastapi_validation_schemas(document)
     normalize_json_value_schema(document)
     normalize_optional_parameter_schemas(document)
