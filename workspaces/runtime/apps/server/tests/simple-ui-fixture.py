@@ -101,7 +101,7 @@ with c.runtime.lock, c.runtime.db() as db:
     lead.update(autoWake=True, status='waiting')
     c.runtime.put(db, 'agents', lead)
 # Commit the root before create() opens another database connection.
-worker_count = int(os.environ['TOKEN_RATE_WORKER_COUNT']) if os.environ.get('TOKEN_RATE_WORKER_COUNT') else 1 if os.environ.get('RICH_PREVIEW_UI_FIXTURE') else 40
+worker_count = int(os.environ['TOKEN_RATE_WORKER_COUNT']) if os.environ.get('TOKEN_RATE_WORKER_COUNT') else 1 if os.environ.get('RICH_PREVIEW_UI_FIXTURE') or os.environ.get('PROJECT_TREE_UI_FIXTURE') else 40
 for i in range(worker_count):
     child = c.runtime.create({'name': f'Worker {i:02}', 'prompt': 'Review one component',
         'role': 'implementer' if os.environ.get('WORKSPACE_BADGE_FIXTURE') else 'reviewer',
@@ -147,9 +147,10 @@ updates = {
     103: "Fixed and checked at 390px. The dialog scrolls, the buttons stay reachable, and Escape closes it.",
     104: "Thanks. Add the screenshot and test command to your report. I will include it in the release evidence.",
 }
-for i in range(105):
-    from_lead = i in {101, 104}
-    c.runtime.chat_message(lead['id'] if from_lead else child['id'], child['id'] if from_lead else 'parent', updates.get(i, f'Earlier finding {i}'), f'fixture-earlier-{i}')
+if not os.environ.get('PROJECT_TREE_UI_FIXTURE'):
+    for i in range(105):
+        from_lead = i in {101, 104}
+        c.runtime.chat_message(lead['id'] if from_lead else child['id'], child['id'] if from_lead else 'parent', updates.get(i, f'Earlier finding {i}'), f'fixture-earlier-{i}')
 c.runtime.chat_message(child['id'], 'parent', 'A private update before the final answer.', 'fixture-private')
 c.runtime.chat_message(child['id'], 'broadcast', 'Release checks are ready for review.', 'fixture-broadcast')
 # Enough actual rooms to exercise the bounded sidebar at production-like sizes.

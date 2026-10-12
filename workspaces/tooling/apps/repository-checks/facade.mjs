@@ -935,12 +935,12 @@ export function parseCounts(item, output) {
     };
   }
   const playwright = normalizedOutput.match(
-    /^\s*(?:(\d+) failed[ \t]*\n)?[ \t]*(?:(\d+) skipped[ \t]*\n)?[ \t]*(?:(\d+) passed(?: \([^\n]+\))?)?\s*$/m,
+    /(?:^|\n)[ \t]*(?:(\d+) failed[ \t]*\n)?[ \t]*(?:(\d+) skipped[ \t]*\n)?[ \t]*(\d+) passed(?: \([^\n]+\))?[ \t]*(?:\n|$)/m,
   );
-  if (playwright?.slice(1).some((count) => count !== undefined)) {
+  if (playwright) {
     const failed = +(playwright[1] ?? 0);
     const skipped = +(playwright[2] ?? 0);
-    const passed = +(playwright[3] ?? 0);
+    const passed = +playwright[3];
     return {
       passed,
       failed,

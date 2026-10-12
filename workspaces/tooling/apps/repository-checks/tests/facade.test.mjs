@@ -535,6 +535,13 @@ test("Vitest summaries count test cases rather than test files", () => {
   assert.deepEqual(
     parseCounts(
       item,
+      "Earlier output\n\n  11 skipped\n  322 passed (7.1m)\nPlaywright output: /tmp/results",
+    ),
+    { passed: 322, failed: 0, skipped: 11, executed: 322, summaryFound: true },
+  );
+  assert.deepEqual(
+    parseCounts(
+      item,
       "\u001b[31m14 failed\u001b[39m\n" +
         "\u001b[33m11 skipped\u001b[39m\n" +
         "\u001b[32m301 passed (9.1m)\u001b[39m",

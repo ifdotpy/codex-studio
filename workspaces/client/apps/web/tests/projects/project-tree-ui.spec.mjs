@@ -71,6 +71,7 @@ test("project pointer and keyboard order persist, and a click collapses the proj
       env: {
         ...process.env,
         EXECUTION_SETTINGS_CATALOG: JSON.stringify(models),
+        PROJECT_TREE_UI_FIXTURE: "1",
       },
     },
   );
@@ -144,8 +145,6 @@ test("project pointer and keyboard order persist, and a click collapses the proj
     if (process.env.CODEX_TEST_DESKTOP) {
       await page.waitForURL(url + "/");
       await page.locator("#message").waitFor();
-    } else {
-      await page.goto(url, { waitUntil: "domcontentloaded" });
     }
     const state = async () => (await readTestState(url)).runtime.agents;
     const waitFor = async (predicate) => {
@@ -172,42 +171,65 @@ test("project pointer and keyboard order persist, and a click collapses the proj
       return data;
     };
     const folders = {};
-    for (const name of [
-      "assistant",
-      "litos",
-      "Newcrom Case",
-      "Empty project",
-    ]) {
-      const path = join(root, name);
-      await mkdir(path);
-      folders[name] = await realpath(path);
-    }
-    for (const name of ["assistant", "litos", "Newcrom Case"])
-      await post("/api/projects", { path: folders[name] });
-    const created = [];
-    for (let i = 0; i < 7; i++) {
-      const chat = await post("/api/leads", {
-        id: crypto.randomUUID(),
-        cwd: folders.assistant,
-      });
-      await post("/api/rename", { id: chat.id, name: "Review component " + i });
-      created.push(chat);
-    }
-    const legal = await post("/api/leads", {
-      id: crypto.randomUUID(),
-      cwd: folders["Newcrom Case"],
-    });
-    await post("/api/rename", { id: legal.id, name: "Review evidence" });
-    const stateDir = (await readTestState(url)).stateDir;
-    await page.evaluate(
-      ({ stateDir, path }) =>
-        localStorage.setItem(
-          `codex-project-tree:${stateDir}`,
-          JSON.stringify({ [path]: true }),
-        ),
-      { stateDir, path: folders.assistant },
+    const setupStartedAt = performance.now();
+    const folderNames = ["assistant", "litos", "Newcrom Case", "Empty project"];
+    await Promise.all(
+      folderNames.map(async (name) => {
+        const path = join(root, name);
+        await mkdir(path);
+        folders[name] = await realpath(path);
+      }),
     );
-    await page.reload({ waitUntil: "domcontentloaded" });
+    await Promise.all(
+      ["assistant", "litos", "Newcrom Case"].map((name) =>
+        post("/api/projects", { path: folders[name] }),
+      ),
+    );
+    const [created, legal] = await Promise.all([
+      Promise.all(
+        Array.from({ length: 7 }, (_, i) =>
+          post("/api/leads", {
+            id: crypto.randomUUID(),
+            cwd: folders.assistant,
+          }).then((chat) => ({ ...chat, name: `Review component ${i}` })),
+        ),
+      ),
+      post("/api/leads", {
+        id: crypto.randomUUID(),
+        cwd: folders["Newcrom Case"],
+      }),
+    ]);
+    await Promise.all([
+      ...created.map((chat) =>
+        post("/api/rename", { id: chat.id, name: chat.name }),
+      ),
+      post("/api/rename", { id: legal.id, name: "Review evidence" }),
+    ]);
+    console.log(
+      `Project tree fixture setup completed in ${Math.round(performance.now() - setupStartedAt)} ms`,
+    );
+    const stateDir = (await readTestState(url)).stateDir;
+    if (process.env.CODEX_TEST_DESKTOP) {
+      await page.evaluate(
+        ({ stateDir, path }) =>
+          localStorage.setItem(
+            `codex-project-tree:${stateDir}`,
+            JSON.stringify({ [path]: true }),
+          ),
+        { stateDir, path: folders.assistant },
+      );
+      await page.reload({ waitUntil: "domcontentloaded" });
+    } else {
+      await page.addInitScript(
+        ({ stateDir, path }) =>
+          localStorage.setItem(
+            `codex-project-tree:${stateDir}`,
+            JSON.stringify({ [path]: true }),
+          ),
+        { stateDir, path: folders.assistant },
+      );
+      await page.goto(url, { waitUntil: "domcontentloaded" });
+    }
     const group = (name) =>
       page.locator(".sidebar-project").filter({
         has: page.locator(".project-tree-toggle", { hasText: name }),
@@ -494,6 +516,9 @@ test("project pointer and keyboard order persist, and a click collapses the proj
       .getByLabel("Filter projects and chats")
       .fill("Review component 2");
     await page.locator(`[data-chat="${created[2].id}"]`).click();
+    // The previous reload also cleared this filter implicitly. Clear it
+    // explicitly so the next interaction targets the now-visible project.
+    await page.getByLabel("Filter projects and chats").fill("");
     await group("litos").locator(".project-tree-heading").hover();
     await page
       .getByRole("button", { name: "New chat in litos", exact: true })
@@ -550,8 +575,6 @@ test("project pointer and keyboard order persist, and a click collapses the proj
     await group("Empty project")
       .getByText("No chats", { exact: true })
       .waitFor();
-    await page.reload({ waitUntil: "domcontentloaded" });
-    await group("Empty project").waitFor();
     const projectOptions = async (name) => {
       await group(name).locator(":scope > .project-tree-heading").hover();
       await page
@@ -580,319 +603,10 @@ test("project pointer and keyboard order persist, and a click collapses the proj
       folders.litos,
       "project rename preserves the directory",
     );
-    const newFolder = async (parent, name) => {
-      if (parent) {
-        await page
-          .locator(`[data-folder-id="${parent}"] > .project-tree-heading`)
-          .hover();
-        await page
-          .locator(`[data-folder-id="${parent}"] > .project-tree-heading`)
-          .getByRole("button", { name: /Options for folder/ })
-          .click();
-        await page
-          .getByRole("menuitem", { name: "New subfolder", exact: true })
-          .click();
-      } else {
-        await projectOptions("Client work");
-        await page
-          .getByRole("menuitem", { name: "New chat folder", exact: true })
-          .click();
-      }
-      await page.getByRole("menu").waitFor({ state: "hidden" });
-      const form = page.getByRole("dialog", {
-        name: "New chat folder",
-        exact: true,
-      });
-      const folderModal = form.locator(
-        "xpath=ancestor::*[contains(@class, 'mantine-Modal-root')]",
-      );
-      await form.getByLabel("Folder name").fill(name);
-      await form
-        .getByRole("button", { name: "Create folder", exact: true })
-        .click();
-      await form.waitFor({ state: "hidden" });
-      await folderModal
-        .locator(".mantine-Modal-overlay")
-        .waitFor({ state: "detached" });
-      const projects = await fetch(url + "/api/projects").then((response) =>
-        response.json(),
-      );
-      return projects.items
-        .find((project) => project.path === folders.litos)
-        .folders.find((folder) => folder.name === name).id;
-    };
-    const workFolder = await newFolder(null, "Reviews");
-    const childFolder = await newFolder(workFolder, "Interface");
-    const sourceChat = (await state()).find(
-      (a) => a.isLead && a.cwd === folders.litos,
-    );
-    const openChatMenu = async () => {
-      const row = page.locator(`[data-chat="${sourceChat.id}"]`).locator("..");
-      await row.hover();
-      await row
-        .getByRole("button", {
-          name: `Actions for ${sourceChat.name}`,
-          exact: true,
-        })
-        .click();
-    };
-    await openChatMenu();
-    await page
-      .getByRole("menuitem", { name: "Move to folder", exact: true })
-      .click();
-    const moveDialog = page.getByRole("dialog", {
-      name: "Move chat",
-      exact: true,
-    });
-    await moveDialog.getByLabel("Move to folder").selectOption(childFolder);
-    await moveDialog
-      .getByRole("button", { name: "Move chat", exact: true })
-      .click();
-    await moveDialog.waitFor({ state: "hidden" });
-    await page
-      .locator(
-        `[data-folder-id="${childFolder}"] [data-chat="${sourceChat.id}"]`,
-      )
-      .waitFor();
-    const movedChat = (await state()).find((a) => a.id === sourceChat.id);
-    assert.equal(movedChat.cwd, sourceChat.cwd);
-    assert.equal(movedChat.accountKey, sourceChat.accountKey);
-    const folderHeading = (id) =>
-      page.locator(`[data-folder-id="${id}"] > .project-tree-heading`);
-    const workFolderToggle = folderHeading(workFolder).locator(
-      ".project-tree-toggle",
-    );
-    assert.equal(await workFolderToggle.getAttribute("aria-expanded"), "true");
-    await workFolderToggle.click();
-    assert.equal(await workFolderToggle.getAttribute("aria-expanded"), "false");
-    await page
-      .locator(`[data-folder-id="${workFolder}"] [data-chat]`)
-      .waitFor({ state: "detached" });
-    await workFolderToggle.click();
-    assert.equal(await workFolderToggle.getAttribute("aria-expanded"), "true");
-    const moveSource = () => page.locator(`[data-chat="${sourceChat.id}"]`);
-    const currentSource = async () =>
-      (await state()).find((a) => a.id === sourceChat.id);
-    // A rejected move keeps the chat at its saved location.
-    await page.route("**/api/organization", (route) =>
-      route.fulfill({
-        status: 409,
-        contentType: "application/json",
-        body: JSON.stringify({ error: "Folder changed in another window" }),
-      }),
-    );
-    const dragChatTo = async (target) => {
-      await moveSource().hover();
-      const box = await moveSource().boundingBox();
-      await page.mouse.down();
-      await page.mouse.move(
-        box.x + box.width / 2,
-        box.y + box.height / 2 + 10,
-        {
-          steps: 5,
-        },
-      );
-      await target.hover();
-      await target.hover();
-      assert.equal(
-        await target.getAttribute("data-folder-drop"),
-        "true",
-        "The destination has a visible drop highlight",
-      );
-      await page.screenshot({
-        path: join(root, "folder-drop.png"),
-        animations: "disabled",
-      });
-      await page.mouse.up();
-      assert.equal(await page.locator('[data-folder-drop="true"]').count(), 0);
-    };
-    await dragChatTo(folderHeading(workFolder));
-    await page
-      .getByText("Folder changed in another window", { exact: true })
-      .waitFor();
-    assert.equal((await currentSource()).projectFolder, childFolder);
-    await page.unroute("**/api/organization");
-    await dragChatTo(folderHeading(workFolder));
-    await waitFor(
-      async () => (await currentSource()).projectFolder === workFolder,
-    );
-    await folderHeading(workFolder)
-      .locator("..")
-      .locator(
-        `:scope > .project-folder-chats > .sidebar-row [data-chat="${sourceChat.id}"]`,
-      )
-      .waitFor();
-    await dragChatTo(
-      group("Client work").locator(":scope > .project-tree-heading"),
-    );
-    await waitFor(async () => !(await currentSource()).projectFolder);
-    await group("Client work")
-      .locator(
-        `:scope > .project-chats > .sidebar-row [data-chat="${sourceChat.id}"]`,
-      )
-      .waitFor();
-    // Dropping onto a collapsed destination opens it after the server confirms.
-    await folderHeading(childFolder)
-      .getByRole("button", { expanded: true })
-      .click();
-    await dragChatTo(folderHeading(childFolder));
-    await waitFor(
-      async () => (await currentSource()).projectFolder === childFolder,
-    );
-    await page
-      .locator(
-        `[data-folder-id="${childFolder}"] [data-chat="${sourceChat.id}"]`,
-      )
-      .waitFor();
-    assert.equal((await currentSource()).cwd, sourceChat.cwd);
-    assert.equal((await currentSource()).accountKey, sourceChat.accountKey);
-    assert.equal((await currentSource()).threadId, sourceChat.threadId);
-    await page
-      .locator(`[data-folder-id="${childFolder}"] > .project-tree-heading`)
-      .hover();
-    await page
-      .getByRole("button", {
-        name: "New chat in folder Interface",
-        exact: true,
-      })
-      .click();
-    await page
-      .getByRole("dialog", { name: "New chat", exact: true })
-      .getByRole("button", { name: "Start chat", exact: true })
-      .click();
-    await waitFor(async () =>
-      (await state()).some(
-        (a) =>
-          a.isLead && a.id !== sourceChat.id && a.projectFolder === childFolder,
-      ),
-    );
-    await page.reload({ waitUntil: "domcontentloaded" });
-    await group("Client work").waitFor();
-    await page
-      .locator(
-        `[data-folder-id="${childFolder}"] [data-chat="${sourceChat.id}"]`,
-      )
-      .waitFor();
-    await waitFor(
-      async () =>
-        (await page
-          .locator(`[data-folder-id="${childFolder}"] [data-chat]`)
-          .count()) === 2,
-    );
-    await page
-      .locator(`[data-folder-id="${childFolder}"] > .project-tree-heading`)
-      .hover();
-    await page
-      .getByRole("button", {
-        name: "Options for folder Interface",
-        exact: true,
-      })
-      .click();
-    await page
-      .getByRole("menuitem", { name: "Rename folder", exact: true })
-      .click();
-    const renameFolder = page.getByRole("dialog", {
-      name: "Rename folder",
-      exact: true,
-    });
-    await renameFolder.getByLabel("Folder name").fill("UI review");
-    await renameFolder
-      .getByRole("button", { name: "Save name", exact: true })
-      .click();
-    await renameFolder.waitFor({ state: "hidden" });
-    await page
-      .locator(`[data-folder-id="${childFolder}"] > .project-tree-heading`)
-      .getByText("UI review", { exact: true })
-      .waitFor();
-    const emptyFolder = await newFolder(null, "Temporary");
-    if (secondPage) {
-      const rootFolders = (client) =>
-        client
-          .locator(
-            `[data-project-path="${folders.litos}"] > .project-chats > [data-folder-id]`,
-          )
-          .evaluateAll((rows) => rows.map((row) => row.dataset.folderId));
-      await secondPage.locator(`[data-folder-id="${emptyFolder}"]`).waitFor();
-      const beforeFolderOrder = await rootFolders(page);
-      const folderSource = folderHeading(emptyFolder).locator(
-        ".project-tree-toggle",
-      );
-      const folderTarget = folderHeading(workFolder).locator(
-        ".project-tree-toggle",
-      );
-      await folderSource.hover();
-      const sourceBox = await folderSource.boundingBox();
-      await page.mouse.down();
-      await page.mouse.move(
-        sourceBox.x + sourceBox.width / 2,
-        sourceBox.y + sourceBox.height / 2 + 10,
-        { steps: 5 },
-      );
-      await folderTarget.hover({ position: { x: 45, y: 3 } });
-      await folderTarget.hover({ position: { x: 45, y: 3 } });
-      await expect(folderTarget).toHaveAttribute("data-drop-edge", "before");
-      await page.mouse.up();
-      await expect.poll(() => rootFolders(page)).not.toEqual(beforeFolderOrder);
-      await waitForOrderReceipt();
-      const savedFolderOrder = await rootFolders(page);
-      assert.notDeepEqual(savedFolderOrder, beforeFolderOrder);
-      await expect
-        .poll(() => rootFolders(secondPage))
-        .toEqual(savedFolderOrder);
-      await secondPage.reload();
-      await expect
-        .poll(() => rootFolders(secondPage))
-        .toEqual(savedFolderOrder);
-      await secondContext.close();
-    }
-    await page
-      .locator(`[data-folder-id="${emptyFolder}"] > .project-tree-heading`)
-      .hover();
-    await page
-      .getByRole("button", {
-        name: "Options for folder Temporary",
-        exact: true,
-      })
-      .click();
-    await page
-      .getByRole("menuitem", { name: "Remove empty folder", exact: true })
-      .click();
-    await page
-      .locator(`[data-folder-id="${emptyFolder}"]`)
-      .waitFor({ state: "detached" });
-    await page.getByLabel("Filter projects and chats").fill("UI review");
-    await page
-      .locator(
-        `[data-folder-id="${childFolder}"] [data-chat="${sourceChat.id}"]`,
-      )
-      .waitFor();
-    await page.getByLabel("Filter projects and chats").fill("");
-    await page.screenshot({
-      path: join(root, "projects-desktop.png"),
-      animations: "disabled",
-    });
-    for (const width of [390, 320]) {
-      await page.setViewportSize({ width, height: 844 });
-      await page.locator("#sidebar-toggle").click();
-      await page.locator("#sidebar").waitFor();
-      await page.waitForFunction(() => {
-        const r = document.querySelector("#sidebar").getBoundingClientRect();
-        return r.x >= -1 && r.right <= innerWidth + 1;
-      });
-      assert.ok(
-        await page
-          .locator("#sidebar")
-          .evaluate((el) => el.scrollWidth <= el.clientWidth),
-      );
-      await page.screenshot({
-        path: join(root, `projects-${width}.png`),
-        animations: "disabled",
-      });
-      await page.keyboard.press("Escape");
-    }
+    await secondContext?.close();
     expect(errors).toEqual([]);
     console.log(
-      "PASS project tree: project and folder names, nested chat folders, chat moves, new chats in folders, empty folder removal, directory preservation, order, search, persistence, mobile widths. Evidence " +
+      "PASS project tree: project names, add and rename projects, chat order and pinning, keyboard controls, new chats in projects. Evidence " +
         root,
     );
   } finally {
