@@ -1,5 +1,5 @@
 {
-  "source": "hand-authored supervisor v1 newline-delimited JSON frames; providerFrames references the existing provider replay transcript",
+  "source": "Supervisor response projections were captured from the running disposable Python supervisor; processScenario records open, health snapshot, stdout stream, and exit. The bad-protocol request is a recorded error exchange. Provider reattach after backend restart is exercised by providerFixture.",
   "transport": {
     "linux": "unix-domain-socket",
     "windows": "named-pipe",
@@ -47,6 +47,72 @@
     {
       "direction": "server",
       "frame": { "error": "Supervisor protocol or state directory mismatch" }
+    }
+  ],
+  "processScenario": [
+    {
+      "request": {
+        "action": "open",
+        "handle": "fixture-child",
+        "command": [
+          "$python",
+          "-c",
+          "import json,sys,time; print(json.dumps({'result':'fixture-output'}), flush=True); time.sleep(.1); sys.stderr.write('fixture-stderr\\n'); sys.stderr.flush()"
+        ],
+        "env": { "PATH": "$path" },
+        "cwd": "$cwd"
+      },
+      "expected": {
+        "result": { "resumed": false, "initResult": null, "generation": 1 }
+      }
+    },
+    {
+      "request": { "action": "health" },
+      "expected": {
+        "result": {
+          "protocol": 1,
+          "durability": "sqlite-full-sync-per-request"
+        }
+      }
+    },
+    {
+      "request": { "action": "next", "handle": "fixture-child", "cursor": 0 },
+      "eventKind": "stdout",
+      "expected": {
+        "result": {
+          "event": {
+            "sequence": 1,
+            "kind": "stdout",
+            "payload": "{\"result\":\"fixture-output\"}"
+          }
+        }
+      }
+    },
+    {
+      "request": { "action": "next", "handle": "fixture-child", "cursor": 1 },
+      "eventKind": "stderr",
+      "expected": {
+        "result": {
+          "event": {
+            "sequence": 2,
+            "kind": "stderr",
+            "payload": "{\"data\":\"fixture-stderr\\n\"}"
+          }
+        }
+      }
+    },
+    {
+      "request": { "action": "next", "handle": "fixture-child", "cursor": 2 },
+      "eventKind": "exit",
+      "expected": {
+        "result": {
+          "event": {
+            "sequence": 3,
+            "kind": "exit",
+            "payload": "{\"returnCode\":0}"
+          }
+        }
+      }
     }
   ]
 }

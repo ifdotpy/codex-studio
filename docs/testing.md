@@ -186,9 +186,44 @@ STUDIO_HTTP_BACKEND_COMMAND='/path/to/codex-backend' \
 The fixture checker consumes the existing
 `restart-mid-turn-supervisor-replay.json` provider transcript and the
 `supervisor-v1-http.json` socket frames, then checks the public transcript and
-message receipt. Its altered-expectation case proves the same frame comparator
-fails when recorded behavior changes. The checker currently executes the Unix
-socket transport; the named-pipe fixture is recorded for a Windows checker.
+message receipt. The fixture's supervisor response projections were captured
+from the disposable supervisor. Its negative control changes the expected
+health protocol on a live exchange and requires the same frame checker to fail.
+The checker currently executes Unix sockets; Windows named-pipe execution is not
+covered by this checker.
+
+The supervisor v1 action inventory comes from
+`codex_process_supervisor.py:Supervisor.handle`:
+
+| Action             | Fixture coverage | Reason                                                                                             |
+| ------------------ | ---------------- | -------------------------------------------------------------------------------------------------- |
+| `health`           | Covered          | Health snapshot and durability are compared.                                                       |
+| `open`             | Covered          | Starts a disposable Python child and checks its open receipt.                                      |
+| `next`             | Covered          | Replays recorded stdout, stderr, and exit events.                                                  |
+| `finishFallback`   | Not covered      | Requires the recovery fallback state transition.                                                   |
+| `adminCloseHandle` | Not covered      | Privileged operator-only action; no operator process is started.                                   |
+| `retireCommand`    | Not covered      | Requires the separate completed `server-command:` retirement lifecycle.                            |
+| `write`            | Not covered      | Provider RPC writes are exercised by provider replay, not hand-built socket calls.                 |
+| `operationStatus`  | Not covered      | Requires a persisted monitor operation and native RPC identity.                                    |
+| `ack`              | Not covered      | Destructive journal cursor mutation is covered by Python implementation tests.                     |
+| `replay`           | Not covered      | Durable journal replay internals remain covered by Python implementation tests.                    |
+| `status`           | Not covered      | The fixture checks open receipt, health snapshot, and event stream instead.                        |
+| `detach`           | Not covered      | Connection close is exercised by backend restart; standalone detach has no observable HTTP result. |
+
+The recorded frame kinds are handshake (`ok`), successful request response
+(`result`), rejected handshake (`error`), and child event kinds `stdout`,
+`stderr`, and `exit`. All are covered by the fixture. Provider reattach after a
+backend restart is exercised by the referenced provider fixture and its HTTP
+transcript recovery assertion.
+
+During this specification phase the harness still launches the disposable
+Python supervisor. `docs/plans/rust-workspaces.md` decision D-01 and milestone
+M-07 call for the owned backend, supervisor, and CLI to move together after
+compatibility is frozen; selecting a separate supervisor executable here would
+test a partial migration the plan explicitly avoids. An arbitrary backend can
+therefore be tested against the current Python supervisor's wire behavior;
+the runtime move will replace that implementation at the agreed whole-runtime
+cutover.
 
 Some suites intentionally test Python implementation details and are not part
 of this portable HTTP corpus: `provider-replay-runner.py` and

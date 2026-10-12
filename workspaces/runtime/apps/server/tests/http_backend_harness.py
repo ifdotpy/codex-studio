@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 import tempfile
-from typing import Any, Callable
+from typing import Any, Callable, TextIO
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -103,7 +103,7 @@ class BackendProcess:
         self.class_setup_phases: dict[str, float] = {}
         self._process: subprocess.Popen[str] | None = None
         self._supervisor_process: subprocess.Popen[str] | None = None
-        self._supervisor_log: Any = None
+        self._supervisor_log: TextIO | None = None
         self._backend_python: Path | None = None
         self._output: queue.Queue[str] = queue.Queue()
         self._reader: threading.Thread | None = None
