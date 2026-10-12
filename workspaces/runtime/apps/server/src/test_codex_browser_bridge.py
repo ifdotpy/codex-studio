@@ -487,5 +487,248 @@ class Wiring(unittest.TestCase):
         self.assertIn("RuntimeDirectoryMode=0755", unit)
 
 
+
+class RemoteWindow(Flow):
+    """A window on another Mac: its own server holds the port and relays to this server."""
+
+    def remote_sign_in(self, tool: FakeTool, bridge: Bridge, card: dict[str, Any],
+                       token: str | None = None) -> tuple[int, dict[str, str], bytes]:
+        result = bridge.answer(card["id"], {"decision": "accept", "forward": True}, local=False)
+        forward = result["forward"]
+        self.assertEqual(result["openUrl"], card["params"]["url"])
+        self.assertEqual((forward["server"], forward["bridgeId"], forward["port"]),
+                         ("srv-b", card["params"]["bridgeId"], tool.port))
+        # Nothing binds on the chat's server; the window's server binds the port.
+        self.assertEqual(bridge.forwards, {})
+        self.assertNotIn(forward["token"], json.dumps(self.runtime.cards()))
+        client = Runtime(self.root / "client.sqlite3")
+        sent: list[tuple[str, str]] = []
+
+        def exchange(server: str, action: str, payload: dict[str, Any]) -> Any:
+            sent.append((server, action))
+            return bridge_module.remote_callback(self.runtime, payload)
+        data = {**forward, "token": token or forward["token"]}
+        self.assertEqual(bridge_module.open_remote_forward(client, data, exchange, listen_port=0),
+                         {"status": "forwarding"})
+        [remote] = client.__dict__["_browser_remote_forwards"].values()
+        location = provider_redirect(result["openUrl"])
+        parts = urlsplit(location)
+        response = browser_get(remote.bound_port, (parts.path or "/") + "?" + parts.query,
+                               {"Cookie": "studio=mac-secret", "Authorization": "Bearer mac",
+                                "User-Agent": "browser"})
+        self.assertEqual(sent, [("srv-b", "browser_callback")])
+        wait_until(lambda: client.__dict__["_browser_remote_forwards"] == {})
+        return response
+
+    def test_a_vm_chat_signs_in_from_a_window_on_another_mac(self) -> None:
+        self.bridge.server_id = lambda: "srv-b"
+        tool = self.tool("aws")
+        self.launch(tool)
+        card = self.card()
+        with patch.object(bridge_module, "bridge", return_value=self.bridge):
+            response = self.remote_sign_in(tool, self.bridge, card)
+        status, headers, body = response
+        self.assertEqual(status, 200)
+        self.assertIn(b"Signed in", body)
+        self.assertEqual(headers["content-security-policy"], SANDBOX)
+        self.assertEqual(len(tool.codes), 1)
+        self.assertEqual(len(self.provider.tokens), 1)
+        self.assertNotIn("cookie", tool.received[-1][1])
+        [card] = self.runtime.cards()
+        self.assertEqual((card["status"], card["decision"]), ("answered", "accept"))
+
+    def test_a_wrong_forward_token_never_reaches_the_tool(self) -> None:
+        self.bridge.server_id = lambda: "srv-b"
+        tool = self.tool("aws")
+        self.launch(tool)
+        card = self.card()
+        with patch.object(bridge_module, "bridge", return_value=self.bridge):
+            status, _headers, body = self.remote_sign_in(tool, self.bridge, card, token="x" * 43)
+        self.assertEqual(status, 502)
+        self.assertIn(b"unknown", body)
+        self.assertEqual(tool.codes, [])
+        with patch.object(bridge_module, "bridge", return_value=self.bridge):
+            with self.assertRaisesRegex(PermissionError, "token"):
+                bridge_module.remote_callback(self.runtime, {"bridgeId": card["params"]["bridgeId"],
+                                                             "token": "y" * 43, "target": "/oauth/callback"})
+
+    def test_an_older_window_still_gets_the_remote_message(self) -> None:
+        tool = self.tool("aws")
+        self.launch(tool)
+        card = self.card()
+        with self.assertRaisesRegex(ValueError, "Open this chat in the window of the Mac"):
+            self.bridge.answer(card["id"], {"decision": "accept"}, local=False)
+        self.assertNotIn("browser.answer", self.guest.methods)
+
+
+class NativeChats(unittest.TestCase):
+    """A native chat of this server: the launcher in its session, the host queue and card."""
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp(prefix="sbh-", dir="/tmp"))
+        self.provider = FakeProvider()
+        self.tools: list[FakeTool] = []
+        self.agent_id, self.thread = str(uuid.uuid4()), str(uuid.uuid4())
+        self.runtime = Runtime(self.root / "runtime.sqlite3")
+        self.runtime.root = self.root  # type: ignore[attr-defined]
+        with self.runtime.db() as db:
+            self.runtime.put(db, "agents", {"id": self.agent_id, "threadId": self.thread, "provider": "claude",
+                                            "epoch": 0, "autoWake": True})
+            self.runtime.put(db, "agents", {"id": str(uuid.uuid4()), "threadId": str(uuid.uuid4()),
+                                            "executionMode": "vm"})
+        from codex_browser_host import HostGuest
+        self.guest = HostGuest(self.runtime, listeners=lambda: [Listener("127.0.0.1", tool.port, UID)
+                                                                 for tool in self.tools],
+                               http_providers=frozenset({self.provider.origin}))
+        self.bridge = Bridge(self.runtime, lambda: self.guest, source="host", server_id=lambda: "srv-b",
+                             http_providers=frozenset({self.provider.origin}))
+
+    def tearDown(self) -> None:
+        self.bridge.stop()
+        self.guest.close()
+        for tool in self.tools:
+            tool.close()
+        self.provider.close()
+        shutil.rmtree(self.root)
+
+    def launch(self, session: str) -> tuple[FakeTool, subprocess.CompletedProcess[str]]:
+        from codex_browser_host import session_environment
+        tool = FakeTool(self.provider, "aws")
+        self.tools.append(tool)
+        environment = session_environment(self.root)
+        # The tool runs the launcher that the session environment names.
+        result = tool.launch(Path(environment["BROWSER"]).parent,
+                             {"STUDIO_BROWSER_SOCKET": environment["STUDIO_BROWSER_SOCKET"],
+                              "STUDIO_BROWSER_SESSION": session})
+        return tool, result
+
+    def test_the_session_launcher_queues_a_card_for_the_chat_of_its_thread(self) -> None:
+        tool, result = self.launch(self.thread)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.bridge.poll(0)
+        [card] = self.runtime.cards()
+        self.assertEqual((card["agent"], card["params"]["source"]), (self.agent_id, "host"))
+        self.assertEqual(card["params"]["redirect"]["port"], tool.port)
+        # A window on this Mac reaches the tool directly: nothing binds.
+        answer = self.bridge.answer(card["id"], {"decision": "accept"}, local=True)
+        self.assertEqual(answer, {"status": "answered", "openUrl": card["params"]["url"]})
+        self.assertEqual(self.bridge.forwards, {})
+        parts = urlsplit(provider_redirect(answer["openUrl"]))
+        status, _headers, _body = browser_get(tool.port, (parts.path or "/") + "?" + parts.query)
+        self.assertEqual(status, 200)
+        self.assertEqual(len(tool.codes), 1)
+
+    def test_a_window_on_another_mac_relays_through_its_own_server(self) -> None:
+        tool, result = self.launch(self.agent_id)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.bridge.poll(0)
+        [card] = self.runtime.cards()
+        answer = self.bridge.answer(card["id"], {"decision": "accept", "forward": True}, local=False)
+        forward = answer["forward"]
+        client = Runtime(self.root / "client.sqlite3")
+        with patch.object(bridge_module, "host_bridge", return_value=self.bridge):
+            bridge_module.open_remote_forward(
+                client, forward, lambda server, action, payload: bridge_module.remote_callback(self.runtime, payload),
+                listen_port=0)
+            [remote] = client.__dict__["_browser_remote_forwards"].values()
+            parts = urlsplit(provider_redirect(answer["openUrl"]))
+            status, headers, body = browser_get(remote.bound_port, (parts.path or "/") + "?" + parts.query,
+                                                {"Cookie": "studio=mac-secret", "User-Agent": "browser"})
+        self.assertEqual(status, 200)
+        self.assertIn(b"Signed in", body)
+        self.assertEqual(headers["content-security-policy"], SANDBOX)
+        self.assertEqual(len(tool.codes), 1)
+        self.assertNotIn("cookie", tool.received[-1][1])
+        # A second approval reply is a replay with the same forward.
+        replay = self.bridge.answer(card["id"], {"decision": "accept", "forward": True}, local=False)
+        self.assertEqual(replay["forward"], forward)
+
+    def test_unknown_and_vm_sessions_get_no_card(self) -> None:
+        with self.runtime.db() as db:
+            vm_thread = [json.loads(row[0])["threadId"] for row in db.execute("SELECT record FROM runtime_agents")
+                         if json.loads(row[0]).get("executionMode") == "vm"][0]
+        for session in (str(uuid.uuid4()), vm_thread):
+            _tool, result = self.launch(session)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("does not know the chat", result.stderr)
+        self.bridge.poll(0)
+        self.assertEqual(self.runtime.cards(), [])
+
+    def test_the_bridge_file_names_the_launcher_and_the_socket(self) -> None:
+        from codex_browser_host import SESSION_FILE, publish
+        account = self.root / "account-servers" / "claude-local"
+        account.mkdir(parents=True)
+        publish(account, self.root)
+        value = json.loads((account / SESSION_FILE).read_text())
+        self.assertEqual(value, {"BROWSER": str(self.root / "browser-host" / "studio-browser"),
+                                 "STUDIO_BROWSER_SOCKET": str(self.root / "browser-host" / "open.sock")})
+        self.assertEqual((account / SESSION_FILE).stat().st_mode & 0o777, 0o600)
+        self.assertEqual((self.root / "browser-host").stat().st_mode & 0o777, 0o700)
+
+
+class HostParts(unittest.TestCase):
+    def test_lsof_listeners_give_addresses_ports_and_owners(self) -> None:
+        from codex_browser_host import lsof_listeners
+        text = "p10\nu501\nf3\ntIPv4\nn127.0.0.1:8000\nf4\ntIPv6\nn*:7000\np11\nu0\nf5\ntIPv4\nn*:9000\nf6\ntIPv6\nn[::1]:9100\n"
+        self.assertEqual(lsof_listeners(text), [Listener("127.0.0.1", 8000, 501), Listener("::", 7000, 501),
+                                                Listener("0.0.0.0", 9000, 0), Listener("::1", 9100, 0)])
+
+    def test_the_paired_exchange_sends_each_redirect_once_and_keeps_unknown_unknown(self) -> None:
+        class Service:
+            def __init__(self, outcome: dict[str, Any]) -> None:
+                self.outcome = outcome
+                self.queued: list[tuple[str, str, str]] = []
+                self.transport = type("T", (), {"servers": staticmethod(lambda: [{"id": "srv-b"}])})()
+
+            def queue(self, db: Any, server: str, action: str, payload: dict[str, Any], key: str) -> str:
+                self.queued.append((server, action, key))
+                return key
+
+            def deliver(self, key: str) -> dict[str, Any]:
+                return self.outcome
+
+        class Owner(Runtime):
+            service: Any
+
+            def multi_server(self) -> Any:
+                return self.service
+        runtime = Owner(Path(tempfile.mkdtemp(prefix="sbx-", dir="/tmp")) / "r.sqlite3")
+        runtime.service = Service({"outcome": "applied", "value": {"status": 200}})
+        exchange = bridge_module.paired_exchange(runtime)
+        self.assertEqual(exchange("srv-b", "browser_callback", {}), {"status": 200})
+        exchange("srv-b", "browser_callback", {})
+        keys = [key for _s, _a, key in runtime.service.queued]
+        self.assertEqual(len(set(keys)), 2)
+        with self.assertRaisesRegex(ValueError, "not paired"):
+            exchange("srv-c", "browser_callback", {})
+        runtime.service.outcome = {"outcome": "not_applied", "error": "The sign-in forward is closed"}
+        with self.assertRaisesRegex(ValueError, "closed"):
+            exchange("srv-b", "browser_callback", {})
+        runtime.service.outcome = {"outcome": "unknown"}
+        with self.assertRaisesRegex(RuntimeError, "unknown"):
+            exchange("srv-b", "browser_callback", {})
+        shutil.rmtree(runtime.path.parent)
+
+    def test_a_client_forward_refuses_bad_shapes_and_a_closed_request(self) -> None:
+        runtime = Runtime(Path(tempfile.mkdtemp(prefix="sbx-", dir="/tmp")) / "r.sqlite3")
+        good = {"server": "srv-b", "bridgeId": "a" * 32, "host": "127.0.0.1", "port": free_port(),
+                "path": "/oauth/callback", "expiresAt": time.time() + 60, "token": "t" * 43}
+        for change in ({"host": "example.com"}, {"port": 80}, {"path": "x"}, {"bridgeId": "../x"}, {"token": ""}):
+            with self.assertRaisesRegex(ValueError, "invalid"):
+                bridge_module.open_remote_forward(runtime, {**good, **change}, lambda *a: None)
+        with self.assertRaisesRegex(ValueError, "no longer open"):
+            bridge_module.open_remote_forward(runtime, {**good, "expiresAt": time.time() - 1}, lambda *a: None)
+        self.assertEqual(runtime.__dict__.get("_browser_remote_forwards", {}), {})
+        shutil.rmtree(runtime.path.parent)
+
+    def test_the_paired_channel_sends_browser_callback_to_the_bridge(self) -> None:
+        from codex_multi_server_orchestration import MultiServerService
+        owner = type("Owner", (), {"runtime": object()})()
+        with patch.object(bridge_module, "remote_callback", return_value={"status": 200}) as relayed:
+            value = MultiServerService._receive(owner, "srv-a", "browser_callback", {"bridgeId": "b"}, "k")
+        self.assertEqual(value, {"status": 200})
+        relayed.assert_called_once_with(owner.runtime, {"bridgeId": "b"})
+
+
 if __name__ == "__main__":
     unittest.main()

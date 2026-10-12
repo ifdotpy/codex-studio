@@ -423,11 +423,48 @@ Rollout:
   kubelogin. AWS needs `BROWSER` in a new provider, or `BROWSER=studio-browser aws sso login`
   in the command.
 
+## 5. Native chats and windows on another Mac
+
+A headless server (igor-mbp) has no person at its browser. A sign-in that an agent starts
+there opens on the Mac where the person works.
+
+### Native chats
+
+- `codex_browser_host.py` runs the guest's `BrowserBridge` in the server process, on the
+  socket `<state>/browser-host/open.sock` (folder 0700). On macOS the listener owners come
+  from `lsof -F ptun`; on Linux from `/proc/net/tcp`.
+- The launcher `<state>/browser-host/studio-browser` runs the guest shim with the server's
+  Python. A Claude bridge reads `<bridge state>/studio-browser.json` and gives each session
+  `BROWSER`, `STUDIO_BROWSER_SOCKET` and `STUDIO_BROWSER_SESSION` (its native thread ID). The
+  bridge process keeps its own environment, so its launch identity does not change.
+- The chat is the agent whose ID or `threadId` is the session hint. It must not be a VM chat.
+  Native agents of one user can act for each other, so the hint is not a security boundary;
+  the approval card is the consent. Cards carry `source: "host"`.
+- A window on the same server opens the link without a forward: the tool listens on that Mac.
+- Open: Codex native chats get no `BROWSER` yet; a thread needs a per-thread
+  `shell_environment_policy` that keeps its native settings identity.
+
+### A window on another Mac
+
+1. The window accepts with `forward: true` (only a desktop with `signInForward`).
+2. The chat's server approves the guest lease and returns the link and a forward: `server`,
+   `bridgeId`, `host`, `port`, `path`, `expiresAt` and a random `token`. It binds nothing and
+   keeps only the token's SHA-256 in the card.
+3. The window calls `openSignIn({url, forward})`. The desktop checks that the forward belongs to
+   the server of the frame, and asks its own server `/api/browser/forward` (a local window
+   request) to hold the port. That server binds the port strictly, as for a VM chat.
+4. The browser's redirect reaches that Forward. It sends one paired request
+   `browser_callback` (`bridgeId`, `token`, `target`, `headers`) with a new request ID. The
+   chat's server checks the token and relays through the same guest or host `browser.callback`:
+   the lease, the path, the relay count and the deadline still apply.
+5. A lost reply stays unknown and is never sent again; the browser gets the "unknown" page.
+
 ## Decisions
 
 1. One approval for each link. There is no provider allow list.
-2. A remote window refuses to open with "Open this chat in the window of the Mac that runs its
-   server to sign in, or use the tool's device-code mode." Nothing is forwarded.
+2. Replaced on 2026-10-12 (section 5): a window on another Mac signs in through its own
+   server. A window without the desktop forward still gets "Open this chat in the window of
+   the Mac that runs its server to sign in, or use the tool's device-code mode."
 3. Only this action brings the browser to the front (`openSignIn`); `openExternal` keeps its
    behaviour.
 4. A loopback start page without a redirect is refused.

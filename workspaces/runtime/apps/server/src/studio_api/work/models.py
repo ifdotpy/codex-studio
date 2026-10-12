@@ -248,6 +248,8 @@ class AnswerBody(ContractModel):
     decision: Literal["answer", "accept", "decline", "cancel"] | None = None
     answers: dict[StrictStr, JsonValue] | None = None
     content: dict[StrictStr, JsonValue] | None = None
+    # A window on another Mac accepts a sign-in link: its own server holds the redirect port.
+    forward: StrictBool | None = None
     model_config = {"extra": "allow"}
     __pydantic_extra__: dict[str, JsonValue]
 
@@ -910,8 +912,26 @@ class PanelLayoutResult(ResponseModel):
     reports: list[PanelLayoutReport]
 
 
+class BrowserForward(ContractModel):
+    """The redirect port of a sign-in that a paired server approved for a window on this Mac."""
+    server: StrictStr = Field(min_length=1, max_length=200)
+    bridgeId: StrictStr = Field(pattern=r"^[0-9a-f]{32}$")
+    host: Literal["127.0.0.1", "localhost", "::1"]
+    port: StrictInt = Field(ge=1024, le=65535)
+    path: StrictStr = Field(min_length=1, max_length=2048)
+    expiresAt: StrictInt | StrictFloat
+    token: StrictStr = Field(min_length=16, max_length=200)
+
+
+class BrowserForwardResult(ResponseModel):
+    status: Literal["forwarding"]
+    replayed: StrictBool | None = None
+
+
 class AnswerResult(ResponseModel):
     status: Literal["answered"]
     replayed: StrictBool | None = None
     # An accepted sign-in link (browser/open) that the window opens in the browser.
     openUrl: StrictStr | None = None
+    # For a window on another Mac: the port that its own server holds (/api/browser/forward).
+    forward: BrowserForward | None = None

@@ -20,7 +20,7 @@ import {
   requestApprovalDetails,
   requestQuestions,
 } from "./requestData";
-import { openSignInPage } from "./openSignIn";
+import { canForwardSignIn, openSignInPage } from "./openSignIn";
 
 type Props = {
   mainAgentId?: string;
@@ -366,7 +366,7 @@ function RequestCard({
       // loopback forward on this Mac. Open it now; nothing opened before the approval.
       if (browserOpen && result.openUrl) {
         try {
-          await openSignInPage(result.openUrl);
+          await openSignInPage(result.openUrl, result.forward);
         } catch (error) {
           notify(
             `Studio approved the link, but the browser did not open: ${errorText(error)}`,
@@ -540,9 +540,11 @@ function RequestCard({
                 </dl>
               )}
               <p>
-                {browserOpen.port
-                  ? `The sign-in result goes to this chat's Linux user${browserOpen.linuxUser ? ` (${browserOpen.linuxUser})` : ""} on port ${browserOpen.port} of this Mac.`
-                  : "This page needs no forward. It shows a code or a confirmation."}
+                {!browserOpen.port
+                  ? "This page needs no forward. It shows a code or a confirmation."
+                  : browserOpen.source === "host"
+                    ? `The sign-in result goes to the command in this chat on port ${browserOpen.port}.`
+                    : `The sign-in result goes to this chat's Linux user${browserOpen.linuxUser ? ` (${browserOpen.linuxUser})` : ""} on port ${browserOpen.port} of this Mac.`}
               </p>
               <details>
                 <summary>Full link</summary>
@@ -611,7 +613,15 @@ function RequestCard({
                 variant="filled"
                 color="indigo"
                 disabled={sending}
-                onClick={() => void post({ decision: "accept" })}
+                onClick={() =>
+                  void post({
+                    decision: "accept",
+                    // A window on another Mac holds the redirect port there.
+                    ...(browserOpen && canForwardSignIn()
+                      ? { forward: true }
+                      : {}),
+                  })
+                }
               >
                 {browserOpen
                   ? "Open in browser"

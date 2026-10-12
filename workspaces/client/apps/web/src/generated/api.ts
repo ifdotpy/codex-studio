@@ -433,6 +433,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/browser/forward": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Browser Forward */
+    post: operations["browser_forward_api_browser_forward_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/capabilities": {
     parameters: {
       query?: never;
@@ -5537,6 +5554,8 @@ export interface components {
       } | null;
       /** Decision */
       decision?: ("answer" | "accept" | "decline" | "cancel") | null;
+      /** Forward */
+      forward?: boolean | null;
       /** Id */
       id: string;
     } & {
@@ -5558,6 +5577,7 @@ export interface components {
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
+      forward?: components["schemas"]["BrowserForward"] | null;
       /** Openurl */
       openUrl?: null | string;
       /** Replayed */
@@ -6030,6 +6050,43 @@ export interface components {
       worktreePreparation?: ("waiting" | "preparing") | null;
       /** Yolomode */
       yoloMode?: boolean | null;
+    };
+    /**
+     * BrowserForward
+     * @description The redirect port of a sign-in that a paired server approved for a window on this Mac.
+     */
+    BrowserForward: {
+      /** Bridgeid */
+      bridgeId: string;
+      /** Expiresat */
+      expiresAt: number;
+      /**
+       * Host
+       * @enum {string}
+       */
+      host: "127.0.0.1" | "localhost" | "::1";
+      /** Path */
+      path: string;
+      /** Port */
+      port: number;
+      /** Server */
+      server: string;
+      /** Token */
+      token: string;
+    };
+    /** BrowserForwardResult */
+    BrowserForwardResult: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Replayed */
+      replayed?: boolean | null;
+      /**
+       * Status
+       * @constant
+       */
+      status: "forwarding";
     };
     /** BrowserRecoveryRecordResponse */
     BrowserRecoveryRecordResponse: {
@@ -20680,6 +20737,69 @@ export interface operations {
       /** @description Content Too Large */
       413: components["responses"]["ApiError413"];
       415: components["responses"]["ApiError415"];
+    };
+  };
+  browser_forward_api_browser_forward_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["BrowserForward"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["BrowserForwardResult"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
     };
   };
   capabilities_api_capabilities_get: {

@@ -961,6 +961,11 @@ class MultiServerService:
     def _receive(self, principal: str, action: str, p: dict[str, Any], key: str) -> dict[str, Any]:
         if action in {'move_validate', 'move_status', 'move_begin', 'move_chunk', 'move_prepare', 'move_activate', 'move_home_validate', 'move_home_relocate', 'move_home_event', 'move_route_ready', 'move_route_status'}:
             return cast(dict[str, Any], self.moves().receive(principal, action, p, key))
+        if action == 'browser_callback':
+            # One sign-in redirect that a window's own server received (codex_browser_bridge.py).
+            # It can carry a code, so a lost reply stays unknown and is never relayed again.
+            from codex_browser_bridge import remote_callback
+            return remote_callback(self.runtime, p)
         if action in {'add_location', 'remove_location'}:
             from codex_project_locations import receive as receive_location
             return receive_location(self.runtime, principal, action, p, key)

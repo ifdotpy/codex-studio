@@ -109,6 +109,9 @@ const { contextBridge, ipcRenderer } = require("electron");
       openExternal: (value) => invoke("openExternal", value),
       // An approved sign-in link opens after the server answer, so the 1.2 second click
       // window can pass. It still needs a click or key press of the person in the last 30 s.
+      // The desktop holds the redirect port of a sign-in on another server (openSignIn with
+      // a forward).
+      signInForward: true,
       openSignIn: (value) =>
         performance.now() - lastAction <= 30000
           ? invoke("openSignIn", value, false)

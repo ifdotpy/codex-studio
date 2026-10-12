@@ -259,6 +259,8 @@ class BrowserBridge:
             raise BridgeError("unknown_agent", "Studio does not know the chat in LAYR_SESSION") from None
         if context.get("uid") != uid:
             raise BridgeError("unknown_agent", "LAYR_SESSION names a chat of another Linux user")
+        # A native chat names itself by its session; the context gives its Studio chat.
+        agent = str(context.get("agentId") or agent)
         now = self.clock()
         recent = [item for item in self.items.values()
                   if item["uid"] == uid and item["createdAt"] > now - LIMIT_WINDOW_SECONDS]

@@ -499,6 +499,12 @@ class AppServer:
         if provider == "claude" and process_factory is None:
             from codex_claude import transport
             command, env = transport(root, provider_options) if provider_options else transport(root)
+            try:
+                # The bridge gives each Claude session the browser link launcher of this server.
+                from codex_browser_host import publish
+                publish(Path(root), Path(supervisor_root) if supervisor_root else Path(root).parent.parent)
+            except OSError as error:
+                print("browser launcher for Claude sessions: " + str(error)[:200], file=sys.stderr)
         command = provider_process_command(command)
         if self.supervisor_mode:
             if not supervisor_handle:
@@ -10784,6 +10790,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         for m in monitors:
             self.cancel_monitor(m)
         return {"stopped": sorted(ids)}
+
+    def open_browser_forward(self, data):
+        """Hold the redirect port of a sign-in that a paired server approved for a window on
+        this Mac, and relay the redirect to it (codex_browser_bridge.open_remote_forward)."""
+        from codex_browser_bridge import open_remote_forward
+        return open_remote_forward(self, data)
 
     def answer(self, key, data, *, local_window=False):
         """Answer a request card. `local_window` is true only for a window on the Mac that runs
