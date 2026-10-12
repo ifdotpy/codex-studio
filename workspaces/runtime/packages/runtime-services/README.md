@@ -17,6 +17,8 @@
 
 ## Pattern
 
+Transcript search uses Unicode lowercase matching, so `ß` and `SS` do not match as Python casefold would.
+
 A service module separates pure decisions from effects. Pure functions take
 snapshots and explicit clocks and return decisions; they are tested directly.
 Effects go through the store's repositories or through a narrow port trait

@@ -9,6 +9,7 @@ mod rules;
 mod session;
 mod sync;
 mod sync_documents;
+mod transcript;
 mod work_items;
 mod workspace_views;
 
@@ -21,6 +22,7 @@ pub(crate) fn groups() -> Vec<RouteGroup> {
         sync::routes(),
         sync_documents::routes(),
         panels::routes(),
+        transcript::routes(),
         work_items::routes(),
         workspace_views::routes(),
         desktop::routes(),

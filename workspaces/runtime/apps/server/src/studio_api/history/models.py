@@ -330,7 +330,7 @@ class TranscriptItemQuery(ContractModel):
 
 class TranscriptSearchQuery(ContractModel):
     id: StrictStr | None = None
-    q: StrictStr | None = None
+    q: StrictStr = Field(min_length=1, max_length=500)
     limit: SafeQueryInt | None = None
 
 
