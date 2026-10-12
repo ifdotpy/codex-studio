@@ -9,7 +9,10 @@ use thiserror::Error;
 
 pub const MAX_PREVIEW_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_PATH_CHARS: usize = 4096;
-const PYTHON_MIME_OVERRIDES: &[(&str, &str)] = &[("wav", "audio/x-wav")];
+const PYTHON_MIME_OVERRIDES: &[(&str, &str)] = &[
+    ("ts", "text/vnd.trolltech.linguist"),
+    ("wav", "audio/x-wav"),
+];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceContext {

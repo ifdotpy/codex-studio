@@ -93,7 +93,7 @@ class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         outside = cls.outside
         outside.write_text("symlink and absolute paths stay supported", encoding="utf-8")
         (cls.workspace / "link.md").symlink_to(outside)
-        cls.preview_extensions = ("avif", "bmp", "webm", "ogg", "wav")
+        cls.preview_extensions = ("avif", "bmp", "webm", "ogg", "ts", "wav")
         for extension in cls.preview_extensions:
             (cls.workspace / f"preview.{extension}").write_bytes(b"preview")
         if hasattr(os, "mkfifo"):

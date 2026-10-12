@@ -1,7 +1,7 @@
 //! File metadata and bounded content reads for local workspaces.
 
 use super::extractors::QueryParams;
-use super::manifest::{OperationStatus, RouteGroup, get};
+use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -15,11 +15,20 @@ use crate::error::ApiError;
 use crate::router::HttpState;
 
 const IMAGE_EXECUTION_DEPENDENCY: &str = "workspace-state/image-execution";
+const EXECUTION_DEPENDENCIES: [Dependency; 1] = [Dependency::new(IMAGE_EXECUTION_DEPENDENCY)];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
-        get("/api/file-info", OperationStatus::Implemented, file_info),
-        get("/api/file", OperationStatus::Implemented, file_content),
+        get(
+            "/api/file-info",
+            OperationStatus::partial(&EXECUTION_DEPENDENCIES),
+            file_info,
+        ),
+        get(
+            "/api/file",
+            OperationStatus::partial(&EXECUTION_DEPENDENCIES),
+            file_content,
+        ),
     ])
 }
 
@@ -107,7 +116,7 @@ fn read_info(
         return Ok(info);
     }
     let context = workspace_context(store, agent_id)?;
-    ensure_local_workspace(&context)?;
+    ensure_local_workspace(&context, "GET", "/api/file-info")?;
     let path = path.ok_or_else(|| file_error(WorkspaceFilesError::MissingPath))?;
     workspace_files::file_info(path, Some(&context.cwd)).map_err(file_error)
 }
@@ -139,7 +148,7 @@ fn read_content(
         return Ok(content);
     }
     let context = workspace_context(store, agent_id)?;
-    ensure_local_workspace(&context)?;
+    ensure_local_workspace(&context, "GET", "/api/file")?;
     let path = path.ok_or_else(|| file_error(WorkspaceFilesError::MissingPath))?;
     workspace_files::file_content(path, Some(&context.cwd)).map_err(file_error)
 }
@@ -191,12 +200,16 @@ fn validate_asset(id: &str, record: &str) -> Result<(Value, String), ApiError> {
     Ok((value, owner))
 }
 
-fn ensure_local_workspace(context: &WorkspaceContext) -> Result<(), ApiError> {
+fn ensure_local_workspace(
+    context: &WorkspaceContext,
+    method: &str,
+    path: &str,
+) -> Result<(), ApiError> {
     if context.execution_backed {
-        Err(ApiError::new(
-            StatusCode::NOT_IMPLEMENTED,
-            format!("Not implemented: requires {IMAGE_EXECUTION_DEPENDENCY}"),
-        ))
+        Err(
+            dependency_unavailable(method, path, &EXECUTION_DEPENDENCIES)
+                .unwrap_or_else(|_| ApiError::internal()),
+        )
     } else {
         Ok(())
     }
