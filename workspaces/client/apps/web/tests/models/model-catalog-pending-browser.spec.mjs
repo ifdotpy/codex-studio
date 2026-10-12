@@ -81,6 +81,25 @@ test("Model Catalog Pending Browser", async ({
               response.end(JSON.stringify(syncProtocolFixture()));
               return;
             }
+            if (path === "/api/test/models-revision") {
+              const event = {
+                protocol: 3,
+                workspaceId: syncIdentity.workspaceId,
+                epoch: "fixture",
+                revision: 2,
+                reason: "models-catalog-completed",
+                resources: [{ kind: "models" }],
+                resourceVersions: [
+                  { resource: { kind: "models" }, revision: 2 },
+                ],
+              };
+              syncStream?.write(
+                `event: resources\ndata: ${JSON.stringify(event)}\n\n`,
+              );
+              response.writeHead(204);
+              response.end();
+              return;
+            }
             if (path === "/api/sync/stream") {
               syncStream = response;
               const resources = JSON.parse(
@@ -364,32 +383,56 @@ test("Model Catalog Pending Browser", async ({
       await page.waitForFunction(() => !!window.catalogResult.error);
       await hasModel("complete-worker-model");
     }
-    for (const unavailableAccounts of [
+    for (const [index, unavailableAccounts] of [
       undefined,
       [],
       [{ accountKey: "second", error: "Pending", catalogPending: "true" }],
       [{ accountKey: "second", catalogPending: true }],
-    ]) {
-      await reset([
-        {
-          body: {
-            data: [model("valid-model")],
-            catalogPending: true,
-            unavailableAccounts,
+    ].entries()) {
+      await reset(
+        [
+          {
+            body: {
+              data: [model("valid-model")],
+              catalogPending: true,
+              unavailableAccounts,
+            },
           },
-        },
-      ]);
+        ],
+        `valid-${index}`,
+      );
       await hasModel("valid-model");
     }
 
-    await reset([pending, ready("must-not-load")]);
+    await reset([pending], "pending-remount");
     await page.waitForFunction(
       () => window.catalogRenderCount > window.catalogResponseRenderCount,
     );
-    await page.evaluate(() => window.mountCatalog("first", false, false));
+    await page.evaluate((reply) => {
+      window.unmountCatalog();
+      window.catalogReplies = [reply];
+      window.catalogRequests = [];
+      window.catalogResponses = 0;
+      window.mountCatalog("pending-remount");
+    }, ready("completed-after-revision"));
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
+    assert.equal(await page.evaluate(() => window.catalogRequests.length), 0);
+    await page.evaluate(() => fetch("/api/test/models-revision"));
+    await page.waitForFunction(() => window.catalogRequests.length === 1);
+    await page.waitForFunction(() => window.catalogResponses === 1);
+    await hasModel("completed-after-revision");
+    assert.equal(await page.evaluate(() => window.catalogRequests.length), 1);
+    await page.evaluate(() =>
+      window.mountCatalog("pending-remount", false, false),
+    );
     assert.equal(await page.evaluate(() => window.catalogRequests.length), 1);
 
-    await reset([{ ...ready("old-account-model"), hold: true }]);
+    await reset([{ ...ready("old-account-model"), hold: true }], "hold-abort");
     await page.evaluate(() => {
       window.oldCatalogRelease = window.releaseCatalog;
       window.catalogReplies = [
