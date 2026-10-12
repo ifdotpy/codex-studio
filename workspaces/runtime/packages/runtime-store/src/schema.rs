@@ -98,18 +98,108 @@ fn event_payload(key: &str, raw: &str, deleted: bool) -> Result<String, serde_js
                 "id" | "agent" | "kind" | "status" | "created" | "error"
             )
         });
-        if let Some(Value::Number(number)) = value.get_mut("created")
-            && number.is_f64()
-            && let Some(normalized) = number.as_f64().and_then(serde_json::Number::from_f64)
-        {
-            *number = normalized;
-        }
+        value.retain(|name, field| match name.as_str() {
+            "id" => field.is_string(),
+            "agent" | "kind" | "status" | "error" => field.is_string() || field.is_null(),
+            "created" => {
+                field.is_null()
+                    || field
+                        .as_number()
+                        .and_then(serde_json::Number::as_f64)
+                        .is_some_and(f64::is_finite)
+            }
+            _ => false,
+        });
     }
-    serde_json::to_string(&json!({
-        "collection": "event",
-        "id": key,
-        "value": value,
-    }))
+
+    let mut payload = format!(
+        "{{\"collection\":\"event\",\"id\":{},\"value\":{{",
+        serde_json::to_string(key)?
+    );
+    for (index, (name, field)) in value.iter().enumerate() {
+        if index != 0 {
+            payload.push(',');
+        }
+        payload.push_str(&serde_json::to_string(name)?);
+        payload.push(':');
+        if name == "created"
+            && let Some(number) = field.as_number()
+        {
+            if let Some(value) = number.as_f64().filter(|value| value.is_finite()) {
+                payload.push_str(&python_float_json(value));
+            }
+            continue;
+        }
+        payload.push_str(&serde_json::to_string(field)?);
+    }
+    payload.push_str("}}");
+    Ok(payload)
+}
+
+fn python_float_json(value: f64) -> String {
+    if value == 0.0 {
+        return if value.is_sign_negative() {
+            "-0.0".to_owned()
+        } else {
+            "0.0".to_owned()
+        };
+    }
+
+    let raw = format!("{value:?}");
+    let (mantissa, exponent) = match raw.split_once('e') {
+        Some((mantissa, exponent)) => match exponent.parse::<i32>() {
+            Ok(exponent) => (mantissa, exponent),
+            Err(_) => return raw,
+        },
+        None => (raw.as_str(), 0),
+    };
+    let negative = mantissa.starts_with('-');
+    let unsigned = mantissa.strip_prefix('-').unwrap_or(mantissa);
+    let (integer, fractional) = unsigned.split_once('.').unwrap_or((unsigned, ""));
+    let mut digits = format!("{integer}{fractional}");
+    let mut decimal_position = integer.len() as i32 + exponent;
+    let leading_zeroes = digits.bytes().take_while(|digit| *digit == b'0').count();
+    digits.drain(..leading_zeroes);
+    decimal_position -= leading_zeroes as i32;
+    while digits.len() > 1 && digits.ends_with('0') {
+        digits.pop();
+    }
+    let scientific_exponent = decimal_position - 1;
+
+    let mut result = String::new();
+    if negative {
+        result.push('-');
+    }
+    if !(-4..16).contains(&scientific_exponent) {
+        result.push(digits.as_bytes()[0] as char);
+        if digits.len() > 1 {
+            result.push('.');
+            result.push_str(&digits[1..]);
+        }
+        result.push('e');
+        result.push(if scientific_exponent < 0 { '-' } else { '+' });
+        result.push_str(&format!("{:02}", scientific_exponent.unsigned_abs()));
+    } else if decimal_position <= 0 {
+        result.push_str("0.");
+        result.extend(std::iter::repeat_n(
+            '0',
+            decimal_position.unsigned_abs() as usize,
+        ));
+        result.push_str(&digits);
+    } else if decimal_position as usize >= digits.len() {
+        result.push_str(&digits);
+        result.extend(std::iter::repeat_n(
+            '0',
+            decimal_position as usize - digits.len(),
+        ));
+        result.push_str(".0");
+    } else {
+        let position = decimal_position as usize;
+        result.push_str(&digits[..position]);
+        result.push('.');
+        result.push_str(&digits[position..]);
+    }
+    result
 }
 
 fn open_read_only(path: &Path) -> StoreResult<Connection> {
@@ -193,7 +283,7 @@ fn connection_pragmas(connection: &Connection) -> StoreResult<Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::SCHEMA_SNAPSHOT;
+    use super::{SCHEMA_SNAPSHOT, event_payload, python_float_json};
     use serde_json::Value;
 
     #[test]
@@ -211,5 +301,40 @@ mod tests {
         );
         assert_eq!(snapshot["pragmas"]["main"]["journal_mode"], "wal");
         assert_eq!(snapshot["pragmas"]["analytics"]["synchronous"], 2);
+    }
+
+    #[test]
+    fn event_float_json_matches_python_repr_boundaries() {
+        for (value, expected) in [
+            (1_791_788_985.520_981_8, "1791788985.5209818"),
+            (0.1, "0.1"),
+            (1e21, "1e+21"),
+            (5.0, "5.0"),
+            (1_791_788_985.0, "1791788985.0"),
+            (1.234_567_890_123_456_7, "1.2345678901234567"),
+            (9_007_199_254_740_992.0, "9007199254740992.0"),
+            (-0.1, "-0.1"),
+            (-1e-7, "-1e-07"),
+            (1e-5, "1e-05"),
+            (1e-4, "0.0001"),
+            (1e15, "1000000000000000.0"),
+            (1e16, "1e+16"),
+            (-0.0, "-0.0"),
+        ] {
+            assert_eq!(python_float_json(value), expected);
+        }
+    }
+
+    #[test]
+    fn integer_created_values_follow_python_float_coercion() {
+        assert_eq!(
+            event_payload(
+                "fixture",
+                r#"{"id":"fixture","created":9007199254740993}"#,
+                false,
+            )
+            .expect("event payload encodes"),
+            r#"{"collection":"event","id":"fixture","value":{"created":9007199254740992.0,"id":"fixture"}}"#,
+        );
     }
 }

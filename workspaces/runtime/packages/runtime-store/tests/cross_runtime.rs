@@ -23,10 +23,12 @@ runtime = QuietRuntime(root, lambda *_args, **_kwargs: None)
 agent = runtime.create({"name":"Rust store fixture", "cwd":str(root), "prompt":"temporary"}, defer=True)
 agent["fixtureFlag"] = True
 agent["fixtureInteger"] = 7
+agent["fixtureUnicode"] = "Zażółć 東京\n\u0000"
+agent["fixtureNested"] = {"items":[0.1,5.0,9007199254740993,True,{"text":"🦀\t"}]}
 with runtime.lock, runtime.db() as db:
     runtime.put(db, "agents", agent)
     task = {"id":"cross-task", "rootId":agent["id"], "status":"ready", "title":"fixture",
-            "description":"", "owner":None, "created":1720000000.25, "updated":1720000000.5,
+            "description":"", "owner":None, "created":1e-7, "updated":1e21,
             "createdBy":agent["id"], "version":1, "dependencies":[], "decisions":[], "results":[],
             "fixtureFlag":True, "fixtureInteger":7}
     runtime.put(db, "tasks", task)
@@ -34,6 +36,22 @@ with runtime.lock, runtime.db() as db:
     db.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES(?,?,?,?,?,?)",
                ("cross-message", "room-fixture", agent["id"], "Python message", 1720000000.5,
                 json.dumps({"delivery": True, "attempt": 1})))
+    numeric_events = [
+        ("numeric-created-precision", 1791788985.5209818),
+        ("numeric-created-tenth", 0.1),
+        ("numeric-created-large-exponent", 1e21),
+        ("numeric-created-integer-real", 5.0),
+        ("numeric-created-large-integer-real", 1791788985.0),
+        ("numeric-created-17-digits", 1.2345678901234567),
+        ("numeric-created-over-2pow53", 9007199254740993),
+        ("numeric-created-negative", -0.1),
+        ("numeric-created-negative-exponent", -1e-7),
+    ]
+    for event_id, created in numeric_events:
+        db.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) "
+                   "VALUES(?,?,?,?,'pending',?,0,NULL,?)",
+                   (event_id, agent["id"], "work_review", "{}", created,
+                    "Zażółć 東京\n\u0000" if event_id == "numeric-created-precision" else None))
 agent_id = agent["id"]
 runtime.close()
 reference = pathlib.Path(sys.argv[3])
@@ -57,10 +75,33 @@ class QuietRuntime(Runtime):
 root = pathlib.Path(sys.argv[1])
 agent_id = sys.argv[3]
 reference_root = pathlib.Path(sys.argv[4])
+with sqlite3.connect(root / "canvas.sqlite3") as raw_db:
+    persisted_agent_record = raw_db.execute(
+        "SELECT record FROM runtime_agents WHERE id=?", (agent_id,)
+    ).fetchone()[0]
+    persisted_task_record = raw_db.execute(
+        "SELECT record FROM runtime_tasks WHERE id='cross-task'"
+    ).fetchone()[0]
+with sqlite3.connect(reference_root / "canvas.sqlite3") as raw_db:
+    python_agent_record = raw_db.execute(
+        "SELECT record FROM runtime_agents WHERE id=?", (agent_id,)
+    ).fetchone()[0]
+    python_task_record = raw_db.execute(
+        "SELECT record FROM runtime_tasks WHERE id='cross-task'"
+    ).fetchone()[0]
 runtime = QuietRuntime(root, lambda *_args, **_kwargs: None)
 agent = runtime.agent(agent_id)
 assert agent["fixtureFlag"] is True and type(agent["fixtureInteger"]) is int
 assert agent["rustAgentFlag"] is True
+assert agent["fixtureUnicode"] == "Zażółć 東京\n\u0000"
+assert agent["fixtureNested"] == {"items":[0.1,5.0,9007199254740993,True,{"text":"🦀\t"}]}
+assert json.loads(persisted_agent_record) == agent
+assert ": " in python_agent_record and ": " not in persisted_agent_record
+assert r"\u6771\u4eac" in python_agent_record and "東京" in persisted_agent_record
+assert r"\n\u0000" in python_agent_record and r"\n\u0000" in persisted_agent_record
+assert python_agent_record.index('"fixtureUnicode"') < python_agent_record.index('"fixtureNested"')
+assert persisted_agent_record.index('"fixtureNested"') < persisted_agent_record.index('"fixtureUnicode"')
+assert r"\ud83e\udd80" in python_agent_record and "🦀" in persisted_agent_record
 with runtime.read_db() as db:
     tasks = runtime.records(db, "tasks")
     task = next(row for row in tasks if row["id"] == "cross-task")
@@ -70,6 +111,11 @@ with runtime.read_db() as db:
     ).fetchone()
     message = db.execute("SELECT deliveries FROM runtime_chat_messages WHERE id='cross-message'").fetchone()[0]
 assert task["rustFlag"] is True and task["fixtureInteger"] == 7
+assert task["created"] == 1e-7 and task["updated"] == 1e21
+assert json.loads(persisted_task_record) == task
+rust_task_created_token = persisted_task_record.split('"created":', 1)[1].split(',', 1)[0]
+python_task_created_token = python_task_record.split('"created": ', 1)[1].split(',', 1)[0]
+assert rust_task_created_token == "1e-7" and python_task_created_token == "1e-07"
 assert json.loads(event)["rust"] is True
 entity = json.loads(rust_event_row[1])
 assert entity["collection"] == "event" and entity["id"] == "cross-event"
@@ -80,6 +126,18 @@ with sqlite3.connect(reference_root / "canvas.sqlite3") as db:
     register_functions(db)
     db.execute("BEGIN IMMEDIATE")
     db.execute("UPDATE runtime_events SET status='running' WHERE id='cross-event'")
+    numeric_event_ids = (
+        "numeric-created-precision", "numeric-created-tenth", "numeric-created-large-exponent",
+        "numeric-created-integer-real", "numeric-created-large-integer-real",
+        "numeric-created-17-digits", "numeric-created-over-2pow53", "numeric-created-negative",
+        "numeric-created-negative-exponent",
+    )
+    for event_id in numeric_event_ids:
+        db.execute("UPDATE runtime_events SET status='running' WHERE id=?", (event_id,))
+    python_numeric_rows = db.execute(
+        "SELECT seq,payload,hash,deleted FROM sync_entities "
+        "WHERE collection='event' AND id LIKE 'numeric-created-%' ORDER BY id"
+    ).fetchall()
     python_event_row = db.execute(
         "SELECT seq, payload, hash, deleted FROM sync_entities WHERE collection='event' AND id='cross-event'"
     ).fetchone()
@@ -88,7 +146,9 @@ task["pythonRollbackGate"] = True
 with runtime.lock, runtime.db() as db:
     runtime.put(db, "tasks", task)
 runtime.close()
-print(json.dumps({"task": task, "message": json.loads(message)}))
+print(json.dumps({"task": task, "message": json.loads(message), "numeric_rows": python_numeric_rows,
+                  "rust_task_created_token": rust_task_created_token,
+                  "python_task_created_token": python_task_created_token}))
 "#;
 
 #[test]
@@ -137,11 +197,21 @@ fn python_fixture_round_trips_through_rust_and_python_write_rollback_gate() {
         .expect("cross-runtime test operation succeeds");
     assert_eq!(agent.extra["fixtureFlag"], json!(true));
     assert_eq!(agent.extra["fixtureInteger"].as_i64(), Some(7));
+    assert_eq!(
+        agent.extra["fixtureUnicode"],
+        json!("Zażółć 東京\n\u{0000}")
+    );
+    assert_eq!(
+        agent.extra["fixtureNested"],
+        json!({"items":[0.1,5.0,9007199254740993_i64,true,{"text":"🦀\t"}]})
+    );
     let task = TaskRepository::get(&reader, &TaskId::from("cross-task"))
         .expect("cross-runtime test operation succeeds")
         .expect("cross-runtime test operation succeeds");
     assert_eq!(task.extra["fixtureFlag"], json!(true));
     assert_eq!(task.extra["fixtureInteger"].as_i64(), Some(7));
+    assert_eq!(task.created, 1e-7);
+    assert_eq!(task.updated, 1e21);
     let event = QueueEventRepository::get(&reader, &QueueEventId::from("cross-event"))
         .expect("cross-runtime test operation succeeds")
         .expect("cross-runtime test operation succeeds");
@@ -177,6 +247,23 @@ fn python_fixture_round_trips_through_rust_and_python_write_rollback_gate() {
             event.text = json!({"rust": true}).to_string();
             event.status = "running".to_owned();
             QueueEventRepository::put(transaction, &event)?;
+            for event_id in [
+                "numeric-created-precision",
+                "numeric-created-tenth",
+                "numeric-created-large-exponent",
+                "numeric-created-integer-real",
+                "numeric-created-large-integer-real",
+                "numeric-created-17-digits",
+                "numeric-created-over-2pow53",
+                "numeric-created-negative",
+                "numeric-created-negative-exponent",
+            ] {
+                let mut numeric_event =
+                    QueueEventRepository::get(transaction, &QueueEventId::from(event_id))?
+                        .expect("Python fixture contains each adversarial numeric event");
+                numeric_event.status = "running".to_owned();
+                QueueEventRepository::put(transaction, &numeric_event)?;
+            }
             let mut agent = AgentRepository::get(transaction, &AgentId::from(agent_id.as_str()))?
                 .expect("Python fixture contains the agent");
             agent.extra.insert("rustAgentFlag".to_owned(), json!(true));
@@ -198,6 +285,25 @@ fn python_fixture_round_trips_through_rust_and_python_write_rollback_gate() {
     store
         .verify_schema()
         .expect("cross-runtime test operation succeeds");
+    let reader = store.read().expect("cross-runtime test operation succeeds");
+    let rust_numeric_rows = {
+        let mut statement = reader
+            .prepare("SELECT seq,payload,hash,deleted FROM sync_entities WHERE collection='event' AND id LIKE 'numeric-created-%' ORDER BY id")
+            .expect("cross-runtime test operation succeeds");
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .expect("cross-runtime test operation succeeds")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("cross-runtime test operation succeeds")
+    };
+    drop(reader);
     drop(store);
 
     let verified = python(
@@ -211,6 +317,27 @@ fn python_fixture_round_trips_through_rust_and_python_write_rollback_gate() {
     let python_output =
         serde_json::from_str::<Value>(&verified).expect("cross-runtime test operation succeeds");
     assert_eq!(python_output["task"]["rustFlag"], true);
+    assert_eq!(python_output["rust_task_created_token"], "1e-7");
+    assert_eq!(python_output["python_task_created_token"], "1e-07");
+    let python_numeric_rows = python_output["numeric_rows"]
+        .as_array()
+        .expect("Python helper returns numeric event rows");
+    assert_eq!(rust_numeric_rows.len(), 9);
+    assert_eq!(python_numeric_rows.len(), 9);
+    for (rust_row, python_row) in rust_numeric_rows.iter().zip(python_numeric_rows) {
+        assert_eq!(rust_row.0, python_row[0]);
+        assert_eq!(
+            rust_row.1,
+            python_row[1]
+                .as_str()
+                .expect("Python sync payload is JSON text")
+        );
+        assert_eq!(
+            rust_row.2,
+            python_row[2].as_str().expect("Python sync hash is text")
+        );
+        assert_eq!(rust_row.3, python_row[3]);
+    }
 
     let reopened = RuntimeStore::open(Some(&root)).expect("cross-runtime test operation succeeds");
     let read_back = reopened
