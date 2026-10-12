@@ -202,8 +202,8 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         edited = self.line / "edit"
         edit_started = self.line / "edit-started"
         script = (
-            'import pathlib,time;pathlib.Path("edit").write_text("before cancel");'
-            f'pathlib.Path({str(edit_started)!r}).write_text("ready");time.sleep(20)'
+            'import pathlib,threading;pathlib.Path("edit").write_text("before cancel");'
+            f'pathlib.Path({str(edit_started)!r}).write_text("ready");threading.Event().wait()'
         )
         task = asyncio.create_task(self.execute("cancel", script))
         await asyncio.to_thread(wait_for_condition, lambda: bool(self.host.children), 'host exec child start')
