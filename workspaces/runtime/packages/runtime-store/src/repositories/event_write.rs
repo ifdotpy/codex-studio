@@ -181,6 +181,26 @@ impl EventWriteRepository {
         agent_id: &str,
         status: &str,
     ) -> StoreResult<()> {
+        Self::set_agent_sync_fields(transaction, agent_id, status, None)
+    }
+
+    /// Keep renderer-visible lifecycle fields in step with a scheduler transition.
+    pub fn set_agent_sync_lifecycle(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        status: &str,
+        in_flight: bool,
+        turn_id: Option<&str>,
+    ) -> StoreResult<()> {
+        Self::set_agent_sync_fields(transaction, agent_id, status, Some((in_flight, turn_id)))
+    }
+
+    fn set_agent_sync_fields(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        status: &str,
+        lifecycle: Option<(bool, Option<&str>)>,
+    ) -> StoreResult<()> {
         let old = transaction
             .query_row(
                 "SELECT payload,deleted FROM sync_entities WHERE collection='agent' AND id=?1",
@@ -210,10 +230,23 @@ impl EventWriteRepository {
                 "agent sync projection identity is invalid".to_owned(),
             ));
         }
-        if value.get("status").and_then(Value::as_str) == Some(status) {
+        let status_changed = value.get("status").and_then(Value::as_str) != Some(status);
+        let lifecycle_changed = lifecycle.is_some_and(|(in_flight, turn_id)| {
+            value.get("inFlight").and_then(Value::as_bool) != Some(in_flight)
+                || value.get("turnId").and_then(Value::as_str) != turn_id
+        });
+        if !status_changed && !lifecycle_changed {
             return Ok(());
         }
         value.insert("status".to_owned(), Value::String(status.to_owned()));
+        if let Some((in_flight, turn_id)) = lifecycle {
+            value.insert("inFlight".to_owned(), Value::Bool(in_flight));
+            if let Some(turn_id) = turn_id {
+                value.insert("turnId".to_owned(), Value::String(turn_id.to_owned()));
+            } else {
+                value.insert("turnId".to_owned(), Value::Null);
+            }
+        }
         if status == "queued"
             && let Some(overview) = value.get_mut("overview").and_then(Value::as_object_mut)
         {
@@ -269,6 +302,42 @@ mod tests {
                 "collection":"agent","id":"a","value":{"id":"a","status":"queued","overview":{"result":"","resultTruncated":false,"resultTurnId":null,"task":"keep"}}
             })
         );
+    }
+
+    #[test]
+    fn agent_projection_lifecycle_write_updates_activity_and_turn_identity() {
+        let mut connection = Connection::open_in_memory().expect("memory SQLite opens");
+        connection
+            .execute_batch(
+                "CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
+                 CREATE TABLE sync_documents(seq INTEGER,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
+                 CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);
+                 INSERT INTO sync_entities VALUES('agent','a',1,'old', '{\"collection\":\"agent\",\"id\":\"a\",\"value\":{\"id\":\"a\",\"status\":\"starting\",\"inFlight\":false,\"turnId\":null}}',0);",
+            )
+            .expect("projection fixture creates");
+        let transaction = connection.transaction().expect("transaction begins");
+        EventWriteRepository::set_agent_sync_lifecycle(
+            &transaction,
+            "a",
+            "running",
+            true,
+            Some("turn-1"),
+        )
+        .expect("lifecycle projection updates");
+        transaction.commit().expect("transaction commits");
+        let payload: String = connection
+            .query_row(
+                "SELECT payload FROM sync_entities WHERE collection='agent' AND id='a'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("projection exists");
+        let value = serde_json::from_str::<serde_json::Value>(&payload)
+            .expect("projection remains JSON")["value"]
+            .clone();
+        assert_eq!(value["status"], "running");
+        assert_eq!(value["inFlight"], true);
+        assert_eq!(value["turnId"], "turn-1");
     }
 
     #[test]
