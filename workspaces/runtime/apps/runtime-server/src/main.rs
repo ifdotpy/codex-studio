@@ -1,7 +1,10 @@
 use std::env;
 use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use studio_runtime_http::{HttpState, router};
+use studio_runtime_store::RuntimeStore;
 use tokio::net::TcpListener;
 
 const DEFAULT_PORT: u16 = 4620;
@@ -17,13 +20,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    let mut workspace = [0_u8; 16];
-    getrandom::fill(&mut workspace).map_err(|error| std::io::Error::other(error.to_string()))?;
-    let workspace_id = workspace
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let state_dir = env::var("CODEX_AGENTS_STATE_DIR").unwrap_or_default();
+    let configured_state_dir = env::var_os("CODEX_AGENTS_STATE_DIR").map(PathBuf::from);
+    let store = Arc::new(RuntimeStore::open(configured_state_dir.as_deref())?);
+    let workspace_id = studio_runtime_store::SyncDocumentsRepository::workspace_id(&store.read()?)?;
+    let state_dir = store.root().to_string_lossy().into_owned();
     let native_path = env::var("CODEX_BIN").ok();
     let public_origin = env::var("CODEX_CANVAS_PUBLIC_ORIGIN").ok();
     let app = router(HttpState::new(
@@ -33,6 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         state_dir,
         address.port(),
         public_origin,
+        Some(store),
     ))?;
     println!("Codex Canvas: http://{}:{}", address.ip(), address.port());
     axum::serve(

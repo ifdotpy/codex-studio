@@ -17,6 +17,7 @@ pub use records::{
     MessageRepository, QueueEvent, QueueEventId, QueueEventRepository, TaskId, TaskRecord,
     TaskRepository, WorkStatus,
 };
+pub use repositories::sync_documents::{EntityRow, SyncDocument, SyncDocumentsRepository};
 
 const DATABASE_BUSY_TIMEOUT_MS: u32 = 15_000;
 
@@ -32,6 +33,8 @@ pub enum StoreError {
     UnsafeStateDirectory,
     #[error("database schema or migration marker is incompatible: {0}")]
     SchemaMismatch(String),
+    #[error("invalid stored sync object {scope}/{id}")]
+    InvalidSyncObject { scope: String, id: String },
     #[error("database object {object} in {database} is incompatible: {reason}")]
     SchemaObjectMismatch {
         database: String,
@@ -77,6 +80,7 @@ pub struct RuntimeStore {
     root: PathBuf,
     _runtime_lock: RuntimeLock,
     writer: Mutex<Connection>,
+    version_reader: Mutex<Connection>,
 }
 
 impl RuntimeStore {
@@ -100,10 +104,13 @@ impl RuntimeStore {
         let writer = open_database(&canvas_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         writer.pragma_update(None, "synchronous", "FULL")?;
         schema::register_python_trigger_functions(&writer)?;
+        let version_reader = open_database(&canvas_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        version_reader.pragma_update(None, "query_only", "ON")?;
         let store = Self {
             root,
             _runtime_lock: runtime_lock,
             writer: Mutex::new(writer),
+            version_reader: Mutex::new(version_reader),
         };
         store.transaction(|transaction| {
             bootstrap::prepare_sync_schema(transaction)?;
@@ -147,6 +154,16 @@ impl RuntimeStore {
         )?;
         connection.pragma_update(None, "query_only", "ON")?;
         Ok(connection)
+    }
+
+    /// Return SQLite's connection-local generation, advanced by commits made
+    /// through the serialized writer or another connection.
+    pub fn generation(&self) -> StoreResult<i64> {
+        let reader = self
+            .version_reader
+            .lock()
+            .map_err(|_| StoreError::WriterPoisoned)?;
+        Ok(reader.query_row("PRAGMA data_version", [], |row| row.get(0))?)
     }
 
     pub fn verify_schema(&self) -> StoreResult<()> {
