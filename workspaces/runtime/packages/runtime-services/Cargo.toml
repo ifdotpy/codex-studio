@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 studio-runtime-process = { path = "../runtime-process" }
 studio-runtime-providers = { path = "../runtime-providers" }
 studio-runtime-store = { path = "../runtime-store" }
