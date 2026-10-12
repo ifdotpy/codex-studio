@@ -1070,7 +1070,7 @@ class SyncRouterTests(unittest.TestCase):
         self.assertEqual(response.json()["error"], "The server workspace changed. Reload before sending.")
         self.assertEqual(context.store.push_calls, [])
 
-    def test_real_api_context_sender_validates_after_write_without_retry_hint(self) -> None:
+    def test_real_api_context_sender_reports_a_durable_write_despite_a_response_mismatch(self) -> None:
         context = ApiContext.for_schema()
         store = StoreStub()
         store.invalid_push_response = True
@@ -1084,14 +1084,15 @@ class SyncRouterTests(unittest.TestCase):
         }
         with patch.object(context, "sync", return_value=store):
             with TestClient(app, raise_server_exceptions=False) as client:
-                response = client.post(
-                    "/api/sync/drafts", json=request,
-                    headers={"X-Canvas-Workspace": "workspace-a"},
-                )
+                with self.assertLogs("studio_api.context", level="ERROR") as logs:
+                    response = client.post(
+                        "/api/sync/drafts", json=request,
+                        headers={"X-Canvas-Workspace": "workspace-a"},
+                    )
         self.assertEqual(len(store.push_calls), 1)
-        self.assertEqual(response.status_code, 500)
-        self.assertNotIn("outcome", response.json())
-        self.assertEqual(response.json()["error"], "The server could not validate its response")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertNotIn("error", response.text)
+        self.assertIn("Response contract mismatch for POST /api/sync/drafts", logs.output[0])
 
     def test_real_api_context_sender_accepts_typed_sync_success_responses(self) -> None:
         context = ApiContext.for_schema()

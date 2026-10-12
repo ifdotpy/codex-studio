@@ -282,11 +282,13 @@ class FederationRouterTests(unittest.TestCase):
         self.assertEqual(response.json()["result"], {"protocol": 1, "approved": True, "revoked": False})
         self.assertEqual(self.runtime.service.calls, [("status", raw)])
 
-    def test_invalid_service_response_does_not_mark_completed_write_as_retryable(self) -> None:
+    def test_invalid_service_response_still_reports_the_completed_write(self) -> None:
         self.runtime.service.result = {"result": {"approved": True}}
-        response = self.post_signed(b'{"protocol":1}')
-        self.assertEqual(response.status_code, 500)
-        self.assertNotIn("outcome", response.json())
+        with self.assertLogs("studio_api.context", level="ERROR") as logs:
+            response = self.post_signed(b'{"protocol":1}')
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {"result": {"approved": True}})
+        self.assertIn("Response contract mismatch for POST", logs.output[0])
         self.assertEqual(self.runtime.service.writes, 1)
 
     def test_oversize_body_rejected_before_service(self) -> None:

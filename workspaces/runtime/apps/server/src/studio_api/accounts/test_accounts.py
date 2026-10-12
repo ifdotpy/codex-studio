@@ -1101,9 +1101,10 @@ class AccountsRouterTests(unittest.TestCase):
                 self.assertEqual(changed.json()["workerBaseRef"], "main")
                 self.assertNotIn("accountRevision", changed.json())
 
-                # Reproduce the previous closed response contract to record the
-                # durable-write hazard in ApiContext.send. The production model
-                # remains open; this isolated override represents the rejected DTO.
+                # Reproduce the previous closed response contract: the write is
+                # durable before ApiContext.send validates, so the response must
+                # report it. The production model remains open; this isolated
+                # override represents the rejected DTO.
                 class ClosedProjectMutation(ProjectMutationRecord):
                     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -1118,15 +1119,15 @@ class AccountsRouterTests(unittest.TestCase):
                     "action": "set_worker_base", "path": str(project_path),
                     "base_ref": "next", "expected_revision": 1,
                 })
-                self.assertEqual(mismatch.status_code, 500)
-                self.assertEqual(mismatch.json(), {"error": "The server could not validate its response"})
+                self.assertEqual(mismatch.status_code, 200, mismatch.text)
+                self.assertEqual(mismatch.json()["workerBaseRef"], "next")
                 with isolated.runtime.lock, isolated.runtime.db() as db:
-                    after_failed_response = json.loads(db.execute(
+                    after_mismatched_response = json.loads(db.execute(
                         "SELECT record FROM runtime_projects WHERE id=?",
                         (str(project_path.resolve()),),
                     ).fetchone()[0])
-                self.assertEqual(after_failed_response["workerBaseRef"], "next")
-                self.assertEqual(after_failed_response["workerBaseRevision"], 2)
+                self.assertEqual(after_mismatched_response["workerBaseRef"], "next")
+                self.assertEqual(after_mismatched_response["workerBaseRevision"], 2)
         finally:
             isolated.tearDown()
 

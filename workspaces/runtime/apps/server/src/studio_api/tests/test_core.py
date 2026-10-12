@@ -102,12 +102,13 @@ def request_for(
     *,
     accept_encoding: str = "",
     if_none_match: str = "",
+    method: str = "GET",
 ) -> Request:
     scope = {
         "type": "http",
         "asgi": {"version": "3.0"},
         "http_version": "1.1",
-        "method": "GET",
+        "method": method,
         "scheme": "http",
         "path": "/api/messages",
         "raw_path": b"/api/messages",
@@ -308,6 +309,15 @@ print(api_schema_hash(openapi_document()))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(json.loads(bytes(response.body)), {"value": "not-a-number"})
         self.assertIn("Response contract mismatch", logs.output[0])
+
+    def test_write_contract_mismatch_also_fails_open_because_the_write_is_durable(self) -> None:
+        with self.assertLogs("studio_api.context", level="ERROR") as logs:
+            response = self.context.send(
+                request_for(NumericResponse, method="POST"), {"value": "not-a-number"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(bytes(response.body)), {"value": "not-a-number"})
+        self.assertIn("Response contract mismatch for POST", logs.output[0])
 
     def test_direct_json_encoding_accepts_integers_beyond_python_string_limit(self) -> None:
         value = 10 ** 4_300

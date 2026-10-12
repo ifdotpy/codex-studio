@@ -288,15 +288,16 @@ def test_capacity_retry_response_matches_saved_runtime_record() -> None:
     assert runtime.calls == [("capacity_retry", ("agent", "retry", "retry"))]
 
 
-def test_context_sender_rejects_invalid_service_response_without_retry_hint() -> None:
+def test_context_sender_reports_a_completed_write_despite_an_invalid_service_response() -> None:
     app, runtime, _context = _app()
     runtime.invalid_stop_response = True
     response = TestClient(app, raise_server_exceptions=False).post(
         "/api/stop", json={"id": "agent"}
     )
 
-    assert response.status_code == 500
-    assert "outcome" not in response.json()
+    # The stop already happened; the response reports it and the mismatch is logged.
+    assert response.status_code == 200, response.text
+    assert "error" not in response.json()
 
 
 def test_transfer_response_preserves_receipt_identity_and_filters_internal_state() -> None:
@@ -839,8 +840,8 @@ class AgentRouterTests(unittest.TestCase):
     def test_capacity_retry_response_matches_saved_runtime_record(self) -> None:
         test_capacity_retry_response_matches_saved_runtime_record()
 
-    def test_context_sender_rejects_invalid_response_without_retry_hint(self) -> None:
-        test_context_sender_rejects_invalid_service_response_without_retry_hint()
+    def test_context_sender_reports_completed_write_despite_invalid_response(self) -> None:
+        test_context_sender_reports_a_completed_write_despite_an_invalid_service_response()
 
     def test_transfer_projection_preserves_identity_and_filters_internal_state(self) -> None:
         test_transfer_response_preserves_receipt_identity_and_filters_internal_state()
