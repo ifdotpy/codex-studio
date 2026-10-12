@@ -615,10 +615,13 @@ async function currentExternalProof(s, proof) {
   const aliases = expected
     ? expected.map((server) => server.alias)
     : externalAliases(proof);
-  if (!aliases.length) return { catalogs: [], configs: {} };
+  if (!aliases.length) return { catalogs: [], configs: {}, transports: {} };
   if (expected) {
     try {
-      return await targetExternalCatalog(s.cwd, expected);
+      return await targetExternalCatalog(s.cwd, expected, {
+        transports:
+          proof.externalTransports || s.moveProof?.externalTransports || {},
+      });
     } catch (error) {
       if (error.data?.moveRefusal) throw error;
       throw externalRefusal(aliases, [], aliases);
@@ -697,6 +700,9 @@ async function proofOptions(s, proof) {
       ? { compiledTools: compiled, compiledToolsJson: JSON.stringify(compiled) }
       : {}),
     ...(external.catalogs.length ? { externalCatalog: external.catalogs } : {}),
+    ...(Object.keys(external.transports || {}).length
+      ? { externalTransports: external.transports }
+      : {}),
     options,
     optionsHash,
     proofMethod: external.catalogs.length
