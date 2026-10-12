@@ -440,11 +440,13 @@ test("Account Transfer Ui", async ({
       "Waiting for the current turn (fixture stream applied)";
     agents[0].accountTransfer.waiting = syncedTransferWaiting;
     notifySync([{ kind: "state" }]);
-    await page
-      .getByRole("dialog", { name: "Chat settings", exact: true })
-      .getByRole("button", { name: "Main agent settings", exact: true })
-      .click();
     const agentSettings = page.locator(".execution-dropdown");
+    if (!(await agentSettings.isVisible()))
+      await page
+        .getByRole("dialog", { name: "Chat settings", exact: true })
+        .getByRole("button", { name: "Main agent settings", exact: true })
+        .click();
+    await agentSettings.waitFor();
     const transferStatus = agentSettings.locator(
       ".account-menu-note[role=status]",
     );
