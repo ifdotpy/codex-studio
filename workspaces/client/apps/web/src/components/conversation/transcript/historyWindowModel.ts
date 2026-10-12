@@ -74,20 +74,18 @@ export function historyWindowAnchor(rows: HistoryGroup[], id: string) {
   return row ? { row, item: row.items[0] } : undefined;
 }
 
-/** Compute the old visible, focus, selection and requested window rows. */
 export function historyWindowIndices(
   rows: HistoryGroup[],
   visible: string[],
   pinned: string[],
   anchors: (string | null | undefined)[],
 ): number[] {
-  const requested = anchors[0];
   const keep = new Set([
     ...visible,
     ...pinned,
-    ...(requested
-      ? [historyWindowAnchor(rows, requested)?.row.id || requested]
-      : []),
+    ...anchors.flatMap((id) =>
+      id ? [historyWindowAnchor(rows, id)?.row.id || id] : [],
+    ),
   ]);
   return rows.flatMap((row, index) => (keep.has(row.id) ? [index] : []));
 }

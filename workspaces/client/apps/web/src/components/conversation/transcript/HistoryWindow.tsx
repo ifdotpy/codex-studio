@@ -19,6 +19,8 @@ import {
   historyWindowRange,
 } from "./historyWindowModel";
 
+type WindowAnchor = { id: string; offset: number; kind?: "message" | "row" };
+
 /** A viewport owns only mounted rows. The conversation scroll hook owns anchors. */
 export default function HistoryWindow({
   rows,
@@ -46,12 +48,15 @@ export default function HistoryWindow({
     rows.slice(-12).map((row) => row.id),
   );
   const [initialAnchor] = useState(() =>
-    saved<{ id: string; offset: number; kind?: "message" | "row" } | null>(
-      `${storageKey}:window-anchor`,
-      null,
-    ),
+    saved<WindowAnchor | null>(`${storageKey}:window-anchor`, null),
   );
   const storedAnchor = useRef(initialAnchor);
+  const viewportAnchor = useRef<WindowAnchor | null>(initialAnchor);
+  const restoringAnchor = useRef(initialAnchor?.id || null);
+  const restoreViewportAnchor = useRef<(anchor: WindowAnchor) => void>(
+    () => {},
+  );
+  const previousRows = useRef(rows);
   const [requested, setRequested] = useState<string | null>(
     () => storedAnchor.current?.id || null,
   );
@@ -64,7 +69,10 @@ export default function HistoryWindow({
     (rows.length > HISTORY_WINDOW_THRESHOLD ||
       rows.reduce((count, row) => count + row.items.length, 0) > 256);
   const indices = useMemo(() => {
-    return historyWindowIndices(rows, visible, pinned, [requested]);
+    return historyWindowIndices(rows, visible, pinned, [
+      requested,
+      viewportAnchor.current?.id,
+    ]);
   }, [rows, visible, pinned, requested]);
   const rowsById = useMemo(
     () => new Map(rows.map((row) => [row.id, row])),
@@ -89,7 +97,7 @@ export default function HistoryWindow({
     if (!active)
       return () => root.removeEventListener("studio-history-reveal", reveal);
     let frame = 0;
-    let restoreFrame = 0;
+    let viewportRestoreFrame = 0;
     const persistAnchor = () => {
       const bounds = root.getBoundingClientRect();
       const row = Array.from(
@@ -99,6 +107,7 @@ export default function HistoryWindow({
         return box.bottom > bounds.top && box.top < bounds.bottom;
       });
       if (root.scrollHeight - root.scrollTop - root.clientHeight < 32) {
+        viewportAnchor.current = null;
         save(`${storageKey}:window-anchor`, null);
       } else if (row) {
         const metadata = latest.current.rowsById.get(row.dataset.historyRow!);
@@ -116,12 +125,19 @@ export default function HistoryWindow({
         const item = visible
           ? metadata.items.find((item) => item.id === visible.dataset.message)
           : metadata.items[0];
-        if (item)
-          save(`${storageKey}:window-anchor`, {
-            id: messageRenderKey(item),
-            kind: visible ? "message" : "row",
-            offset: (visible || row).getBoundingClientRect().top - bounds.top,
-          });
+        const anchor: WindowAnchor = item
+          ? {
+              id: messageRenderKey(item),
+              kind: visible ? "message" : "row",
+              offset: (visible || row).getBoundingClientRect().top - bounds.top,
+            }
+          : {
+              id: row.dataset.historyRow!,
+              kind: "row",
+              offset: row.getBoundingClientRect().top - bounds.top,
+            };
+        viewportAnchor.current = anchor;
+        save(`${storageKey}:window-anchor`, anchor);
       }
     };
     const update = () => {
@@ -140,7 +156,9 @@ export default function HistoryWindow({
           : ids,
       );
       setRequested((id) =>
-        id && ids.includes(historyWindowAnchor(current, id)?.row.id || id)
+        id &&
+        restoringAnchor.current !== id &&
+        ids.includes(historyWindowAnchor(current, id)?.row.id || id)
           ? null
           : id,
       );
@@ -198,32 +216,31 @@ export default function HistoryWindow({
     document.addEventListener("focusout", focusChanged);
     const observer = new ResizeObserver(schedule);
     observer.observe(root);
-    const anchor = storedAnchor.current;
-    storedAnchor.current = null;
-    if (
-      anchor &&
-      typeof anchor.id === "string" &&
-      Number.isFinite(anchor.offset)
-    ) {
-      const match = historyWindowAnchor(latest.current.rows, anchor.id);
-      if (anchor.kind === "message" && match) setRevealedMessage(match.item.id);
+    const restoreAnchor = (anchor: WindowAnchor, afterRestore?: () => void) => {
+      if (viewportRestoreFrame) cancelAnimationFrame(viewportRestoreFrame);
+      let previousTop: number | undefined;
       let attempts = 0;
-      const restoreAnchor = () => {
+      const measure = () => {
+        viewportRestoreFrame = 0;
         const resolved = historyWindowAnchor(latest.current.rows, anchor.id);
-        const row =
-          resolved &&
-          Array.from(
-            node.querySelectorAll<HTMLElement>("[data-history-row]"),
-          ).find((row) => row.dataset.historyRow === resolved.row.id);
+        const row = resolved
+          ? Array.from(
+              node.querySelectorAll<HTMLElement>("[data-history-row]"),
+            ).find(
+              (candidate) => candidate.dataset.historyRow === resolved.row.id,
+            )
+          : undefined;
         const message =
-          row &&
-          resolved &&
-          Array.from(row.querySelectorAll<HTMLElement>("[data-message]")).find(
-            (message) =>
-              message.dataset.message === resolved.item.id ||
-              (!!resolved.item.sourceId &&
-                message.dataset.sourceMessage === resolved.item.sourceId),
-          );
+          row && resolved
+            ? Array.from(
+                row.querySelectorAll<HTMLElement>("[data-message]"),
+              ).find(
+                (candidate) =>
+                  candidate.dataset.message === resolved.item.id ||
+                  (!!resolved.item.sourceId &&
+                    candidate.dataset.sourceMessage === resolved.item.sourceId),
+              )
+            : undefined;
         if (anchor.kind === "message" && message) {
           for (
             let parent = message.parentElement;
@@ -242,26 +259,58 @@ export default function HistoryWindow({
           !visibleMessage &&
           attempts++ < 20
         ) {
-          restoreFrame = requestAnimationFrame(restoreAnchor);
+          viewportRestoreFrame = requestAnimationFrame(measure);
           return;
         }
         const target =
           anchor.kind === "message" && visibleMessage ? message : row;
-        if (target) {
-          root.scrollTop +=
-            target.getBoundingClientRect().top -
-            root.getBoundingClientRect().top -
-            anchor.offset;
-          rememberLatest.current?.();
+        if (!target) {
+          afterRestore?.();
+          update();
+          return;
         }
+        if (anchor.kind === "message" && target === row && attempts++ < 20) {
+          viewportRestoreFrame = requestAnimationFrame(measure);
+          return;
+        }
+        const top =
+          target.getBoundingClientRect().top - root.getBoundingClientRect().top;
+        if (previousTop === undefined || Math.abs(top - previousTop) > 0.5) {
+          previousTop = top;
+          if (attempts++ < 20) {
+            viewportRestoreFrame = requestAnimationFrame(measure);
+            return;
+          }
+        }
+        root.scrollTop += top - anchor.offset;
+        rememberLatest.current?.();
+        afterRestore?.();
         update();
       };
-      restoreFrame = requestAnimationFrame(restoreAnchor);
+      viewportRestoreFrame = requestAnimationFrame(measure);
+    };
+    restoreViewportAnchor.current = (anchor) =>
+      restoreAnchor(anchor, () => {
+        if (restoringAnchor.current === anchor.id)
+          restoringAnchor.current = null;
+      });
+    const anchor = storedAnchor.current;
+    storedAnchor.current = null;
+    if (
+      anchor &&
+      typeof anchor.id === "string" &&
+      Number.isFinite(anchor.offset)
+    ) {
+      const match = historyWindowAnchor(latest.current.rows, anchor.id);
+      if (anchor.kind === "message" && match) setRevealedMessage(match.item.id);
+      restoringAnchor.current = anchor.id;
+      restoreViewportAnchor.current(anchor);
     } else update();
     return () => {
       scheduleUpdate.current = () => {};
+      restoreViewportAnchor.current = () => {};
       if (frame) cancelAnimationFrame(frame);
-      if (restoreFrame) cancelAnimationFrame(restoreFrame);
+      if (viewportRestoreFrame) cancelAnimationFrame(viewportRestoreFrame);
       observer.disconnect();
       root.removeEventListener("scroll", scrolled);
       root.removeEventListener("studio-history-reveal", reveal);
@@ -270,7 +319,14 @@ export default function HistoryWindow({
       document.removeEventListener("focusout", focusChanged);
     };
   }, [active, scrollContainer, storageKey]);
-  useLayoutEffect(() => scheduleUpdate.current(), [rows, offsets]);
+  useLayoutEffect(() => {
+    scheduleUpdate.current();
+    if (previousRows.current !== rows) {
+      previousRows.current = rows;
+      if (viewportAnchor.current)
+        restoreViewportAnchor.current(viewportAnchor.current);
+    }
+  }, [rows, offsets]);
   useLayoutEffect(() => {
     const node = body.current;
     if (!node) return;
