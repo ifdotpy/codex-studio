@@ -1,0 +1,55 @@
+name: Fast tier setup
+description: Install the pinned tools and isolated runtime used by the fast tier.
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: 22
+    - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      with:
+        package_json_file: package.json
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: "3.14"
+    - name: Read the pinned Rust toolchain
+      id: rust-toolchain
+      shell: bash
+      run: |
+        channel="$(sed -n 's/^channel = \"\(.*\)\"/\1/p' rust-toolchain.toml)"
+        components="$(sed -n 's/^components = \[\(.*\)\]/\1/p' rust-toolchain.toml | tr -d ' \"')"
+        test -n "$channel"
+        test -n "$components"
+        echo "channel=$channel" >> "$GITHUB_OUTPUT"
+        echo "components=$components" >> "$GITHUB_OUTPUT"
+    - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
+      with:
+        toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+        components: ${{ steps.rust-toolchain.outputs.components }}
+    - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2
+      with:
+        tool: nextest@0.9.146
+    - name: Download and verify pinned Just 1.58.0
+      shell: bash
+      run: |
+        archive="$RUNNER_TEMP/just-1.58.0-x86_64-unknown-linux-musl.tar.gz"
+        mkdir -p "$RUNNER_TEMP/just-bin"
+        curl --fail --location --silent --show-error \
+          https://github.com/casey/just/releases/download/1.58.0/just-1.58.0-x86_64-unknown-linux-musl.tar.gz \
+          --output "$archive"
+        echo "4a5cc2f53e6f0f8c59092a6cc38291eb729d46a7dd95d3ae582008881b84931d  $archive" | sha256sum --check
+        tar -xzf "$archive" -C "$RUNNER_TEMP/just-bin" just
+        echo "$RUNNER_TEMP/just-bin" >> "$GITHUB_PATH"
+    - name: Verify Just version
+      shell: bash
+      run: test "$(just --version)" = "just 1.58.0"
+    - name: Install locked JavaScript dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile
+    - name: Prepare the isolated Python test environment
+      shell: bash
+      run: |
+        echo "XDG_CACHE_HOME=$RUNNER_TEMP/codex-studio-cache" >> "$GITHUB_ENV"
+        cargo build --release -p studio-operations-python
+        cargo build --locked --release -p studio-diagnostics
+        XDG_CACHE_HOME="$RUNNER_TEMP/codex-studio-cache" python3 workspaces/runtime/apps/server/src/install-cli.py --dev --bin-dir "$RUNNER_TEMP/codex-studio-bin"

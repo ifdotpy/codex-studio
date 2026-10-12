@@ -104,6 +104,35 @@ def _receive(connection):
 
 
 class ServerSuiteRunner(unittest.TestCase):
+    def test_server_shards_partition_runnable_entries_stably(self):
+        entries = [
+            (f"suite-{index:02d}.py", "safe" if index % 2 else "component")
+            for index in reversed(range(13))
+        ]
+        expected = sorted(entries)
+        for shard_count in (1, 2, 3, 5, 13):
+            with self.subTest(shard_count=shard_count):
+                first = [RUNNER.shard_entries(entries, index, shard_count)
+                         for index in range(shard_count)]
+                second = [RUNNER.shard_entries(entries, index, shard_count)
+                          for index in range(shard_count)]
+                self.assertEqual(first, second)
+                assigned = [entry for shard in first for entry in shard]
+                self.assertEqual(sorted(assigned), expected)
+                self.assertEqual(len(assigned), len(set(assigned)))
+
+        all_entries = [*entries, ("automated.py", "automated"), ("heavy.py", "heavy")]
+        runnable, skipped = RUNNER._runnable_entries(all_entries, set())
+        self.assertEqual(set(skipped), {("automated.py", "automated"), ("heavy.py", "heavy")})
+        shards = [RUNNER.shard_entries(runnable, index, 3) for index in range(3)]
+        self.assertEqual(sorted(entry for shard in shards for entry in shard), sorted(runnable))
+
+    def test_server_shards_reject_invalid_or_empty_selection(self):
+        with self.assertRaisesRegex(ValueError, "shard index"):
+            RUNNER.shard_entries([("one.py", "safe")], 1, 1)
+        with self.assertRaisesRegex(ValueError, "selected no suites"):
+            RUNNER.shard_entries([("one.py", "safe")], 1, 2)
+
     def test_compare_runs_normalizes_old_and_relocated_suite_paths(self):
         with tempfile.TemporaryDirectory(prefix="server-run-compare-") as directory:
             old_log = Path(directory) / "old.log"

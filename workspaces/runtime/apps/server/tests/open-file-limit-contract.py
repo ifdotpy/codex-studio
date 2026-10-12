@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+from codex_open_file_limit import raise_open_file_limit
 
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
@@ -49,9 +50,15 @@ class OpenFileLimit(unittest.TestCase):
 
     def test_higher_soft_limit_is_not_lowered(self):
         hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
-        self.assertGreaterEqual(hard, 100000, 'The host hard limit must permit this contract')
-        own, _ = run_with(100000, hard)
-        self.assertEqual(own, 100000)
+        bounded_hard = 100000 if hard == resource.RLIM_INFINITY else hard
+        if bounded_hard < 2:
+            self.skipTest("The host hard limit cannot represent a higher soft limit")
+        target = bounded_hard // 2
+        current = target + 1
+        with (mock.patch.object(resource, "getrlimit", return_value=(current, hard)),
+              mock.patch.object(resource, "setrlimit") as set_limit):
+            self.assertEqual(raise_open_file_limit(target), current)
+        set_limit.assert_not_called()
 
 
 class EntryPoints(unittest.TestCase):

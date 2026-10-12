@@ -1529,8 +1529,9 @@ def worker_plan(entries, profile=None, override=None, sample_seconds=5.0):
 
 def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
                execute=run_process, workers=None, load_sample_seconds=5.0,
-               audit_home=False):
+               audit_home=False, shard_index=None, shard_count=None):
     runnable, _skipped = _runnable_entries(entries, opted_in)
+    runnable = _apply_shard(runnable, shard_index, shard_count)
     focus_profile = _load_profile() if len(runnable) == FOCUSED_SUITE_LIMIT else None
     focused_slots = _focused_slot_count(focus_profile) if focus_profile is not None else 0
     focused = focused_slots > 0
@@ -1542,7 +1543,8 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
     with lock:
         return _run_suites_locked(entries, opted_in, timeout, expensive_timeout,
                                   root, execute, workers, load_sample_seconds, audit_home,
-                                  focused=focused, focused_slots=focused_slots)
+                                  focused=focused, focused_slots=focused_slots,
+                                  shard_index=shard_index, shard_count=shard_count)
 
 
 def _runnable_entries(entries, opted_in):
@@ -1558,10 +1560,33 @@ def _runnable_entries(entries, opted_in):
     return runnable, skipped
 
 
+def shard_entries(entries, shard_index, shard_count):
+    """Assign sorted runnable suite paths to stable, non-overlapping shards."""
+    if shard_count < 1:
+        raise ValueError("shard count must be at least one")
+    if not 0 <= shard_index < shard_count:
+        raise ValueError("shard index must be between zero and shard count minus one")
+    ordered = sorted(entries, key=lambda entry: entry[0])
+    selected = [entry for index, entry in enumerate(ordered) if index % shard_count == shard_index]
+    if not selected:
+        raise ValueError(f"server shard {shard_index + 1}/{shard_count} selected no suites")
+    return selected
+
+
+def _apply_shard(runnable, shard_index, shard_count):
+    if shard_index is None and shard_count is None:
+        return runnable
+    if shard_index is None or shard_count is None:
+        raise ValueError("shard index and shard count must be supplied together")
+    return shard_entries(runnable, shard_index, shard_count)
+
+
 def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
                        execute=run_process, workers=None, load_sample_seconds=5.0,
-                       audit_home=False, focused=False, focused_slots=0):
+                       audit_home=False, focused=False, focused_slots=0,
+                       shard_index=None, shard_count=None):
     runnable, skipped = _runnable_entries(entries, opted_in)
+    runnable = _apply_shard(runnable, shard_index, shard_count)
     failures = []
     with SUITE_OUTCOME_LOCK:
         SUITE_DURATIONS.clear()
@@ -1792,6 +1817,12 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
     profile.update({"suiteSeconds": suite_seconds, "maxSuiteRssBytes": max_suite_rss})
     if save_measurements and not focused:
         _save_profile(profile)
+    with SUITE_OUTCOME_LOCK:
+        diagnostics = {
+            "workerPlan": plan,
+            "suiteDurations": dict(SUITE_DURATIONS),
+        }
+    print("Server runner diagnostics: " + json.dumps(diagnostics, sort_keys=True), flush=True)
     return runnable, skipped, failures, time.monotonic() - started
 
 
@@ -1831,6 +1862,10 @@ def main():
     parser.add_argument("--jobs", type=int,
                         default=os.environ.get("CODEX_SERVER_TEST_JOBS"),
                         help="maximum concurrent test processes; set CODEX_SERVER_TEST_JOBS instead for an environment override (default: automatic)")
+    parser.add_argument("--shard-index", type=int,
+                        help="zero-based server-suite shard index; requires --shard-count")
+    parser.add_argument("--shard-count", type=int,
+                        help="number of disjoint server-suite shards; requires --shard-index")
     parser.add_argument("--show-jobs", action="store_true",
                         help="show the automatic worker count without running suites")
     parser.add_argument("--audit-home", action="store_true",
@@ -1842,6 +1877,12 @@ def main():
     validate_deadlines(parser, args)
     if args.jobs is not None and args.jobs < 1:
         parser.error("--jobs must be greater than zero")
+    if (args.shard_index is None) != (args.shard_count is None):
+        parser.error("--shard-index and --shard-count must be supplied together")
+    if args.shard_count is not None and args.shard_count < 1:
+        parser.error("--shard-count must be at least one")
+    if args.shard_index is not None and not 0 <= args.shard_index < args.shard_count:
+        parser.error("--shard-index must be between zero and shard count minus one")
     if not math.isfinite(args.load_sample_seconds) or args.load_sample_seconds < 0:
         parser.error("--load-sample-seconds must be a finite, non-negative number")
     entries = select_entries(args.filter)
@@ -1850,6 +1891,12 @@ def main():
             parser.error("--only cannot be combined with --include")
         entries = only_category(entries, args.only)
     implicit_opt_ins = exact_filter_opt_ins(args.filter, entries)
+    opted_in = set(args.include) | ({args.only} if args.only else set()) | implicit_opt_ins
+    if args.shard_index is not None:
+        try:
+            _apply_shard(_runnable_entries(entries, opted_in)[0], args.shard_index, args.shard_count)
+        except ValueError as error:
+            parser.error(str(error))
     load_sample_seconds = args.load_sample_seconds
     if args.filter:
         selected_runnable = sum(
@@ -1859,8 +1906,11 @@ def main():
         if selected_runnable < available_cpu_count():
             load_sample_seconds = 0.0
     if args.show_jobs:
-        opted_in = set(args.include) | ({args.only} if args.only else set()) | implicit_opt_ins
         runnable, _skipped = _runnable_entries(entries, opted_in)
+        try:
+            runnable = _apply_shard(runnable, args.shard_index, args.shard_count)
+        except ValueError as error:
+            parser.error(str(error))
         profile = _load_profile()
         focused_slots = (_focused_slot_count(profile)
                          if len(runnable) == FOCUSED_SUITE_LIMIT else 0)
@@ -1882,7 +1932,15 @@ def main():
         print("Worker plan: " + json.dumps(plan, sort_keys=True))
         return 0
     if args.list:
-        for path, kind in entries:
+        if args.shard_index is None:
+            listed = entries
+        else:
+            runnable, _skipped = _runnable_entries(entries, opted_in)
+            try:
+                listed = _apply_shard(runnable, args.shard_index, args.shard_count)
+            except ValueError as error:
+                parser.error(str(error))
+        for path, kind in listed:
             label = "default" if kind in {"safe", "component"} else f"opt-in:{kind}"
             print(f"{label:18} {path}")
         helpers = excluded_helpers(args.filter)
@@ -1900,11 +1958,11 @@ def main():
         return 2
     if (args.only == "expensive" or "expensive" in args.include) and len(entries) != 1:
         parser.error("load-class suites must be selected one at a time")
-    opted_in = set(args.include) | ({args.only} if args.only else set()) | implicit_opt_ins
     runnable, skipped, failures, elapsed = run_suites(
         entries, opted_in, args.timeout, args.expensive_timeout,
         workers=args.jobs, load_sample_seconds=load_sample_seconds,
-        audit_home=args.audit_home)
+        audit_home=args.audit_home, shard_index=args.shard_index,
+        shard_count=args.shard_count)
     for path, kind in skipped:
         if kind == "environment":
             print(f"SKIP {path}: no executable Codex app-server found (set CODEX_BIN, install codex on PATH, or install ~/.local/bin/codex)")

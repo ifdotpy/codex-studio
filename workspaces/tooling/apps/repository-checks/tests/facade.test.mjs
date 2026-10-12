@@ -12,6 +12,8 @@ import {
   parseCounts,
   parseSelection,
   pruneLogs,
+  serverRunDiagnostics,
+  serverShardRunOptions,
 } from "../facade.mjs";
 import {
   mkdtempSync,
@@ -395,6 +397,39 @@ test("server summaries count assertion scripts as executed suites and reject no 
       .executed,
     0,
   );
+});
+
+test("server shard facade options are zero-based and diagnostics report plan and ten slowest suites", () => {
+  assert.deepEqual(serverShardRunOptions("1", "4").serverArgs, [
+    "--shard-index",
+    "1",
+    "--shard-count",
+    "4",
+  ]);
+  assert.throws(
+    () => serverShardRunOptions("4", "4"),
+    /Usage: test-server-shard/,
+  );
+  const output = [
+    "Finished nested-fixture.py: passed, 900.00s",
+    `Server runner diagnostics: ${JSON.stringify({
+      workerPlan: { workers: 4 },
+      suiteDurations: Object.fromEntries(
+        Array.from({ length: 12 }, (_, index) => [`suite-${index}`, index + 1]),
+      ),
+    })}`,
+    ...Array.from(
+      { length: 12 },
+      (_, index) => `Finished suite-${index}: passed, ${index + 1}.00s`,
+    ),
+  ].join("\n");
+  const diagnostics = serverRunDiagnostics(output);
+  assert.equal(diagnostics.planLine, 'Selected worker plan: {"workers":4}');
+  assert.equal(diagnostics.durations.length, 10);
+  assert.deepEqual(diagnostics.durations.slice(0, 2), [
+    { suite: "suite-11", seconds: 12 },
+    { suite: "suite-10", seconds: 11 },
+  ]);
 });
 
 test("server failure counts do not double count structured failures or passing tracebacks", () => {
