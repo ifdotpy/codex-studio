@@ -7,8 +7,9 @@
   requirements, prepare the sync schema family, and provide synchronous typed
   reads and writes.
 - **Public interface:** `RuntimeStore::open`, `RuntimeStore::read`, and
-  `RuntimeStore::transaction`; repositories for agents, tasks, queue events,
-  and chat messages.
+  `RuntimeStore::transaction`; `JsonRecord`, `Table<R>`, and `RecordPage<R>`
+  for JSON-record tables; repositories for agents, tasks, queue events, and
+  chat messages.
 - **Boundaries:** No Tokio, Python, general schema migration, or state
   directory creation. Sync DDL is sourced only from `src/sync_schema.sql`.
   The root OpenAPI document owns HTTP DTOs; the Python
@@ -17,8 +18,11 @@
 - **Invariants:** One exclusive runtime lock, one serialized writer using
   `BEGIN IMMEDIATE`, independent query-only read connections, WAL and FULL
   synchronous writes, and fail-closed checks for required tables, columns,
-  triggers and migration-marker meaning. Optional feature tables are ignored
-  until a Rust repository depends on them.
+  triggers and migration-marker meaning. `Table<R>` validates records against
+  their named schemas on reads and writes, checks that each JSON `id` matches
+  its SQLite key, and reports invalid records with one table/key error while
+  preserving schema-permitted extension fields. Optional feature tables are
+  ignored until a Rust repository depends on them.
 - **Configuration owner:** `codex_state.py` currently defines state path
   resolution; this crate mirrors its environment and platform rules. The
   committed `runtime-state-schema.json` is the only schema snapshot.
