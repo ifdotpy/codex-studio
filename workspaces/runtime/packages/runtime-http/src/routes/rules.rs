@@ -9,8 +9,6 @@ use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavai
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 use serde_json::{Number, Value, json};
 use studio_runtime_services::rules::{self, RulesError};
 use studio_runtime_store::{RulesRepository, StoreError};
@@ -59,7 +57,7 @@ pub(crate) async fn list(State(state): State<HttpState>) -> Result<Json<Value>, 
         .map(|rule| serde_json::from_str::<Value>(&rule.record).map_err(|_| ApiError::internal()))
         .collect::<Result<Vec<_>, _>>()?;
     let response = json!({"rules": output});
-    Ok(Json(generated_json::<crate::generated::RuleList>(
+    Ok(Json(super::generated_json::<crate::generated::RuleList>(
         response,
     )?))
 }
@@ -215,9 +213,9 @@ async fn update(
                 }
             };
             if result.get("deleted").is_some() {
-                generated_json::<crate::generated::DeletedRuleReceipt>(result)
+                super::generated_json::<crate::generated::DeletedRuleReceipt>(result)
             } else {
-                generated_json::<crate::generated::RuleRecordResponse>(result)
+                super::generated_json::<crate::generated::RuleRecordResponse>(result)
             }
         })?;
     Ok(Json(result))
@@ -395,10 +393,3 @@ fn new_rule_id() -> String {
     format!("rule-{time:x}-{:x}-{sequence:x}", std::process::id())
 }
 
-fn generated_json<T>(value: Value) -> Result<Value, ApiError>
-where
-    T: DeserializeOwned + Serialize,
-{
-    let dto = serde_json::from_value::<T>(value).map_err(|_| ApiError::internal())?;
-    serde_json::to_value(dto).map_err(|_| ApiError::internal())
-}
