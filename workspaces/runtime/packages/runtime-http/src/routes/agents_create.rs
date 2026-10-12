@@ -5,8 +5,6 @@ use super::manifest::{OperationStatus, RouteGroup, post};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use studio_runtime_services::agents_create::{self, RenameError};
@@ -90,9 +88,9 @@ async fn rename(
     })
     .await
     .map_err(|_| ApiError::internal())??;
-    Ok(Json(generated_json::<crate::generated::RenameResponse>(
-        result,
-    )?))
+    Ok(Json(super::generated_json::<
+        crate::generated::RenameResponse,
+    >(result)?))
 }
 
 fn rename_signature(id: &str, name: Option<&str>) -> String {
@@ -167,14 +165,6 @@ fn rename_error(error: RenameError) -> ApiError {
         ),
         RenameError::Store(_) => ApiError::internal(),
     }
-}
-
-fn generated_json<T>(value: Value) -> Result<Value, ApiError>
-where
-    T: DeserializeOwned + Serialize,
-{
-    let dto = serde_json::from_value::<T>(value).map_err(|_| ApiError::internal())?;
-    serde_json::to_value(dto).map_err(|_| ApiError::internal())
 }
 
 #[cfg(test)]

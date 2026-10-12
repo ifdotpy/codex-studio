@@ -80,7 +80,7 @@ async fn messages(
     let result = tokio::task::spawn_blocking(move || {
         let connection = store.read().map_err(|_| ApiError::internal())?;
         let value = coordination::history(&connection, &room).map_err(coordination_error)?;
-        generated_json::<Vec<crate::generated::MessageRecord>>(value)
+        super::generated_json::<Vec<crate::generated::MessageRecord>>(value)
     })
     .await
     .map_err(|_| ApiError::internal())??;
@@ -98,7 +98,7 @@ async fn create_chat(
                 coordination::create_chat(transaction, &body.id, &body.name, &body.members)
             })
             .map_err(coordination_error)?;
-        generated_json::<crate::generated::ChatCreated>(value)
+        super::generated_json::<crate::generated::ChatCreated>(value)
     })
     .await
     .map_err(|_| ApiError::internal())??;
@@ -116,7 +116,7 @@ async fn connect_chat(
                 coordination::connect_chat(transaction, &body.source, &body.target, body.connected)
             })
             .map_err(coordination_error)?;
-        generated_json::<crate::generated::ChatReceipt>(value)
+        super::generated_json::<crate::generated::ChatReceipt>(value)
     })
     .await
     .map_err(|_| ApiError::internal())??;
@@ -142,9 +142,10 @@ async fn post_message(
                 )
             })
             .map_err(coordination_error)?;
-        let value = generated_json::<crate::generated::StudioApiWorkModelsMessageReceipt>(value)?;
+        let value =
+            super::generated_json::<crate::generated::StudioApiWorkModelsMessageReceipt>(value)?;
         wake.notify_one();
-        Ok(value)
+        Ok::<Value, ApiError>(value)
     })
     .await
     .map_err(|_| ApiError::internal())??;
@@ -175,14 +176,6 @@ async fn delete_room() -> Result<Json<Value>, ApiError> {
 
 fn default_connected() -> bool {
     true
-}
-
-fn generated_json<T>(value: Value) -> Result<Value, ApiError>
-where
-    T: serde::de::DeserializeOwned + serde::Serialize,
-{
-    let dto = serde_json::from_value::<T>(value).map_err(|_| ApiError::internal())?;
-    serde_json::to_value(dto).map_err(|_| ApiError::internal())
 }
 
 fn coordination_error(error: CoordinationError) -> ApiError {

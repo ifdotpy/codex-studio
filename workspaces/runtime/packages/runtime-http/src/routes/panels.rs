@@ -72,7 +72,9 @@ async fn panel(
         })
         .await
         .map_err(|_| ApiError::internal())??;
-        generated_json::<crate::generated::ProgressPanel>(result)
+        Ok(Json(super::generated_json::<
+            crate::generated::ProgressPanel,
+        >(result)?))
     }
 }
 
@@ -103,7 +105,9 @@ async fn save_panel_layout(
         })
         .await
         .map_err(|_| ApiError::internal())??;
-        generated_json::<crate::generated::PanelLayoutResult>(result)
+        Ok(Json(super::generated_json::<
+            crate::generated::PanelLayoutResult,
+        >(result)?))
     }
 }
 
@@ -173,7 +177,9 @@ async fn profiles(State(state): State<HttpState>) -> Result<Json<Value>, ApiErro
     })
     .await
     .map_err(|_| ApiError::internal())??;
-    generated_json::<crate::generated::ProfileList>(profiles)
+    Ok(Json(
+        super::generated_json::<crate::generated::ProfileList>(profiles)?,
+    ))
 }
 
 async fn update_profiles(
@@ -237,7 +243,9 @@ async fn update_profiles(
     })
     .await
     .map_err(|_| ApiError::internal())??;
-    generated_json::<crate::generated::ProfileMutation>(result)
+    Ok(Json(super::generated_json::<
+        crate::generated::ProfileMutation,
+    >(result)?))
 }
 
 fn profile_field_error(field: ProfileField) -> ApiError {
@@ -270,14 +278,4 @@ fn schema_dependency_error() -> ApiError {
         StatusCode::NOT_IMPLEMENTED,
         "Not implemented: requires store-bootstrap/workspace-profiles-schema",
     )
-}
-
-fn generated_json<T>(value: Value) -> Result<Json<Value>, ApiError>
-where
-    T: serde::de::DeserializeOwned + serde::Serialize,
-{
-    let typed: T = serde_json::from_value(value).map_err(|_| ApiError::internal())?;
-    serde_json::to_value(typed)
-        .map(Json)
-        .map_err(|_| ApiError::internal())
 }

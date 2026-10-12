@@ -158,7 +158,7 @@ fn put_rule_entity(
         "id": id,
         "value": value,
     }))?;
-    SyncDocumentsRepository::put_entity(transaction, "rule", id, &payload, deleted)?;
+    SyncDocumentsRepository::put_entity_payload(transaction, "rule", id, &payload, deleted)?;
     Ok(())
 }
 

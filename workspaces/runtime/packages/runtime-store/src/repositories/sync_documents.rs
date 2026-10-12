@@ -90,7 +90,7 @@ pub struct SyncDocumentsRepository;
 
 impl SyncDocumentsRepository {
     /// Publish the renderer-owned sync envelope for an entity inside its source write transaction.
-    pub(crate) fn put_entity(
+    pub fn put_entity(
         transaction: &Transaction<'_>,
         collection: &str,
         id: &str,
@@ -103,28 +103,7 @@ impl SyncDocumentsRepository {
             "id": id,
             "value": value,
         }))?;
-        let hash = hash_payload(&payload);
-        let old = transaction
-            .query_row(
-                "SELECT hash,deleted FROM sync_entities WHERE collection=?1 AND id=?2",
-                params![collection, id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0)),
-            )
-            .optional()?;
-        if old
-            .as_ref()
-            .is_some_and(|(old_hash, old_deleted)| old_hash == &hash && *old_deleted == deleted)
-        {
-            return Ok(false);
-        }
-        let sequence = next_sequence(transaction)?;
-        transaction.execute(
-            "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) \
-             VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(collection,id) DO UPDATE SET \
-             seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=excluded.deleted",
-            params![collection, id, sequence, hash, payload, i64::from(deleted)],
-        )?;
-        Ok(true)
+        Self::put_entity_payload(transaction, collection, id, &payload, deleted)
     }
 
     pub fn entity_sequence(connection: &Connection) -> StoreResult<i64> {
@@ -216,10 +195,10 @@ impl SyncDocumentsRepository {
         scope: &str,
         payload: &str,
     ) -> StoreResult<bool> {
-        Self::put_entity(transaction, "uiPreferences", scope, payload, false)
+        Self::put_entity_payload(transaction, "uiPreferences", scope, payload, false)
     }
 
-    pub fn put_entity(
+    pub(crate) fn put_entity_payload(
         transaction: &Transaction<'_>,
         collection: &str,
         id: &str,

@@ -392,4 +392,3 @@ fn new_rule_id() -> String {
     let sequence = RULE_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     format!("rule-{time:x}-{:x}-{sequence:x}", std::process::id())
 }
-

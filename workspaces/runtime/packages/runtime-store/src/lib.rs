@@ -31,13 +31,13 @@ pub use repositories::queue_write::{PendingEvent, QueueWriteRepository};
 pub use repositories::rules::{RulesRepository, StoredAgent, StoredRule};
 pub use repositories::scheduler::{ClaimedEvents, SchedulerRepository};
 pub use repositories::sync_documents::{EntityRow, SyncDocument, SyncDocumentsRepository};
+pub use repositories::terminals::{TerminalRow, TerminalsRepository};
 pub use repositories::transcript::{
     TranscriptItem, TranscriptRepository, TranscriptStoreError, TranscriptStoreResult,
 };
 pub use repositories::work_items::{StoredQueueEvent, StoredRecord, WorkItemsRepository};
 pub use repositories::workspace_files::{StoredWorkspaceAsset, WorkspaceFilesRepository};
 pub use repositories::workspace_views::{WorkspaceTaskRow, WorkspaceViewsRepository};
-pub use repositories::terminals::{TerminalRow, TerminalsRepository};
 
 const DATABASE_BUSY_TIMEOUT_MS: u32 = 15_000;
 

@@ -3,7 +3,6 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use serde::de::DeserializeOwned;
 use serde_json::Value;
 use studio_runtime_services::transcript::{self, TranscriptError};
 
@@ -84,7 +83,7 @@ async fn transcript_item(
         .await
         .map_err(|_| ApiError::internal())?
         .map_err(map_transcript_error)?;
-    Ok(Json(generated_json::<
+    Ok(Json(super::generated_json::<
         crate::generated::TranscriptItemResponse,
     >(value)?))
 }
@@ -113,7 +112,7 @@ async fn transcript_search(
             .await
             .map_err(|_| ApiError::internal())?
             .map_err(map_transcript_error)?;
-    Ok(Json(generated_json::<
+    Ok(Json(super::generated_json::<
         crate::generated::TranscriptSearchResponse,
     >(value)?))
 }
@@ -136,14 +135,6 @@ async fn canvas_transcript() -> Result<Json<Value>, ApiError> {
         "/api/transcript",
         &CANVAS_TRANSCRIPT_DEPENDENCIES,
     ))
-}
-
-fn generated_json<T>(value: Value) -> Result<Value, ApiError>
-where
-    T: DeserializeOwned + serde::Serialize,
-{
-    let dto = serde_json::from_value::<T>(value).map_err(|_| ApiError::internal())?;
-    serde_json::to_value(dto).map_err(|_| ApiError::internal())
 }
 
 fn dependency_error(method: &str, path: &str, dependencies: &[Dependency]) -> ApiError {

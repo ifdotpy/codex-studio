@@ -5,8 +5,6 @@ use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavai
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use studio_runtime_services::workspace_files::{self, WorkspaceContext, WorkspaceFilesError};
 use studio_runtime_store::{AgentId, AgentRepository, RuntimeStore, WorkspaceFilesRepository};
@@ -52,7 +50,7 @@ pub(crate) async fn file_info(
     })
     .await
     .map_err(|_| ApiError::internal())??;
-    generated_json::<crate::generated::FileInfo>(json!({
+    super::generated_json::<crate::generated::FileInfo>(json!({
         "path": result.path,
         "name": result.name,
         "mime": result.mime,
@@ -81,7 +79,7 @@ pub(crate) async fn file_content(
     })
     .await
     .map_err(|_| ApiError::internal())??;
-    generated_json::<crate::generated::FileContent>(json!({
+    super::generated_json::<crate::generated::FileContent>(json!({
         "name": result.name,
         "mime": result.mime,
         "base64": base64_encode(&result.bytes),
@@ -250,14 +248,6 @@ fn file_error(error: WorkspaceFilesError) -> ApiError {
         WorkspaceFilesError::MissingPath => ApiError::new(StatusCode::BAD_REQUEST, "Supply a path"),
         WorkspaceFilesError::InvalidPath => ApiError::new(StatusCode::BAD_REQUEST, "Invalid path"),
     }
-}
-
-fn generated_json<T>(value: Value) -> Result<Value, ApiError>
-where
-    T: DeserializeOwned + Serialize,
-{
-    let dto = serde_json::from_value::<T>(value).map_err(|_| ApiError::internal())?;
-    serde_json::to_value(dto).map_err(|_| ApiError::internal())
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
