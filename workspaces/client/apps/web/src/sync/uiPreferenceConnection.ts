@@ -326,9 +326,7 @@ export function connectUiPreferences(
         if (
           typeof change.workspaceId !== "string" ||
           typeof change.epoch !== "string" ||
-          !Array.isArray(change.resources) ||
-          !Array.isArray(change.resourceVersions) ||
-          change.resources.length !== change.resourceVersions.length
+          !Array.isArray(change.resources)
         ) {
           void reconcile().catch(scheduleRetry);
           return;
@@ -337,6 +335,13 @@ export function connectUiPreferences(
         onIdentity?.(change.workspaceId);
         const workspaceChanged = cursor.observeWorkspace(change.workspaceId);
         const epochChanged = cursor.observeEpoch(change.epoch);
+        if (
+          !Array.isArray(change.resourceVersions) ||
+          change.resources.length !== change.resourceVersions.length
+        ) {
+          void reconcile().catch(scheduleRetry);
+          return;
+        }
         const stateVersion = change.resourceVersions.find(
           (version, index) =>
             (version.resource ?? change.resources[index])?.kind === "state",
