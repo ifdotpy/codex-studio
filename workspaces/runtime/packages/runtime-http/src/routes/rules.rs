@@ -200,12 +200,11 @@ async fn update(
                         "fingerprint": fingerprint,
                         "minimumWorkers": if kind == "low_workers" { body.get("minimumWorkers").cloned().unwrap_or(json!(8)) } else { Value::Null },
                         "durationMinutes": if kind == "low_workers" { body.get("durationMinutes").cloned().unwrap_or(json!(30)) } else { Value::Null },
-                        "lowSince": if kind == "low_workers" { Value::Null } else { Value::Null },
-                        "alerted": if kind == "low_workers" { json!(false) } else { Value::Null },
+                        "lowSince": Value::Null, "alerted": Value::Null,
                     });
                     let value = strip_null_low_worker_fields(value, kind);
-                    if kind == "low_workers" && old_record.is_some_and(|old| low_worker_rule_unchanged(old, &value)) {
-                        old_record.unwrap().clone()
+                    if let Some(old) = old_record.filter(|old| kind == "low_workers" && low_worker_rule_unchanged(old, &value)) {
+                        old.clone()
                     } else {
                         let mut value = value;
                         if kind == "low_workers" { value["nextAt"] = json!(now); }
@@ -296,11 +295,11 @@ fn validate_agent(id: &str, value: &Value) -> Result<(), ApiError> {
 }
 
 fn strip_null_low_worker_fields(mut value: Value, kind: &str) -> Value {
-    if kind != "low_workers" {
-        if let Some(object) = value.as_object_mut() {
-            for key in ["minimumWorkers", "durationMinutes", "lowSince", "alerted"] {
-                object.remove(key);
-            }
+    if kind != "low_workers"
+        && let Some(object) = value.as_object_mut()
+    {
+        for key in ["minimumWorkers", "durationMinutes", "lowSince", "alerted"] {
+            object.remove(key);
         }
     }
     value
@@ -347,7 +346,7 @@ fn file_fingerprint(path: &Path) -> Option<Value> {
 }
 
 fn resolve_workspace_path(agent: &Value, input: &str) -> Result<String, ApiError> {
-    let cwd = string(agent, "cwd").ok_or_else(|| ApiError::internal())?;
+    let cwd = string(agent, "cwd").ok_or_else(ApiError::internal)?;
     let mut path = PathBuf::from(input.trim());
     if path == Path::new("~") || path.starts_with("~/") {
         let home = std::env::var_os("HOME").ok_or_else(|| located("path"))?;
