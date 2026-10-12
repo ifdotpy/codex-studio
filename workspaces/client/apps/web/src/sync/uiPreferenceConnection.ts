@@ -50,6 +50,10 @@ export function connectUiPreferences(
   // advances it only after a pull or a complete state change batch is applied.
   const cursor = new EntitySequenceCheckpoint();
   let workspaceId: string | undefined;
+  // Pull on uncovered baselines or invalid/non-contiguous state changes; while
+  // pulling, reconcile queued versions against the returned checkpoint. Resume
+  // through a reopened stream when possible, and pull directly only when no
+  // stream is available or a read retry expires while the stream is healthy.
   let pulling = false;
   let pullAgain = false;
   let pendingBaseline: { sequence: number; mustPull: boolean } | undefined;

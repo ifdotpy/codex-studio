@@ -7,7 +7,10 @@ import {
   mergePreferenceFields,
   type PreferenceFields,
 } from "./uiPreferenceMerge";
-import { capturePreferenceWrite } from "./uiPreferenceStore";
+import {
+  capturePreferenceWrite,
+  receivePreferenceFields,
+} from "./uiPreferenceStore";
 const streams = vi.hoisted(() => new Map<string, EventTarget>());
 const failedStreamOrigins = vi.hoisted(() => new Set<string>());
 vi.mock("../servers/eventSource", () => ({
@@ -27,6 +30,8 @@ vi.mock("../servers/eventSource", () => ({
   },
 }));
 import { connectUiPreferences } from "./uiPreferenceConnection";
+import { legacyPreferenceSeed } from "../servers/legacyPreferenceSeed";
+import type { StudioServer } from "../servers/registry";
 class FakeStorageEvent extends Event {
   key: string | null;
   newValue: string | null;
@@ -192,6 +197,38 @@ beforeEach(() => {
   vi.stubGlobal("StorageEvent", FakeStorageEvent);
 });
 describe("paired server preference replication", () => {
+  it("does not read a session or post defaults on a fresh local profile", async () => {
+    const server = backend("https://defaults.invalid", {});
+    const seed = legacyPreferenceSeed(
+      [
+        {
+          id: "local",
+          origin: "http://localhost",
+          workspaceId: "local-workspace",
+          label: "This computer",
+          alias: "LOC",
+        } satisfies StudioServer,
+      ],
+      new Map([["local", "local-workspace"]]),
+      {},
+      null,
+    );
+    receivePreferenceFields("user", seed);
+    const stop = connectUiPreferences(
+      "https://defaults.invalid",
+      server.fetch,
+      localStorage,
+    );
+    try {
+      await waitForBaseline("https://defaults.invalid", server);
+      expect(seed).toEqual({});
+      expect(server.sessionReads).toBe(0);
+      expect(server.writes).toHaveLength(0);
+    } finally {
+      stop();
+    }
+  });
+
   it("merges both servers and catches up an offline server without new edit versions", async () => {
     const theme = '["codex-studio-preferences-v1","theme"]';
     const size = '["codex-studio-preferences-v1","mainFontSize"]';
@@ -266,6 +303,9 @@ describe("paired server preference replication", () => {
         ).toEqual(version),
       );
       expect(server.writes).toHaveLength(1);
+      expect(server.writes[0].fields[theme]).toEqual(
+        expect.objectContaining({ value: "dark" }),
+      );
     } finally {
       stop();
     }
