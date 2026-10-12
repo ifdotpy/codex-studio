@@ -18,7 +18,6 @@ use studio_runtime_process::{
 };
 
 const SOCKET: &str = "supervisor.sock";
-const TEST_ROOT: &str = "/var/tmp/cs-rust-process";
 const SOURCE: &str = env!("CARGO_MANIFEST_DIR");
 const SUPERVISOR: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -28,13 +27,16 @@ const SUPERVISOR: &str = concat!(
 struct DisposableState(PathBuf);
 
 impl DisposableState {
-    fn new() -> Self {
+    fn new(label: &str) -> Self {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path =
-            PathBuf::from(TEST_ROOT).join(format!("supervisor-{}-{unique}", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "studio-runtime-process-{label}-{}-{unique}",
+            std::process::id()
+        ));
+        assert_outside_runtime_state(&path);
         fs::create_dir_all(&path).unwrap();
         Self(path)
     }
@@ -57,6 +59,32 @@ impl Drop for DisposableState {
     }
 }
 
+fn runtime_default_state_dir() -> PathBuf {
+    if let Some(configured) = std::env::var_os("CODEX_AGENTS_STATE_DIR") {
+        let configured = PathBuf::from(configured);
+        if let Ok(relative) = configured.strip_prefix("~/") {
+            return std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .expect("HOME is required to resolve the runtime state directory")
+                .join(relative);
+        }
+        return configured;
+    }
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .expect("HOME is required to resolve the runtime state directory")
+        .join(".local/state/codex-agents")
+}
+
+fn assert_outside_runtime_state(path: &Path) {
+    let runtime_state = runtime_default_state_dir();
+    assert_ne!(path, runtime_state, "test state must not be runtime state");
+    assert!(
+        !path.starts_with(&runtime_state),
+        "test state must be outside the runtime state directory: {path:?} is under {runtime_state:?}"
+    );
+}
+
 struct SupervisorProcess {
     child: Child,
     owned_children: Vec<u32>,
@@ -73,7 +101,7 @@ impl SupervisorProcess {
             .arg(SUPERVISOR)
             .arg("--state")
             .arg(&state.0)
-            .env("XDG_CACHE_HOME", "/var/tmp/cs-rust-process/cache")
+            .env("XDG_CACHE_HOME", state.0.join("cache"))
             .env("PYTHONDONTWRITEBYTECODE", "1")
             .current_dir(SOURCE)
             .stdin(Stdio::null())
@@ -91,8 +119,8 @@ impl SupervisorProcess {
         };
         let socket = state.socket();
         assert!(
-            socket.starts_with(TEST_ROOT),
-            "refuse a socket outside /var/tmp: {socket:?}"
+            socket.starts_with(&state.0),
+            "refuse a socket outside this test's disposable directory: {socket:?}"
         );
         wait_until("supervisor socket", || socket.exists());
         process
@@ -160,12 +188,18 @@ fn wait_until(label: &str, mut ready: impl FnMut() -> bool) {
 }
 
 fn connect_client(state: &DisposableState) -> SupervisorClient<std::os::unix::net::UnixStream> {
+    let socket = safe_socket_path(state);
+    SupervisorClient::connect(&socket, state.identity()).unwrap()
+}
+
+fn safe_socket_path(state: &DisposableState) -> PathBuf {
     let socket = state.socket();
     assert!(
-        socket.starts_with("/var/tmp/"),
-        "refuse to connect outside /var/tmp: {socket:?}"
+        socket.starts_with(&state.0),
+        "refuse to connect outside this test's disposable directory: {socket:?}"
     );
-    SupervisorClient::connect(&socket, state.identity()).unwrap()
+    assert_outside_runtime_state(&socket);
+    socket
 }
 
 fn open_request(handle: &str, command: Vec<String>, cwd: &Path) -> OpenRequest {
@@ -224,8 +258,7 @@ fn pid_exists(pid: u32) -> bool {
 
 #[test]
 fn disposable_python_supervisor_v1_actions_events_replay_and_reattach() {
-    fs::create_dir_all(TEST_ROOT).unwrap();
-    let state = DisposableState::new();
+    let state = DisposableState::new("integration");
     let workspace = state.0.join("workspace");
     fs::create_dir_all(&workspace).unwrap();
     let python = python_executable();
@@ -451,7 +484,8 @@ fn disposable_python_supervisor_v1_actions_events_replay_and_reattach() {
         .iter()
         .find(|item| item.id == admin_handle.0)
         .unwrap();
-    let mut operator = SupervisorClient::connect_operator(state.socket(), state.0.clone()).unwrap();
+    let mut operator =
+        SupervisorClient::connect_operator(safe_socket_path(&state), state.0.clone()).unwrap();
     let closed = operator
         .admin_close_handle(AdminCloseHandleRequest {
             handle: admin_handle,
@@ -471,7 +505,7 @@ fn disposable_python_supervisor_v1_actions_events_replay_and_reattach() {
             .finished
     );
 
-    let mut bad = std::os::unix::net::UnixStream::connect(state.socket()).unwrap();
+    let mut bad = std::os::unix::net::UnixStream::connect(safe_socket_path(&state)).unwrap();
     let bad_handshake =
         json!({"protocol":99,"stateDir":state.0.to_string_lossy(),"backendId":"bad-version"});
     serde_json::to_writer(&mut bad, &bad_handshake).unwrap();
@@ -524,9 +558,10 @@ fn lost_action_response_is_unknown_outcome() {
             .unwrap();
         drop(server_side);
     });
+    let test_state = DisposableState::new("unknown-outcome");
     let identity = BackendIdentity {
         backend_id: BackendId("unit-test".into()),
-        state_dir: PathBuf::from("/var/tmp/cs-rust-process/unit"),
+        state_dir: test_state.0.clone(),
     };
     let mut client = SupervisorClient::from_transport(client_side, identity).unwrap();
     let result = client.health(HealthRequest::default());
@@ -554,9 +589,10 @@ fn handshake_rejection_is_a_typed_protocol_mismatch() {
             .write_all(b"{\"error\":\"Supervisor protocol or state directory mismatch\"}\n")
             .unwrap();
     });
+    let test_state = DisposableState::new("protocol-mismatch");
     let identity = BackendIdentity {
         backend_id: BackendId("wrong-version-test".into()),
-        state_dir: PathBuf::from("/var/tmp/codex-runtime-process-test"),
+        state_dir: test_state.0.clone(),
     };
     let result = SupervisorClient::from_transport(client_side, identity);
     assert!(matches!(

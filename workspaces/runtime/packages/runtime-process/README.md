@@ -89,8 +89,9 @@ Rust fixture and leaves the shared Python fixture untouched.
 ## Integration checks
 
 `tests/supervisor_v1.rs` launches the Python supervisor from this checkout into
-a unique `/var/tmp` state directory, checks that the socket is below `/var/tmp`,
-then exercises every action, event kind, bad-protocol handshake, cursor/ACK,
+a unique directory below `std::env::temp_dir()` (the test runner's `TMPDIR`),
+checks that the socket stays inside that test-created directory and outside the
+runtime's default state directory, then exercises every action, event kind, bad-protocol handshake, cursor/ACK,
 replay, same-identity reattach, and cleanup of the disposable supervisor and
 children. It uses no fixture from the Python backend-neutral suite. Pure frame
 codec and extension-field tests run without a process.
@@ -126,7 +127,8 @@ The intended adapter is `notify` 8.2.0 (CC0-1.0); verify exact-file detection,
 atomic replacement, teardown, and callback ordering on Linux inotify and macOS
 kqueue. Establish the Windows/WSL watcher requirement before promising support.
 
-The production crate currently has no new third-party dependencies. The
+The crate uses workspace `serde`, `serde_json`, and `thiserror` (`=2.0.17`,
+MIT OR Apache-2.0); this slice introduces no new dependency version. The
 approved transport is `std::os::unix::net::UnixStream` behind the generic
 `Read + Write` seam. Windows named-pipe transport is an explicit implementation
 gap because the Windows server entry-point/release promise is not yet frozen.
