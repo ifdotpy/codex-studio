@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use studio_runtime_providers::{
-    Action, Frame, Lifecycle, Method, RequestId, RequestOutcome, RequestTicket, ResponseBody,
-    SessionState,
+    Action, Frame, Lifecycle, MAX_FRAME_BYTES, Method, RequestFrame, RequestId, RequestOutcome,
+    RequestTicket, ResponseBody, SessionState, encode_line,
 };
 
 const INIT: &str = r#"{"clientInfo":{"name":"codex_agents_canvas","version":"1.0.0"},"capabilities":{"experimentalApi":true}}"#;
@@ -480,6 +480,39 @@ fn every_lifecycle_transition_and_pending_disposition_is_exercised() {
             ..
         }
     )));
+}
+
+#[test]
+fn numeric_request_exactly_at_frame_limit_uses_its_actual_id_for_validation() {
+    let params = json!({"payload":""});
+    let empty = encode_line(&Frame::Request(RequestFrame {
+        id: RequestId::Number(2),
+        method: Method::ModelList,
+        params: Some(params.clone()),
+        fields: Default::default(),
+    }))
+    .expect("empty frame");
+    let payload_len = MAX_FRAME_BYTES + 1 - empty.len();
+    let params = json!({"payload":"x".repeat(payload_len)});
+    let exact = encode_line(&Frame::Request(RequestFrame {
+        id: RequestId::Number(2),
+        method: Method::ModelList,
+        params: Some(params.clone()),
+        fields: Default::default(),
+    }))
+    .expect("actual id frame fits exactly at limit");
+    assert_eq!(exact.len(), MAX_FRAME_BYTES + 1);
+
+    let mut session = state(false);
+    let (ticket, actions) = session
+        .submit(Method::ModelList, params, 1, 10, None, false)
+        .expect("valid maximum-size request");
+    assert_eq!(ticket.id, RequestId::Number(2));
+    let written = match &actions[0] {
+        Action::Write(bytes) => bytes,
+        other => panic!("expected request write, got {other:?}"),
+    };
+    assert_eq!(written.len(), exact.len());
 }
 
 #[test]

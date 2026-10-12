@@ -184,17 +184,22 @@ impl SessionState {
         thread_id: Option<String>,
         serialized: bool,
     ) -> Result<RequestTicket, SessionError> {
-        validate_request_encoding(self.claude, method, &params)?;
         let id = if self.claude {
             let id = RequestId::String(format!("claude:{:032x}", self.next_claude_id));
-            self.next_claude_id = self
+            let next_id = self
                 .next_claude_id
                 .checked_add(1)
                 .ok_or(BookError::IdExhausted)?;
+            validate_request_encoding(id.clone(), method, &params)?;
             self.book.register(id.clone(), method)?;
+            self.next_claude_id = next_id;
             id
         } else {
-            self.book.allocate_numeric(method)?
+            let id = self.book.next_numeric_candidate()?;
+            validate_request_encoding(id.clone(), method, &params)?;
+            let allocated = self.book.allocate_numeric(method)?;
+            debug_assert_eq!(allocated, id);
+            allocated
         };
         let ticket = RequestTicket {
             generation: self.generation,
@@ -399,15 +404,10 @@ impl SessionState {
 }
 
 fn validate_request_encoding(
-    claude: bool,
+    id: RequestId,
     method: Method,
     params: &Value,
 ) -> Result<(), SessionError> {
-    let id = if claude {
-        RequestId::String("claude:ffffffffffffffffffffffffffffffff".into())
-    } else {
-        RequestId::Number(u64::MAX)
-    };
     encode_line(&Frame::Request(RequestFrame {
         id,
         method,
@@ -652,7 +652,16 @@ where
         match event {
             Some(ReadEvent::Frame(frame)) => {
                 let received = self.state.receive(frame)?;
-                actions.extend(self.apply(received)?);
+                match self.apply(received) {
+                    Ok(received_actions) => actions.extend(received_actions),
+                    Err(DriverError::Dispatcher {
+                        actions: mut pending,
+                    }) => {
+                        actions.append(&mut pending);
+                        return Err(DriverError::Dispatcher { actions });
+                    }
+                    Err(error) => return Err(error),
+                }
             }
             Some(ReadEvent::Failure(error)) => {
                 drop(error);
@@ -679,7 +688,9 @@ where
             reader, dispatcher, ..
         } = self;
         reader.stop();
-        dispatcher.close().map_err(|_| DriverError::Dispatcher)
+        dispatcher.close().map_err(|_| DriverError::Dispatcher {
+            actions: Vec::new(),
+        })
     }
 
     fn apply(&mut self, actions: Vec<Action>) -> Result<Vec<Action>, DriverError> {
@@ -705,9 +716,9 @@ where
                         }
                         other => Inbound::Notification(other),
                     };
-                    self.dispatcher
-                        .send(inbound)
-                        .map_err(|_| DriverError::Dispatcher)?;
+                    if self.dispatcher.send(inbound).is_err() {
+                        return Err(DriverError::Dispatcher { actions: unhandled });
+                    }
                 }
                 other => unhandled.push(other),
             }
@@ -730,6 +741,6 @@ pub enum DriverError {
     },
     #[error("provider request deadline elapsed; unresolved outcomes are unknown")]
     DeadlineUnknown { actions: Vec<Action> },
-    #[error("provider callback lane failed")]
-    Dispatcher,
+    #[error("provider callback lane failed; actions retain any settled request outcomes")]
+    Dispatcher { actions: Vec<Action> },
 }

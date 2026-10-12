@@ -34,6 +34,27 @@ struct AcknowledgedReader {
     chunks: mpsc::Receiver<Option<Vec<u8>>>,
     read_ack: mpsc::Sender<()>,
 }
+
+struct ObservedReader {
+    chunks: mpsc::Receiver<Option<Vec<u8>>>,
+    read_started: mpsc::Sender<()>,
+}
+
+impl Read for ObservedReader {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        self.read_started
+            .send(())
+            .map_err(|_| io::ErrorKind::BrokenPipe)?;
+        match self.chunks.recv() {
+            Ok(Some(chunk)) => {
+                let count = output.len().min(chunk.len());
+                output[..count].copy_from_slice(&chunk[..count]);
+                Ok(count)
+            }
+            Ok(None) | Err(_) => Ok(0),
+        }
+    }
+}
 impl Read for AcknowledgedReader {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
         match self.chunks.recv() {
@@ -113,6 +134,24 @@ impl Handler for Noop {
     type Error = ();
     fn handle(&mut self, _: Inbound) -> Result<(), Self::Error> {
         Ok(())
+    }
+}
+
+struct FailingHandler {
+    dropped: mpsc::Sender<()>,
+}
+
+impl Handler for FailingHandler {
+    type Error = ();
+
+    fn handle(&mut self, _: Inbound) -> Result<(), Self::Error> {
+        Err(())
+    }
+}
+
+impl Drop for FailingHandler {
+    fn drop(&mut self) {
+        assert!(self.dropped.send(()).is_ok());
     }
 }
 
@@ -510,6 +549,70 @@ fn pump_one_expires_before_queued_response_at_deadline_but_accepts_response_befo
         }
         driver.close().expect("scripted test operation");
     }
+}
+
+#[test]
+fn deadline_resolution_survives_callback_dispatch_failure() {
+    let (chunks_tx, chunks_rx) = mpsc::channel();
+    let (read_started_tx, read_started_rx) = mpsc::channel();
+    let (handler_dropped_tx, handler_dropped_rx) = mpsc::channel();
+    let mut driver = ConnectionDriver::start(
+        ObservedReader {
+            chunks: chunks_rx,
+            read_started: read_started_tx,
+        },
+        Sink,
+        FailingHandler {
+            dropped: handler_dropped_tx,
+        },
+        DriverConfig {
+            generation: 11,
+            claude: false,
+            now_ms: 0,
+            timeout_ms: 100,
+            initialize_params: json!({}),
+        },
+    )
+    .expect("scripted test operation");
+    read_started_rx.recv().expect("reader started");
+    chunks_tx
+        .send(Some(json_line(json!({"id":1,"result":{}}))))
+        .expect("init reply");
+    read_started_rx.recv().expect("init response queued");
+    driver.pump_next(0).expect("initialize");
+    let (ticket, _) = driver
+        .submit(Method::ModelList, json!({}), None, false, 1, 5)
+        .expect("submit pending request");
+
+    chunks_tx
+        .send(Some(json_line(
+            json!({"method":"turn/started","params":{}}),
+        )))
+        .expect("first callback");
+    read_started_rx.recv().expect("first callback queued");
+    driver
+        .pump_one(0)
+        .expect("callback is handed off asynchronously");
+    handler_dropped_rx
+        .recv()
+        .expect("failed dispatcher worker exited");
+
+    chunks_tx
+        .send(Some(json_line(
+            json!({"method":"turn/completed","params":{}}),
+        )))
+        .expect("second callback");
+    read_started_rx.recv().expect("second callback queued");
+    let error = driver
+        .pump_one(6)
+        .expect_err("expired request and failed dispatcher");
+    let detail = format!("{error:?}");
+    assert!(
+        detail.contains(&format!("{:?}", ticket.id)) && detail.contains("Unknown"),
+        "deadline settlement was lost: {detail}"
+    );
+    chunks_tx.send(None).expect("close reader");
+    assert!(driver.close().is_err());
 }
 
 #[test]

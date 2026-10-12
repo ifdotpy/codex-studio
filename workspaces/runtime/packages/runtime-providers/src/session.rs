@@ -71,6 +71,16 @@ impl PendingBook {
         Ok(id)
     }
 
+    pub(crate) fn next_numeric_candidate(&self) -> Result<RequestId, BookError> {
+        if self.closed {
+            return Err(BookError::ConnectionClosed);
+        }
+        self.next_numeric_id
+            .checked_add(1)
+            .map(RequestId::Number)
+            .ok_or(BookError::IdExhausted)
+    }
+
     /// Register an externally allocated ID, used for the bridge's string UUIDs.
     pub fn register(&mut self, id: RequestId, method: Method) -> Result<(), BookError> {
         if self.closed {
