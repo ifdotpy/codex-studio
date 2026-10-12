@@ -3,6 +3,7 @@ pub(crate) mod event_write;
 pub(crate) mod events;
 pub(crate) mod messages;
 pub(crate) mod rules;
+pub(crate) mod scheduler;
 pub(crate) mod sync_documents;
 pub(crate) mod tasks;
 pub(crate) mod work_items;
@@ -16,6 +17,7 @@ pub(crate) const REQUIREMENTS: &[&SchemaRequirements] = &[
     &event_write::REQUIREMENTS,
     &messages::REQUIREMENTS,
     &rules::REQUIREMENTS,
+    &scheduler::REQUIREMENTS,
     &sync_documents::REQUIREMENTS,
     &work_items::REQUIREMENTS,
 ];

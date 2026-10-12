@@ -9,5 +9,6 @@
 
 pub mod event_write;
 pub mod rules;
+pub mod scheduler;
 pub mod sync_policy;
 pub mod work_policy;
