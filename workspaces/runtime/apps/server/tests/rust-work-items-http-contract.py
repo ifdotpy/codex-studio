@@ -150,7 +150,6 @@ class WorkItemsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def test_partial_writes_refuse_without_writing(self):
         cases = (
             ("POST", "/api/work", {"agent": self.agent_id, "action": "create", "title": "No write"}, "event-driver/work-items"),
-            ("POST", "/api/queue", {"agent": self.agent_id, "action": "cancel", "message_id": "python-queue-1"}, "event-driver/queue-mutations"),
             ("POST", "/api/organization", {"id": self.agent_id, "pinned": True}, "workspace-state/organization-effects"),
         )
         before = work_state_snapshot(self.backend.state)

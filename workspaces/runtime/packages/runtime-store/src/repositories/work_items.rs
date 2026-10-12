@@ -106,17 +106,40 @@ impl WorkItemsRepository {
         };
         let mut statement = connection.prepare(sql)?;
         let rows = statement.query_map(params![agent, epoch], |row| {
-            let (error, error_valid) = optional_text(row.get_ref(5)?);
-            let (metadata, metadata_valid) = optional_text(row.get_ref(6)?);
+            let (id, id_valid) = row.get::<_, String>(0).map_or_else(
+                |_| ("<invalid id>".to_owned(), false),
+                |value| (value, true),
+            );
+            let (kind, kind_valid) = row
+                .get::<_, String>(1)
+                .map_or_else(|_| (String::new(), false), |value| (value, true));
+            let (text, text_valid) = row
+                .get::<_, String>(2)
+                .map_or_else(|_| (String::new(), false), |value| (value, true));
+            let (status, status_valid) = row
+                .get::<_, String>(3)
+                .map_or_else(|_| (String::new(), false), |value| (value, true));
+            let (created, created_valid) = row
+                .get::<_, f64>(4)
+                .map_or_else(|_| (f64::NAN, false), |value| (value, value.is_finite()));
+            let (error, error_valid) = row.get_ref(5).map(optional_text).unwrap_or((None, false));
+            let (metadata, metadata_valid) =
+                row.get_ref(6).map(optional_text).unwrap_or((None, false));
             Ok(StoredQueueEvent {
-                id: row.get(0)?,
-                kind: row.get(1)?,
-                text: row.get(2)?,
-                status: row.get(3)?,
-                created: row.get(4)?,
+                id,
+                kind,
+                text,
+                status,
+                created,
                 error,
                 metadata,
-                valid: error_valid && metadata_valid,
+                valid: id_valid
+                    && kind_valid
+                    && text_valid
+                    && status_valid
+                    && created_valid
+                    && error_valid
+                    && metadata_valid,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>()

@@ -7,6 +7,8 @@ mod desktop;
 mod monitors;
 mod panels;
 mod questions_reads;
+mod queue_read;
+mod queue_write;
 mod rules;
 mod session;
 mod sync;

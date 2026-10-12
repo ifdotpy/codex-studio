@@ -6,8 +6,6 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
 use studio_runtime_services::event_write::{self, AnnotationWrite, EventWriteError, PlanWrite};
 use studio_runtime_services::work_policy::{self, WorkPolicyError};
 use studio_runtime_store::{
@@ -19,7 +17,6 @@ use crate::router::HttpState;
 use crate::validation::Registry;
 
 const WORK_DEPENDENCY: [Dependency; 1] = [Dependency::new("event-driver/work-items")];
-const QUEUE_DEPENDENCY: [Dependency; 1] = [Dependency::new("event-driver/queue-mutations")];
 const ORGANIZATION_DEPENDENCY: [Dependency; 1] =
     [Dependency::new("workspace-state/organization-effects")];
 
@@ -34,8 +31,8 @@ pub(crate) fn routes() -> RouteGroup {
         get("/api/queue", OperationStatus::Implemented, queue),
         post(
             "/api/queue",
-            OperationStatus::partial(&QUEUE_DEPENDENCY),
-            queue_action,
+            OperationStatus::Implemented,
+            super::queue_write::queue_action,
         ),
         get("/api/plan", OperationStatus::Implemented, plan),
         post("/api/plan", OperationStatus::Implemented, save_plan),
@@ -68,27 +65,16 @@ pub(crate) async fn queue(
 ) -> Result<Json<Value>, ApiError> {
     let agent_id = query_string(&query, "agent")?;
     read_agent(state, agent_id, |connection, agent, validators| {
-        let prepared = work_policy::prepare_queue(
-            WorkItemsRepository::queue(connection, &agent.id.0, agent.epoch).map_err(|_| ApiError::internal())?,
-        ).map_err(stored_error)?;
-        let assets = WorkItemsRepository::assets(connection, &prepared.asset_ids).map_err(|_| ApiError::internal())?;
-        let assets = stored_values("runtime_assets", "TranscriptAsset", assets, validators, true)?;
-        let owners = assets.iter().map(|asset| asset["agent"].as_str().expect("schema-validated asset owner")).collect::<BTreeSet<_>>();
-        for owner in owners {
-            let record = AgentRepository::get(connection, &AgentId::from(owner)).map_err(|_| invalid_stored("runtime_agents", owner))?;
-            if !record.as_ref().is_some_and(is_live) {
-                return Err(invalid_stored("runtime_agents", owner));
-            }
-        }
-        let items = work_policy::queue_items(prepared, &assets).map_err(stored_error)?;
-        for item in &items {
-            if !validators.validate_stored("QueueItem", item) {
-                return Err(invalid_stored("runtime_events", item["id"].as_str().unwrap_or("<event>")));
-            }
-        }
-        let revision = queue_revision(agent, &items)?;
-        Ok(json!({ "items": items, "revision": revision, "capabilities": {"reorder": true, "receipts": true} }))
-    }).await.map(Json)
+        let snapshot = super::queue_read::queue_snapshot(connection, agent, validators)
+            .map_err(super::queue_read::api_error)?;
+        Ok(json!({
+            "items": snapshot.items,
+            "revision": snapshot.revision,
+            "capabilities": snapshot.capabilities,
+        }))
+    })
+    .await
+    .map(Json)
 }
 
 pub(crate) async fn plan(
@@ -138,26 +124,13 @@ where
         if agent.id.0 != id {
             return Err(invalid_stored("runtime_agents", &id));
         }
-        if !is_live(&agent) {
+        if !super::queue_read::is_live(&agent) {
             return Err(ApiError::new(StatusCode::BAD_REQUEST, "Invalid request"));
         }
         read(&connection, &agent, &validators)
     })
     .await
     .map_err(|_| ApiError::internal())?
-}
-
-fn is_live(agent: &AgentRecord) -> bool {
-    !agent
-        .extra
-        .get("deletedAt")
-        .is_some_and(|value| match value {
-            Value::Null => false,
-            Value::Bool(value) => *value,
-            Value::Number(value) => value.as_f64().is_some_and(|number| number != 0.0),
-            Value::String(value) => !value.is_empty(),
-            _ => true,
-        })
 }
 
 fn stored_values(
@@ -197,22 +170,6 @@ fn record_value(object: &'static str, row: &StoredRecord) -> Result<Value, ApiEr
     .map_err(|_| invalid_stored(object, &row.id))
 }
 
-fn queue_revision(agent: &AgentRecord, items: &[Value]) -> Result<String, ApiError> {
-    let revision = match agent.extra.get("queueMutationRevision") {
-        None => 0,
-        Some(value) => value
-            .as_i64()
-            .filter(|revision| *revision >= 0)
-            .ok_or_else(|| invalid_stored("runtime_agents", &agent.id.0))?,
-    };
-    let bytes = serde_json::to_vec(&json!([agent.epoch, revision, items]))
-        .map_err(|_| ApiError::internal())?;
-    Ok(Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect())
-}
-
 fn query_string(query: &QueryParams, name: &str) -> Result<String, ApiError> {
     query
         .typed_value(name)
@@ -234,10 +191,6 @@ fn stored_error(error: WorkPolicyError) -> ApiError {
 
 pub(crate) async fn work_action(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
     Err(dependency_error("POST", "/api/work", &WORK_DEPENDENCY))
-}
-pub(crate) async fn queue_action(ApiJson(body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    validate_queue_action(&body)?;
-    Err(dependency_error("POST", "/api/queue", &QUEUE_DEPENDENCY))
 }
 pub(crate) async fn save_plan(
     State(state): State<HttpState>,
@@ -355,62 +308,14 @@ fn request_signature(body: &Value) -> Result<String, ApiError> {
     Ok(signature)
 }
 
-fn python_operation_signature(body: &Value) -> Result<String, ApiError> {
+pub(crate) fn python_operation_signature(body: &Value) -> Result<String, ApiError> {
     use sha2::{Digest, Sha256};
     let mut value = body.clone();
     let object = value.as_object_mut().ok_or_else(ApiError::internal)?;
     object.entry("agent").or_insert(Value::Null);
-    let object = value.as_object().ok_or_else(ApiError::internal)?;
-    let mut keys = object.keys().collect::<Vec<_>>();
-    keys.sort();
-    let canonical = format!(
-        "{{{}}}",
-        keys.into_iter()
-            .map(|key| {
-                let encoded = match &object[key] {
-                    Value::String(value) => python_quote(value),
-                    Value::Null | Value::Bool(_) | Value::Number(_) => object[key].to_string(),
-                    _ => return Err(ApiError::internal()),
-                };
-                Ok(format!("{}: {encoded}", python_quote(key)))
-            })
-            .collect::<Result<Vec<_>, ApiError>>()?
-            .join(", ")
-    );
+    let canonical = studio_runtime_services::event_write::python_json(&value);
     let digest = Sha256::digest(canonical.as_bytes());
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
-}
-
-fn python_quote(value: &str) -> String {
-    let mut out = String::from("\"");
-    for c in value.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\u{8}' => out.push_str("\\b"),
-            '\u{c}' => out.push_str("\\f"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c < ' ' => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c if c as u32 > 0x7f => {
-                let n = c as u32;
-                if n <= 0xffff {
-                    out.push_str(&format!("\\u{n:04x}"));
-                } else {
-                    let n = n - 0x10000;
-                    out.push_str(&format!(
-                        "\\u{:04x}\\u{:04x}",
-                        0xd800 + (n >> 10),
-                        0xdc00 + (n & 0x3ff)
-                    ));
-                }
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
 }
 
 fn write_error(error: EventWriteError) -> ApiError {
@@ -429,28 +334,4 @@ fn write_error(error: EventWriteError) -> ApiError {
         EventWriteError::InvalidStoredObject { object, id } => invalid_stored(object, &id),
         EventWriteError::Store(_) | EventWriteError::Clock => ApiError::internal(),
     }
-}
-
-fn validate_queue_action(body: &Value) -> Result<(), ApiError> {
-    let action = body
-        .get("action")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let has_id = ["id", "message_id"].iter().any(|field| {
-        body.get(*field)
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.is_empty())
-    });
-    if matches!(action, "cancel" | "edit" | "first" | "send_now") && !has_id {
-        return Err(ApiError::validation(vec![Value::String("body".into())]));
-    }
-    if action == "send_now"
-        && !body
-            .get("request_id")
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.is_empty())
-    {
-        return Err(ApiError::validation(vec![Value::String("body".into())]));
-    }
-    Ok(())
 }

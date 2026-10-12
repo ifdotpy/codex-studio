@@ -39365,6 +39365,7 @@
             "title": "Request Id"
           },
           "text": {
+            "maxLength": 32000,
             "title": "Text",
             "type": "string"
           }
