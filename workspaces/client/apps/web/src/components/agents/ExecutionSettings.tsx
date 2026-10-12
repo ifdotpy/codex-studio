@@ -426,7 +426,6 @@ function ScopedExecutionSettings({
     ...new Set(connectedAccounts.map((account) => account.provider || "codex")),
   ].filter((provider) => role !== "review" || provider === "codex");
   const chooseAccount = (key: string | null) => {
-    setWantedModel(null);
     if (teamDefaults) void changeAccount(key);
     else if (key) onAccountChange?.(key);
   };
@@ -434,8 +433,8 @@ function ScopedExecutionSettings({
     accounts.find((account) => account.id === accountOf(agent))?.provider ||
     agent.provider ||
     "codex";
-  // Another provider's tab lists that provider's models. Choosing one first moves
-  // the subagents to the provider's first ready account; the model follows.
+  // Another provider's tab lists that provider's models. Choosing one saves the
+  // provider's first ready account and the model for new subagents only.
   const browseAccount =
     role === "worker" &&
     teamDefaults &&
@@ -448,10 +447,7 @@ function ScopedExecutionSettings({
     browseAccount?.id || "",
     !!browseAccount && (opened || !!settingsRow),
   );
-  const [wantedModel, setWantedModel] = useState<{
-    account: string;
-    model: string;
-  } | null>(null);
+
   useEffect(() => {
     // Keep the confirmed default until the snapshot carries the change.
     if (
@@ -965,21 +961,28 @@ function ScopedExecutionSettings({
     }
   };
   const mobile = useMediaQuery("(max-width: 760px)");
-  useEffect(() => {
-    // Apply a model chosen on another provider's tab once its account is in effect.
-    if (!wantedModel) return;
-    if (error) {
-      setWantedModel(null);
-      return;
-    }
-    if (saving || current.account_key !== wantedModel.account || !catalogKnown)
-      return;
-    setWantedModel(null);
-    if (infoFor(catalog, wantedModel.model))
-      void change({ model: wantedModel.model });
-  }, [wantedModel, error, saving, current.account_key, catalogKnown, catalog]);
+  const chooseBrowsedModel = (account: string, model: string) => {
+    const row = infoFor(browseCatalog, model);
+    const effort = row?.supportedReasoningEfforts?.some(
+      (item) => item.reasoningEffort === current.effort,
+    )
+      ? current.effort
+      : row?.defaultReasoningEffort || null;
+    // No account transfer: existing subagents keep their account and model.
+    void submit({
+      id: agent.id,
+      worker_defaults: {
+        ...current,
+        account_key: account,
+        model,
+        effort,
+        fast_mode: false,
+        daybreak_enabled: false,
+      },
+    });
+  };
   const pickerModel = browseAccount
-    ? wantedModel?.model || ""
+    ? ""
     : role === "review"
       ? reviewCurrent.model || DEFAULT
       : current.model || DEFAULT;
@@ -1072,10 +1075,8 @@ function ScopedExecutionSettings({
           role === "review" ? "Default review model" : prefix + " model"
         }
         onModel={(value) => {
-          if (browseAccount) {
-            setWantedModel({ account: browseAccount.id, model: value });
-            void changeAccount(browseAccount.id);
-          } else if (role === "review")
+          if (browseAccount) chooseBrowsedModel(browseAccount.id, value);
+          else if (role === "review")
             void changeReview({ model: value === DEFAULT ? null : value });
           else void change({ model: value === DEFAULT ? null : value });
         }}
@@ -1103,7 +1104,7 @@ function ScopedExecutionSettings({
       {role === "worker" && !onDraftChange && (
         <p className="notice">
           {browseAccount
-            ? `A model here moves the subagents to ${setupAccountName(browseAccount)}. Choose another account above to use it instead.`
+            ? `A model here is for new subagents on ${setupAccountName(browseAccount)}. Existing subagents keep their account. Choose another account above to use it instead.`
             : "For new subagents. An account change also moves existing ones."}
         </p>
       )}
