@@ -27,26 +27,18 @@ const MAX_MUTATION_SYNC_ENTITIES: i64 = 500;
 
 async fn rename(
     State(state): State<HttpState>,
-    ApiJson(body): ApiJson<Value>,
+    ApiJson(body): ApiJson<crate::generated::RenameRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let id = body
-        .get("id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid request"))?
-        .to_owned();
-    let request_id = body
-        .get("request_id")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    let name = body
-        .get("name")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .map(str::to_owned);
-    if request_id.as_ref().is_some_and(|value| value.is_empty())
-        || name.as_ref().is_some_and(|value| value.is_empty())
-        || (name.is_none() && request_id.is_none())
-    {
+    let id = body.id;
+    let request_id = body.request_id.flatten();
+    let name = body.name.flatten().map(|name| name.trim().to_owned());
+    if name.as_ref().is_some_and(String::is_empty) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "A name must have 1 to 80 characters",
+        ));
+    }
+    if name.is_none() && request_id.is_none() {
         return Err(ApiError::validation(vec![Value::String("body".to_owned())]));
     }
     let signature = rename_signature(&id, name.as_deref());
