@@ -80,6 +80,19 @@ async function setup(context, page) {
   await expect(button(sidebar, "Unpin Remote Saved pin")).toBeEnabled();
   return { fixture, sidebar };
 }
+const waitForOrderReceipt = (page) =>
+  expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          !Object.keys(localStorage).some(
+            (key) =>
+              key.startsWith("codex-sidebar-order:") &&
+              key.endsWith(":pending"),
+          ),
+      ),
+    )
+    .toBe(true);
 
 test("saved folders, nested folders, order, pins, teams, compact and collapse remain visible with search and status", async ({
   page,
@@ -196,6 +209,9 @@ test("pointer and keyboard reorder preserve source order, and chats can enter an
             .length,
       )
       .toBe(1);
+    // The fixture records the request before its client receipt updates the
+    // revision used for the next write. Wait for the durable pending marker.
+    await waitForOrderReceipt(page);
     expect(fixture.calls.remote[0].body.groups.unknown).toEqual([
       "unknown-saved-id",
     ]);
@@ -209,6 +225,7 @@ test("pointer and keyboard reorder preserve source order, and chats can enter an
             .length,
       )
       .toBe(2);
+    await waitForOrderReceipt(page);
     expect(await member.getAttribute("data-sidebar-group")).toBe(before);
     const remoteTeam = sidebar
       .getByRole("button", { name: /Remote Saved team/ })
@@ -731,19 +748,6 @@ test("project pointer and keyboard order plus pin keyboard order persist on the 
     const visibleChats = sidebar.locator("[data-chat]");
     await expect(visibleChats).toHaveCount(14);
     const initialChats = await visibleChats.count();
-    const waitForOrderReceipt = () =>
-      expect
-        .poll(() =>
-          page.evaluate(
-            () =>
-              !Object.keys(localStorage).some(
-                (key) =>
-                  key.startsWith("codex-sidebar-order:") &&
-                  key.endsWith(":pending"),
-              ),
-          ),
-        )
-        .toBe(true);
     await otherProject.focus();
     await page.keyboard.press("Alt+ArrowUp");
     await expect
@@ -757,7 +761,7 @@ test("project pointer and keyboard order plus pin keyboard order persist on the 
       )
       .toBe(1);
     // Snapshot mutation precedes the POST receipt; wait until the pending write clears.
-    await waitForOrderReceipt();
+    await waitForOrderReceipt(page);
     await expect
       .poll(() =>
         sidebar
@@ -779,7 +783,7 @@ test("project pointer and keyboard order plus pin keyboard order persist on the 
             .length,
       )
       .toBe(2);
-    await waitForOrderReceipt();
+    await waitForOrderReceipt(page);
     await expect
       .poll(() =>
         sidebar
@@ -806,7 +810,7 @@ test("project pointer and keyboard order plus pin keyboard order persist on the 
             .length,
       )
       .toBe(3);
-    await waitForOrderReceipt();
+    await waitForOrderReceipt(page);
     await expect(sidebar.getByRole("status")).toHaveText(
       "Moved to position 2 of 3",
     );
@@ -819,7 +823,7 @@ test("project pointer and keyboard order plus pin keyboard order persist on the 
             .length,
       )
       .toBe(4);
-    await waitForOrderReceipt();
+    await waitForOrderReceipt(page);
     const key = JSON.stringify(["chats", sourcePath("local"), true, false]);
     expect(fixture.local.snapshot.runtime.sidebarOrder.groups[key]).toEqual([
       "root-a",
