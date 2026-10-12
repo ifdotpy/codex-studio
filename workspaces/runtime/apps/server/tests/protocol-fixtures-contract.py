@@ -26,22 +26,42 @@ FIXTURES = Path(__file__).parent / "fixtures" / "provider-replay"
 PROTOCOL_FIXTURE = Path(__file__).parent / "fixtures" / "supervisor-protocol" / "supervisor-v1-http.json"
 
 
-def assert_frame_matches(actual: object, expected: object, state: Path) -> None:
-    """Compare recorded frame fields recursively; fixture dictionaries are projections."""
+def assert_frame_matches(
+    actual: object,
+    expected: object,
+    state: Path,
+    *,
+    action: str,
+    path: str = "$",
+) -> None:
+    """Compare recorded frame fields and name the action/path on every mismatch."""
     if isinstance(expected, dict):
         if not isinstance(actual, dict):
-            raise AssertionError(f"expected frame object, got {actual!r}")
+            raise AssertionError(
+                f"supervisor action {action!r} frame {path}: expected object, got {actual!r}"
+            )
         for key, value in expected.items():
-            assert_frame_matches(actual.get(key), value, state)
+            child_path = f"{path}.{key}"
+            if key not in actual:
+                raise AssertionError(
+                    f"supervisor action {action!r} frame {child_path}: expected key, got missing"
+                )
+            assert_frame_matches(actual[key], value, state, action=action, path=child_path)
     elif isinstance(expected, list):
         if not isinstance(actual, list) or len(actual) != len(expected):
-            raise AssertionError(f"expected frame list {expected!r}, got {actual!r}")
-        for actual_item, expected_item in zip(actual, expected):
-            assert_frame_matches(actual_item, expected_item, state)
+            raise AssertionError(
+                f"supervisor action {action!r} frame {path}: expected list {expected!r}, got {actual!r}"
+            )
+        for index, (actual_item, expected_item) in enumerate(zip(actual, expected)):
+            assert_frame_matches(
+                actual_item, expected_item, state, action=action, path=f"{path}[{index}]"
+            )
     else:
         resolved = str(state) if expected == "$state" else expected
         if actual != resolved:
-            raise AssertionError(f"expected frame field {resolved!r}, got {actual!r}")
+            raise AssertionError(
+                f"supervisor action {action!r} frame {path}: expected {resolved!r}, got {actual!r}"
+            )
 
 
 def substitute(value: object, state: Path) -> object:
@@ -82,7 +102,7 @@ def supervisor_exchange(
                     if not line:
                         raise AssertionError("supervisor closed before its recorded response frame")
                     response = json.loads(line)
-                    assert_frame_matches(response, item["frame"], state)
+                    assert_frame_matches(response, item["frame"], state, action="handshake")
                     observed.append(response)
                 elif "request" in item and "events" not in item:
                     request = substitute(item["request"], state)
@@ -95,7 +115,9 @@ def supervisor_exchange(
                     stream.write((json.dumps(request, separators=(",", ":")) + "\n").encode())
                     stream.flush()
                     response = json.loads(stream.readline())
-                    assert_frame_matches(response, expected, state)
+                    assert_frame_matches(
+                        response, expected, state, action=str(request.get("action"))
+                    )
                     observed.append(response)
                 elif "events" in item:
                     pending = {frame["eventKind"]: frame for frame in item["events"]}
@@ -130,7 +152,10 @@ def supervisor_exchange(
                             raise AssertionError(f"unexpected supervisor event kind: {kind!r}")
                         expected = copy.deepcopy(recorded["expected"])
                         expected["requestId"] = response["requestId"]
-                        assert_frame_matches(response, expected, state)
+                        assert_frame_matches(
+                            response, expected, state,
+                            action=f"{next_request.get('action')} event {kind}",
+                        )
                         cursor = event["sequence"]
                         observed.append(response)
                 else:
@@ -216,7 +241,7 @@ class ProtocolFixturesContract(unittest.TestCase):
 
     def test_checker_rejects_an_altered_recorded_expectation(self) -> None:
         altered = copy.deepcopy(self.protocol["processScenario"][1:2])
-        with self.assertRaises(AssertionError):
+        with self.assertRaisesRegex(AssertionError, r"action 'health' frame \$\.result\.protocol"):
             supervisor_exchange(
                 self.backend.state,
                 self.protocol["supervisorFrames"][:2],
