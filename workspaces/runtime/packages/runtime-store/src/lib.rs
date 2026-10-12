@@ -1,5 +1,6 @@
 mod path;
 mod records;
+mod repositories;
 mod schema;
 
 use std::fs::{File, OpenOptions};

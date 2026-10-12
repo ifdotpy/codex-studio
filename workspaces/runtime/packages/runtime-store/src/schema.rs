@@ -13,18 +13,28 @@ const SCHEMA_SNAPSHOT: &str =
 pub(crate) fn verify(canvas_path: &Path, analytics_path: &Path) -> StoreResult<()> {
     let canvas = open_read_only(canvas_path)?;
     let analytics = open_read_only(analytics_path)?;
-    for (object, required) in CANVAS_TABLES {
-        require_columns(&canvas, "canvas.sqlite3", object, required)?;
-    }
-    for object in CANVAS_TRIGGERS {
-        require_trigger(&canvas, "canvas.sqlite3", object, "runtime_events")?;
-    }
-    for object in AGENT_TRIGGERS {
-        require_trigger(&canvas, "canvas.sqlite3", object, "runtime_agents")?;
-    }
-    if table_exists(&canvas, "runtime_transcript_revisions")? {
-        for object in TRANSCRIPT_AGENT_TRIGGERS {
-            require_trigger(&canvas, "canvas.sqlite3", object, "runtime_agents")?;
+    for requirements in crate::repositories::REQUIREMENTS {
+        for table in requirements.tables {
+            require_columns(&canvas, "canvas.sqlite3", table.name, table.columns)?;
+        }
+        for trigger in requirements.triggers {
+            require_trigger(&canvas, "canvas.sqlite3", trigger.name, trigger.table)?;
+        }
+        for function in requirements.connection_functions {
+            if !SUPPORTED_CONNECTION_FUNCTIONS.contains(function) {
+                return Err(object_mismatch(
+                    "canvas.sqlite3",
+                    function,
+                    "repository requires an unregistered connection-local SQL function",
+                ));
+            }
+        }
+        for conditional in requirements.conditional_triggers {
+            if table_exists(&canvas, conditional.table_exists)? {
+                for trigger in conditional.triggers {
+                    require_trigger(&canvas, "canvas.sqlite3", trigger.name, trigger.table)?;
+                }
+            }
         }
     }
     verify_payload_migration(&canvas)?;
@@ -53,59 +63,32 @@ pub(crate) fn verify(canvas_path: &Path, analytics_path: &Path) -> StoreResult<(
     Ok(())
 }
 
-// These requirements are the persisted SQL contract of the repositories and
-// the triggers exercised by their writes. Optional feature tables are not
-// inspected until a repository for that family is added.
-const CANVAS_TABLES: &[(&str, &[&str])] = &[
-    ("runtime_agents", &["id", "record"]),
-    ("runtime_tasks", &["id", "record"]),
-    (
-        "runtime_events",
-        &[
-            "id", "agent", "kind", "text", "status", "created", "epoch", "turn_id", "error",
-        ],
-    ),
-    (
-        "runtime_chat_messages",
-        &[
-            "seq",
-            "id",
-            "room",
-            "sender",
-            "text",
-            "created",
-            "deliveries",
-        ],
-    ),
-    (
-        "sync_entities",
-        &["collection", "id", "seq", "hash", "payload", "deleted"],
-    ),
-    ("sync_documents", &["seq"]),
-    ("sync_versions", &["seq"]),
-    ("runtime_agent_record_generation", &["id", "value"]),
-    (
-        "runtime_scheduler_agent_change_state",
-        &["id", "entries", "total", "generation"],
-    ),
-    ("runtime_scheduler_agent_changes", &["id", "generation"]),
-];
+#[derive(Clone, Copy)]
+pub(crate) struct TableRequirement {
+    pub name: &'static str,
+    pub columns: &'static [&'static str],
+}
 
-const CANVAS_TRIGGERS: &[&str] = &[
-    "sync_entity_event_INSERT",
-    "sync_entity_event_UPDATE",
-    "sync_entity_event_DELETE",
-];
-const AGENT_TRIGGERS: &[&str] = &[
-    "runtime_agent_record_generation_insert",
-    "runtime_agent_record_generation_update",
-    "runtime_agent_record_generation_delete",
-];
-const TRANSCRIPT_AGENT_TRIGGERS: &[&str] = &[
-    "sync_transcript_revision_runtime_agents_insert",
-    "sync_transcript_revision_runtime_agents_update",
-    "sync_transcript_revision_runtime_agents_delete",
-];
+#[derive(Clone, Copy)]
+pub(crate) struct TriggerRequirement {
+    pub name: &'static str,
+    pub table: &'static str,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ConditionalTriggerRequirement {
+    pub table_exists: &'static str,
+    pub triggers: &'static [TriggerRequirement],
+}
+
+pub(crate) struct SchemaRequirements {
+    pub tables: &'static [TableRequirement],
+    pub triggers: &'static [TriggerRequirement],
+    pub conditional_triggers: &'static [ConditionalTriggerRequirement],
+    pub connection_functions: &'static [&'static str],
+}
+
+const SUPPORTED_CONNECTION_FUNCTIONS: &[&str] = &["sync_entity_payload", "sync_entity_hash"];
 
 pub(crate) fn register_python_trigger_functions(connection: &Connection) -> StoreResult<()> {
     connection.create_scalar_function(

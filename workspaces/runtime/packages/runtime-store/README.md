@@ -212,7 +212,24 @@ store. Unknown JSON fields are retained in a flattened map on read and rewrite.
 Each repository is a small type with `get(connection, id)` and
 `put(transaction, record)` methods; JSON-backed families share the private
 `get_json_record`/`put_json_record` helpers, while SQL row families map their
-columns explicitly. This is the pattern for adding the remaining families.
+columns explicitly. Each implementation lives in
+`src/repositories/<family>.rs` and exports `REQUIREMENTS: SchemaRequirements`
+beside its SQL methods. The declaration lists every table and column it uses,
+required triggers and connection-local SQL functions its writes need, plus conditional
+requirements such as transcript triggers when the transcript table exists.
+`schema::verify` aggregates these declarations via the single
+`repositories::REQUIREMENTS` list. Add a module, declare its contract next to
+its SQL, and add one line to that list; do not centralize family-specific
+schema knowledge in `schema.rs`.
+
+The fixture schema used by the Python drift guard is captured from a new
+`Runtime` before `Canvas` is initialized. It therefore omits
+`graph_agents`, `graph_edges`, `groups`, `messages`, and `messages_room`, which
+`Canvas.__init__` creates on every real server start. The Python guard is blind
+to changes in those Canvas-owned objects. Recommendation for a future guard
+change: capture the canonical snapshot after full server startup, including
+`Canvas`; keep a separately named Runtime-only fixture only if focused tests
+need it. This slice does not change the Python guard or snapshot.
 
 The initial state directory schema is created by the Python runtime today. A
 fresh state directory without Python does not get provisioned by this crate;
