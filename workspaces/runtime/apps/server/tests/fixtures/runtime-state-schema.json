@@ -1,0 +1,4616 @@
+{
+  "analytics.sqlite3": {
+    "file_migration_v1": [],
+    "payload_migrations": [],
+    "pragma_user_version": 0,
+    "sqlite_master": [
+      {
+        "name": "analytics_agents_root",
+        "sql": "CREATE INDEX analytics_agents_root ON analytics_agents(json_extract(record,'$.rootId'))",
+        "table": "analytics_agents",
+        "type": "index"
+      },
+      {
+        "name": "analytics_cost_changes_revision_v1",
+        "sql": "CREATE INDEX analytics_cost_changes_revision_v1 ON analytics_cost_changes_v1(root,revision)",
+        "table": "analytics_cost_changes_v1",
+        "type": "index"
+      },
+      {
+        "name": "analytics_cost_projection_seq_v1",
+        "sql": "CREATE INDEX analytics_cost_projection_seq_v1 ON analytics_cost_projection_v1(json_extract(packed,'$[0]'))",
+        "table": "analytics_cost_projection_v1",
+        "type": "index"
+      },
+      {
+        "name": "analytics_items_scope",
+        "sql": "CREATE INDEX analytics_items_scope ON analytics_items(agent,at)",
+        "table": "analytics_items",
+        "type": "index"
+      },
+      {
+        "name": "analytics_items_team",
+        "sql": "CREATE INDEX analytics_items_team ON analytics_items(root,at)",
+        "table": "analytics_items",
+        "type": "index"
+      },
+      {
+        "name": "analytics_items_tool",
+        "sql": "CREATE INDEX analytics_items_tool ON analytics_items(name,at)",
+        "table": "analytics_items",
+        "type": "index"
+      },
+      {
+        "name": "analytics_turns_scope",
+        "sql": "CREATE INDEX analytics_turns_scope ON analytics_turns(agent,at)",
+        "table": "analytics_turns",
+        "type": "index"
+      },
+      {
+        "name": "analytics_usage_migration",
+        "sql": "CREATE INDEX analytics_usage_migration ON analytics_usage(agent,seq)",
+        "table": "analytics_usage",
+        "type": "index"
+      },
+      {
+        "name": "analytics_usage_response",
+        "sql": "CREATE INDEX analytics_usage_response ON analytics_usage(agent,thread,json_extract(record,'$.responseId'))",
+        "table": "analytics_usage",
+        "type": "index"
+      },
+      {
+        "name": "analytics_usage_root_seq",
+        "sql": "CREATE INDEX analytics_usage_root_seq ON analytics_usage(root,seq)",
+        "table": "analytics_usage",
+        "type": "index"
+      },
+      {
+        "name": "analytics_usage_scope",
+        "sql": "CREATE INDEX analytics_usage_scope ON analytics_usage(agent,at)",
+        "table": "analytics_usage",
+        "type": "index"
+      },
+      {
+        "name": "analytics_usage_team",
+        "sql": "CREATE INDEX analytics_usage_team ON analytics_usage(root,at)",
+        "table": "analytics_usage",
+        "type": "index"
+      },
+      {
+        "name": "analytics_usage_thread",
+        "sql": "CREATE INDEX analytics_usage_thread ON analytics_usage(agent,thread,seq)",
+        "table": "analytics_usage",
+        "type": "index"
+      },
+      {
+        "name": "analytics_agents",
+        "sql": "CREATE TABLE analytics_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "analytics_agents",
+        "type": "table"
+      },
+      {
+        "name": "analytics_cost_changes_v1",
+        "sql": "CREATE TABLE analytics_cost_changes_v1 (\n        root TEXT NOT NULL,id TEXT NOT NULL,revision INTEGER NOT NULL,PRIMARY KEY(root,id))",
+        "table": "analytics_cost_changes_v1",
+        "type": "table"
+      },
+      {
+        "name": "analytics_cost_projection_v1",
+        "sql": "CREATE TABLE analytics_cost_projection_v1 (id TEXT PRIMARY KEY,root TEXT,packed TEXT NOT NULL)",
+        "table": "analytics_cost_projection_v1",
+        "type": "table"
+      },
+      {
+        "name": "analytics_cost_roots_v1",
+        "sql": "CREATE TABLE analytics_cost_roots_v1 (\n        root TEXT PRIMARY KEY,revision INTEGER NOT NULL,floor INTEGER NOT NULL)",
+        "table": "analytics_cost_roots_v1",
+        "type": "table"
+      },
+      {
+        "name": "analytics_cost_state_v1",
+        "sql": "CREATE TABLE analytics_cost_state_v1 (\n        singleton INTEGER PRIMARY KEY CHECK(singleton=1), token TEXT NOT NULL)",
+        "table": "analytics_cost_state_v1",
+        "type": "table"
+      },
+      {
+        "name": "analytics_history",
+        "sql": "CREATE TABLE analytics_history (id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL)",
+        "table": "analytics_history",
+        "type": "table"
+      },
+      {
+        "name": "analytics_items",
+        "sql": "CREATE TABLE analytics_items (\n            id TEXT PRIMARY KEY, agent TEXT NOT NULL, root TEXT, thread TEXT, turn TEXT,\n            at REAL NOT NULL, type TEXT, name TEXT, is_tool INTEGER NOT NULL, record TEXT NOT NULL)",
+        "table": "analytics_items",
+        "type": "table"
+      },
+      {
+        "name": "analytics_limits",
+        "sql": "CREATE TABLE analytics_limits (\n            id INTEGER PRIMARY KEY AUTOINCREMENT, account TEXT NOT NULL, at REAL NOT NULL, record TEXT NOT NULL)",
+        "table": "analytics_limits",
+        "type": "table"
+      },
+      {
+        "name": "analytics_meta",
+        "sql": "CREATE TABLE analytics_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        "table": "analytics_meta",
+        "type": "table"
+      },
+      {
+        "name": "analytics_notifications",
+        "sql": "CREATE TABLE analytics_notifications (\n            id TEXT PRIMARY KEY, agent TEXT, root TEXT, method TEXT, hour INTEGER,\n            count INTEGER NOT NULL, bytes INTEGER NOT NULL)",
+        "table": "analytics_notifications",
+        "type": "table"
+      },
+      {
+        "name": "analytics_turns",
+        "sql": "CREATE TABLE analytics_turns (\n            id TEXT PRIMARY KEY, agent TEXT NOT NULL, root TEXT, at REAL NOT NULL, record TEXT NOT NULL)",
+        "table": "analytics_turns",
+        "type": "table"
+      },
+      {
+        "name": "analytics_usage",
+        "sql": "CREATE TABLE analytics_usage (\n            seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,\n            agent TEXT NOT NULL, root TEXT, thread TEXT, turn TEXT, at REAL NOT NULL, record TEXT NOT NULL)",
+        "table": "analytics_usage",
+        "type": "table"
+      },
+      {
+        "name": "analytics_usage_roots",
+        "sql": "CREATE TABLE analytics_usage_roots (root TEXT PRIMARY KEY, generation INTEGER NOT NULL)",
+        "table": "analytics_usage_roots",
+        "type": "table"
+      },
+      {
+        "name": "analytics_cost_projection_delete_v1",
+        "sql": "CREATE TRIGGER analytics_cost_projection_delete_v1 AFTER DELETE ON analytics_cost_projection_v1 BEGIN INSERT INTO analytics_cost_roots_v1 SELECT OLD.root,1,0 WHERE OLD.root IS NOT NULL ON CONFLICT(root) DO UPDATE SET revision=revision+1,floor=MAX(0,revision+1-8192); INSERT INTO analytics_cost_changes_v1 SELECT root,OLD.id,revision FROM analytics_cost_roots_v1 WHERE root IS OLD.root AND OLD.root IS NOT NULL ON CONFLICT(root,id) DO UPDATE SET revision=excluded.revision; DELETE FROM analytics_cost_changes_v1 WHERE root IS OLD.root AND OLD.root IS NOT NULL AND revision<=(SELECT floor FROM analytics_cost_roots_v1 WHERE root IS OLD.root); END",
+        "table": "analytics_cost_projection_v1",
+        "type": "trigger"
+      },
+      {
+        "name": "analytics_cost_projection_insert_v1",
+        "sql": "CREATE TRIGGER analytics_cost_projection_insert_v1 AFTER INSERT ON analytics_cost_projection_v1 BEGIN INSERT INTO analytics_cost_roots_v1 SELECT NEW.root,1,0 WHERE NEW.root IS NOT NULL ON CONFLICT(root) DO UPDATE SET revision=revision+1,floor=MAX(0,revision+1-8192); INSERT INTO analytics_cost_changes_v1 SELECT root,NEW.id,revision FROM analytics_cost_roots_v1 WHERE root IS NEW.root AND NEW.root IS NOT NULL ON CONFLICT(root,id) DO UPDATE SET revision=excluded.revision; DELETE FROM analytics_cost_changes_v1 WHERE root IS NEW.root AND NEW.root IS NOT NULL AND revision<=(SELECT floor FROM analytics_cost_roots_v1 WHERE root IS NEW.root); END",
+        "table": "analytics_cost_projection_v1",
+        "type": "trigger"
+      },
+      {
+        "name": "analytics_cost_projection_update_v1",
+        "sql": "CREATE TRIGGER analytics_cost_projection_update_v1 AFTER UPDATE ON analytics_cost_projection_v1 BEGIN INSERT INTO analytics_cost_roots_v1 SELECT NEW.root,1,0 WHERE NEW.root IS NOT NULL ON CONFLICT(root) DO UPDATE SET revision=revision+1,floor=MAX(0,revision+1-8192); INSERT INTO analytics_cost_changes_v1 SELECT root,NEW.id,revision FROM analytics_cost_roots_v1 WHERE root IS NEW.root AND NEW.root IS NOT NULL ON CONFLICT(root,id) DO UPDATE SET revision=excluded.revision; DELETE FROM analytics_cost_changes_v1 WHERE root IS NEW.root AND NEW.root IS NOT NULL AND revision<=(SELECT floor FROM analytics_cost_roots_v1 WHERE root IS NEW.root); INSERT INTO analytics_cost_roots_v1 SELECT OLD.root,1,0 WHERE OLD.root IS NOT NULL AND OLD.root IS NOT NEW.root ON CONFLICT(root) DO UPDATE SET revision=revision+1,floor=MAX(0,revision+1-8192); INSERT INTO analytics_cost_changes_v1 SELECT root,OLD.id,revision FROM analytics_cost_roots_v1 WHERE root IS OLD.root AND OLD.root IS NOT NULL AND OLD.root IS NOT NEW.root ON CONFLICT(root,id) DO UPDATE SET revision=excluded.revision; DELETE FROM analytics_cost_changes_v1 WHERE root IS OLD.root AND OLD.root IS NOT NULL AND OLD.root IS NOT NEW.root AND revision<=(SELECT floor FROM analytics_cost_roots_v1 WHERE root IS OLD.root); END",
+        "table": "analytics_cost_projection_v1",
+        "type": "trigger"
+      },
+      {
+        "name": "analytics_cost_usage_before_delete_v1",
+        "sql": "CREATE TRIGGER analytics_cost_usage_before_delete_v1 BEFORE DELETE ON analytics_usage BEGIN INSERT INTO analytics_cost_projection_v1 SELECT OLD.id,OLD.root,(WITH cost_raw AS MATERIALIZED (SELECT jsonb(OLD.record) AS cost_document) SELECT json_array(OLD.seq,OLD.agent,OLD.thread,OLD.turn,OLD.at,CASE WHEN json_type(cost_document,'$.agentId') IN ('array','object') THEN json_extract(OLD.record,'$.agentId') || '' ELSE json_extract(cost_document,'$.agentId') END,CASE WHEN json_type(cost_document,'$.threadId') IN ('array','object') THEN json_extract(OLD.record,'$.threadId') || '' ELSE json_extract(cost_document,'$.threadId') END,CASE WHEN json_type(cost_document,'$.turnId') IN ('array','object') THEN json_extract(OLD.record,'$.turnId') || '' ELSE json_extract(cost_document,'$.turnId') END,CASE WHEN json_type(cost_document,'$.responseId') IS NULL OR json_type(cost_document,'$.responseId') IN ('null','false') OR (json_type(cost_document,'$.responseId') IN ('integer','real') AND json_extract(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='text' AND json_extract(cost_document,'$.responseId')='') OR (json_type(cost_document,'$.responseId')='array' AND json_array_length(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='object' AND NOT EXISTS (SELECT 1 FROM json_each(cost_document,'$.responseId'))) THEN 0 ELSE 1 END,CASE WHEN json_type(cost_document,'$.model')='text' THEN json_extract(cost_document,'$.model') END,COALESCE(CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(OLD.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,'default'),CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.inputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.inputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cachedInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cachedInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cacheWriteInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cacheWriteInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.outputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.outputTokens') END END,CASE WHEN json_extract(cost_document,'$.inputTokensAreUncached')=1 THEN 1 ELSE 0 END,CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(OLD.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,CASE WHEN json_type(cost_document,'$.responseId') IN ('array','object') THEN json_extract(OLD.record,'$.responseId') || '' ELSE json_extract(cost_document,'$.responseId') END) FROM cost_raw) WHERE NOT EXISTS (SELECT 1 FROM analytics_cost_projection_v1 WHERE id=OLD.id); END",
+        "table": "analytics_usage",
+        "type": "trigger"
+      },
+      {
+        "name": "analytics_cost_usage_before_insert_v1",
+        "sql": "CREATE TRIGGER analytics_cost_usage_before_insert_v1 BEFORE INSERT ON analytics_usage BEGIN INSERT INTO analytics_cost_projection_v1 SELECT u.id,u.root,(WITH cost_raw AS MATERIALIZED (SELECT jsonb(u.record) AS cost_document) SELECT json_array(u.seq,u.agent,u.thread,u.turn,u.at,CASE WHEN json_type(cost_document,'$.agentId') IN ('array','object') THEN json_extract(u.record,'$.agentId') || '' ELSE json_extract(cost_document,'$.agentId') END,CASE WHEN json_type(cost_document,'$.threadId') IN ('array','object') THEN json_extract(u.record,'$.threadId') || '' ELSE json_extract(cost_document,'$.threadId') END,CASE WHEN json_type(cost_document,'$.turnId') IN ('array','object') THEN json_extract(u.record,'$.turnId') || '' ELSE json_extract(cost_document,'$.turnId') END,CASE WHEN json_type(cost_document,'$.responseId') IS NULL OR json_type(cost_document,'$.responseId') IN ('null','false') OR (json_type(cost_document,'$.responseId') IN ('integer','real') AND json_extract(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='text' AND json_extract(cost_document,'$.responseId')='') OR (json_type(cost_document,'$.responseId')='array' AND json_array_length(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='object' AND NOT EXISTS (SELECT 1 FROM json_each(cost_document,'$.responseId'))) THEN 0 ELSE 1 END,CASE WHEN json_type(cost_document,'$.model')='text' THEN json_extract(cost_document,'$.model') END,COALESCE(CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(u.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,'default'),CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.inputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.inputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cachedInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cachedInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cacheWriteInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cacheWriteInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.outputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.outputTokens') END END,CASE WHEN json_extract(cost_document,'$.inputTokensAreUncached')=1 THEN 1 ELSE 0 END,CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(u.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,CASE WHEN json_type(cost_document,'$.responseId') IN ('array','object') THEN json_extract(u.record,'$.responseId') || '' ELSE json_extract(cost_document,'$.responseId') END) FROM cost_raw) FROM analytics_usage u WHERE (u.seq=NEW.seq OR u.id=NEW.id) AND NOT EXISTS (SELECT 1 FROM analytics_cost_projection_v1 WHERE id=u.id); END",
+        "table": "analytics_usage",
+        "type": "trigger"
+      },
+      {
+        "name": "analytics_cost_usage_before_update_v1",
+        "sql": "CREATE TRIGGER analytics_cost_usage_before_update_v1 BEFORE UPDATE ON analytics_usage BEGIN INSERT INTO analytics_cost_projection_v1 SELECT OLD.id,OLD.root,(WITH cost_raw AS MATERIALIZED (SELECT jsonb(OLD.record) AS cost_document) SELECT json_array(OLD.seq,OLD.agent,OLD.thread,OLD.turn,OLD.at,CASE WHEN json_type(cost_document,'$.agentId') IN ('array','object') THEN json_extract(OLD.record,'$.agentId') || '' ELSE json_extract(cost_document,'$.agentId') END,CASE WHEN json_type(cost_document,'$.threadId') IN ('array','object') THEN json_extract(OLD.record,'$.threadId') || '' ELSE json_extract(cost_document,'$.threadId') END,CASE WHEN json_type(cost_document,'$.turnId') IN ('array','object') THEN json_extract(OLD.record,'$.turnId') || '' ELSE json_extract(cost_document,'$.turnId') END,CASE WHEN json_type(cost_document,'$.responseId') IS NULL OR json_type(cost_document,'$.responseId') IN ('null','false') OR (json_type(cost_document,'$.responseId') IN ('integer','real') AND json_extract(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='text' AND json_extract(cost_document,'$.responseId')='') OR (json_type(cost_document,'$.responseId')='array' AND json_array_length(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='object' AND NOT EXISTS (SELECT 1 FROM json_each(cost_document,'$.responseId'))) THEN 0 ELSE 1 END,CASE WHEN json_type(cost_document,'$.model')='text' THEN json_extract(cost_document,'$.model') END,COALESCE(CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(OLD.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,'default'),CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.inputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.inputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cachedInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cachedInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cacheWriteInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cacheWriteInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.outputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.outputTokens') END END,CASE WHEN json_extract(cost_document,'$.inputTokensAreUncached')=1 THEN 1 ELSE 0 END,CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(OLD.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,CASE WHEN json_type(cost_document,'$.responseId') IN ('array','object') THEN json_extract(OLD.record,'$.responseId') || '' ELSE json_extract(cost_document,'$.responseId') END) FROM cost_raw) WHERE NOT EXISTS (SELECT 1 FROM analytics_cost_projection_v1 WHERE id=OLD.id); END",
+        "table": "analytics_usage",
+        "type": "trigger"
+      },
+      {
+        "name": "analytics_cost_usage_delete_v1",
+        "sql": "CREATE TRIGGER analytics_cost_usage_delete_v1 AFTER DELETE ON analytics_usage BEGIN DELETE FROM analytics_cost_projection_v1 WHERE id=OLD.id; END",
+        "table": "analytics_usage",
+        "type": "trigger"
+      },
+      {
+        "name": "analytics_cost_usage_insert_v1",
+        "sql": "CREATE TRIGGER analytics_cost_usage_insert_v1 AFTER INSERT ON analytics_usage BEGIN DELETE FROM analytics_cost_projection_v1 WHERE json_extract(packed,'$[0]')=+NEW.seq AND id IS NOT NEW.id; INSERT INTO analytics_cost_projection_v1 VALUES (NEW.id,NEW.root,(WITH cost_raw AS MATERIALIZED (SELECT jsonb(NEW.record) AS cost_document) SELECT json_array(NEW.seq,NEW.agent,NEW.thread,NEW.turn,NEW.at,CASE WHEN json_type(cost_document,'$.agentId') IN ('array','object') THEN json_extract(NEW.record,'$.agentId') || '' ELSE json_extract(cost_document,'$.agentId') END,CASE WHEN json_type(cost_document,'$.threadId') IN ('array','object') THEN json_extract(NEW.record,'$.threadId') || '' ELSE json_extract(cost_document,'$.threadId') END,CASE WHEN json_type(cost_document,'$.turnId') IN ('array','object') THEN json_extract(NEW.record,'$.turnId') || '' ELSE json_extract(cost_document,'$.turnId') END,CASE WHEN json_type(cost_document,'$.responseId') IS NULL OR json_type(cost_document,'$.responseId') IN ('null','false') OR (json_type(cost_document,'$.responseId') IN ('integer','real') AND json_extract(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='text' AND json_extract(cost_document,'$.responseId')='') OR (json_type(cost_document,'$.responseId')='array' AND json_array_length(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='object' AND NOT EXISTS (SELECT 1 FROM json_each(cost_document,'$.responseId'))) THEN 0 ELSE 1 END,CASE WHEN json_type(cost_document,'$.model')='text' THEN json_extract(cost_document,'$.model') END,COALESCE(CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(NEW.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,'default'),CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.inputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.inputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cachedInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cachedInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cacheWriteInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cacheWriteInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.outputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.outputTokens') END END,CASE WHEN json_extract(cost_document,'$.inputTokensAreUncached')=1 THEN 1 ELSE 0 END,CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(NEW.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,CASE WHEN json_type(cost_document,'$.responseId') IN ('array','object') THEN json_extract(NEW.record,'$.responseId') || '' ELSE json_extract(cost_document,'$.responseId') END) FROM cost_raw)) ON CONFLICT(id) DO UPDATE SET root=excluded.root,packed=excluded.packed WHERE root IS NOT excluded.root OR packed IS NOT excluded.packed; END",
+        "table": "analytics_usage",
+        "type": "trigger"
+      },
+      {
+        "name": "analytics_cost_usage_update_v1",
+        "sql": "CREATE TRIGGER analytics_cost_usage_update_v1 AFTER UPDATE ON analytics_usage BEGIN DELETE FROM analytics_cost_projection_v1 WHERE json_extract(packed,'$[0]')=+NEW.seq AND id IS NOT NEW.id; DELETE FROM analytics_cost_projection_v1 WHERE id=OLD.id AND OLD.id IS NOT NEW.id; INSERT INTO analytics_cost_projection_v1 VALUES (NEW.id,NEW.root,(WITH cost_raw AS MATERIALIZED (SELECT jsonb(NEW.record) AS cost_document) SELECT json_array(NEW.seq,NEW.agent,NEW.thread,NEW.turn,NEW.at,CASE WHEN json_type(cost_document,'$.agentId') IN ('array','object') THEN json_extract(NEW.record,'$.agentId') || '' ELSE json_extract(cost_document,'$.agentId') END,CASE WHEN json_type(cost_document,'$.threadId') IN ('array','object') THEN json_extract(NEW.record,'$.threadId') || '' ELSE json_extract(cost_document,'$.threadId') END,CASE WHEN json_type(cost_document,'$.turnId') IN ('array','object') THEN json_extract(NEW.record,'$.turnId') || '' ELSE json_extract(cost_document,'$.turnId') END,CASE WHEN json_type(cost_document,'$.responseId') IS NULL OR json_type(cost_document,'$.responseId') IN ('null','false') OR (json_type(cost_document,'$.responseId') IN ('integer','real') AND json_extract(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='text' AND json_extract(cost_document,'$.responseId')='') OR (json_type(cost_document,'$.responseId')='array' AND json_array_length(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='object' AND NOT EXISTS (SELECT 1 FROM json_each(cost_document,'$.responseId'))) THEN 0 ELSE 1 END,CASE WHEN json_type(cost_document,'$.model')='text' THEN json_extract(cost_document,'$.model') END,COALESCE(CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(NEW.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,'default'),CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.inputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.inputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cachedInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cachedInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cacheWriteInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cacheWriteInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.outputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.outputTokens') END END,CASE WHEN json_extract(cost_document,'$.inputTokensAreUncached')=1 THEN 1 ELSE 0 END,CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(NEW.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,CASE WHEN json_type(cost_document,'$.responseId') IN ('array','object') THEN json_extract(NEW.record,'$.responseId') || '' ELSE json_extract(cost_document,'$.responseId') END) FROM cost_raw)) ON CONFLICT(id) DO UPDATE SET root=excluded.root,packed=excluded.packed WHERE root IS NOT excluded.root OR packed IS NOT excluded.packed; END",
+        "table": "analytics_usage",
+        "type": "trigger"
+      }
+    ],
+    "tables_and_columns": [
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "analytics_agents"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "root",
+            "notnull": 1,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "id",
+            "notnull": 1,
+            "primary_key_position": 2,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "revision",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          }
+        ],
+        "name": "analytics_cost_changes_v1"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "root",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "packed",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "analytics_cost_projection_v1"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "root",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "revision",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "floor",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          }
+        ],
+        "name": "analytics_cost_roots_v1"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "singleton",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "token",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "analytics_cost_state_v1"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "agent",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "analytics_history"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "agent",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "root",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "thread",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 4,
+            "default": null,
+            "name": "turn",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 5,
+            "default": null,
+            "name": "at",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "REAL"
+          },
+          {
+            "cid": 6,
+            "default": null,
+            "name": "type",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 7,
+            "default": null,
+            "name": "name",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 8,
+            "default": null,
+            "name": "is_tool",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 9,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "analytics_items"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "account",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "at",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "REAL"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "analytics_limits"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "key",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "value",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "analytics_meta"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "agent",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "root",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "method",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 4,
+            "default": null,
+            "name": "hour",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 5,
+            "default": null,
+            "name": "count",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 6,
+            "default": null,
+            "name": "bytes",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          }
+        ],
+        "name": "analytics_notifications"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "agent",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "root",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "at",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "REAL"
+          },
+          {
+            "cid": 4,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "analytics_turns"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "seq",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "id",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "agent",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "root",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 4,
+            "default": null,
+            "name": "thread",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 5,
+            "default": null,
+            "name": "turn",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 6,
+            "default": null,
+            "name": "at",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "REAL"
+          },
+          {
+            "cid": 7,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "analytics_usage"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "root",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "generation",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          }
+        ],
+        "name": "analytics_usage_roots"
+      }
+    ]
+  },
+  "canvas.sqlite3": {
+    "file_migration_v1": [],
+    "payload_migrations": [],
+    "pragma_user_version": 0,
+    "sqlite_master": [
+      {
+        "name": "runtime_access_nonce_age",
+        "sql": "CREATE INDEX runtime_access_nonce_age ON runtime_access_nonces(created)",
+        "table": "runtime_access_nonces",
+        "type": "index"
+      },
+      {
+        "name": "runtime_access_outbound_age",
+        "sql": "CREATE INDEX runtime_access_outbound_age\n          ON runtime_access_outbound(json_extract(record,'$.completed'))\n          WHERE json_extract(record,'$.outcome')='complete'",
+        "table": "runtime_access_outbound",
+        "type": "index"
+      },
+      {
+        "name": "runtime_access_receipt_age",
+        "sql": "CREATE INDEX runtime_access_receipt_age\n          ON runtime_access_receipts(json_extract(record,'$.completed')) WHERE status='complete'",
+        "table": "runtime_access_receipts",
+        "type": "index"
+      },
+      {
+        "name": "runtime_account_transfer_status",
+        "sql": "CREATE INDEX runtime_account_transfer_status ON runtime_account_transfers(json_extract(record,'$.status'))",
+        "table": "runtime_account_transfers",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_account_scope",
+        "sql": "CREATE INDEX runtime_agent_account_scope ON runtime_agents(\n                    CASE WHEN json_type(record,'$.accountKey') IS NULL THEN 'default'\n                         ELSE json_extract(record,'$.accountKey') END)",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_capacity_retry_state_due_v2",
+        "sql": "CREATE INDEX runtime_agent_capacity_retry_state_due_v2 ON runtime_agents(\n                    json_extract(record,'$.capacityRetry.status'),\n                    json_extract(record,'$.capacityRetry.dueAt'))",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_dispatch_active",
+        "sql": "CREATE INDEX runtime_agent_dispatch_active ON runtime_agents(json_extract(record,'$.rootId')) WHERE json_extract(record,'$.inFlight')=1 OR json_extract(record,'$.status') IN ('running','starting','approval')",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_dispatch_busy_input",
+        "sql": "CREATE INDEX runtime_agent_dispatch_busy_input ON runtime_agents(json_extract(record,'$.rootId')) WHERE json_extract(record,'$.startAttempt.activeAtReservation')=1",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_dispatch_workspace",
+        "sql": "CREATE INDEX runtime_agent_dispatch_workspace ON runtime_agents(json_extract(record,'$.cwd')) WHERE json_type(record,'$.workspaceOperation')='text' AND json_extract(record,'$.workspaceOperation')!=''",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_global_active",
+        "sql": "CREATE INDEX runtime_agent_global_active ON runtime_agents(\n                    json_extract(record,'$.status')) WHERE json_extract(record,'$.status') IN\n                    ('running','starting','approval')",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_inflight",
+        "sql": "CREATE INDEX runtime_agent_inflight ON runtime_agents(\n                    json_extract(record,'$.inFlight')) WHERE json_extract(record,'$.inFlight')=1",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_live_root",
+        "sql": "CREATE INDEX runtime_agent_live_root ON runtime_agents(\n                    json_extract(record,'$.rootId'),id)\n                    WHERE json_extract(record,'$.deletedAt') IS NULL",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_native_reset_pending",
+        "sql": "CREATE INDEX runtime_agent_native_reset_pending ON runtime_agents(id)\n                    WHERE json_extract(record,'$.nativeRelease.resetPending')=1",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_native_scope",
+        "sql": "CREATE INDEX runtime_agent_native_scope ON runtime_agents(\n                    json_extract(record,'$.threadId'),\n                    CASE WHEN json_type(record,'$.accountKey') IS NULL THEN 'default'\n                         ELSE json_extract(record,'$.accountKey') END)",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_parent",
+        "sql": "CREATE INDEX runtime_agent_parent ON runtime_agents(\n                    json_extract(record,'$.parentId'))",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_reservation_cwd",
+        "sql": "CREATE INDEX runtime_agent_reservation_cwd ON runtime_agents(\n                    json_extract(record,'$.cwd'))\n                    WHERE json_type(record,'$.workspaceOperation')='text'\n                      AND json_extract(record,'$.workspaceOperation')!=''",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_root",
+        "sql": "CREATE INDEX runtime_agent_root ON runtime_agents(\n                    json_extract(record,'$.rootId'))",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_budget_usage_agent",
+        "sql": "CREATE INDEX runtime_budget_usage_agent ON runtime_budget_usage(agent,kind)",
+        "table": "runtime_budget_usage",
+        "type": "index"
+      },
+      {
+        "name": "runtime_chat_room",
+        "sql": "CREATE INDEX runtime_chat_room ON runtime_chat_messages(room, seq)",
+        "table": "runtime_chat_messages",
+        "type": "index"
+      },
+      {
+        "name": "runtime_context_manifest_latest",
+        "sql": "CREATE INDEX runtime_context_manifest_latest\n                  ON runtime_context_manifests(agent,sequence DESC)",
+        "table": "runtime_context_manifests",
+        "type": "index"
+      },
+      {
+        "name": "runtime_conversion_annotations_rootId",
+        "sql": "CREATE INDEX runtime_conversion_annotations_rootId ON runtime_annotations(json_extract(record,'$.rootId')) WHERE json_extract(record,'$.rootId') IS NOT NULL",
+        "table": "runtime_annotations",
+        "type": "index"
+      },
+      {
+        "name": "runtime_conversion_complaints_leadId",
+        "sql": "CREATE INDEX runtime_conversion_complaints_leadId ON runtime_complaints(json_extract(record,'$.leadId')) WHERE json_extract(record,'$.leadId') IS NOT NULL",
+        "table": "runtime_complaints",
+        "type": "index"
+      },
+      {
+        "name": "runtime_conversion_event_meta_leadId",
+        "sql": "CREATE INDEX runtime_conversion_event_meta_leadId ON runtime_event_meta(json_extract(record,'$.leadId')) WHERE json_extract(record,'$.leadId') IS NOT NULL",
+        "table": "runtime_event_meta",
+        "type": "index"
+      },
+      {
+        "name": "runtime_conversion_event_meta_rootId",
+        "sql": "CREATE INDEX runtime_conversion_event_meta_rootId ON runtime_event_meta(json_extract(record,'$.rootId')) WHERE json_extract(record,'$.rootId') IS NOT NULL",
+        "table": "runtime_event_meta",
+        "type": "index"
+      },
+      {
+        "name": "runtime_conversion_plans_rootId",
+        "sql": "CREATE INDEX runtime_conversion_plans_rootId ON runtime_plans(json_extract(record,'$.rootId')) WHERE json_extract(record,'$.rootId') IS NOT NULL",
+        "table": "runtime_plans",
+        "type": "index"
+      },
+      {
+        "name": "runtime_conversion_rules_rootId",
+        "sql": "CREATE INDEX runtime_conversion_rules_rootId ON runtime_rules(json_extract(record,'$.rootId')) WHERE json_extract(record,'$.rootId') IS NOT NULL",
+        "table": "runtime_rules",
+        "type": "index"
+      },
+      {
+        "name": "runtime_event_created_id",
+        "sql": "CREATE INDEX runtime_event_created_id ON runtime_events(created DESC,id)",
+        "table": "runtime_events",
+        "type": "index"
+      },
+      {
+        "name": "runtime_event_queue",
+        "sql": "CREATE INDEX runtime_event_queue ON runtime_events(status, agent, created)",
+        "table": "runtime_events",
+        "type": "index"
+      },
+      {
+        "name": "runtime_event_repair_candidates_v2",
+        "sql": "CREATE INDEX runtime_event_repair_candidates_v2 ON runtime_events(agent,created)\n                  WHERE status='delivered' AND kind IN ('monitor_exit','agent_message','work_review','work_decision')",
+        "table": "runtime_events",
+        "type": "index"
+      },
+      {
+        "name": "runtime_event_user_turns",
+        "sql": "CREATE INDEX runtime_event_user_turns ON runtime_events(agent,kind,status,turn_id)",
+        "table": "runtime_events",
+        "type": "index"
+      },
+      {
+        "name": "runtime_execution_attempt_run",
+        "sql": "CREATE INDEX runtime_execution_attempt_run ON runtime_execution_attempts(run)",
+        "table": "runtime_execution_attempts",
+        "type": "index"
+      },
+      {
+        "name": "runtime_execution_effect_run",
+        "sql": "CREATE INDEX runtime_execution_effect_run ON runtime_execution_effects(run)",
+        "table": "runtime_execution_effects",
+        "type": "index"
+      },
+      {
+        "name": "runtime_execution_input_event",
+        "sql": "CREATE INDEX runtime_execution_input_event ON runtime_execution_inputs(event)",
+        "table": "runtime_execution_inputs",
+        "type": "index"
+      },
+      {
+        "name": "runtime_execution_node_run",
+        "sql": "CREATE INDEX runtime_execution_node_run ON runtime_execution_nodes(run)",
+        "table": "runtime_execution_nodes",
+        "type": "index"
+      },
+      {
+        "name": "runtime_execution_run_agent",
+        "sql": "CREATE INDEX runtime_execution_run_agent ON runtime_execution_runs(agent,created DESC)",
+        "table": "runtime_execution_runs",
+        "type": "index"
+      },
+      {
+        "name": "runtime_execution_run_created",
+        "sql": "CREATE INDEX runtime_execution_run_created ON runtime_execution_runs(created DESC)",
+        "table": "runtime_execution_runs",
+        "type": "index"
+      },
+      {
+        "name": "runtime_execution_run_message",
+        "sql": "CREATE INDEX runtime_execution_run_message ON runtime_execution_runs(agent,thread,turn)",
+        "table": "runtime_execution_runs",
+        "type": "index"
+      },
+      {
+        "name": "runtime_execution_run_native",
+        "sql": "CREATE INDEX runtime_execution_run_native ON runtime_execution_runs(agent,account,thread,turn)",
+        "table": "runtime_execution_runs",
+        "type": "index"
+      },
+      {
+        "name": "runtime_federation_nonce_age",
+        "sql": "CREATE INDEX runtime_federation_nonce_age\n          ON runtime_federation_nonces(created)",
+        "table": "runtime_federation_nonces",
+        "type": "index"
+      },
+      {
+        "name": "runtime_federation_outbox_peer",
+        "sql": "CREATE INDEX runtime_federation_outbox_peer\n          ON runtime_federation_outbox(peer_id)",
+        "table": "runtime_federation_outbox",
+        "type": "index"
+      },
+      {
+        "name": "runtime_item_agent",
+        "sql": "CREATE INDEX runtime_item_agent ON runtime_items(agent, created)",
+        "table": "runtime_items",
+        "type": "index"
+      },
+      {
+        "name": "runtime_monitor_agent_status",
+        "sql": "CREATE INDEX runtime_monitor_agent_status ON runtime_monitors(\n                    json_extract(record,'$.agent'),json_extract(record,'$.status'))",
+        "table": "runtime_monitors",
+        "type": "index"
+      },
+      {
+        "name": "runtime_monitor_stall_due",
+        "sql": "CREATE INDEX runtime_monitor_stall_due ON runtime_monitors(\n                    COALESCE(json_extract(record,'$.activityAt'),json_extract(record,'$.created'),1e99)+\n                    COALESCE(json_extract(record,'$.stallTimeoutSeconds'),1800))\n                    WHERE json_extract(record,'$.status')='running'",
+        "table": "runtime_monitors",
+        "type": "index"
+      },
+      {
+        "name": "runtime_monitor_status",
+        "sql": "CREATE INDEX runtime_monitor_status ON runtime_monitors(json_extract(record,'$.status'),json_extract(record,'$.created'))",
+        "table": "runtime_monitors",
+        "type": "index"
+      },
+      {
+        "name": "runtime_payload_refs_hash",
+        "sql": "CREATE INDEX runtime_payload_refs_hash ON runtime_payload_refs(sha256)",
+        "table": "runtime_payload_refs",
+        "type": "index"
+      },
+      {
+        "name": "runtime_request_agent_status",
+        "sql": "CREATE INDEX runtime_request_agent_status ON runtime_requests(json_extract(record,'$.agent'),json_extract(record,'$.status'))",
+        "table": "runtime_requests",
+        "type": "index"
+      },
+      {
+        "name": "runtime_request_native_question",
+        "sql": "CREATE INDEX runtime_request_native_question ON runtime_requests(\n                    json_extract(record,'$.agent'),json_extract(record,'$.params.itemId'),\n                    json_extract(record,'$.status'))\n                    WHERE json_valid(record) AND json_extract(record,'$.method')='item/tool/requestUserInput'",
+        "table": "runtime_requests",
+        "type": "index"
+      },
+      {
+        "name": "runtime_room_many_members",
+        "sql": "CREATE INDEX runtime_room_many_members ON runtime_rooms(json_array_length(record,'$.members')) WHERE json_array_length(record,'$.members')>2",
+        "table": "runtime_rooms",
+        "type": "index"
+      },
+      {
+        "name": "runtime_room_member_first",
+        "sql": "CREATE INDEX runtime_room_member_first ON runtime_rooms(json_extract(record,'$.members[0]'))",
+        "table": "runtime_rooms",
+        "type": "index"
+      },
+      {
+        "name": "runtime_room_member_second",
+        "sql": "CREATE INDEX runtime_room_member_second ON runtime_rooms(json_extract(record,'$.members[1]'))",
+        "table": "runtime_rooms",
+        "type": "index"
+      },
+      {
+        "name": "runtime_room_root",
+        "sql": "CREATE INDEX runtime_room_root ON runtime_rooms(json_extract(record,'$.rootId'))",
+        "table": "runtime_rooms",
+        "type": "index"
+      },
+      {
+        "name": "runtime_rule_agent_inflight",
+        "sql": "CREATE INDEX runtime_rule_agent_inflight ON runtime_rules(json_extract(record,'$.agent'),json_extract(record,'$.inFlight'))",
+        "table": "runtime_rules",
+        "type": "index"
+      },
+      {
+        "name": "runtime_rule_ready_tick",
+        "sql": "CREATE INDEX runtime_rule_ready_tick ON runtime_rules(json_extract(record,'$.status')) WHERE NOT COALESCE(json_extract(record,'$.inFlight'),0)",
+        "table": "runtime_rules",
+        "type": "index"
+      },
+      {
+        "name": "runtime_scheduler_agent_change_generation",
+        "sql": "CREATE INDEX runtime_scheduler_agent_change_generation ON runtime_scheduler_agent_changes(generation)",
+        "table": "runtime_scheduler_agent_changes",
+        "type": "index"
+      },
+      {
+        "name": "runtime_server_links_home_parent",
+        "sql": "CREATE INDEX runtime_server_links_home_parent\n                    ON runtime_server_links(json_extract(record,'$.parent'))\n                    WHERE json_extract(record,'$.side')='home'",
+        "table": "runtime_server_links",
+        "type": "index"
+      },
+      {
+        "name": "runtime_server_outbox_due",
+        "sql": "CREATE INDEX runtime_server_outbox_due\n                    ON runtime_server_outbox(state,next_at)",
+        "table": "runtime_server_outbox",
+        "type": "index"
+      },
+      {
+        "name": "runtime_server_output_tools_expiry",
+        "sql": "CREATE INDEX runtime_server_output_tools_expiry\n                    ON runtime_server_output_tools(expires)",
+        "table": "runtime_server_output_tools",
+        "type": "index"
+      },
+      {
+        "name": "runtime_task_agent_created_id",
+        "sql": "CREATE INDEX runtime_task_agent_created_id ON runtime_tasks(\n                    json_extract(record,'$.agent'), json_extract(record,'$.created') DESC, id DESC)",
+        "table": "runtime_tasks",
+        "type": "index"
+      },
+      {
+        "name": "runtime_task_agent_updated_id",
+        "sql": "CREATE INDEX runtime_task_agent_updated_id ON runtime_tasks(\n                    json_extract(record,'$.agent'),\n                    CASE WHEN COALESCE(json_extract(record,'$.finished'),0) > COALESCE(json_extract(record,'$.created'),0)\n                         THEN json_extract(record,'$.finished') ELSE json_extract(record,'$.created') END,\n                    id)",
+        "table": "runtime_tasks",
+        "type": "index"
+      },
+      {
+        "name": "runtime_task_history",
+        "sql": "CREATE INDEX runtime_task_history ON runtime_tasks(json_extract(record,'$.created') DESC, json_extract(record,'$.agent')) WHERE json_extract(record,'$.status')!='running'",
+        "table": "runtime_tasks",
+        "type": "index"
+      },
+      {
+        "name": "runtime_task_status",
+        "sql": "CREATE INDEX runtime_task_status ON runtime_tasks(json_extract(record,'$.status'), json_extract(record,'$.created'))",
+        "table": "runtime_tasks",
+        "type": "index"
+      },
+      {
+        "name": "runtime_tool_request_actor",
+        "sql": "CREATE INDEX runtime_tool_request_actor\n                ON runtime_tool_requests(json_extract(record,'$.agent'), json_extract(record,'$.updated') DESC)",
+        "table": "runtime_tool_requests",
+        "type": "index"
+      },
+      {
+        "name": "runtime_turn_item_link_scope_v1",
+        "sql": "CREATE INDEX runtime_turn_item_link_scope_v1 ON runtime_turn_item_links_v1(agent,turn_id,epoch,created,id)",
+        "table": "runtime_turn_item_links_v1",
+        "type": "index"
+      },
+      {
+        "name": "runtime_usage_resume_account",
+        "sql": "CREATE INDEX runtime_usage_resume_account ON runtime_usage_resumes(json_extract(record,'$.accountKey'),json_extract(record,'$.status'))",
+        "table": "runtime_usage_resumes",
+        "type": "index"
+      },
+      {
+        "name": "runtime_usage_resume_agent",
+        "sql": "CREATE INDEX runtime_usage_resume_agent ON runtime_usage_resumes(agent)",
+        "table": "runtime_usage_resumes",
+        "type": "index"
+      },
+      {
+        "name": "runtime_usage_resume_due",
+        "sql": "CREATE INDEX runtime_usage_resume_due ON runtime_usage_resumes(json_extract(record,'$.status'),json_extract(record,'$.dueAt'))",
+        "table": "runtime_usage_resumes",
+        "type": "index"
+      },
+      {
+        "name": "runtime_work_archive_due",
+        "sql": "CREATE INDEX runtime_work_archive_due ON runtime_work(\n                COALESCE(json_extract(record,'$.archiveIntent.nextAttemptAt'),0),id)\n                WHERE json_extract(record,'$.archiveIntent.status')='pending'",
+        "table": "runtime_work",
+        "type": "index"
+      },
+      {
+        "name": "runtime_work_owner_status",
+        "sql": "CREATE INDEX runtime_work_owner_status\n                ON runtime_work(json_extract(record,'$.owner'),json_extract(record,'$.status'))",
+        "table": "runtime_work",
+        "type": "index"
+      },
+      {
+        "name": "runtime_work_root_status",
+        "sql": "CREATE INDEX runtime_work_root_status\n                ON runtime_work(json_extract(record,'$.rootId'),json_extract(record,'$.status'))",
+        "table": "runtime_work",
+        "type": "index"
+      },
+      {
+        "name": "runtime_workspace_operation_agent_phase",
+        "sql": "CREATE INDEX runtime_workspace_operation_agent_phase ON runtime_workspace_operations(json_extract(record,'$.agent'),json_extract(record,'$.phase'))",
+        "table": "runtime_workspace_operations",
+        "type": "index"
+      },
+      {
+        "name": "runtime_workspace_operation_phase",
+        "sql": "CREATE INDEX runtime_workspace_operation_phase ON runtime_workspace_operations(\n                json_extract(record,'$.phase'), json_extract(record,'$.agent'))",
+        "table": "runtime_workspace_operations",
+        "type": "index"
+      },
+      {
+        "name": "sync_entities_collection_deleted",
+        "sql": "CREATE INDEX sync_entities_collection_deleted\n        ON sync_entities(collection,deleted)",
+        "table": "sync_entities",
+        "type": "index"
+      },
+      {
+        "name": "sync_entities_collection_seq",
+        "sql": "CREATE INDEX sync_entities_collection_seq ON sync_entities(collection,seq)",
+        "table": "sync_entities",
+        "type": "index"
+      },
+      {
+        "name": "sync_entities_non_transcript_seq",
+        "sql": "CREATE INDEX sync_entities_non_transcript_seq ON sync_entities(seq)\n        WHERE collection NOT LIKE 'transcript:%'",
+        "table": "sync_entities",
+        "type": "index"
+      },
+      {
+        "name": "sync_entities_seq",
+        "sql": "CREATE INDEX sync_entities_seq ON sync_entities(seq)",
+        "table": "sync_entities",
+        "type": "index"
+      },
+      {
+        "name": "sync_entities_tombstone_order",
+        "sql": "CREATE INDEX sync_entities_tombstone_order\n        ON sync_entities(seq,collection,id)\n        WHERE deleted=1 AND collection NOT LIKE 'transcript:%'",
+        "table": "sync_entities",
+        "type": "index"
+      },
+      {
+        "name": "sync_scope_seq",
+        "sql": "CREATE INDEX sync_scope_seq ON sync_documents(scope,seq)",
+        "table": "sync_documents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_access_alias_requests",
+        "sql": "CREATE TABLE runtime_access_alias_requests (\n          id TEXT PRIMARY KEY, server TEXT NOT NULL, alias TEXT NOT NULL)",
+        "table": "runtime_access_alias_requests",
+        "type": "table"
+      },
+      {
+        "name": "runtime_access_audit",
+        "sql": "CREATE TABLE runtime_access_audit (\n          seq INTEGER PRIMARY KEY AUTOINCREMENT, client TEXT NOT NULL, actor TEXT NOT NULL,\n          action TEXT NOT NULL, created REAL NOT NULL)",
+        "table": "runtime_access_audit",
+        "type": "table"
+      },
+      {
+        "name": "runtime_access_clients",
+        "sql": "CREATE TABLE runtime_access_clients (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_access_clients",
+        "type": "table"
+      },
+      {
+        "name": "runtime_access_invites",
+        "sql": "CREATE TABLE runtime_access_invites (\n          id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE, hash TEXT NOT NULL, record TEXT NOT NULL)",
+        "table": "runtime_access_invites",
+        "type": "table"
+      },
+      {
+        "name": "runtime_access_local_alias",
+        "sql": "CREATE TABLE runtime_access_local_alias (\n          id INTEGER PRIMARY KEY CHECK(id=1), alias TEXT NOT NULL)",
+        "table": "runtime_access_local_alias",
+        "type": "table"
+      },
+      {
+        "name": "runtime_access_name_requests",
+        "sql": "CREATE TABLE runtime_access_name_requests (\n          id TEXT PRIMARY KEY, label TEXT NOT NULL, actor TEXT NOT NULL, applied INTEGER NOT NULL)",
+        "table": "runtime_access_name_requests",
+        "type": "table"
+      },
+      {
+        "name": "runtime_access_name_targets",
+        "sql": "CREATE TABLE runtime_access_name_targets (\n          id TEXT PRIMARY KEY, server TEXT NOT NULL, label TEXT NOT NULL)",
+        "table": "runtime_access_name_targets",
+        "type": "table"
+      },
+      {
+        "name": "runtime_access_nonces",
+        "sql": "CREATE TABLE runtime_access_nonces (\n          client TEXT NOT NULL, nonce TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY(client,nonce))",
+        "table": "runtime_access_nonces",
+        "type": "table"
+      },
+      {
+        "name": "runtime_access_outbound",
+        "sql": "CREATE TABLE runtime_access_outbound (\n          server TEXT NOT NULL, request_id TEXT NOT NULL, hash TEXT NOT NULL,\n          record TEXT NOT NULL, PRIMARY KEY(server,request_id))",
+        "table": "runtime_access_outbound",
+        "type": "table"
+      },
+      {
+        "name": "runtime_access_receipts",
+        "sql": "CREATE TABLE runtime_access_receipts (\n          client TEXT NOT NULL, request_id TEXT NOT NULL, hash TEXT NOT NULL, session TEXT NOT NULL,\n          status TEXT NOT NULL, record TEXT NOT NULL, PRIMARY KEY(client,request_id))",
+        "table": "runtime_access_receipts",
+        "type": "table"
+      },
+      {
+        "name": "runtime_account_transfers",
+        "sql": "CREATE TABLE runtime_account_transfers(id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_account_transfers",
+        "type": "table"
+      },
+      {
+        "name": "runtime_agent_moves",
+        "sql": "CREATE TABLE runtime_agent_moves(id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_agent_moves",
+        "type": "table"
+      },
+      {
+        "name": "runtime_agent_record_generation",
+        "sql": "CREATE TABLE runtime_agent_record_generation (\n                    id INTEGER PRIMARY KEY CHECK(id=1), value INTEGER NOT NULL)",
+        "table": "runtime_agent_record_generation",
+        "type": "table"
+      },
+      {
+        "name": "runtime_agents",
+        "sql": "CREATE TABLE runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_agents",
+        "type": "table"
+      },
+      {
+        "name": "runtime_annotations",
+        "sql": "CREATE TABLE runtime_annotations (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_annotations",
+        "type": "table"
+      },
+      {
+        "name": "runtime_assets",
+        "sql": "CREATE TABLE runtime_assets (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_assets",
+        "type": "table"
+      },
+      {
+        "name": "runtime_budget",
+        "sql": "CREATE TABLE runtime_budget (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_budget",
+        "type": "table"
+      },
+      {
+        "name": "runtime_budget_usage",
+        "sql": "CREATE TABLE runtime_budget_usage (id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL, tokens INTEGER NOT NULL, at REAL NOT NULL)",
+        "table": "runtime_budget_usage",
+        "type": "table"
+      },
+      {
+        "name": "runtime_capacity_retries",
+        "sql": "CREATE TABLE runtime_capacity_retries (id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL)",
+        "table": "runtime_capacity_retries",
+        "type": "table"
+      },
+      {
+        "name": "runtime_chat_messages",
+        "sql": "CREATE TABLE runtime_chat_messages (\n                  seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,\n                  room TEXT NOT NULL, sender TEXT NOT NULL, text TEXT NOT NULL,\n                  created REAL NOT NULL, deliveries TEXT NOT NULL)",
+        "table": "runtime_chat_messages",
+        "type": "table"
+      },
+      {
+        "name": "runtime_checkpoints",
+        "sql": "CREATE TABLE runtime_checkpoints (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_checkpoints",
+        "type": "table"
+      },
+      {
+        "name": "runtime_compactions",
+        "sql": "CREATE TABLE runtime_compactions (id TEXT PRIMARY KEY, agent TEXT NOT NULL)",
+        "table": "runtime_compactions",
+        "type": "table"
+      },
+      {
+        "name": "runtime_complaints",
+        "sql": "CREATE TABLE runtime_complaints (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_complaints",
+        "type": "table"
+      },
+      {
+        "name": "runtime_completed_turns",
+        "sql": "CREATE TABLE runtime_completed_turns (id TEXT PRIMARY KEY)",
+        "table": "runtime_completed_turns",
+        "type": "table"
+      },
+      {
+        "name": "runtime_context_manifests",
+        "sql": "CREATE TABLE runtime_context_manifests (\n                  agent TEXT NOT NULL, thread_id TEXT NOT NULL, compactions INTEGER NOT NULL,\n                  sequence INTEGER NOT NULL, event_id TEXT NOT NULL, record TEXT NOT NULL,\n                  PRIMARY KEY(agent,thread_id,compactions))",
+        "table": "runtime_context_manifests",
+        "type": "table"
+      },
+      {
+        "name": "runtime_context_reminders",
+        "sql": "CREATE TABLE runtime_context_reminders (\n                  agent TEXT NOT NULL, version TEXT NOT NULL, event_id TEXT NOT NULL,\n                  PRIMARY KEY(agent,version))",
+        "table": "runtime_context_reminders",
+        "type": "table"
+      },
+      {
+        "name": "runtime_event_meta",
+        "sql": "CREATE TABLE runtime_event_meta (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_event_meta",
+        "type": "table"
+      },
+      {
+        "name": "runtime_events",
+        "sql": "CREATE TABLE runtime_events (\n                  id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL,\n                  text TEXT NOT NULL, status TEXT NOT NULL, created REAL NOT NULL,\n                  epoch INTEGER NOT NULL, turn_id TEXT, error TEXT)",
+        "table": "runtime_events",
+        "type": "table"
+      },
+      {
+        "name": "runtime_execution_attempts",
+        "sql": "CREATE TABLE runtime_execution_attempts (id TEXT PRIMARY KEY, run TEXT NOT NULL, record TEXT NOT NULL)",
+        "table": "runtime_execution_attempts",
+        "type": "table"
+      },
+      {
+        "name": "runtime_execution_effects",
+        "sql": "CREATE TABLE runtime_execution_effects (id TEXT PRIMARY KEY, run TEXT NOT NULL, kind TEXT NOT NULL, reference TEXT NOT NULL, record TEXT NOT NULL)",
+        "table": "runtime_execution_effects",
+        "type": "table"
+      },
+      {
+        "name": "runtime_execution_inputs",
+        "sql": "CREATE TABLE runtime_execution_inputs (run TEXT NOT NULL, event TEXT NOT NULL, PRIMARY KEY(run,event))",
+        "table": "runtime_execution_inputs",
+        "type": "table"
+      },
+      {
+        "name": "runtime_execution_nodes",
+        "sql": "CREATE TABLE runtime_execution_nodes (id TEXT PRIMARY KEY, run TEXT NOT NULL, record TEXT NOT NULL)",
+        "table": "runtime_execution_nodes",
+        "type": "table"
+      },
+      {
+        "name": "runtime_execution_runs",
+        "sql": "CREATE TABLE runtime_execution_runs (id TEXT PRIMARY KEY, agent TEXT NOT NULL, account TEXT NOT NULL, epoch INTEGER NOT NULL, thread TEXT, turn TEXT, created REAL NOT NULL, record TEXT NOT NULL)",
+        "table": "runtime_execution_runs",
+        "type": "table"
+      },
+      {
+        "name": "runtime_federation_identity",
+        "sql": "CREATE TABLE runtime_federation_identity (\n          id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_federation_identity",
+        "type": "table"
+      },
+      {
+        "name": "runtime_federation_inbox",
+        "sql": "CREATE TABLE runtime_federation_inbox (\n          peer_id TEXT NOT NULL, message_id TEXT NOT NULL, record TEXT NOT NULL,\n          PRIMARY KEY(peer_id,message_id))",
+        "table": "runtime_federation_inbox",
+        "type": "table"
+      },
+      {
+        "name": "runtime_federation_invites",
+        "sql": "CREATE TABLE runtime_federation_invites (\n          id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_federation_invites",
+        "type": "table"
+      },
+      {
+        "name": "runtime_federation_nonces",
+        "sql": "CREATE TABLE runtime_federation_nonces (\n          peer_id TEXT NOT NULL, nonce TEXT NOT NULL, created INTEGER NOT NULL,\n          PRIMARY KEY(peer_id,nonce))",
+        "table": "runtime_federation_nonces",
+        "type": "table"
+      },
+      {
+        "name": "runtime_federation_outbox",
+        "sql": "CREATE TABLE runtime_federation_outbox (\n          id TEXT PRIMARY KEY, peer_id TEXT NOT NULL, record TEXT NOT NULL)",
+        "table": "runtime_federation_outbox",
+        "type": "table"
+      },
+      {
+        "name": "runtime_federation_peers",
+        "sql": "CREATE TABLE runtime_federation_peers (\n          id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_federation_peers",
+        "type": "table"
+      },
+      {
+        "name": "runtime_federation_rooms",
+        "sql": "CREATE TABLE runtime_federation_rooms (\n          id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_federation_rooms",
+        "type": "table"
+      },
+      {
+        "name": "runtime_federation_settings",
+        "sql": "CREATE TABLE runtime_federation_settings (\n          id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_federation_settings",
+        "type": "table"
+      },
+      {
+        "name": "runtime_item_fulltext",
+        "sql": "CREATE TABLE runtime_item_fulltext (id TEXT PRIMARY KEY, body TEXT NOT NULL)",
+        "table": "runtime_item_fulltext",
+        "type": "table"
+      },
+      {
+        "name": "runtime_items",
+        "sql": "CREATE TABLE runtime_items (\n                  id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL, created REAL NOT NULL)",
+        "table": "runtime_items",
+        "type": "table"
+      },
+      {
+        "name": "runtime_lead_requests",
+        "sql": "CREATE TABLE runtime_lead_requests (id TEXT PRIMARY KEY, agent TEXT NOT NULL, signature TEXT NOT NULL)",
+        "table": "runtime_lead_requests",
+        "type": "table"
+      },
+      {
+        "name": "runtime_monitors",
+        "sql": "CREATE TABLE runtime_monitors (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_monitors",
+        "type": "table"
+      },
+      {
+        "name": "runtime_native_sweeps",
+        "sql": "CREATE TABLE runtime_native_sweeps (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_native_sweeps",
+        "type": "table"
+      },
+      {
+        "name": "runtime_operation_receipts",
+        "sql": "CREATE TABLE runtime_operation_receipts (id TEXT PRIMARY KEY, signature TEXT NOT NULL, result TEXT NOT NULL)",
+        "table": "runtime_operation_receipts",
+        "type": "table"
+      },
+      {
+        "name": "runtime_payload_refs",
+        "sql": "CREATE TABLE runtime_payload_refs (\n            table_name TEXT NOT NULL, record_id TEXT NOT NULL, field TEXT NOT NULL,\n            sha256 TEXT NOT NULL, PRIMARY KEY(table_name,record_id,field))",
+        "table": "runtime_payload_refs",
+        "type": "table"
+      },
+      {
+        "name": "runtime_plans",
+        "sql": "CREATE TABLE runtime_plans (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_plans",
+        "type": "table"
+      },
+      {
+        "name": "runtime_profiles",
+        "sql": "CREATE TABLE runtime_profiles (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_profiles",
+        "type": "table"
+      },
+      {
+        "name": "runtime_projects",
+        "sql": "CREATE TABLE runtime_projects (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_projects",
+        "type": "table"
+      },
+      {
+        "name": "runtime_requests",
+        "sql": "CREATE TABLE runtime_requests (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_requests",
+        "type": "table"
+      },
+      {
+        "name": "runtime_rooms",
+        "sql": "CREATE TABLE runtime_rooms (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_rooms",
+        "type": "table"
+      },
+      {
+        "name": "runtime_rules",
+        "sql": "CREATE TABLE runtime_rules (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_rules",
+        "type": "table"
+      },
+      {
+        "name": "runtime_scheduler_agent_change_state",
+        "sql": "CREATE TABLE runtime_scheduler_agent_change_state (id INTEGER PRIMARY KEY CHECK(id=1),floor INTEGER NOT NULL,generation INTEGER NOT NULL,entries INTEGER NOT NULL,total INTEGER NOT NULL)",
+        "table": "runtime_scheduler_agent_change_state",
+        "type": "table"
+      },
+      {
+        "name": "runtime_scheduler_agent_changes",
+        "sql": "CREATE TABLE runtime_scheduler_agent_changes (id TEXT PRIMARY KEY,generation INTEGER NOT NULL CHECK(typeof(generation)='integer' AND generation>=0))",
+        "table": "runtime_scheduler_agent_changes",
+        "type": "table"
+      },
+      {
+        "name": "runtime_search",
+        "sql": "CREATE VIRTUAL TABLE runtime_search USING fts5(id UNINDEXED,agent UNINDEXED,kind UNINDEXED,body,tokenize='unicode61')",
+        "table": "runtime_search",
+        "type": "table"
+      },
+      {
+        "name": "runtime_search_config",
+        "sql": "CREATE TABLE 'runtime_search_config'(k PRIMARY KEY, v) WITHOUT ROWID",
+        "table": "runtime_search_config",
+        "type": "table"
+      },
+      {
+        "name": "runtime_search_content",
+        "sql": "CREATE TABLE 'runtime_search_content'(id INTEGER PRIMARY KEY, c0, c1, c2, c3)",
+        "table": "runtime_search_content",
+        "type": "table"
+      },
+      {
+        "name": "runtime_search_data",
+        "sql": "CREATE TABLE 'runtime_search_data'(id INTEGER PRIMARY KEY, block BLOB)",
+        "table": "runtime_search_data",
+        "type": "table"
+      },
+      {
+        "name": "runtime_search_docsize",
+        "sql": "CREATE TABLE 'runtime_search_docsize'(id INTEGER PRIMARY KEY, sz BLOB)",
+        "table": "runtime_search_docsize",
+        "type": "table"
+      },
+      {
+        "name": "runtime_search_idx",
+        "sql": "CREATE TABLE 'runtime_search_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID",
+        "table": "runtime_search_idx",
+        "type": "table"
+      },
+      {
+        "name": "runtime_search_indexed",
+        "sql": "CREATE TABLE runtime_search_indexed (id TEXT PRIMARY KEY)",
+        "table": "runtime_search_indexed",
+        "type": "table"
+      },
+      {
+        "name": "runtime_search_next_meta",
+        "sql": "CREATE TABLE runtime_search_next_meta (\n                id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL,\n                search_rowid INTEGER NOT NULL UNIQUE)",
+        "table": "runtime_search_next_meta",
+        "type": "table"
+      },
+      {
+        "name": "runtime_search_rollout",
+        "sql": "CREATE TABLE runtime_search_rollout (\n                id INTEGER PRIMARY KEY CHECK(id=1), phase TEXT NOT NULL,\n                cursor INTEGER NOT NULL DEFAULT 0, updated REAL NOT NULL)",
+        "table": "runtime_search_rollout",
+        "type": "table"
+      },
+      {
+        "name": "runtime_search_rows",
+        "sql": "CREATE TABLE runtime_search_rows (id TEXT PRIMARY KEY, search_rowid INTEGER NOT NULL UNIQUE)",
+        "table": "runtime_search_rows",
+        "type": "table"
+      },
+      {
+        "name": "runtime_search_rows_rollout",
+        "sql": "CREATE TABLE runtime_search_rows_rollout (id INTEGER PRIMARY KEY CHECK(id=1),cursor INTEGER NOT NULL DEFAULT 0)",
+        "table": "runtime_search_rows_rollout",
+        "type": "table"
+      },
+      {
+        "name": "runtime_server_fetch",
+        "sql": "CREATE TABLE runtime_server_fetch (\n                    id TEXT PRIMARY KEY, server TEXT NOT NULL, signature TEXT NOT NULL,\n                    state TEXT NOT NULL, result TEXT)",
+        "table": "runtime_server_fetch",
+        "type": "table"
+      },
+      {
+        "name": "runtime_server_inbox",
+        "sql": "CREATE TABLE runtime_server_inbox (\n                    id TEXT PRIMARY KEY, signature TEXT NOT NULL, state TEXT NOT NULL,\n                    result TEXT, created_at REAL NOT NULL DEFAULT 0, completed_at REAL NOT NULL DEFAULT 0, principal TEXT, actor TEXT)",
+        "table": "runtime_server_inbox",
+        "type": "table"
+      },
+      {
+        "name": "runtime_server_links",
+        "sql": "CREATE TABLE runtime_server_links (\n                    id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_server_links",
+        "type": "table"
+      },
+      {
+        "name": "runtime_server_outbox",
+        "sql": "CREATE TABLE runtime_server_outbox (\n                    id TEXT PRIMARY KEY, server TEXT NOT NULL, body TEXT NOT NULL,\n                    state TEXT NOT NULL, result TEXT, attempts INTEGER NOT NULL DEFAULT 0,\n                    next_at REAL NOT NULL DEFAULT 0, error TEXT, created_at REAL NOT NULL DEFAULT 0, completed_at REAL NOT NULL DEFAULT 0, fingerprint TEXT)",
+        "table": "runtime_server_outbox",
+        "type": "table"
+      },
+      {
+        "name": "runtime_server_output_tools",
+        "sql": "CREATE TABLE runtime_server_output_tools (\n                    id TEXT PRIMARY KEY, expires REAL NOT NULL)",
+        "table": "runtime_server_output_tools",
+        "type": "table"
+      },
+      {
+        "name": "runtime_server_retired",
+        "sql": "CREATE TABLE runtime_server_retired (\n                    id TEXT NOT NULL, direction TEXT NOT NULL, signature TEXT NOT NULL,\n                    server TEXT, actor TEXT, PRIMARY KEY(id,direction))",
+        "table": "runtime_server_retired",
+        "type": "table"
+      },
+      {
+        "name": "runtime_server_sequence",
+        "sql": "CREATE TABLE runtime_server_sequence (\n                    id INTEGER PRIMARY KEY CHECK(id=1), value INTEGER NOT NULL)",
+        "table": "runtime_server_sequence",
+        "type": "table"
+      },
+      {
+        "name": "runtime_sidebar_order",
+        "sql": "CREATE TABLE runtime_sidebar_order (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_sidebar_order",
+        "type": "table"
+      },
+      {
+        "name": "runtime_supervisor_cursor",
+        "sql": "CREATE TABLE runtime_supervisor_cursor (handle TEXT PRIMARY KEY, sequence INTEGER NOT NULL)",
+        "table": "runtime_supervisor_cursor",
+        "type": "table"
+      },
+      {
+        "name": "runtime_tasks",
+        "sql": "CREATE TABLE runtime_tasks (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_tasks",
+        "type": "table"
+      },
+      {
+        "name": "runtime_tool_request_aliases",
+        "sql": "CREATE TABLE runtime_tool_request_aliases\n                (agent TEXT NOT NULL, alias TEXT NOT NULL, request TEXT NOT NULL, PRIMARY KEY(agent,alias,request))",
+        "table": "runtime_tool_request_aliases",
+        "type": "table"
+      },
+      {
+        "name": "runtime_tool_requests",
+        "sql": "CREATE TABLE runtime_tool_requests (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_tool_requests",
+        "type": "table"
+      },
+      {
+        "name": "runtime_tool_results",
+        "sql": "CREATE TABLE runtime_tool_results (id TEXT PRIMARY KEY, result TEXT NOT NULL)",
+        "table": "runtime_tool_results",
+        "type": "table"
+      },
+      {
+        "name": "runtime_turn_item_link_state_v1",
+        "sql": "CREATE TABLE runtime_turn_item_link_state_v1 (id INTEGER PRIMARY KEY CHECK(id=1),epoch TEXT NOT NULL,source_rootpage INTEGER NOT NULL,cursor INTEGER,target INTEGER,complete INTEGER NOT NULL CHECK(complete IN (0,1)),scanned_rows INTEGER NOT NULL,source_bytes INTEGER NOT NULL,updated REAL NOT NULL)",
+        "table": "runtime_turn_item_link_state_v1",
+        "type": "table"
+      },
+      {
+        "name": "runtime_turn_item_links_v1",
+        "sql": "CREATE TABLE runtime_turn_item_links_v1 (id TEXT PRIMARY KEY,agent TEXT NOT NULL,turn_id,created REAL NOT NULL,epoch TEXT NOT NULL)",
+        "table": "runtime_turn_item_links_v1",
+        "type": "table"
+      },
+      {
+        "name": "runtime_usage_resumes",
+        "sql": "CREATE TABLE runtime_usage_resumes (id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL)",
+        "table": "runtime_usage_resumes",
+        "type": "table"
+      },
+      {
+        "name": "runtime_work",
+        "sql": "CREATE TABLE runtime_work (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_work",
+        "type": "table"
+      },
+      {
+        "name": "runtime_workspace_operations",
+        "sql": "CREATE TABLE runtime_workspace_operations (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_workspace_operations",
+        "type": "table"
+      },
+      {
+        "name": "sync_documents",
+        "sql": "CREATE TABLE sync_documents (\n        seq INTEGER PRIMARY KEY AUTOINCREMENT, scope TEXT NOT NULL,\n        id TEXT NOT NULL, payload TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0,\n        UNIQUE(scope,id))",
+        "table": "sync_documents",
+        "type": "table"
+      },
+      {
+        "name": "sync_entities",
+        "sql": "CREATE TABLE sync_entities (\n        collection TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL,\n        hash TEXT NOT NULL, payload TEXT, deleted INTEGER NOT NULL DEFAULT 0,\n        PRIMARY KEY(collection,id))",
+        "table": "sync_entities",
+        "type": "table"
+      },
+      {
+        "name": "sync_entity_meta",
+        "sql": "CREATE TABLE sync_entity_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        "table": "sync_entity_meta",
+        "type": "table"
+      },
+      {
+        "name": "sync_versions",
+        "sql": "CREATE TABLE sync_versions (\n        seq INTEGER PRIMARY KEY, scope TEXT NOT NULL UNIQUE,\n        hash TEXT NOT NULL, deleted INTEGER NOT NULL, updated REAL NOT NULL)",
+        "table": "sync_versions",
+        "type": "table"
+      },
+      {
+        "name": "runtime_agent_record_generation_delete",
+        "sql": "CREATE TRIGGER runtime_agent_record_generation_delete AFTER DELETE ON runtime_agents BEGIN UPDATE runtime_agent_record_generation SET value=value+1 WHERE id=1; UPDATE runtime_scheduler_agent_change_state SET entries=entries+CASE WHEN EXISTS(SELECT 1 FROM runtime_scheduler_agent_changes WHERE id=OLD.id) THEN 0 ELSE 1 END,total=total-COALESCE((SELECT generation FROM runtime_scheduler_agent_changes WHERE id=OLD.id),0)+(SELECT value FROM runtime_agent_record_generation WHERE id=1) WHERE id=1; INSERT INTO runtime_scheduler_agent_changes(id,generation) SELECT OLD.id,value FROM runtime_agent_record_generation WHERE id=1 ON CONFLICT(id) DO UPDATE SET generation=excluded.generation; UPDATE runtime_scheduler_agent_change_state SET generation=(SELECT value FROM runtime_agent_record_generation WHERE id=1) WHERE id=1; END",
+        "table": "runtime_agents",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_agent_record_generation_insert",
+        "sql": "CREATE TRIGGER runtime_agent_record_generation_insert AFTER INSERT ON runtime_agents BEGIN UPDATE runtime_agent_record_generation SET value=value+1 WHERE id=1; UPDATE runtime_scheduler_agent_change_state SET entries=entries+CASE WHEN EXISTS(SELECT 1 FROM runtime_scheduler_agent_changes WHERE id=NEW.id) THEN 0 ELSE 1 END,total=total-COALESCE((SELECT generation FROM runtime_scheduler_agent_changes WHERE id=NEW.id),0)+(SELECT value FROM runtime_agent_record_generation WHERE id=1) WHERE id=1; INSERT INTO runtime_scheduler_agent_changes(id,generation) SELECT NEW.id,value FROM runtime_agent_record_generation WHERE id=1 ON CONFLICT(id) DO UPDATE SET generation=excluded.generation; UPDATE runtime_scheduler_agent_change_state SET generation=(SELECT value FROM runtime_agent_record_generation WHERE id=1) WHERE id=1; END",
+        "table": "runtime_agents",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_agent_record_generation_update",
+        "sql": "CREATE TRIGGER runtime_agent_record_generation_update AFTER UPDATE ON runtime_agents WHEN OLD.record IS NOT NEW.record OR OLD.id IS NOT NEW.id OR OLD.rowid IS NOT NEW.rowid BEGIN UPDATE runtime_agent_record_generation SET value=value+1 WHERE id=1; UPDATE runtime_scheduler_agent_change_state SET entries=entries+CASE WHEN EXISTS(SELECT 1 FROM runtime_scheduler_agent_changes WHERE id=OLD.id) THEN 0 ELSE 1 END,total=total-COALESCE((SELECT generation FROM runtime_scheduler_agent_changes WHERE id=OLD.id),0)+(SELECT value FROM runtime_agent_record_generation WHERE id=1) WHERE id=1 AND OLD.id IS NOT NEW.id; INSERT INTO runtime_scheduler_agent_changes(id,generation) SELECT OLD.id,value FROM runtime_agent_record_generation WHERE id=1 AND OLD.id IS NOT NEW.id ON CONFLICT(id) DO UPDATE SET generation=excluded.generation; UPDATE runtime_scheduler_agent_change_state SET entries=entries+CASE WHEN EXISTS(SELECT 1 FROM runtime_scheduler_agent_changes WHERE id=NEW.id) THEN 0 ELSE 1 END,total=total-COALESCE((SELECT generation FROM runtime_scheduler_agent_changes WHERE id=NEW.id),0)+(SELECT value FROM runtime_agent_record_generation WHERE id=1) WHERE id=1; INSERT INTO runtime_scheduler_agent_changes(id,generation) SELECT NEW.id,value FROM runtime_agent_record_generation WHERE id=1 ON CONFLICT(id) DO UPDATE SET generation=excluded.generation; UPDATE runtime_scheduler_agent_change_state SET generation=(SELECT value FROM runtime_agent_record_generation WHERE id=1) WHERE id=1; END",
+        "table": "runtime_agents",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_payload_checkpoints_delete",
+        "sql": "CREATE TRIGGER runtime_payload_checkpoints_delete AFTER DELETE ON runtime_checkpoints BEGIN\n            DELETE FROM runtime_payload_refs WHERE table_name='runtime_checkpoints' AND record_id=OLD.id;\n        END",
+        "table": "runtime_checkpoints",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_payload_checkpoints_insert",
+        "sql": "CREATE TRIGGER runtime_payload_checkpoints_insert AFTER INSERT ON runtime_checkpoints BEGIN\n            INSERT OR REPLACE INTO runtime_payload_refs(table_name,record_id,field,sha256)\n            SELECT 'runtime_checkpoints',NEW.id,j.key,json_extract(j.value,'$.sha256')\n            FROM json_each(json_extract(NEW.record,'$._payloadBlobs')) AS j\n            WHERE json_type(j.value,'$.sha256')='text';\n        END",
+        "table": "runtime_checkpoints",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_payload_checkpoints_update",
+        "sql": "CREATE TRIGGER runtime_payload_checkpoints_update AFTER UPDATE OF record ON runtime_checkpoints BEGIN\n            DELETE FROM runtime_payload_refs WHERE table_name='runtime_checkpoints' AND record_id=OLD.id;\n            INSERT OR REPLACE INTO runtime_payload_refs(table_name,record_id,field,sha256)\n            SELECT 'runtime_checkpoints',NEW.id,j.key,json_extract(j.value,'$.sha256')\n            FROM json_each(json_extract(NEW.record,'$._payloadBlobs')) AS j\n            WHERE json_type(j.value,'$.sha256')='text';\n        END",
+        "table": "runtime_checkpoints",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_payload_requests_delete",
+        "sql": "CREATE TRIGGER runtime_payload_requests_delete AFTER DELETE ON runtime_tool_requests BEGIN\n            DELETE FROM runtime_payload_refs WHERE table_name='runtime_tool_requests' AND record_id=OLD.id;\n        END",
+        "table": "runtime_tool_requests",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_payload_requests_insert",
+        "sql": "CREATE TRIGGER runtime_payload_requests_insert AFTER INSERT ON runtime_tool_requests BEGIN\n            INSERT OR REPLACE INTO runtime_payload_refs(table_name,record_id,field,sha256)\n            SELECT 'runtime_tool_requests',NEW.id,j.key,json_extract(j.value,'$.sha256')\n            FROM json_each(json_extract(NEW.record,'$._payloadBlobs')) AS j\n            WHERE json_type(j.value,'$.sha256')='text';\n        END",
+        "table": "runtime_tool_requests",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_payload_requests_update",
+        "sql": "CREATE TRIGGER runtime_payload_requests_update AFTER UPDATE OF record ON runtime_tool_requests BEGIN\n            DELETE FROM runtime_payload_refs WHERE table_name='runtime_tool_requests' AND record_id=OLD.id;\n            INSERT OR REPLACE INTO runtime_payload_refs(table_name,record_id,field,sha256)\n            SELECT 'runtime_tool_requests',NEW.id,j.key,json_extract(j.value,'$.sha256')\n            FROM json_each(json_extract(NEW.record,'$._payloadBlobs')) AS j\n            WHERE json_type(j.value,'$.sha256')='text';\n        END",
+        "table": "runtime_tool_requests",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_payload_results_delete",
+        "sql": "CREATE TRIGGER runtime_payload_results_delete AFTER DELETE ON runtime_tool_results BEGIN\n            DELETE FROM runtime_payload_refs WHERE table_name='runtime_tool_results' AND record_id=OLD.id;\n        END",
+        "table": "runtime_tool_results",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_payload_results_insert",
+        "sql": "CREATE TRIGGER runtime_payload_results_insert AFTER INSERT ON runtime_tool_results BEGIN\n            INSERT OR REPLACE INTO runtime_payload_refs(table_name,record_id,field,sha256)\n            SELECT 'runtime_tool_results',NEW.id,j.key,json_extract(j.value,'$.sha256')\n            FROM json_each(json_extract(NEW.result,'$._payloadBlobs')) AS j\n            WHERE json_type(j.value,'$.sha256')='text';\n        END",
+        "table": "runtime_tool_results",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_payload_results_update",
+        "sql": "CREATE TRIGGER runtime_payload_results_update AFTER UPDATE OF result ON runtime_tool_results BEGIN\n            DELETE FROM runtime_payload_refs WHERE table_name='runtime_tool_results' AND record_id=OLD.id;\n            INSERT OR REPLACE INTO runtime_payload_refs(table_name,record_id,field,sha256)\n            SELECT 'runtime_tool_results',NEW.id,j.key,json_extract(j.value,'$.sha256')\n            FROM json_each(json_extract(NEW.result,'$._payloadBlobs')) AS j\n            WHERE json_type(j.value,'$.sha256')='text';\n        END",
+        "table": "runtime_tool_results",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_turn_item_link_delete_v1",
+        "sql": "CREATE TRIGGER runtime_turn_item_link_delete_v1 AFTER DELETE ON runtime_items BEGIN DELETE FROM runtime_turn_item_links_v1 WHERE id=OLD.id;  END",
+        "table": "runtime_items",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_turn_item_link_insert_v1",
+        "sql": "CREATE TRIGGER runtime_turn_item_link_insert_v1 AFTER INSERT ON runtime_items BEGIN INSERT INTO runtime_turn_item_links_v1(id,agent,turn_id,created,epoch) VALUES (NEW.id,NEW.agent,json_extract(NEW.record,'$.turnId'),NEW.created,COALESCE((SELECT epoch FROM runtime_turn_item_link_state_v1 WHERE id=1),'')) ON CONFLICT(id) DO UPDATE SET agent=excluded.agent,turn_id=excluded.turn_id,created=excluded.created,epoch=excluded.epoch WHERE runtime_turn_item_links_v1.agent IS NOT excluded.agent OR runtime_turn_item_links_v1.turn_id IS NOT excluded.turn_id OR runtime_turn_item_links_v1.created IS NOT excluded.created OR runtime_turn_item_links_v1.epoch IS NOT excluded.epoch; END",
+        "table": "runtime_items",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_turn_item_link_update_v1",
+        "sql": "CREATE TRIGGER runtime_turn_item_link_update_v1 AFTER UPDATE ON runtime_items WHEN OLD.id IS NOT NEW.id OR OLD.agent IS NOT NEW.agent OR OLD.record IS NOT NEW.record OR OLD.created IS NOT NEW.created OR OLD.rowid IS NOT NEW.rowid BEGIN DELETE FROM runtime_turn_item_links_v1 WHERE id=OLD.id AND OLD.id IS NOT NEW.id; INSERT INTO runtime_turn_item_links_v1(id,agent,turn_id,created,epoch) VALUES (NEW.id,NEW.agent,json_extract(NEW.record,'$.turnId'),NEW.created,COALESCE((SELECT epoch FROM runtime_turn_item_link_state_v1 WHERE id=1),'')) ON CONFLICT(id) DO UPDATE SET agent=excluded.agent,turn_id=excluded.turn_id,created=excluded.created,epoch=excluded.epoch WHERE runtime_turn_item_links_v1.agent IS NOT excluded.agent OR runtime_turn_item_links_v1.turn_id IS NOT excluded.turn_id OR runtime_turn_item_links_v1.created IS NOT excluded.created OR runtime_turn_item_links_v1.epoch IS NOT excluded.epoch; END",
+        "table": "runtime_items",
+        "type": "trigger"
+      },
+      {
+        "name": "sync_entity_event_DELETE",
+        "sql": "CREATE TRIGGER sync_entity_event_DELETE\n          AFTER DELETE ON runtime_events BEGIN\n          INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)\n          VALUES ('event',OLD.id,(SELECT max(seq)+1 FROM (\n                    SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL\n                    SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL\n                    SELECT COALESCE(MAX(seq),0) FROM sync_versions)),\n                  sync_entity_hash(sync_entity_payload('event',OLD.id,'{}',1)),sync_entity_payload('event',OLD.id,'{}',1),1)\n          ON CONFLICT(collection,id) DO UPDATE SET\n            seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=excluded.deleted\n          WHERE sync_entities.hash!=excluded.hash OR sync_entities.deleted!=excluded.deleted;\n        END",
+        "table": "runtime_events",
+        "type": "trigger"
+      },
+      {
+        "name": "sync_entity_event_INSERT",
+        "sql": "CREATE TRIGGER sync_entity_event_INSERT\n          AFTER INSERT ON runtime_events BEGIN\n          INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)\n          VALUES ('event',NEW.id,(SELECT max(seq)+1 FROM (\n                    SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL\n                    SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL\n                    SELECT COALESCE(MAX(seq),0) FROM sync_versions)),\n                  sync_entity_hash(sync_entity_payload('event',NEW.id,json_object('id',NEW.id,'agent',NEW.agent,'kind',NEW.kind,'status',NEW.status,'created',NEW.created,'error',NEW.error),0)),sync_entity_payload('event',NEW.id,json_object('id',NEW.id,'agent',NEW.agent,'kind',NEW.kind,'status',NEW.status,'created',NEW.created,'error',NEW.error),0),0)\n          ON CONFLICT(collection,id) DO UPDATE SET\n            seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=excluded.deleted\n          WHERE sync_entities.hash!=excluded.hash OR sync_entities.deleted!=excluded.deleted;\n        END",
+        "table": "runtime_events",
+        "type": "trigger"
+      },
+      {
+        "name": "sync_entity_event_UPDATE",
+        "sql": "CREATE TRIGGER sync_entity_event_UPDATE\n          AFTER UPDATE ON runtime_events BEGIN\n          INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)\n          VALUES ('event',NEW.id,(SELECT max(seq)+1 FROM (\n                    SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL\n                    SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL\n                    SELECT COALESCE(MAX(seq),0) FROM sync_versions)),\n                  sync_entity_hash(sync_entity_payload('event',NEW.id,json_object('id',NEW.id,'agent',NEW.agent,'kind',NEW.kind,'status',NEW.status,'created',NEW.created,'error',NEW.error),0)),sync_entity_payload('event',NEW.id,json_object('id',NEW.id,'agent',NEW.agent,'kind',NEW.kind,'status',NEW.status,'created',NEW.created,'error',NEW.error),0),0)\n          ON CONFLICT(collection,id) DO UPDATE SET\n            seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=excluded.deleted\n          WHERE sync_entities.hash!=excluded.hash OR sync_entities.deleted!=excluded.deleted;\n        END",
+        "table": "runtime_events",
+        "type": "trigger"
+      },
+      {
+        "name": "sync_entity_tombstone_count_delete",
+        "sql": "CREATE TRIGGER sync_entity_tombstone_count_delete\n      AFTER DELETE ON sync_entities\n      WHEN OLD.deleted=1 AND OLD.collection NOT LIKE 'transcript:%' BEGIN\n        UPDATE sync_entity_meta SET value=CAST(value AS INTEGER)-1\n        WHERE key='entity_tombstone_count';\n      END",
+        "table": "sync_entities",
+        "type": "trigger"
+      },
+      {
+        "name": "sync_entity_tombstone_count_insert",
+        "sql": "CREATE TRIGGER sync_entity_tombstone_count_insert\n      AFTER INSERT ON sync_entities\n      WHEN NEW.deleted=1 AND NEW.collection NOT LIKE 'transcript:%' BEGIN\n        UPDATE sync_entity_meta SET value=CAST(value AS INTEGER)+1\n        WHERE key='entity_tombstone_count';\n      END",
+        "table": "sync_entities",
+        "type": "trigger"
+      },
+      {
+        "name": "sync_entity_tombstone_count_update",
+        "sql": "CREATE TRIGGER sync_entity_tombstone_count_update\n      AFTER UPDATE OF deleted,collection ON sync_entities\n      WHEN (OLD.deleted=1 AND OLD.collection NOT LIKE 'transcript:%') !=\n           (NEW.deleted=1 AND NEW.collection NOT LIKE 'transcript:%') BEGIN\n        UPDATE sync_entity_meta SET value=CAST(value AS INTEGER)+\n          CASE WHEN NEW.deleted=1 AND NEW.collection NOT LIKE 'transcript:%' THEN 1 ELSE -1 END\n        WHERE key='entity_tombstone_count';\n      END",
+        "table": "sync_entities",
+        "type": "trigger"
+      }
+    ],
+    "tables_and_columns": [
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "server",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "alias",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_access_alias_requests"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "seq",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "client",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "actor",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "action",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 4,
+            "default": null,
+            "name": "created",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "REAL"
+          }
+        ],
+        "name": "runtime_access_audit"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_access_clients"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "request_id",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "hash",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_access_invites"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "alias",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_access_local_alias"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "label",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "actor",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "applied",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          }
+        ],
+        "name": "runtime_access_name_requests"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "server",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "label",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_access_name_targets"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "client",
+            "notnull": 1,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "nonce",
+            "notnull": 1,
+            "primary_key_position": 2,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "created",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          }
+        ],
+        "name": "runtime_access_nonces"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "server",
+            "notnull": 1,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "request_id",
+            "notnull": 1,
+            "primary_key_position": 2,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "hash",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_access_outbound"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "client",
+            "notnull": 1,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "request_id",
+            "notnull": 1,
+            "primary_key_position": 2,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "hash",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "session",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 4,
+            "default": null,
+            "name": "status",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 5,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_access_receipts"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_account_transfers"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_agent_moves"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "value",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          }
+        ],
+        "name": "runtime_agent_record_generation"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_agents"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_annotations"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_assets"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_budget"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "agent",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "kind",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "tokens",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 4,
+            "default": null,
+            "name": "at",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "REAL"
+          }
+        ],
+        "name": "runtime_budget_usage"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "agent",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_capacity_retries"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "seq",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "id",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "room",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "sender",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 4,
+            "default": null,
+            "name": "text",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 5,
+            "default": null,
+            "name": "created",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "REAL"
+          },
+          {
+            "cid": 6,
+            "default": null,
+            "name": "deliveries",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_chat_messages"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_checkpoints"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "agent",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_compactions"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_complaints"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_completed_turns"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "agent",
+            "notnull": 1,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "thread_id",
+            "notnull": 1,
+            "primary_key_position": 2,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "compactions",
+            "notnull": 1,
+            "primary_key_position": 3,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "sequence",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 4,
+            "default": null,
+            "name": "event_id",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 5,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_context_manifests"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "agent",
+            "notnull": 1,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "version",
+            "notnull": 1,
+            "primary_key_position": 2,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "event_id",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_context_reminders"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_event_meta"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "agent",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "kind",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "text",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 4,
+            "default": null,
+            "name": "status",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 5,
+            "default": null,
+            "name": "created",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "REAL"
+          },
+          {
+            "cid": 6,
+            "default": null,
+            "name": "epoch",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 7,
+            "default": null,
+            "name": "turn_id",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 8,
+            "default": null,
+            "name": "error",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_events"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "run",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_execution_attempts"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "run",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "kind",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "reference",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 4,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_execution_effects"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "run",
+            "notnull": 1,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "event",
+            "notnull": 1,
+            "primary_key_position": 2,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_execution_inputs"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "run",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_execution_nodes"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "agent",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "account",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "epoch",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 4,
+            "default": null,
+            "name": "thread",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 5,
+            "default": null,
+            "name": "turn",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 6,
+            "default": null,
+            "name": "created",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "REAL"
+          },
+          {
+            "cid": 7,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_execution_runs"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_federation_identity"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "peer_id",
+            "notnull": 1,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "message_id",
+            "notnull": 1,
+            "primary_key_position": 2,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_federation_inbox"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_federation_invites"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "peer_id",
+            "notnull": 1,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "nonce",
+            "notnull": 1,
+            "primary_key_position": 2,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "created",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          }
+        ],
+        "name": "runtime_federation_nonces"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "peer_id",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_federation_outbox"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_federation_peers"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_federation_rooms"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_federation_settings"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "body",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_item_fulltext"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "agent",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "created",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "REAL"
+          }
+        ],
+        "name": "runtime_items"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "agent",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "signature",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_lead_requests"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_monitors"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_native_sweeps"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "signature",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "result",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_operation_receipts"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "table_name",
+            "notnull": 1,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record_id",
+            "notnull": 1,
+            "primary_key_position": 2,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "field",
+            "notnull": 1,
+            "primary_key_position": 3,
+            "type": "TEXT"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "sha256",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_payload_refs"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_plans"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_profiles"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_projects"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_requests"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_rooms"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_rules"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "floor",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "generation",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "entries",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 4,
+            "default": null,
+            "name": "total",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          }
+        ],
+        "name": "runtime_scheduler_agent_change_state"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "generation",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          }
+        ],
+        "name": "runtime_scheduler_agent_changes"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": ""
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "agent",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": ""
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "kind",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": ""
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "body",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": ""
+          }
+        ],
+        "name": "runtime_search"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "k",
+            "notnull": 1,
+            "primary_key_position": 1,
+            "type": ""
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "v",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": ""
+          }
+        ],
+        "name": "runtime_search_config"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "c0",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": ""
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "c1",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": ""
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "c2",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": ""
+          },
+          {
+            "cid": 4,
+            "default": null,
+            "name": "c3",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": ""
+          }
+        ],
+        "name": "runtime_search_content"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "block",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "BLOB"
+          }
+        ],
+        "name": "runtime_search_data"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "sz",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "BLOB"
+          }
+        ],
+        "name": "runtime_search_docsize"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "segid",
+            "notnull": 1,
+            "primary_key_position": 1,
+            "type": ""
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "term",
+            "notnull": 1,
+            "primary_key_position": 2,
+            "type": ""
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "pgno",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": ""
+          }
+        ],
+        "name": "runtime_search_idx"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_search_indexed"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "agent",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "kind",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "search_rowid",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          }
+        ],
+        "name": "runtime_search_next_meta"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "phase",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": "0",
+            "name": "cursor",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "updated",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "REAL"
+          }
+        ],
+        "name": "runtime_search_rollout"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "search_rowid",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          }
+        ],
+        "name": "runtime_search_rows"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 1,
+            "default": "0",
+            "name": "cursor",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          }
+        ],
+        "name": "runtime_search_rows_rollout"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "server",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "signature",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "state",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 4,
+            "default": null,
+            "name": "result",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_server_fetch"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "signature",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "state",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "result",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 4,
+            "default": "0",
+            "name": "created_at",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "REAL"
+          },
+          {
+            "cid": 5,
+            "default": "0",
+            "name": "completed_at",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "REAL"
+          },
+          {
+            "cid": 6,
+            "default": null,
+            "name": "principal",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 7,
+            "default": null,
+            "name": "actor",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_server_inbox"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_server_links"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "server",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "body",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "state",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 4,
+            "default": null,
+            "name": "result",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 5,
+            "default": "0",
+            "name": "attempts",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 6,
+            "default": "0",
+            "name": "next_at",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "REAL"
+          },
+          {
+            "cid": 7,
+            "default": null,
+            "name": "error",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 8,
+            "default": "0",
+            "name": "created_at",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "REAL"
+          },
+          {
+            "cid": 9,
+            "default": "0",
+            "name": "completed_at",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "REAL"
+          },
+          {
+            "cid": 10,
+            "default": null,
+            "name": "fingerprint",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_server_outbox"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "expires",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "REAL"
+          }
+        ],
+        "name": "runtime_server_output_tools"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 1,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "direction",
+            "notnull": 1,
+            "primary_key_position": 2,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "signature",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "server",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 4,
+            "default": null,
+            "name": "actor",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_server_retired"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "value",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          }
+        ],
+        "name": "runtime_server_sequence"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_sidebar_order"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "handle",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "sequence",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          }
+        ],
+        "name": "runtime_supervisor_cursor"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_tasks"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "agent",
+            "notnull": 1,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "alias",
+            "notnull": 1,
+            "primary_key_position": 2,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "request",
+            "notnull": 1,
+            "primary_key_position": 3,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_tool_request_aliases"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_tool_requests"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "result",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_tool_results"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "epoch",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "source_rootpage",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "cursor",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 4,
+            "default": null,
+            "name": "target",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 5,
+            "default": null,
+            "name": "complete",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 6,
+            "default": null,
+            "name": "scanned_rows",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 7,
+            "default": null,
+            "name": "source_bytes",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 8,
+            "default": null,
+            "name": "updated",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "REAL"
+          }
+        ],
+        "name": "runtime_turn_item_link_state_v1"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "agent",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "turn_id",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": ""
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "created",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "REAL"
+          },
+          {
+            "cid": 4,
+            "default": null,
+            "name": "epoch",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_turn_item_links_v1"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "agent",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_usage_resumes"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_work"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "id",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "record",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "runtime_workspace_operations"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "seq",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "scope",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "id",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "payload",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 4,
+            "default": "0",
+            "name": "deleted",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          }
+        ],
+        "name": "sync_documents"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "collection",
+            "notnull": 1,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "id",
+            "notnull": 1,
+            "primary_key_position": 2,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "seq",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "hash",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 4,
+            "default": null,
+            "name": "payload",
+            "notnull": 0,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 5,
+            "default": "0",
+            "name": "deleted",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          }
+        ],
+        "name": "sync_entities"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "key",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "TEXT"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "value",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          }
+        ],
+        "name": "sync_entity_meta"
+      },
+      {
+        "columns": [
+          {
+            "cid": 0,
+            "default": null,
+            "name": "seq",
+            "notnull": 0,
+            "primary_key_position": 1,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 1,
+            "default": null,
+            "name": "scope",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 2,
+            "default": null,
+            "name": "hash",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "TEXT"
+          },
+          {
+            "cid": 3,
+            "default": null,
+            "name": "deleted",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "INTEGER"
+          },
+          {
+            "cid": 4,
+            "default": null,
+            "name": "updated",
+            "notnull": 1,
+            "primary_key_position": 0,
+            "type": "REAL"
+          }
+        ],
+        "name": "sync_versions"
+      }
+    ]
+  },
+  "pragmas": {
+    "analytics": {
+      "journal_mode": "wal",
+      "synchronous": 2
+    },
+    "main": {
+      "journal_mode": "wal",
+      "synchronous": 2
+    }
+  }
+}
