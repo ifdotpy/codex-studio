@@ -7,6 +7,7 @@
 //! provider or the server. Route modules in `studio-runtime-http` call
 //! services; services never depend on HTTP types.
 
+pub mod account_driver;
 pub mod account_policy;
 pub mod event_write;
 pub mod panels;
