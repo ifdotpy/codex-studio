@@ -4,7 +4,7 @@ import {
   sourcePath,
   scope,
 } from "./sidebar-parity-fixture.mjs";
-test("project headings ignore saved collapse state", async ({
+test("project headings ignore the earlier saved collapse state", async ({
   page,
   context,
 }, testInfo) => {
@@ -29,10 +29,12 @@ test("project headings ignore saved collapse state", async ({
       hasText: "Home project",
     });
     await expect(group).toBeVisible();
-    await expect(group).not.toHaveAttribute("aria-expanded");
+    await expect(group).toHaveAttribute("aria-expanded", "true");
     const chats = sidebar.locator(".sidebar-project [data-chat]");
     await expect(chats).toHaveCount(20);
     const before = await chats.count();
+    await group.click();
+    await expect(group).toHaveAttribute("aria-expanded", "false");
     await group.click();
     await expect(chats).toHaveCount(before);
     await page.reload();
@@ -55,7 +57,7 @@ test("project headings ignore saved collapse state", async ({
     });
     expect(preferences.local[sourcePath("local")]).toBe(true);
     expect(preferences.remote[sourcePath("remote")]).toBe(true);
-    await expect(group).not.toHaveAttribute("aria-expanded");
+    await expect(group).toHaveAttribute("aria-expanded", "true");
   } finally {
     await f.close();
   }
@@ -94,7 +96,7 @@ test("selecting a remote chat leaves saved project collapse state untouched", as
     const group = sidebar.locator(".project-tree-toggle", {
       hasText: "Home project",
     });
-    await expect(group).not.toHaveAttribute("aria-expanded");
+    await expect(group).toHaveAttribute("aria-expanded", "true");
     await sidebar
       .getByLabel("Filter projects and chats")
       .fill("Remote Saved pin");
@@ -114,7 +116,7 @@ test("selecting a remote chat leaves saved project collapse state untouched", as
       .locator("[data-chat]")
       .first()
       .click();
-    await expect(group).not.toHaveAttribute("aria-expanded");
+    await expect(group).toHaveAttribute("aria-expanded", "true");
     const result = await page.evaluate(
       ({ scope }) => ({
         writes: window.__reviewWrites,
@@ -229,7 +231,7 @@ test("combined frames do not mount sidebars or migrate null groups", async ({
     await f.close();
   }
 });
-test("unregistered project headings do not collapse", async ({
+test("unregistered project headings collapse like registered ones", async ({
   page,
   context,
 }) => {
@@ -244,15 +246,11 @@ test("unregistered project headings do not collapse", async ({
       hasText: "/remote/project",
     });
     await expect(group).toBeVisible();
-    await expect(group).not.toHaveAttribute("aria-expanded");
+    await expect(group).toHaveAttribute("aria-expanded", "true");
     await group.click();
-    await page.evaluate(
-      () =>
-        new Promise((resolve) =>
-          requestAnimationFrame(() => requestAnimationFrame(resolve)),
-        ),
-    );
-    await expect(group).not.toHaveAttribute("aria-expanded");
+    await expect(group).toHaveAttribute("aria-expanded", "false");
+    await page.reload();
+    await expect(group).toHaveAttribute("aria-expanded", "false");
   } finally {
     await f.close();
   }

@@ -219,7 +219,7 @@ test("the owner adapter preserves saved organization in standalone and classic s
       "Project B",
       "Project A",
     ]);
-    expect(before.projects[0].expanded).toBeNull();
+    expect(before.projects[0].expanded).toBe("true");
     expect(before.folders).toEqual([
       { id: "parent", parent: null, name: "Parent", expanded: "true" },
       { id: "nested", parent: "parent", name: "Nested", expanded: "false" },

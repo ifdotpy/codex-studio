@@ -576,12 +576,55 @@ describe("original saved sidebar state", () => {
     expect(
       cache.saved(`codex-project-compact:${model.data.stateDir}`, {}),
     ).toEqual({ [model.projectKey("local", path)]: false });
+    // The saved bare path of the earlier project collapse stays unused.
     expect(
       cache.saved(`codex-project-tree:${model.data.stateDir}`, {}),
-    ).toEqual({});
+    ).toEqual({
+      [JSON.stringify([model.projectKey("local", path), "project"])]: false,
+    });
     expect(a.writes).toEqual([]);
     expect(b.writes).toEqual([]);
     expect(local.sidebar.collapsed).toEqual({ [path]: true });
+  });
+
+  it("collapses a project heading by its home server's value and saves it there", () => {
+    const local = source("local");
+    const remote = source("remote", [
+      {
+        id: path,
+        path,
+        name: "Remote",
+        projectAliases: [{ serverId: "local", projectId: path, name: "local" }],
+      },
+    ]);
+    const heading = JSON.stringify([path, "project"]);
+    remote.sidebar.collapsed = { [heading]: true };
+    const a = backend(local);
+    const b = backend(remote);
+    const model = mergeSidebar([local, remote]);
+    const key = JSON.stringify([model.projectKey("local", path), "project"]);
+    expect(model.mapTreeKey("remote", heading)).toBe(key);
+    // A member server's value does not collapse the home project.
+    expect(model.collapsed[key]).toBe(false);
+    const cache = mergedSidebarPreferences(
+      model,
+      new Map([
+        ["local", a.backend],
+        ["remote", b.backend],
+      ]),
+    );
+    const tree = `codex-project-tree:${model.data.stateDir}`;
+    const previous = cache.saved<Record<string, boolean>>(tree, {});
+    expect(
+      cache.editPreference(tree, previous, { ...previous, [key]: true }),
+    ).toMatchObject({ [key]: true });
+    expect(JSON.parse(a.values.get(`codex-project-tree:${scope}`)!)).toEqual({
+      [heading]: true,
+    });
+    expect(b.writes).toEqual([]);
+    local.sidebar.collapsed = { [heading]: true };
+    remote.sidebar.collapsed = {};
+    expect(mergeSidebar([local, remote]).collapsed[key]).toBe(true);
   });
 
   it("writes only changed source fields, keeps unrelated keys and subscribes to original keys", () => {

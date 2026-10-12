@@ -333,6 +333,8 @@ export function mergeSidebar(
         "team",
         teamKey(owner, parts[2]),
       ]);
+    if (parts[1] === "project" && parts.length === 2)
+      return JSON.stringify([projectKey(owner, parts[0]), "project"]);
     return projectKey(owner, value);
   };
   const mapOrderGroup = (owner: string, value: string) => {
@@ -439,6 +441,7 @@ export function mergeSidebar(
     const collapsed = new Set<string>();
     const addPath = (path: string) => {
       compact.add(path);
+      collapsed.add(JSON.stringify([path, "project"]));
     };
     for (const project of source.sidebar.projects) {
       const path = project.path || "";
@@ -460,12 +463,20 @@ export function mergeSidebar(
         const parts = JSON.parse(field);
         if (parts[1] === "folder") return folderReferences.get(parts[2])?.owner;
         if (parts[1] === "team") return teamReferences.get(parts[2])?.owner;
+        if (parts[1] === "project")
+          return projectReferences.get(parts[0])?.owner;
       } catch {
         /* Project paths need not be JSON. */
       }
     }
     return projectReferences.get(field)?.owner;
   };
+  // A project heading is collapsed by its home server's value only.
+  const collapseOwner = (mapped: string) =>
+    projectReferences.get(mapped)?.owner ??
+    (mapped.endsWith(',"project"]')
+      ? preferenceOwner("collapsed", mapped)
+      : undefined);
   const mergeVisual = (
     kind: "compact" | "collapsed",
     values: ReadonlyMap<string, Record<string, boolean>>,
@@ -479,9 +490,7 @@ export function mergeSidebar(
             ? projectKey(source.id, name)
             : mapTreeKey(source.id, name);
         const headingOwner =
-          kind === "collapsed"
-            ? projectReferences.get(mapped)?.owner
-            : undefined;
+          kind === "collapsed" ? collapseOwner(mapped) : undefined;
         if (headingOwner && headingOwner !== source.id) continue;
         result[mapped] = mapped in result ? result[mapped] && value : value;
       }
@@ -490,7 +499,7 @@ export function mergeSidebar(
         for (const name of preferenceKeys.get(source.id)!.collapsed)
           if (!values.get(source.id)?.[name]) {
             const mapped = mapTreeKey(source.id, name);
-            const headingOwner = projectReferences.get(mapped)?.owner;
+            const headingOwner = collapseOwner(mapped);
             if (!headingOwner || headingOwner === source.id)
               result[mapped] = false;
           }
