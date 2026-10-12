@@ -54,6 +54,18 @@ increasing per-handle sequence and the child generation; `payload` is the JSON
 value recorded by the supervisor (`stdout` provider frame, `stderr` data, or
 exit return code). Unknown event names and unknown fields are retained.
 
+The supervisor has one reader thread per child stream. Event order is preserved
+within stdout and within stderr, but there is no ordering guarantee between
+those streams. A child write does not correspond to one event: stdout is parsed
+into lines and stderr is read in chunks of up to 65,536 bytes, so writes may be
+split or combined. Journal sequence records append order only. `next` returns
+the first committed event after its cursor, and `replay` returns retained
+events in cursor order; clients should group and aggregate stream payloads by
+kind rather than infer cross-stream order. The `exit` event comes from the
+stdout reader after process termination and does not alone guarantee that the
+stderr reader has finished. Consumers that need complete output should also
+wait for `stdoutReaderAlive` and `stderrReaderAlive` to become false.
+
 For a handle, `sequence` is the latest journal cursor and `acknowledged` is the
 durable contiguous cursor. `next` returns the first event after its cursor;
 `replay` returns all retained events after its cursor. Both reject a cursor

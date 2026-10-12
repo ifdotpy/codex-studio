@@ -315,7 +315,16 @@ fn disposable_python_supervisor_v1_actions_events_replay_and_reattach() {
     let mut supervisor = SupervisorProcess::start(&state, &python);
     let supervisor_pid = supervisor.id();
 
-    let wait_script = "import json,sys; print(json.dumps({'ready':True}),flush=True); m=json.loads(sys.stdin.readline()); print(json.dumps({'id':m['id'],'result':{'echo':m['params']['text']}}),flush=True); print('stderr:'+m['params']['text'],file=sys.stderr,flush=True)";
+    let wait_script = r#"
+import json, sys
+print(json.dumps({'ready': True}), flush=True)
+message = json.loads(sys.stdin.readline())
+text = message['params']['text']
+for chunk in ('stderr:', text[:5], text[5:]):
+    sys.stderr.write(chunk)
+    sys.stderr.flush()
+print(json.dumps({'id': message['id'], 'result': {'echo': text}}), flush=True)
+"#;
     let command = vec![python.clone(), "-u".into(), "-c".into(), wait_script.into()];
     let handle = SupervisorHandle("rust-v1-main".into());
 
@@ -403,14 +412,12 @@ fn disposable_python_supervisor_v1_actions_events_replay_and_reattach() {
     assert_eq!(receipt.native_id, write.remote_id);
 
     let mut cursor = ready.sequence;
-    let mut kinds = Vec::new();
-    let mut final_sequence = cursor;
+    let mut stdout_payloads = Vec::new();
+    let mut stderr_text = String::new();
+    let mut exit_code = None;
     let deadline = Instant::now() + Duration::from_secs(15);
-    while Instant::now() < deadline
-        && !(kinds.contains(&EventKind::Stdout)
-            && kinds.contains(&EventKind::Stderr)
-            && kinds.contains(&EventKind::Exit))
-    {
+    let mut readers_drained = false;
+    while Instant::now() < deadline && !readers_drained {
         let result = client
             .next(CursorRequest {
                 handle: handle.clone(),
@@ -420,33 +427,41 @@ fn disposable_python_supervisor_v1_actions_events_replay_and_reattach() {
             .unwrap();
         if let Some(event) = result.event {
             cursor = event.sequence;
-            final_sequence = cursor;
-            if event.kind == EventKind::Stdout {
-                assert_eq!(event.payload["result"]["echo"], "hello-from-rust");
-            }
-            if event.kind == EventKind::Stderr {
-                assert!(
+            match event.kind {
+                EventKind::Stdout => stdout_payloads.push(event.payload),
+                EventKind::Stderr => stderr_text.push_str(
                     event.payload["data"]
                         .as_str()
-                        .unwrap()
-                        .contains("stderr:hello-from-rust")
-                );
-            }
-            if event.kind == EventKind::Exit {
-                assert_eq!(event.payload["returnCode"], 0);
-            }
-            if !kinds.contains(&event.kind) {
-                kinds.push(event.kind.clone());
+                        .expect("stderr event payload contains text"),
+                ),
+                EventKind::Exit => {
+                    exit_code = Some(
+                        event.payload["returnCode"]
+                            .as_i64()
+                            .expect("exit event contains an integer returnCode"),
+                    );
+                }
+                EventKind::Unknown(kind) => panic!("unexpected supervisor event kind: {kind}"),
             }
         }
+        readers_drained =
+            exit_code.is_some() && !result.stdout_reader_alive && !result.stderr_reader_alive;
     }
-    assert!(kinds.contains(&EventKind::Stdout));
-    assert!(kinds.contains(&EventKind::Stderr));
-    assert!(kinds.contains(&EventKind::Exit));
+    assert!(
+        readers_drained,
+        "supervisor output readers did not drain before timeout"
+    );
+    assert_eq!(exit_code, Some(0));
+    assert!(
+        stdout_payloads
+            .iter()
+            .any(|payload| payload["result"]["echo"] == "hello-from-rust")
+    );
+    assert!(stderr_text.contains("stderr:hello-from-rust"));
     client
         .ack(AckRequest {
             handle: handle.clone(),
-            sequence: final_sequence,
+            sequence: cursor,
             extra: BTreeMap::new(),
         })
         .unwrap();

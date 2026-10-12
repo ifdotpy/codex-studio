@@ -76,6 +76,8 @@ impl<T: SupervisorTransport> SupervisorClient<T> {
         self.call(SupervisorAction::Open, request)
     }
 
+    /// Return the first committed journal event after the cursor. Sequence is
+    /// append order; it does not imply order between stdout and stderr readers.
     pub fn next(&mut self, request: CursorRequest) -> Result<NextResult, SupervisorError> {
         self.call(SupervisorAction::Next, request)
     }
@@ -116,6 +118,8 @@ impl<T: SupervisorTransport> SupervisorClient<T> {
         self.call(SupervisorAction::Ack, request)
     }
 
+    /// Return retained events in journal sequence order. The sequence records
+    /// append order, not a guaranteed cross-stream source order.
     pub fn replay(&mut self, request: CursorRequest) -> Result<ReplayResult, SupervisorError> {
         self.call(SupervisorAction::Replay, request)
     }
