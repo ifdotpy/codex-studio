@@ -14,7 +14,7 @@ use thiserror::Error;
 
 use crate::{
     BookError, CallbackDispatcher, CodecError, Frame, Handler, Inbound, Method, PendingBook,
-    RequestFrame, RequestId, ResponseBody, ResponseMatch, encode_line,
+    RequestFrame, RequestId, RequestState, ResponseBody, ResponseMatch, encode_line,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -102,6 +102,24 @@ impl SessionState {
         timeout_ms: u64,
         initialize_params: Value,
     ) -> Result<(Self, Vec<Action>), SessionError> {
+        Self::new_with_recovered(
+            generation,
+            claude,
+            now_ms,
+            timeout_ms,
+            initialize_params,
+            Vec::new(),
+        )
+    }
+
+    pub fn new_with_recovered(
+        generation: u64,
+        claude: bool,
+        now_ms: u64,
+        timeout_ms: u64,
+        initialize_params: Value,
+        recovered: Vec<(RequestId, Method, Option<String>)>,
+    ) -> Result<(Self, Vec<Action>), SessionError> {
         let mut state = Self {
             generation,
             claude,
@@ -112,6 +130,9 @@ impl SessionState {
             active_threads: BTreeMap::new(),
             queued_threads: BTreeMap::new(),
         };
+        for (id, method, thread_id) in recovered {
+            state.track_existing_request(id, method, thread_id)?;
+        }
         let ticket = state.register(
             Method::Initialize,
             initialize_params,
@@ -119,9 +140,38 @@ impl SessionState {
             timeout_ms,
             None,
             false,
+            None,
         )?;
         let actions = state.write_request(&ticket)?;
         Ok((state, actions))
+    }
+
+    pub fn track_existing_request(
+        &mut self,
+        id: RequestId,
+        method: Method,
+        thread_id: Option<String>,
+    ) -> Result<RequestTicket, SessionError> {
+        if matches!(self.lifecycle, Lifecycle::Lost | Lifecycle::Closed) {
+            return Err(SessionError::NotReady);
+        }
+        self.book.register(id.clone(), method)?;
+        let ticket = RequestTicket {
+            generation: self.generation,
+            id: id.clone(),
+            method,
+        };
+        self.pending.insert(
+            id,
+            Pending {
+                ticket: ticket.clone(),
+                params: Value::Null,
+                deadline_ms: u64::MAX,
+                thread_id,
+                serialized: false,
+            },
+        );
+        Ok(ticket)
     }
 
     #[must_use]
@@ -143,6 +193,49 @@ impl SessionState {
         thread_id: Option<String>,
         lightweight_read: bool,
     ) -> Result<(RequestTicket, Vec<Action>), SessionError> {
+        self.submit_with_id_inner(
+            None,
+            method,
+            params,
+            now_ms,
+            timeout_ms,
+            thread_id,
+            lightweight_read,
+        )
+    }
+
+    /// Submit a request with a durable caller allocated identity.
+    pub fn submit_with_id(
+        &mut self,
+        id: RequestId,
+        method: Method,
+        params: Value,
+        now_ms: u64,
+        timeout_ms: u64,
+        thread_id: Option<String>,
+        lightweight_read: bool,
+    ) -> Result<(RequestTicket, Vec<Action>), SessionError> {
+        self.submit_with_id_inner(
+            Some(id),
+            method,
+            params,
+            now_ms,
+            timeout_ms,
+            thread_id,
+            lightweight_read,
+        )
+    }
+
+    fn submit_with_id_inner(
+        &mut self,
+        request_id: Option<RequestId>,
+        method: Method,
+        params: Value,
+        now_ms: u64,
+        timeout_ms: u64,
+        thread_id: Option<String>,
+        lightweight_read: bool,
+    ) -> Result<(RequestTicket, Vec<Action>), SessionError> {
         if self.lifecycle != Lifecycle::Ready {
             return Err(SessionError::NotReady);
         }
@@ -150,7 +243,9 @@ impl SessionState {
         if serialized && thread_id.is_none() {
             return Err(SessionError::MissingThreadId);
         }
-        let ticket = self.register(method, params, now_ms, timeout_ms, thread_id, serialized)?;
+        let ticket = self.register(
+            method, params, now_ms, timeout_ms, thread_id, serialized, request_id,
+        )?;
         let mut actions = Vec::new();
         let pending = self
             .pending
@@ -183,8 +278,13 @@ impl SessionState {
         timeout_ms: u64,
         thread_id: Option<String>,
         serialized: bool,
+        request_id: Option<RequestId>,
     ) -> Result<RequestTicket, SessionError> {
-        let id = if self.claude {
+        let id = if let Some(id) = request_id {
+            validate_request_encoding(id.clone(), method, &params)?;
+            self.book.register(id.clone(), method)?;
+            id
+        } else if self.claude {
             let id = RequestId::String(format!("claude:{:032x}", self.next_claude_id));
             let next_id = self
                 .next_claude_id
@@ -288,17 +388,34 @@ impl SessionState {
         if matches!(self.lifecycle, Lifecycle::Lost | Lifecycle::Closed) {
             return (Ok(()), Vec::new());
         }
-        if !self
+        let expired = self
             .pending
-            .values()
-            .any(|pending| now_ms >= pending.deadline_ms)
-        {
+            .iter_mut()
+            .filter_map(|(id, pending)| {
+                (now_ms >= pending.deadline_ms
+                    && self.book.state(id) == Some(RequestState::Pending))
+                .then(|| {
+                    pending.deadline_ms = u64::MAX;
+                    id.clone()
+                })
+            })
+            .collect::<Vec<_>>();
+        if expired.is_empty() {
             return (Ok(()), Vec::new());
         }
-        (
-            Err(SessionError::DeadlineUnknown),
-            self.mark_unknown(Lifecycle::Lost),
-        )
+        let mut actions = Vec::with_capacity(expired.len());
+        for id in expired {
+            if self.book.mark_unknown(&id).is_err() {
+                continue;
+            }
+            if let Some(pending) = self.pending.get(&id) {
+                actions.push(Action::Resolve {
+                    ticket: pending.ticket.clone(),
+                    outcome: RequestOutcome::Unknown,
+                });
+            }
+        }
+        (Err(SessionError::DeadlineUnknown), actions)
     }
 
     pub fn transport_lost(&mut self) -> Vec<Action> {

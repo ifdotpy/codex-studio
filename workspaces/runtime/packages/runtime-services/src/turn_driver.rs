@@ -2,8 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -14,13 +14,16 @@ use studio_runtime_store::{
 };
 use thiserror::Error;
 
+#[cfg(test)]
+use crate::provider_session::ProviderProcessReader;
 use crate::provider_session::{
     ProviderProcess, ProviderSession, ProviderSessionConfig, ProviderSessionError,
     ProviderSessionEvent,
 };
 use crate::scheduler::{
-    SchedulerError, TurnDriver, TurnIntent, TurnOutcome, TurnStart, consume_wake,
-    recover_on_startup, settle_started_attempt, settle_terminal_attempt,
+    SchedulerError, TurnDriver, TurnIntent, TurnOutcome, TurnStart, attempt_can_prepare,
+    consume_wake, mark_submitted_for_provider, recover_on_startup, settle_start_rejected_provider,
+    settle_started_attempt, settle_started_provider, settle_terminal_attempt,
 };
 
 const SESSION_POLL: Duration = Duration::from_millis(100);
@@ -47,9 +50,15 @@ impl ProviderHandle {
     }
 }
 
-#[derive(Clone, Copy, Debug, Error)]
-#[error("provider process could not be attached")]
-pub struct ProviderFactoryError;
+#[derive(Debug, Error)]
+pub enum ProviderFactoryError {
+    #[error(transparent)]
+    Supervisor(#[from] studio_runtime_process::SupervisorError),
+    #[error("provider reader failed: {0}")]
+    Reader(#[from] std::io::Error),
+    #[error("provider launch failed: {0}")]
+    Launch(String),
+}
 
 /// Supplies supervisor-owned provider streams. Implementations must attach or
 /// start only the stable handle they are given.
@@ -162,27 +171,18 @@ struct SessionRegistry {
     store: Arc<RuntimeStore>,
     factory: Arc<dyn ProviderProcessFactory>,
     shutdown: Arc<AtomicBool>,
-    state: Mutex<RegistryState>,
-    ready: Condvar,
-    next_id: AtomicU64,
+    sessions: Mutex<HashMap<ProviderHandle, ManagedSession>>,
     unknown_threads: Arc<AtomicU64>,
     request_timeout_ms: u64,
 }
 
-struct RegistryState {
-    sessions: HashMap<ProviderHandle, ManagedSession>,
-    connecting: Vec<ProviderHandle>,
-    closed: bool,
-}
-
 struct ManagedSession {
-    id: u64,
-    sender: SyncSender<SessionCommand>,
-    worker: Option<JoinHandle<()>>,
+    sender: Sender<SessionCommand>,
+    worker: JoinHandle<()>,
 }
 
 enum SessionCommand {
-    StartTurn(Box<TurnIntent>, Sender<TurnStart>),
+    StartTurn(TurnIntent, Sender<TurnStart>),
     Shutdown,
 }
 
@@ -197,13 +197,7 @@ impl SessionRegistry {
             store,
             factory,
             shutdown,
-            state: Mutex::new(RegistryState {
-                sessions: HashMap::new(),
-                connecting: Vec::new(),
-                closed: false,
-            }),
-            ready: Condvar::new(),
-            next_id: AtomicU64::new(1),
+            sessions: Mutex::new(HashMap::new()),
             unknown_threads: Arc::new(AtomicU64::new(0)),
             request_timeout_ms,
         }
@@ -231,16 +225,15 @@ impl SessionRegistry {
             };
         }
         let handle = ProviderHandle::for_account(&intent.account_key);
-        let (sender, id) = match self.session_sender(&handle) {
+        let sender = match self.session_sender(&handle) {
             Ok(value) => value,
             Err(()) => return TurnStart::NotSubmitted,
         };
         let (reply, result) = mpsc::channel();
         if sender
-            .send(SessionCommand::StartTurn(Box::new(intent), reply))
+            .send(SessionCommand::StartTurn(intent, reply))
             .is_err()
         {
-            self.discard_session(&handle, id);
             return TurnStart::NotSubmitted;
         }
         result.recv().unwrap_or(TurnStart::Unknown)
@@ -250,113 +243,55 @@ impl SessionRegistry {
         self.session_sender(handle).map(|_| ())
     }
 
-    fn session_sender(
-        &self,
-        handle: &ProviderHandle,
-    ) -> Result<(SyncSender<SessionCommand>, u64), ()> {
-        loop {
-            let mut state = self.state.lock().map_err(|_| ())?;
-            if state.closed || self.shutdown.load(Ordering::Acquire) {
-                return Err(());
-            }
-            if let Some(session) = state.sessions.get(handle) {
-                return Ok((session.sender.clone(), session.id));
-            }
-            if state.connecting.iter().any(|existing| existing == handle) {
-                state = self.ready.wait(state).map_err(|_| ())?;
-                drop(state);
-                continue;
-            }
-            state.connecting.push(handle.clone());
-            drop(state);
-
-            let connected = self
-                .factory
-                .start_or_reattach(handle)
-                .map_err(|_| ())
-                .and_then(|process| {
-                    ProviderSession::connect(process, ProviderSessionConfig::new()).map_err(|_| ())
-                });
-            let mut state = self.state.lock().map_err(|_| ())?;
-            state.connecting.retain(|existing| existing != handle);
-            self.ready.notify_all();
-            let Ok(session) = connected else {
-                return Err(());
-            };
-            if state.closed || self.shutdown.load(Ordering::Acquire) {
-                let _ignored = session.close();
-                return Err(());
-            }
-            let (sender, receiver) = mpsc::sync_channel(128);
-            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-            let store = Arc::clone(&self.store);
-            let shutdown = Arc::clone(&self.shutdown);
-            let unknown_threads = Arc::clone(&self.unknown_threads);
-            let request_timeout_ms = self.request_timeout_ms;
-            let handle_for_worker = handle.clone();
-            let worker = thread::spawn(move || {
-                provider_session_loop(
-                    session,
-                    store,
-                    handle_for_worker,
-                    receiver,
-                    shutdown,
-                    unknown_threads,
-                    request_timeout_ms,
-                );
-            });
-            state.sessions.insert(
-                handle.clone(),
-                ManagedSession {
-                    id,
-                    sender: sender.clone(),
-                    worker: Some(worker),
-                },
+    fn session_sender(&self, handle: &ProviderHandle) -> Result<Sender<SessionCommand>, ()> {
+        if self.shutdown.load(Ordering::Acquire) {
+            return Err(());
+        }
+        let mut sessions = self.sessions.lock().map_err(|_| ())?;
+        if let Some(session) = sessions.get(handle) {
+            return Ok(session.sender.clone());
+        }
+        let (sender, receiver) = mpsc::channel();
+        let store = Arc::clone(&self.store);
+        let factory = Arc::clone(&self.factory);
+        let shutdown = Arc::clone(&self.shutdown);
+        let unknown_threads = Arc::clone(&self.unknown_threads);
+        let request_timeout_ms = self.request_timeout_ms;
+        let worker_handle = handle.clone();
+        let worker = thread::spawn(move || {
+            provider_account_worker(
+                store,
+                factory,
+                worker_handle,
+                receiver,
+                shutdown,
+                unknown_threads,
+                request_timeout_ms,
             );
-            return Ok((sender, id));
-        }
-    }
-
-    fn discard_session(&self, handle: &ProviderHandle, id: u64) {
-        let worker = self.state.lock().ok().and_then(|mut state| {
-            let matches = state
-                .sessions
-                .get(handle)
-                .is_some_and(|session| session.id == id);
-            matches
-                .then(|| {
-                    state
-                        .sessions
-                        .remove(handle)
-                        .and_then(|mut session| session.worker.take())
-                })
-                .flatten()
         });
-        if let Some(worker) = worker {
-            let _ignored = worker.join();
-        }
+        sessions.insert(
+            handle.clone(),
+            ManagedSession {
+                sender: sender.clone(),
+                worker,
+            },
+        );
+        Ok(sender)
     }
 
     fn shutdown(&self) -> Result<(), TurnRuntimeError> {
-        let workers = {
-            let mut state = self
-                .state
-                .lock()
-                .map_err(|_| TurnRuntimeError::WorkerPanicked)?;
-            state.closed = true;
-            let workers = state
+        let sessions = std::mem::take(
+            &mut *self
                 .sessions
-                .drain()
-                .filter_map(|(_, mut session)| {
-                    let _ignored = session.sender.send(SessionCommand::Shutdown);
-                    session.worker.take()
-                })
-                .collect::<Vec<_>>();
-            self.ready.notify_all();
-            workers
-        };
-        for worker in workers {
-            worker
+                .lock()
+                .map_err(|_| TurnRuntimeError::WorkerPanicked)?,
+        );
+        for session in sessions.values() {
+            let _ignored = session.sender.send(SessionCommand::Shutdown);
+        }
+        for (_, session) in sessions {
+            session
+                .worker
                 .join()
                 .map_err(|_| TurnRuntimeError::WorkerPanicked)?;
         }
@@ -364,6 +299,7 @@ impl SessionRegistry {
     }
 }
 
+#[derive(Clone)]
 struct PendingStart {
     intent: TurnIntent,
     reply: Option<Sender<TurnStart>>,
@@ -387,20 +323,30 @@ fn provider_session_loop(
     mut session: ProviderSession,
     store: Arc<RuntimeStore>,
     handle: ProviderHandle,
-    commands: Receiver<SessionCommand>,
+    commands: &Receiver<SessionCommand>,
     shutdown: Arc<AtomicBool>,
     unknown_threads: Arc<AtomicU64>,
     request_timeout_ms: u64,
-) {
-    let mut event_state = SessionEventState::default();
+    event_state: &mut SessionEventState,
+) -> bool {
+    event_state.resumed_threads.clear();
     loop {
         loop {
             match commands.try_recv() {
                 Ok(SessionCommand::StartTurn(intent, reply)) => {
-                    let intent = *intent;
-                    if !attempt_can_submit(&store, &intent) {
-                        let _ignored = reply.send(TurnStart::NotSubmitted);
-                        continue;
+                    match attempt_can_prepare(&store, &intent) {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            let _ignored = reply.send(TurnStart::NotSubmitted);
+                            continue;
+                        }
+                        Err(_) => {
+                            let _ignored = reply.send(TurnStart::Blocked {
+                                reason: "scheduler state could not be read; input remains pending."
+                                    .into(),
+                            });
+                            continue;
+                        }
                     }
                     let Some(thread_id) = intent.thread_id.as_ref() else {
                         let _ignored = reply.send(TurnStart::Blocked {
@@ -453,65 +399,167 @@ fn provider_session_loop(
                     }
                 }
                 Ok(SessionCommand::Shutdown) => {
-                    settle_active_on_close(&store, &mut event_state.active);
                     notify_pending_unknown(&mut event_state.pending);
                     let _ignored = session.close();
-                    return;
+                    return false;
                 }
                 Err(TryRecvError::Disconnected) => {
-                    settle_active_on_close(&store, &mut event_state.active);
                     notify_pending_unknown(&mut event_state.pending);
                     let _ignored = session.close();
-                    return;
+                    return false;
                 }
                 Err(TryRecvError::Empty) => break,
             }
         }
         if shutdown.load(Ordering::Acquire) {
-            settle_active_on_close(&store, &mut event_state.active);
             notify_pending_unknown(&mut event_state.pending);
             let _ignored = session.close();
-            return;
+            return false;
         }
         match session.receive_event_timeout(SESSION_POLL) {
-            Ok(Some(event)) => handle_provider_event(
-                &store,
-                &handle,
-                &mut session,
-                event,
-                &mut event_state,
-                unknown_threads.as_ref(),
-                request_timeout_ms,
-            ),
+            Ok(Some((event, cursor))) => {
+                let mut retry_delay = Duration::from_millis(100);
+                loop {
+                    match handle_provider_event(
+                        &store,
+                        &handle,
+                        session.generation(),
+                        &mut session,
+                        event.clone(),
+                        event_state,
+                        unknown_threads.as_ref(),
+                        request_timeout_ms,
+                    ) {
+                        Ok(()) => break,
+                        Err(error) => {
+                            eprintln!("provider event settlement failed; retaining frame: {error}");
+                            if shutdown.load(Ordering::Acquire) {
+                                let _ignored = session.close();
+                                return false;
+                            }
+                            thread::sleep(retry_delay);
+                            retry_delay = retry_delay.saturating_mul(2).min(Duration::from_secs(5));
+                        }
+                    }
+                }
+                if let Some(cursor) = cursor {
+                    if session.acknowledge_handled(cursor).is_err() {
+                        let _ignored = session.close();
+                        return true;
+                    }
+                }
+            }
             Ok(None) => {}
             Err(ProviderSessionError::Closed) => {
-                settle_active_on_close(&store, &mut event_state.active);
                 notify_pending_unknown(&mut event_state.pending);
                 let _ignored = session.close();
-                return;
+                return true;
             }
             Err(_) => {
-                settle_active_on_close(&store, &mut event_state.active);
                 notify_pending_unknown(&mut event_state.pending);
                 let _ignored = session.close();
-                return;
+                return true;
             }
         }
     }
 }
 
-fn attempt_can_submit(store: &RuntimeStore, intent: &TurnIntent) -> bool {
-    store
-        .read()
-        .and_then(|connection| {
-            SchedulerRepository::attempt_can_submit(
-                &connection,
-                &intent.agent_id,
-                intent.epoch,
-                &intent.attempt_id,
-            )
-        })
-        .unwrap_or(false)
+fn provider_account_worker(
+    store: Arc<RuntimeStore>,
+    factory: Arc<dyn ProviderProcessFactory>,
+    handle: ProviderHandle,
+    commands: Receiver<SessionCommand>,
+    shutdown: Arc<AtomicBool>,
+    unknown_threads: Arc<AtomicU64>,
+    request_timeout_ms: u64,
+) {
+    let mut event_state = SessionEventState::default();
+    loop {
+        if shutdown.load(Ordering::Acquire) {
+            notify_pending_unknown(&mut event_state.pending);
+            return;
+        }
+        let connected = match factory.start_or_reattach(&handle) {
+            Ok(mut process) => {
+                let generation = process.generation();
+                let recovered = store.read().and_then(|connection| {
+                    SchedulerRepository::submitted_start_requests(
+                        &connection,
+                        handle.account_key(),
+                        generation,
+                    )
+                });
+                match recovered {
+                    Ok(requests) => {
+                        event_state.pending.clear();
+                        let mut tickets = Vec::with_capacity(requests.len());
+                        for (agent_id, epoch, attempt_id, request_id, thread_id) in requests {
+                            let request = RequestId::String(request_id);
+                            tickets.push((
+                                request.clone(),
+                                Method::TurnStart,
+                                Some(thread_id.clone()),
+                            ));
+                            event_state.pending.insert(
+                                request,
+                                PendingStart {
+                                    intent: TurnIntent {
+                                        agent_id,
+                                        epoch,
+                                        attempt_id,
+                                        account_key: handle.account_key().to_owned(),
+                                        provider: "codex".to_owned(),
+                                        thread_id: Some(thread_id),
+                                        cwd: None,
+                                        model: None,
+                                        events: Vec::new(),
+                                    },
+                                    reply: None,
+                                    stage: PendingStartStage::Turn,
+                                },
+                            );
+                        }
+                        ProviderSession::connect_recovering(
+                            process,
+                            ProviderSessionConfig::new(),
+                            tickets,
+                        )
+                    }
+                    Err(_) => {
+                        let _ignored = process.stop();
+                        Err(ProviderSessionError::Closed)
+                    }
+                }
+            }
+            Err(_) => Err(ProviderSessionError::Closed),
+        };
+        match connected {
+            Ok(session) => {
+                if !provider_session_loop(
+                    session,
+                    Arc::clone(&store),
+                    handle.clone(),
+                    &commands,
+                    Arc::clone(&shutdown),
+                    Arc::clone(&unknown_threads),
+                    request_timeout_ms,
+                    &mut event_state,
+                ) {
+                    return;
+                }
+            }
+            Err(_) => match commands.recv_timeout(SCHEDULER_POLL) {
+                Ok(SessionCommand::StartTurn(_, reply)) => {
+                    let _ignored = reply.send(TurnStart::NotSubmitted);
+                }
+                Ok(SessionCommand::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    notify_pending_unknown(&mut event_state.pending);
+                    return;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            },
+        }
+    }
 }
 
 fn submit_turn_start(
@@ -522,12 +570,38 @@ fn submit_turn_start(
     reply: Sender<TurnStart>,
     request_timeout_ms: u64,
 ) {
-    if !attempt_can_submit(store, &intent) {
-        let _ignored = reply.send(TurnStart::NotSubmitted);
-        return;
+    let mut params = match provider_turn_params(store, &intent) {
+        Ok(params) => params,
+        Err(reason) => {
+            let _ignored = reply.send(TurnStart::Blocked { reason });
+            return;
+        }
+    };
+    match attempt_can_prepare(store, &intent) {
+        Ok(true) => {}
+        Ok(false) => {
+            let _ignored = reply.send(TurnStart::NotSubmitted);
+            return;
+        }
+        Err(_) => {
+            let _ignored = reply.send(TurnStart::NotSubmitted);
+            return;
+        }
     }
-    let params = turn_start_params(&intent);
-    match session.send_request(
+    let request_id = format!("studio-turn-start:{}:{}", intent.attempt_id, intent.epoch);
+    match mark_submitted_for_provider(store, &intent, &request_id, session.generation()) {
+        Ok(true) => {}
+        Ok(false) | Err(_) => {
+            let _ignored = reply.send(TurnStart::NotSubmitted);
+            return;
+        }
+    }
+    params["clientUserMessageId"] = intent
+        .events
+        .first()
+        .map_or(Value::Null, |event| Value::String(event.id.clone()));
+    match session.send_request_with_id(
+        RequestId::String(request_id.clone()),
         Method::TurnStart,
         params,
         intent.thread_id.clone(),
@@ -553,12 +627,13 @@ fn submit_turn_start(
 fn handle_provider_event(
     store: &RuntimeStore,
     handle: &ProviderHandle,
+    generation: u64,
     session: &mut ProviderSession,
     event: ProviderSessionEvent,
     state: &mut SessionEventState,
     unknown_threads: &AtomicU64,
     request_timeout_ms: u64,
-) {
+) -> Result<(), TurnRuntimeError> {
     let pending = &mut state.pending;
     let resumed_threads = &mut state.resumed_threads;
     let active = &mut state.active;
@@ -569,10 +644,10 @@ fn handle_provider_event(
             late: _,
         } if ticket.method == Method::ThreadResume => {
             let Some(mut start) = pending.remove(&ticket.id) else {
-                return;
+                return Ok(());
             };
             if start.stage != PendingStartStage::Resume {
-                return;
+                return Ok(());
             }
             let resumed_id = match body {
                 ResponseBody::Result(result) => result
@@ -588,7 +663,7 @@ fn handle_provider_event(
                         reason: "Provider thread resume failed; input remains pending.".to_owned(),
                     });
                 }
-                return;
+                return Ok(());
             }
             let Some(thread_id) = start.intent.thread_id.clone() else {
                 if let Some(reply) = start.reply.take() {
@@ -596,7 +671,7 @@ fn handle_provider_event(
                         reason: "Provider thread resume returned no thread identity.".to_owned(),
                     });
                 }
-                return;
+                return Ok(());
             };
             resumed_threads.insert(thread_id);
             if let Some(reply) = start.reply.take() {
@@ -615,8 +690,8 @@ fn handle_provider_event(
             body,
             late: _,
         } if ticket.method == Method::TurnStart => {
-            let Some(mut start) = pending.remove(&ticket.id) else {
-                return;
+            let Some(mut start) = pending.get(&ticket.id).cloned() else {
+                return Ok(());
             };
             match body {
                 ResponseBody::Result(result) => {
@@ -630,15 +705,26 @@ fn handle_provider_event(
                         if let Some(reply) = start.reply.take() {
                             let _ignored = reply.send(TurnStart::Unknown);
                         }
-                        pending.insert(ticket.id, start);
-                        return;
+                        if let Some(start) = pending.get_mut(&ticket.id) {
+                            start.reply.take();
+                        }
+                        return Ok(());
                     };
+                    let request_id = request_id_string(&ticket.id);
                     let identity = identity_for(&start.intent);
-                    if !settle_started_attempt(store, &identity, &turn_id).unwrap_or(false) {
+                    let settled = settle_started_provider(
+                        store,
+                        &start.intent,
+                        &request_id,
+                        ticket.generation,
+                        &turn_id,
+                    )?;
+                    pending.remove(&ticket.id);
+                    if !settled {
                         if let Some(reply) = start.reply.take() {
                             let _ignored = reply.send(TurnStart::Unknown);
                         }
-                        return;
+                        return Ok(());
                     }
                     if let Some(reply) = start.reply.take() {
                         let _ignored = reply.send(TurnStart::Accepted {
@@ -646,14 +732,40 @@ fn handle_provider_event(
                         });
                     }
                     if !terminal_turn_matches(store, &identity, &turn_id)
-                        && let Some(thread_id) = start.intent.thread_id
+                        && let Some(thread_id) = start.intent.thread_id.clone()
                     {
-                        active.insert((thread_id, turn_id), identity);
+                        active.insert((thread_id, turn_id.clone()), identity.clone());
+                    }
+                    if was_stopped_after_submit(store, &identity) {
+                        let id = RequestId::String(format!(
+                            "studio-turn-interrupt:{}:{}",
+                            start.intent.attempt_id, turn_id
+                        ));
+                        let _ignored = session.send_request_with_id(
+                            id,
+                            Method::TurnInterrupt,
+                            json!({"threadId":start.intent.thread_id,"turnId":turn_id}),
+                            start.intent.thread_id.clone(),
+                            false,
+                            request_timeout_ms,
+                        );
                     }
                 }
-                ResponseBody::Error(_) => {
-                    if let Some(reply) = start.reply.take() {
-                        let _ignored = reply.send(TurnStart::NotSubmitted);
+                ResponseBody::Error(error) => {
+                    let error = json!({"message":provider_error_message(&error)});
+                    let request_id = request_id_string(&ticket.id);
+                    let settled = settle_start_rejected_provider(
+                        store,
+                        &start.intent,
+                        &request_id,
+                        ticket.generation,
+                        error.clone(),
+                    )?;
+                    pending.remove(&ticket.id);
+                    if settled && let Some(reply) = start.reply.take() {
+                        let _ignored = reply.send(TurnStart::Rejected { error });
+                    } else if let Some(reply) = start.reply.take() {
+                        let _ignored = reply.send(TurnStart::Unknown);
                     }
                 }
             }
@@ -683,11 +795,12 @@ fn handle_provider_event(
                 route_notification(
                     store,
                     handle,
+                    generation,
                     notification.method,
                     notification.params.unwrap_or(Value::Null),
                     active,
                     unknown_threads,
-                );
+                )?;
             }
         }
         ProviderSessionEvent::Closed { .. } => {}
@@ -699,55 +812,55 @@ fn handle_provider_event(
         }
         ProviderSessionEvent::Reply { .. } | ProviderSessionEvent::UnknownOutcome { .. } => {}
     }
+    Ok(())
 }
 
 fn route_notification(
     store: &RuntimeStore,
     handle: &ProviderHandle,
+    generation: u64,
     method: Method,
     params: Value,
     active: &mut HashMap<(String, String), TurnAttemptIdentity>,
     unknown_threads: &AtomicU64,
-) {
+) -> Result<(), TurnRuntimeError> {
     if !matches!(method, Method::TurnStarted | Method::TurnCompleted) {
-        return;
+        return Ok(());
     }
     let Some(thread_id) = params.get("threadId").and_then(Value::as_str) else {
-        return;
+        return Ok(());
     };
     let Some(turn) = params.get("turn") else {
-        return;
+        return Ok(());
     };
     let Some(turn_id) = turn
         .get("id")
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())
     else {
-        return;
+        return Ok(());
     };
-    let lookup = store.read().and_then(|connection| {
+    let (thread_known, identity) = store.read().and_then(|connection| {
         SchedulerRepository::find_attempt_for_thread(
             &connection,
             handle.account_key(),
+            generation,
             thread_id,
             Some(turn_id),
         )
-    });
-    let Ok((thread_known, identity)) = lookup else {
-        return;
-    };
+    })?;
     if !thread_known {
         unknown_threads.fetch_add(1, Ordering::Relaxed);
-        return;
+        return Ok(());
     }
     let Some(identity) = identity else {
-        return;
+        return Ok(());
     };
     if method == Method::TurnStarted {
-        if settle_started_attempt(store, &identity, turn_id).unwrap_or(false) {
+        if settle_started_attempt(store, &identity, turn_id)? {
             active.insert((thread_id.to_owned(), turn_id.to_owned()), identity);
         }
-        return;
+        return Ok(());
     }
     let outcome = match turn.get("status").and_then(Value::as_str) {
         Some("completed") => TurnOutcome::Completed,
@@ -757,27 +870,40 @@ fn route_notification(
         Some("interrupted") => TurnOutcome::Interrupted {
             error: turn.get("error").cloned(),
         },
-        _ => return,
+        _ => return Ok(()),
     };
-    if settle_terminal_attempt(store, &identity, turn_id, outcome).unwrap_or(false) {
+    if method == Method::TurnCompleted && matches!(&outcome, TurnOutcome::Completed) {
+        // The current Rust slice has no durable transcript/context projection or
+        // answer-item writer. Do not claim completion without those records.
+        let outcome = TurnOutcome::Failed {
+            error: Some(
+                json!({"message":"Rust turn history persistence is unavailable: submitted user transcript/context projection and provider answer items are not stored."}),
+            ),
+        };
+        if settle_terminal_attempt(store, &identity, turn_id, outcome)? {
+            active.remove(&(thread_id.to_owned(), turn_id.to_owned()));
+        }
+        return Ok(());
+    }
+    if settle_terminal_attempt(store, &identity, turn_id, outcome)? {
         active.remove(&(thread_id.to_owned(), turn_id.to_owned()));
+    }
+    Ok(())
+}
+
+fn request_id_string(id: &RequestId) -> String {
+    match id {
+        RequestId::Number(id) => id.to_string(),
+        RequestId::String(id) => id.clone(),
     }
 }
 
-fn settle_active_on_close(
-    store: &RuntimeStore,
-    active: &mut HashMap<(String, String), TurnAttemptIdentity>,
-) {
-    for ((_, turn_id), identity) in active.drain() {
-        let _ignored = settle_terminal_attempt(
-            store,
-            &identity,
-            &turn_id,
-            TurnOutcome::Interrupted {
-                error: Some(json!({"message":"Provider process ended during the turn."})),
-            },
-        );
-    }
+fn provider_error_message(error: &Value) -> String {
+    error
+        .get("message")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| error.to_string())
 }
 
 fn notify_pending_unknown(pending: &mut HashMap<RequestId, PendingStart>) {
@@ -822,6 +948,23 @@ fn terminal_turn_matches(
         })
 }
 
+fn was_stopped_after_submit(store: &RuntimeStore, identity: &TurnAttemptIdentity) -> bool {
+    store
+        .read()
+        .ok()
+        .and_then(|connection| {
+            AgentRepository::get(&connection, &AgentId::from(identity.agent_id.as_str()))
+                .ok()
+                .flatten()
+        })
+        .is_some_and(|agent| {
+            agent.epoch != identity.epoch
+                && agent.status == studio_runtime_store::AgentStatus::Paused
+                && agent.extra.get("autoWake").and_then(Value::as_bool) == Some(false)
+                && agent.extra.get("turnEpoch").and_then(Value::as_i64) == Some(identity.epoch)
+        })
+}
+
 fn turn_start_params(intent: &TurnIntent) -> Value {
     let text = intent
         .events
@@ -839,6 +982,90 @@ fn turn_start_params(intent: &TurnIntent) -> Value {
         params["model"] = Value::String(model.clone());
     }
     params
+}
+
+fn provider_turn_params(store: &RuntimeStore, intent: &TurnIntent) -> Result<Value, String> {
+    let agent = store
+        .read()
+        .and_then(|connection| {
+            AgentRepository::get(&connection, &AgentId::from(intent.agent_id.as_str()))
+        })
+        .map_err(|_| "scheduler state could not be read; input remains pending.".to_owned())?
+        .ok_or_else(|| "agent settings are unavailable; input remains pending.".to_owned())?;
+    if agent.extra.get("pendingSettings").is_some_and(|value| {
+        !value.is_null() && value.as_object().is_none_or(|object| !object.is_empty())
+    }) {
+        return Err(
+            "pendingSettings are not supported by the Rust turn driver; apply settings first."
+                .into(),
+        );
+    }
+    if agent.extra.get("workspaceReady").and_then(Value::as_bool) == Some(false)
+        || (agent.extra.get("imageWorkspace").and_then(Value::as_bool) == Some(true)
+            && agent
+                .extra
+                .get("imageWorkspaceReady")
+                .and_then(Value::as_bool)
+                != Some(true))
+        || (agent.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+            && agent.extra.get("layrReady").and_then(Value::as_bool) == Some(false))
+    {
+        return Err(
+            "workspace is not ready; prepare the workspace before submitting input.".into(),
+        );
+    }
+    let mut params = turn_start_params(intent);
+    if let Some(effort) = agent
+        .extra
+        .get("nativeEffort")
+        .or_else(|| agent.extra.get("effort"))
+        .filter(|value| !value.is_null())
+    {
+        params["effort"] = effort.clone();
+    }
+    params["serviceTier"] = Value::String(
+        if agent.extra.get("fastMode").and_then(Value::as_bool) == Some(true) {
+            "priority"
+        } else {
+            "default"
+        }
+        .into(),
+    );
+    let program = if agent.extra.get("daybreakEnabled").and_then(Value::as_bool) == Some(true) {
+        agent
+            .extra
+            .get("cyberAccessProgram")
+            .and_then(Value::as_str)
+            .filter(|value| matches!(*value, "daybreakBlue" | "daybreakRed"))
+            .ok_or_else(|| {
+                "selected Daybreak access program is unavailable; input remains pending.".to_owned()
+            })?
+    } else {
+        "standard"
+    };
+    params["cyberAccessProgram"] = Value::String(program.to_owned());
+    if let Some(yolo) = agent.extra.get("yoloMode") {
+        let Some(yolo) = yolo.as_bool() else {
+            return Err(
+                "permission settings cannot be applied because yoloMode is invalid.".into(),
+            );
+        };
+        params["approvalPolicy"] = Value::String(if yolo { "never" } else { "on-request" }.into());
+        if yolo {
+            params["sandboxPolicy"] = json!({"type":"dangerFullAccess"});
+        } else if agent.extra.get("role").and_then(Value::as_str) == Some("reviewer") {
+            params["sandboxPolicy"] = json!({"type":"readOnly"});
+        } else {
+            let Some(cwd) = intent.cwd.as_deref().filter(|cwd| !cwd.is_empty()) else {
+                return Err(
+                    "workspace path is missing; permission settings cannot be applied.".into(),
+                );
+            };
+            params["sandboxPolicy"] =
+                json!({"type":"workspaceWrite","writableRoots":[cwd],"networkAccess":false});
+        }
+    }
+    Ok(params)
 }
 
 struct PendingWake(bool);
@@ -999,9 +1226,36 @@ runtime.close()
         stops: Mutex<usize>,
         changed: Condvar,
         starts: AtomicUsize,
+        initializes: AtomicUsize,
     }
 
     impl FakeSignals {
+        fn wait_for_starts(&self, expected: usize) -> bool {
+            let Ok(stops) = self.stops.lock() else {
+                return false;
+            };
+            self.changed
+                .wait_timeout_while(stops, Duration::from_secs(20), |_| {
+                    self.starts.load(Ordering::Relaxed) < expected
+                })
+                .is_ok_and(|(_, timeout)| {
+                    self.starts.load(Ordering::Relaxed) >= expected && !timeout.timed_out()
+                })
+        }
+
+        fn wait_for_initializes(&self, expected: usize) -> bool {
+            let Ok(stops) = self.stops.lock() else {
+                return false;
+            };
+            self.changed
+                .wait_timeout_while(stops, Duration::from_secs(20), |_| {
+                    self.initializes.load(Ordering::Relaxed) < expected
+                })
+                .is_ok_and(|(_, timeout)| {
+                    self.initializes.load(Ordering::Relaxed) >= expected && !timeout.timed_out()
+                })
+        }
+
         fn wait_for_stops(&self, expected: usize) -> bool {
             let Ok(stops) = self.stops.lock() else {
                 return false;
@@ -1023,6 +1277,7 @@ runtime.close()
                 stops: Mutex::new(0),
                 changed: Condvar::new(),
                 starts: AtomicUsize::new(0),
+                initializes: AtomicUsize::new(0),
             });
             (
                 Self {
@@ -1040,7 +1295,9 @@ runtime.close()
             handle: &ProviderHandle,
         ) -> Result<Box<dyn ProviderProcess>, ProviderFactoryError> {
             if !handle.as_str().starts_with("account:") {
-                return Err(ProviderFactoryError);
+                return Err(ProviderFactoryError::Launch(
+                    "invalid account handle".into(),
+                ));
             }
             self.signals.starts.fetch_add(1, Ordering::Relaxed);
             let fixture = format!(
@@ -1053,7 +1310,7 @@ runtime.close()
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .spawn()
-                .map_err(|_| ProviderFactoryError)?;
+                .map_err(|error| ProviderFactoryError::Launch(error.to_string()))?;
             let stdout = child.stdout.take();
             let stdin = child.stdin.take();
             Ok(Box::new(FakeProcess {
@@ -1073,7 +1330,7 @@ runtime.close()
     }
 
     impl ProviderProcess for FakeProcess {
-        fn split(&mut self) -> io::Result<(Box<dyn Read + Send>, Box<dyn Write + Send>)> {
+        fn split(&mut self) -> io::Result<(Box<dyn ProviderProcessReader>, Box<dyn Write + Send>)> {
             let stdout = self
                 .stdout
                 .take()
@@ -1082,7 +1339,17 @@ runtime.close()
                 .stdin
                 .take()
                 .ok_or_else(|| io::Error::other("fake provider stdin already taken"))?;
-            Ok((Box::new(stdout), Box::new(stdin)))
+            Ok((Box::new(CursorReader(stdout)), Box::new(stdin)))
+        }
+
+        fn acknowledged_cursor(&self) -> u64 {
+            0
+        }
+        fn generation(&self) -> u64 {
+            1
+        }
+        fn acknowledge(&mut self, _cursor: u64) -> io::Result<()> {
+            Ok(())
         }
 
         fn stop(&mut self) -> io::Result<()> {
@@ -1138,11 +1405,21 @@ runtime.close()
             handle: &ProviderHandle,
         ) -> Result<Box<dyn ProviderProcess>, ProviderFactoryError> {
             if !handle.as_str().starts_with("account:") {
-                return Err(ProviderFactoryError);
+                return Err(ProviderFactoryError::Launch(
+                    "invalid account handle".into(),
+                ));
             }
-            self.0.signals.starts.fetch_add(1, Ordering::Relaxed);
+            if let Ok(_stops) = self.0.signals.stops.lock() {
+                self.0.signals.starts.fetch_add(1, Ordering::Relaxed);
+                self.0.signals.changed.notify_all();
+            }
             let (output, input) = mpsc::channel::<Option<Vec<u8>>>();
-            *self.0.output.lock().map_err(|_| ProviderFactoryError)? = Some(output.clone());
+            *self
+                .0
+                .output
+                .lock()
+                .map_err(|_| ProviderFactoryError::Launch("fake output mutex poisoned".into()))? =
+                Some(output.clone());
             Ok(Box::new(ControlledProcess {
                 provider: Arc::clone(&self.0),
                 input: Some(input),
@@ -1151,10 +1428,12 @@ runtime.close()
         }
     }
 
-    struct ReturningUnknown;
+    struct ReturningUnknown<'a>(&'a RuntimeStore);
 
-    impl TurnDriver for ReturningUnknown {
-        fn start(&mut self, _intent: TurnIntent) -> TurnStart {
+    impl TurnDriver for ReturningUnknown<'_> {
+        fn start(&mut self, intent: TurnIntent) -> TurnStart {
+            mark_submitted_for_provider(self.0, &intent, "restart-ticket", 1)
+                .expect("fake provider start identity is persisted");
             TurnStart::Unknown
         }
     }
@@ -1166,7 +1445,7 @@ runtime.close()
     }
 
     impl ProviderProcess for ControlledProcess {
-        fn split(&mut self) -> io::Result<(Box<dyn Read + Send>, Box<dyn Write + Send>)> {
+        fn split(&mut self) -> io::Result<(Box<dyn ProviderProcessReader>, Box<dyn Write + Send>)> {
             let input = self
                 .input
                 .take()
@@ -1185,6 +1464,16 @@ runtime.close()
             ))
         }
 
+        fn acknowledged_cursor(&self) -> u64 {
+            0
+        }
+        fn generation(&self) -> u64 {
+            1
+        }
+        fn acknowledge(&mut self, _cursor: u64) -> io::Result<()> {
+            Ok(())
+        }
+
         fn stop(&mut self) -> io::Result<()> {
             self.provider.close_output();
             if let Ok(mut stops) = self.provider.signals.stops.lock() {
@@ -1199,6 +1488,23 @@ runtime.close()
         input: Receiver<Option<Vec<u8>>>,
         buffered: VecDeque<u8>,
         ended: bool,
+    }
+
+    struct CursorReader<R>(R);
+
+    impl<R: Read + Send> Read for CursorReader<R> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            self.0.read(buffer)
+        }
+    }
+
+    impl<R: Read + Send> ProviderProcessReader for CursorReader<R> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            self.0.read(buffer)
+        }
+        fn take_cursors(&mut self) -> Vec<u64> {
+            Vec::new()
+        }
     }
 
     impl Read for ControlledReader {
@@ -1217,6 +1523,15 @@ runtime.close()
                 *slot = self.buffered.pop_front().expect("buffered byte exists");
             }
             Ok(count)
+        }
+    }
+
+    impl ProviderProcessReader for ControlledReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            <Self as Read>::read(self, buffer)
+        }
+        fn take_cursors(&mut self) -> Vec<u64> {
+            Vec::new()
         }
     }
 
@@ -1246,6 +1561,13 @@ runtime.close()
                         self.output.send(Some(bytes.into_bytes())).map_err(|_| {
                             io::Error::new(io::ErrorKind::BrokenPipe, "fake reader closed")
                         })?;
+                        if let Ok(_stops) = self.provider.signals.stops.lock() {
+                            self.provider
+                                .signals
+                                .initializes
+                                .fetch_add(1, Ordering::Relaxed);
+                            self.provider.signals.changed.notify_all();
+                        }
                     }
                     Some("thread/resume") => {
                         self.provider.send_frame(json!({
@@ -1373,8 +1695,13 @@ runtime.close()
         let agent = AgentRepository::get(&connection, &AgentId::from(agent_id.as_str()))
             .expect("agent reads")
             .expect("agent exists");
-        assert_eq!(agent.status, AgentStatus::Completed);
-        assert_eq!(agent.extra["lastCompletedTurnStatus"], "completed");
+        assert_eq!(agent.status, AgentStatus::Failed);
+        assert_eq!(agent.extra["lastCompletedTurnStatus"], "failed");
+        assert!(
+            agent.extra["lastCompletedTurnError"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("transcript/context projection"))
+        );
         let delivered: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND kind='user' AND status='delivered'",
@@ -1466,8 +1793,9 @@ runtime.close()
         let agent = AgentRepository::get(&connection, &AgentId::from(agent_id.as_str()))
             .expect("agent reads")
             .expect("agent exists");
-        assert_eq!(agent.status, AgentStatus::Interrupted);
-        assert_eq!(agent.extra["lastCompletedTurnStatus"], "interrupted");
+        assert_eq!(agent.status, AgentStatus::Running);
+        assert_eq!(agent.extra["inFlight"], true);
+        assert!(agent.extra.get("lastCompletedTurnStatus").is_none());
     }
 
     #[test]
@@ -1510,8 +1838,9 @@ runtime.close()
         let agent = AgentRepository::get(&connection, &AgentId::from(agent_id.as_str()))
             .expect("agent reads")
             .expect("agent exists");
-        assert_eq!(agent.status, AgentStatus::Interrupted);
-        assert_eq!(agent.extra["lastCompletedTurnStatus"], "interrupted");
+        assert_eq!(agent.status, AgentStatus::Running);
+        assert_eq!(agent.extra["inFlight"], true);
+        assert!(agent.extra.get("lastCompletedTurnStatus").is_none());
     }
 
     #[test]
@@ -1524,6 +1853,7 @@ runtime.close()
             stops: Mutex::new(0),
             changed: Condvar::new(),
             starts: AtomicUsize::new(0),
+            initializes: AtomicUsize::new(0),
         });
         let provider = Arc::new(ControlledProvider {
             requests: Mutex::new(Vec::new()),
@@ -1597,8 +1927,8 @@ runtime.close()
             let agent = AgentRepository::get(&connection, &AgentId::from(agent_id.as_str()))
                 .expect("agent reads")
                 .expect("agent exists");
-            assert_eq!(agent.status, AgentStatus::Completed);
-            assert_eq!(agent.extra["lastCompletedTurnStatus"], "completed");
+            assert_eq!(agent.status, AgentStatus::Failed);
+            assert_eq!(agent.extra["lastCompletedTurnStatus"], "failed");
         }
         let delivered: i64 = connection
             .query_row(
@@ -1621,6 +1951,7 @@ runtime.close()
             stops: Mutex::new(0),
             changed: Condvar::new(),
             starts: AtomicUsize::new(0),
+            initializes: AtomicUsize::new(0),
         });
         let provider = Arc::new(ControlledProvider {
             requests: Mutex::new(Vec::new()),
@@ -1689,7 +2020,7 @@ runtime.close()
             let agent = AgentRepository::get(&connection, &AgentId::from(agent_id.as_str()))
                 .expect("agent reads")
                 .expect("agent exists");
-            assert_eq!(agent.status, AgentStatus::Completed);
+            assert_eq!(agent.status, AgentStatus::Failed);
         }
     }
 
@@ -1707,7 +2038,7 @@ runtime.close()
             agents[0].1,
             "restart-unknown-attempt",
             1.0,
-            &mut ReturningUnknown,
+            &mut ReturningUnknown(&store),
         )
         .expect("submitted turn is recorded as unknown");
         drop(store);
@@ -1718,6 +2049,7 @@ runtime.close()
             stops: Mutex::new(0),
             changed: Condvar::new(),
             starts: AtomicUsize::new(0),
+            initializes: AtomicUsize::new(0),
         });
         let provider = Arc::new(ControlledProvider {
             requests: Mutex::new(Vec::new()),
@@ -1730,7 +2062,11 @@ runtime.close()
             Arc::new(ControlledFactory(Arc::clone(&provider))),
         )
         .expect("runtime restarts and reattaches to the provider");
-        assert_eq!(signals.starts.load(Ordering::Relaxed), 1);
+        assert!(signals.wait_for_starts(1), "recovery account attaches");
+        assert!(
+            signals.wait_for_initializes(1),
+            "recovered session initializes"
+        );
         assert!(
             provider
                 .requests
@@ -1739,10 +2075,8 @@ runtime.close()
                 .is_empty()
         );
 
-        provider.send_frame(json!({
-            "method":"turn/started",
-            "params":{"threadId":"fake-thread-0","turn":{"id":"recovered-turn"}}
-        }));
+        provider
+            .send_frame(json!({"id":"restart-ticket","result":{"turn":{"id":"recovered-turn"}}}));
         provider.send_frame(json!({
             "method":"turn/completed",
             "params":{"threadId":"fake-thread-0","turn":{"id":"recovered-turn","status":"completed"}}
@@ -1760,7 +2094,7 @@ runtime.close()
         let agent = AgentRepository::get(&connection, &AgentId::from(agents[0].0.as_str()))
             .expect("agent reads")
             .expect("agent exists");
-        assert_eq!(agent.status, AgentStatus::Completed);
+        assert_eq!(agent.status, AgentStatus::Failed);
         assert_eq!(agent.extra["lastCompletedTurn"], "recovered-turn");
         let (status, turn_id): (String, String) = connection
             .query_row(

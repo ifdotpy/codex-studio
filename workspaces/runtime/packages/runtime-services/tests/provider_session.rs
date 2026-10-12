@@ -7,7 +7,8 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Value, json};
 use studio_runtime_providers::{Method, ResponseBody};
 use studio_runtime_services::provider_session::{
-    ProviderProcess, ProviderSession, ProviderSessionConfig, ProviderSessionEvent,
+    ProviderProcess, ProviderProcessReader, ProviderSession, ProviderSessionConfig,
+    ProviderSessionEvent,
 };
 
 struct FakeProcess {
@@ -39,7 +40,7 @@ impl FakeProcess {
 }
 
 impl ProviderProcess for FakeProcess {
-    fn split(&mut self) -> io::Result<(Box<dyn Read + Send>, Box<dyn Write + Send>)> {
+    fn split(&mut self) -> io::Result<(Box<dyn ProviderProcessReader>, Box<dyn Write + Send>)> {
         let reader = self
             .stdout
             .take()
@@ -48,7 +49,17 @@ impl ProviderProcess for FakeProcess {
             .stdin
             .take()
             .ok_or_else(|| io::Error::other("fake stdin already taken"))?;
-        Ok((Box::new(reader), Box::new(writer)))
+        Ok((Box::new(CursorReader(reader)), Box::new(writer)))
+    }
+
+    fn acknowledged_cursor(&self) -> u64 {
+        0
+    }
+    fn generation(&self) -> u64 {
+        1
+    }
+    fn acknowledge(&mut self, _cursor: u64) -> io::Result<()> {
+        Ok(())
     }
 
     fn stop(&mut self) -> io::Result<()> {
@@ -99,7 +110,7 @@ impl ControlledProcess {
 }
 
 impl ProviderProcess for ControlledProcess {
-    fn split(&mut self) -> io::Result<(Box<dyn Read + Send>, Box<dyn Write + Send>)> {
+    fn split(&mut self) -> io::Result<(Box<dyn ProviderProcessReader>, Box<dyn Write + Send>)> {
         let input = self
             .input
             .take()
@@ -115,6 +126,16 @@ impl ProviderProcess for ControlledProcess {
                 buffered: Vec::new(),
             }),
         ))
+    }
+
+    fn acknowledged_cursor(&self) -> u64 {
+        0
+    }
+    fn generation(&self) -> u64 {
+        1
+    }
+    fn acknowledge(&mut self, _cursor: u64) -> io::Result<()> {
+        Ok(())
     }
 
     fn stop(&mut self) -> io::Result<()> {
@@ -153,6 +174,32 @@ impl Read for ControlledReader {
             *slot = self.buffered.pop_front().expect("buffered byte exists");
         }
         Ok(count)
+    }
+}
+
+impl ProviderProcessReader for ControlledReader {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        <Self as Read>::read(self, buffer)
+    }
+    fn take_cursors(&mut self) -> Vec<u64> {
+        Vec::new()
+    }
+}
+
+struct CursorReader<R>(R);
+
+impl<R: Read + Send> Read for CursorReader<R> {
+    fn read(&mut self, target: &mut [u8]) -> io::Result<usize> {
+        self.0.read(target)
+    }
+}
+
+impl<R: Read + Send> ProviderProcessReader for CursorReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.0.read(buffer)
+    }
+    fn take_cursors(&mut self) -> Vec<u64> {
+        Vec::new()
     }
 }
 
@@ -206,7 +253,7 @@ fn fake_provider_initializes_exchanges_request_and_routes_notifications() {
     let mut got_reply = false;
     let mut got_notification = false;
     while !got_reply || !got_notification {
-        match session.receive_event().expect("provider event") {
+        match session.receive_event().expect("provider event").0 {
             ProviderSessionEvent::Reply {
                 ticket: received,
                 body: ResponseBody::Result(result),
@@ -232,7 +279,7 @@ fn lost_reply_is_unknown_and_is_not_retried() {
         .send_request(Method::ModelList, json!({}), None, false, 10_000)
         .expect("request should be submitted once");
     assert_eq!(
-        session.receive_event().expect("unknown reply event"),
+        session.receive_event().expect("unknown reply event").0,
         ProviderSessionEvent::UnknownOutcome { ticket }
     );
     session.close().expect("provider shutdown");
@@ -252,7 +299,10 @@ fn reply_after_deadline_is_reported_as_late_evidence() {
         .send_request(Method::ModelList, json!({}), None, false, 0)
         .expect("request should be submitted once");
     assert_eq!(
-        session.receive_event().expect("unknown event at deadline"),
+        session
+            .receive_event()
+            .expect("unknown event at deadline")
+            .0,
         ProviderSessionEvent::UnknownOutcome {
             ticket: ticket.clone()
         }
@@ -262,7 +312,7 @@ fn reply_after_deadline_is_reported_as_late_evidence() {
         "result":{"late":true}
     }));
     assert_eq!(
-        session.receive_event().expect("late evidence"),
+        session.receive_event().expect("late evidence").0,
         ProviderSessionEvent::Reply {
             ticket,
             body: ResponseBody::Result(json!({"late": true})),
