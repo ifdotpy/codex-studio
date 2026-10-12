@@ -169,7 +169,7 @@ pub(crate) fn register_python_trigger_functions(connection: &Connection) -> Stor
     Ok(())
 }
 
-fn sha256_hex(value: &[u8]) -> String {
+pub fn sha256_hex(value: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let digest = Sha256::digest(value);
     let mut result = String::with_capacity(digest.len() * 2);
@@ -214,7 +214,9 @@ fn event_payload(key: &str, raw: &str, deleted: bool) -> Result<String, serde_js
         "{{\"collection\":\"event\",\"id\":{},\"value\":{{",
         serde_json::to_string(key)?
     );
-    for (index, (name, field)) in value.iter().enumerate() {
+    let mut fields = value.into_iter().collect::<Vec<_>>();
+    fields.sort_by(|left, right| left.0.cmp(&right.0));
+    for (index, (name, field)) in fields.iter().enumerate() {
         if index != 0 {
             payload.push(',');
         }

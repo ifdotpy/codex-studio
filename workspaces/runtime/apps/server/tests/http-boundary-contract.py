@@ -6,6 +6,7 @@ from __future__ import annotations
 _clock = __import__("time")
 _module_import_started = _clock.monotonic()
 
+import base64
 import json
 import os
 import os
@@ -51,7 +52,7 @@ def create_backend(test_case: type[unittest.TestCase]) -> BackendProcess:
     test_case.addClassCleanup(record_ready_times, backend)
     test_case.addClassCleanup(backend.close)
     phase_started = time.monotonic()
-    backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
+    seed_catalog_state(backend)
     backend.class_setup_phases["fakeProviderSetupSeconds"] = round(
         time.monotonic() - phase_started, 4)
     phase_started = time.monotonic()
@@ -435,6 +436,43 @@ class RestartContractTests(TimedBoundaryTest):
         self.assertIn("Recovered output.", json.dumps(transcript.json()))
         methods = [frame.get("method") for frame in backend.received_provider_frames()]
         self.assertIn("turn/start", methods)
+
+    def test_accounts_returns_the_rust_catalog_registry_snapshot(self) -> None:
+        response = self.backend.request("GET", "/api/accounts")
+        assert_status(response, 200)
+        self.assertEqual(response.json()["accounts"][0]["status"], "ready")
+
+
+def seed_catalog_state(backend: BackendProcess) -> None:
+    backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
+    claims = base64.urlsafe_b64encode(json.dumps({
+        "https://api.openai.com/auth": {"chatgpt_account_id": "fixture-account"},
+    }).encode()).rstrip(b"=").decode()
+    (backend.codex_home / "auth.json").write_text(json.dumps({
+        "tokens": {
+            "account_id": "fixture-account",
+            "access_token": f"e30.{claims}.fixture-signature",
+        },
+    }), encoding="utf-8")
+    from unittest.mock import patch
+    from codex_runtime import Runtime
+    with patch.dict(os.environ, backend._environment()):
+        runtime = Runtime(backend.state)
+        runtime.close()
+    accounts = backend.state / "accounts"
+    accounts.mkdir(parents=True, exist_ok=True)
+    (accounts / "registry.json").write_text(json.dumps({
+        "version": 1,
+        "defaultAccountKey": "default",
+        "accounts": {
+            "default": {
+                "id": "default", "home": str(backend.codex_home), "label": "Codex",
+                "source": "Codex CLI", "provider": "codex", "accountId": "fixture-account",
+                "status": "ready",
+            },
+        },
+        "logins": {},
+    }), encoding="utf-8")
 
 
 if __name__ == "__main__":
