@@ -231,11 +231,31 @@ export function useSnapshot() {
   );
   useEffect(() => {
     let stopped = false;
+    let failures = 0;
+    let retry: ReturnType<typeof setTimeout> | undefined;
     const initialize = async () => {
+      let storage: Awaited<ReturnType<typeof syncDatabase>>;
       try {
-        const storage = await syncDatabase();
+        storage = await syncDatabase();
+      } catch (error) {
         if (stopped) return;
-        setWorkspaceId(storage.workspaceId);
+        dispatchProjectionStatus({
+          type: "startup-failed",
+          error: isProjectionDatabaseClosedError(error)
+            ? PROJECTION_DATABASE_RELOAD_MESSAGE
+            : errorText(error),
+        });
+        // Attachments and drafts need the workspace identity. Without a retry, one
+        // failed read at startup kept them refused until the window restarted.
+        retry = setTimeout(
+          () => void initialize(),
+          Math.min(500 * 2 ** Math.min(failures++, 4), 8000),
+        );
+        return;
+      }
+      if (stopped) return;
+      setWorkspaceId(storage.workspaceId);
+      try {
         await refresh(true);
       } catch (error) {
         if (stopped) return;
@@ -258,6 +278,7 @@ export function useSnapshot() {
     void initialize();
     return () => {
       stopped = true;
+      clearTimeout(retry);
       generation.current++;
       clearTimeout(credentialRetry.current);
       credentialRetry.current = undefined;
