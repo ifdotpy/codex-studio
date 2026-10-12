@@ -277,7 +277,7 @@ fn refuse_remote(agent: &AgentRecord) -> Result<(), EventWriteError> {
     Ok(())
 }
 
-fn enqueue_event(
+pub fn enqueue_event(
     transaction: &Transaction<'_>,
     agent: &AgentRecord,
     id: String,
