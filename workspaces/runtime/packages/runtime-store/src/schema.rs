@@ -1,41 +1,94 @@
 use std::path::Path;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, functions::FunctionFlags, params};
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{StoreError, StoreResult};
 
+#[cfg(test)]
 const SCHEMA_SNAPSHOT: &str =
     include_str!("../../../apps/server/tests/fixtures/runtime-state-schema.json");
 
 pub(crate) fn verify(canvas_path: &Path, analytics_path: &Path) -> StoreResult<()> {
-    let expected: Value = serde_json::from_str(SCHEMA_SNAPSHOT)?;
     let canvas = open_read_only(canvas_path)?;
     let analytics = open_read_only(analytics_path)?;
-    let actual = json!({
-        "canvas.sqlite3": database_snapshot(&canvas)?,
-        "analytics.sqlite3": database_snapshot(&analytics)?,
-        "pragmas": {
-            "main": connection_pragmas(&canvas)?,
-            "analytics": connection_pragmas(&analytics)?,
+    for requirements in crate::repositories::REQUIREMENTS {
+        for table in requirements.tables {
+            require_columns(&canvas, "canvas.sqlite3", table.name, table.columns)?;
         }
-    });
-
-    for database in ["canvas.sqlite3", "analytics.sqlite3"] {
-        if expected.get(database) != actual.get(database) {
-            return Err(StoreError::SchemaMismatch(format!(
-                "{database} sqlite_master rows, user_version, or migration markers differ"
-            )));
+        for trigger in requirements.triggers {
+            require_trigger(&canvas, "canvas.sqlite3", trigger.name, trigger.table)?;
+        }
+        for function in requirements.connection_functions {
+            if !SUPPORTED_CONNECTION_FUNCTIONS.contains(function) {
+                return Err(object_mismatch(
+                    "canvas.sqlite3",
+                    function,
+                    "repository requires an unregistered connection-local SQL function",
+                ));
+            }
+        }
+        for conditional in requirements.conditional_triggers {
+            if table_exists(&canvas, conditional.table_exists)? {
+                for trigger in conditional.triggers {
+                    require_trigger(&canvas, "canvas.sqlite3", trigger.name, trigger.table)?;
+                }
+            }
         }
     }
-    if expected.get("pragmas") != actual.get("pragmas") {
-        return Err(StoreError::SchemaMismatch(
-            "database journal or synchronous pragma differs".to_owned(),
-        ));
+    verify_payload_migration(&canvas)?;
+    verify_analytics_migration(&canvas, &analytics)?;
+
+    for (database, connection) in [
+        ("canvas.sqlite3", &canvas),
+        ("analytics.sqlite3", &analytics),
+    ] {
+        let (journal, synchronous) = connection_pragmas(connection)?;
+        if journal != "wal" {
+            return Err(object_mismatch(
+                database,
+                "PRAGMA journal_mode",
+                "expected WAL",
+            ));
+        }
+        if synchronous != 2 {
+            return Err(object_mismatch(
+                database,
+                "PRAGMA synchronous",
+                "expected FULL (2)",
+            ));
+        }
     }
     Ok(())
 }
+
+#[derive(Clone, Copy)]
+pub(crate) struct TableRequirement {
+    pub name: &'static str,
+    pub columns: &'static [&'static str],
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct TriggerRequirement {
+    pub name: &'static str,
+    pub table: &'static str,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ConditionalTriggerRequirement {
+    pub table_exists: &'static str,
+    pub triggers: &'static [TriggerRequirement],
+}
+
+pub(crate) struct SchemaRequirements {
+    pub tables: &'static [TableRequirement],
+    pub triggers: &'static [TriggerRequirement],
+    pub conditional_triggers: &'static [ConditionalTriggerRequirement],
+    pub connection_functions: &'static [&'static str],
+}
+
+const SUPPORTED_CONNECTION_FUNCTIONS: &[&str] = &["sync_entity_payload", "sync_entity_hash"];
 
 pub(crate) fn register_python_trigger_functions(connection: &Connection) -> StoreResult<()> {
     connection.create_scalar_function(
@@ -209,62 +262,180 @@ fn open_read_only(path: &Path) -> StoreResult<Connection> {
     )?)
 }
 
-fn database_snapshot(connection: &Connection) -> StoreResult<Value> {
-    let mut objects = connection.prepare(
-        "SELECT type, name, tbl_name, sql FROM sqlite_master \
-         WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
-    )?;
-    let sqlite_master = objects
-        .query_map([], |row| {
-            Ok(json!({
-                "type": row.get::<_, String>(0)?,
-                "name": row.get::<_, String>(1)?,
-                "table": row.get::<_, String>(2)?,
-                "sql": row.get::<_, Option<String>>(3)?,
-            }))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    let user_version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    let payload_migrations = if has_table(connection, "runtime_payload_migrations")? {
-        let mut statement = connection.prepare(
-            "SELECT name, cursor, complete, status FROM runtime_payload_migrations ORDER BY name",
-        )?;
-        statement
-            .query_map([], |row| {
-                Ok(json!({
-                    "name": row.get::<_, String>(0)?,
-                    "cursor": row.get::<_, i64>(1)?,
-                    "complete": row.get::<_, i64>(2)?,
-                    "status": row.get::<_, String>(3)?,
-                }))
-            })?
-            .collect::<Result<Vec<_>, _>>()?
-    } else {
-        Vec::new()
-    };
-    let file_migration = if has_table(connection, "analytics_meta")? {
-        connection
-            .query_row(
-                "SELECT value FROM analytics_meta WHERE key='fileMigrationV1'",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .map(|value| serde_json::from_str::<Value>(&value))
-            .transpose()?
-            .map_or_else(Vec::new, |value| vec![value])
-    } else {
-        Vec::new()
-    };
-    Ok(json!({
-        "pragma_user_version": user_version,
-        "payload_migrations": payload_migrations,
-        "file_migration_v1": file_migration,
-        "sqlite_master": sqlite_master,
-    }))
+fn require_columns(
+    connection: &Connection,
+    database: &str,
+    object: &str,
+    required: &[&str],
+) -> StoreResult<()> {
+    if !table_exists(connection, object)? {
+        return Err(object_mismatch(
+            database,
+            object,
+            "required table is missing",
+        ));
+    }
+    let columns = table_columns(connection, object)?;
+    if let Some(missing) = required.iter().find(|column| !columns.contains(**column)) {
+        return Err(object_mismatch(
+            database,
+            object,
+            &format!("required column {missing} is missing"),
+        ));
+    }
+    Ok(())
 }
 
-fn has_table(connection: &Connection, name: &str) -> StoreResult<bool> {
+fn require_trigger(
+    connection: &Connection,
+    database: &str,
+    trigger: &str,
+    table: &str,
+) -> StoreResult<()> {
+    let exists: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?1 AND tbl_name=?2)",
+        params![trigger, table],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        return Err(object_mismatch(
+            database,
+            trigger,
+            "required trigger is missing",
+        ));
+    }
+    Ok(())
+}
+
+fn object_mismatch(database: &str, object: &str, reason: &str) -> StoreError {
+    StoreError::SchemaObjectMismatch {
+        database: database.to_owned(),
+        object: object.to_owned(),
+        reason: reason.to_owned(),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PayloadMigrationState {
+    NotStarted,
+    InProgress,
+    Complete,
+}
+
+fn verify_payload_migration(connection: &Connection) -> StoreResult<PayloadMigrationState> {
+    if !table_exists(connection, "runtime_payload_migrations")? {
+        return Ok(PayloadMigrationState::NotStarted);
+    }
+    require_columns(
+        connection,
+        "canvas.sqlite3",
+        "runtime_payload_migrations",
+        &["name", "cursor", "complete"],
+    )?;
+    let columns = table_columns(connection, "runtime_payload_migrations")?;
+    let has_status = columns.contains("status");
+    let select = if has_status {
+        "SELECT cursor,complete,status FROM runtime_payload_migrations WHERE name='payload-v1:tasks'"
+    } else {
+        "SELECT cursor,complete,NULL FROM runtime_payload_migrations WHERE name='payload-v1:tasks'"
+    };
+    let marker = connection
+        .query_row(select, [], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .optional()?;
+    let Some((cursor, complete, status)) = marker else {
+        return Ok(PayloadMigrationState::NotStarted);
+    };
+    if cursor < 0 || !matches!(complete, 0 | 1) {
+        return Err(object_mismatch(
+            "canvas.sqlite3",
+            "runtime_payload_migrations.payload-v1:tasks",
+            "marker has invalid cursor or complete value",
+        ));
+    }
+    if complete == 1 {
+        if has_status && status.as_deref() != Some("complete") {
+            return Err(object_mismatch(
+                "canvas.sqlite3",
+                "runtime_payload_migrations.payload-v1:tasks",
+                "complete marker has a non-complete status",
+            ));
+        }
+        Ok(PayloadMigrationState::Complete)
+    } else {
+        if has_status
+            && !matches!(
+                status.as_deref(),
+                Some("pending" | "running" | "waitingForSpace" | "error")
+            )
+        {
+            return Err(object_mismatch(
+                "canvas.sqlite3",
+                "runtime_payload_migrations.payload-v1:tasks",
+                "incomplete marker has an unknown status",
+            ));
+        }
+        Ok(PayloadMigrationState::InProgress)
+    }
+}
+
+fn verify_analytics_migration(canvas: &Connection, analytics: &Connection) -> StoreResult<()> {
+    let legacy_analytics_table: Option<String> = canvas
+        .query_row(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name GLOB 'analytics_*' LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(table) = legacy_analytics_table {
+        return Err(object_mismatch(
+            "canvas.sqlite3",
+            &table,
+            "legacy analytics table remains in canvas during file migration",
+        ));
+    }
+    if !table_exists(analytics, "analytics_meta")? {
+        return Ok(());
+    }
+    require_columns(
+        analytics,
+        "analytics.sqlite3",
+        "analytics_meta",
+        &["key", "value"],
+    )?;
+    let marker = analytics
+        .query_row(
+            "SELECT value FROM analytics_meta WHERE key='fileMigrationV1'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let Some(marker) = marker else {
+        return Ok(());
+    };
+    let decoded: Value = serde_json::from_str(&marker).map_err(|error| {
+        object_mismatch(
+            "analytics.sqlite3",
+            "analytics_meta.fileMigrationV1",
+            &format!("marker is invalid JSON: {error}"),
+        )
+    })?;
+    if decoded.get("phase").and_then(Value::as_str) != Some("complete") {
+        return Err(object_mismatch(
+            "analytics.sqlite3",
+            "analytics_meta.fileMigrationV1",
+            "file migration is not complete",
+        ));
+    }
+    Ok(())
+}
+
+fn table_exists(connection: &Connection, name: &str) -> StoreResult<bool> {
     Ok(connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
         params![name],
@@ -272,18 +443,29 @@ fn has_table(connection: &Connection, name: &str) -> StoreResult<bool> {
     )?)
 }
 
-fn connection_pragmas(connection: &Connection) -> StoreResult<Value> {
+fn table_columns(
+    connection: &Connection,
+    table: &str,
+) -> StoreResult<std::collections::HashSet<String>> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info(\"{table}\")"))?;
+    Ok(statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<std::collections::HashSet<_>, _>>()?)
+}
+
+fn connection_pragmas(connection: &Connection) -> StoreResult<(String, i64)> {
     let journal_mode: String = connection.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
     let synchronous: i64 = connection.query_row("PRAGMA synchronous", [], |row| row.get(0))?;
-    Ok(json!({
-        "journal_mode": journal_mode,
-        "synchronous": synchronous,
-    }))
+    Ok((journal_mode, synchronous))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{SCHEMA_SNAPSHOT, event_payload, python_float_json};
+    use super::{
+        PayloadMigrationState, SCHEMA_SNAPSHOT, event_payload, python_float_json,
+        verify_payload_migration,
+    };
+    use rusqlite::Connection;
     use serde_json::Value;
 
     #[test]
@@ -301,6 +483,44 @@ mod tests {
         );
         assert_eq!(snapshot["pragmas"]["main"]["journal_mode"], "wal");
         assert_eq!(snapshot["pragmas"]["analytics"]["synchronous"], 2);
+    }
+
+    #[test]
+    fn absent_in_progress_and_complete_payload_markers_are_distinct() {
+        let db = Connection::open_in_memory().expect("in-memory SQLite opens");
+        assert_eq!(
+            verify_payload_migration(&db).expect("absent marker is accepted"),
+            PayloadMigrationState::NotStarted
+        );
+        db.execute_batch(
+            "CREATE TABLE runtime_payload_migrations(name TEXT PRIMARY KEY,cursor INTEGER NOT NULL,complete INTEGER NOT NULL,status TEXT);
+             INSERT INTO runtime_payload_migrations VALUES('payload-v1:tasks',7,0,'waitingForSpace');",
+        )
+        .expect("in-progress marker inserts");
+        assert_eq!(
+            verify_payload_migration(&db).expect("in-progress marker is accepted"),
+            PayloadMigrationState::InProgress
+        );
+        db.execute(
+            "UPDATE runtime_payload_migrations SET complete=1,status='complete' WHERE name='payload-v1:tasks'",
+            [],
+        )
+        .expect("complete marker updates");
+        assert_eq!(
+            verify_payload_migration(&db).expect("complete marker is accepted"),
+            PayloadMigrationState::Complete
+        );
+        db.execute(
+            "UPDATE runtime_payload_migrations SET complete=0,status='unknown' WHERE name='payload-v1:tasks'",
+            [],
+        )
+        .expect("malformed marker updates");
+        let error = verify_payload_migration(&db).expect_err("unknown marker state is refused");
+        assert!(matches!(
+            error,
+            crate::StoreError::SchemaObjectMismatch { ref object, .. }
+                if object == "runtime_payload_migrations.payload-v1:tasks"
+        ));
     }
 
     #[test]

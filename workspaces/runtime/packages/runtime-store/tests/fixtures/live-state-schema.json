@@ -1,0 +1,1546 @@
+{
+  "analytics.sqlite3": {
+    "sqlite_master": [
+      {
+        "name": "analytics_agents_root",
+        "sql": "CREATE INDEX analytics_agents_root ON analytics_agents(json_extract(record,'$.rootId'))",
+        "table": "analytics_agents",
+        "type": "index"
+      },
+      {
+        "name": "analytics_cost_changes_revision_v1",
+        "sql": "CREATE INDEX analytics_cost_changes_revision_v1 ON analytics_cost_changes_v1(root,revision)",
+        "table": "analytics_cost_changes_v1",
+        "type": "index"
+      },
+      {
+        "name": "analytics_cost_projection_seq_v1",
+        "sql": "CREATE INDEX analytics_cost_projection_seq_v1 ON analytics_cost_projection_v1(json_extract(packed,'$[0]'))",
+        "table": "analytics_cost_projection_v1",
+        "type": "index"
+      },
+      {
+        "name": "analytics_items_scope",
+        "sql": "CREATE INDEX analytics_items_scope ON analytics_items(agent,at)",
+        "table": "analytics_items",
+        "type": "index"
+      },
+      {
+        "name": "analytics_items_team",
+        "sql": "CREATE INDEX analytics_items_team ON analytics_items(root,at)",
+        "table": "analytics_items",
+        "type": "index"
+      },
+      {
+        "name": "analytics_items_tool",
+        "sql": "CREATE INDEX analytics_items_tool ON analytics_items(name,at)",
+        "table": "analytics_items",
+        "type": "index"
+      },
+      {
+        "name": "analytics_turns_scope",
+        "sql": "CREATE INDEX analytics_turns_scope ON analytics_turns(agent,at)",
+        "table": "analytics_turns",
+        "type": "index"
+      },
+      {
+        "name": "analytics_usage_migration",
+        "sql": "CREATE INDEX analytics_usage_migration ON analytics_usage(agent,seq)",
+        "table": "analytics_usage",
+        "type": "index"
+      },
+      {
+        "name": "analytics_usage_response",
+        "sql": "CREATE INDEX analytics_usage_response ON analytics_usage(agent,thread,json_extract(record,'$.responseId'))",
+        "table": "analytics_usage",
+        "type": "index"
+      },
+      {
+        "name": "analytics_usage_root_seq",
+        "sql": "CREATE INDEX analytics_usage_root_seq ON analytics_usage(root,seq)",
+        "table": "analytics_usage",
+        "type": "index"
+      },
+      {
+        "name": "analytics_usage_scope",
+        "sql": "CREATE INDEX analytics_usage_scope ON analytics_usage(agent,at)",
+        "table": "analytics_usage",
+        "type": "index"
+      },
+      {
+        "name": "analytics_usage_team",
+        "sql": "CREATE INDEX analytics_usage_team ON analytics_usage(root,at)",
+        "table": "analytics_usage",
+        "type": "index"
+      },
+      {
+        "name": "analytics_usage_thread",
+        "sql": "CREATE INDEX analytics_usage_thread ON analytics_usage(agent,thread,seq)",
+        "table": "analytics_usage",
+        "type": "index"
+      },
+      {
+        "name": "analytics_agents",
+        "sql": "CREATE TABLE analytics_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "analytics_agents",
+        "type": "table"
+      },
+      {
+        "name": "analytics_cost_changes_v1",
+        "sql": "CREATE TABLE analytics_cost_changes_v1 (\n        root TEXT NOT NULL,id TEXT NOT NULL,revision INTEGER NOT NULL,PRIMARY KEY(root,id))",
+        "table": "analytics_cost_changes_v1",
+        "type": "table"
+      },
+      {
+        "name": "analytics_cost_projection_v1",
+        "sql": "CREATE TABLE analytics_cost_projection_v1 (id TEXT PRIMARY KEY,root TEXT,packed TEXT NOT NULL)",
+        "table": "analytics_cost_projection_v1",
+        "type": "table"
+      },
+      {
+        "name": "analytics_cost_roots_v1",
+        "sql": "CREATE TABLE analytics_cost_roots_v1 (\n        root TEXT PRIMARY KEY,revision INTEGER NOT NULL,floor INTEGER NOT NULL)",
+        "table": "analytics_cost_roots_v1",
+        "type": "table"
+      },
+      {
+        "name": "analytics_cost_state_v1",
+        "sql": "CREATE TABLE analytics_cost_state_v1 (\n        singleton INTEGER PRIMARY KEY CHECK(singleton=1), token TEXT NOT NULL)",
+        "table": "analytics_cost_state_v1",
+        "type": "table"
+      },
+      {
+        "name": "analytics_history",
+        "sql": "CREATE TABLE analytics_history (id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL)",
+        "table": "analytics_history",
+        "type": "table"
+      },
+      {
+        "name": "analytics_items",
+        "sql": "CREATE TABLE analytics_items (\n            id TEXT PRIMARY KEY, agent TEXT NOT NULL, root TEXT, thread TEXT, turn TEXT,\n            at REAL NOT NULL, type TEXT, name TEXT, is_tool INTEGER NOT NULL, record TEXT NOT NULL)",
+        "table": "analytics_items",
+        "type": "table"
+      },
+      {
+        "name": "analytics_limits",
+        "sql": "CREATE TABLE analytics_limits (\n            id INTEGER PRIMARY KEY AUTOINCREMENT, account TEXT NOT NULL, at REAL NOT NULL, record TEXT NOT NULL)",
+        "table": "analytics_limits",
+        "type": "table"
+      },
+      {
+        "name": "analytics_meta",
+        "sql": "CREATE TABLE analytics_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        "table": "analytics_meta",
+        "type": "table"
+      },
+      {
+        "name": "analytics_notifications",
+        "sql": "CREATE TABLE analytics_notifications (\n            id TEXT PRIMARY KEY, agent TEXT, root TEXT, method TEXT, hour INTEGER,\n            count INTEGER NOT NULL, bytes INTEGER NOT NULL)",
+        "table": "analytics_notifications",
+        "type": "table"
+      },
+      {
+        "name": "analytics_turns",
+        "sql": "CREATE TABLE analytics_turns (\n            id TEXT PRIMARY KEY, agent TEXT NOT NULL, root TEXT, at REAL NOT NULL, record TEXT NOT NULL)",
+        "table": "analytics_turns",
+        "type": "table"
+      },
+      {
+        "name": "analytics_usage",
+        "sql": "CREATE TABLE analytics_usage (\n            seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,\n            agent TEXT NOT NULL, root TEXT, thread TEXT, turn TEXT, at REAL NOT NULL, record TEXT NOT NULL)",
+        "table": "analytics_usage",
+        "type": "table"
+      },
+      {
+        "name": "analytics_usage_roots",
+        "sql": "CREATE TABLE analytics_usage_roots (root TEXT PRIMARY KEY, generation INTEGER NOT NULL)",
+        "table": "analytics_usage_roots",
+        "type": "table"
+      },
+      {
+        "name": "analytics_cost_projection_delete_v1",
+        "sql": "CREATE TRIGGER analytics_cost_projection_delete_v1 AFTER DELETE ON analytics_cost_projection_v1 BEGIN INSERT INTO analytics_cost_roots_v1 SELECT OLD.root,1,0 WHERE OLD.root IS NOT NULL ON CONFLICT(root) DO UPDATE SET revision=revision+1,floor=MAX(0,revision+1-8192); INSERT INTO analytics_cost_changes_v1 SELECT root,OLD.id,revision FROM analytics_cost_roots_v1 WHERE root IS OLD.root AND OLD.root IS NOT NULL ON CONFLICT(root,id) DO UPDATE SET revision=excluded.revision; DELETE FROM analytics_cost_changes_v1 WHERE root IS OLD.root AND OLD.root IS NOT NULL AND revision<=(SELECT floor FROM analytics_cost_roots_v1 WHERE root IS OLD.root); END",
+        "table": "analytics_cost_projection_v1",
+        "type": "trigger"
+      },
+      {
+        "name": "analytics_cost_projection_insert_v1",
+        "sql": "CREATE TRIGGER analytics_cost_projection_insert_v1 AFTER INSERT ON analytics_cost_projection_v1 BEGIN INSERT INTO analytics_cost_roots_v1 SELECT NEW.root,1,0 WHERE NEW.root IS NOT NULL ON CONFLICT(root) DO UPDATE SET revision=revision+1,floor=MAX(0,revision+1-8192); INSERT INTO analytics_cost_changes_v1 SELECT root,NEW.id,revision FROM analytics_cost_roots_v1 WHERE root IS NEW.root AND NEW.root IS NOT NULL ON CONFLICT(root,id) DO UPDATE SET revision=excluded.revision; DELETE FROM analytics_cost_changes_v1 WHERE root IS NEW.root AND NEW.root IS NOT NULL AND revision<=(SELECT floor FROM analytics_cost_roots_v1 WHERE root IS NEW.root); END",
+        "table": "analytics_cost_projection_v1",
+        "type": "trigger"
+      },
+      {
+        "name": "analytics_cost_projection_update_v1",
+        "sql": "CREATE TRIGGER analytics_cost_projection_update_v1 AFTER UPDATE ON analytics_cost_projection_v1 BEGIN INSERT INTO analytics_cost_roots_v1 SELECT NEW.root,1,0 WHERE NEW.root IS NOT NULL ON CONFLICT(root) DO UPDATE SET revision=revision+1,floor=MAX(0,revision+1-8192); INSERT INTO analytics_cost_changes_v1 SELECT root,NEW.id,revision FROM analytics_cost_roots_v1 WHERE root IS NEW.root AND NEW.root IS NOT NULL ON CONFLICT(root,id) DO UPDATE SET revision=excluded.revision; DELETE FROM analytics_cost_changes_v1 WHERE root IS NEW.root AND NEW.root IS NOT NULL AND revision<=(SELECT floor FROM analytics_cost_roots_v1 WHERE root IS NEW.root); INSERT INTO analytics_cost_roots_v1 SELECT OLD.root,1,0 WHERE OLD.root IS NOT NULL AND OLD.root IS NOT NEW.root ON CONFLICT(root) DO UPDATE SET revision=revision+1,floor=MAX(0,revision+1-8192); INSERT INTO analytics_cost_changes_v1 SELECT root,OLD.id,revision FROM analytics_cost_roots_v1 WHERE root IS OLD.root AND OLD.root IS NOT NULL AND OLD.root IS NOT NEW.root ON CONFLICT(root,id) DO UPDATE SET revision=excluded.revision; DELETE FROM analytics_cost_changes_v1 WHERE root IS OLD.root AND OLD.root IS NOT NULL AND OLD.root IS NOT NEW.root AND revision<=(SELECT floor FROM analytics_cost_roots_v1 WHERE root IS OLD.root); END",
+        "table": "analytics_cost_projection_v1",
+        "type": "trigger"
+      },
+      {
+        "name": "analytics_cost_usage_before_delete_v1",
+        "sql": "CREATE TRIGGER analytics_cost_usage_before_delete_v1 BEFORE DELETE ON analytics_usage BEGIN INSERT INTO analytics_cost_projection_v1 SELECT OLD.id,OLD.root,(WITH cost_raw AS MATERIALIZED (SELECT jsonb(OLD.record) AS cost_document) SELECT json_array(OLD.seq,OLD.agent,OLD.thread,OLD.turn,OLD.at,CASE WHEN json_type(cost_document,'$.agentId') IN ('array','object') THEN json_extract(OLD.record,'$.agentId') || '' ELSE json_extract(cost_document,'$.agentId') END,CASE WHEN json_type(cost_document,'$.threadId') IN ('array','object') THEN json_extract(OLD.record,'$.threadId') || '' ELSE json_extract(cost_document,'$.threadId') END,CASE WHEN json_type(cost_document,'$.turnId') IN ('array','object') THEN json_extract(OLD.record,'$.turnId') || '' ELSE json_extract(cost_document,'$.turnId') END,CASE WHEN json_type(cost_document,'$.responseId') IS NULL OR json_type(cost_document,'$.responseId') IN ('null','false') OR (json_type(cost_document,'$.responseId') IN ('integer','real') AND json_extract(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='text' AND json_extract(cost_document,'$.responseId')='') OR (json_type(cost_document,'$.responseId')='array' AND json_array_length(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='object' AND NOT EXISTS (SELECT 1 FROM json_each(cost_document,'$.responseId'))) THEN 0 ELSE 1 END,CASE WHEN json_type(cost_document,'$.model')='text' THEN json_extract(cost_document,'$.model') END,COALESCE(CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(OLD.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,'default'),CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.inputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.inputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cachedInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cachedInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cacheWriteInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cacheWriteInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.outputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.outputTokens') END END,CASE WHEN json_extract(cost_document,'$.inputTokensAreUncached')=1 THEN 1 ELSE 0 END,CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(OLD.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,CASE WHEN json_type(cost_document,'$.responseId') IN ('array','object') THEN json_extract(OLD.record,'$.responseId') || '' ELSE json_extract(cost_document,'$.responseId') END) FROM cost_raw) WHERE NOT EXISTS (SELECT 1 FROM analytics_cost_projection_v1 WHERE id=OLD.id); END",
+        "table": "analytics_usage",
+        "type": "trigger"
+      },
+      {
+        "name": "analytics_cost_usage_before_insert_v1",
+        "sql": "CREATE TRIGGER analytics_cost_usage_before_insert_v1 BEFORE INSERT ON analytics_usage BEGIN INSERT INTO analytics_cost_projection_v1 SELECT u.id,u.root,(WITH cost_raw AS MATERIALIZED (SELECT jsonb(u.record) AS cost_document) SELECT json_array(u.seq,u.agent,u.thread,u.turn,u.at,CASE WHEN json_type(cost_document,'$.agentId') IN ('array','object') THEN json_extract(u.record,'$.agentId') || '' ELSE json_extract(cost_document,'$.agentId') END,CASE WHEN json_type(cost_document,'$.threadId') IN ('array','object') THEN json_extract(u.record,'$.threadId') || '' ELSE json_extract(cost_document,'$.threadId') END,CASE WHEN json_type(cost_document,'$.turnId') IN ('array','object') THEN json_extract(u.record,'$.turnId') || '' ELSE json_extract(cost_document,'$.turnId') END,CASE WHEN json_type(cost_document,'$.responseId') IS NULL OR json_type(cost_document,'$.responseId') IN ('null','false') OR (json_type(cost_document,'$.responseId') IN ('integer','real') AND json_extract(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='text' AND json_extract(cost_document,'$.responseId')='') OR (json_type(cost_document,'$.responseId')='array' AND json_array_length(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='object' AND NOT EXISTS (SELECT 1 FROM json_each(cost_document,'$.responseId'))) THEN 0 ELSE 1 END,CASE WHEN json_type(cost_document,'$.model')='text' THEN json_extract(cost_document,'$.model') END,COALESCE(CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(u.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,'default'),CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.inputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.inputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cachedInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cachedInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cacheWriteInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cacheWriteInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.outputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.outputTokens') END END,CASE WHEN json_extract(cost_document,'$.inputTokensAreUncached')=1 THEN 1 ELSE 0 END,CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(u.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,CASE WHEN json_type(cost_document,'$.responseId') IN ('array','object') THEN json_extract(u.record,'$.responseId') || '' ELSE json_extract(cost_document,'$.responseId') END) FROM cost_raw) FROM analytics_usage u WHERE (u.seq=NEW.seq OR u.id=NEW.id) AND NOT EXISTS (SELECT 1 FROM analytics_cost_projection_v1 WHERE id=u.id); END",
+        "table": "analytics_usage",
+        "type": "trigger"
+      },
+      {
+        "name": "analytics_cost_usage_before_update_v1",
+        "sql": "CREATE TRIGGER analytics_cost_usage_before_update_v1 BEFORE UPDATE ON analytics_usage BEGIN INSERT INTO analytics_cost_projection_v1 SELECT OLD.id,OLD.root,(WITH cost_raw AS MATERIALIZED (SELECT jsonb(OLD.record) AS cost_document) SELECT json_array(OLD.seq,OLD.agent,OLD.thread,OLD.turn,OLD.at,CASE WHEN json_type(cost_document,'$.agentId') IN ('array','object') THEN json_extract(OLD.record,'$.agentId') || '' ELSE json_extract(cost_document,'$.agentId') END,CASE WHEN json_type(cost_document,'$.threadId') IN ('array','object') THEN json_extract(OLD.record,'$.threadId') || '' ELSE json_extract(cost_document,'$.threadId') END,CASE WHEN json_type(cost_document,'$.turnId') IN ('array','object') THEN json_extract(OLD.record,'$.turnId') || '' ELSE json_extract(cost_document,'$.turnId') END,CASE WHEN json_type(cost_document,'$.responseId') IS NULL OR json_type(cost_document,'$.responseId') IN ('null','false') OR (json_type(cost_document,'$.responseId') IN ('integer','real') AND json_extract(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='text' AND json_extract(cost_document,'$.responseId')='') OR (json_type(cost_document,'$.responseId')='array' AND json_array_length(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='object' AND NOT EXISTS (SELECT 1 FROM json_each(cost_document,'$.responseId'))) THEN 0 ELSE 1 END,CASE WHEN json_type(cost_document,'$.model')='text' THEN json_extract(cost_document,'$.model') END,COALESCE(CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(OLD.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,'default'),CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.inputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.inputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cachedInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cachedInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cacheWriteInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cacheWriteInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.outputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.outputTokens') END END,CASE WHEN json_extract(cost_document,'$.inputTokensAreUncached')=1 THEN 1 ELSE 0 END,CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(OLD.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,CASE WHEN json_type(cost_document,'$.responseId') IN ('array','object') THEN json_extract(OLD.record,'$.responseId') || '' ELSE json_extract(cost_document,'$.responseId') END) FROM cost_raw) WHERE NOT EXISTS (SELECT 1 FROM analytics_cost_projection_v1 WHERE id=OLD.id); END",
+        "table": "analytics_usage",
+        "type": "trigger"
+      },
+      {
+        "name": "analytics_cost_usage_delete_v1",
+        "sql": "CREATE TRIGGER analytics_cost_usage_delete_v1 AFTER DELETE ON analytics_usage BEGIN DELETE FROM analytics_cost_projection_v1 WHERE id=OLD.id; END",
+        "table": "analytics_usage",
+        "type": "trigger"
+      },
+      {
+        "name": "analytics_cost_usage_insert_v1",
+        "sql": "CREATE TRIGGER analytics_cost_usage_insert_v1 AFTER INSERT ON analytics_usage BEGIN DELETE FROM analytics_cost_projection_v1 WHERE json_extract(packed,'$[0]')=+NEW.seq AND id IS NOT NEW.id; INSERT INTO analytics_cost_projection_v1 VALUES (NEW.id,NEW.root,(WITH cost_raw AS MATERIALIZED (SELECT jsonb(NEW.record) AS cost_document) SELECT json_array(NEW.seq,NEW.agent,NEW.thread,NEW.turn,NEW.at,CASE WHEN json_type(cost_document,'$.agentId') IN ('array','object') THEN json_extract(NEW.record,'$.agentId') || '' ELSE json_extract(cost_document,'$.agentId') END,CASE WHEN json_type(cost_document,'$.threadId') IN ('array','object') THEN json_extract(NEW.record,'$.threadId') || '' ELSE json_extract(cost_document,'$.threadId') END,CASE WHEN json_type(cost_document,'$.turnId') IN ('array','object') THEN json_extract(NEW.record,'$.turnId') || '' ELSE json_extract(cost_document,'$.turnId') END,CASE WHEN json_type(cost_document,'$.responseId') IS NULL OR json_type(cost_document,'$.responseId') IN ('null','false') OR (json_type(cost_document,'$.responseId') IN ('integer','real') AND json_extract(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='text' AND json_extract(cost_document,'$.responseId')='') OR (json_type(cost_document,'$.responseId')='array' AND json_array_length(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='object' AND NOT EXISTS (SELECT 1 FROM json_each(cost_document,'$.responseId'))) THEN 0 ELSE 1 END,CASE WHEN json_type(cost_document,'$.model')='text' THEN json_extract(cost_document,'$.model') END,COALESCE(CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(NEW.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,'default'),CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.inputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.inputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cachedInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cachedInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cacheWriteInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cacheWriteInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.outputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.outputTokens') END END,CASE WHEN json_extract(cost_document,'$.inputTokensAreUncached')=1 THEN 1 ELSE 0 END,CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(NEW.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,CASE WHEN json_type(cost_document,'$.responseId') IN ('array','object') THEN json_extract(NEW.record,'$.responseId') || '' ELSE json_extract(cost_document,'$.responseId') END) FROM cost_raw)) ON CONFLICT(id) DO UPDATE SET root=excluded.root,packed=excluded.packed WHERE root IS NOT excluded.root OR packed IS NOT excluded.packed; END",
+        "table": "analytics_usage",
+        "type": "trigger"
+      },
+      {
+        "name": "analytics_cost_usage_update_v1",
+        "sql": "CREATE TRIGGER analytics_cost_usage_update_v1 AFTER UPDATE ON analytics_usage BEGIN DELETE FROM analytics_cost_projection_v1 WHERE json_extract(packed,'$[0]')=+NEW.seq AND id IS NOT NEW.id; DELETE FROM analytics_cost_projection_v1 WHERE id=OLD.id AND OLD.id IS NOT NEW.id; INSERT INTO analytics_cost_projection_v1 VALUES (NEW.id,NEW.root,(WITH cost_raw AS MATERIALIZED (SELECT jsonb(NEW.record) AS cost_document) SELECT json_array(NEW.seq,NEW.agent,NEW.thread,NEW.turn,NEW.at,CASE WHEN json_type(cost_document,'$.agentId') IN ('array','object') THEN json_extract(NEW.record,'$.agentId') || '' ELSE json_extract(cost_document,'$.agentId') END,CASE WHEN json_type(cost_document,'$.threadId') IN ('array','object') THEN json_extract(NEW.record,'$.threadId') || '' ELSE json_extract(cost_document,'$.threadId') END,CASE WHEN json_type(cost_document,'$.turnId') IN ('array','object') THEN json_extract(NEW.record,'$.turnId') || '' ELSE json_extract(cost_document,'$.turnId') END,CASE WHEN json_type(cost_document,'$.responseId') IS NULL OR json_type(cost_document,'$.responseId') IN ('null','false') OR (json_type(cost_document,'$.responseId') IN ('integer','real') AND json_extract(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='text' AND json_extract(cost_document,'$.responseId')='') OR (json_type(cost_document,'$.responseId')='array' AND json_array_length(cost_document,'$.responseId')=0) OR (json_type(cost_document,'$.responseId')='object' AND NOT EXISTS (SELECT 1 FROM json_each(cost_document,'$.responseId'))) THEN 0 ELSE 1 END,CASE WHEN json_type(cost_document,'$.model')='text' THEN json_extract(cost_document,'$.model') END,COALESCE(CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(NEW.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,'default'),CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.inputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.inputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.inputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cachedInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cachedInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cachedInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.cacheWriteInputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.cacheWriteInputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.cacheWriteInputTokens') END END,CASE WHEN json_type(cost_document,'$.delta.inputTokens') IN ('integer','real','true','false') AND json_type(cost_document,'$.delta.outputTokens') IN ('integer','real','true','false') THEN CASE WHEN json_type(cost_document,'$.delta.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.delta.outputTokens') END ELSE CASE WHEN json_type(cost_document,'$.last.outputTokens') IN ('integer','real') THEN json_extract(cost_document,'$.last.outputTokens') END END,CASE WHEN json_extract(cost_document,'$.inputTokensAreUncached')=1 THEN 1 ELSE 0 END,CASE WHEN json_type(cost_document,'$.accountKey') IN ('array','object') THEN json_extract(NEW.record,'$.accountKey') || '' ELSE json_extract(cost_document,'$.accountKey') END,CASE WHEN json_type(cost_document,'$.responseId') IN ('array','object') THEN json_extract(NEW.record,'$.responseId') || '' ELSE json_extract(cost_document,'$.responseId') END) FROM cost_raw)) ON CONFLICT(id) DO UPDATE SET root=excluded.root,packed=excluded.packed WHERE root IS NOT excluded.root OR packed IS NOT excluded.packed; END",
+        "table": "analytics_usage",
+        "type": "trigger"
+      }
+    ]
+  },
+  "canvas.sqlite3": {
+    "sqlite_master": [
+      {
+        "name": "messages_room",
+        "sql": "CREATE INDEX messages_room ON messages(room, at)",
+        "table": "messages",
+        "type": "index"
+      },
+      {
+        "name": "runtime_access_nonce_age",
+        "sql": "CREATE INDEX runtime_access_nonce_age ON runtime_access_nonces(created)",
+        "table": "runtime_access_nonces",
+        "type": "index"
+      },
+      {
+        "name": "runtime_access_outbound_age",
+        "sql": "CREATE INDEX runtime_access_outbound_age\n          ON runtime_access_outbound(json_extract(record,'$.completed'))\n          WHERE json_extract(record,'$.outcome')='complete'",
+        "table": "runtime_access_outbound",
+        "type": "index"
+      },
+      {
+        "name": "runtime_access_receipt_age",
+        "sql": "CREATE INDEX runtime_access_receipt_age\n          ON runtime_access_receipts(json_extract(record,'$.completed')) WHERE status='complete'",
+        "table": "runtime_access_receipts",
+        "type": "index"
+      },
+      {
+        "name": "runtime_account_transfer_status",
+        "sql": "CREATE INDEX runtime_account_transfer_status ON runtime_account_transfers(json_extract(record,'$.status'))",
+        "table": "runtime_account_transfers",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_account_scope",
+        "sql": "CREATE INDEX runtime_agent_account_scope ON runtime_agents(\n                    CASE WHEN json_type(record,'$.accountKey') IS NULL THEN 'default'\n                         ELSE json_extract(record,'$.accountKey') END)",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_capacity_retry_state_due_v2",
+        "sql": "CREATE INDEX runtime_agent_capacity_retry_state_due_v2 ON runtime_agents(\n                    json_extract(record,'$.capacityRetry.status'),\n                    json_extract(record,'$.capacityRetry.dueAt'))",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_dispatch_active",
+        "sql": "CREATE INDEX runtime_agent_dispatch_active ON runtime_agents(json_extract(record,'$.rootId')) WHERE json_extract(record,'$.inFlight')=1 OR json_extract(record,'$.status') IN ('running','starting','approval')",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_dispatch_busy_input",
+        "sql": "CREATE INDEX runtime_agent_dispatch_busy_input ON runtime_agents(json_extract(record,'$.rootId')) WHERE json_extract(record,'$.startAttempt.activeAtReservation')=1",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_dispatch_workspace",
+        "sql": "CREATE INDEX runtime_agent_dispatch_workspace ON runtime_agents(json_extract(record,'$.cwd')) WHERE json_type(record,'$.workspaceOperation')='text' AND json_extract(record,'$.workspaceOperation')!=''",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_global_active",
+        "sql": "CREATE INDEX runtime_agent_global_active ON runtime_agents(\n                    json_extract(record,'$.status')) WHERE json_extract(record,'$.status') IN\n                    ('running','starting','approval')",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_inflight",
+        "sql": "CREATE INDEX runtime_agent_inflight ON runtime_agents(\n                    json_extract(record,'$.inFlight')) WHERE json_extract(record,'$.inFlight')=1",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_live_root",
+        "sql": "CREATE INDEX runtime_agent_live_root ON runtime_agents(\n                    json_extract(record,'$.rootId'),id)\n                    WHERE json_extract(record,'$.deletedAt') IS NULL",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_native_reset_pending",
+        "sql": "CREATE INDEX runtime_agent_native_reset_pending ON runtime_agents(id)\n                    WHERE json_extract(record,'$.nativeRelease.resetPending')=1",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_native_scope",
+        "sql": "CREATE INDEX runtime_agent_native_scope ON runtime_agents(\n                    json_extract(record,'$.threadId'),\n                    CASE WHEN json_type(record,'$.accountKey') IS NULL THEN 'default'\n                         ELSE json_extract(record,'$.accountKey') END)",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_parent",
+        "sql": "CREATE INDEX runtime_agent_parent ON runtime_agents(\n                    json_extract(record,'$.parentId'))",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_reservation_cwd",
+        "sql": "CREATE INDEX runtime_agent_reservation_cwd ON runtime_agents(\n                    json_extract(record,'$.cwd'))\n                    WHERE json_type(record,'$.workspaceOperation')='text'\n                      AND json_extract(record,'$.workspaceOperation')!=''",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_root",
+        "sql": "CREATE INDEX runtime_agent_root ON runtime_agents(\n                    json_extract(record,'$.rootId'))",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_sweep_busy",
+        "sql": "CREATE INDEX runtime_agent_sweep_busy ON runtime_agents(COALESCE(json_extract(record,'$.accountKey'),'default')) WHERE COALESCE(json_extract(record,'$.provider'),'codex')='codex' AND (json_extract(record,'$.contextRepair.phase') IN ('preparing','submitted','unknown','ready') OR COALESCE(json_extract(record,'$.nativeToolRefreshId'),'')!='')",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_agent_sweep_cleanup",
+        "sql": "CREATE INDEX runtime_agent_sweep_cleanup ON runtime_agents(json_extract(record,'$.contextRepair.sourceCleanup.accountKey'),json_extract(record,'$.contextRepair.sourceCleanup.threadId')) WHERE json_extract(record,'$.contextRepair.sourceCleanup.phase') IN ('planned','submitted')",
+        "table": "runtime_agents",
+        "type": "index"
+      },
+      {
+        "name": "runtime_budget_usage_agent",
+        "sql": "CREATE INDEX runtime_budget_usage_agent ON runtime_budget_usage(agent,kind)",
+        "table": "runtime_budget_usage",
+        "type": "index"
+      },
+      {
+        "name": "runtime_chat_room",
+        "sql": "CREATE INDEX runtime_chat_room ON runtime_chat_messages(room, seq)",
+        "table": "runtime_chat_messages",
+        "type": "index"
+      },
+      {
+        "name": "runtime_context_manifest_latest",
+        "sql": "CREATE INDEX runtime_context_manifest_latest\n                  ON runtime_context_manifests(agent,sequence DESC)",
+        "table": "runtime_context_manifests",
+        "type": "index"
+      },
+      {
+        "name": "runtime_conversion_annotations_rootId",
+        "sql": "CREATE INDEX runtime_conversion_annotations_rootId ON runtime_annotations(json_extract(record,'$.rootId')) WHERE json_extract(record,'$.rootId') IS NOT NULL",
+        "table": "runtime_annotations",
+        "type": "index"
+      },
+      {
+        "name": "runtime_conversion_complaints_leadId",
+        "sql": "CREATE INDEX runtime_conversion_complaints_leadId ON runtime_complaints(json_extract(record,'$.leadId')) WHERE json_extract(record,'$.leadId') IS NOT NULL",
+        "table": "runtime_complaints",
+        "type": "index"
+      },
+      {
+        "name": "runtime_conversion_event_meta_leadId",
+        "sql": "CREATE INDEX runtime_conversion_event_meta_leadId ON runtime_event_meta(json_extract(record,'$.leadId')) WHERE json_extract(record,'$.leadId') IS NOT NULL",
+        "table": "runtime_event_meta",
+        "type": "index"
+      },
+      {
+        "name": "runtime_conversion_event_meta_rootId",
+        "sql": "CREATE INDEX runtime_conversion_event_meta_rootId ON runtime_event_meta(json_extract(record,'$.rootId')) WHERE json_extract(record,'$.rootId') IS NOT NULL",
+        "table": "runtime_event_meta",
+        "type": "index"
+      },
+      {
+        "name": "runtime_conversion_plans_rootId",
+        "sql": "CREATE INDEX runtime_conversion_plans_rootId ON runtime_plans(json_extract(record,'$.rootId')) WHERE json_extract(record,'$.rootId') IS NOT NULL",
+        "table": "runtime_plans",
+        "type": "index"
+      },
+      {
+        "name": "runtime_conversion_rules_rootId",
+        "sql": "CREATE INDEX runtime_conversion_rules_rootId ON runtime_rules(json_extract(record,'$.rootId')) WHERE json_extract(record,'$.rootId') IS NOT NULL",
+        "table": "runtime_rules",
+        "type": "index"
+      },
+      {
+        "name": "runtime_event_created_id",
+        "sql": "CREATE INDEX runtime_event_created_id ON runtime_events(created DESC,id)",
+        "table": "runtime_events",
+        "type": "index"
+      },
+      {
+        "name": "runtime_event_queue",
+        "sql": "CREATE INDEX runtime_event_queue ON runtime_events(status, agent, created)",
+        "table": "runtime_events",
+        "type": "index"
+      },
+      {
+        "name": "runtime_event_repair_candidates_v2",
+        "sql": "CREATE INDEX runtime_event_repair_candidates_v2 ON runtime_events(agent,created)\n                  WHERE status='delivered' AND kind IN ('monitor_exit','agent_message','work_review','work_decision')",
+        "table": "runtime_events",
+        "type": "index"
+      },
+      {
+        "name": "runtime_event_user_turns",
+        "sql": "CREATE INDEX runtime_event_user_turns ON runtime_events(agent,kind,status,turn_id)",
+        "table": "runtime_events",
+        "type": "index"
+      },
+      {
+        "name": "runtime_execution_attempt_run",
+        "sql": "CREATE INDEX runtime_execution_attempt_run ON runtime_execution_attempts(run)",
+        "table": "runtime_execution_attempts",
+        "type": "index"
+      },
+      {
+        "name": "runtime_execution_effect_run",
+        "sql": "CREATE INDEX runtime_execution_effect_run ON runtime_execution_effects(run)",
+        "table": "runtime_execution_effects",
+        "type": "index"
+      },
+      {
+        "name": "runtime_execution_input_event",
+        "sql": "CREATE INDEX runtime_execution_input_event ON runtime_execution_inputs(event)",
+        "table": "runtime_execution_inputs",
+        "type": "index"
+      },
+      {
+        "name": "runtime_execution_node_run",
+        "sql": "CREATE INDEX runtime_execution_node_run ON runtime_execution_nodes(run)",
+        "table": "runtime_execution_nodes",
+        "type": "index"
+      },
+      {
+        "name": "runtime_execution_run_agent",
+        "sql": "CREATE INDEX runtime_execution_run_agent ON runtime_execution_runs(agent,created DESC)",
+        "table": "runtime_execution_runs",
+        "type": "index"
+      },
+      {
+        "name": "runtime_execution_run_created",
+        "sql": "CREATE INDEX runtime_execution_run_created ON runtime_execution_runs(created DESC)",
+        "table": "runtime_execution_runs",
+        "type": "index"
+      },
+      {
+        "name": "runtime_execution_run_message",
+        "sql": "CREATE INDEX runtime_execution_run_message ON runtime_execution_runs(agent,thread,turn)",
+        "table": "runtime_execution_runs",
+        "type": "index"
+      },
+      {
+        "name": "runtime_execution_run_native",
+        "sql": "CREATE INDEX runtime_execution_run_native ON runtime_execution_runs(agent,account,thread,turn)",
+        "table": "runtime_execution_runs",
+        "type": "index"
+      },
+      {
+        "name": "runtime_federation_nonce_age",
+        "sql": "CREATE INDEX runtime_federation_nonce_age\n          ON runtime_federation_nonces(created)",
+        "table": "runtime_federation_nonces",
+        "type": "index"
+      },
+      {
+        "name": "runtime_federation_outbox_peer",
+        "sql": "CREATE INDEX runtime_federation_outbox_peer\n          ON runtime_federation_outbox(peer_id)",
+        "table": "runtime_federation_outbox",
+        "type": "index"
+      },
+      {
+        "name": "runtime_item_agent",
+        "sql": "CREATE INDEX runtime_item_agent ON runtime_items(agent, created)",
+        "table": "runtime_items",
+        "type": "index"
+      },
+      {
+        "name": "runtime_item_turn_scope",
+        "sql": "CREATE INDEX runtime_item_turn_scope ON runtime_items(\n                    agent, json_extract(record,'$.turnId'), created)",
+        "table": "runtime_items",
+        "type": "index"
+      },
+      {
+        "name": "runtime_monitor_agent_status",
+        "sql": "CREATE INDEX runtime_monitor_agent_status ON runtime_monitors(\n                    json_extract(record,'$.agent'),json_extract(record,'$.status'))",
+        "table": "runtime_monitors",
+        "type": "index"
+      },
+      {
+        "name": "runtime_monitor_stall_due",
+        "sql": "CREATE INDEX runtime_monitor_stall_due ON runtime_monitors(\n                    COALESCE(json_extract(record,'$.activityAt'),json_extract(record,'$.created'),1e99)+\n                    COALESCE(json_extract(record,'$.stallTimeoutSeconds'),1800))\n                    WHERE json_extract(record,'$.status')='running'",
+        "table": "runtime_monitors",
+        "type": "index"
+      },
+      {
+        "name": "runtime_monitor_status",
+        "sql": "CREATE INDEX runtime_monitor_status ON runtime_monitors(json_extract(record,'$.status'),json_extract(record,'$.created'))",
+        "table": "runtime_monitors",
+        "type": "index"
+      },
+      {
+        "name": "runtime_payload_refs_hash",
+        "sql": "CREATE INDEX runtime_payload_refs_hash ON runtime_payload_refs(sha256)",
+        "table": "runtime_payload_refs",
+        "type": "index"
+      },
+      {
+        "name": "runtime_request_agent_status",
+        "sql": "CREATE INDEX runtime_request_agent_status ON runtime_requests(json_extract(record,'$.agent'),json_extract(record,'$.status'))",
+        "table": "runtime_requests",
+        "type": "index"
+      },
+      {
+        "name": "runtime_request_native_question",
+        "sql": "CREATE INDEX runtime_request_native_question ON runtime_requests(\n                    json_extract(record,'$.agent'),json_extract(record,'$.params.itemId'),\n                    json_extract(record,'$.status'))\n                    WHERE json_valid(record) AND json_extract(record,'$.method')='item/tool/requestUserInput'",
+        "table": "runtime_requests",
+        "type": "index"
+      },
+      {
+        "name": "runtime_room_many_members",
+        "sql": "CREATE INDEX runtime_room_many_members ON runtime_rooms(json_array_length(record,'$.members')) WHERE json_array_length(record,'$.members')>2",
+        "table": "runtime_rooms",
+        "type": "index"
+      },
+      {
+        "name": "runtime_room_member_first",
+        "sql": "CREATE INDEX runtime_room_member_first ON runtime_rooms(json_extract(record,'$.members[0]'))",
+        "table": "runtime_rooms",
+        "type": "index"
+      },
+      {
+        "name": "runtime_room_member_second",
+        "sql": "CREATE INDEX runtime_room_member_second ON runtime_rooms(json_extract(record,'$.members[1]'))",
+        "table": "runtime_rooms",
+        "type": "index"
+      },
+      {
+        "name": "runtime_room_root",
+        "sql": "CREATE INDEX runtime_room_root ON runtime_rooms(json_extract(record,'$.rootId'))",
+        "table": "runtime_rooms",
+        "type": "index"
+      },
+      {
+        "name": "runtime_rule_agent_inflight",
+        "sql": "CREATE INDEX runtime_rule_agent_inflight ON runtime_rules(json_extract(record,'$.agent'),json_extract(record,'$.inFlight'))",
+        "table": "runtime_rules",
+        "type": "index"
+      },
+      {
+        "name": "runtime_rule_ready_tick",
+        "sql": "CREATE INDEX runtime_rule_ready_tick ON runtime_rules(json_extract(record,'$.status')) WHERE NOT COALESCE(json_extract(record,'$.inFlight'),0)",
+        "table": "runtime_rules",
+        "type": "index"
+      },
+      {
+        "name": "runtime_scheduler_agent_change_generation",
+        "sql": "CREATE INDEX runtime_scheduler_agent_change_generation ON runtime_scheduler_agent_changes(generation)",
+        "table": "runtime_scheduler_agent_changes",
+        "type": "index"
+      },
+      {
+        "name": "runtime_server_links_home_parent",
+        "sql": "CREATE INDEX runtime_server_links_home_parent\n                    ON runtime_server_links(json_extract(record,'$.parent'))\n                    WHERE json_extract(record,'$.side')='home'",
+        "table": "runtime_server_links",
+        "type": "index"
+      },
+      {
+        "name": "runtime_server_outbox_due",
+        "sql": "CREATE INDEX runtime_server_outbox_due\n                    ON runtime_server_outbox(state,next_at)",
+        "table": "runtime_server_outbox",
+        "type": "index"
+      },
+      {
+        "name": "runtime_server_output_tools_expiry",
+        "sql": "CREATE INDEX runtime_server_output_tools_expiry\n                    ON runtime_server_output_tools(expires)",
+        "table": "runtime_server_output_tools",
+        "type": "index"
+      },
+      {
+        "name": "runtime_task_agent_created_id",
+        "sql": "CREATE INDEX runtime_task_agent_created_id ON runtime_tasks(\n                    json_extract(record,'$.agent'), json_extract(record,'$.created') DESC, id DESC)",
+        "table": "runtime_tasks",
+        "type": "index"
+      },
+      {
+        "name": "runtime_task_agent_updated_id",
+        "sql": "CREATE INDEX runtime_task_agent_updated_id ON runtime_tasks(\n                    json_extract(record,'$.agent'),\n                    CASE WHEN COALESCE(json_extract(record,'$.finished'),0) > COALESCE(json_extract(record,'$.created'),0)\n                         THEN json_extract(record,'$.finished') ELSE json_extract(record,'$.created') END,\n                    id)",
+        "table": "runtime_tasks",
+        "type": "index"
+      },
+      {
+        "name": "runtime_task_history",
+        "sql": "CREATE INDEX runtime_task_history ON runtime_tasks(json_extract(record,'$.created') DESC, json_extract(record,'$.agent')) WHERE json_extract(record,'$.status')!='running'",
+        "table": "runtime_tasks",
+        "type": "index"
+      },
+      {
+        "name": "runtime_task_status",
+        "sql": "CREATE INDEX runtime_task_status ON runtime_tasks(json_extract(record,'$.status'), json_extract(record,'$.created'))",
+        "table": "runtime_tasks",
+        "type": "index"
+      },
+      {
+        "name": "runtime_tool_request_actor",
+        "sql": "CREATE INDEX runtime_tool_request_actor\n                ON runtime_tool_requests(json_extract(record,'$.agent'), json_extract(record,'$.updated') DESC)",
+        "table": "runtime_tool_requests",
+        "type": "index"
+      },
+      {
+        "name": "runtime_turn_item_link_scope_v1",
+        "sql": "CREATE INDEX runtime_turn_item_link_scope_v1 ON runtime_turn_item_links_v1(agent,turn_id,epoch,created,id)",
+        "table": "runtime_turn_item_links_v1",
+        "type": "index"
+      },
+      {
+        "name": "runtime_usage_resume_account",
+        "sql": "CREATE INDEX runtime_usage_resume_account ON runtime_usage_resumes(json_extract(record,'$.accountKey'),json_extract(record,'$.status'))",
+        "table": "runtime_usage_resumes",
+        "type": "index"
+      },
+      {
+        "name": "runtime_usage_resume_agent",
+        "sql": "CREATE INDEX runtime_usage_resume_agent ON runtime_usage_resumes(agent)",
+        "table": "runtime_usage_resumes",
+        "type": "index"
+      },
+      {
+        "name": "runtime_usage_resume_due",
+        "sql": "CREATE INDEX runtime_usage_resume_due ON runtime_usage_resumes(json_extract(record,'$.status'),json_extract(record,'$.dueAt'))",
+        "table": "runtime_usage_resumes",
+        "type": "index"
+      },
+      {
+        "name": "runtime_work_archive_due",
+        "sql": "CREATE INDEX runtime_work_archive_due ON runtime_work(COALESCE(json_extract(record,'$.archiveIntent.nextAttemptAt'),0),id) WHERE json_extract(record,'$.archiveIntent.status')='pending'",
+        "table": "runtime_work",
+        "type": "index"
+      },
+      {
+        "name": "runtime_work_owner_status",
+        "sql": "CREATE INDEX runtime_work_owner_status\n                ON runtime_work(json_extract(record,'$.owner'),json_extract(record,'$.status'))",
+        "table": "runtime_work",
+        "type": "index"
+      },
+      {
+        "name": "runtime_work_root_status",
+        "sql": "CREATE INDEX runtime_work_root_status\n                ON runtime_work(json_extract(record,'$.rootId'),json_extract(record,'$.status'))",
+        "table": "runtime_work",
+        "type": "index"
+      },
+      {
+        "name": "runtime_workspace_operation_agent_phase",
+        "sql": "CREATE INDEX runtime_workspace_operation_agent_phase ON runtime_workspace_operations(json_extract(record,'$.agent'),json_extract(record,'$.phase'))",
+        "table": "runtime_workspace_operations",
+        "type": "index"
+      },
+      {
+        "name": "runtime_workspace_operation_phase",
+        "sql": "CREATE INDEX runtime_workspace_operation_phase ON runtime_workspace_operations(\n                json_extract(record,'$.phase'), json_extract(record,'$.agent'))",
+        "table": "runtime_workspace_operations",
+        "type": "index"
+      },
+      {
+        "name": "sync_entities_collection_deleted",
+        "sql": "CREATE INDEX sync_entities_collection_deleted\n        ON sync_entities(collection,deleted)",
+        "table": "sync_entities",
+        "type": "index"
+      },
+      {
+        "name": "sync_entities_collection_seq",
+        "sql": "CREATE INDEX sync_entities_collection_seq ON sync_entities(collection,seq)",
+        "table": "sync_entities",
+        "type": "index"
+      },
+      {
+        "name": "sync_entities_non_transcript_seq",
+        "sql": "CREATE INDEX sync_entities_non_transcript_seq ON sync_entities(seq)\n        WHERE collection NOT LIKE 'transcript:%'",
+        "table": "sync_entities",
+        "type": "index"
+      },
+      {
+        "name": "sync_entities_seq",
+        "sql": "CREATE INDEX sync_entities_seq ON sync_entities(seq)",
+        "table": "sync_entities",
+        "type": "index"
+      },
+      {
+        "name": "sync_entities_tombstone_order",
+        "sql": "CREATE INDEX sync_entities_tombstone_order\n        ON sync_entities(seq,collection,id)\n        WHERE deleted=1 AND collection NOT LIKE 'transcript:%'",
+        "table": "sync_entities",
+        "type": "index"
+      },
+      {
+        "name": "sync_scope_seq",
+        "sql": "CREATE INDEX sync_scope_seq ON sync_documents(scope,seq)",
+        "table": "sync_documents",
+        "type": "index"
+      },
+      {
+        "name": "user_terminal_output_end",
+        "sql": "CREATE INDEX user_terminal_output_end ON user_terminal_output (terminal,end)",
+        "table": "user_terminal_output",
+        "type": "index"
+      },
+      {
+        "name": "voice_records_agent",
+        "sql": "CREATE INDEX voice_records_agent ON voice_records(agent,seq)",
+        "table": "voice_records",
+        "type": "index"
+      },
+      {
+        "name": "graph_agents",
+        "sql": "CREATE TABLE graph_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "graph_agents",
+        "type": "table"
+      },
+      {
+        "name": "graph_edges",
+        "sql": "CREATE TABLE graph_edges (\n                  id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL,\n                  kind TEXT NOT NULL, UNIQUE(source, target, kind))",
+        "table": "graph_edges",
+        "type": "table"
+      },
+      {
+        "name": "groups",
+        "sql": "CREATE TABLE groups (\n                  id TEXT PRIMARY KEY, name TEXT NOT NULL, members TEXT NOT NULL)",
+        "table": "groups",
+        "type": "table"
+      },
+      {
+        "name": "messages",
+        "sql": "CREATE TABLE messages (\n                  id TEXT PRIMARY KEY, room TEXT NOT NULL, author TEXT NOT NULL,\n                  text TEXT NOT NULL, at REAL NOT NULL, deliveries TEXT NOT NULL)",
+        "table": "messages",
+        "type": "table"
+      },
+      {
+        "name": "runtime_access_alias_requests",
+        "sql": "CREATE TABLE runtime_access_alias_requests (\n          id TEXT PRIMARY KEY, server TEXT NOT NULL, alias TEXT NOT NULL)",
+        "table": "runtime_access_alias_requests",
+        "type": "table"
+      },
+      {
+        "name": "runtime_access_audit",
+        "sql": "CREATE TABLE runtime_access_audit (\n          seq INTEGER PRIMARY KEY AUTOINCREMENT, client TEXT NOT NULL, actor TEXT NOT NULL,\n          action TEXT NOT NULL, created REAL NOT NULL)",
+        "table": "runtime_access_audit",
+        "type": "table"
+      },
+      {
+        "name": "runtime_access_auto_attempts",
+        "sql": "CREATE TABLE runtime_access_auto_attempts(id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_access_auto_attempts",
+        "type": "table"
+      },
+      {
+        "name": "runtime_access_clients",
+        "sql": "CREATE TABLE runtime_access_clients (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_access_clients",
+        "type": "table"
+      },
+      {
+        "name": "runtime_access_discovered",
+        "sql": "CREATE TABLE runtime_access_discovered(id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_access_discovered",
+        "type": "table"
+      },
+      {
+        "name": "runtime_access_invites",
+        "sql": "CREATE TABLE runtime_access_invites (\n          id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE, hash TEXT NOT NULL, record TEXT NOT NULL)",
+        "table": "runtime_access_invites",
+        "type": "table"
+      },
+      {
+        "name": "runtime_access_local_alias",
+        "sql": "CREATE TABLE runtime_access_local_alias (\n          id INTEGER PRIMARY KEY CHECK(id=1), alias TEXT NOT NULL)",
+        "table": "runtime_access_local_alias",
+        "type": "table"
+      },
+      {
+        "name": "runtime_access_name_requests",
+        "sql": "CREATE TABLE runtime_access_name_requests (\n          id TEXT PRIMARY KEY, label TEXT NOT NULL, actor TEXT NOT NULL, applied INTEGER NOT NULL)",
+        "table": "runtime_access_name_requests",
+        "type": "table"
+      },
+      {
+        "name": "runtime_access_name_targets",
+        "sql": "CREATE TABLE runtime_access_name_targets (\n          id TEXT PRIMARY KEY, server TEXT NOT NULL, label TEXT NOT NULL)",
+        "table": "runtime_access_name_targets",
+        "type": "table"
+      },
+      {
+        "name": "runtime_access_nonces",
+        "sql": "CREATE TABLE runtime_access_nonces (\n          client TEXT NOT NULL, nonce TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY(client,nonce))",
+        "table": "runtime_access_nonces",
+        "type": "table"
+      },
+      {
+        "name": "runtime_access_outbound",
+        "sql": "CREATE TABLE runtime_access_outbound (\n          server TEXT NOT NULL, request_id TEXT NOT NULL, hash TEXT NOT NULL,\n          record TEXT NOT NULL, PRIMARY KEY(server,request_id))",
+        "table": "runtime_access_outbound",
+        "type": "table"
+      },
+      {
+        "name": "runtime_access_receipts",
+        "sql": "CREATE TABLE runtime_access_receipts (\n          client TEXT NOT NULL, request_id TEXT NOT NULL, hash TEXT NOT NULL, session TEXT NOT NULL,\n          status TEXT NOT NULL, record TEXT NOT NULL, PRIMARY KEY(client,request_id))",
+        "table": "runtime_access_receipts",
+        "type": "table"
+      },
+      {
+        "name": "runtime_access_settings",
+        "sql": "CREATE TABLE runtime_access_settings(id INTEGER PRIMARY KEY CHECK(id=1), auto_pair INTEGER NOT NULL)",
+        "table": "runtime_access_settings",
+        "type": "table"
+      },
+      {
+        "name": "runtime_access_unrevokes",
+        "sql": "CREATE TABLE runtime_access_unrevokes(id TEXT PRIMARY KEY, client TEXT NOT NULL)",
+        "table": "runtime_access_unrevokes",
+        "type": "table"
+      },
+      {
+        "name": "runtime_account_transfers",
+        "sql": "CREATE TABLE runtime_account_transfers(id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_account_transfers",
+        "type": "table"
+      },
+      {
+        "name": "runtime_agent_moves",
+        "sql": "CREATE TABLE runtime_agent_moves(id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_agent_moves",
+        "type": "table"
+      },
+      {
+        "name": "runtime_agent_record_generation",
+        "sql": "CREATE TABLE runtime_agent_record_generation (\n                    id INTEGER PRIMARY KEY CHECK(id=1), value INTEGER NOT NULL)",
+        "table": "runtime_agent_record_generation",
+        "type": "table"
+      },
+      {
+        "name": "runtime_agents",
+        "sql": "CREATE TABLE runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_agents",
+        "type": "table"
+      },
+      {
+        "name": "runtime_annotations",
+        "sql": "CREATE TABLE runtime_annotations (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_annotations",
+        "type": "table"
+      },
+      {
+        "name": "runtime_assets",
+        "sql": "CREATE TABLE runtime_assets (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_assets",
+        "type": "table"
+      },
+      {
+        "name": "runtime_budget",
+        "sql": "CREATE TABLE runtime_budget (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_budget",
+        "type": "table"
+      },
+      {
+        "name": "runtime_budget_usage",
+        "sql": "CREATE TABLE runtime_budget_usage (id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL, tokens INTEGER NOT NULL, at REAL NOT NULL)",
+        "table": "runtime_budget_usage",
+        "type": "table"
+      },
+      {
+        "name": "runtime_capacity_retries",
+        "sql": "CREATE TABLE runtime_capacity_retries (id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL)",
+        "table": "runtime_capacity_retries",
+        "type": "table"
+      },
+      {
+        "name": "runtime_chat_messages",
+        "sql": "CREATE TABLE runtime_chat_messages (\n                  seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,\n                  room TEXT NOT NULL, sender TEXT NOT NULL, text TEXT NOT NULL,\n                  created REAL NOT NULL, deliveries TEXT NOT NULL)",
+        "table": "runtime_chat_messages",
+        "type": "table"
+      },
+      {
+        "name": "runtime_checkpoints",
+        "sql": "CREATE TABLE runtime_checkpoints (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_checkpoints",
+        "type": "table"
+      },
+      {
+        "name": "runtime_compactions",
+        "sql": "CREATE TABLE runtime_compactions (id TEXT PRIMARY KEY, agent TEXT NOT NULL)",
+        "table": "runtime_compactions",
+        "type": "table"
+      },
+      {
+        "name": "runtime_complaints",
+        "sql": "CREATE TABLE runtime_complaints (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_complaints",
+        "type": "table"
+      },
+      {
+        "name": "runtime_completed_turns",
+        "sql": "CREATE TABLE runtime_completed_turns (id TEXT PRIMARY KEY)",
+        "table": "runtime_completed_turns",
+        "type": "table"
+      },
+      {
+        "name": "runtime_context_manifests",
+        "sql": "CREATE TABLE runtime_context_manifests (\n                  agent TEXT NOT NULL, thread_id TEXT NOT NULL, compactions INTEGER NOT NULL,\n                  sequence INTEGER NOT NULL, event_id TEXT NOT NULL, record TEXT NOT NULL,\n                  PRIMARY KEY(agent,thread_id,compactions))",
+        "table": "runtime_context_manifests",
+        "type": "table"
+      },
+      {
+        "name": "runtime_context_reminders",
+        "sql": "CREATE TABLE runtime_context_reminders (\n                  agent TEXT NOT NULL, version TEXT NOT NULL, event_id TEXT NOT NULL,\n                  PRIMARY KEY(agent,version))",
+        "table": "runtime_context_reminders",
+        "type": "table"
+      },
+      {
+        "name": "runtime_event_meta",
+        "sql": "CREATE TABLE runtime_event_meta (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_event_meta",
+        "type": "table"
+      },
+      {
+        "name": "runtime_events",
+        "sql": "CREATE TABLE runtime_events (\n                  id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL,\n                  text TEXT NOT NULL, status TEXT NOT NULL, created REAL NOT NULL,\n                  epoch INTEGER NOT NULL, turn_id TEXT, error TEXT)",
+        "table": "runtime_events",
+        "type": "table"
+      },
+      {
+        "name": "runtime_execution_attempts",
+        "sql": "CREATE TABLE runtime_execution_attempts (id TEXT PRIMARY KEY, run TEXT NOT NULL, record TEXT NOT NULL)",
+        "table": "runtime_execution_attempts",
+        "type": "table"
+      },
+      {
+        "name": "runtime_execution_effects",
+        "sql": "CREATE TABLE runtime_execution_effects (id TEXT PRIMARY KEY, run TEXT NOT NULL, kind TEXT NOT NULL, reference TEXT NOT NULL, record TEXT NOT NULL)",
+        "table": "runtime_execution_effects",
+        "type": "table"
+      },
+      {
+        "name": "runtime_execution_inputs",
+        "sql": "CREATE TABLE runtime_execution_inputs (run TEXT NOT NULL, event TEXT NOT NULL, PRIMARY KEY(run,event))",
+        "table": "runtime_execution_inputs",
+        "type": "table"
+      },
+      {
+        "name": "runtime_execution_nodes",
+        "sql": "CREATE TABLE runtime_execution_nodes (id TEXT PRIMARY KEY, run TEXT NOT NULL, record TEXT NOT NULL)",
+        "table": "runtime_execution_nodes",
+        "type": "table"
+      },
+      {
+        "name": "runtime_execution_runs",
+        "sql": "CREATE TABLE runtime_execution_runs (id TEXT PRIMARY KEY, agent TEXT NOT NULL, account TEXT NOT NULL, epoch INTEGER NOT NULL, thread TEXT, turn TEXT, created REAL NOT NULL, record TEXT NOT NULL)",
+        "table": "runtime_execution_runs",
+        "type": "table"
+      },
+      {
+        "name": "runtime_federation_identity",
+        "sql": "CREATE TABLE runtime_federation_identity (\n          id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_federation_identity",
+        "type": "table"
+      },
+      {
+        "name": "runtime_federation_inbox",
+        "sql": "CREATE TABLE runtime_federation_inbox (\n          peer_id TEXT NOT NULL, message_id TEXT NOT NULL, record TEXT NOT NULL,\n          PRIMARY KEY(peer_id,message_id))",
+        "table": "runtime_federation_inbox",
+        "type": "table"
+      },
+      {
+        "name": "runtime_federation_invites",
+        "sql": "CREATE TABLE runtime_federation_invites (\n          id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_federation_invites",
+        "type": "table"
+      },
+      {
+        "name": "runtime_federation_nonces",
+        "sql": "CREATE TABLE runtime_federation_nonces (\n          peer_id TEXT NOT NULL, nonce TEXT NOT NULL, created INTEGER NOT NULL,\n          PRIMARY KEY(peer_id,nonce))",
+        "table": "runtime_federation_nonces",
+        "type": "table"
+      },
+      {
+        "name": "runtime_federation_outbox",
+        "sql": "CREATE TABLE runtime_federation_outbox (\n          id TEXT PRIMARY KEY, peer_id TEXT NOT NULL, record TEXT NOT NULL)",
+        "table": "runtime_federation_outbox",
+        "type": "table"
+      },
+      {
+        "name": "runtime_federation_peers",
+        "sql": "CREATE TABLE runtime_federation_peers (\n          id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_federation_peers",
+        "type": "table"
+      },
+      {
+        "name": "runtime_federation_rooms",
+        "sql": "CREATE TABLE runtime_federation_rooms (\n          id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_federation_rooms",
+        "type": "table"
+      },
+      {
+        "name": "runtime_federation_settings",
+        "sql": "CREATE TABLE runtime_federation_settings (\n          id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_federation_settings",
+        "type": "table"
+      },
+      {
+        "name": "runtime_item_fulltext",
+        "sql": "CREATE TABLE runtime_item_fulltext (id TEXT PRIMARY KEY, body TEXT NOT NULL)",
+        "table": "runtime_item_fulltext",
+        "type": "table"
+      },
+      {
+        "name": "runtime_items",
+        "sql": "CREATE TABLE runtime_items (\n                  id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL, created REAL NOT NULL)",
+        "table": "runtime_items",
+        "type": "table"
+      },
+      {
+        "name": "runtime_lead_requests",
+        "sql": "CREATE TABLE runtime_lead_requests (id TEXT PRIMARY KEY, agent TEXT NOT NULL, signature TEXT NOT NULL)",
+        "table": "runtime_lead_requests",
+        "type": "table"
+      },
+      {
+        "name": "runtime_model_modes",
+        "sql": "CREATE TABLE runtime_model_modes (agent TEXT, request TEXT, version TEXT, record TEXT, PRIMARY KEY(agent,request,version))",
+        "table": "runtime_model_modes",
+        "type": "table"
+      },
+      {
+        "name": "runtime_model_status",
+        "sql": "CREATE TABLE runtime_model_status (agent TEXT, revision TEXT, at REAL, record TEXT, PRIMARY KEY(agent,revision))",
+        "table": "runtime_model_status",
+        "type": "table"
+      },
+      {
+        "name": "runtime_monitors",
+        "sql": "CREATE TABLE runtime_monitors (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_monitors",
+        "type": "table"
+      },
+      {
+        "name": "runtime_native_catalog_updates",
+        "sql": "CREATE TABLE runtime_native_catalog_updates (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_native_catalog_updates",
+        "type": "table"
+      },
+      {
+        "name": "runtime_native_limit_refreshes",
+        "sql": "CREATE TABLE runtime_native_limit_refreshes (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_native_limit_refreshes",
+        "type": "table"
+      },
+      {
+        "name": "runtime_native_notices",
+        "sql": "CREATE TABLE runtime_native_notices (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_native_notices",
+        "type": "table"
+      },
+      {
+        "name": "runtime_native_sweeps",
+        "sql": "CREATE TABLE runtime_native_sweeps (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_native_sweeps",
+        "type": "table"
+      },
+      {
+        "name": "runtime_operation_receipts",
+        "sql": "CREATE TABLE runtime_operation_receipts (id TEXT PRIMARY KEY, signature TEXT NOT NULL, result TEXT NOT NULL)",
+        "table": "runtime_operation_receipts",
+        "type": "table"
+      },
+      {
+        "name": "runtime_payload_refs",
+        "sql": "CREATE TABLE runtime_payload_refs (\n            table_name TEXT NOT NULL, record_id TEXT NOT NULL, field TEXT NOT NULL,\n            sha256 TEXT NOT NULL, PRIMARY KEY(table_name,record_id,field))",
+        "table": "runtime_payload_refs",
+        "type": "table"
+      },
+      {
+        "name": "runtime_plans",
+        "sql": "CREATE TABLE runtime_plans (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_plans",
+        "type": "table"
+      },
+      {
+        "name": "runtime_profiles",
+        "sql": "CREATE TABLE runtime_profiles (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_profiles",
+        "type": "table"
+      },
+      {
+        "name": "runtime_projects",
+        "sql": "CREATE TABLE runtime_projects (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_projects",
+        "type": "table"
+      },
+      {
+        "name": "runtime_requests",
+        "sql": "CREATE TABLE runtime_requests (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_requests",
+        "type": "table"
+      },
+      {
+        "name": "runtime_rooms",
+        "sql": "CREATE TABLE runtime_rooms (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_rooms",
+        "type": "table"
+      },
+      {
+        "name": "runtime_rules",
+        "sql": "CREATE TABLE runtime_rules (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_rules",
+        "type": "table"
+      },
+      {
+        "name": "runtime_scheduler_agent_change_state",
+        "sql": "CREATE TABLE runtime_scheduler_agent_change_state (id INTEGER PRIMARY KEY CHECK(id=1),floor INTEGER NOT NULL,generation INTEGER NOT NULL,entries INTEGER NOT NULL,total INTEGER NOT NULL)",
+        "table": "runtime_scheduler_agent_change_state",
+        "type": "table"
+      },
+      {
+        "name": "runtime_scheduler_agent_changes",
+        "sql": "CREATE TABLE runtime_scheduler_agent_changes (id TEXT PRIMARY KEY,generation INTEGER NOT NULL CHECK(typeof(generation)='integer' AND generation>=0))",
+        "table": "runtime_scheduler_agent_changes",
+        "type": "table"
+      },
+      {
+        "name": "runtime_search_next",
+        "sql": "CREATE VIRTUAL TABLE runtime_search_next USING fts5(body,content='',contentless_delete=1,tokenize='unicode61')",
+        "table": "runtime_search_next",
+        "type": "table"
+      },
+      {
+        "name": "runtime_search_next_config",
+        "sql": "CREATE TABLE 'runtime_search_next_config'(k PRIMARY KEY, v) WITHOUT ROWID",
+        "table": "runtime_search_next_config",
+        "type": "table"
+      },
+      {
+        "name": "runtime_search_next_data",
+        "sql": "CREATE TABLE 'runtime_search_next_data'(id INTEGER PRIMARY KEY, block BLOB)",
+        "table": "runtime_search_next_data",
+        "type": "table"
+      },
+      {
+        "name": "runtime_search_next_docsize",
+        "sql": "CREATE TABLE 'runtime_search_next_docsize'(id INTEGER PRIMARY KEY, sz BLOB, origin INTEGER)",
+        "table": "runtime_search_next_docsize",
+        "type": "table"
+      },
+      {
+        "name": "runtime_search_next_idx",
+        "sql": "CREATE TABLE 'runtime_search_next_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID",
+        "table": "runtime_search_next_idx",
+        "type": "table"
+      },
+      {
+        "name": "runtime_search_next_meta",
+        "sql": "CREATE TABLE runtime_search_next_meta (\n                id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL,\n                search_rowid INTEGER NOT NULL UNIQUE)",
+        "table": "runtime_search_next_meta",
+        "type": "table"
+      },
+      {
+        "name": "runtime_search_rollout",
+        "sql": "CREATE TABLE runtime_search_rollout (\n                id INTEGER PRIMARY KEY CHECK(id=1), phase TEXT NOT NULL,\n                cursor INTEGER NOT NULL DEFAULT 0, updated REAL NOT NULL)",
+        "table": "runtime_search_rollout",
+        "type": "table"
+      },
+      {
+        "name": "runtime_server_fetch",
+        "sql": "CREATE TABLE runtime_server_fetch (\n                    id TEXT PRIMARY KEY, server TEXT NOT NULL, signature TEXT NOT NULL,\n                    state TEXT NOT NULL, result TEXT)",
+        "table": "runtime_server_fetch",
+        "type": "table"
+      },
+      {
+        "name": "runtime_server_inbox",
+        "sql": "CREATE TABLE runtime_server_inbox (\n                    id TEXT PRIMARY KEY, signature TEXT NOT NULL, state TEXT NOT NULL,\n                    result TEXT, created_at REAL NOT NULL DEFAULT 0, completed_at REAL NOT NULL DEFAULT 0, principal TEXT, actor TEXT)",
+        "table": "runtime_server_inbox",
+        "type": "table"
+      },
+      {
+        "name": "runtime_server_links",
+        "sql": "CREATE TABLE runtime_server_links (\n                    id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_server_links",
+        "type": "table"
+      },
+      {
+        "name": "runtime_server_outbox",
+        "sql": "CREATE TABLE runtime_server_outbox (\n                    id TEXT PRIMARY KEY, server TEXT NOT NULL, body TEXT NOT NULL,\n                    state TEXT NOT NULL, result TEXT, attempts INTEGER NOT NULL DEFAULT 0,\n                    next_at REAL NOT NULL DEFAULT 0, error TEXT, created_at REAL NOT NULL DEFAULT 0, completed_at REAL NOT NULL DEFAULT 0, fingerprint TEXT)",
+        "table": "runtime_server_outbox",
+        "type": "table"
+      },
+      {
+        "name": "runtime_server_output_tools",
+        "sql": "CREATE TABLE runtime_server_output_tools (\n                    id TEXT PRIMARY KEY, expires REAL NOT NULL)",
+        "table": "runtime_server_output_tools",
+        "type": "table"
+      },
+      {
+        "name": "runtime_server_retired",
+        "sql": "CREATE TABLE runtime_server_retired (\n                    id TEXT NOT NULL, direction TEXT NOT NULL, signature TEXT NOT NULL,\n                    server TEXT, actor TEXT, PRIMARY KEY(id,direction))",
+        "table": "runtime_server_retired",
+        "type": "table"
+      },
+      {
+        "name": "runtime_server_sequence",
+        "sql": "CREATE TABLE runtime_server_sequence (\n                    id INTEGER PRIMARY KEY CHECK(id=1), value INTEGER NOT NULL)",
+        "table": "runtime_server_sequence",
+        "type": "table"
+      },
+      {
+        "name": "runtime_sidebar_order",
+        "sql": "CREATE TABLE runtime_sidebar_order (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_sidebar_order",
+        "type": "table"
+      },
+      {
+        "name": "runtime_supervisor_cursor",
+        "sql": "CREATE TABLE runtime_supervisor_cursor (handle TEXT PRIMARY KEY, sequence INTEGER NOT NULL)",
+        "table": "runtime_supervisor_cursor",
+        "type": "table"
+      },
+      {
+        "name": "runtime_tasks",
+        "sql": "CREATE TABLE runtime_tasks (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_tasks",
+        "type": "table"
+      },
+      {
+        "name": "runtime_tool_request_aliases",
+        "sql": "CREATE TABLE runtime_tool_request_aliases\n                (agent TEXT NOT NULL, alias TEXT NOT NULL, request TEXT NOT NULL, PRIMARY KEY(agent,alias,request))",
+        "table": "runtime_tool_request_aliases",
+        "type": "table"
+      },
+      {
+        "name": "runtime_tool_requests",
+        "sql": "CREATE TABLE runtime_tool_requests (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_tool_requests",
+        "type": "table"
+      },
+      {
+        "name": "runtime_tool_results",
+        "sql": "CREATE TABLE runtime_tool_results (id TEXT PRIMARY KEY, result TEXT NOT NULL)",
+        "table": "runtime_tool_results",
+        "type": "table"
+      },
+      {
+        "name": "runtime_transcript_revisions",
+        "sql": "CREATE TABLE runtime_transcript_revisions(\n                        agent TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0)",
+        "table": "runtime_transcript_revisions",
+        "type": "table"
+      },
+      {
+        "name": "runtime_turn_item_link_state_v1",
+        "sql": "CREATE TABLE runtime_turn_item_link_state_v1 (id INTEGER PRIMARY KEY CHECK(id=1),epoch TEXT NOT NULL,source_rootpage INTEGER NOT NULL,cursor INTEGER,target INTEGER,complete INTEGER NOT NULL CHECK(complete IN (0,1)),scanned_rows INTEGER NOT NULL,source_bytes INTEGER NOT NULL,updated REAL NOT NULL)",
+        "table": "runtime_turn_item_link_state_v1",
+        "type": "table"
+      },
+      {
+        "name": "runtime_turn_item_links_v1",
+        "sql": "CREATE TABLE runtime_turn_item_links_v1 (id TEXT PRIMARY KEY,agent TEXT NOT NULL,turn_id,created REAL NOT NULL,epoch TEXT NOT NULL)",
+        "table": "runtime_turn_item_links_v1",
+        "type": "table"
+      },
+      {
+        "name": "runtime_usage_resumes",
+        "sql": "CREATE TABLE runtime_usage_resumes (id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL)",
+        "table": "runtime_usage_resumes",
+        "type": "table"
+      },
+      {
+        "name": "runtime_work",
+        "sql": "CREATE TABLE runtime_work (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_work",
+        "type": "table"
+      },
+      {
+        "name": "runtime_workspace_operations",
+        "sql": "CREATE TABLE runtime_workspace_operations (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        "table": "runtime_workspace_operations",
+        "type": "table"
+      },
+      {
+        "name": "sync_documents",
+        "sql": "CREATE TABLE sync_documents (\n        seq INTEGER PRIMARY KEY AUTOINCREMENT, scope TEXT NOT NULL,\n        id TEXT NOT NULL, payload TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0,\n        UNIQUE(scope,id))",
+        "table": "sync_documents",
+        "type": "table"
+      },
+      {
+        "name": "sync_entities",
+        "sql": "CREATE TABLE sync_entities (\n        collection TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL,\n        hash TEXT NOT NULL, payload TEXT, deleted INTEGER NOT NULL DEFAULT 0,\n        PRIMARY KEY(collection,id))",
+        "table": "sync_entities",
+        "type": "table"
+      },
+      {
+        "name": "sync_entity_meta",
+        "sql": "CREATE TABLE sync_entity_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        "table": "sync_entity_meta",
+        "type": "table"
+      },
+      {
+        "name": "sync_generation",
+        "sql": "CREATE TABLE sync_generation (id INTEGER PRIMARY KEY, value INTEGER NOT NULL)",
+        "table": "sync_generation",
+        "type": "table"
+      },
+      {
+        "name": "sync_identity",
+        "sql": "CREATE TABLE sync_identity (id TEXT PRIMARY KEY)",
+        "table": "sync_identity",
+        "type": "table"
+      },
+      {
+        "name": "sync_versions",
+        "sql": "CREATE TABLE sync_versions (\n        seq INTEGER PRIMARY KEY, scope TEXT NOT NULL UNIQUE,\n        hash TEXT NOT NULL, deleted INTEGER NOT NULL, updated REAL NOT NULL)",
+        "table": "sync_versions",
+        "type": "table"
+      },
+      {
+        "name": "user_terminal_decoder_state",
+        "sql": "CREATE TABLE user_terminal_decoder_state (terminal TEXT PRIMARY KEY, pending BLOB NOT NULL)",
+        "table": "user_terminal_decoder_state",
+        "type": "table"
+      },
+      {
+        "name": "user_terminal_event_cursor",
+        "sql": "CREATE TABLE user_terminal_event_cursor (terminal TEXT PRIMARY KEY, sequence INTEGER NOT NULL)",
+        "table": "user_terminal_event_cursor",
+        "type": "table"
+      },
+      {
+        "name": "user_terminal_output",
+        "sql": "CREATE TABLE user_terminal_output (terminal TEXT NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, text TEXT NOT NULL, PRIMARY KEY (terminal,start))",
+        "table": "user_terminal_output",
+        "type": "table"
+      },
+      {
+        "name": "user_terminal_receipts",
+        "sql": "CREATE TABLE user_terminal_receipts (id TEXT PRIMARY KEY, signature TEXT NOT NULL, result TEXT NOT NULL)",
+        "table": "user_terminal_receipts",
+        "type": "table"
+      },
+      {
+        "name": "user_terminals",
+        "sql": "CREATE TABLE user_terminals (id TEXT PRIMARY KEY, record TEXT NOT NULL, output TEXT NOT NULL, offset INTEGER NOT NULL)",
+        "table": "user_terminals",
+        "type": "table"
+      },
+      {
+        "name": "voice_approvals",
+        "sql": "CREATE TABLE voice_approvals (id TEXT PRIMARY KEY, agent TEXT NOT NULL, speech TEXT NOT NULL, transcript TEXT NOT NULL, status TEXT NOT NULL, result TEXT)",
+        "table": "voice_approvals",
+        "type": "table"
+      },
+      {
+        "name": "voice_deliveries",
+        "sql": "CREATE TABLE voice_deliveries (\n                  id TEXT PRIMARY KEY, agent TEXT NOT NULL, records TEXT NOT NULL, text TEXT NOT NULL, edited_text TEXT)",
+        "table": "voice_deliveries",
+        "type": "table"
+      },
+      {
+        "name": "voice_records",
+        "sql": "CREATE TABLE voice_records (\n                  seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,\n                  agent TEXT NOT NULL, session TEXT NOT NULL, kind TEXT NOT NULL,\n                  text TEXT NOT NULL, item_id TEXT NOT NULL, previous_item_id TEXT NOT NULL,\n                  payload TEXT NOT NULL, created REAL NOT NULL)",
+        "table": "voice_records",
+        "type": "table"
+      },
+      {
+        "name": "voice_sessions",
+        "sql": "CREATE TABLE voice_sessions (\n                  id TEXT PRIMARY KEY, agent TEXT NOT NULL, created REAL NOT NULL,\n                  ended REAL, sdp TEXT, answer TEXT, native_thread TEXT,\n                  account_key TEXT, connection_id TEXT, state TEXT, error TEXT)",
+        "table": "voice_sessions",
+        "type": "table"
+      },
+      {
+        "name": "voice_speech_requests",
+        "sql": "CREATE TABLE voice_speech_requests (\n                id TEXT PRIMARY KEY, session TEXT NOT NULL, record_id TEXT NOT NULL,\n                state TEXT NOT NULL, error TEXT)",
+        "table": "voice_speech_requests",
+        "type": "table"
+      },
+      {
+        "name": "runtime_agent_record_generation_delete",
+        "sql": "CREATE TRIGGER runtime_agent_record_generation_delete AFTER DELETE ON runtime_agents BEGIN UPDATE runtime_agent_record_generation SET value=value+1 WHERE id=1; UPDATE runtime_scheduler_agent_change_state SET entries=entries+CASE WHEN EXISTS(SELECT 1 FROM runtime_scheduler_agent_changes WHERE id=OLD.id) THEN 0 ELSE 1 END,total=total-COALESCE((SELECT generation FROM runtime_scheduler_agent_changes WHERE id=OLD.id),0)+(SELECT value FROM runtime_agent_record_generation WHERE id=1) WHERE id=1; INSERT INTO runtime_scheduler_agent_changes(id,generation) SELECT OLD.id,value FROM runtime_agent_record_generation WHERE id=1 ON CONFLICT(id) DO UPDATE SET generation=excluded.generation; UPDATE runtime_scheduler_agent_change_state SET generation=(SELECT value FROM runtime_agent_record_generation WHERE id=1) WHERE id=1; END",
+        "table": "runtime_agents",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_agent_record_generation_insert",
+        "sql": "CREATE TRIGGER runtime_agent_record_generation_insert AFTER INSERT ON runtime_agents BEGIN UPDATE runtime_agent_record_generation SET value=value+1 WHERE id=1; UPDATE runtime_scheduler_agent_change_state SET entries=entries+CASE WHEN EXISTS(SELECT 1 FROM runtime_scheduler_agent_changes WHERE id=NEW.id) THEN 0 ELSE 1 END,total=total-COALESCE((SELECT generation FROM runtime_scheduler_agent_changes WHERE id=NEW.id),0)+(SELECT value FROM runtime_agent_record_generation WHERE id=1) WHERE id=1; INSERT INTO runtime_scheduler_agent_changes(id,generation) SELECT NEW.id,value FROM runtime_agent_record_generation WHERE id=1 ON CONFLICT(id) DO UPDATE SET generation=excluded.generation; UPDATE runtime_scheduler_agent_change_state SET generation=(SELECT value FROM runtime_agent_record_generation WHERE id=1) WHERE id=1; END",
+        "table": "runtime_agents",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_agent_record_generation_update",
+        "sql": "CREATE TRIGGER runtime_agent_record_generation_update AFTER UPDATE ON runtime_agents WHEN OLD.record IS NOT NEW.record OR OLD.id IS NOT NEW.id OR OLD.rowid IS NOT NEW.rowid BEGIN UPDATE runtime_agent_record_generation SET value=value+1 WHERE id=1; UPDATE runtime_scheduler_agent_change_state SET entries=entries+CASE WHEN EXISTS(SELECT 1 FROM runtime_scheduler_agent_changes WHERE id=OLD.id) THEN 0 ELSE 1 END,total=total-COALESCE((SELECT generation FROM runtime_scheduler_agent_changes WHERE id=OLD.id),0)+(SELECT value FROM runtime_agent_record_generation WHERE id=1) WHERE id=1 AND OLD.id IS NOT NEW.id; INSERT INTO runtime_scheduler_agent_changes(id,generation) SELECT OLD.id,value FROM runtime_agent_record_generation WHERE id=1 AND OLD.id IS NOT NEW.id ON CONFLICT(id) DO UPDATE SET generation=excluded.generation; UPDATE runtime_scheduler_agent_change_state SET entries=entries+CASE WHEN EXISTS(SELECT 1 FROM runtime_scheduler_agent_changes WHERE id=NEW.id) THEN 0 ELSE 1 END,total=total-COALESCE((SELECT generation FROM runtime_scheduler_agent_changes WHERE id=NEW.id),0)+(SELECT value FROM runtime_agent_record_generation WHERE id=1) WHERE id=1; INSERT INTO runtime_scheduler_agent_changes(id,generation) SELECT NEW.id,value FROM runtime_agent_record_generation WHERE id=1 ON CONFLICT(id) DO UPDATE SET generation=excluded.generation; UPDATE runtime_scheduler_agent_change_state SET generation=(SELECT value FROM runtime_agent_record_generation WHERE id=1) WHERE id=1; END",
+        "table": "runtime_agents",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_payload_checkpoints_delete",
+        "sql": "CREATE TRIGGER runtime_payload_checkpoints_delete AFTER DELETE ON runtime_checkpoints BEGIN\n            DELETE FROM runtime_payload_refs WHERE table_name='runtime_checkpoints' AND record_id=OLD.id;\n        END",
+        "table": "runtime_checkpoints",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_payload_checkpoints_insert",
+        "sql": "CREATE TRIGGER runtime_payload_checkpoints_insert AFTER INSERT ON runtime_checkpoints BEGIN\n            INSERT OR REPLACE INTO runtime_payload_refs(table_name,record_id,field,sha256)\n            SELECT 'runtime_checkpoints',NEW.id,j.key,json_extract(j.value,'$.sha256')\n            FROM json_each(json_extract(NEW.record,'$._payloadBlobs')) AS j\n            WHERE json_type(j.value,'$.sha256')='text';\n        END",
+        "table": "runtime_checkpoints",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_payload_checkpoints_update",
+        "sql": "CREATE TRIGGER runtime_payload_checkpoints_update AFTER UPDATE OF record ON runtime_checkpoints BEGIN\n            DELETE FROM runtime_payload_refs WHERE table_name='runtime_checkpoints' AND record_id=OLD.id;\n            INSERT OR REPLACE INTO runtime_payload_refs(table_name,record_id,field,sha256)\n            SELECT 'runtime_checkpoints',NEW.id,j.key,json_extract(j.value,'$.sha256')\n            FROM json_each(json_extract(NEW.record,'$._payloadBlobs')) AS j\n            WHERE json_type(j.value,'$.sha256')='text';\n        END",
+        "table": "runtime_checkpoints",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_payload_requests_delete",
+        "sql": "CREATE TRIGGER runtime_payload_requests_delete AFTER DELETE ON runtime_tool_requests BEGIN\n            DELETE FROM runtime_payload_refs WHERE table_name='runtime_tool_requests' AND record_id=OLD.id;\n        END",
+        "table": "runtime_tool_requests",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_payload_requests_insert",
+        "sql": "CREATE TRIGGER runtime_payload_requests_insert AFTER INSERT ON runtime_tool_requests BEGIN\n            INSERT OR REPLACE INTO runtime_payload_refs(table_name,record_id,field,sha256)\n            SELECT 'runtime_tool_requests',NEW.id,j.key,json_extract(j.value,'$.sha256')\n            FROM json_each(json_extract(NEW.record,'$._payloadBlobs')) AS j\n            WHERE json_type(j.value,'$.sha256')='text';\n        END",
+        "table": "runtime_tool_requests",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_payload_requests_update",
+        "sql": "CREATE TRIGGER runtime_payload_requests_update AFTER UPDATE OF record ON runtime_tool_requests BEGIN\n            DELETE FROM runtime_payload_refs WHERE table_name='runtime_tool_requests' AND record_id=OLD.id;\n            INSERT OR REPLACE INTO runtime_payload_refs(table_name,record_id,field,sha256)\n            SELECT 'runtime_tool_requests',NEW.id,j.key,json_extract(j.value,'$.sha256')\n            FROM json_each(json_extract(NEW.record,'$._payloadBlobs')) AS j\n            WHERE json_type(j.value,'$.sha256')='text';\n        END",
+        "table": "runtime_tool_requests",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_payload_results_delete",
+        "sql": "CREATE TRIGGER runtime_payload_results_delete AFTER DELETE ON runtime_tool_results BEGIN\n            DELETE FROM runtime_payload_refs WHERE table_name='runtime_tool_results' AND record_id=OLD.id;\n        END",
+        "table": "runtime_tool_results",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_payload_results_insert",
+        "sql": "CREATE TRIGGER runtime_payload_results_insert AFTER INSERT ON runtime_tool_results BEGIN\n            INSERT OR REPLACE INTO runtime_payload_refs(table_name,record_id,field,sha256)\n            SELECT 'runtime_tool_results',NEW.id,j.key,json_extract(j.value,'$.sha256')\n            FROM json_each(json_extract(NEW.result,'$._payloadBlobs')) AS j\n            WHERE json_type(j.value,'$.sha256')='text';\n        END",
+        "table": "runtime_tool_results",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_payload_results_update",
+        "sql": "CREATE TRIGGER runtime_payload_results_update AFTER UPDATE OF result ON runtime_tool_results BEGIN\n            DELETE FROM runtime_payload_refs WHERE table_name='runtime_tool_results' AND record_id=OLD.id;\n            INSERT OR REPLACE INTO runtime_payload_refs(table_name,record_id,field,sha256)\n            SELECT 'runtime_tool_results',NEW.id,j.key,json_extract(j.value,'$.sha256')\n            FROM json_each(json_extract(NEW.result,'$._payloadBlobs')) AS j\n            WHERE json_type(j.value,'$.sha256')='text';\n        END",
+        "table": "runtime_tool_results",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_turn_item_link_delete_v1",
+        "sql": "CREATE TRIGGER runtime_turn_item_link_delete_v1 AFTER DELETE ON runtime_items BEGIN DELETE FROM runtime_turn_item_links_v1 WHERE id=OLD.id;  END",
+        "table": "runtime_items",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_turn_item_link_insert_v1",
+        "sql": "CREATE TRIGGER runtime_turn_item_link_insert_v1 AFTER INSERT ON runtime_items BEGIN INSERT INTO runtime_turn_item_links_v1(id,agent,turn_id,created,epoch) VALUES (NEW.id,NEW.agent,json_extract(NEW.record,'$.turnId'),NEW.created,COALESCE((SELECT epoch FROM runtime_turn_item_link_state_v1 WHERE id=1),'')) ON CONFLICT(id) DO UPDATE SET agent=excluded.agent,turn_id=excluded.turn_id,created=excluded.created,epoch=excluded.epoch WHERE runtime_turn_item_links_v1.agent IS NOT excluded.agent OR runtime_turn_item_links_v1.turn_id IS NOT excluded.turn_id OR runtime_turn_item_links_v1.created IS NOT excluded.created OR runtime_turn_item_links_v1.epoch IS NOT excluded.epoch; END",
+        "table": "runtime_items",
+        "type": "trigger"
+      },
+      {
+        "name": "runtime_turn_item_link_update_v1",
+        "sql": "CREATE TRIGGER runtime_turn_item_link_update_v1 AFTER UPDATE ON runtime_items WHEN OLD.id IS NOT NEW.id OR OLD.agent IS NOT NEW.agent OR OLD.record IS NOT NEW.record OR OLD.created IS NOT NEW.created OR OLD.rowid IS NOT NEW.rowid BEGIN DELETE FROM runtime_turn_item_links_v1 WHERE id=OLD.id AND OLD.id IS NOT NEW.id; INSERT INTO runtime_turn_item_links_v1(id,agent,turn_id,created,epoch) VALUES (NEW.id,NEW.agent,json_extract(NEW.record,'$.turnId'),NEW.created,COALESCE((SELECT epoch FROM runtime_turn_item_link_state_v1 WHERE id=1),'')) ON CONFLICT(id) DO UPDATE SET agent=excluded.agent,turn_id=excluded.turn_id,created=excluded.created,epoch=excluded.epoch WHERE runtime_turn_item_links_v1.agent IS NOT excluded.agent OR runtime_turn_item_links_v1.turn_id IS NOT excluded.turn_id OR runtime_turn_item_links_v1.created IS NOT excluded.created OR runtime_turn_item_links_v1.epoch IS NOT excluded.epoch; END",
+        "table": "runtime_items",
+        "type": "trigger"
+      },
+      {
+        "name": "sync_entity_event_DELETE",
+        "sql": "CREATE TRIGGER sync_entity_event_DELETE\n          AFTER DELETE ON runtime_events BEGIN\n          INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)\n          VALUES ('event',OLD.id,(SELECT max(seq)+1 FROM (\n                    SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL\n                    SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL\n                    SELECT COALESCE(MAX(seq),0) FROM sync_versions)),\n                  sync_entity_hash(sync_entity_payload('event',OLD.id,'{}',1)),sync_entity_payload('event',OLD.id,'{}',1),1)\n          ON CONFLICT(collection,id) DO UPDATE SET\n            seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=excluded.deleted\n          WHERE sync_entities.hash!=excluded.hash OR sync_entities.deleted!=excluded.deleted;\n        END",
+        "table": "runtime_events",
+        "type": "trigger"
+      },
+      {
+        "name": "sync_entity_event_INSERT",
+        "sql": "CREATE TRIGGER sync_entity_event_INSERT\n          AFTER INSERT ON runtime_events BEGIN\n          INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)\n          VALUES ('event',NEW.id,(SELECT max(seq)+1 FROM (\n                    SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL\n                    SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL\n                    SELECT COALESCE(MAX(seq),0) FROM sync_versions)),\n                  sync_entity_hash(sync_entity_payload('event',NEW.id,json_object('id',NEW.id,'agent',NEW.agent,'kind',NEW.kind,'status',NEW.status,'created',NEW.created,'error',NEW.error),0)),sync_entity_payload('event',NEW.id,json_object('id',NEW.id,'agent',NEW.agent,'kind',NEW.kind,'status',NEW.status,'created',NEW.created,'error',NEW.error),0),0)\n          ON CONFLICT(collection,id) DO UPDATE SET\n            seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=excluded.deleted\n          WHERE sync_entities.hash!=excluded.hash OR sync_entities.deleted!=excluded.deleted;\n        END",
+        "table": "runtime_events",
+        "type": "trigger"
+      },
+      {
+        "name": "sync_entity_event_UPDATE",
+        "sql": "CREATE TRIGGER sync_entity_event_UPDATE\n          AFTER UPDATE ON runtime_events BEGIN\n          INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)\n          VALUES ('event',NEW.id,(SELECT max(seq)+1 FROM (\n                    SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL\n                    SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL\n                    SELECT COALESCE(MAX(seq),0) FROM sync_versions)),\n                  sync_entity_hash(sync_entity_payload('event',NEW.id,json_object('id',NEW.id,'agent',NEW.agent,'kind',NEW.kind,'status',NEW.status,'created',NEW.created,'error',NEW.error),0)),sync_entity_payload('event',NEW.id,json_object('id',NEW.id,'agent',NEW.agent,'kind',NEW.kind,'status',NEW.status,'created',NEW.created,'error',NEW.error),0),0)\n          ON CONFLICT(collection,id) DO UPDATE SET\n            seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=excluded.deleted\n          WHERE sync_entities.hash!=excluded.hash OR sync_entities.deleted!=excluded.deleted;\n        END",
+        "table": "runtime_events",
+        "type": "trigger"
+      },
+      {
+        "name": "sync_entity_tombstone_count_delete",
+        "sql": "CREATE TRIGGER sync_entity_tombstone_count_delete\n      AFTER DELETE ON sync_entities\n      WHEN OLD.deleted=1 AND OLD.collection NOT LIKE 'transcript:%' BEGIN\n        UPDATE sync_entity_meta SET value=CAST(value AS INTEGER)-1\n        WHERE key='entity_tombstone_count';\n      END",
+        "table": "sync_entities",
+        "type": "trigger"
+      },
+      {
+        "name": "sync_entity_tombstone_count_insert",
+        "sql": "CREATE TRIGGER sync_entity_tombstone_count_insert\n      AFTER INSERT ON sync_entities\n      WHEN NEW.deleted=1 AND NEW.collection NOT LIKE 'transcript:%' BEGIN\n        UPDATE sync_entity_meta SET value=CAST(value AS INTEGER)+1\n        WHERE key='entity_tombstone_count';\n      END",
+        "table": "sync_entities",
+        "type": "trigger"
+      },
+      {
+        "name": "sync_entity_tombstone_count_update",
+        "sql": "CREATE TRIGGER sync_entity_tombstone_count_update\n      AFTER UPDATE OF deleted,collection ON sync_entities\n      WHEN (OLD.deleted=1 AND OLD.collection NOT LIKE 'transcript:%') !=\n           (NEW.deleted=1 AND NEW.collection NOT LIKE 'transcript:%') BEGIN\n        UPDATE sync_entity_meta SET value=CAST(value AS INTEGER)+\n          CASE WHEN NEW.deleted=1 AND NEW.collection NOT LIKE 'transcript:%' THEN 1 ELSE -1 END\n        WHERE key='entity_tombstone_count';\n      END",
+        "table": "sync_entities",
+        "type": "trigger"
+      },
+      {
+        "name": "sync_transcript_revision_runtime_agents_delete",
+        "sql": "CREATE TRIGGER sync_transcript_revision_runtime_agents_delete AFTER DELETE ON runtime_agents BEGIN INSERT INTO runtime_transcript_revisions(agent,revision)\n                                    VALUES (OLD.id,1) ON CONFLICT(agent) DO UPDATE SET revision=revision+1; END",
+        "table": "runtime_agents",
+        "type": "trigger"
+      },
+      {
+        "name": "sync_transcript_revision_runtime_agents_insert",
+        "sql": "CREATE TRIGGER sync_transcript_revision_runtime_agents_insert AFTER INSERT ON runtime_agents BEGIN INSERT INTO runtime_transcript_revisions(agent,revision)\n                                    VALUES (NEW.id,1) ON CONFLICT(agent) DO UPDATE SET revision=revision+1; END",
+        "table": "runtime_agents",
+        "type": "trigger"
+      },
+      {
+        "name": "sync_transcript_revision_runtime_agents_update",
+        "sql": "CREATE TRIGGER sync_transcript_revision_runtime_agents_update AFTER UPDATE ON runtime_agents BEGIN INSERT INTO runtime_transcript_revisions(agent,revision)\n                                    VALUES (NEW.id,1) ON CONFLICT(agent) DO UPDATE SET revision=revision+1;\n                                    INSERT INTO runtime_transcript_revisions(agent,revision)\n                                    SELECT OLD.id,1 WHERE OLD.id!=NEW.id\n                                    ON CONFLICT(agent) DO UPDATE SET revision=revision+1; END",
+        "table": "runtime_agents",
+        "type": "trigger"
+      },
+      {
+        "name": "sync_transcript_revision_runtime_items_delete",
+        "sql": "CREATE TRIGGER sync_transcript_revision_runtime_items_delete AFTER DELETE ON runtime_items BEGIN INSERT INTO runtime_transcript_revisions(agent,revision)\n                                    VALUES (OLD.agent,1) ON CONFLICT(agent) DO UPDATE SET revision=revision+1; END",
+        "table": "runtime_items",
+        "type": "trigger"
+      },
+      {
+        "name": "sync_transcript_revision_runtime_items_insert",
+        "sql": "CREATE TRIGGER sync_transcript_revision_runtime_items_insert AFTER INSERT ON runtime_items BEGIN INSERT INTO runtime_transcript_revisions(agent,revision)\n                                    VALUES (NEW.agent,1) ON CONFLICT(agent) DO UPDATE SET revision=revision+1; END",
+        "table": "runtime_items",
+        "type": "trigger"
+      },
+      {
+        "name": "sync_transcript_revision_runtime_items_update",
+        "sql": "CREATE TRIGGER sync_transcript_revision_runtime_items_update AFTER UPDATE ON runtime_items BEGIN INSERT INTO runtime_transcript_revisions(agent,revision)\n                                    VALUES (NEW.agent,1) ON CONFLICT(agent) DO UPDATE SET revision=revision+1;\n                                    INSERT INTO runtime_transcript_revisions(agent,revision)\n                                    SELECT OLD.agent,1 WHERE OLD.agent!=NEW.agent\n                                    ON CONFLICT(agent) DO UPDATE SET revision=revision+1; END",
+        "table": "runtime_items",
+        "type": "trigger"
+      }
+    ]
+  }
+}

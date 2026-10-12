@@ -170,6 +170,78 @@ print(json.dumps({"task": task, "message": json.loads(message), "numeric_rows": 
                   "diagnostics": diagnostics}))
 "#;
 
+const CREATE_FEATURE_STATE: &str = r#"
+import json, pathlib, sys
+sys.path.insert(0, sys.argv[2])
+from codex_runtime import Runtime
+class QuietRuntime(Runtime):
+    def schedule(self):
+        return
+root = pathlib.Path(sys.argv[1])
+runtime = QuietRuntime(root, lambda *_args, **_kwargs: None)
+agent = runtime.create({"name":"feature fixture", "cwd":str(root), "prompt":"temporary"}, defer=True)
+agent_id = agent["id"]
+with runtime.lock, runtime.db() as db:
+    runtime.put(db, "agents", agent)
+    runtime.put(db, "tasks", {"id":"feature-task", "rootId":agent_id, "agent":agent_id, "status":"ready",
+        "title":"feature", "description":"", "owner":None, "created":1.0, "updated":2.0,
+        "createdBy":agent_id, "version":1, "dependencies":[], "decisions":[], "results":[],
+        "futureFeatureField":{"enabled":True}})
+from codex_voice import VoiceStore
+voice = VoiceStore(runtime)
+from codex_terminals import TerminalManager
+terminals = TerminalManager(root)
+from codex_multi_server import MultiServerService
+with runtime.db() as db:
+    MultiServerService.ensure_tables(db)
+from codex_server_discovery import ServerDiscovery
+from types import SimpleNamespace
+discovery = ServerDiscovery(SimpleNamespace(runtime=runtime))
+# Exercise the real migration routine without making the test depend on the
+# runner's free-space report. This empty disposable state has no payload to copy.
+import codex_work
+codex_work.shutil.disk_usage = lambda _path: SimpleNamespace(free=32 * 1024**3)
+runtime._search_migration_run()
+with runtime.db() as db:
+    phase = db.execute("SELECT phase FROM runtime_search_rollout WHERE id=1").fetchone()[0]
+    if phase != "complete":
+        raise AssertionError(f"search migration phase is {phase}")
+terminals.close()
+discovery.close()
+runtime.close()
+print(json.dumps({"agent_id":agent_id,"search_phase":phase}))
+"#;
+
+const VERIFY_FEATURE_STATE: &str = r#"
+import json, pathlib, sys
+sys.path.insert(0, sys.argv[2])
+from codex_runtime import Runtime
+class QuietRuntime(Runtime):
+    def schedule(self):
+        return
+root = pathlib.Path(sys.argv[1])
+agent_id = sys.argv[3]
+runtime = QuietRuntime(root, lambda *_args, **_kwargs: None)
+with runtime.db() as db:
+    agent = runtime.agent(agent_id, db)
+task = runtime.task_detail("feature-task")
+if not agent.get("rustWrite") or not task.get("rustWrite"):
+    raise AssertionError("Python record accessors did not observe Rust writes")
+with runtime.db() as db:
+    required = ("voice_sessions", "voice_records", "voice_approvals", "voice_deliveries",
+        "voice_speech_requests", "user_terminals", "user_terminal_output", "user_terminal_receipts",
+        "user_terminal_event_cursor", "user_terminal_decoder_state", "runtime_access_discovered",
+        "runtime_access_settings", "runtime_access_auto_attempts", "runtime_access_unrevokes",
+        "runtime_search_next", "runtime_search_next_config", "runtime_search_next_data",
+        "runtime_search_next_docsize", "runtime_search_next_idx")
+    actual = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    missing = sorted(set(required) - actual)
+    if missing:
+        raise AssertionError(f"feature tables disappeared: {missing}")
+runtime.close()
+print(json.dumps({"feature_tables":list(required),"agent":agent,"task":task}))
+"#;
+
 #[test]
 fn python_flock_excludes_rust_and_rust_flock_excludes_python() {
     let root = temporary_state("locks");
@@ -443,6 +515,36 @@ fn python_fixture_round_trips_through_rust_and_python_write_rollback_gate() {
         .cleanup()
         .expect("Python reference state is removed");
     root.cleanup().expect("temporary Python state is removed");
+}
+
+#[test]
+fn python_feature_initialized_state_round_trips_through_rust() {
+    let root = temporary_state("features");
+    let created = python(&root, CREATE_FEATURE_STATE, &[]);
+    let output: Value = serde_json::from_str(&created).expect("feature setup returns JSON");
+    let agent_id = output["agent_id"].as_str().expect("agent id exists");
+    assert_eq!(output["search_phase"], "complete");
+
+    let store = RuntimeStore::open(Some(&root)).expect("feature-initialized state opens");
+    store
+        .transaction(|tx| {
+            let mut agent =
+                AgentRepository::get(tx, &AgentId::from(agent_id))?.expect("agent exists");
+            agent.extra.insert("rustWrite".into(), json!(true));
+            AgentRepository::put(tx, &agent)?;
+            let mut task =
+                TaskRepository::get(tx, &TaskId::from("feature-task"))?.expect("task exists");
+            task.extra.insert("rustWrite".into(), json!(true));
+            TaskRepository::put(tx, &task)
+        })
+        .expect("Rust writes supported records");
+    drop(store);
+
+    let checked = python(&root, VERIFY_FEATURE_STATE, &[agent_id]);
+    let checked: Value = serde_json::from_str(&checked).expect("Python verifies feature state");
+    assert_eq!(checked["agent"]["rustWrite"], true);
+    assert_eq!(checked["task"]["rustWrite"], true);
+    root.cleanup().expect("feature state is removed");
 }
 
 fn python(root: &Path, code: &str, args: &[&str]) -> String {

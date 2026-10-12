@@ -151,134 +151,16 @@ pub struct ChatMessage {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AgentRepository;
 
-impl AgentRepository {
-    pub fn get(connection: &Connection, id: &AgentId) -> StoreResult<Option<AgentRecord>> {
-        get_json_record(connection, "runtime_agents", &id.0)
-    }
-
-    pub fn put(connection: &Connection, record: &AgentRecord) -> StoreResult<()> {
-        put_json_record(connection, "runtime_agents", &record.id.0, record)
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TaskRepository;
-
-impl TaskRepository {
-    pub fn get(connection: &Connection, id: &TaskId) -> StoreResult<Option<TaskRecord>> {
-        get_json_record(connection, "runtime_tasks", &id.0)
-    }
-
-    pub fn put(connection: &Connection, record: &TaskRecord) -> StoreResult<()> {
-        put_json_record(connection, "runtime_tasks", &record.id.0, record)
-    }
-}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct QueueEventRepository;
 
-impl QueueEventRepository {
-    pub fn get(connection: &Connection, id: &QueueEventId) -> StoreResult<Option<QueueEvent>> {
-        let event = connection
-            .query_row(
-                "SELECT id, agent, kind, text, status, created, epoch, turn_id, error \
-                 FROM runtime_events WHERE id = ?1",
-                [&id.0],
-                |row| {
-                    Ok(QueueEvent {
-                        id: QueueEventId(row.get(0)?),
-                        agent: AgentId(row.get(1)?),
-                        kind: row.get(2)?,
-                        text: row.get(3)?,
-                        status: row.get(4)?,
-                        created: row.get(5)?,
-                        epoch: row.get(6)?,
-                        turn_id: row.get(7)?,
-                        error: row.get(8)?,
-                    })
-                },
-            )
-            .optional()?;
-        Ok(event)
-    }
-
-    pub fn put(connection: &Connection, event: &QueueEvent) -> StoreResult<()> {
-        connection.execute(
-            "INSERT INTO runtime_events(id, agent, kind, text, status, created, epoch, turn_id, error) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
-             ON CONFLICT(id) DO UPDATE SET agent=excluded.agent, kind=excluded.kind, \
-             text=excluded.text, status=excluded.status, created=excluded.created, \
-             epoch=excluded.epoch, turn_id=excluded.turn_id, error=excluded.error",
-            params![
-                event.id.0,
-                event.agent.0,
-                event.kind,
-                event.text,
-                event.status,
-                event.created,
-                event.epoch,
-                event.turn_id,
-                event.error,
-            ],
-        )?;
-        Ok(())
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MessageRepository;
 
-impl MessageRepository {
-    pub fn get(connection: &Connection, id: &ChatMessageId) -> StoreResult<Option<ChatMessage>> {
-        let message = connection
-            .query_row(
-                "SELECT seq, id, room, sender, text, created, deliveries \
-                 FROM runtime_chat_messages WHERE id = ?1",
-                [&id.0],
-                |row| {
-                    let deliveries: String = row.get(6)?;
-                    let parsed = serde_json::from_str(&deliveries).map_err(|error| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            6,
-                            rusqlite::types::Type::Text,
-                            Box::new(error),
-                        )
-                    })?;
-                    Ok(ChatMessage {
-                        sequence: row.get(0)?,
-                        id: ChatMessageId(row.get(1)?),
-                        room: row.get(2)?,
-                        sender: row.get(3)?,
-                        text: row.get(4)?,
-                        created: row.get(5)?,
-                        deliveries: parsed,
-                    })
-                },
-            )
-            .optional()?;
-        Ok(message)
-    }
-
-    pub fn put(connection: &Connection, message: &ChatMessage) -> StoreResult<()> {
-        connection.execute(
-            "INSERT INTO runtime_chat_messages(id, room, sender, text, created, deliveries) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
-             ON CONFLICT(id) DO UPDATE SET room=excluded.room, sender=excluded.sender, \
-             text=excluded.text, created=excluded.created, deliveries=excluded.deliveries",
-            params![
-                message.id.0,
-                message.room,
-                message.sender,
-                message.text,
-                message.created,
-                serde_json::to_string(&message.deliveries)?,
-            ],
-        )?;
-        Ok(())
-    }
-}
-
-fn get_json_record<T: serde::de::DeserializeOwned>(
+pub(crate) fn get_json_record<T: serde::de::DeserializeOwned>(
     connection: &Connection,
     table: &str,
     id: &str,
@@ -302,7 +184,7 @@ fn get_json_record<T: serde::de::DeserializeOwned>(
     Ok(record)
 }
 
-fn put_json_record<T: Serialize>(
+pub(crate) fn put_json_record<T: Serialize>(
     connection: &Connection,
     table: &str,
     id: &str,

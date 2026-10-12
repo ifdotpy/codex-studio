@@ -1,5 +1,6 @@
 mod path;
 mod records;
+mod repositories;
 mod schema;
 
 use std::fs::{File, OpenOptions};
@@ -28,8 +29,14 @@ pub enum StoreError {
     MissingDatabase(PathBuf),
     #[error("state directory cannot be inside .claude")]
     UnsafeStateDirectory,
-    #[error("database schema or migration markers do not match the committed snapshot: {0}")]
+    #[error("database schema or migration marker is incompatible: {0}")]
     SchemaMismatch(String),
+    #[error("database object {object} in {database} is incompatible: {reason}")]
+    SchemaObjectMismatch {
+        database: String,
+        object: String,
+        reason: String,
+    },
     #[error("SQLite operation failed: {0}")]
     Sqlite(#[from] rusqlite::Error),
     #[error("SQLite commit outcome is unknown: {0}")]
