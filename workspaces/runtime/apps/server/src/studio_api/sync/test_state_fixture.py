@@ -50,7 +50,9 @@ class StateFixtureResponseTests(unittest.TestCase):
 
         threading.Thread(target=collect_output, name="entity-fixture-output", daemon=True).start()
         observed: list[str] = []
-        deadline = time.monotonic() + 30
+        # The loop ends when the fixture prints its port or exits. This bound only
+        # stops a hang; a cold start on a loaded 4-core runner has exceeded 30 s.
+        deadline = time.monotonic() + 180
         while time.monotonic() < deadline:
             if cls.process.poll() is not None and lines.empty():
                 break
