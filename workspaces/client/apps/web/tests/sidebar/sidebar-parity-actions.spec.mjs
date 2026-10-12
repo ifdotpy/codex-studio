@@ -140,8 +140,10 @@ test("saved folders, nested folders, order, pins, teams, compact and collapse re
     const projectHeading = sidebar.locator(".project-tree-toggle", {
       hasText: "Home project",
     });
-    await expect(projectHeading).not.toHaveAttribute("aria-expanded");
+    await expect(projectHeading).toHaveAttribute("aria-expanded", "true");
     const visibleBeforeClick = await sidebar.locator("[data-chat]").count();
+    await projectHeading.click();
+    await expect(projectHeading).toHaveAttribute("aria-expanded", "false");
     await projectHeading.click();
     await expect(sidebar.locator("[data-chat]")).toHaveCount(
       visibleBeforeClick,
@@ -725,7 +727,7 @@ test("project pointer and keyboard order plus pin keyboard order persist on the 
       hasText: "Home project",
     });
     await expect(otherProject).toBeVisible();
-    await expect(otherProject).not.toHaveAttribute("aria-expanded");
+    await expect(otherProject).toHaveAttribute("aria-expanded", "true");
     const visibleChats = sidebar.locator("[data-chat]");
     await expect(visibleChats).toHaveCount(14);
     const initialChats = await visibleChats.count();

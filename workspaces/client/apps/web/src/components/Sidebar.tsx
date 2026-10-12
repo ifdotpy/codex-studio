@@ -355,6 +355,8 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
   };
   const folderKey = (path: string, id: string) =>
     JSON.stringify([path, "folder", id]);
+  // Not the bare path: saved values of the earlier project collapse stay unused.
+  const projectTreeKey = (path: string) => JSON.stringify([path, "project"]);
   const projectKey = `codex-project-tree:${p.data.stateDir}`;
   const [collapsed, setCollapsed] = useSidebarVisualState<
     Record<string, boolean>
@@ -498,6 +500,8 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
         ancestors[folderKey(path || "", folder.id)] = false;
         folder = folders.find((item) => item.id === folder!.parentId);
       }
+      if (path && collapsed[projectTreeKey(path)])
+        ancestors[projectTreeKey(path)] = false;
       if (path && Object.keys(ancestors).length) {
         const next = { ...collapsed, ...ancestors };
         setCollapsed(
@@ -565,7 +569,10 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
         }).then((moved) => {
           if (!moved) return;
           setCollapsed((previous) => {
-            const next = { ...previous, [project.path]: false };
+            const next = {
+              ...previous,
+              [projectTreeKey(project.path)]: false,
+            };
             let parent = folder;
             const seen = new Set<string>();
             while (parent && !seen.has(parent.id)) {
@@ -1419,6 +1426,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
             }
           };
           const layrChip = chipWithVault(chip, vaultEntries);
+          const closed = !!collapsed[projectTreeKey(group.path)] && !query;
           const syncDialogEntry =
             syncDialog?.path === group.path
               ? syncEntries.find(
@@ -1445,8 +1453,10 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                   )}
                   className="project-tree-toggle"
                   title={services.displayPath?.(group.path) || group.path}
+                  aria-expanded={!closed}
+                  onClick={() => toggleTree(projectTreeKey(group.path))}
                 >
-                  <FolderOpen size={18} />
+                  {closed ? <Folder size={18} /> : <FolderOpen size={18} />}
                   <span title={group.name}>{group.name}</span>
                 </UnstyledButton>
                 {!archive && (!compact || !!group.path) && (
@@ -1802,74 +1812,79 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                     />
                   </SidebarBackendProvider>
                 ))}
-              <div className="project-chats">
-                {visibleSharedRooms
-                  .filter((r) => r.projectPath === group.path)
-                  .map((room) => {
-                    const alias =
-                      services.alias?.({ kind: "chat", id: room.id }) ||
-                      aliases[services.serverForChat(room.id)] ||
-                      DEFAULT_LOCAL_SERVER_ALIAS;
-                    const serverOffline =
-                      p.offlineServers?.has(services.serverForChat(room.id)) ??
-                      false;
-                    const chatRow = (
+              {!closed && (
+                <div className="project-chats">
+                  {visibleSharedRooms
+                    .filter((r) => r.projectPath === group.path)
+                    .map((room) => {
+                      const alias =
+                        services.alias?.({ kind: "chat", id: room.id }) ||
+                        aliases[services.serverForChat(room.id)] ||
+                        DEFAULT_LOCAL_SERVER_ALIAS;
+                      const serverOffline =
+                        p.offlineServers?.has(
+                          services.serverForChat(room.id),
+                        ) ?? false;
+                      const chatRow = (
+                        <UnstyledButton
+                          className="chat-row"
+                          aria-description={
+                            serverOffline
+                              ? `${alias} is unreachable. Showing the last known state.`
+                              : undefined
+                          }
+                          aria-current={
+                            p.opened === room.id ? "page" : undefined
+                          }
+                          onClick={() => p.open(room.id)}
+                        >
+                          <span className="row-copy">
+                            <strong>{room.name}</strong>
+                            <ChatServerLine
+                              provider={
+                                p.data.threads.find((agent) =>
+                                  room.members?.includes(agent.id),
+                                )?.provider || undefined
+                              }
+                              alias={alias}
+                              offline={serverOffline}
+                            />
+                          </span>
+                        </UnstyledButton>
+                      );
+                      return (
+                        <div
+                          key={room.id}
+                          className={`sidebar-row lead-row ${p.opened === room.id ? "selected" : ""}`}
+                        >
+                          {chatRow}
+                        </div>
+                      );
+                    })}
+                  {renderProjectChats(group)}
+                  {!query &&
+                    (viewChatCounts.get(group.path) || 0) >=
+                      hideOldChatsThreshold &&
+                    (isCompactProject(group.path)
+                      ? filtered.filter((a) => a.cwd === group.path).length >
+                        group.chats.length
+                      : filtered.some((a) => a.cwd === group.path)) && (
                       <UnstyledButton
-                        className="chat-row"
-                        aria-description={
-                          serverOffline
-                            ? `${alias} is unreachable. Showing the last known state.`
-                            : undefined
+                        className="project-show-all"
+                        onClick={() =>
+                          setCompactProject(
+                            group.path,
+                            !isCompactProject(group.path),
+                          )
                         }
-                        aria-current={p.opened === room.id ? "page" : undefined}
-                        onClick={() => p.open(room.id)}
                       >
-                        <span className="row-copy">
-                          <strong>{room.name}</strong>
-                          <ChatServerLine
-                            provider={
-                              p.data.threads.find((agent) =>
-                                room.members?.includes(agent.id),
-                              )?.provider || undefined
-                            }
-                            alias={alias}
-                            offline={serverOffline}
-                          />
-                        </span>
+                        {isCompactProject(group.path)
+                          ? `Show old (${oldChatCount})`
+                          : "Hide old"}
                       </UnstyledButton>
-                    );
-                    return (
-                      <div
-                        key={room.id}
-                        className={`sidebar-row lead-row ${p.opened === room.id ? "selected" : ""}`}
-                      >
-                        {chatRow}
-                      </div>
-                    );
-                  })}
-                {renderProjectChats(group)}
-                {!query &&
-                  (viewChatCounts.get(group.path) || 0) >=
-                    hideOldChatsThreshold &&
-                  (isCompactProject(group.path)
-                    ? filtered.filter((a) => a.cwd === group.path).length >
-                      group.chats.length
-                    : filtered.some((a) => a.cwd === group.path)) && (
-                    <UnstyledButton
-                      className="project-show-all"
-                      onClick={() =>
-                        setCompactProject(
-                          group.path,
-                          !isCompactProject(group.path),
-                        )
-                      }
-                    >
-                      {isCompactProject(group.path)
-                        ? `Show old (${oldChatCount})`
-                        : "Hide old"}
-                    </UnstyledButton>
-                  )}
-              </div>
+                    )}
+                </div>
+              )}
             </section>
           );
         })}

@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-test("project pointer and keyboard order persist without collapsing", async ({
+test("project pointer and keyboard order persist, and a click collapses the project", async ({
   page: runnerPage,
 }) => {
   const skill = fileURLToPath(new URL("../../../../../../", import.meta.url));
@@ -218,10 +218,15 @@ test("project pointer and keyboard order persist without collapsing", async ({
     assert.equal(await projectsHeading.getAttribute("aria-expanded"), null);
     const projectName = group("assistant").locator(".project-tree-toggle");
     assert.equal(await projectName.evaluate((node) => node.tagName), "BUTTON");
-    assert.equal(await projectName.getAttribute("aria-expanded"), null);
-    await projectName.click();
+    // The saved bare path of the earlier project collapse leaves it open.
+    assert.equal(await projectName.getAttribute("aria-expanded"), "true");
     const initialChats = group("assistant").locator("[data-chat]");
     // The list fills in after reload, so wait for the full set before counting.
+    await waitFor(async () => (await initialChats.count()) === 7);
+    await projectName.click();
+    await waitFor(async () => (await initialChats.count()) === 0);
+    assert.equal(await projectName.getAttribute("aria-expanded"), "false");
+    await projectName.click();
     await waitFor(async () => (await initialChats.count()) === 7);
     assert.equal(await initialChats.count(), 7);
     assert.equal(
@@ -452,15 +457,25 @@ test("project pointer and keyboard order persist without collapsing", async ({
     await waitFor(
       async () => !(await state()).find((a) => a.id === pinnedId).pinned,
     );
-    assert.equal(await assistantProject.getAttribute("aria-expanded"), null);
+    assert.equal(await assistantProject.getAttribute("aria-expanded"), "true");
     const assistantChatCount = await group("assistant")
       .locator("[data-chat]")
       .count();
     await assistantProject.click();
+    await waitFor(
+      async () =>
+        (await group("assistant").locator("[data-chat]").count()) === 0,
+    );
+    await assistantProject.click();
+    await waitFor(
+      async () =>
+        (await group("assistant").locator("[data-chat]").count()) ===
+        assistantChatCount,
+    );
     assert.equal(
       await group("assistant").locator("[data-chat]").count(),
       assistantChatCount,
-      "Clicking a project name leaves its chats visible",
+      "A second click on a project name shows its chats again",
     );
     await page.locator(`[data-chat="${legal.id}"]`).click();
     await page.reload();
@@ -469,7 +484,7 @@ test("project pointer and keyboard order persist without collapsing", async ({
       await group("assistant")
         .locator(".project-tree-toggle")
         .getAttribute("aria-expanded"),
-      null,
+      "true",
     );
     assert.equal(
       await group("assistant").locator("[data-chat]").count(),

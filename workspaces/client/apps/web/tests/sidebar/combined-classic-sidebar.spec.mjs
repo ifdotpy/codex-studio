@@ -193,11 +193,15 @@ for (const [theme, viewport] of [
       ).toHaveAccessibleDescription(
         "REM: Ready for layr chats. Drag to reorder. Alt + Up or Down also works.",
       );
-      await expect(projectName).not.toHaveAttribute("aria-expanded");
+      await expect(projectName).toHaveAttribute("aria-expanded", "true");
       expect(await projectName.evaluate((element) => element.tagName)).toBe(
         "BUTTON",
       );
       const chatCount = await sidebar.locator("[data-chat]").count();
+      // The heading collapses the merged project with the chats of both servers.
+      await projectName.click();
+      await expect(projectName).toHaveAttribute("aria-expanded", "false");
+      await expect(sidebar.locator("[data-chat]")).toHaveCount(0);
       await projectName.click();
       await expect(sidebar.locator("[data-chat]")).toHaveCount(chatCount);
       await expect(page.getByLabel("Studio server")).toHaveCount(0);
