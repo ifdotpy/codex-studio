@@ -2,6 +2,7 @@ pub(crate) mod compose;
 pub(crate) mod extractors;
 pub(crate) mod manifest;
 
+mod agents_create;
 mod desktop;
 mod rules;
 mod session;
@@ -13,6 +14,7 @@ use manifest::RouteGroup;
 
 pub(crate) fn groups() -> Vec<RouteGroup> {
     vec![
+        agents_create::routes(),
         session::routes(),
         rules::routes(),
         sync::routes(),
