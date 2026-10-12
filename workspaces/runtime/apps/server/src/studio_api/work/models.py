@@ -19,12 +19,18 @@ from codex_records import (
     RuleRecord as RuleRecordContract,
     ToolRequestRecord as ToolRequestRecordContract,
     WorkViewRecord as WorkViewRecordContract,
-    WorkArchiveIntentRecord,
-    WorkArchiveRecord,
     WorkDecisionRecord,
     WorkResultRecord,
 )
-from studio_api.models import ContractModel, JsonValue, ResponseModel, SafeInt, SafeQueryInt, SignedSafeInt
+from studio_api.models import (
+    MAX_SAFE_INTEGER,
+    ContractModel,
+    JsonValue,
+    ResponseModel,
+    SafeInt,
+    SafeQueryInt,
+    SignedSafeInt,
+)
 from studio_api.history.models import CheckpointSummary, TranscriptAsset
 from studio_api.sync.models import (
     MonitorEntityDto,
@@ -59,7 +65,7 @@ class WorkspaceQuery(AgentQuery):
 class TaskFeedQuery(AgentQuery):
     cursor: StrictStr | None = None
     before: StrictStr | None = None
-    limit: SafeQueryInt = 100
+    limit: SafeQueryInt = Field(default=100, ge=0, le=MAX_SAFE_INTEGER)
     timing: Literal["0", "1"] = "0"
 
 
@@ -71,7 +77,7 @@ class AgentChatQuery(ContractModel):
     room: StrictStr = ""
     before: SafeQueryInt | None = None
     after: SafeQueryInt | None = None
-    limit: SafeQueryInt = 100
+    limit: SafeQueryInt = Field(default=100, ge=0, le=MAX_SAFE_INTEGER)
 
 
 class ReceiptQuery(AgentQuery):
@@ -117,7 +123,7 @@ class WorkBody(OperationBody):
 
 
 class QueueCancelBody(OperationBody):
-    id: StrictStr = ""
+    id: StrictStr | None = None
     action: Literal["cancel"]
     request_id: StrictStr | None = Field(default=None, max_length=200)
     message_id: StrictStr | None = None
@@ -344,6 +350,26 @@ class PanelLayoutBody(ContractModel):
     lastVisibleHeading: StrictStr | None = None
 
 
+class WorkArchiveRecord(TypedDict, total=False, extra_items=JsonValue):  # type: ignore[call-arg]
+    reason: StrictStr
+    status: StrictStr
+    worktree: JsonObjectResponse
+
+
+class WorkArchiveIntentRecord(TypedDict, extra_items=JsonValue):  # type: ignore[call-arg]
+    id: Required[StrictStr]
+    status: Required[Literal["pending", "complete", "terminal"]]
+    owner: NotRequired[StrictStr | None]
+    attempts: NotRequired[SafeInt]
+    created: NotRequired[StrictFloat]
+    schedulerVersion: NotRequired[SafeInt]
+    previousId: NotRequired[StrictStr]
+    nextAttemptAt: NotRequired[StrictFloat]
+    lastOutcome: NotRequired[WorkArchiveRecord]
+    updated: NotRequired[StrictFloat]
+    outcome: NotRequired[WorkArchiveRecord]
+
+
 class WorkItem(ResponseModel):
     """work_view spreads stored records; retain their unknown top-level and nested fields."""
 
@@ -549,22 +575,31 @@ class _OpenRecordResponse(ResponseModel):
 _RECORD_RESPONSE_MODELS: dict[tuple[type[Any], frozenset[str]], Any] = {}
 
 
-def _response_annotation(annotation: object, name: str) -> Any:
+_SIGNED_RESPONSE_INTEGER_FIELDS = frozenset(
+    {"exitCode", "lastExitCode", "lastStallExitCode", "stallWakeGeneration"}
+)
+
+
+def _response_annotation(annotation: object, name: str, *, field_name: str = "") -> Any:
+    if annotation is int:
+        # TypedDict record annotations are the storage contract; make the
+        # generated response model enforce the safe range it publishes.
+        return SignedSafeInt if field_name in _SIGNED_RESPONSE_INTEGER_FIELDS else SafeInt
     if annotation == _JSON_OBJECT_CONTRACT:
         return JsonObjectResponse
     origin = get_origin(annotation)
     args = get_args(annotation)
     if origin in (NotRequired, Required):
-        return origin[_response_annotation(args[0], name)]
+        return origin[_response_annotation(args[0], name, field_name=field_name)]
     if isinstance(annotation, type) and hasattr(annotation, "__required_keys__"):
         record = cast(type[Any], annotation)
         return _record_response_model(f"{record.__name__}Response", record)
     if origin is Annotated:
-        return Annotated[_response_annotation(args[0], name), *args[1:]]
+        return Annotated[_response_annotation(args[0], name, field_name=field_name), *args[1:]]
     if origin in (Union, UnionType):
-        return Union[tuple(_response_annotation(arg, name) for arg in args)]
+        return Union[tuple(_response_annotation(arg, name, field_name=field_name) for arg in args)]
     if origin is not None and args and origin is not Literal:
-        converted = tuple(_response_annotation(arg, name) for arg in args)
+        converted = tuple(_response_annotation(arg, name, field_name=field_name) for arg in args)
         parameter = converted[0] if len(converted) == 1 else converted
         try:
             return origin[parameter]
@@ -590,7 +625,9 @@ def _record_response_model(
         origin = get_origin(annotation)
         if origin in (NotRequired, Required):
             annotation = get_args(annotation)[0]
-        annotation = _response_annotation(annotation, f"{name}{field_name.title()}")
+        annotation = _response_annotation(
+            annotation, f"{name}{field_name.title()}", field_name=field_name
+        )
         default = ... if field_name in required or field_name in required_fields else None
         fields[field_name] = (annotation, default)
     create_response_model = cast(Callable[..., Any], create_model)

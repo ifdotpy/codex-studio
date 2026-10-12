@@ -545,7 +545,10 @@ class FederationRouterTests(unittest.TestCase):
     def test_oversize_body_rejected_before_service(self) -> None:
         response = self.post_signed(b" " * (MAX_BODY_BYTES + 1))
         self.assertEqual(response.status_code, 413)
-        self.assertEqual(response.json(), {"error": "Invalid request size"})
+        self.assertEqual(
+            response.json(),
+            {"error": "Invalid request size", "location": ["body"]},
+        )
         self.assertEqual(self.runtime.service.calls, [])
         self.assertEqual(self.runtime.service.writes, 0)
 

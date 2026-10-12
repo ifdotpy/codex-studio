@@ -7,7 +7,7 @@ import math
 import threading
 from typing import cast
 
-from studio_api.models import JsonValue, MAX_SAFE_INTEGER
+from studio_api.models import JsonValue, MAX_SAFE_INTEGER, MIN_SAFE_INTEGER
 
 
 HTTP_METHODS = frozenset({"get", "put", "post", "delete", "options", "head", "patch", "trace"})
@@ -56,6 +56,7 @@ def openapi_document() -> dict[str, JsonValue]:
 
     app = create_app(ApiContext.for_schema())
     document = cast(dict[str, JsonValue], json.loads(json.dumps(app.openapi())))
+    remove_orphan_fastapi_validation_schemas(document)
     normalize_json_value_schema(document)
     normalize_optional_parameter_schemas(document)
     bound_integer_schemas(document)
@@ -63,7 +64,7 @@ def openapi_document() -> dict[str, JsonValue]:
     document["x-query-parameter-contract"] = {
         "unknown": "reject",
         "repeatedScalar": "reject",
-        "integerPattern": "^-?[0-9]+$",
+        "integerPattern": "^[0-9]+$",
         "numberPattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$",
         "booleanValues": ["true", "false"],
     }
@@ -287,15 +288,16 @@ def normalize_optional_parameter_schemas(document: dict[str, JsonValue]) -> None
 
 
 def bound_integer_schemas(document: dict[str, JsonValue]) -> None:
-    """Give each typed integer branch a portable safe-integer range.
+    """Normalize bounds declared by validating types; never invent a range.
 
-    Model aliases carry runtime validation bounds. This document pass also
-    bounds integer literals and generated shared DTOs. JsonValue's opaque
-    recursive schema contains a `number` branch, not an integer branch.
+    SafeInt and SignedSafeInt carry runtime and schema bounds. Exact integer
+    literals/enums carry their own runtime domain and receive equivalent bounds
+    from those values. Missing bounds remain an audit error.
     """
     def visit(value: JsonValue) -> None:
         if isinstance(value, dict):
             if value.get("type") == "integer":
+                safe_domain = value.pop("x-safe-integer", None)
                 # Pydantic can preserve Field constraints as internal metadata
                 # when SafeInt is nested in an optional union. Normalize those
                 # enforced constraints to their JSON Schema spellings first.
@@ -314,24 +316,54 @@ def bound_integer_schemas(document: dict[str, JsonValue]) -> None:
                             value[target] = max(existing, constraint)
                         else:
                             value[target] = min(existing, constraint)
-                if "minimum" not in value:
-                    exclusive_minimum = value.get("exclusiveMinimum")
-                    value["minimum"] = (
-                        math.floor(exclusive_minimum) + 1
-                        if isinstance(exclusive_minimum, (int, float))
-                        else 0
+                if safe_domain in {"unsigned", "signed"}:
+                    domain_minimum = MIN_SAFE_INTEGER if safe_domain == "signed" else 0
+                    domain_maximum = MAX_SAFE_INTEGER
+                    existing_minimum = value.get("minimum")
+                    existing_maximum = value.get("maximum")
+                    value["minimum"] = max(
+                        existing_minimum
+                        if isinstance(existing_minimum, (int, float))
+                        and not isinstance(existing_minimum, bool)
+                        else domain_minimum,
+                        domain_minimum,
                     )
-                if "maximum" not in value:
-                    exclusive_maximum = value.get("exclusiveMaximum")
-                    value["maximum"] = (
-                        math.ceil(exclusive_maximum) - 1
-                        if isinstance(exclusive_maximum, (int, float))
-                        else MAX_SAFE_INTEGER
+                    value["maximum"] = min(
+                        existing_maximum
+                        if isinstance(existing_maximum, (int, float))
+                        and not isinstance(existing_maximum, bool)
+                        else domain_maximum,
+                        domain_maximum,
                     )
+                exclusive_minimum = value.get("exclusiveMinimum")
+                if (
+                    "minimum" not in value
+                    and isinstance(exclusive_minimum, (int, float))
+                    and not isinstance(exclusive_minimum, bool)
+                ):
+                    value["minimum"] = math.floor(exclusive_minimum) + 1
+                exclusive_maximum = value.get("exclusiveMaximum")
+                if (
+                    "maximum" not in value
+                    and isinstance(exclusive_maximum, (int, float))
+                    and not isinstance(exclusive_maximum, bool)
+                ):
+                    value["maximum"] = math.ceil(exclusive_maximum) - 1
                 const = value.get("const")
                 if isinstance(const, int) and not isinstance(const, bool):
                     value["minimum"] = const
                     value["maximum"] = const
+                enum = value.get("enum")
+                if (
+                    "minimum" not in value
+                    and "maximum" not in value
+                    and isinstance(enum, list)
+                    and enum
+                    and all(isinstance(item, int) and not isinstance(item, bool) for item in enum)
+                ):
+                    integer_values = [item for item in enum if isinstance(item, int) and not isinstance(item, bool)]
+                    value["minimum"] = min(integer_values)
+                    value["maximum"] = max(integer_values)
             for child in value.values():
                 visit(child)
         elif isinstance(value, list):

@@ -75,7 +75,7 @@ from .models import (
     UsageResumeRequest,
     UsageResumeResponse,
 )
-from studio_api.models import JsonValue, ResponseModel
+from studio_api.models import JsonValue, ResponseModel, SafeInt
 
 AgentJsonRecord = dict[str, JsonValue]
 
@@ -142,11 +142,11 @@ class StopResponse(ResponseModel):
 
 class ConfigureResponse(ResponseModel):
     id: str
-    concurrency: int
+    concurrency: SafeInt
     agentMode: AgentMode
-    agentModeRevision: int
-    maxAgents: int
-    tokenBudget: int | None = None
+    agentModeRevision: SafeInt
+    maxAgents: SafeInt
+    tokenBudget: SafeInt | None = None
 
 
 def create_router(context: ApiContext) -> APIRouter:

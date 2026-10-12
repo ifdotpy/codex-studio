@@ -77,10 +77,41 @@ class MainIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.runtime.rename.assert_not_called()
 
+    def test_duplicate_excluded_account_keys_are_rejected_at_http_boundary(self) -> None:
+        response = self.client.post(
+            "/api/conversation",
+            json={"id": "lead", "excluded_account_keys": ["second", "second"]},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json(),
+            {"error": "Invalid request", "location": ["body", "excluded_account_keys"]},
+        )
+
+    def test_sync_stream_rejects_invalid_resource_query_with_location(self) -> None:
+        response = self.client.get("/api/sync/stream?protocol=3&resources=invalid")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json(),
+            {"error": "Invalid request", "location": ["query", "resources"]},
+        )
+
+    def test_monitor_log_requires_id_with_query_location(self) -> None:
+        response = self.client.get("/api/monitor/log")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json(),
+            {"error": "Invalid request", "location": ["query", "id"]},
+        )
+
     def test_project_body_limit_rejects_before_dispatch(self) -> None:
         response = self.client.post("/api/projects", content=b" " * (6 * 1024 * 1024 + 1),
                                     headers={"Content-Type": "application/json"})
         self.assertEqual(response.status_code, 413)
+        self.assertEqual(
+            response.json(),
+            {"error": "Invalid request size", "location": ["body"]},
+        )
         self.runtime.projects.assert_not_called()
 
     def test_discover_optional_body_accepts_absent_and_object_rejects_null(self) -> None:

@@ -8,8 +8,19 @@ from tempfile import TemporaryDirectory
 from typing import cast
 
 from codex_layout import REPOSITORY_ROOT
+from pydantic import TypeAdapter, ValidationError
 from codex_sync_entities import _DTO_MODELS
-from studio_api.models import JsonValue
+from studio_api.models import (
+    MAX_SAFE_INTEGER,
+    MIN_SAFE_INTEGER,
+    JsonValue,
+    SafeInt,
+    SafeIntHeader,
+    SafeQueryInt,
+    SignedSafeInt,
+)
+from studio_api.io.models import TerminalRecord
+from studio_api.work.models import RuleRecord, WorkItem
 from studio_api.generate_types import render
 from studio_api.schema import (
     entity_schema_names,
@@ -92,6 +103,84 @@ def sample_document(response_schema: dict[str, JsonValue]) -> dict[str, JsonValu
 
 
 class SchemaContractTests(unittest.TestCase):
+    def test_integer_alias_runtime_and_exported_bounds_agree(self) -> None:
+        cases = (
+            (SafeInt, 0, MAX_SAFE_INTEGER, (-1, MAX_SAFE_INTEGER + 1)),
+            (SignedSafeInt, MIN_SAFE_INTEGER, MAX_SAFE_INTEGER,
+             (MIN_SAFE_INTEGER - 1, MAX_SAFE_INTEGER + 1)),
+            (SafeQueryInt, 0, MAX_SAFE_INTEGER, ("+1", " 1", "1.0", "")),
+            (SafeIntHeader, 0, MAX_SAFE_INTEGER, ("+1", " 1", "1.0", "")),
+        )
+        for alias, minimum, maximum, invalid_values in cases:
+            with self.subTest(alias=alias):
+                adapter = TypeAdapter(alias)
+                document: dict[str, JsonValue] = {
+                    "components": {"schemas": {"value": adapter.json_schema()}}
+                }
+                bound_integer_schemas(document)
+                components = document["components"]
+                assert isinstance(components, dict)
+                schemas = components["schemas"]
+                assert isinstance(schemas, dict)
+                schema = schemas["value"]
+                assert isinstance(schema, dict)
+                self.assertEqual(schema["minimum"], minimum)
+                self.assertEqual(schema["maximum"], maximum)
+                for accepted_value in (minimum, maximum):
+                    accepted = (
+                        str(accepted_value)
+                        if alias in (SafeQueryInt, SafeIntHeader)
+                        else accepted_value
+                    )
+                    adapter.validate_python(accepted)
+                for invalid_value in invalid_values:
+                    with self.assertRaises(ValidationError):
+                        adapter.validate_python(invalid_value)
+
+    def test_persisted_rule_and_negative_exit_code_fit_bounded_response_models(self) -> None:
+        rule = RuleRecord.model_validate(
+            {"id": "rule-1", "kind": "once", "stallWakeGeneration": -1}
+        )
+        self.assertEqual(rule.stallWakeGeneration, -1)
+        terminal = TerminalRecord.model_validate(
+            {"id": "terminal-1", "agent": "agent-1", "title": "shell",
+             "cwd": "/tmp", "status": "exited", "created": 1, "exitCode": -9}
+        )
+        self.assertEqual(terminal.exitCode, -9)
+
+        document = json.loads(
+            (REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-http/openapi.json")
+            .read_text(encoding="utf-8")
+        )
+        components = document["components"]["schemas"]
+        rule_integer = components["RuleRecordResponse"]["properties"]["stallWakeGeneration"]
+        self.assertLessEqual(rule_integer["minimum"], rule.stallWakeGeneration)
+        self.assertGreaterEqual(rule_integer["maximum"], rule.stallWakeGeneration)
+        exit_schema = components["TerminalRecord"]["properties"]["exitCode"]
+        exit_integer = next(branch for branch in exit_schema["anyOf"] if branch.get("type") == "integer")
+        self.assertLessEqual(exit_integer["minimum"], terminal.exitCode)
+        self.assertGreaterEqual(exit_integer["maximum"], terminal.exitCode)
+
+    def test_work_archive_producer_integer_fields_use_safe_runtime_aliases(self) -> None:
+        adapter = TypeAdapter(WorkItem)
+        item = {
+            "id": "work-1", "rootId": "root-1", "title": "Archive",
+            "status": "ready", "created": 1, "updated": 2, "version": 1,
+            "archiveIntent": {
+                "id": "archive-1", "status": "pending", "attempts": MAX_SAFE_INTEGER,
+                "schedulerVersion": MAX_SAFE_INTEGER,
+            },
+        }
+        result = adapter.validate_python(item)
+        assert result.archiveIntent is not None
+        self.assertEqual(result.archiveIntent["attempts"], MAX_SAFE_INTEGER)
+        for field in ("attempts", "schedulerVersion"):
+            with self.subTest(field=field):
+                invalid = json.loads(json.dumps(item))
+                invalid["archiveIntent"][field] = MAX_SAFE_INTEGER + 1
+                with self.assertRaises(ValidationError):
+                    adapter.validate_python(invalid)
+
     def test_generated_document_does_not_loosen_main_constraint_baseline(self) -> None:
         baseline_path = Path(__file__).with_name("openapi_constraint_baseline.json")
         manifest = json.loads(baseline_path.read_text(encoding="utf-8"))
@@ -120,6 +209,34 @@ class SchemaContractTests(unittest.TestCase):
                 "Adds the nullable branch for the error location field.",
             ("/paths/~1api~1sync~1drafts/post/requestBody/content/application~1json/schema/properties/rows/items/properties/newDocumentState/properties/deleted", "property"):
                 "Publishes the deleted state in the sync drafts request schema.",
+            ("/paths/~1api~1analytics/get/operationParameters/query/from_time", "parameter"):
+                "Documents the client's from_time filter, which the insights model maps to its legacy 'from' option.",
+            ("/paths/~1api~1analytics/get/operationParameters/query/to_time", "parameter"):
+                "Documents the client's to_time filter, which the insights model maps to its legacy 'to' option.",
+            ("/paths/~1api~1monitor~1log/get/operationParameters/header/Range", "parameter"):
+                "Documents the standard optional HTTP Range header already interpreted by the handler.",
+            ("/paths/~1api~1sync~1stream/get/operationParameters/header/Last-Event-ID", "parameter"):
+                "Documents the optional event cursor header now parsed by the shared safe-integer type.",
+            ("/paths/~1api~1sync~1stream/get/operationParameters/header/X-Codex-Sync-Protocol", "parameter"):
+                "Documents the optional protocol negotiation header already read by the stream handler.",
+            ("/paths/~1api~1sync~1stream/get/operationParameters/query/apiSchema", "parameter"):
+                "Documents the optional API schema query used by the existing client compatibility handshake.",
+            ("/components/schemas/AgentNativeStatus/properties/error", "@anyOf"):
+                "Clarifies opaque JSON error extensions; the integer code branch is now bounded by SafeInt.",
+            ("/components/schemas/AgentResponse/properties/error", "@anyOf"):
+                "Clarifies opaque JSON error extensions; the integer code branch is now bounded by SafeInt.",
+            ("/components/schemas/BranchResponse/properties/error", "@anyOf"):
+                "Clarifies opaque JSON error extensions; the integer code branch is now bounded by SafeInt.",
+            ("/components/schemas/AgentResponse/properties/nativeStatus", "@anyOf"):
+                "Clarifies the native status union; its integer code branch is bounded by SafeInt.",
+            ("/components/schemas/BranchResponse/properties/nativeStatus", "@anyOf"):
+                "Clarifies the native status union; its integer code branch is bounded by SafeInt.",
+            ("/components/schemas/DesktopResponse/properties/supervisor", "@anyOf"):
+                "Clarifies supervisor diagnostics; typed counters and identifiers are bounded by their runtime aliases.",
+            ("/components/schemas/DiagnosticsResponse/properties/supervisor/properties/health", "@anyOf"):
+                "Clarifies supervisor health diagnostics; typed counters and identifiers are bounded by their runtime aliases.",
+            ("/components/schemas/SupervisorDiagnostics/properties/health", "@anyOf"):
+                "Clarifies supervisor health diagnostics; typed counters and identifiers are bounded by their runtime aliases.",
         }
         self.assertEqual(
             {(item["pointer"], item["constraint"]) for item in loosenings},
@@ -138,7 +255,11 @@ class SchemaContractTests(unittest.TestCase):
                         "requestBody": {"content": {"application/json": {"schema": {
                             "type": "object", "properties": {"count": {"type": "integer", "maximum": 8}},
                         }}}},
-                        "responses": {"200": {"description": "ok"}},
+                        "responses": {"200": {"description": "ok", "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/Nested"}
+                            }
+                        }}},
                     }
                 }
             },
@@ -171,6 +292,29 @@ class SchemaContractTests(unittest.TestCase):
             {("enum", "/paths/~1example/post/operationParameters/header/X-Mode/schema")},
         )
 
+    def test_constraint_diff_ignores_unreachable_components(self) -> None:
+        baseline_doc: dict[str, JsonValue] = {
+            "paths": {
+                "/example": {
+                    "get": {"responses": {"200": {"content": {
+                        "application/json": {"schema": {"type": "string"}}
+                    }}}}
+                }
+            },
+            "components": {"schemas": {
+                "ValidationError": {"type": "object", "properties": {
+                    "loc": {"type": "array", "items": {"type": "integer"}}
+                }}
+            }},
+        }
+        candidate_doc = json.loads(json.dumps(baseline_doc))
+        candidate_doc["components"]["schemas"].pop("ValidationError")
+        loosenings, tightenings = constraint_changes(
+            constraint_snapshot(baseline_doc), constraint_snapshot(candidate_doc)
+        )
+        self.assertEqual(loosenings, [])
+        self.assertEqual(tightenings, [])
+
     def test_constraint_diff_detects_operation_and_union_loosenings(self) -> None:
         baseline_doc: dict[str, JsonValue] = {
             "paths": {
@@ -180,11 +324,23 @@ class SchemaContractTests(unittest.TestCase):
                             "in": "query", "name": "agent", "required": True,
                             "schema": {"type": "string"},
                         }],
-                        "responses": {"200": {"description": "ok", "content": {
-                            "application/json": {"schema": {
-                                "$ref": "#/components/schemas/SessionResponse",
+                        "responses": {
+                            "200": {"description": "ok", "content": {
+                                "application/json": {"schema": {
+                                    "$ref": "#/components/schemas/SessionResponse",
+                                }},
                             }},
-                        }}},
+                            "201": {"description": "keep schemas reachable", "content": {
+                                "application/json": {"schema": {
+                                    "type": "object", "properties": {
+                                        "branch": {"$ref": "#/components/schemas/Branch"},
+                                        "nested": {"$ref": "#/components/schemas/NestedBranch"},
+                                        "enum": {"$ref": "#/components/schemas/EnumValue"},
+                                        "session": {"$ref": "#/components/schemas/SessionResponse"},
+                                    },
+                                }},
+                            }},
+                        },
                     },
                     "post": {
                         "requestBody": {"required": True, "content": {
@@ -350,7 +506,7 @@ class SchemaContractTests(unittest.TestCase):
     def test_integer_schema_bounder_preserves_domains_and_bounds_consts(self) -> None:
         document: dict[str, JsonValue] = {
             "anyOf": [
-                {"type": "integer"},
+                {"type": "integer", "x-safe-integer": "unsigned"},
                 {"type": "integer", "minimum": 4, "maximum": 7},
                 {"type": "integer", "const": 1},
             ]
@@ -358,7 +514,9 @@ class SchemaContractTests(unittest.TestCase):
         bound_integer_schemas(document)
         variants = document["anyOf"]
         assert isinstance(variants, list)
-        self.assertEqual(variants[0], {"type": "integer", "minimum": 0, "maximum": 9_007_199_254_740_991})
+        self.assertEqual(variants[0], {
+            "type": "integer", "minimum": 0, "maximum": MAX_SAFE_INTEGER,
+        })
         self.assertEqual(variants[1], {"type": "integer", "minimum": 4, "maximum": 7})
         self.assertEqual(variants[2], {"type": "integer", "const": 1, "minimum": 1, "maximum": 1})
 
@@ -378,7 +536,11 @@ class SchemaContractTests(unittest.TestCase):
     def test_request_schema_audit_has_only_documented_exceptions(self) -> None:
         report = request_schema_audit()
         self.assertEqual(report["findings"], [])
-        self.assertEqual(report["jsonSchemaExtra"], {"uses": 0, "validationUses": 0})
+        self.assertEqual(report["jsonSchemaExtra"], {"uses": 3, "validationUses": 1})
+        self.assertEqual(
+            report["signedRequestModelCoverage"],
+            {"enforcedOperations": 4, "expectedOperations": 4},
+        )
         exceptions = report["exceptions"]
         self.assertTrue(exceptions)
         self.assertIsInstance(exceptions, list)
@@ -461,8 +623,11 @@ class SchemaContractTests(unittest.TestCase):
                 "type": "array",
                 "prefixItems": [
                     {"type": "string"},
-                    {"anyOf": [{"type": "integer"}, {"type": "null"}]},
-                    {"type": "integer"},
+                    {"anyOf": [
+                        {"type": "integer", "minimum": 0, "maximum": MAX_SAFE_INTEGER},
+                        {"type": "null"},
+                    ]},
+                    {"type": "integer", "minimum": 0, "maximum": MAX_SAFE_INTEGER},
                 ],
                 "minItems": 3,
                 "maxItems": 3,
@@ -474,7 +639,10 @@ class SchemaContractTests(unittest.TestCase):
         document = sample_document(
             {
                 "type": "array",
-                "prefixItems": [{"type": "string"}, {"type": "integer"}],
+                "prefixItems": [
+                    {"type": "string"},
+                    {"type": "integer", "minimum": 0, "maximum": MAX_SAFE_INTEGER},
+                ],
                 "maxItems": 2,
             }
         )
@@ -525,15 +693,6 @@ class SchemaContractTests(unittest.TestCase):
 
     def test_rejects_integer_schema_without_bounds(self) -> None:
         document = sample_document({"type": "integer"})
-        paths = cast(dict[str, JsonValue], document["paths"])
-        example_path = cast(dict[str, JsonValue], paths["/api/example"])
-        get_operation = cast(dict[str, JsonValue], example_path["get"])
-        responses = cast(dict[str, JsonValue], get_operation["responses"])
-        response = cast(dict[str, JsonValue], responses["200"])
-        content = cast(dict[str, JsonValue], response["content"])
-        media = cast(dict[str, JsonValue], content["application/json"])
-        schema = cast(dict[str, JsonValue], media["schema"])
-        schema.pop("minimum")
         with self.assertRaisesRegex(ValueError, "integer schema has no minimum"):
             validate_contract_schemas(document)
 
@@ -792,7 +951,10 @@ class SchemaContractTests(unittest.TestCase):
             "properties": {
                 "id": {"type": "string"},
                 "text": {"type": "string", "default": ""},
-                "rows": {"type": "integer", "default": 24},
+                "rows": {
+                    "type": "integer", "minimum": 0,
+                    "maximum": MAX_SAFE_INTEGER, "default": 24,
+                },
             },
             "required": ["id"],
         }

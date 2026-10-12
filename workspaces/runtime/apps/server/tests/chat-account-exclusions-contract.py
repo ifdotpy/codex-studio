@@ -156,11 +156,9 @@ class ChatAccountExclusions(unittest.TestCase):
         transfers = AccountTransfers(runtime)
         with self.assertRaisesRegex(ValueError, "disabled for this chat"):
             transfers.request("lead", "second", "47c243b6-18d0-49be-a127-72ccfd57a5e8")
-        self.assertEqual(
+        with self.assertRaises(ValidationError) as duplicate:
             ConversationRequest(id="lead", excluded_account_keys=["second", "second"])
-            .excluded_account_keys,
-            {"second"},
-        )
+        self.assertEqual(duplicate.exception.errors()[0]["loc"], ("excluded_account_keys",))
         with self.assertRaises(ValidationError) as caught:
             ConversationRequest(id="lead", excluded_account_keys=[""])
         self.assertEqual(caught.exception.errors()[0]["loc"], ("excluded_account_keys", 0))

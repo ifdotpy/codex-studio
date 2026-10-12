@@ -276,11 +276,20 @@ class ConversationRequest(ContractModel):
     agent_mode: AgentMode | None = None
     subagent_concurrency: SafeInt | None = Field(default=None, ge=0, le=512)
     expected_mode_revision: SafeInt | None = Field(default=None, ge=0)
-    excluded_account_keys: set[Annotated[str, Field(min_length=1, pattern=r"\S")]] | None = Field(
+    excluded_account_keys: list[Annotated[str, Field(min_length=1, pattern=r"\S")]] | None = Field(
         default=None,
         max_length=512,
-        strict=False,
+        json_schema_extra={"uniqueItems": True},
     )
+
+    @field_validator("excluded_account_keys")
+    @classmethod
+    def validate_excluded_account_keys(
+        cls, value: list[str] | None
+    ) -> list[str] | None:
+        if value is not None and len(value) != len(set(value)):
+            raise ValueError("excluded_account_keys must contain unique values")
+        return value
 
 
 class ConfigureRequest(ContractModel):

@@ -63,6 +63,40 @@ def _resolve_schema_content(
     }
 
 
+def _reachable_schema_names(document: JsonValue) -> set[str]:
+    """Return schema components reachable from an operation's wire contract."""
+    reachable: set[str] = set()
+    visited_refs: set[str] = set()
+
+    def visit(value: JsonValue) -> None:
+        if isinstance(value, dict):
+            ref = value.get("$ref")
+            if isinstance(ref, str) and ref.startswith("#/components/"):
+                parts = ref[2:].split("/")
+                if len(parts) >= 3 and parts[1] == "schemas":
+                    name = parts[2].replace("~1", "/").replace("~0", "~")
+                    reachable.add(name)
+                if ref not in visited_refs:
+                    visited_refs.add(ref)
+                    target: JsonValue = document
+                    for part in ref[2:].split("/"):
+                        if not isinstance(target, dict):
+                            break
+                        target = target.get(part.replace("~1", "/").replace("~0", "~"))
+                    else:
+                        visit(target)
+            for key, child in value.items():
+                if key != "$ref":
+                    visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    if isinstance(document, dict):
+        visit(document.get("paths"))
+    return reachable
+
+
 def _canonical(value: JsonValue) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
@@ -197,7 +231,10 @@ def constraint_snapshot(document: JsonValue) -> dict[str, dict[str, JsonValue]]:
     if isinstance(components, dict):
         schemas = components.get("schemas")
         if isinstance(schemas, dict):
+            reachable_schemas = _reachable_schema_names(document)
             for name, schema in schemas.items():
+                if name not in reachable_schemas:
+                    continue
                 visit_schema(schema, f"/components/schemas/{name}")
         parameters = components.get("parameters")
         if isinstance(parameters, dict):

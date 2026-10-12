@@ -62,9 +62,15 @@ def require_strict_integer(value: object) -> object:
 
 # Keep the shared range check in a validator so a field's narrower Field bounds
 # compose with it instead of being shadowed by nested Annotated metadata.
-SafeInt: TypeAlias = Annotated[StrictInt, AfterValidator(_validate_safe_int)]
+SafeInt: TypeAlias = Annotated[
+    StrictInt,
+    AfterValidator(_validate_safe_int),
+    Field(json_schema_extra={"x-safe-integer": "unsigned"}),
+]
 SignedSafeInt: TypeAlias = Annotated[
-    StrictInt, AfterValidator(_validate_signed_safe_int)
+    StrictInt,
+    AfterValidator(_validate_signed_safe_int),
+    Field(json_schema_extra={"x-safe-integer": "signed"}),
 ]
 
 

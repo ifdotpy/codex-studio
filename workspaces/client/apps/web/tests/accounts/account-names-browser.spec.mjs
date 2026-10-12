@@ -146,6 +146,9 @@ test("accounts names save, clear, keys, exact retry, and themes", async ({
       .getByRole("button", { name: "Edit name for personal@example.com" })
       .click();
     await input.fill("x".repeat(33));
+    await expect(row.locator(".mantine-TextInput-error")).toHaveText(
+      "Use at most 32 characters.",
+    );
     await expect(
       row.getByRole("button", { name: "Save", exact: true }),
     ).toBeDisabled();

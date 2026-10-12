@@ -119,6 +119,7 @@ function AccountNameEditor({
   const request = useRef<{ label: string; request_id: string } | null>(null);
   const lock = useRef(false);
   const fallback = account.email?.split("@")[0] || "Account";
+  const nameTooLong = [...name.trim()].length > 32;
   const save = async () => {
     if (lock.current || disabled) return;
     const label = name.trim();
@@ -176,14 +177,16 @@ function AccountNameEditor({
             }}
             disabled={busy || disabled}
             autoFocus
-            error={error || undefined}
+            error={
+              error || (nameTooLong ? "Use at most 32 characters." : undefined)
+            }
           />
           <div className="account-name-actions">
             <ActionButton
               type="submit"
               actionRole="primary"
               loading={busy}
-              disabled={disabled || [...name.trim()].length > 32}
+              disabled={disabled || nameTooLong}
             >
               Save
             </ActionButton>

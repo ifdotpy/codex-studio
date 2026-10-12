@@ -184,12 +184,10 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.get("/api/workspace", response_model=WorkspaceView, responses=api_read_responses(errors=(400,), etag=True))
     def workspace(request: Request, documented: WorkspaceQuery = Depends()) -> Response:
         query = documented
-        if query.view in {"work", "inbox", "annotations"}:
-            value = _runtime(context).workspace_part(query.agent, query.view)
-        elif query.view == "full":
+        if query.view == "full":
             value = _runtime(context).workspace_snapshot(query.agent, view="full")
         else:
-            raise ValueError("Unknown workspace view")
+            value = _runtime(context).workspace_part(query.agent, query.view)
         return context.send(request, value, etag=True)
 
     @router.get("/api/workspace/tasks", response_model=WorkspaceTaskFeed,

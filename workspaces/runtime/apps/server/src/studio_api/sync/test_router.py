@@ -836,6 +836,16 @@ class SyncRouterTests(unittest.TestCase):
             )
         subscribe.assert_not_called()
 
+    def test_invalid_resource_subscription_uses_request_error_location(self) -> None:
+        response = make_client(ContextStub()).get(
+            "/api/sync/stream?protocol=3&resources=not-json"
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json(),
+            {"error": "Invalid request", "location": ["query", "resources"]},
+        )
+
     def test_matching_schema_stream_starts_with_handshake(self) -> None:
         context = ContextStub()
         with patch.object(context.hub, "subscribe", wraps=context.hub.subscribe) as subscribe:

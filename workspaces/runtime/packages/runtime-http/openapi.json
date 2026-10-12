@@ -10382,7 +10382,7 @@
             "anyOf": [
               {
                 "maximum": 9007199254740991,
-                "minimum": 0,
+                "minimum": -9007199254740991,
                 "type": "integer"
               },
               {
@@ -10773,7 +10773,7 @@
             "anyOf": [
               {
                 "maximum": 9007199254740991,
-                "minimum": 0,
+                "minimum": -9007199254740991,
                 "type": "integer"
               },
               {
@@ -19905,7 +19905,7 @@
               {
                 "exclusiveMinimum": 0,
                 "maximum": 9007199254740991,
-                "minimum": 1,
+                "minimum": 0,
                 "type": "integer"
               },
               {
@@ -21021,14 +21021,14 @@
                   "type": "string"
                 },
                 "maxItems": 512,
-                "type": "array",
-                "uniqueItems": true
+                "type": "array"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Excluded Account Keys"
+            "title": "Excluded Account Keys",
+            "uniqueItems": true
           },
           "expected_account_key": {
             "anyOf": [
@@ -21496,7 +21496,7 @@
               {
                 "exclusiveMinimum": 0,
                 "maximum": 9007199254740991,
-                "minimum": 1,
+                "minimum": 0,
                 "type": "integer"
               },
               {
@@ -25780,19 +25780,6 @@
         "title": "FileInfo",
         "type": "object"
       },
-      "HTTPValidationError": {
-        "properties": {
-          "detail": {
-            "items": {
-              "$ref": "#/components/schemas/ValidationError"
-            },
-            "title": "Detail",
-            "type": "array"
-          }
-        },
-        "title": "HTTPValidationError",
-        "type": "object"
-      },
       "HistoricalInputProofRecordResponse": {
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
@@ -28314,7 +28301,7 @@
             "anyOf": [
               {
                 "maximum": 9007199254740991,
-                "minimum": 0,
+                "minimum": -9007199254740991,
                 "type": "integer"
               },
               {
@@ -28704,7 +28691,7 @@
             "anyOf": [
               {
                 "maximum": 9007199254740991,
-                "minimum": 0,
+                "minimum": -9007199254740991,
                 "type": "integer"
               },
               {
@@ -28741,7 +28728,7 @@
             "anyOf": [
               {
                 "maximum": 9007199254740991,
-                "minimum": 0,
+                "minimum": -9007199254740991,
                 "type": "integer"
               },
               {
@@ -28827,7 +28814,7 @@
           },
           "stallWakeGeneration": {
             "maximum": 9007199254740991,
-            "minimum": 0,
+            "minimum": -9007199254740991,
             "title": "Stallwakegeneration",
             "type": "integer"
           },
@@ -30430,7 +30417,7 @@
             "anyOf": [
               {
                 "maximum": 9007199254740991,
-                "minimum": 0,
+                "minimum": -9007199254740991,
                 "type": "integer"
               },
               {
@@ -33570,8 +33557,8 @@
               1,
               2
             ],
-            "maximum": 9007199254740991,
-            "minimum": 0,
+            "maximum": 2,
+            "minimum": 1,
             "title": "Rounds",
             "type": "integer"
           },
@@ -33629,8 +33616,8 @@
               1,
               2
             ],
-            "maximum": 9007199254740991,
-            "minimum": 0,
+            "maximum": 2,
+            "minimum": 1,
             "title": "Rounds",
             "type": "integer"
           },
@@ -37119,9 +37106,15 @@
             "title": "Expected Revision"
           },
           "id": {
-            "default": "",
-            "title": "Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Id"
           },
           "message_id": {
             "anyOf": [
@@ -42015,7 +42008,7 @@
             "anyOf": [
               {
                 "maximum": 9007199254740991,
-                "minimum": 0,
+                "minimum": -9007199254740991,
                 "type": "integer"
               },
               {
@@ -42066,7 +42059,7 @@
             "anyOf": [
               {
                 "maximum": 9007199254740991,
-                "minimum": 0,
+                "minimum": -9007199254740991,
                 "type": "integer"
               },
               {
@@ -42598,7 +42591,7 @@
             "anyOf": [
               {
                 "maximum": 9007199254740991,
-                "minimum": 0,
+                "minimum": -9007199254740991,
                 "type": "integer"
               },
               {
@@ -42630,7 +42623,7 @@
             "anyOf": [
               {
                 "maximum": 9007199254740991,
-                "minimum": 0,
+                "minimum": -9007199254740991,
                 "type": "integer"
               },
               {
@@ -42710,7 +42703,7 @@
           },
           "stallWakeGeneration": {
             "maximum": 9007199254740991,
-            "minimum": 0,
+            "minimum": -9007199254740991,
             "title": "Stallwakegeneration",
             "type": "integer"
           },
@@ -47928,7 +47921,7 @@
             "anyOf": [
               {
                 "maximum": 9007199254740991,
-                "minimum": 0,
+                "minimum": -9007199254740991,
                 "type": "integer"
               },
               {
@@ -48243,7 +48236,7 @@
             "anyOf": [
               {
                 "maximum": 9007199254740991,
-                "minimum": 0,
+                "minimum": -9007199254740991,
                 "type": "integer"
               },
               {
@@ -48761,7 +48754,7 @@
             "anyOf": [
               {
                 "maximum": 9007199254740991,
-                "minimum": 0,
+                "minimum": -9007199254740991,
                 "type": "integer"
               },
               {
@@ -48881,7 +48874,7 @@
             "anyOf": [
               {
                 "maximum": 9007199254740991,
-                "minimum": 0,
+                "minimum": -9007199254740991,
                 "type": "integer"
               },
               {
@@ -52682,48 +52675,6 @@
         "title": "UsageResumeStatus",
         "type": "string"
       },
-      "ValidationError": {
-        "properties": {
-          "ctx": {
-            "title": "Context",
-            "type": "object"
-          },
-          "input": {
-            "title": "Input"
-          },
-          "loc": {
-            "items": {
-              "anyOf": [
-                {
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                {
-                  "type": "string"
-                }
-              ]
-            },
-            "title": "Location",
-            "type": "array"
-          },
-          "msg": {
-            "title": "Message",
-            "type": "string"
-          },
-          "type": {
-            "title": "Error Type",
-            "type": "string"
-          }
-        },
-        "required": [
-          "loc",
-          "msg",
-          "type"
-        ],
-        "title": "ValidationError",
-        "type": "object"
-      },
       "VaultAwsProfileDto": {
         "additionalProperties": false,
         "description": "An AWS profile of this Mac: signedIn says whether it has keys or a usable sign-in.",
@@ -54611,11 +54562,7 @@
             "type": "string"
           },
           "worktree": {
-            "additionalProperties": {
-              "$ref": "#/components/schemas/JsonValue"
-            },
-            "title": "Worktree",
-            "type": "object"
+            "$ref": "#/components/schemas/JsonObjectResponse"
           }
         },
         "title": "WorkArchiveRecord",
@@ -56478,7 +56425,7 @@
             "anyOf": [
               {
                 "maximum": 9007199254740991,
-                "minimum": 0,
+                "minimum": -9007199254740991,
                 "type": "integer"
               },
               {
@@ -66064,8 +66011,9 @@
           {
             "in": "query",
             "name": "id",
-            "required": false,
+            "required": true,
             "schema": {
+              "title": "Id",
               "type": "string"
             }
           },
@@ -70432,8 +70380,11 @@
           {
             "in": "query",
             "name": "q",
-            "required": false,
+            "required": true,
             "schema": {
+              "maxLength": 500,
+              "minLength": 1,
+              "title": "Q",
               "type": "string"
             }
           },
@@ -76092,7 +76043,7 @@
       "true",
       "false"
     ],
-    "integerPattern": "^-?[0-9]+$",
+    "integerPattern": "^[0-9]+$",
     "numberPattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$",
     "repeatedScalar": "reject",
     "unknown": "reject"

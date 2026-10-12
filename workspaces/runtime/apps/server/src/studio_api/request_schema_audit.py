@@ -21,6 +21,11 @@ from studio_api.schema import openapi_document
 # A JSON Schema cannot express the UTF-8 byte count of a string. Keep this
 # validator in Python until the API uses a byte-oriented field representation.
 SCHEMA_EXCEPTIONS = {
+    ("studio_api.agents.models.ConversationRequest", "validate_excluded_account_keys"): (
+        "The Pydantic field validator rejects duplicate array members before dispatch. "
+        "Pydantic does not infer JSON Schema uniqueItems from a list validator, so the "
+        "field publishes uniqueItems alongside this named runtime validator."
+    ),
     ("studio_api.accounts.models.AccountNameRequest", "require_unicode_scalar_label"): (
         "JSON Schema string constraints do not portably reject lone UTF-16 surrogate escapes. "
         "The smallest declarative form would be a standard Unicode-scalar format assertion."
@@ -116,6 +121,16 @@ HANDLER_EXCEPTIONS = (
     },
     {
         "kind": "handler_validation",
+        "model": "GET /api/workspace/tasks",
+        "name": "task-feed JSON cursor strings",
+        "operations": "GET /api/workspace/tasks",
+        "exception": (
+            "cursor and before are JSON-encoded strings parsed by the handler into structured cursors. "
+            "Replacing them with typed query objects would change the established query wire format."
+        ),
+    },
+    {
+        "kind": "handler_validation",
         "model": "GET /api/sync/stream",
         "name": "resources JSON query payload",
         "operations": "GET /api/sync/stream",
@@ -178,13 +193,6 @@ def _model_types(annotation: object, seen: set[type[BaseModel]]) -> set[type[Bas
     for argument in get_args(annotation):
         result.update(_model_types(argument, seen))
     return result
-
-
-def _contains_set(annotation: object) -> bool:
-    return get_origin(annotation) is set or any(
-        argument is set or _contains_set(argument)
-        for argument in get_args(annotation)
-    )
 
 
 def _contains_numeric(annotation: object) -> bool:
@@ -255,6 +263,12 @@ def request_models() -> dict[type[BaseModel], set[str]]:
         for method in sorted(route.methods or ()):
             operation = f"{method} {route.path}"
             visit(route.dependant, operation, set())
+            if method.upper() == "POST":
+                from studio_api.federation.router import SIGNED_REQUEST_OPERATION_MODELS
+
+                signed_model = SIGNED_REQUEST_OPERATION_MODELS.get(route.path)
+                if signed_model is not None:
+                    result.setdefault(signed_model, set()).add(operation)
     return result
 
 
@@ -338,6 +352,32 @@ def _json_schema_extra_findings(
                 validation_keys = keys & _JSON_SCHEMA_EXTRA_VALIDATION_KEYS
                 if validation_keys:
                     validation_uses += 1
+                    # The array's Pydantic field validator enforces uniqueness
+                    # before returning the list. Keep this schema hint paired to
+                    # that named validator, and let the HTTP/unit regression
+                    # prove the runtime behavior.
+                    validator_paired = (
+                        relative_path.as_posix() == "agents/models.py"
+                        and validation_keys == {"uniqueItems"}
+                        and any(
+                            isinstance(candidate, (ast.FunctionDef, ast.AsyncFunctionDef))
+                            and candidate.name == "validate_excluded_account_keys"
+                            and any(
+                                isinstance(decorator, ast.Call)
+                                and isinstance(decorator.func, ast.Name)
+                                and decorator.func.id == "field_validator"
+                                and any(
+                                    isinstance(argument, ast.Constant)
+                                    and argument.value == "excluded_account_keys"
+                                    for argument in decorator.args
+                                )
+                                for decorator in candidate.decorator_list
+                            )
+                            for candidate in ast.walk(tree)
+                        )
+                    )
+                    if validator_paired:
+                        continue
                     findings.append({
                         "kind": "schema_only_validation_constraint",
                         "source": str(relative_path),
@@ -461,6 +501,19 @@ def _unbounded_integer_findings(value: object, location: str = "openapi") -> lis
             and bounded_number(value.get("maximum"))
         ):
             findings.append({"kind": "unbounded_integer_schema", "location": location})
+        elif value.get("type") == "integer":
+            minimum = value.get("minimum")
+            maximum = value.get("maximum")
+            if (
+                isinstance(minimum, (int, float))
+                and not isinstance(minimum, bool)
+                and minimum < -9_007_199_254_740_991
+            ) or (
+                isinstance(maximum, (int, float))
+                and not isinstance(maximum, bool)
+                and maximum > 9_007_199_254_740_991
+            ):
+                findings.append({"kind": "integer_outside_safe_range", "location": location})
         for key, child in value.items():
             findings.extend(_unbounded_integer_findings(child, f"{location}/{key}"))
     elif isinstance(value, list):
@@ -560,6 +613,7 @@ def request_schema_audit() -> dict[str, object]:
     app = create_app(ApiContext.for_schema())
     routes = list(_router_routes(app.routes))
     walked_operations: set[str] = set()
+    signed_request_model_operations: set[str] = set()
     for route in routes:
         endpoint_hints = get_type_hints(route.endpoint, include_extras=True)
         endpoint_models = set().union(
@@ -616,6 +670,30 @@ def request_schema_audit() -> dict[str, object]:
                 f"{method.upper()} {route.path}"
                 for method in route.methods or ()
             )
+        if route.path in {
+            "/api/federation/v1/pair",
+            "/api/federation/v1/status",
+            "/api/federation/v1/message",
+            "/api/federation/v1/pull",
+        }:
+            from studio_api.federation.router import SIGNED_REQUEST_OPERATION_MODELS
+
+            operation = f"POST {route.path}"
+            model = SIGNED_REQUEST_OPERATION_MODELS.get(route.path)
+            expected_model_name = {
+                "/api/federation/v1/pair": "PairRequest",
+                "/api/federation/v1/status": "StatusRequest",
+                "/api/federation/v1/message": "MessageRequest",
+                "/api/federation/v1/pull": "PullRequest",
+            }[route.path]
+            if model is None or model.__name__ != expected_model_name:
+                findings.append({
+                    "kind": "request_model_not_enforced",
+                    "operation": operation,
+                    "expectedModel": expected_model_name,
+                })
+            else:
+                signed_request_model_operations.add(operation)
         for parameter in route.dependant.body_params:
             annotations = (parameter.field_info.annotation, *get_args(parameter.field_info.annotation))
             discriminator = next(
@@ -709,11 +787,6 @@ def request_schema_audit() -> dict[str, object]:
                             if isinstance(parameter, dict) and parameter.get("name") == (field.alias or field_name):
                                 exported_field = parameter.get("schema")
                                 break
-                # JSON arrays are the wire representation of Python sets. Pydantic
-                # must accept that representation while OpenAPI's uniqueItems keeps
-                # the set semantics declarative for generic validators.
-                if _contains_set(field.annotation) and _schema_contains_key(exported_field, "uniqueItems"):
-                    continue
                 query_parameters = all(
                     operation.partition(" ")[0].upper() in {"GET", "DELETE"}
                     for operation in operations
@@ -770,6 +843,10 @@ def request_schema_audit() -> dict[str, object]:
         "operationCoverage": {
             "walked": len(walked_operations),
             "documented": len(documented_operations),
+        },
+        "signedRequestModelCoverage": {
+            "enforcedOperations": len(signed_request_model_operations),
+            "expectedOperations": 4,
         },
         "unboundedIntegerSchemas": len(unbounded_integer_findings),
     }

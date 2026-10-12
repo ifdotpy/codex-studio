@@ -11887,11 +11887,8 @@ export interface components {
       expected_revision?: null | string;
       /** Expectedtext */
       expectedText?: null | string;
-      /**
-       * Id
-       * @default
-       */
-      id?: string;
+      /** Id */
+      id?: null | string;
       /** Message Id */
       message_id?: null | string;
       /** Request Id */
@@ -16957,10 +16954,7 @@ export interface components {
       reason?: string;
       /** Status */
       status?: string;
-      /** Worktree */
-      worktree?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      };
+      worktree?: components["schemas"]["JsonObjectResponse"];
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -22371,8 +22365,8 @@ export interface operations {
   };
   monitor_log_api_monitor_log_get: {
     parameters: {
-      query?: {
-        id?: string;
+      query: {
+        id: string;
       };
       header?: {
         Range?: string;
@@ -24957,9 +24951,9 @@ export interface operations {
   };
   search_api_search_get: {
     parameters: {
-      query?: {
+      query: {
         limit?: number;
-        q?: string;
+        q: string;
       };
       header?: never;
       path?: never;

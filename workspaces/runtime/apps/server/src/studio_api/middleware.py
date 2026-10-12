@@ -357,7 +357,7 @@ class RequestBoundary:
             await _reject(send, 413, "Invalid request size", location=["body"])
             return
         if declared > limit:
-            await _reject(send, 413, "Invalid request size")
+            await _reject(send, 413, "Invalid request size", location=["body"])
             return
 
         body = bytearray()

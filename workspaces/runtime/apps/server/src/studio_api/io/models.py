@@ -170,4 +170,4 @@ class TerminalOutputQuery(ContractModel):
 
 
 class MonitorLogQuery(ContractModel):
-    id: str | None = None
+    id: str

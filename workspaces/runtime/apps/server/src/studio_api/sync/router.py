@@ -17,7 +17,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.types import Receive, Scope, Send
 from pydantic import TypeAdapter, ValidationError
 
-from studio_api.models import SafeIntHeader, SafeQueryInt
+from studio_api.models import MAX_SAFE_INTEGER, SafeIntHeader, SafeQueryInt
 from studio_api.sync.preferences import (
     AppearancePreferences,
     PreferencePushRequest,
@@ -138,11 +138,6 @@ def _first(request: Request, key: str, default: str | None = None) -> str | None
     return request.query_params.get(key, default)
 
 
-def _query_int(request: Request, key: str, default: int) -> int:
-    value = _first(request, key)
-    return default if value is None else int(value)
-
-
 def _resource_event(
     event: str,
     payload: ResourceChangeEvent | ResourceHeartbeatEvent | ResourceTokenRatesEvent,
@@ -242,7 +237,7 @@ def create_router(context: ApiContext) -> APIRouter:
     def pull(
         request: Request,
         scope: str = Query(default="state:entities:v1", min_length=1),
-        after: SafeQueryInt = Query(default=0),
+        after: SafeQueryInt = Query(default=0, ge=0, le=MAX_SAFE_INTEGER),
         limit: SafeQueryInt = Query(
             default=SYNC_BATCH_LIMIT,
             ge=1,
@@ -250,7 +245,7 @@ def create_router(context: ApiContext) -> APIRouter:
             description="Upper bound; the server may lower it by scope.",
         ),
         fresh: Literal["1"] | None = None,
-        initialHigh: SafeQueryInt = Query(default=0),
+        initialHigh: SafeQueryInt = Query(default=0, ge=0, le=MAX_SAFE_INTEGER),
         reset: Literal["1"] | None = None,
         priorityId: str | None = None,
     ) -> object:
@@ -355,7 +350,9 @@ def create_router(context: ApiContext) -> APIRouter:
             resources_json = _first(request, "resources", "") or ""
             if not resources_json or len(resources_json.encode("utf-8")) > MAX_RESOURCE_QUERY_BYTES:
                 return context.send(
-                    request, {"error": "Invalid resource subscription"}, status=400
+                    request,
+                    {"error": "Invalid request", "location": ["query", "resources"]},
+                    status=400,
                 )
             try:
                 raw_resources = json.loads(resources_json)
@@ -365,7 +362,9 @@ def create_router(context: ApiContext) -> APIRouter:
                 last_event_id = last_event_id_header
             except (ValueError, TypeError, ValidationError):
                 return context.send(
-                    request, {"error": "Invalid resource subscription"}, status=400
+                    request,
+                    {"error": "Invalid request", "location": ["query", "resources"]},
+                    status=400,
                 )
 
             try:

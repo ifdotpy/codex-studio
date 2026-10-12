@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import ConfigDict, Field, StrictBool, StrictInt, StrictStr, model_validator
+from pydantic import ConfigDict, Field, StrictBool, StrictStr, model_validator
 
 from studio_api.sync.models import AgentActivity
 from studio_api.models import ContractModel, JsonValue, ResponseModel, SafeInt, SafeQueryInt
@@ -335,7 +335,7 @@ class TranscriptSearchQuery(ContractModel):
 
 
 class SearchQuery(ContractModel):
-    q: StrictStr | None = None
+    q: str = Field(min_length=1, max_length=500)
     limit: SafeQueryInt | None = None
 
 

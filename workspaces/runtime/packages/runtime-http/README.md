@@ -39,8 +39,8 @@ needs insertion order must parse ordered pairs locally.
 
 Query parameters follow the root `x-query-parameter-contract` in
 [`openapi.json`](openapi.json): undeclared names and repeated scalar values are
-rejected with a 422 error and query location. Integer query values use decimal
-digits with an optional leading minus sign; number values use JSON number syntax;
+rejected with a 400 error and query location. Integer query values use ASCII
+decimal digits only; number values use JSON number syntax;
 boolean values are exactly `true` or `false`. OpenAPI cannot express the global
 unknown-name rule, so validators must apply this extension to every operation.
 JSON Schema considers an integral
