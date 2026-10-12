@@ -20,7 +20,7 @@ pub use records::{
 };
 pub use repositories::event_write::{EventWriteReceipt, EventWriteRepository};
 pub use repositories::rules::{RulesRepository, StoredAgent, StoredRule};
-pub use repositories::scheduler::{ClaimedEvents, SchedulerRepository};
+pub use repositories::scheduler::{ClaimedEvents, SchedulerRepository, TurnAttemptIdentity};
 pub use repositories::sync_documents::{EntityRow, SyncDocument, SyncDocumentsRepository};
 pub use repositories::work_items::{StoredQueueEvent, StoredRecord, WorkItemsRepository};
 
