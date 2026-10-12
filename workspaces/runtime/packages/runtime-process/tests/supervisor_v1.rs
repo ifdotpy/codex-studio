@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::BufRead as _;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -18,6 +19,12 @@ use studio_runtime_process::{
 };
 
 const SOCKET: &str = "supervisor.sock";
+#[cfg(target_os = "linux")]
+const UNIX_SOCKET_PATH_LIMIT: usize = 108;
+#[cfg(target_os = "macos")]
+const UNIX_SOCKET_PATH_LIMIT: usize = 104;
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+const UNIX_SOCKET_PATH_LIMIT: usize = 104;
 const SOURCE: &str = env!("CARGO_MANIFEST_DIR");
 const SUPERVISOR: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -27,16 +34,14 @@ const SUPERVISOR: &str = concat!(
 struct DisposableState(PathBuf);
 
 impl DisposableState {
-    fn new(label: &str) -> Self {
+    fn new() -> Self {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "studio-runtime-process-{label}-{}-{unique}",
-            std::process::id()
-        ));
+        let path = std::env::temp_dir().join(format!("rp-{}-{unique}", std::process::id()));
         assert_outside_runtime_state(&path);
+        assert_socket_path_fits(&path.join(SOCKET));
         fs::create_dir_all(&path).unwrap();
         Self(path)
     }
@@ -57,6 +62,15 @@ impl Drop for DisposableState {
     fn drop(&mut self) {
         drop(fs::remove_dir_all(&self.0));
     }
+}
+
+fn assert_socket_path_fits(socket: &Path) {
+    let path_bytes = socket.as_os_str().as_bytes().len();
+    assert!(
+        path_bytes < UNIX_SOCKET_PATH_LIMIT,
+        "test TMPDIR is too long for an AF_UNIX supervisor socket: {} ({path_bytes} bytes; platform limit {UNIX_SOCKET_PATH_LIMIT}); choose a shorter TMPDIR",
+        socket.display()
+    );
 }
 
 fn runtime_default_state_dir() -> PathBuf {
@@ -88,6 +102,7 @@ fn assert_outside_runtime_state(path: &Path) {
 struct SupervisorProcess {
     child: Child,
     owned_children: Vec<u32>,
+    stderr_path: PathBuf,
 }
 
 impl SupervisorProcess {
@@ -96,7 +111,8 @@ impl SupervisorProcess {
             Path::new(SUPERVISOR).is_file(),
             "Rust supervisor integration test requires the checked-out supervisor script at {SUPERVISOR}"
         );
-        let log = File::create(state.0.join("supervisor-stderr.log")).unwrap();
+        let stderr_path = state.0.join("supervisor-stderr.log");
+        let log = File::create(&stderr_path).unwrap();
         let child = Command::new(python)
             .arg(SUPERVISOR)
             .arg("--state")
@@ -113,17 +129,51 @@ impl SupervisorProcess {
                     "Rust supervisor integration test requires Python 3; could not start {python:?}: {error}"
                 )
             });
-        let process = Self {
+        let mut process = Self {
             child,
             owned_children: Vec::new(),
+            stderr_path,
         };
         let socket = state.socket();
         assert!(
             socket.starts_with(&state.0),
             "refuse a socket outside this test's disposable directory: {socket:?}"
         );
-        wait_until("supervisor socket", || socket.exists());
+        process.wait_for_socket(&socket);
         process
+    }
+
+    fn wait_for_socket(&mut self, socket: &Path) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline {
+            if socket.exists() {
+                return;
+            }
+            match self.child.try_wait() {
+                Ok(Some(status)) => panic!(
+                    "disposable supervisor exited before creating socket {} (status {status}); stderr:\n{}",
+                    socket.display(),
+                    self.stderr_output()
+                ),
+                Ok(None) => thread::yield_now(),
+                Err(error) => panic!(
+                    "failed checking disposable supervisor while waiting for socket {}: {error}; stderr:\n{}",
+                    socket.display(),
+                    self.stderr_output()
+                ),
+            }
+        }
+        panic!(
+            "timed out waiting for disposable supervisor socket {} after 15-second hang guard; child status: {:?}; stderr:\n{}",
+            socket.display(),
+            self.child.try_wait(),
+            self.stderr_output()
+        );
+    }
+
+    fn stderr_output(&self) -> String {
+        fs::read_to_string(&self.stderr_path)
+            .unwrap_or_else(|error| format!("<could not read stderr log: {error}>"))
     }
 
     fn id(&self) -> u32 {
@@ -258,7 +308,7 @@ fn pid_exists(pid: u32) -> bool {
 
 #[test]
 fn disposable_python_supervisor_v1_actions_events_replay_and_reattach() {
-    let state = DisposableState::new("integration");
+    let state = DisposableState::new();
     let workspace = state.0.join("workspace");
     fs::create_dir_all(&workspace).unwrap();
     let python = python_executable();
@@ -558,7 +608,7 @@ fn lost_action_response_is_unknown_outcome() {
             .unwrap();
         drop(server_side);
     });
-    let test_state = DisposableState::new("unknown-outcome");
+    let test_state = DisposableState::new();
     let identity = BackendIdentity {
         backend_id: BackendId("unit-test".into()),
         state_dir: test_state.0.clone(),
@@ -589,7 +639,7 @@ fn handshake_rejection_is_a_typed_protocol_mismatch() {
             .write_all(b"{\"error\":\"Supervisor protocol or state directory mismatch\"}\n")
             .unwrap();
     });
-    let test_state = DisposableState::new("protocol-mismatch");
+    let test_state = DisposableState::new();
     let identity = BackendIdentity {
         backend_id: BackendId("wrong-version-test".into()),
         state_dir: test_state.0.clone(),

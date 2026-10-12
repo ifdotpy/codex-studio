@@ -91,7 +91,11 @@ Rust fixture and leaves the shared Python fixture untouched.
 `tests/supervisor_v1.rs` launches the Python supervisor from this checkout into
 a unique directory below `std::env::temp_dir()` (the test runner's `TMPDIR`),
 checks that the socket stays inside that test-created directory and outside the
-runtime's default state directory, then exercises every action, event kind, bad-protocol handshake, cursor/ACK,
+runtime's default state directory, and checks the encoded socket path against
+the platform AF_UNIX length limit before startup. If the supervisor exits
+before binding, the test reports its status and captured stderr; the timeout is
+only a bounded hang guard. It then exercises every action, event kind,
+bad-protocol handshake, cursor/ACK,
 replay, same-identity reattach, and cleanup of the disposable supervisor and
 children. It uses no fixture from the Python backend-neutral suite. Pure frame
 codec and extension-field tests run without a process.
