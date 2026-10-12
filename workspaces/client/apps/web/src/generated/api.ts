@@ -5339,7 +5339,7 @@ export interface components {
       /** Text */
       text: string;
       /** Turnid */
-      turnId?: null | string;
+      turnId?: string | null;
     };
     /** AnnotationReceipt */
     AnnotationReceipt: {

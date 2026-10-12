@@ -20,6 +20,7 @@ const KNOWN_DEPENDENCIES: &[&str] = &[
     "event-driver/work-items",
     "event-driver/queue-mutations",
     "rule-driver/event-rules",
+    "cross-server/remote-events",
     "workspace-state/organization-effects",
 ];
 
