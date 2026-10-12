@@ -1,5 +1,5 @@
 import { decodeSidebarRanks } from "./sidebarOrderRanks";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Agent, Project } from "../types";
 import {
   localSidebarBackend,
@@ -615,7 +615,9 @@ describe("original saved sidebar state", () => {
     expect(local.sidebar.collapsed).toEqual({ [path]: true });
   });
 
-  it("keeps this window's collapse over a stale snapshot until the server carries it", () => {
+  it("keeps this window's collapse over stale snapshots for a short time", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
     const local = source("local");
     const remote = source("remote");
     const a = backend(local);
@@ -638,16 +640,18 @@ describe("original saved sidebar state", () => {
     expect(next.saved<Record<string, boolean>>(tree(rebuilt), {})[key]).toBe(
       true,
     );
-    // The server confirms it, and a later change from elsewhere wins again.
-    const confirmed = source("local");
-    confirmed.sidebar.collapsed = { [heading]: true };
-    const after = mergeSidebar([confirmed, source("remote")]);
+    // A late echo of an earlier value does not flip it back.
+    const echo = source("local");
+    echo.sidebar.collapsed = { [heading]: false };
+    const echoed = mergeSidebar([echo, source("remote")]);
     expect(
-      mergedSidebarPreferences(after, backends).saved<Record<string, boolean>>(
-        tree(after),
+      mergedSidebarPreferences(echoed, backends).saved<Record<string, boolean>>(
+        tree(echoed),
         {},
       )[key],
     ).toBe(true);
+    // After the short time the snapshot rules, so a change from elsewhere wins.
+    vi.setSystemTime(1_000_000 + 10_001);
     const later = mergeSidebar([source("local"), source("remote")]);
     expect(
       mergedSidebarPreferences(later, backends).saved<Record<string, boolean>>(
@@ -655,6 +659,7 @@ describe("original saved sidebar state", () => {
         {},
       )[key],
     ).toBe(false);
+    vi.useRealTimers();
   });
 
   it("collapses a project heading by its home server's value and saves it there", () => {
