@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Literal
 
 from studio_api.system.models import ProviderUpdateNotice
 
@@ -36,6 +36,8 @@ def parse_version(value: object) -> VersionKey | None:
 def compare_versions(
     installed_version: str | None,
     available_version: str | None,
+    *,
+    source: Literal["installed", "upstream"] = "installed",
 ) -> ProviderUpdateNotice | None:
     """Return a notice only when a readable installed candidate is newer."""
     if installed_version is None or available_version is None:
@@ -44,7 +46,7 @@ def compare_versions(
     available = parse_version(available_version)
     if installed is None or available is None or available <= installed:
         return None
-    return ProviderUpdateNotice(availableVersion=available_version, source="installed")
+    return ProviderUpdateNotice(availableVersion=available_version, source=source)
 
 
 def update_warnings(
@@ -53,28 +55,39 @@ def update_warnings(
     """Project installed update notices into the existing informational tray."""
     warnings = []
     for row in providers:
-        notice = row.get("updateNotice")
-        if not notice:
+        notices = row.get("updateNotices", [])
+        if not notices:
             continue
         current = row.get("installedVersion") or "unknown"
-        available = notice["availableVersion"]
         label = labels.get(row["provider"], row["provider"])
-        message = (
-            f"A newer installed {label} version is selected for runtime updates, "
-            f"but this connection is still using {current}. Available: {available}."
-            if row["provider"] == "codex" else
-            f"A newer installed {label} version is not in use on this connection yet. "
-            f"Current: {current} · Available: {available}."
-        )
-        warnings.append({
-            "id": f"provider-update:{row['accountKey']}",
-            "accountKey": row["accountKey"],
-            "provider": row["provider"],
-            "version": available,
-            # Keep this field's established meaning: the tested minimum.
-            "baseline": row["baseline"],
-            "message": message,
-            "at": row["at"],
-            "level": "info",
-        })
+        for notice in notices:
+            available = notice["availableVersion"]
+            source = notice["source"]
+            if source == "upstream":
+                message = (
+                    f"A newer {label} release is available upstream than the version currently in use. "
+                    f"Current: {current} · Available: {available}."
+                )
+            elif row["provider"] == "codex":
+                message = (
+                    f"A newer installed {label} version is selected for runtime updates, "
+                    f"but this connection is still using {current}. Available: {available}."
+                )
+            else:
+                message = (
+                    f"A newer installed {label} version is not in use on this connection yet. "
+                    f"Current: {current} · Available: {available}."
+                )
+            warnings.append({
+                "id": f"provider-update:{row['accountKey']}" +
+                (":upstream" if source == "upstream" else ""),
+                "accountKey": row["accountKey"],
+                "provider": row["provider"],
+                "version": available,
+                # Keep this field's established meaning: the tested minimum.
+                "baseline": row["baseline"],
+                "message": message,
+                "at": row["at"],
+                "level": "info",
+            })
     return warnings

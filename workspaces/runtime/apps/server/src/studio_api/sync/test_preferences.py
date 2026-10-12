@@ -28,6 +28,7 @@ class PreferencesTests(unittest.TestCase):
             "sidebarShortcut": "Control+b",
             "showMessageAvatars": True,
             "hideOldChatsThreshold": 4,
+            "checkProviderUpdates": False,
         }
         fields = {
             json.dumps(["codex-studio-preferences-v1", name], separators=(",", ":")):
