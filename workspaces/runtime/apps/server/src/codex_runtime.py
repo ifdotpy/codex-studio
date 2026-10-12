@@ -4905,6 +4905,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def set_account(self, key, account_key, cwd=None):
         with self.lock, self.db() as db:
             a = self.agent(key, db)
+            from codex_worker_accounts import require_not_excluded
+            require_not_excluded(a, account_key)
             directory = a["cwd"]
             if cwd is not None:
                 if not isinstance(cwd, str) or not cwd.strip():
@@ -5077,6 +5079,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             pass
 
     def conversation_settings(self, key, data):
+        if ("excluded_account_keys" in data
+                and {"agent_mode", "expected_mode_revision", "subagent_concurrency"}.intersection(data)):
+            raise ValueError("Save chat account exclusions separately from agent mode settings")
         if ("agent_mode" in data or "expected_mode_revision" in data
                 or "subagent_concurrency" in data):
             from codex_agent_modes import change_mode
@@ -5131,10 +5136,17 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if pending and not pending["future"].done() and set(data).intersection(
                     execution_fields | {"cwd", "yolo_mode"}):
                 raise ValueError("Wait for thread preparation before changing execution settings")
-        defaults_only = set(data) <= {"id", "worker_defaults", "review_defaults", "expected_account_key"} and bool(
-            {"worker_defaults", "review_defaults"}.intersection(data))
+        defaults_only = set(data) <= {"id", "worker_defaults", "review_defaults", "expected_account_key",
+                                      "excluded_account_keys"} and bool(
+            {"worker_defaults", "review_defaults", "excluded_account_keys"}.intersection(data))
         with self.lock, self.db() as db:
             target = self.agent(key, db)
+            if "excluded_account_keys" in data:
+                if not target.get("isLead"):
+                    raise ValueError("Only a lead can change chat account exclusions")
+                for excluded_key in data["excluded_account_keys"]:
+                    if excluded_key == target.get("accountKey", "default"):
+                        raise ValueError("Switch this chat to another account before disabling its current account")
             if expected_account is not None and target.get("accountKey", "default") != expected_account:
                 raise ValueError("The account changed. Read the current settings before saving")
             if not target.get("isLead") and (set(data) - {"id", "expected_account_key", *execution_fields}):
@@ -5146,12 +5158,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         worker_catalog = None
         if "worker_defaults" in data:
             from codex_worker_accounts import settings_catalog
-            worker_catalog = settings_catalog(self, target.get("accountKey", "default"), data["worker_defaults"])
+            worker_catalog = settings_catalog(self, target.get("accountKey", "default"), data["worker_defaults"], target)
         review_catalog = None
         if "review_defaults" in data:
             from codex_worker_accounts import settings_catalog
             defaults = data.get("worker_defaults") or {"account_key": self.worker_defaults(target).get("accountKey")}
-            review_catalog = settings_catalog(self, target.get("accountKey", "default"), defaults)
+            review_catalog = settings_catalog(self, target.get("accountKey", "default"), defaults, target)
         with self.lock, self.db() as db:
             a = self.agent(key, db)
             if a.get("deletedAt"):
@@ -5163,6 +5175,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 raise ValueError("The account changed. Select the model again")
             if not defaults_only and (a.get("inFlight") or a["status"] in {"running", "starting", "approval"}):
                 raise ValueError("Wait for this turn to end before changing the model or project")
+            if "excluded_account_keys" in data:
+                if not a.get("isLead"):
+                    raise ValueError("Only a lead can change chat account exclusions")
+                if a.get("accountKey", "default") in data["excluded_account_keys"]:
+                    raise ValueError("Switch this chat to another account before disabling its current account")
             team = []
             if "yolo_mode" in data:
                 team = self.team_agents(db, a["id"], include_deleted=True)
@@ -5176,6 +5193,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if any(t["agent"] in team_ids for t in active_task_records(db)):
                     raise ValueError("Wait for team tools to end before changing YOLO mode")
                 a["yoloMode"] = data["yolo_mode"]
+            if "excluded_account_keys" in data:
+                a["excludedAccountKeys"] = data["excluded_account_keys"]
             if execution_fields.intersection(data):
                 # An explicit idle update replaces the queued choice in one transaction.
                 queued = a.pop("pendingSettings", {})
@@ -5214,6 +5233,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     a['projectFolderRevision'] = a.get('projectFolderRevision', 0) + 1
                 a["cwd"] = str(cwd)
                 account_key = self.project_account(str(cwd), db=db)
+                from codex_worker_accounts import require_not_excluded
+                require_not_excluded(a, account_key)
                 provider = self.accounts.get(account_key).get("provider", "codex")
                 if provider != a.get("provider", "codex"):
                     a.update(provider=provider, model="default" if provider == "claude" else DEFAULT_LEAD_MODEL,
@@ -5295,6 +5316,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 ):
                     raise ValueError("This message id has different content")
                 return {"id": message_id, "status": old["status"], "error": old["error"]}
+            from codex_worker_accounts import require_not_excluded
+            require_not_excluded(self.agent(a["rootId"], db), a.get("accountKey", "default"))
             from codex_agent_modes import assert_worker_input
             assert_worker_input(self, db, a)
             assert_native_thread_open(a)
@@ -6830,6 +6853,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if a.get("lazyAccountTransfer"):
                 from codex_account_transfer import transfer_store
                 a = transfer_store(self).before_start(a)
+            with self.read_db() as db:
+                current = self.agent(a["id"], db)
+                from codex_worker_accounts import require_not_excluded
+                require_not_excluded(
+                    self.agent(current["rootId"], db), current.get("accountKey", "default"))
             revalidated_execution = None
             account_key = a.get("accountKey", "default")
             settings_account = a.get("executionSettingsAccountKey", account_key)
@@ -7264,6 +7292,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.start_error(agent_id, attempt["id"], error, unknown=True)
 
     def start_error(self, agent_id, attempt_id, error, *, unknown=False, preparation=False):
+        from codex_worker_accounts import ExcludedAccountError
         from codex_worktree_creation import WorktreeNeedsReview
         stream = getattr(self, '_stream_buffer', None)
         if stream:
@@ -7316,6 +7345,21 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             # Stop/disconnect owns its visible state. Unknown requests retain
             # their reservation until acceptance, rejection, or disconnection.
             current_epoch = a["epoch"] == attempt["epoch"]
+            if (isinstance(error, ExcludedAccountError) and attempt.get("activeAtReservation")
+                    and current_epoch and a.get("autoWake")):
+                # A queued input rejected by an exclusion must not replace the
+                # active turn or return to the outbox for repeated dispatch.
+                a.update(status="running" if a.get("inFlight") else "failed", error=str(error))
+                a.pop("startAttempt", None)
+                for event_id in attempt.get("events", []):
+                    db.execute("UPDATE runtime_events SET status='failed', error=? WHERE id=? AND agent=? "
+                               "AND status IN ('pending','reserved','dispatching','uncertain')",
+                               (str(error), event_id, agent_id))
+                self.put(db, "agents", a)
+                if a.get("parentId"):
+                    self.parent_event(db, a, "excluded-input:" + str(attempt_id), str(error), recovery=True)
+                self.changed.set()
+                return
             worktree_hold = current_epoch and not unknown and isinstance(error, WorktreeNeedsReview)
             if (not unknown and not malformed_history and attempt.get("activeAtReservation")
                     and current_epoch and a["autoWake"]):
@@ -11211,6 +11255,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         from codex_native_action_receipts import record, late_result, assert_identity
         try:
             a = self.agent(key)
+            from codex_worker_accounts import require_not_excluded
+            require_not_excluded(self.agent(a["rootId"]), a.get("accountKey", "default"))
             assert_identity(a, attempt)
             if attempt['action'] == 'review' and a.get('daybreakEnabled'):
                 raise ValueError('Native review cannot select Daybreak. Send a review task in the chat instead')

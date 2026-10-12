@@ -191,10 +191,27 @@ class AgentMoves:
         if payload['provider'] not in {'codex', 'claude'}:
             raise ValueError('Only Codex and Claude support moves')
         accounts = self.runtime.accounts.list()
-        eligible = [row for row in accounts if row.get('provider', 'codex') == payload['provider'] and row.get('status') == 'ready']
+        from codex_worker_accounts import account_order, require_not_excluded
+        excluded = payload.get('excludedAccountKeys', [])
+        agent_id = payload.get('agentId')
+        if agent_id:
+            with self.runtime.read_db() as db:
+                row = db.execute('SELECT record FROM runtime_agents WHERE id=?', (agent_id,)).fetchone()
+                if row:
+                    agent = json.loads(row['record'])
+                    root_row = db.execute('SELECT record FROM runtime_agents WHERE id=?',
+                                          (agent['rootId'],)).fetchone()
+                    if root_row:
+                        excluded = json.loads(root_row['record']).get('excludedAccountKeys', [])
+        eligible_keys = account_order(self.runtime, payload.get('sourceAccountKey', 'default'), excluded=excluded)
+        rows = {row['id']: row for row in accounts}
+        eligible = [rows[key] for key in eligible_keys if key in rows
+                    and rows[key].get('provider', 'codex') == payload['provider']
+                    and rows[key].get('status') == 'ready']
         requested = payload.get('account_key')
         source = payload['accountIdentity']
         if requested:
+            require_not_excluded({'excludedAccountKeys': excluded}, requested)
             selected = next((row for row in accounts if row['id'] == requested), None)
             if not selected or selected.get('provider', 'codex') != payload['provider']:
                 raise ValueError('A move cannot change providers. Select a target account for the same provider')
@@ -208,7 +225,11 @@ class AgentMoves:
             if selected is None:
                 default = self.runtime.accounts.data.get('defaultAccountKey', 'default')
                 selected = next((row for row in eligible if row['id'] == default), None)
+            if selected is None:
+                selected = next(iter(eligible), None)
         if selected is None:
+            if excluded:
+                raise ValueError('No signed-in target account exists for this provider after applying this chat\'s account exclusions')
             raise ValueError('No signed-in target account exists for this provider')
         warning = None
         identity_unknown = payload['provider'] == 'codex' and any(
@@ -357,7 +378,7 @@ class AgentMoves:
                  'link': origin['link'], 'target': server}, identity(key, 'home-validate'))
         else:
             canonical = None
-        preflight = {'routeHome': origin['home'] if origin else self.service.server_id, 'agentId': agent['id'], 'nativeThread': agent['threadId'], 'sourceServer': self.service.server_id, 'provider': agent.get('provider', 'codex'), 'cwd': cwd,
+        preflight = {'routeHome': origin['home'] if origin else self.service.server_id, 'agentId': agent['id'], 'nativeThread': agent['threadId'], 'sourceServer': self.service.server_id, 'sourceAccountKey': agent.get('accountKey', 'default'), 'excludedAccountKeys': self.runtime.agent(agent['rootId']).get('excludedAccountKeys', []), 'provider': agent.get('provider', 'codex'), 'cwd': cwd,
                      'account_key': args.get('account_key'), 'accountIdentity': self._account_identity(account),
                      'accept_cache_loss': args.get('accept_cache_loss') is True,
                      'capabilities': self._capabilities(agent), 'model': agent['model']}

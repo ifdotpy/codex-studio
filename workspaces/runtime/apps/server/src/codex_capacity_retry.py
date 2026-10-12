@@ -169,6 +169,11 @@ class CapacityRetryMixin:
         retry = a.get('capacityRetry') or {}
         if retry.get('id') != attempt.get('capacityRetryId') or not retry:
             return
+        from codex_worker_accounts import ExcludedAccountError
+        if isinstance(error, ExcludedAccountError):
+            retry.update(status='cancelled', dueAt=None, reason=str(error))  # type: ignore[call-arg]  # typed-update
+            self.capacity_save(db, a, retry)
+            return
         if not unknown and isinstance(getattr(error, 'contextRepairWait', None), dict):
             # A running command, monitor or receipt delays context repair. This
             # is a wait, not a rejection: nothing was submitted. Check again later.
@@ -248,6 +253,18 @@ class CapacityRetryMixin:
                 self.capacity_save(db, a, retry)
                 self.put(db, 'agents', a)
                 self.permanent_worker_hold(db, a, retry_id, 'task-changed', retry['reason'])  # type: ignore[arg-type]  # typed-narrowing: cancelled retry always has reason
+                return retry
+            from codex_worker_accounts import ExcludedAccountError, require_not_excluded
+            try:
+                require_not_excluded(self.agent(a['rootId'], db), retry['accountKey'])
+            except ExcludedAccountError as error:
+                if not _automatic:
+                    raise
+                retry.update(status='cancelled', dueAt=None, reason=str(error))  # type: ignore[call-arg]  # typed-update
+                self.capacity_save(db, a, retry)
+                a.update(status='failed', inFlight=False, error=str(error))  # type: ignore[call-arg]  # typed-update
+                self.put(db, 'agents', a)
+                self.permanent_worker_hold(db, a, retry_id, 'account-excluded', str(error))
                 return retry
             self.capacity_check(db, a, retry)
             if a.get('pendingSettings'):

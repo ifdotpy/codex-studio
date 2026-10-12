@@ -163,6 +163,9 @@ class AccountTransfers:
         return row is None or op.get('created', 0) > json.loads(row[0]).get('created', 0)
 
     def check_destination(self, actor: "AgentRecord", target: str, db: "sqlite3.Connection | None"=None) -> None:
+        from codex_worker_accounts import require_not_excluded
+        root = actor if actor.get('isLead') else self.rt.agent(actor['rootId'], db)
+        require_not_excluded(root, target)
         self.rt.accounts.home(target)  # Validate the registered account identity.
 
     def settings_snapshot(self, agent: "AgentRecord") -> "JsonObject":
@@ -235,6 +238,7 @@ class AccountTransfers:
             lead = rt.checked_actor(db, key)
             if not lead.get('isLead'):
                 raise ValueError('Choose the orchestrator to transfer its team')
+            self.check_destination(lead, target, db)
             alias = next(((op, op.get('requests', {}).get(request_id))
                           for op in rt.records(db, 'account_transfers')
                           if request_id in op.get('requests', {})), None)
@@ -300,6 +304,7 @@ class AccountTransfers:
         return op
 
     def adopt(self, db: "sqlite3.Connection", op: "AccountTransferRecord", agents: list["AgentRecord"], include_later: bool=False) -> None:
+        self.check_destination(self.rt.agent(op['leadId'], db), op['targetAccountKey'], db)
         destination_catalog: _ModelCatalog | None = None
         destination_catalog_checked = False
         destination_catalog_error = None
@@ -319,7 +324,6 @@ class AccountTransfers:
                     'sourceThreadId': a.get('threadId'), 'provider': provider, 'name': a.get('name'),
                     'reason': f'Uses {provider}; the destination account uses {op["targetProvider"]}'}
                 continue
-            self.check_destination(a, op['targetAccountKey'], db)
             done = a.get('accountKey', 'default') == op['targetAccountKey']
             active = bool(a.get('inFlight') or a.get('status') in ACTIVE)
             lazy = not done and not active
@@ -729,6 +733,13 @@ class AccountTransfers:
             lazy = a.get('lazyAccountTransfer') or {}
             if lazy.get('id') != key:
                 return a
+            try:
+                self.check_destination(a, op['targetAccountKey'], db)
+            except ValueError as error:
+                member.update(phase='blocked', error=str(error))  # type: ignore[call-arg]  # typed-update
+                self.save(db, op)
+                db.commit()
+                raise
             background_receipt = self.futures.get((key, aid))
             if not background and background_receipt and not background_receipt.done():
                 from codex_runtime import PreparationPending
@@ -910,6 +921,7 @@ class AccountTransfers:
                 if (a.get('lazyAccountTransfer') or {}).get('id') != key:
                     return a
                 self.assert_settings(member, a)
+                self.check_destination(a, target, db)
                 if account_reserved(rt, target):
                     raise RuntimeError('Waiting for the account tool catalog update')
                 member.update(phase='lazy_submitted', nativeMethod=method, nativeParams=copy.deepcopy(params),  # type: ignore[call-arg]  # typed-update
@@ -980,6 +992,13 @@ class AccountTransfers:
             lazy = a.get('lazyAccountTransfer') or {}
             if lazy.get('id') != key:
                 return a
+            try:
+                self.check_destination(a, op['targetAccountKey'], db)
+            except ValueError as error:
+                member.update(phase='blocked', result=result, error=str(error))  # type: ignore[call-arg]  # typed-update
+                self.save(db, op)
+                db.commit()
+                raise
             source_key, source_thread = lazy['sourceAccountKey'], lazy.get('sourceThreadId')
             if member.get('targetConnection') != rt.connection_ids[op['targetAccountKey']]:
                 member.update(phase='unknown', error='Destination connection changed after history move submission; no request was repeated')  # type: ignore[call-arg]  # typed-update
@@ -1781,6 +1800,7 @@ class AccountTransfers:
                     return
                 self.assert_source(op['members'][aid], current)
                 self.assert_settings(op['members'][aid], current)
+                self.check_destination(current, target, db)
                 if source_empty_proof:
                     refreshed = self.native_empty_transfer_proof(
                         db, current, a['threadId'], self.missing_source_rollout_message(a['threadId']))

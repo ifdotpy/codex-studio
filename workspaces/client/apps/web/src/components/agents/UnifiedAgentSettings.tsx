@@ -1,6 +1,7 @@
 import { post } from "../../api";
 import Accounts, { type useAccounts } from "../Accounts";
 import { ExecutionSettings } from "./ExecutionSettings";
+import { AccountExclusionsControl } from "./AccountExclusionsControl";
 import type { ComponentProps } from "react";
 
 export function UnifiedAgentSettings({
@@ -31,12 +32,20 @@ export function UnifiedAgentSettings({
         await settings.refresh();
       }}
       renderPicker={(selectAccount, disabled) => (
-        <ExecutionSettings
-          {...settings}
-          accounts={state.data.accounts}
-          onAccountChange={selectAccount}
-          accountDisabled={disabled}
-        />
+        <>
+          <ExecutionSettings
+            {...settings}
+            accounts={state.data.accounts}
+            onAccountChange={selectAccount}
+            accountDisabled={disabled}
+          />
+          <AccountExclusionsControl
+            lead={settings.agent}
+            accounts={state.data}
+            refresh={settings.refresh}
+            onError={notify}
+          />
+        </>
       )}
     />
   );

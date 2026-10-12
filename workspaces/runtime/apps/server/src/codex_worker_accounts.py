@@ -3,18 +3,33 @@
 from codex_catalog import CatalogPending, CatalogUnavailable
 
 
-def account_order(runtime, parent_account):
+class ExcludedAccountError(ValueError):
+    """A chat tried to start new work on one of its disabled accounts."""
+
+
+def account_order(runtime, parent_account, *, excluded=()):
     rows = {row['id']: row for row in runtime.accounts.list()}
     preferred = [parent_account, runtime.accounts.default(), *rows]
-    return list(dict.fromkeys(key for key in preferred if key in rows and
+    return list(dict.fromkeys(key for key in preferred if key in rows and key not in excluded and
                 not rows[key].get('disconnected') and not rows[key].get('deleted') and not rows[key].get('duplicateOf') and
                 (key == parent_account or rows[key].get('status') == 'ready' or rows[key].get('canAttemptNativeProof') is True)))
+
+
+def excluded_accounts(root):
+    value = root.get('excludedAccountKeys', [])
+    return set(value) if isinstance(value, list) and all(isinstance(key, str) for key in value) else set()
+
+
+def require_not_excluded(root, account_key):
+    if account_key in excluded_accounts(root):
+        raise ExcludedAccountError(f'Account {account_key} is disabled for this chat')
 
 
 def resolve(runtime, parent, data, *, catalogs=None):
     """Return one account and its catalog. Never retry a model request elsewhere."""
     root = runtime.agent(parent['rootId'])
     defaults = runtime.worker_defaults(root)
+    excluded = excluded_accounts(root)
     model = data.get('model')
     if model is None and data.get('profile_id'):
         import json
@@ -42,6 +57,7 @@ def resolve(runtime, parent, data, *, catalogs=None):
     if explicit is not None:
         if not isinstance(explicit, str) or not explicit:
             raise ValueError('Select an available worker account')
+        require_not_excluded(root, explicit)
         if project_accounts and explicit not in project_accounts:
             raise ValueError('Select a worker account of this project')
         row = runtime.accounts.get(explicit)
@@ -49,9 +65,12 @@ def resolve(runtime, parent, data, *, catalogs=None):
             raise ValueError('Sign in to the worker account before creating a worker')
         candidates = [explicit]
     else:
-        candidates = account_order(runtime, parent_account)
+        candidates = account_order(runtime, parent_account, excluded=excluded)
         if project_accounts:
             candidates = [key for key in candidates if key in project_accounts]
+        if not candidates:
+            cause = ' and this project account selection' if project_accounts else ''
+            raise ValueError(f'No worker account is available: this chat disables all accounts{cause}')
     # Native catalogs are provider-specific. Do not depend on the parent's
     # provider when the requested model identifies the other provider.
     provider = ('codex' if model.startswith('gpt-') else
@@ -94,13 +113,14 @@ def resolve(runtime, parent, data, *, catalogs=None):
     raise ValueError(message)
 
 
-def catalog(runtime, parent_account):
+def catalog(runtime, parent_account, root=None):
     """Return selectable models in the same account order used by spawn."""
     from codex_catalog import DISPLAY_READ
 
     models, seen, unavailable = [], set(), []
     pending = False
-    for key in account_order(runtime, parent_account):
+    for key in account_order(runtime, parent_account,
+                             excluded=excluded_accounts(root) if root is not None else ()):
         account = runtime.accounts.get(key)
         try:
             value = runtime.catalog(key)
@@ -123,7 +143,7 @@ def catalog(runtime, parent_account):
             **({'catalogPending': True} if pending else {})}
 
 
-def selected_account(runtime, value):
+def selected_account(runtime, value, root=None):
     if not isinstance(value, dict):
         raise ValueError('worker_defaults needs model, effort and fast_mode')
     key = value.get('account_key')
@@ -131,12 +151,14 @@ def selected_account(runtime, value):
         return None
     if not isinstance(key, str) or not key:
         raise ValueError('Select an available subagent account')
+    if root is not None:
+        require_not_excluded(root, key)
     account = runtime.accounts.get(key)
     if account.get('disconnected') or account.get('deleted') or (account.get('status') != 'ready' and not runtime.accounts.allow_native_auth_attempt(key, account)):
         raise ValueError('Sign in to the subagent account before selecting it')
     return key
 
 
-def settings_catalog(runtime, parent_account, value):
-    key = selected_account(runtime, value)
-    return runtime.catalog(key) if key is not None else catalog(runtime, parent_account)
+def settings_catalog(runtime, parent_account, value, root=None):
+    key = selected_account(runtime, value, root)
+    return runtime.catalog(key) if key is not None else catalog(runtime, parent_account, root)

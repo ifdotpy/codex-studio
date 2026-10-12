@@ -1004,6 +1004,88 @@ class RuntimeContract(unittest.TestCase):
         self.assertEqual(self.runtime.agent(key)['status'], 'idle')
         self.assertIsNone(self.runtime.server)
 
+    def test_chat_account_exclusions_persist_and_reject_transfers_without_interrupting_turn(self):
+        lead = self.lead()
+        before = self.runtime.agent(lead['id'])
+        with self.assertRaisesRegex(ValueError, 'Switch this chat to another account'):
+            self.runtime.conversation_settings(
+                lead['id'], {'excluded_account_keys': ['default']})
+        updated = self.runtime.conversation_settings(
+            lead['id'], {'excluded_account_keys': ['second']})
+        self.assertEqual(updated['excludedAccountKeys'], ['second'])
+        with self.assertRaisesRegex(ValueError, 'disabled for this chat'):
+            self.runtime.set_account(lead['id'], 'second')
+        self.assertEqual(updated['status'], before['status'])
+        self.assertEqual(updated.get('inFlight'), before.get('inFlight'))
+        self.runtime.close()
+        self.runtime = Runtime(self.root, FakeServer)
+        self.assertEqual(self.runtime.agent(lead['id'])['excludedAccountKeys'], ['second'])
+
+    def test_excluded_queued_worker_input_fails_without_requeue_or_interrupting_active_turn(self):
+        lead = self.runtime.new_lead({'cwd': str(self.root)})
+        worker = self.runtime.create(
+            {'prompt': 'Do the work', 'role': 'implementer', 'cwd': str(self.root)},
+            parent=lead['id'], defer=True)
+        from codex_worker_accounts import ExcludedAccountError
+        attempt_id = 'queued-exclusion-attempt'
+        event_id = 'queued-before-exclusion'
+        with self.runtime.lock, self.runtime.db() as db:
+            root = self.runtime.agent(lead['id'], db)
+            root.update(accountKey='second', excludedAccountKeys=['default'])
+            self.runtime.put(db, 'agents', root)
+            agent = self.runtime.agent(worker['id'], db)
+            agent['autoWake'] = True
+            self.runtime.enqueue(db, agent, 'user', 'Already queued', event_id)
+            agent.update(status='running', inFlight=True, turnId='active-turn',
+                         startAttempt={'id': attempt_id, 'epoch': agent['epoch'],
+                                       'activeAtReservation': True, 'events': [event_id],
+                                       'submitted': False, 'accountKey': 'default'})
+            self.runtime.put(db, 'agents', agent)
+        with self.assertRaisesRegex(ValueError, 'disabled for this chat'):
+            self.runtime.send(worker['id'], 'A later worker turn')
+        self.runtime.start_error(worker['id'], attempt_id,
+                                 ExcludedAccountError('Account default is disabled for this chat'))
+        failed = self.runtime.agent(worker['id'])
+        self.assertEqual(failed['status'], 'running')
+        self.assertTrue(failed['inFlight'])
+        self.assertEqual(failed['turnId'], 'active-turn')
+        with self.runtime.db() as db:
+            event = db.execute('SELECT status, error FROM runtime_events WHERE id=?', (event_id,)).fetchone()
+            self.assertEqual(event['status'], 'failed')
+            self.assertIn('disabled for this chat', event['error'])
+            self.assertFalse(db.execute("SELECT 1 FROM runtime_events WHERE id=? AND status='pending'",
+                                        (event_id,)).fetchone())
+            parent_notified = db.execute(
+                "SELECT 1 FROM runtime_events WHERE agent=? AND kind='child_result' AND text LIKE '%disabled for this chat%'",
+                (lead['id'],)).fetchone()
+            self.assertTrue(parent_notified)
+
+    def test_worker_spawn_uses_another_chat_enabled_account(self):
+        lead = self.runtime.new_lead({'cwd': str(self.root)})
+        with self.runtime.lock, self.runtime.db() as db:
+            lead_record = self.runtime.agent(lead['id'], db)
+            lead_record['accountKey'] = 'second'
+            self.runtime.put(db, 'agents', lead_record)
+        self.runtime.conversation_settings(lead['id'], {'excluded_account_keys': ['default']})
+        with self.assertRaisesRegex(ValueError, 'disabled for this chat'):
+            self.runtime.conversation_settings(lead['id'], {'cwd': str(self.root)})
+        rows = [
+            {'id': 'default', 'status': 'ready', 'provider': 'codex'},
+            {'id': 'second', 'status': 'ready', 'provider': 'codex'},
+        ]
+        with patch.object(self.runtime.accounts, 'list', return_value=rows), \
+                patch.object(self.runtime.accounts, 'default', return_value='default'), \
+                patch.object(self.runtime.accounts, 'get', side_effect=lambda key: next(row for row in rows if row['id'] == key)), \
+                patch.object(self.runtime, 'catalog', return_value={'data': [{'model': 'gpt-6-luna'}]}):
+            worker = self.runtime.create(
+                {'prompt': 'Do the work', 'role': 'implementer', 'cwd': str(self.root)},
+                parent=lead['id'], defer=True)
+            self.assertEqual(worker['accountKey'], 'second')
+            with self.assertRaisesRegex(ValueError, 'disabled for this chat'):
+                self.runtime.create(
+                    {'prompt': 'Do the work', 'role': 'implementer', 'cwd': str(self.root),
+                     'account_key': 'default'}, parent=lead['id'], defer=True)
+
     def test_lead_models_follow_account_catalog_and_role_identity(self):
         for model in ['gpt-5.6-luna', 'gpt-5.6-terra', 'test-model']:
             lead = self.runtime.new_lead({'model': model})

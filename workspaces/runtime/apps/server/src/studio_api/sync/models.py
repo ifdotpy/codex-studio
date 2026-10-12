@@ -566,6 +566,7 @@ class AgentEntityDto(ContractModel):
     fastMode: bool | None = None
     concurrency: int | None = None
     accountKey: str | None = None
+    excludedAccountKeys: list[str] | None = None
     cwd: str | None = None
     workspaceMode: Literal["layr", "image", "worktree", "shared"] | None = None
     executionMode: Literal["vm", "native"] | None = None

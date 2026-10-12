@@ -1311,6 +1311,7 @@ class AgentRecord(TypedDict):
     parentId: NotRequired[str | None]
     threadId: NotRequired[str | None]
     accountKey: NotRequired[str]
+    excludedAccountKeys: NotRequired[list[str]]
     executionSettingsAccountKey: NotRequired[str]
     provider: NotRequired[AgentProviderValue]
     model: NotRequired[str | None]
