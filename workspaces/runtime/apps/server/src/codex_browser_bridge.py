@@ -123,6 +123,10 @@ def cleaned(result: Any) -> tuple[int, str, bytes]:
         raise ValueError("The relay body is too large")
     text = str(result.get("contentType") or "").lower()
     base = text.split(";", 1)[0].strip()
+    # A browser sniffs an untyped page; the sandbox and nosniff below forbid that, so an
+    # untyped HTML document (the AWS CLI callback page) is typed here.
+    if not base and body.lstrip()[:15].lower().startswith((b"<!doctype html", b"<html")):
+        base = "text/html"
     if base not in {"text/html", "text/plain"}:
         base = "text/plain"
     charset = CHARSET.search(text)

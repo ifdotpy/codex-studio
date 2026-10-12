@@ -388,6 +388,15 @@ class Relay(unittest.TestCase):
         self.assertEqual(cleaned({"status": 400, "contentType": "text/html; charset=ISO-8859-1",
                                   "body": base64.b64encode(b"x").decode()}),
                          (400, "text/html; charset=iso-8859-1", b"x"))
+        # The AWS CLI callback page has no Content-Type; it renders as HTML, other text stays plain.
+        aws = b"\n  <!DOCTYPE html>\n<html lang=en><title>Amazon Web Services Sign-in</title>"
+        self.assertEqual(cleaned({"status": 200, "body": base64.b64encode(aws).decode()}),
+                         (200, "text/html; charset=utf-8", aws))
+        self.assertEqual(cleaned({"status": 200, "body": base64.b64encode(b"done").decode()})[1],
+                         "text/plain; charset=utf-8")
+        self.assertEqual(cleaned({"status": 200, "contentType": "application/json",
+                                  "body": base64.b64encode(b"<html>").decode()})[1],
+                         "text/plain; charset=utf-8")
         invalid: list[Any] = [{"status": 99}, {"status": "200"}, {"status": 200, "body": "%%"},
                               {"status": 200, "body": base64.b64encode(b"x" * (256 * 1024 + 1)).decode()}, []]
         for result in invalid:
