@@ -1,7 +1,7 @@
 use rusqlite::Connection;
 
 use crate::StoreResult;
-use crate::records::{TaskId, TaskRecord, TaskRepository, get_json_record, put_json_record};
+use crate::records::{Table, TaskId, TaskRecord, TaskRepository};
 use crate::schema::{SchemaRequirements, TableRequirement};
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
@@ -20,10 +20,10 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 
 impl TaskRepository {
     pub fn get(connection: &Connection, id: &TaskId) -> StoreResult<Option<TaskRecord>> {
-        get_json_record(connection, "runtime_tasks", &id.0)
+        Table::<TaskRecord>::new(connection).get(id)
     }
 
     pub fn put(connection: &Connection, record: &TaskRecord) -> StoreResult<()> {
-        put_json_record(connection, "runtime_tasks", &record.id.0, record)
+        Table::<TaskRecord>::new(connection).put(record)
     }
 }
