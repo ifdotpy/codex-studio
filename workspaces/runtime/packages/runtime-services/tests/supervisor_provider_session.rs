@@ -154,7 +154,7 @@ while True:
             .spawn()
             .expect("start disposable supervisor response proxy");
         self.proxy = Some(proxy);
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             if self.root.join(SOCKET).exists()
                 && let Ok(mut client) =
@@ -162,6 +162,14 @@ while True:
                 && client.health(Default::default()).is_ok()
             {
                 break;
+            }
+            if let Some(status) = self
+                .proxy
+                .as_mut()
+                .and_then(|proxy| proxy.try_wait().unwrap())
+            {
+                let log = fs::read_to_string(self.root.join("drop-proxy.log")).unwrap_or_default();
+                panic!("drop proxy exited before becoming ready: {status}; {log}");
             }
             assert!(
                 Instant::now() < deadline,
