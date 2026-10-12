@@ -59,7 +59,7 @@ class ComplaintRouting(unittest.TestCase):
         self.assertEqual(self.events('complaint'), [])
 
     def test_worker_files_for_lead_and_user_cannot_take_over(self):
-        worker = self.runtime.create({'name':'Worker', 'prompt':'Check', 'role':'reviewer', 'model':'test-model', 'effort':'medium'}, parent=self.lead['id'])
+        worker = self.runtime.create({'name':'Worker', 'prompt':'Check', 'role':'reviewer', 'model':'gpt-6-luna', 'effort':'high'}, parent=self.lead['id'])
         c = self.submit(worker['id'])
         self.assertEqual(c['recipient'], 'lead')
         self.assertEqual(self.events('complaint')[0]['agent'], self.lead['id'])
@@ -75,7 +75,7 @@ class ComplaintRouting(unittest.TestCase):
         self.assertEqual((closed['status'], closed['responses'][-1]['author']), ('resolved', 'user'))
 
     def test_user_closes_complaint_of_stopped_lead(self):
-        worker = self.runtime.create({'name':'Worker', 'prompt':'Check', 'role':'reviewer', 'model':'test-model', 'effort':'medium'}, parent=self.lead['id'])
+        worker = self.runtime.create({'name':'Worker', 'prompt':'Check', 'role':'reviewer', 'model':'gpt-6-luna', 'effort':'high'}, parent=self.lead['id'])
         c = self.submit(worker['id'])
         with self.runtime.lock, self.runtime.db() as db:
             lead = self.runtime.agent(self.lead['id'], db)
