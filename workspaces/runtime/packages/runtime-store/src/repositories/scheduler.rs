@@ -58,6 +58,29 @@ pub struct TurnAttemptIdentity {
 pub struct SchedulerRepository;
 
 impl SchedulerRepository {
+    /// Confirm the exact reservation is still current before provider attach/resume.
+    pub fn attempt_can_prepare(
+        connection: &Connection,
+        agent_id: &str,
+        epoch: i64,
+        attempt_id: &str,
+    ) -> StoreResult<bool> {
+        let Some(agent) = AgentRepository::get(connection, &AgentId::from(agent_id))? else {
+            return Ok(false);
+        };
+        let Some(attempt) = agent.extra.get("startAttempt").and_then(Value::as_object) else {
+            return Ok(false);
+        };
+        Ok(agent.epoch == epoch
+            && agent.extra.get("turnEpoch").and_then(Value::as_i64) == Some(epoch)
+            && agent.status == AgentStatus::Starting
+            && agent.extra.get("autoWake").and_then(Value::as_bool) == Some(true)
+            && agent.extra.get("inFlight").and_then(Value::as_bool) == Some(true)
+            && attempt.get("id").and_then(Value::as_str) == Some(attempt_id)
+            && attempt.get("epoch").and_then(Value::as_i64) == Some(epoch)
+            && attempt.get("submitted").and_then(Value::as_bool) == Some(false))
+    }
+
     /// Confirm a claimed attempt is still authorized before submitting user input.
     pub fn attempt_can_submit(
         connection: &Connection,
@@ -81,8 +104,7 @@ impl SchedulerRepository {
             && attempt.get("submitted").and_then(Value::as_bool) == Some(true))
     }
 
-    /// Account sessions that should be reattached to observe submitted turns
-    /// whose native turn identity is still unknown after startup recovery.
+    /// Account sessions that must be reattached to observe any submitted turn.
     pub fn accounts_with_unknown_submitted_turns(
         connection: &Connection,
     ) -> StoreResult<Vec<String>> {
@@ -90,18 +112,49 @@ impl SchedulerRepository {
             "SELECT DISTINCT COALESCE(json_extract(record,'$.accountKey'),'default') \
              FROM runtime_agents \
              WHERE COALESCE(json_extract(record,'$.provider'),'codex')='codex' \
-             AND json_extract(record,'$.autoWake')=1 \
-             AND json_extract(record,'$.inFlight')=1 \
              AND json_extract(record,'$.startAttempt.submitted')=1 \
-             AND json_extract(record,'$.startAttempt.epoch')=json_extract(record,'$.epoch') \
-             AND json_extract(record,'$.turnEpoch')=json_extract(record,'$.epoch') \
-             AND json_extract(record,'$.startAttempt.turnId') IS NULL \
-             AND json_extract(record,'$.startAttempt.observedTurnId') IS NULL \
-             AND json_extract(record,'$.status') IN ('starting','running','waiting') \
+             AND json_extract(record,'$.startAttempt.connectionGeneration') IS NOT NULL \
+             AND json_extract(record,'$.status') IN ('starting','running','waiting','paused') \
              AND json_extract(record,'$.deletedAt') IS NULL \
              ORDER BY 1",
         )?;
         let rows = statement.query_map([], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Submitted `turn/start` requests whose reply may still arrive after reattach.
+    pub fn submitted_start_requests(
+        connection: &Connection,
+        account_key: &str,
+        generation: u64,
+    ) -> StoreResult<Vec<(String, i64, String, String, String)>> {
+        let generation = i64::try_from(generation).map_err(|_| {
+            StoreError::SchemaMismatch("provider generation exceeds SQLite integer range".into())
+        })?;
+        let mut statement = connection.prepare(
+            "SELECT id,json_extract(record,'$.startAttempt.epoch'), \
+                    json_extract(record,'$.startAttempt.id'), \
+                    json_extract(record,'$.startAttempt.requestTicket'), \
+                    json_extract(record,'$.startAttempt.threadId') \
+             FROM runtime_agents \
+             WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 \
+             AND json_extract(record,'$.startAttempt.submitted')=1 \
+             AND json_extract(record,'$.startAttempt.connectionGeneration')=?2 \
+             AND json_extract(record,'$.startAttempt.turnId') IS NULL \
+             AND json_extract(record,'$.startAttempt.requestTicket') IS NOT NULL \
+             AND json_extract(record,'$.status') IN ('starting','running','waiting','paused') \
+             AND json_extract(record,'$.deletedAt') IS NULL \
+             ORDER BY rowid",
+        )?;
+        let rows = statement.query_map(params![account_key, generation], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -111,6 +164,7 @@ impl SchedulerRepository {
     pub fn find_attempt_for_thread(
         connection: &Connection,
         account_key: &str,
+        generation: u64,
         thread_id: &str,
         turn_id: Option<&str>,
     ) -> StoreResult<(bool, Option<TurnAttemptIdentity>)> {
@@ -142,10 +196,28 @@ impl SchedulerRepository {
         let Some(epoch) = attempt.get("epoch").and_then(Value::as_i64) else {
             return Err(invalid_agent(&agent.id.0));
         };
-        if agent.epoch != epoch
-            || agent.extra.get("turnEpoch").and_then(Value::as_i64) != Some(epoch)
+        let completed_turn = agent
+            .extra
+            .get("completedTurnIds")
+            .and_then(Value::as_array)
+            .is_some_and(|turns| turns.iter().any(|id| id.as_str() == turn_id));
+        let current_attempt = agent.epoch == epoch
+            && agent.extra.get("turnEpoch").and_then(Value::as_i64) == Some(epoch)
+            && agent.extra.get("autoWake").and_then(Value::as_bool) == Some(true)
+            && agent.extra.get("inFlight").and_then(Value::as_bool) == Some(true);
+        let stopped_after_submit = agent.status == AgentStatus::Paused
+            && agent.extra.get("autoWake").and_then(Value::as_bool) == Some(false)
+            && agent.extra.get("turnEpoch").and_then(Value::as_i64) == Some(epoch);
+        if (!current_attempt && !stopped_after_submit)
             || attempt.get("submitted").and_then(Value::as_bool) != Some(true)
-            || agent.extra.get("inFlight").and_then(Value::as_bool) != Some(true)
+            || attempt.get("accountKey").and_then(Value::as_str) != Some(account_key)
+            || attempt.get("threadId").and_then(Value::as_str) != Some(thread_id)
+            || attempt.get("connectionGeneration").and_then(Value::as_u64) != Some(generation)
+            || attempt
+                .get("requestTicket")
+                .and_then(Value::as_str)
+                .is_none()
+            || completed_turn
             || turn_id.is_some_and(|turn_id| {
                 attempt
                     .get("turnId")
@@ -287,16 +359,85 @@ impl SchedulerRepository {
             }
         }
 
-        if events
-            .iter()
-            .any(|event| requires_event_policy(&event.kind))
-            || metadata
-                .values()
-                .any(|value| value.get("radioAnswerTurnId").is_some())
+        let unsupported = if agent.extra.get("pendingSettings").is_some_and(truthy) {
+            Some("pendingSettings are not supported by the Rust turn driver; apply settings first.")
+        } else if agent.extra.get("imageWorkspace").and_then(Value::as_bool) == Some(true)
+            && agent
+                .extra
+                .get("imageWorkspaceReady")
+                .and_then(Value::as_bool)
+                != Some(true)
         {
+            Some("image workspace is not ready; prepare the workspace before submitting input.")
+        } else {
+            events.first().and_then(|event| {
+                if event.kind != "user" {
+                    Some("event kind is not supported by the Rust turn driver.")
+                } else if metadata
+                    .get(&event.id.0)
+                    .and_then(|value| value.get("assets"))
+                    .and_then(Value::as_array)
+                    .is_some_and(|assets| !assets.is_empty())
+                {
+                    Some("event attachments are not supported by the Rust turn driver.")
+                } else if metadata
+                    .get(&event.id.0)
+                    .is_some_and(|value| value.get("radioAnswerTurnId").is_some())
+                {
+                    Some("radio answer events are not supported by the Rust turn driver.")
+                } else {
+                    None
+                }
+            })
+        };
+        if let Some(reason) = unsupported {
+            agent.status = AgentStatus::Waiting;
+            agent
+                .extra
+                .insert("inFlight".to_owned(), Value::Bool(false));
+            agent.extra.insert("turnId".to_owned(), Value::Null);
+            agent
+                .extra
+                .insert("nativeFailureHold".to_owned(), Value::Bool(true));
+            agent
+                .extra
+                .insert("error".to_owned(), Value::String(reason.to_owned()));
+            agent.extra.insert(
+                "startOutcomeHold".to_owned(),
+                json!({"stage":"held","reason":reason}),
+            );
+            AgentRepository::put(transaction, &agent)?;
+            EventWriteRepository::set_agent_sync_lifecycle(
+                transaction,
+                agent_id,
+                "waiting",
+                false,
+                None,
+            )?;
             return Ok(None);
         }
-        let selected = select_turn_batch(&agent, events, &metadata, limit);
+        // Process the supported FIFO prefix. Later unsupported events do not suppress
+        // an earlier user message; they receive a named hold on the next admission.
+        let supported_prefix = events
+            .iter()
+            .take_while(|event| {
+                event.kind == "user"
+                    && metadata
+                        .get(&event.id.0)
+                        .and_then(|value| value.get("assets"))
+                        .and_then(Value::as_array)
+                        .is_none_or(Vec::is_empty)
+                    && !metadata
+                        .get(&event.id.0)
+                        .is_some_and(|value| value.get("radioAnswerTurnId").is_some())
+            })
+            .count();
+        let selected = select_turn_batch(
+            &agent,
+            events.into_iter().take(supported_prefix).collect(),
+            &metadata,
+            limit,
+        );
         let mut events = selected;
         if events.is_empty() {
             return Ok(None);
@@ -406,6 +547,76 @@ impl SchedulerRepository {
             attempt.insert("submitted".to_owned(), Value::Bool(true));
         }
         AgentRepository::put(transaction, &agent)?;
+        EventWriteRepository::set_agent_sync_lifecycle(
+            transaction,
+            agent_id,
+            "starting",
+            true,
+            None,
+        )?;
+        Ok(true)
+    }
+
+    /// Record durable provider correlation before `turn/start` is written.
+    pub fn mark_submitted_identity(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        epoch: i64,
+        attempt_id: &str,
+        request_id: &str,
+        account_key: &str,
+        generation: u64,
+        thread_id: &str,
+    ) -> StoreResult<bool> {
+        let Some(mut agent) = AgentRepository::get(transaction, &AgentId::from(agent_id))? else {
+            return Ok(false);
+        };
+        let attempt = agent
+            .extra
+            .get_mut("startAttempt")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| invalid_agent(agent_id))?;
+        if attempt.get("id").and_then(Value::as_str) != Some(attempt_id)
+            || attempt.get("epoch").and_then(Value::as_i64) != Some(epoch)
+            || attempt.get("submitted").and_then(Value::as_bool) != Some(false)
+            || agent.epoch != epoch
+        {
+            return Ok(false);
+        }
+        let changed = Self::mark_submitted(transaction, agent_id, epoch, attempt_id)?;
+        if !changed {
+            return Ok(false);
+        }
+        let Some(mut agent) = AgentRepository::get(transaction, &AgentId::from(agent_id))? else {
+            return Ok(false);
+        };
+        let attempt = agent
+            .extra
+            .get_mut("startAttempt")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| invalid_agent(agent_id))?;
+        attempt.insert(
+            "requestTicket".to_owned(),
+            Value::String(request_id.to_owned()),
+        );
+        attempt.insert(
+            "nativeOperationId".to_owned(),
+            Value::String(request_id.to_owned()),
+        );
+        attempt.insert(
+            "accountKey".to_owned(),
+            Value::String(account_key.to_owned()),
+        );
+        attempt.insert("connectionGeneration".to_owned(), Value::from(generation));
+        attempt.insert("threadId".to_owned(), Value::String(thread_id.to_owned()));
+        AgentRepository::put(transaction, &agent)?;
+        EventWriteRepository::set_agent_sync_lifecycle(
+            transaction,
+            agent_id,
+            "starting",
+            true,
+            None,
+        )?;
         Ok(true)
     }
 
@@ -586,7 +797,7 @@ impl SchedulerRepository {
         let mut statement = transaction.prepare(
             "SELECT id,record FROM runtime_agents \
              WHERE json_extract(record,'$.startAttempt.submitted')=1 \
-             AND json_extract(record,'$.status') IN ('starting','running','waiting') \
+             AND json_extract(record,'$.status') IN ('starting','running','waiting','paused') \
              ORDER BY rowid",
         )?;
         let rows = statement
@@ -641,7 +852,10 @@ impl SchedulerRepository {
                     .map(str::to_owned);
                 (event_ids, attempt_epoch, attempt_id, turn_id)
             };
-            if attempt_epoch != agent.epoch {
+            let stopped_after_submit = agent.status == AgentStatus::Paused
+                && agent.extra.get("autoWake").and_then(Value::as_bool) == Some(false)
+                && agent.extra.get("turnEpoch").and_then(Value::as_i64) == Some(attempt_epoch);
+            if attempt_epoch != agent.epoch && !stopped_after_submit {
                 continue;
             }
             let turn_id = saved_turn_id.or_else(|| {
@@ -652,15 +866,13 @@ impl SchedulerRepository {
                     .filter(|turn_id| !turn_id.is_empty())
                     .map(str::to_owned)
             });
-            if let Some(attempt) = agent
-                .extra
-                .get_mut("startAttempt")
-                .and_then(Value::as_object_mut)
             {
-                attempt.insert(
-                    "executionOutcome".to_owned(),
-                    Value::String("unknown".to_owned()),
-                );
+                let attempt = agent
+                    .extra
+                    .get_mut("startAttempt")
+                    .and_then(Value::as_object_mut)
+                    .ok_or_else(|| invalid_agent(&agent_id))?;
+                attempt.insert("restartRecovery".to_owned(), Value::Bool(true));
             }
             if let Some(ref turn_id) = turn_id {
                 if let Some(attempt) = agent
@@ -673,20 +885,11 @@ impl SchedulerRepository {
                 agent
                     .extra
                     .insert("turnId".to_owned(), Value::String(turn_id.clone()));
-                agent
-                    .extra
-                    .insert("autoWake".to_owned(), Value::Bool(false));
-                agent
-                    .extra
-                    .insert("inFlight".to_owned(), Value::Bool(false));
-                agent.status = AgentStatus::Interrupted;
-                agent.extra.insert(
-                    "error".to_owned(),
-                    Value::String(
-                        "Server restarted during a turn; review history before continuing."
-                            .to_owned(),
-                    ),
-                );
+                agent.extra.insert("inFlight".to_owned(), Value::Bool(true));
+                if !stopped_after_submit {
+                    agent.status = AgentStatus::Running;
+                    agent.extra.insert("error".to_owned(), Value::Null);
+                }
                 for event_id in &event_ids {
                     transaction.execute(
                         "UPDATE runtime_events SET status='delivered',turn_id=?1,error=NULL \
@@ -696,15 +899,14 @@ impl SchedulerRepository {
                     )?;
                 }
             } else {
-                agent.status = AgentStatus::Waiting;
                 agent.extra.insert("inFlight".to_owned(), Value::Bool(true));
-                agent.extra.insert(
-                    "error".to_owned(),
-                    Value::String(
-                        "Submitted input has no confirmed turn identity; it was not resent."
-                            .to_owned(),
-                    ),
-                );
+                if !stopped_after_submit {
+                    agent.status = AgentStatus::Waiting;
+                    agent.extra.insert(
+                        "error".to_owned(),
+                        Value::String("Submitted input has no confirmed turn identity; awaiting the persisted provider request reply.".to_owned()),
+                    );
+                }
                 agent.extra.insert(
                     "startOutcomeHold".to_owned(),
                     serde_json::json!({"stage":"held","attemptId":attempt_id,
@@ -720,7 +922,8 @@ impl SchedulerRepository {
                 }
             }
             let (sync_status, in_flight, sync_turn) = match agent.status {
-                AgentStatus::Interrupted => ("interrupted", false, turn_id.as_deref()),
+                AgentStatus::Running => ("running", true, turn_id.as_deref()),
+                AgentStatus::Paused => ("paused", true, turn_id.as_deref()),
                 AgentStatus::Waiting => ("waiting", true, None),
                 _ => {
                     return Err(StoreError::SchemaMismatch(
@@ -742,6 +945,138 @@ impl SchedulerRepository {
     }
 
     /// Bind a provider turn to the exact submitted scheduler attempt.
+    pub fn settle_started_provider(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        epoch: i64,
+        attempt_id: &str,
+        request_id: &str,
+        account_key: &str,
+        generation: u64,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> StoreResult<bool> {
+        let Some(agent) = AgentRepository::get(transaction, &AgentId::from(agent_id))? else {
+            return Ok(false);
+        };
+        let Some(attempt) = agent.extra.get("startAttempt").and_then(Value::as_object) else {
+            return Ok(false);
+        };
+        if attempt.get("id").and_then(Value::as_str) != Some(attempt_id)
+            || attempt.get("epoch").and_then(Value::as_i64) != Some(epoch)
+            || attempt.get("requestTicket").and_then(Value::as_str) != Some(request_id)
+            || attempt.get("accountKey").and_then(Value::as_str) != Some(account_key)
+            || attempt.get("connectionGeneration").and_then(Value::as_u64) != Some(generation)
+            || attempt.get("threadId").and_then(Value::as_str) != Some(thread_id)
+        {
+            return Ok(false);
+        }
+        Self::settle_started(transaction, agent_id, epoch, attempt_id, turn_id)
+    }
+
+    pub fn settle_start_rejected_provider(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        epoch: i64,
+        attempt_id: &str,
+        request_id: &str,
+        account_key: &str,
+        generation: u64,
+        thread_id: &str,
+        error: Value,
+    ) -> StoreResult<bool> {
+        let Some(mut agent) = AgentRepository::get(transaction, &AgentId::from(agent_id))? else {
+            return Ok(false);
+        };
+        let Some(event_ids) = attempt_events(&agent, epoch, attempt_id)? else {
+            return Ok(false);
+        };
+        let Some(attempt) = agent.extra.get("startAttempt").and_then(Value::as_object) else {
+            return Ok(false);
+        };
+        if attempt.get("requestTicket").and_then(Value::as_str) != Some(request_id)
+            || attempt.get("accountKey").and_then(Value::as_str) != Some(account_key)
+            || attempt.get("connectionGeneration").and_then(Value::as_u64) != Some(generation)
+            || attempt.get("threadId").and_then(Value::as_str) != Some(thread_id)
+        {
+            return Ok(false);
+        }
+        if attempt.get("executionOutcome").and_then(Value::as_str) == Some("failed") {
+            return Ok(true);
+        }
+        let stopped_after_submit = agent.epoch != epoch
+            && agent.status == AgentStatus::Paused
+            && agent.extra.get("autoWake").and_then(Value::as_bool) == Some(false)
+            && agent.extra.get("turnEpoch").and_then(Value::as_i64) == Some(epoch);
+        let current_attempt = agent.epoch == epoch
+            && agent.extra.get("turnEpoch").and_then(Value::as_i64) == Some(epoch)
+            && agent.extra.get("autoWake").and_then(Value::as_bool) == Some(true);
+        if !stopped_after_submit && !current_attempt {
+            return Ok(false);
+        }
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("provider rejected turn/start");
+        for event_id in &event_ids {
+            let changed = transaction.execute(
+                "UPDATE runtime_events SET status='failed',turn_id=NULL,error=?1 \
+                 WHERE id=?2 AND agent=?3 AND epoch=?4 AND status IN ('reserved','dispatching','uncertain')",
+                params![message, event_id, agent_id, epoch],
+            )?;
+            if changed != 1 {
+                return Err(StoreError::SchemaMismatch(
+                    "start rejection no longer matches its submitted events".to_owned(),
+                ));
+            }
+        }
+        if let Some(attempt) = agent
+            .extra
+            .get_mut("startAttempt")
+            .and_then(Value::as_object_mut)
+        {
+            attempt.insert(
+                "executionOutcome".to_owned(),
+                Value::String("failed".into()),
+            );
+            attempt.insert("error".to_owned(), error.clone());
+        }
+        agent
+            .extra
+            .insert("inFlight".to_owned(), Value::Bool(false));
+        agent.extra.insert("turnId".to_owned(), Value::Null);
+        agent.extra.insert(
+            "lastCompletedTurnStatus".to_owned(),
+            Value::String("failed".into()),
+        );
+        agent
+            .extra
+            .insert("lastCompletedTurnError".to_owned(), error.clone());
+        if current_attempt {
+            agent.status = AgentStatus::Failed;
+            agent.extra.insert("error".to_owned(), error.clone());
+            agent
+                .extra
+                .insert("nativeFailureHold".to_owned(), Value::Bool(true));
+            agent.extra.insert(
+                "startOutcomeHold".to_owned(),
+                json!({
+                    "stage":"held","attemptId":attempt_id,"epoch":epoch,"reason":message
+                }),
+            );
+        }
+        AgentRepository::put(transaction, &agent)?;
+        let sync_status = if current_attempt { "failed" } else { "paused" };
+        EventWriteRepository::set_agent_sync_lifecycle(
+            transaction,
+            agent_id,
+            sync_status,
+            false,
+            None,
+        )?;
+        Ok(true)
+    }
+
     pub fn settle_started(
         transaction: &Transaction<'_>,
         agent_id: &str,
@@ -755,20 +1090,24 @@ impl SchedulerRepository {
         let Some(event_ids) = attempt_events(&agent, epoch, attempt_id)? else {
             return Ok(false);
         };
-        if agent.epoch == epoch
-            && agent.extra.get("turnEpoch").and_then(Value::as_i64) == Some(epoch)
-            && agent.extra.get("lastCompletedTurn").and_then(Value::as_str) == Some(turn_id)
+        if completed_turn_ids(&agent)
+            .iter()
+            .any(|completed| completed == turn_id)
         {
-            return Ok(true);
+            return Ok(false);
         }
-        if agent.epoch != epoch
-            || agent.extra.get("turnEpoch").and_then(Value::as_i64) != Some(epoch)
-            || agent.extra.get("autoWake").and_then(Value::as_bool) != Some(true)
-            || !matches!(
+        let stopped_after_submit = agent.epoch != epoch
+            && agent.status == AgentStatus::Paused
+            && agent.extra.get("autoWake").and_then(Value::as_bool) == Some(false)
+            && agent.extra.get("turnEpoch").and_then(Value::as_i64) == Some(epoch);
+        let current_attempt = agent.epoch == epoch
+            && agent.extra.get("turnEpoch").and_then(Value::as_i64) == Some(epoch)
+            && agent.extra.get("autoWake").and_then(Value::as_bool) == Some(true)
+            && matches!(
                 agent.status,
                 AgentStatus::Starting | AgentStatus::Waiting | AgentStatus::Running
-            )
-        {
+            );
+        if !stopped_after_submit && !current_attempt {
             return Ok(false);
         }
         if agent
@@ -801,16 +1140,51 @@ impl SchedulerRepository {
             "observedTurnId".to_owned(),
             Value::String(turn_id.to_owned()),
         );
+        if agent.epoch == epoch {
+            attempt.remove("executionOutcome");
+        }
         agent
             .extra
             .insert("turnId".to_owned(), Value::String(turn_id.to_owned()));
         agent.extra.insert("inFlight".to_owned(), Value::Bool(true));
-        agent.status = AgentStatus::Running;
+        if current_attempt {
+            agent.status = AgentStatus::Running;
+            if agent
+                .extra
+                .get("startOutcomeHold")
+                .and_then(Value::as_object)
+                .and_then(|hold| hold.get("attemptId"))
+                .and_then(Value::as_str)
+                == Some(attempt_id)
+            {
+                agent.extra.remove("startOutcomeHold");
+                if agent
+                    .extra
+                    .get("nativeFailureHold")
+                    .and_then(Value::as_bool)
+                    == Some(true)
+                {
+                    agent
+                        .extra
+                        .insert("nativeFailureHold".to_owned(), Value::Bool(false));
+                }
+                agent.extra.insert("error".to_owned(), Value::Null);
+            }
+        }
         AgentRepository::put(transaction, &agent)?;
+        let sync_status = match agent.status {
+            AgentStatus::Running => "running",
+            AgentStatus::Paused => "paused",
+            _ => {
+                return Err(StoreError::SchemaMismatch(
+                    "invalid start settlement status".into(),
+                ));
+            }
+        };
         EventWriteRepository::set_agent_sync_lifecycle(
             transaction,
             agent_id,
-            "running",
+            sync_status,
             true,
             Some(turn_id),
         )?;
@@ -843,14 +1217,24 @@ impl SchedulerRepository {
         let Some(event_ids) = attempt_events(&agent, epoch, attempt_id)? else {
             return Ok(false);
         };
-        if agent.epoch != epoch
-            || agent.extra.get("turnEpoch").and_then(Value::as_i64) != Some(epoch)
-            || agent.extra.get("autoWake").and_then(Value::as_bool) != Some(true)
-            || !matches!(
+        if completed_turn_ids(&agent)
+            .iter()
+            .any(|completed| completed == turn_id)
+        {
+            return Ok(false);
+        }
+        let stopped_after_submit = agent.epoch != epoch
+            && agent.status == AgentStatus::Paused
+            && agent.extra.get("autoWake").and_then(Value::as_bool) == Some(false)
+            && agent.extra.get("turnEpoch").and_then(Value::as_i64) == Some(epoch);
+        let current_attempt = agent.epoch == epoch
+            && agent.extra.get("turnEpoch").and_then(Value::as_i64) == Some(epoch)
+            && agent.extra.get("autoWake").and_then(Value::as_bool) == Some(true)
+            && matches!(
                 agent.status,
                 AgentStatus::Starting | AgentStatus::Waiting | AgentStatus::Running
-            )
-        {
+            );
+        if !stopped_after_submit && !current_attempt {
             return Ok(false);
         }
         if agent
@@ -873,16 +1257,29 @@ impl SchedulerRepository {
         }
         deliver_attempt_events(transaction, agent_id, epoch, &event_ids, turn_id)?;
 
-        let attempt = agent
+        {
+            let attempt = agent
+                .extra
+                .get_mut("startAttempt")
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| invalid_agent(agent_id))?;
+            attempt.insert("turnId".to_owned(), Value::String(turn_id.to_owned()));
+            attempt.insert(
+                "executionOutcome".to_owned(),
+                Value::String(outcome.to_owned()),
+            );
+        }
+        let clears_unknown = agent
             .extra
-            .get_mut("startAttempt")
-            .and_then(Value::as_object_mut)
-            .ok_or_else(|| invalid_agent(agent_id))?;
-        attempt.insert("turnId".to_owned(), Value::String(turn_id.to_owned()));
-        attempt.insert(
-            "executionOutcome".to_owned(),
-            Value::String(outcome.to_owned()),
-        );
+            .get("startOutcomeHold")
+            .and_then(Value::as_object)
+            .and_then(|hold| hold.get("attemptId"))
+            .and_then(Value::as_str)
+            == Some(attempt_id);
+        if clears_unknown {
+            agent.extra.remove("startOutcomeHold");
+        }
+        remember_completed_turn(&mut agent, turn_id);
         agent.extra.insert(
             "lastCompletedTurn".to_owned(),
             Value::String(turn_id.to_owned()),
@@ -903,18 +1300,24 @@ impl SchedulerRepository {
         agent
             .extra
             .insert("inFlight".to_owned(), Value::Bool(false));
-        if let Some(error) = error {
-            agent.extra.insert("error".to_owned(), error);
-        } else {
-            agent.extra.insert("error".to_owned(), Value::Null);
+        if current_attempt {
+            if let Some(error) = error {
+                agent.extra.insert("error".to_owned(), error);
+            } else {
+                agent.extra.insert("error".to_owned(), Value::Null);
+            }
+            if status == AgentStatus::Failed {
+                agent
+                    .extra
+                    .insert("nativeFailureHold".to_owned(), Value::Bool(true));
+            } else if clears_unknown {
+                agent
+                    .extra
+                    .insert("nativeFailureHold".to_owned(), Value::Bool(false));
+            }
+            agent.status = status.clone();
         }
-        if status == AgentStatus::Failed {
-            agent
-                .extra
-                .insert("nativeFailureHold".to_owned(), Value::Bool(true));
-        }
-        agent.status = status.clone();
-        if status == AgentStatus::Completed
+        if current_attempt && status == AgentStatus::Completed
             && !agent.extra.get("nativeFailureHold").is_some_and(truthy)
             && transaction.query_row(
                 "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status='pending')",
@@ -930,6 +1333,7 @@ impl SchedulerRepository {
             AgentStatus::Completed => "completed",
             AgentStatus::Failed => "failed",
             AgentStatus::Interrupted => "interrupted",
+            AgentStatus::Paused => "paused",
             _ => {
                 return Err(StoreError::SchemaMismatch(
                     "invalid scheduler status".into(),
@@ -1045,19 +1449,6 @@ fn deliver_attempt_events(
     Ok(())
 }
 
-fn requires_event_policy(kind: &str) -> bool {
-    matches!(
-        kind,
-        "agent_message"
-            | "chat_review"
-            | "complaint"
-            | "complaint_response"
-            | "followup"
-            | "radio_turn"
-            | "work_review"
-    )
-}
-
 fn select_turn_batch(
     agent: &AgentRecord,
     events: Vec<QueueEvent>,
@@ -1107,6 +1498,37 @@ fn invalid_agent(agent_id: &str) -> StoreError {
     StoreError::InvalidSyncObject {
         scope: "runtime_agents".to_owned(),
         id: agent_id.to_owned(),
+    }
+}
+
+fn completed_turn_ids(agent: &AgentRecord) -> Vec<String> {
+    agent
+        .extra
+        .get("completedTurnIds")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
+}
+
+fn remember_completed_turn(agent: &mut AgentRecord, turn_id: &str) {
+    let ids = agent
+        .extra
+        .entry("completedTurnIds".to_owned())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if !ids.is_array() {
+        *ids = Value::Array(Vec::new());
+    }
+    let Some(list) = ids.as_array_mut() else {
+        return;
+    };
+    if !list.iter().any(|known| known.as_str() == Some(turn_id)) {
+        list.push(Value::String(turn_id.to_owned()));
+    }
+    if list.len() > 128 {
+        list.drain(..list.len() - 128);
     }
 }
 

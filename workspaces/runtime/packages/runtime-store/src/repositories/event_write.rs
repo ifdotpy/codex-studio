@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use super::sync_documents::{hash_payload, next_sequence};
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
-use crate::{QueueEvent, StoreError, StoreResult};
+use crate::{AgentId, AgentRepository, QueueEvent, StoreError, StoreResult};
 
 const PLAN_TABLE: &[TableRequirement] = &[TableRequirement {
     name: "runtime_plans",
@@ -221,34 +221,69 @@ impl EventWriteRepository {
                 "agent sync projection identity is invalid".to_owned(),
             ));
         }
-        let value = payload
-            .get_mut("value")
-            .and_then(Value::as_object_mut)
-            .ok_or_else(|| StoreError::SchemaMismatch("agent sync projection is invalid".into()))?;
-        if value.get("id").and_then(Value::as_str) != Some(agent_id) {
-            return Err(StoreError::SchemaMismatch(
-                "agent sync projection identity is invalid".to_owned(),
-            ));
-        }
-        let status_changed = value.get("status").and_then(Value::as_str) != Some(status);
-        let lifecycle_changed = lifecycle.is_some_and(|(in_flight, turn_id)| {
-            value.get("inFlight").and_then(Value::as_bool) != Some(in_flight)
-                || value.get("turnId").and_then(Value::as_str) != turn_id
-        });
-        if !status_changed && !lifecycle_changed {
-            return Ok(());
-        }
-        value.insert("status".to_owned(), Value::String(status.to_owned()));
-        if let Some((in_flight, turn_id)) = lifecycle {
-            value.insert("inFlight".to_owned(), Value::Bool(in_flight));
-            if let Some(turn_id) = turn_id {
-                value.insert("turnId".to_owned(), Value::String(turn_id.to_owned()));
-            } else {
-                value.insert("turnId".to_owned(), Value::Null);
+        let before = payload.clone();
+        {
+            let value = payload
+                .get_mut("value")
+                .and_then(Value::as_object_mut)
+                .ok_or_else(|| {
+                    StoreError::SchemaMismatch("agent sync projection is invalid".into())
+                })?;
+            if value.get("id").and_then(Value::as_str) != Some(agent_id) {
+                return Err(StoreError::SchemaMismatch(
+                    "agent sync projection identity is invalid".to_owned(),
+                ));
+            }
+            value.insert("status".to_owned(), Value::String(status.to_owned()));
+            if let Some((in_flight, turn_id)) = lifecycle {
+                value.insert("inFlight".to_owned(), Value::Bool(in_flight));
+                if let Some(turn_id) = turn_id {
+                    value.insert("turnId".to_owned(), Value::String(turn_id.to_owned()));
+                } else {
+                    value.insert("turnId".to_owned(), Value::Null);
+                }
+            }
+            let has_runtime_agents = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_agents')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )?;
+            if has_runtime_agents
+                && let Some(agent) = AgentRepository::get(transaction, &AgentId::from(agent_id))?
+            {
+                value.insert("epoch".to_owned(), Value::from(agent.epoch));
+                for key in [
+                    "turnEpoch",
+                    "error",
+                    "nativeFailureHold",
+                    "activity",
+                    "activeTools",
+                    "startAttempt",
+                    "turnId",
+                    "inFlight",
+                    "autoWake",
+                    "lastCompletedTurn",
+                    "lastCompletedTurnStatus",
+                    "lastCompletedTurnError",
+                    "startOutcomeHold",
+                ] {
+                    if let Some(field) = agent.extra.get(key) {
+                        value.insert(key.to_owned(), field.clone());
+                    } else {
+                        value.remove(key);
+                    }
+                }
             }
         }
+        if payload == before {
+            return Ok(());
+        }
         if status == "queued"
-            && let Some(overview) = value.get_mut("overview").and_then(Value::as_object_mut)
+            && let Some(overview) = payload
+                .get_mut("value")
+                .and_then(Value::as_object_mut)
+                .and_then(|value| value.get_mut("overview"))
+                .and_then(Value::as_object_mut)
         {
             overview.insert("result".into(), Value::String(String::new()));
             overview.insert("resultTruncated".into(), Value::Bool(false));
