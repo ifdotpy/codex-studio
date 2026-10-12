@@ -52,11 +52,14 @@ class HistoryServer(f.fixture.f.FakeServer):
                 raise ValueError('The session has no verified saved prompt snapshot')
             return {'snapshotHash': 'fixture-prompt' + self.proof_revision, 'optionsHash': 'fixture-options',
                     'catalog': self.move_catalog, 'schemas': self.proof_schemas,
+                    'proofMethod': ('saved_snapshot_and_current_ordered_mcp_catalogs' if self.proof_revision
+                                    else 'saved_snapshot_and_identical_studio_options'),
                     'session': copy.deepcopy(self.sessions[params['threadId']])}
         if method == 'claude/movePreflight':
             if params['proof']['catalog'] != self.move_catalog:
                 raise ValueError('The effective target tool definitions differ')
-            return {'snapshotHash': params['proof']['snapshotHash'], 'catalog': self.move_catalog}
+            return {'snapshotHash': params['proof']['snapshotHash'], 'catalog': self.move_catalog,
+                    'proofMethod': params['proof'].get('proofMethod', 'saved_snapshot_and_identical_studio_options')}
         if method == 'claude/moveVersions':
             return {'cli': self.cli_version, 'sdk': self.sdk_version}
         if method == 'claude/moveIdentity':
@@ -918,7 +921,9 @@ class Moves(f.SignedIntegration):
         self.assertEqual(source.get('movedTo', {}).get('server'), self.b.server_id,
                          {name: operation.get(name) for name in ('phase', 'uncertainPhase', 'error')})
         with self.a.runtime.read_db() as db:
-            self.assertEqual(service._get(db, key)['preflight']['claudeProof']['snapshotHash'], 'fixture-prompt+mcp')
+            operation = service._get(db, key)
+        self.assertEqual(operation['preflight']['claudeProof']['snapshotHash'], 'fixture-prompt+mcp')
+        self.assertEqual(operation['target']['cacheProof'], 'saved_snapshot_and_current_ordered_mcp_catalogs')
         self.drive(lambda: bool(self.b.runtime.agent(self.lead['id']).get('turnId')))
         self.assertEqual(len([1 for m, _ in self.b.runtime.server.calls if m == 'claude/moveImport']), 1)
 
