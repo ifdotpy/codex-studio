@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test } from "../playwright.mjs";
 
 test("Native runtime status", async ({ context }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(45_000);
 
   const root = fileURLToPath(new URL("../..//", import.meta.url));
   const require = createRequire(join(root, "package.json"));
@@ -43,7 +43,8 @@ test("Native runtime status", async ({ context }) => {
           if (id === "virtual:runtime-resource-events")
             return `const subscribers=new Map();
 window.emitRuntimeChange=(kind)=>{for(const callback of subscribers.get(kind)||[])callback({epoch:'fixture',revision:Date.now()});};
-export function watchResourceChanges(resource,callback){let group=subscribers.get(resource.kind);if(!group)subscribers.set(resource.kind,group=new Set());group.add(callback);callback({epoch:'fixture',revision:0});return()=>group.delete(callback);}`;
+export function watchResourceChanges(resource,callback){let group=subscribers.get(resource.kind);if(!group)subscribers.set(resource.kind,group=new Set());group.add(callback);callback({epoch:'fixture',revision:0});return()=>group.delete(callback);}
+export function watchResourceConnection(listener){listener('live','open');return()=>{};}`;
           if (id !== entry) return;
           return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {MantineProvider,Modal,Button} from '@mantine/core';import '@mantine/core/styles.css';
   import NativeRuntimeStatus from '/src/components/NativeRuntimeStatus.tsx';import Accounts from '/src/components/Accounts.tsx';import '/src/studio-theme.css';import '/src/appearance.css';

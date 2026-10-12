@@ -445,13 +445,7 @@ test("accounts settings show per-server state and provider choices", async ({
       exact: true,
     }),
   ).toBeVisible();
-  const pageTime = await page.evaluate(() => Date.now());
-  try {
-    await page.clock.pauseAt(pageTime);
-  } catch {
-    const currentPageTime = await page.evaluate(() => Date.now());
-    await page.clock.pauseAt(currentPageTime + 1);
-  }
+  await page.clock.pauseAt(new Date(pageClockStart.getTime() + 60_000));
   releaseUnknownStatus();
   await unknownSignInResponse;
   const startAgain = secondClaudeSignIn.getByRole("button", {

@@ -242,7 +242,7 @@ test("cached limits appear before a slow read on open and restart", async ({
       exact: true,
     });
     const personalRow = studioSettings.locator(
-      '[data-account-identity="codex:personal"]',
+      '[data-account-identity="codex:local:personal"]',
     );
     await expect(personalRow).toContainText("Personal");
     await expect(
