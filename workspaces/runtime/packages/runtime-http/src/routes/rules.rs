@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use studio_runtime_services::rules::{self, RulesError};
-use studio_runtime_store::RulesRepository;
+use studio_runtime_store::{RulesRepository, StoreError};
 
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -21,8 +21,7 @@ pub(crate) async fn list(State(state): State<HttpState>) -> Result<Json<Value>, 
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let records = tokio::task::spawn_blocking(move || {
         let connection = store.read().map_err(|_| ApiError::internal())?;
-        let (rules, agents) =
-            RulesRepository::list(&connection).map_err(|_| ApiError::internal())?;
+        let (rules, agents) = RulesRepository::list(&connection).map_err(store_error)?;
         let rules = rules
             .into_iter()
             .map(|mut rule| {
@@ -54,6 +53,23 @@ fn rules_error(error: RulesError) -> ApiError {
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Invalid stored object {object}/{id}"),
         ),
+    }
+}
+
+fn store_error(error: StoreError) -> ApiError {
+    match error {
+        StoreError::InvalidStoredObject { table, id } => {
+            let object = match table {
+                "runtime_agents" => "agents",
+                "runtime_rules" => "rules",
+                other => other,
+            };
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Invalid stored object {object}/{id}"),
+            )
+        }
+        _ => ApiError::internal(),
     }
 }
 
