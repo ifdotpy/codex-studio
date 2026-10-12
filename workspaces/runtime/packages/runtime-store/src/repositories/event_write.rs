@@ -181,7 +181,7 @@ impl EventWriteRepository {
         agent_id: &str,
         status: &str,
     ) -> StoreResult<()> {
-        Self::set_agent_sync_fields(transaction, agent_id, status, None)
+        Self::set_agent_sync_fields(transaction, agent_id, Some(status), None, None)
     }
 
     /// Keep renderer-visible lifecycle fields in step with a scheduler transition.
@@ -192,14 +192,21 @@ impl EventWriteRepository {
         in_flight: bool,
         turn_id: Option<&str>,
     ) -> StoreResult<()> {
-        Self::set_agent_sync_fields(transaction, agent_id, status, Some((in_flight, turn_id)))
+        Self::set_agent_sync_fields(
+            transaction,
+            agent_id,
+            Some(status),
+            Some((in_flight, turn_id)),
+            None,
+        )
     }
 
     fn set_agent_sync_fields(
         transaction: &Transaction<'_>,
         agent_id: &str,
-        status: &str,
+        status: Option<&str>,
         lifecycle: Option<(bool, Option<&str>)>,
+        name: Option<&str>,
     ) -> StoreResult<()> {
         let old = transaction
             .query_row(
@@ -230,15 +237,22 @@ impl EventWriteRepository {
                 "agent sync projection identity is invalid".to_owned(),
             ));
         }
-        let status_changed = value.get("status").and_then(Value::as_str) != Some(status);
+        let status_changed = status
+            .is_some_and(|status| value.get("status").and_then(Value::as_str) != Some(status));
         let lifecycle_changed = lifecycle.is_some_and(|(in_flight, turn_id)| {
             value.get("inFlight").and_then(Value::as_bool) != Some(in_flight)
                 || value.get("turnId").and_then(Value::as_str) != turn_id
         });
-        if !status_changed && !lifecycle_changed {
+        let name_changed = name.is_some_and(|name| {
+            value.get("name").and_then(Value::as_str) != Some(name)
+                || value.get("manualName").and_then(Value::as_bool) != Some(true)
+        });
+        if !status_changed && !lifecycle_changed && !name_changed {
             return Ok(());
         }
-        value.insert("status".to_owned(), Value::String(status.to_owned()));
+        if let Some(status) = status {
+            value.insert("status".to_owned(), Value::String(status.to_owned()));
+        }
         if let Some((in_flight, turn_id)) = lifecycle {
             value.insert("inFlight".to_owned(), Value::Bool(in_flight));
             if let Some(turn_id) = turn_id {
@@ -247,7 +261,11 @@ impl EventWriteRepository {
                 value.insert("turnId".to_owned(), Value::Null);
             }
         }
-        if status == "queued"
+        if let Some(name) = name {
+            value.insert("name".to_owned(), Value::String(name.to_owned()));
+            value.insert("manualName".to_owned(), Value::Bool(true));
+        }
+        if status == Some("queued")
             && let Some(overview) = value.get_mut("overview").and_then(Value::as_object_mut)
         {
             overview.insert("result".into(), Value::String(String::new()));
@@ -263,6 +281,15 @@ impl EventWriteRepository {
             params![sequence, hash, payload, agent_id],
         )?;
         Ok(())
+    }
+
+    /// Update the renderer's persisted agent title after the agent record write.
+    pub fn set_agent_sync_name(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        name: &str,
+    ) -> StoreResult<()> {
+        Self::set_agent_sync_fields(transaction, agent_id, None, None, Some(name))
     }
 }
 
@@ -338,6 +365,43 @@ mod tests {
         assert_eq!(value["status"], "running");
         assert_eq!(value["inFlight"], true);
         assert_eq!(value["turnId"], "turn-1");
+    }
+
+    #[test]
+    fn agent_projection_name_write_advances_revision_and_preserves_other_fields() {
+        let mut connection = Connection::open_in_memory().expect("memory SQLite opens");
+        connection
+            .execute_batch(
+                "CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
+                 CREATE TABLE sync_documents(seq INTEGER,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
+                 CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);
+                 INSERT INTO sync_entities VALUES('agent','a',1,'old','{\"collection\":\"agent\",\"id\":\"a\",\"value\":{\"id\":\"a\",\"name\":\"Old\",\"manualName\":false,\"needsTitle\":true,\"role\":\"orchestrator\"}}',0);",
+            )
+            .expect("projection fixture creates");
+        let transaction = connection.transaction().expect("transaction begins");
+        EventWriteRepository::set_agent_sync_name(&transaction, "a", "New")
+            .expect("agent title projection updates");
+        transaction.commit().expect("transaction commits");
+        let (sequence, hash, payload) = connection
+            .query_row(
+                "SELECT seq,hash,payload FROM sync_entities WHERE collection='agent' AND id='a'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .expect("updated projection exists");
+        assert_eq!(sequence, 2);
+        assert_eq!(hash, super::hash_payload(&payload));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&payload)
+                .expect("updated projection remains JSON")["value"],
+            json!({"id":"a","name":"New","manualName":true,"needsTitle":true,"role":"orchestrator"})
+        );
     }
 
     #[test]
