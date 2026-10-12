@@ -21,7 +21,7 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('move_fixture', Path(__file__).with_name('multi-server-signed-integration.py'))
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
-from codex_agent_move import DEADLINE
+from codex_agent_move import DEADLINE, worker_account, worker_defaults_here
 from codex_native_errors import NativeRpcError
 
 
@@ -1281,6 +1281,33 @@ class Moves(f.SignedIntegration):
         result = json.loads(self.events(self.a, self.lead['id'], 'child_result')[0]['text'])
         self.assertEqual(result['agent_id'], worker['id'])
         self.assertEqual(result['result'], 'Moved result')
+
+
+class SubagentAccountOnTarget(unittest.TestCase):
+    """A moved chat's subagent account is the target's account of the same identity."""
+
+    source = [{'id': 'profile-attar', 'provider': None, 'email': 'attar@example.com', 'accountId': 'a1', 'status': 'ready'}]
+    defaults = {'accountKey': 'profile-attar', 'model': 'gpt-6-luna', 'effort': 'medium', 'fastMode': False}
+
+    def test_the_same_identity_keeps_the_choice(self):
+        identity = worker_account(self.source, self.defaults)
+        self.assertEqual(identity, {'provider': 'codex', 'email': 'attar@example.com', 'accountId': 'a1'})
+        target = [{'id': 'default', 'email': 'person@example.com', 'status': 'ready'},
+                  {'id': 'login-7', 'email': 'attar@example.com', 'accountId': 'a1', 'status': 'ready'}]
+        self.assertEqual(worker_defaults_here(target, self.defaults, identity),
+                         {**self.defaults, 'accountKey': 'login-7'})
+
+    def test_a_missing_account_becomes_automatic(self):
+        identity = worker_account(self.source, self.defaults)
+        target = [{'id': 'default', 'email': 'person@example.com', 'status': 'ready'},
+                  {'id': 'profile-attar', 'email': 'other@example.com', 'status': 'ready'},
+                  {'id': 'login-8', 'email': 'attar@example.com', 'status': 'error'}]
+        moved = worker_defaults_here(target, self.defaults, identity)
+        self.assertNotIn('accountKey', moved)
+        self.assertEqual(moved['model'], 'gpt-6-luna')
+        # Without an identity from the source, a key of this server is never trusted.
+        self.assertNotIn('accountKey', worker_defaults_here(target, self.defaults, None))
+        self.assertEqual(worker_defaults_here(target, {'model': 'x'}, identity), {'model': 'x'})
 
 
 if __name__ == '__main__':
