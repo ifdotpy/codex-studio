@@ -587,6 +587,48 @@ describe("original saved sidebar state", () => {
     expect(local.sidebar.collapsed).toEqual({ [path]: true });
   });
 
+  it("keeps this window's collapse over a stale snapshot until the server carries it", () => {
+    const local = source("local");
+    const remote = source("remote");
+    const a = backend(local);
+    const b = backend(remote);
+    const backends = new Map([
+      ["local", a.backend],
+      ["remote", b.backend],
+    ]);
+    const heading = JSON.stringify([path, "project"]);
+    const tree = (model: ReturnType<typeof mergeSidebar>) =>
+      `codex-project-tree:${model.data.stateDir}`;
+    const first = mergeSidebar([local, remote]);
+    const key = JSON.stringify([first.projectKey("local", path), "project"]);
+    const cache = mergedSidebarPreferences(first, backends);
+    const previous = cache.saved<Record<string, boolean>>(tree(first), {});
+    cache.editPreference(tree(first), previous, { ...previous, [key]: true });
+    // The model is rebuilt from snapshots that do not carry the edit yet.
+    const rebuilt = mergeSidebar([source("local"), source("remote")]);
+    const next = mergedSidebarPreferences(rebuilt, backends);
+    expect(next.saved<Record<string, boolean>>(tree(rebuilt), {})[key]).toBe(
+      true,
+    );
+    // The server confirms it, and a later change from elsewhere wins again.
+    const confirmed = source("local");
+    confirmed.sidebar.collapsed = { [heading]: true };
+    const after = mergeSidebar([confirmed, source("remote")]);
+    expect(
+      mergedSidebarPreferences(after, backends).saved<Record<string, boolean>>(
+        tree(after),
+        {},
+      )[key],
+    ).toBe(true);
+    const later = mergeSidebar([source("local"), source("remote")]);
+    expect(
+      mergedSidebarPreferences(later, backends).saved<Record<string, boolean>>(
+        tree(later),
+        {},
+      )[key],
+    ).toBe(false);
+  });
+
   it("collapses a project heading by its home server's value and saves it there", () => {
     const local = source("local");
     const remote = source("remote", [
