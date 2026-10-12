@@ -131,7 +131,7 @@ class WorkerDefaults(unittest.TestCase):
 
     def test_latest_root_defaults_not_intermediate_execution(self):
         self.settings(effort="high", fast_mode=True)
-        worker = self.worker(model="worker", effort="high", fast_mode=True)
+        worker = self.worker(model="gpt-6-luna", effort="high", fast_mode=True)
         with self.runtime.lock, self.runtime.db() as db:
             worker.update(autoWake=True, role="implementer")
             self.runtime.put(db, "agents", worker)
@@ -361,7 +361,7 @@ class WorkerDefaults(unittest.TestCase):
         )
 
     def test_model_change_falls_back_and_checks_account_catalogue(self):
-        child = self.worker(model="worker", effort="high")
+        child = self.worker(model="gpt-6-luna", effort="high")
         changed = self.runtime.conversation_settings(child["id"], {"model": "small"})
         self.assertEqual(
             (changed["effort"], changed["nativeEffort"]), ("medium", "medium")
@@ -371,7 +371,7 @@ class WorkerDefaults(unittest.TestCase):
             "data": [model("gpt-6-astra")]
         }
         with self.assertRaisesRegex(ValueError, "not available"):
-            self.worker(model="worker")
+            self.worker(model="gpt-6-luna")
         self.assertEqual(calls, [self.lead["accountKey"]])
 
     def test_spawn_batch_rejects_invalid_override_before_any_child(self):
