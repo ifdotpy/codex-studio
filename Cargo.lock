@@ -1411,6 +1411,7 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "sha2",
+ "studio-runtime-schema",
  "studio-runtime-services",
  "studio-runtime-store",
  "subtle",
@@ -1434,6 +1435,14 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "studio-runtime-schema"
+version = "0.1.0"
+dependencies = [
+ "jsonschema",
+ "serde_json",
 ]
 
 [[package]]
@@ -1471,6 +1480,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "studio-runtime-schema",
  "thiserror",
 ]
 

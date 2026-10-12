@@ -18,9 +18,9 @@ use thiserror::Error;
 
 pub use path::resolve_state_dir;
 pub use records::{
-    AgentId, AgentRecord, AgentRepository, AgentStatus, ChatMessage, ChatMessageId,
-    MessageRepository, QueueEvent, QueueEventId, QueueEventRepository, TaskId, TaskRecord,
-    TaskRepository, WorkStatus,
+    AgentId, AgentRecord, AgentRepository, AgentStatus, ChatMessage, ChatMessageId, JsonRecord,
+    MessageRepository, QueueEvent, QueueEventId, QueueEventRepository, RecordPage, Table, TaskId,
+    TaskRecord, TaskRepository, WorkStatus,
 };
 pub use repositories::rules::{RulesRepository, StoredAgent, StoredRule};
 pub use repositories::sync_documents::{EntityRow, SyncDocument, SyncDocumentsRepository};
