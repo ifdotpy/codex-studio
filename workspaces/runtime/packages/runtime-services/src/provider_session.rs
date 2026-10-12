@@ -211,44 +211,65 @@ impl ProviderSession {
     /// close. Frames and inbound callbacks retain their wire order.
     pub fn receive_event(&mut self) -> Result<ProviderSessionEvent, ProviderSessionError> {
         loop {
-            if let Some(event) = self.queued.pop_front() {
+            if let Some(event) = self.receive_event_timeout(Duration::from_secs(1))? {
                 return Ok(event);
+            }
+        }
+    }
+
+    /// Wait for one event, returning `None` when the caller's deadline expires.
+    /// Provider request deadlines still resolve to `UnknownOutcome` events.
+    pub fn receive_event_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<ProviderSessionEvent>, ProviderSessionError> {
+        let caller_deadline = Instant::now().checked_add(timeout);
+        loop {
+            if let Some(event) = self.queued.pop_front() {
+                return Ok(Some(event));
             }
             if self.reader_ended {
                 return Err(ProviderSessionError::Closed);
             }
             let now = now_ms(self.started);
-            let received = if let Some(deadline) = self.deadlines.values().min().copied() {
-                let wait = Duration::from_millis(deadline.saturating_sub(now));
-                match self
-                    .reader_events
-                    .as_ref()
-                    .ok_or(ProviderSessionError::Closed)?
-                    .recv_timeout(wait)
-                {
+            let request_deadline = self.deadlines.values().min().copied();
+            let mut wait = request_deadline
+                .map(|deadline| Duration::from_millis(deadline.saturating_sub(now)));
+            if let Some(caller_deadline) = caller_deadline {
+                let remaining = caller_deadline.saturating_duration_since(Instant::now());
+                wait = Some(wait.map_or(remaining, |request_wait| request_wait.min(remaining)));
+            }
+            let receiver = self
+                .reader_events
+                .as_ref()
+                .ok_or(ProviderSessionError::Closed)?;
+            let received = match wait {
+                Some(wait) => match receiver.recv_timeout(wait) {
                     Ok(event) => Some(event),
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
-                        let (result, actions) = self.state.expire(now_ms(self.started));
-                        self.deadlines.clear();
-                        self.apply_actions(
-                            actions
-                                .into_iter()
-                                .filter(|action| !matches!(action, Action::GenerationClosed { .. }))
-                                .collect(),
-                        );
-                        if result.is_err() {
-                            continue;
-                        }
-                        None
-                    }
                     Err(mpsc::RecvTimeoutError::Disconnected) => Some(ReadEvent::End),
-                }
-            } else {
-                self.reader_events
-                    .as_ref()
-                    .ok_or(ProviderSessionError::Closed)?
-                    .recv()
-                    .ok()
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        let now = now_ms(self.started);
+                        if request_deadline.is_some_and(|deadline| now >= deadline) {
+                            let (result, actions) = self.state.expire(now);
+                            self.deadlines.clear();
+                            self.apply_actions(
+                                actions
+                                    .into_iter()
+                                    .filter(|action| {
+                                        !matches!(action, Action::GenerationClosed { .. })
+                                    })
+                                    .collect(),
+                            );
+                            if result.is_err() {
+                                continue;
+                            }
+                            None
+                        } else {
+                            return Ok(None);
+                        }
+                    }
+                },
+                None => receiver.recv().ok(),
             };
             match received {
                 Some(ReadEvent::Frame(frame)) => {

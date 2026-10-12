@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
@@ -211,13 +212,21 @@ fn pending_selection_matches_python_and_claims_rust_event_write_events() {
         agent_id: agent.to_owned(),
         epoch,
         attempt_id: "unknown-attempt".to_owned(),
+        account_key: "default".to_owned(),
+        provider: "codex".to_owned(),
+        thread_id: Some("fixture-thread".to_owned()),
+        cwd: Some("/tmp".to_owned()),
+        model: Some("fixture-model".to_owned()),
         events: Vec::new(),
     };
     let mut stale_intent = intent.clone();
     stale_intent.attempt_id = "stale-attempt".to_owned();
+    let mut stale_epoch = intent.clone();
+    stale_epoch.epoch -= 1;
     assert!(
         !settle_started(&store, &stale_intent, "late-turn").expect("stale callback is ignored")
     );
+    assert!(!settle_started(&store, &stale_epoch, "late-turn").expect("stale epoch is ignored"));
     assert!(settle_started(&store, &intent, "late-turn").expect("late acceptance settles"));
     let reader = store.read().expect("late acceptance state reads");
     let delivered: i64 = reader
@@ -302,6 +311,57 @@ fn submitted_marker_survives_settlement_write_failure() {
         .expect("recovered agent reads")
         .expect("recovered agent exists");
     assert_eq!(agent_record.status, AgentStatus::Waiting);
+}
+
+#[test]
+fn restart_interrupts_a_known_submitted_turn_without_replaying_events() {
+    let state = TemporaryState::new();
+    let fixture = run_python(&state.0, CREATE_PYTHON_EVENTS, &[]);
+    let fixture: Value = serde_json::from_str(&fixture).expect("Python fixture returns JSON");
+    let agent = fixture["agent"].as_str().expect("agent ID is present");
+    let epoch = fixture["epoch"].as_i64().expect("agent epoch is present");
+    let store = RuntimeStore::open(Some(&state.0)).expect("Rust opens Python-written state");
+    let mut driver = CaptureDriver::returning(TurnStart::Accepted {
+        turn_id: "known-restart-turn".to_owned(),
+    });
+    let mut wake = PendingWake(true);
+    consume_wake(
+        &store,
+        &mut wake,
+        agent,
+        epoch,
+        "known-restart-attempt",
+        16.5,
+        &mut driver,
+    )
+    .expect("accepted turn is persisted before restart");
+    drop(store);
+
+    let store = RuntimeStore::open(Some(&state.0)).expect("Rust reopens submitted state");
+    assert_eq!(
+        studio_runtime_services::scheduler::recover_on_startup(&store)
+            .expect("known submitted turn recovers conservatively"),
+        1
+    );
+    let reader = store.read().expect("recovered turn state reads");
+    let agent_record = AgentRepository::get(&reader, &AgentId::from(agent))
+        .expect("agent reads")
+        .expect("agent exists");
+    assert_eq!(agent_record.status, AgentStatus::Interrupted);
+    assert_eq!(agent_record.extra["turnId"], "known-restart-turn");
+    assert_eq!(agent_record.extra["autoWake"], false);
+    let (delivered, pending): (i64, i64) = reader
+        .query_row(
+            "SELECT SUM(status='delivered'),SUM(status='pending') FROM runtime_events WHERE agent=?1",
+            [agent],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("recovered event statuses read");
+    assert_eq!(delivered, 3);
+    assert_eq!(pending, 0);
+    let pending_agents = studio_runtime_store::SchedulerRepository::pending_agents(&reader)
+        .expect("recovered agent is not resubmitted");
+    assert!(pending_agents.is_empty());
 }
 
 #[test]
@@ -544,13 +604,19 @@ fn server_source() -> PathBuf {
 
 struct TemporaryState(PathBuf);
 
+static TEMP_STATE_ID: AtomicUsize = AtomicUsize::new(0);
+
 impl TemporaryState {
     fn new() -> Self {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock follows Unix epoch")
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("studio-scheduler-parity-{nonce}"));
+        let id = TEMP_STATE_ID.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "studio-scheduler-parity-{}-{nonce}-{id}",
+            std::process::id()
+        ));
         fs::create_dir_all(&root).expect("temporary state directory creates");
         Self(root)
     }

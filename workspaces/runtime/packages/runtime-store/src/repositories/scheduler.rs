@@ -47,10 +47,125 @@ pub struct ClaimedEvents {
     pub metadata: BTreeMap<String, Value>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TurnAttemptIdentity {
+    pub agent_id: String,
+    pub epoch: i64,
+    pub attempt_id: String,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SchedulerRepository;
 
 impl SchedulerRepository {
+    /// Confirm a claimed attempt is still authorized before submitting user input.
+    pub fn attempt_can_submit(
+        connection: &Connection,
+        agent_id: &str,
+        epoch: i64,
+        attempt_id: &str,
+    ) -> StoreResult<bool> {
+        let Some(agent) = AgentRepository::get(connection, &AgentId::from(agent_id))? else {
+            return Ok(false);
+        };
+        let Some(attempt) = agent.extra.get("startAttempt").and_then(Value::as_object) else {
+            return Ok(false);
+        };
+        Ok(agent.epoch == epoch
+            && agent.extra.get("turnEpoch").and_then(Value::as_i64) == Some(epoch)
+            && agent.status == AgentStatus::Starting
+            && agent.extra.get("autoWake").and_then(Value::as_bool) == Some(true)
+            && agent.extra.get("inFlight").and_then(Value::as_bool) == Some(true)
+            && attempt.get("id").and_then(Value::as_str) == Some(attempt_id)
+            && attempt.get("epoch").and_then(Value::as_i64) == Some(epoch)
+            && attempt.get("submitted").and_then(Value::as_bool) == Some(true))
+    }
+
+    /// Account sessions that should be reattached to observe submitted turns
+    /// whose native turn identity is still unknown after startup recovery.
+    pub fn accounts_with_unknown_submitted_turns(
+        connection: &Connection,
+    ) -> StoreResult<Vec<String>> {
+        let mut statement = connection.prepare(
+            "SELECT DISTINCT COALESCE(json_extract(record,'$.accountKey'),'default') \
+             FROM runtime_agents \
+             WHERE COALESCE(json_extract(record,'$.provider'),'codex')='codex' \
+             AND json_extract(record,'$.autoWake')=1 \
+             AND json_extract(record,'$.inFlight')=1 \
+             AND json_extract(record,'$.startAttempt.submitted')=1 \
+             AND json_extract(record,'$.startAttempt.epoch')=json_extract(record,'$.epoch') \
+             AND json_extract(record,'$.turnEpoch')=json_extract(record,'$.epoch') \
+             AND json_extract(record,'$.startAttempt.turnId') IS NULL \
+             AND json_extract(record,'$.startAttempt.observedTurnId') IS NULL \
+             AND json_extract(record,'$.status') IN ('starting','running','waiting') \
+             AND json_extract(record,'$.deletedAt') IS NULL \
+             ORDER BY 1",
+        )?;
+        let rows = statement.query_map([], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Resolve an account-scoped provider thread to its current submitted attempt.
+    /// The boolean distinguishes an unknown thread from a known thread with no
+    /// matching live attempt, so callers can count only truly unknown notices.
+    pub fn find_attempt_for_thread(
+        connection: &Connection,
+        account_key: &str,
+        thread_id: &str,
+        turn_id: Option<&str>,
+    ) -> StoreResult<(bool, Option<TurnAttemptIdentity>)> {
+        let mut statement = connection.prepare(
+            "SELECT id,record FROM runtime_agents \
+             WHERE json_extract(record,'$.threadId')=?1 \
+             AND COALESCE(json_extract(record,'$.accountKey'),'default')=?2 \
+             ORDER BY rowid LIMIT 2",
+        )?;
+        let rows = statement
+            .query_map(params![thread_id, account_key], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let [(_, record)] = rows.as_slice() else {
+            return Ok((!rows.is_empty(), None));
+        };
+        let agent: AgentRecord =
+            serde_json::from_str(record).map_err(|_| StoreError::InvalidSyncObject {
+                scope: "runtime_agents".to_owned(),
+                id: rows[0].0.clone(),
+            })?;
+        let Some(attempt) = agent.extra.get("startAttempt").and_then(Value::as_object) else {
+            return Ok((true, None));
+        };
+        let Some(attempt_id) = attempt.get("id").and_then(Value::as_str) else {
+            return Err(invalid_agent(&agent.id.0));
+        };
+        let Some(epoch) = attempt.get("epoch").and_then(Value::as_i64) else {
+            return Err(invalid_agent(&agent.id.0));
+        };
+        if agent.epoch != epoch
+            || agent.extra.get("turnEpoch").and_then(Value::as_i64) != Some(epoch)
+            || attempt.get("submitted").and_then(Value::as_bool) != Some(true)
+            || agent.extra.get("inFlight").and_then(Value::as_bool) != Some(true)
+            || turn_id.is_some_and(|turn_id| {
+                attempt
+                    .get("turnId")
+                    .or_else(|| attempt.get("observedTurnId"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|known| known != turn_id)
+            })
+        {
+            return Ok((true, None));
+        }
+        Ok((
+            true,
+            Some(TurnAttemptIdentity {
+                agent_id: agent.id.0,
+                epoch,
+                attempt_id: attempt_id.to_owned(),
+            }),
+        ))
+    }
+
     /// Return queued local agents with pending events in the current epoch.
     pub fn pending_agents(connection: &Connection) -> StoreResult<Vec<(String, i64)>> {
         let mut statement = connection.prepare(
@@ -640,6 +755,12 @@ impl SchedulerRepository {
         let Some(event_ids) = attempt_events(&agent, epoch, attempt_id)? else {
             return Ok(false);
         };
+        if agent.epoch == epoch
+            && agent.extra.get("turnEpoch").and_then(Value::as_i64) == Some(epoch)
+            && agent.extra.get("lastCompletedTurn").and_then(Value::as_str) == Some(turn_id)
+        {
+            return Ok(true);
+        }
         if agent.epoch != epoch
             || agent.extra.get("turnEpoch").and_then(Value::as_i64) != Some(epoch)
             || agent.extra.get("autoWake").and_then(Value::as_bool) != Some(true)

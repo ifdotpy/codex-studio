@@ -1,7 +1,10 @@
+use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 
-use serde_json::json;
+use serde_json::{Value, json};
 use studio_runtime_providers::{Method, ResponseBody};
 use studio_runtime_services::provider_session::{
     ProviderProcess, ProviderSession, ProviderSessionConfig, ProviderSessionEvent,
@@ -51,6 +54,139 @@ impl ProviderProcess for FakeProcess {
     fn stop(&mut self) -> io::Result<()> {
         let _ignored = self.child.kill();
         self.child.wait().map(|_| ())
+    }
+}
+
+struct ControlledProvider {
+    output: Mutex<Option<Sender<Option<Vec<u8>>>>>,
+}
+
+impl ControlledProvider {
+    fn send_frame(&self, frame: Value) {
+        let bytes = format!(
+            "{}\n",
+            serde_json::to_string(&frame).expect("fake frame serializes")
+        );
+        self.output
+            .lock()
+            .expect("fake output lock is available")
+            .as_ref()
+            .expect("fake provider is connected")
+            .send(Some(bytes.into_bytes()))
+            .expect("fake reader remains connected");
+    }
+}
+
+struct ControlledProcess {
+    provider: Arc<ControlledProvider>,
+    input: Option<Receiver<Option<Vec<u8>>>>,
+    output: Sender<Option<Vec<u8>>>,
+}
+
+impl ControlledProcess {
+    fn new(provider: Arc<ControlledProvider>) -> Self {
+        let (output, input) = mpsc::channel();
+        *provider
+            .output
+            .lock()
+            .expect("fake output lock is available") = Some(output.clone());
+        Self {
+            provider,
+            input: Some(input),
+            output,
+        }
+    }
+}
+
+impl ProviderProcess for ControlledProcess {
+    fn split(&mut self) -> io::Result<(Box<dyn Read + Send>, Box<dyn Write + Send>)> {
+        let input = self
+            .input
+            .take()
+            .ok_or_else(|| io::Error::other("fake reader already taken"))?;
+        Ok((
+            Box::new(ControlledReader {
+                input,
+                buffered: VecDeque::new(),
+                ended: false,
+            }),
+            Box::new(ControlledWriter {
+                output: self.output.clone(),
+                buffered: Vec::new(),
+            }),
+        ))
+    }
+
+    fn stop(&mut self) -> io::Result<()> {
+        if let Some(output) = self
+            .provider
+            .output
+            .lock()
+            .map_err(|_| io::Error::other("fake output lock poisoned"))?
+            .take()
+        {
+            let _ignored = output.send(None);
+        }
+        Ok(())
+    }
+}
+
+struct ControlledReader {
+    input: Receiver<Option<Vec<u8>>>,
+    buffered: VecDeque<u8>,
+    ended: bool,
+}
+
+impl Read for ControlledReader {
+    fn read(&mut self, target: &mut [u8]) -> io::Result<usize> {
+        while self.buffered.is_empty() && !self.ended {
+            match self.input.recv() {
+                Ok(Some(bytes)) => self.buffered.extend(bytes),
+                Ok(None) | Err(_) => self.ended = true,
+            }
+        }
+        if self.buffered.is_empty() {
+            return Ok(0);
+        }
+        let count = target.len().min(self.buffered.len());
+        for slot in &mut target[..count] {
+            *slot = self.buffered.pop_front().expect("buffered byte exists");
+        }
+        Ok(count)
+    }
+}
+
+struct ControlledWriter {
+    output: Sender<Option<Vec<u8>>>,
+    buffered: Vec<u8>,
+}
+
+impl Write for ControlledWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.buffered.extend_from_slice(bytes);
+        while let Some(end) = self.buffered.iter().position(|byte| *byte == b'\n') {
+            let line = self.buffered.drain(..=end).collect::<Vec<_>>();
+            let request: Value = serde_json::from_slice(&line)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+            if request.get("method").and_then(Value::as_str) == Some("initialize") {
+                let response = json!({
+                    "id":request["id"],
+                    "result":{"protocolVersion":1}
+                });
+                let bytes = format!(
+                    "{}\n",
+                    serde_json::to_string(&response).expect("initialize response serializes")
+                );
+                self.output
+                    .send(Some(bytes.into_bytes()))
+                    .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "fake reader closed"))?;
+            }
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -104,7 +240,14 @@ fn lost_reply_is_unknown_and_is_not_retried() {
 
 #[test]
 fn reply_after_deadline_is_reported_as_late_evidence() {
-    let mut session = connect("late");
+    let provider = Arc::new(ControlledProvider {
+        output: Mutex::new(None),
+    });
+    let mut session = ProviderSession::connect(
+        Box::new(ControlledProcess::new(Arc::clone(&provider))),
+        ProviderSessionConfig::new(),
+    )
+    .expect("controlled fake provider initializes");
     let ticket = session
         .send_request(Method::ModelList, json!({}), None, false, 0)
         .expect("request should be submitted once");
@@ -114,6 +257,10 @@ fn reply_after_deadline_is_reported_as_late_evidence() {
             ticket: ticket.clone()
         }
     );
+    provider.send_frame(json!({
+        "id":ticket.id,
+        "result":{"late":true}
+    }));
     assert_eq!(
         session.receive_event().expect("late evidence"),
         ProviderSessionEvent::Reply {

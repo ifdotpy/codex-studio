@@ -1,7 +1,9 @@
 //! Durable pending-event handoff between the scheduler and the future turn driver.
 
 use serde_json::Value;
-use studio_runtime_store::{AgentStatus, RuntimeStore, SchedulerRepository, StoreError};
+use studio_runtime_store::{
+    AgentStatus, RuntimeStore, SchedulerRepository, StoreError, TurnAttemptIdentity,
+};
 use thiserror::Error;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -20,6 +22,11 @@ pub struct TurnIntent {
     pub agent_id: String,
     pub epoch: i64,
     pub attempt_id: String,
+    pub account_key: String,
+    pub provider: String,
+    pub thread_id: Option<String>,
+    pub cwd: Option<String>,
+    pub model: Option<String>,
     pub events: Vec<TurnEvent>,
 }
 
@@ -28,6 +35,7 @@ pub enum TurnStart {
     Accepted { turn_id: String },
     NotSubmitted,
     Unknown,
+    Blocked { reason: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -107,6 +115,46 @@ pub fn settle_terminal(
     })?)
 }
 
+pub fn settle_started_attempt(
+    store: &RuntimeStore,
+    identity: &TurnAttemptIdentity,
+    turn_id: &str,
+) -> Result<bool, SchedulerError> {
+    Ok(store.transaction(|transaction| {
+        SchedulerRepository::settle_started(
+            transaction,
+            &identity.agent_id,
+            identity.epoch,
+            &identity.attempt_id,
+            turn_id,
+        )
+    })?)
+}
+
+pub fn settle_terminal_attempt(
+    store: &RuntimeStore,
+    identity: &TurnAttemptIdentity,
+    turn_id: &str,
+    outcome: TurnOutcome,
+) -> Result<bool, SchedulerError> {
+    let (status, error) = match outcome {
+        TurnOutcome::Completed => (AgentStatus::Completed, None),
+        TurnOutcome::Failed { error } => (AgentStatus::Failed, error),
+        TurnOutcome::Interrupted { error } => (AgentStatus::Interrupted, error),
+    };
+    Ok(store.transaction(|transaction| {
+        SchedulerRepository::settle_terminal(
+            transaction,
+            &identity.agent_id,
+            identity.epoch,
+            &identity.attempt_id,
+            turn_id,
+            status,
+            error,
+        )
+    })?)
+}
+
 /// Consume one wake, claim a batch, then hand it off. Startup recovery is separate so a
 /// concurrent wake cannot reclaim an in-process attempt between its claim and driver call.
 /// Every store transaction is committed before the turn-driver port is called. The submitted
@@ -166,6 +214,38 @@ pub fn consume_wake(
         agent_id: agent_id.to_owned(),
         epoch,
         attempt_id: attempt_id.to_owned(),
+        account_key: claimed
+            .agent
+            .extra
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default")
+            .to_owned(),
+        provider: claimed
+            .agent
+            .extra
+            .get("provider")
+            .and_then(Value::as_str)
+            .unwrap_or("codex")
+            .to_owned(),
+        thread_id: claimed
+            .agent
+            .extra
+            .get("threadId")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        cwd: claimed
+            .agent
+            .extra
+            .get("cwd")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        model: claimed
+            .agent
+            .extra
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         events: claimed
             .events
             .iter()
@@ -203,13 +283,40 @@ pub fn consume_wake(
         {
             return Ok(());
         }
+        if matches!(outcome, TurnStart::Unknown)
+            && agent.epoch == epoch
+            && agent
+                .extra
+                .get("startAttempt")
+                .and_then(Value::as_object)
+                .is_some_and(|attempt| {
+                    attempt.get("id").and_then(Value::as_str) == Some(attempt_id)
+                        && attempt
+                            .get("turnId")
+                            .and_then(Value::as_str)
+                            .is_some_and(|turn_id| !turn_id.is_empty())
+                })
+        {
+            return Ok(());
+        }
+        if let TurnStart::Accepted { turn_id } = &outcome
+            && SchedulerRepository::settle_started(
+                transaction,
+                agent_id,
+                epoch,
+                attempt_id,
+                turn_id,
+            )?
+        {
+            return Ok(());
+        }
         let may_continue = agent.epoch == epoch
             && agent.status == studio_runtime_store::AgentStatus::Starting
             && agent.extra.get("autoWake").and_then(Value::as_bool) == Some(true)
             && agent.extra.get("inFlight").and_then(Value::as_bool) == Some(true);
         if !may_continue {
             let (status, turn_id) = match outcome {
-                TurnStart::NotSubmitted => ("cancelled", None),
+                TurnStart::NotSubmitted | TurnStart::Blocked { .. } => ("cancelled", None),
                 TurnStart::Accepted { ref turn_id } => ("uncertain", Some(turn_id.as_str())),
                 TurnStart::Unknown => ("uncertain", None),
             };
@@ -298,6 +405,38 @@ pub fn consume_wake(
                 {
                     attempt.insert("submitted".to_owned(), Value::Bool(true));
                 }
+            }
+            TurnStart::Blocked { ref reason } => {
+                let mut changed = 0;
+                for event in &claimed.events {
+                    changed += transaction.execute(
+                        "UPDATE runtime_events SET status='pending',turn_id=NULL,error=NULL \
+                         WHERE id=?1 AND agent=?2 AND epoch=?3 AND status IN ('reserved','dispatching')",
+                        (event.id.0.as_str(), agent_id, epoch),
+                    )?;
+                }
+                if changed != claimed.events.len() {
+                    return Err(StoreError::SchemaMismatch(
+                        "scheduler event claim changed before blocked outcome".to_owned(),
+                    ));
+                }
+                agent.status = studio_runtime_store::AgentStatus::Waiting;
+                agent
+                    .extra
+                    .insert("inFlight".to_owned(), Value::Bool(false));
+                agent.extra.insert("turnId".to_owned(), Value::Null);
+                agent
+                    .extra
+                    .insert("nativeFailureHold".to_owned(), Value::Bool(true));
+                agent
+                    .extra
+                    .insert("error".to_owned(), Value::String(reason.clone()));
+                agent.extra.insert(
+                    "startOutcomeHold".to_owned(),
+                    serde_json::json!({"stage":"held","attemptId":attempt_id,
+                        "epoch":epoch,"reason":reason}),
+                );
+                agent.extra.remove("startAttempt");
             }
         }
         studio_runtime_store::AgentRepository::put(transaction, &agent)?;
