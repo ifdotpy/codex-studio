@@ -1,8 +1,10 @@
 """Keep new main-branch operations reachable through the strict API boundary."""
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 import unittest
+from urllib.parse import quote
 from unittest.mock import Mock
 
 from fastapi.testclient import TestClient
@@ -14,7 +16,10 @@ from studio_api.context import ApiContext
 
 class MainIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.runtime = SimpleNamespace(projects=Mock(), rename=Mock(), queue_action=Mock())
+        self.runtime = SimpleNamespace(
+            projects=Mock(), rename=Mock(), queue_action=Mock(), workspace_task_feed=Mock(),
+            rules=Mock()
+        )
         context = ApiContext.for_schema()
         context.canvas.runtime = self.runtime
         context.remote = SimpleNamespace(request_origin=lambda *_args: "http://testserver")
@@ -103,6 +108,66 @@ class MainIntegrationTests(unittest.TestCase):
             response.json(),
             {"error": "Invalid request", "location": ["query", "id"]},
         )
+
+    def test_task_feed_json_cursors_are_validated_without_echoing_input(self) -> None:
+        cases = (
+            ("cursor", {"id": "task-1", "updated": "private-marker"}),
+            ("cursor", {"id": "task-1"}),
+            ("cursor", {"id": "task-1", "updated": {"private-marker": 1}}),
+            ("before", {"id": "task-1", "created": "private-marker"}),
+            ("before", {"id": "task-1"}),
+            ("before", {"id": "task-1", "created": {"private-marker": 1}}),
+        )
+        for parameter, value in cases:
+            with self.subTest(parameter=parameter, value=value):
+                encoded = quote(json.dumps(value), safe="")
+                response = self.client.get(f"/api/workspace/tasks?{parameter}={encoded}")
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(
+                    response.json(),
+                    {"error": "Invalid request", "location": ["query", parameter]},
+                )
+                self.assertNotIn("private-marker", response.text)
+        self.runtime.workspace_task_feed.assert_not_called()
+
+    def test_empty_task_feed_cursor_round_trips(self) -> None:
+        self.runtime.workspace_task_feed.return_value = {
+            "tasks": [], "cursor": {"updated": 0, "id": ""}, "hasMore": False,
+        }
+        first = self.client.get("/api/workspace/tasks")
+        self.assertEqual(first.status_code, 200, first.text)
+        cursor = first.json()["cursor"]
+        self.assertEqual(cursor, {"updated": 0, "id": ""})
+
+        encoded_cursor = quote(json.dumps(cursor), safe="")
+        second = self.client.get(f"/api/workspace/tasks?cursor={encoded_cursor}")
+        self.assertEqual(second.status_code, 200, second.text)
+        self.runtime.workspace_task_feed.assert_called_with(
+            None, cursor={"updated": 0, "id": ""}, before=None, limit=100,
+        )
+
+    def test_receipt_json_query_errors_use_the_located_envelope(self) -> None:
+        response = self.client.get("/api/messages/receipts?ids=private-marker")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json(),
+            {"error": "Invalid request", "location": ["query", "ids"]},
+        )
+        self.assertNotIn("private-marker", response.text)
+
+    def test_rule_kind_requirements_are_validated_at_the_http_boundary(self) -> None:
+        invalid_bodies = (
+            {"agent": "lead", "kind": "low_workers", "command": "echo"},
+            {"agent": "lead", "kind": "file", "path": ""},
+            {"agent": "lead", "kind": "once", "at": 4_102_444_800},
+        )
+        for body in invalid_bodies:
+            with self.subTest(body=body):
+                response = self.client.post("/api/rules", json=body)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json()["error"], "Invalid request")
+                self.assertEqual(response.json()["location"][0], "body")
+        self.runtime.rules.assert_not_called()
 
     def test_project_body_limit_rejects_before_dispatch(self) -> None:
         response = self.client.post("/api/projects", content=b" " * (6 * 1024 * 1024 + 1),

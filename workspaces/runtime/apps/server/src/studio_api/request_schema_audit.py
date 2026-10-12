@@ -81,6 +81,13 @@ SCHEMA_EXCEPTIONS = {
         "A generated name requires request_id when name is absent. The smallest "
         "declarative form is dependentRequired."
     ),
+    ("studio_api.work.models.RuleBody", "validate_save_kind"): (
+        "Save requirements depend on rule kind: low_workers forbids command; file "
+        "requires a non-empty path and is the only kind that supports livenessCommand; "
+        "when at is omitted it defaults to the current time plus intervalSeconds, and "
+        "the resulting date must be within the next year. These cross-field and "
+        "time-dependent rules are enforced by the RuleBody model validator and rule handler."
+    ),
     ("studio_api.voice.models.VoiceRecordRequest", "validate_record_payload"): (
         "Payload and text requirements depend on kind and nested payload values. "
         "The smallest declarative form is a kind-discriminated record union with "
@@ -504,7 +511,17 @@ def _unbounded_integer_findings(value: object, location: str = "openapi") -> lis
         elif value.get("type") == "integer":
             minimum = value.get("minimum")
             maximum = value.get("maximum")
-            if (
+            domain = value.get("x-integer-domain")
+            is_wide_alias = (
+                domain == "unsigned64"
+                and minimum == 0
+                and maximum == 9_223_372_036_854_775_807
+            ) or (
+                domain == "signed64"
+                and minimum == -(2**63)
+                and maximum == 9_223_372_036_854_775_807
+            )
+            if not is_wide_alias and ((
                 isinstance(minimum, (int, float))
                 and not isinstance(minimum, bool)
                 and minimum < -9_007_199_254_740_991
@@ -512,7 +529,7 @@ def _unbounded_integer_findings(value: object, location: str = "openapi") -> lis
                 isinstance(maximum, (int, float))
                 and not isinstance(maximum, bool)
                 and maximum > 9_007_199_254_740_991
-            ):
+            )):
                 findings.append({"kind": "integer_outside_safe_range", "location": location})
         for key, child in value.items():
             findings.extend(_unbounded_integer_findings(child, f"{location}/{key}"))
@@ -844,8 +861,8 @@ def request_schema_audit() -> dict[str, object]:
             "walked": len(walked_operations),
             "documented": len(documented_operations),
         },
-        "signedRequestModelCoverage": {
-            "enforcedOperations": len(signed_request_model_operations),
+        "signedRequestModelRegistration": {
+            "registeredOperations": len(signed_request_model_operations),
             "expectedOperations": 4,
         },
         "unboundedIntegerSchemas": len(unbounded_integer_findings),

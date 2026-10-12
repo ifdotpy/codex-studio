@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Annotated, Callable, Protocol, cast, get_args,
 from codex_backend_identity import BACKEND_BUILD
 from codex_layout import SERVER_SOURCE_ROOT
 
-from pydantic import BaseModel, RootModel, TypeAdapter
+from pydantic import BaseModel, RootModel, TypeAdapter, ValidationError
 
 from starlette.requests import Request
 from starlette.responses import Response

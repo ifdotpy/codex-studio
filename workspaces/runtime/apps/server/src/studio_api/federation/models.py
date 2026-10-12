@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BeforeValidator, Field, StrictInt
+from pydantic import BeforeValidator, Field
 
 from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel, SafeInt, require_strict_integer
 

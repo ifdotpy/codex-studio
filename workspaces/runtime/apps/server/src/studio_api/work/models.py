@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import time
 from types import UnionType
 from typing import Annotated, Any, Callable, Literal, Union, cast, get_args, get_origin, get_type_hints
 from typing_extensions import NotRequired, Required, TypedDict, TypeAliasType
 
-from pydantic import ConfigDict, Field, RootModel, StrictBool, StrictFloat, StrictInt, StrictStr, create_model, model_validator
+from pydantic import ConfigDict, Field, RootModel, StrictBool, StrictFloat, StrictStr, create_model, model_validator
 
 from codex_records import (
     AgentRecord as AgentRecordContract,
@@ -67,6 +68,16 @@ class TaskFeedQuery(AgentQuery):
     before: StrictStr | None = None
     limit: SafeQueryInt = Field(default=100, ge=0, le=MAX_SAFE_INTEGER)
     timing: Literal["0", "1"] = "0"
+
+
+class TaskFeedCursor(ContractModel):
+    id: StrictStr
+    updated: SafeInt | StrictFloat
+
+
+class TaskFeedBeforeCursor(ContractModel):
+    id: StrictStr
+    created: SafeInt | StrictFloat
 
 
 class TaskIdQuery(ContractModel):
@@ -313,6 +324,18 @@ class RuleBody(ContractModel):
     stallWakeGeneration: SafeInt | None = None
     fingerprint: list[SafeInt] | None = None
     error: StrictStr | None = None
+
+    @model_validator(mode="after")
+    def validate_save_kind(self) -> RuleBody:
+        if self.action != "save":
+            return self
+        if self.kind == "low_workers" and self.command:
+            raise ValueError("A low-worker alert does not run a command")
+        if self.kind == "file" and not self.path:
+            raise ValueError("A file rule requires a path")
+        if self.at is not None and not time.time() - 1 <= self.at <= time.time() + 31_536_000:
+            raise ValueError("Choose a date within the next year")
+        return self
     lowSince: SafeInt | StrictFloat | None = None
     alerted: StrictBool | None = None
     lastAt: SafeInt | StrictFloat | None = None
@@ -575,31 +598,36 @@ class _OpenRecordResponse(ResponseModel):
 _RECORD_RESPONSE_MODELS: dict[tuple[type[Any], frozenset[str]], Any] = {}
 
 
-_SIGNED_RESPONSE_INTEGER_FIELDS = frozenset(
-    {"exitCode", "lastExitCode", "lastStallExitCode", "stallWakeGeneration"}
-)
-
-
-def _response_annotation(annotation: object, name: str, *, field_name: str = "") -> Any:
+def _response_annotation(annotation: object, name: str) -> Any:
     if annotation is int:
-        # TypedDict record annotations are the storage contract; make the
-        # generated response model enforce the safe range it publishes.
-        return SignedSafeInt if field_name in _SIGNED_RESPONSE_INTEGER_FIELDS else SafeInt
+        # Plain record integers use the safe domain. Non-default integer domains
+        # stay explicit on the TypedDict field annotation itself.
+        return SafeInt
     if annotation == _JSON_OBJECT_CONTRACT:
         return JsonObjectResponse
     origin = get_origin(annotation)
     args = get_args(annotation)
     if origin in (NotRequired, Required):
-        return origin[_response_annotation(args[0], name, field_name=field_name)]
+        return origin[_response_annotation(args[0], name)]
     if isinstance(annotation, type) and hasattr(annotation, "__required_keys__"):
         record = cast(type[Any], annotation)
         return _record_response_model(f"{record.__name__}Response", record)
     if origin is Annotated:
-        return Annotated[_response_annotation(args[0], name, field_name=field_name), *args[1:]]
+        if any(
+            (
+                getattr(item, "json_schema_extra", {}).get("x-integer-domain")
+                or getattr(item, "json_schema_extra", {}).get("x-safe-integer")
+            )
+            for item in args[1:]
+            if isinstance(getattr(item, "json_schema_extra", None), dict)
+        ):
+            # Preserve an explicitly annotated integer domain on the record.
+            return annotation
+        return Annotated[_response_annotation(args[0], name), *args[1:]]
     if origin in (Union, UnionType):
-        return Union[tuple(_response_annotation(arg, name, field_name=field_name) for arg in args)]
+        return Union[tuple(_response_annotation(arg, name) for arg in args)]
     if origin is not None and args and origin is not Literal:
-        converted = tuple(_response_annotation(arg, name, field_name=field_name) for arg in args)
+        converted = tuple(_response_annotation(arg, name) for arg in args)
         parameter = converted[0] if len(converted) == 1 else converted
         try:
             return origin[parameter]
@@ -626,7 +654,7 @@ def _record_response_model(
         if origin in (NotRequired, Required):
             annotation = get_args(annotation)[0]
         annotation = _response_annotation(
-            annotation, f"{name}{field_name.title()}", field_name=field_name
+            annotation, f"{name}{field_name.title()}"
         )
         default = ... if field_name in required or field_name in required_fields else None
         fields[field_name] = (annotation, default)

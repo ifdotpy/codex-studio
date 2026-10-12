@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import StrictStr, TypeAdapter, ValidationError
 from starlette.responses import Response
 
+from studio_api.app import QueryContractError
 from studio_api.models import JsonValue
 from studio_api.request_helpers import body_data
 from studio_api.responses import api_read_responses, api_write_responses
@@ -65,6 +66,8 @@ from .models import (
     RuleList,
     RuleMutation,
     TaskFeedQuery,
+    TaskFeedCursor,
+    TaskFeedBeforeCursor,
     TaskDetailResponse,
     TaskIdQuery,
     ToolRequestCancelBody,
@@ -194,10 +197,19 @@ def create_router(context: ApiContext) -> APIRouter:
                 responses=api_read_responses(errors=(400,), etag=True, headers=("Server-Timing",)))
     def workspace_tasks(request: Request, documented: TaskFeedQuery = Depends()) -> Response:
         query = documented
-        cursor = json.loads(query.cursor) if query.cursor else None
-        before = json.loads(query.before) if query.before else None
+        try:
+            cursor = TaskFeedCursor.model_validate_json(query.cursor) if query.cursor else None
+        except (ValueError, ValidationError):
+            raise QueryContractError("cursor") from None
+        try:
+            before = TaskFeedBeforeCursor.model_validate_json(query.before) if query.before else None
+        except (ValueError, ValidationError):
+            raise QueryContractError("before") from None
         started = time.perf_counter() if query.timing == "1" else None
-        result = _runtime(context).workspace_task_feed(query.agent, cursor=cursor, before=before,
+        result = _runtime(context).workspace_task_feed(
+            query.agent,
+            cursor=cursor.model_dump() if cursor is not None else None,
+            before=before.model_dump() if before is not None else None,
                                                        limit=query.limit)
         timing = {"task-feed": (time.perf_counter() - started) * 1000} if started is not None else None
         return context.send(request, result, etag=True, server_timing=timing)
@@ -229,7 +241,7 @@ def create_router(context: ApiContext) -> APIRouter:
         try:
             ids = _RECEIPT_IDS_ADAPTER.validate_json(query.ids)
         except ValidationError:
-            raise ValueError("Invalid receipt ID list") from None
+            raise QueryContractError("ids") from None
         result = _runtime(context).user_delivery_receipts(query.agent, ids)
         return context.send(request, {**result, "workspaceId": context.workspace_id()})
 

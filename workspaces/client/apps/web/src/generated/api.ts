@@ -14665,6 +14665,8 @@ export interface components {
       bufferedBytes: number;
       /** Id */
       id: string;
+      /** Jobidentity */
+      jobIdentity?: null | string;
       /** Persistenceerrors */
       persistenceErrors?: {
         [key: string]: string;

@@ -143,12 +143,17 @@ def _monitor_log_response(
             if stream:
                 stream.close()
             return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
-        if match.group(1):
-            start = int(match.group(1))
-            end = min(size, int(match.group(2)) + 1) if match.group(2) else size
-        else:
-            suffix = int(match.group(2))
-            start, end = max(0, size - suffix), size
+        try:
+            if match.group(1):
+                start = int(match.group(1))
+                end = min(size, int(match.group(2)) + 1) if match.group(2) else size
+            else:
+                suffix = int(match.group(2))
+                start, end = max(0, size - suffix), size
+        except ValueError:
+            if stream:
+                stream.close()
+            return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
         if start >= size or end <= start:
             if stream:
                 stream.close()
@@ -241,8 +246,6 @@ def create_router(context: ApiContext) -> APIRouter:
         ),
     ) -> Response:
         monitor_id = query.id
-        if monitor_id is None:
-            raise ValueError("Unknown monitor")
         return _monitor_log_response(io_context, request, monitor_id, range_header)
 
     @router.get("/api/file-info", response_model=FileInfo, responses=api_read_responses(errors=(400, 404)))

@@ -20,6 +20,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from studio_api.context import ApiContext, RemoteAccessContract
+from studio_api.app import QueryContractError
 from studio_api.models import JsonValue
 from studio_api.responses import install_error_response_docs
 from studio_api.work.router import create_router
@@ -63,6 +64,13 @@ def make_client(context: FakeContext) -> TestClient:
     @app.exception_handler(ValueError)
     def invalid_operation(_: Request, __: ValueError) -> JSONResponse:
         return JSONResponse({"error": "Invalid request"}, status_code=400)
+
+    @app.exception_handler(QueryContractError)
+    def invalid_query(_: Request, error: QueryContractError) -> JSONResponse:
+        return JSONResponse(
+            {"error": "Invalid request", "location": ["query", error.parameter]},
+            status_code=400,
+        )
 
     return TestClient(app)
 

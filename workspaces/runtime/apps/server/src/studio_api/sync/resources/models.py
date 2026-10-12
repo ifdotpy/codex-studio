@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field, RootModel, StrictBool, StrictFloat, StrictInt, StrictStr, model_validator
+from pydantic import Field, RootModel, StrictBool, StrictFloat, StrictStr, model_validator
 
 from studio_api.models import ContractModel, SafeInt, SyncEntity
 from studio_api.schema import API_SCHEMA_MISMATCH_FIELD

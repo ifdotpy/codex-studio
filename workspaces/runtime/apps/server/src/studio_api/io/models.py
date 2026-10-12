@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import ConfigDict, Field, field_validator
 
-from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel, SafeQueryInt, SafeInt, SignedSafeInt
+from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel, SafeQueryInt, SafeInt, SignedSafeInt, UInt64
 
 
 class TerminalState(ContractStrEnum):
@@ -147,7 +147,7 @@ class FileInfo(ResponseModel):
     path: str
     name: str
     mime: str
-    size: SafeInt
+    size: UInt64  # stat().st_size is a signed 64-bit file size
 
 
 class FileContent(ResponseModel):

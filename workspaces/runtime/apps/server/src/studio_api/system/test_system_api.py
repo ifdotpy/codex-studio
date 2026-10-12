@@ -89,7 +89,8 @@ def supervisor_health() -> dict[str, JsonValue]:
         "recovery": {"degraded": False, "fallbackReady": False, "blocked": None},
         "handles": [{
             "id": "native:fixture", "pid": 10, "signature": "fixture-signature",
-            "startTime": "fixture-start", "sequence": 2, "acknowledged": 1,
+            "startTime": "fixture-start", "jobIdentity": None,
+            "sequence": 2, "acknowledged": 1,
             "bufferedBytes": 64, "backpressure": False, "stdoutReaderAlive": True,
             "stdoutReaderError": None, "persistenceErrors": {"stdout": "OSError: fixture"},
         }],

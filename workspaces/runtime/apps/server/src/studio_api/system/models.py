@@ -215,6 +215,7 @@ class SupervisorHandle(ContractModel):
     pid: SafeInt | None
     signature: str
     startTime: str | None
+    jobIdentity: str | None = None
     sequence: SafeInt
     acknowledged: SafeInt
     bufferedBytes: SafeInt

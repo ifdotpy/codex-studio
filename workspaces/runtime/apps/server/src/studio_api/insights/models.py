@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import ConfigDict, Field
 
-from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel, SafeInt, SafeQueryInt, SignedSafeInt
+from studio_api.models import ContractModel, ContractStrEnum, Int64, JsonValue, ResponseModel, SafeInt, SafeQueryInt, SignedSafeInt
 
 
 class AnalyticsScope(ContractStrEnum):
@@ -360,8 +360,8 @@ class AnalyticsHistoryContext(AnalyticsStoredRecord):
 
 
 class AnalyticsFilesystemRemap(ContractModel):
-    previous: list[SafeInt]
-    current: list[SafeInt]
+    previous: list[Int64]  # filesystem st_dev/st_ino tuple
+    current: list[Int64]  # filesystem st_dev/st_ino tuple
     offset: SafeInt
     at: SafeInt | float
     proof: Literal["samePathInodeHeaderAnchor"]
@@ -381,8 +381,8 @@ class AnalyticsHistoryRecord(AnalyticsStoredRecord):
     updated: SafeInt | float | None = None
     path: str | None = None
     fileBytes: SafeInt | None = None
-    identity: list[SafeInt] | None = None
-    filesystemIdentity: list[SafeInt] | None = None
+    identity: list[Int64] | None = None  # filesystem st_dev/st_ino tuple
+    filesystemIdentity: list[Int64] | None = None  # filesystem st_dev/st_ino tuple
     filesystemRemap: AnalyticsFilesystemRemap | None = None
     filesystemRemapCount: SafeInt | None = None
     anchor: str | None = None

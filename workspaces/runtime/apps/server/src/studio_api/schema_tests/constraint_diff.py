@@ -313,6 +313,12 @@ def constraint_changes(
             return None
         if not isinstance(old_value, dict) or not isinstance(new_value, dict):
             return "loosening"
+        if not old_value:
+            # An unconstrained schema accepts every JSON value. Replacing it
+            # with a recursive JsonValue schema can only narrow that set.
+            return "tightening" if new_value else None
+        if not new_value:
+            return "loosening"
         old_type, new_type = old_value.get("type"), new_value.get("type")
         if old_type != new_type:
             if old_type == "integer" and new_type == "number":
@@ -324,6 +330,11 @@ def constraint_changes(
         for key in set(old_value) | set(new_value):
             before, after = old_value.get(key), new_value.get(key)
             if before == after:
+                continue
+            if key.startswith("x-"):
+                # OpenAPI extensions describe tooling metadata, not validation.
+                continue
+            if key in {"title", "description", "default", "examples", "deprecated", "readOnly", "writeOnly"}:
                 continue
             if key in {"minimum", "exclusiveMinimum", "minLength", "minItems", "minProperties", "minContains"}:
                 if after is None:
@@ -359,8 +370,10 @@ def constraint_changes(
                     directions.append("loosening")
                 elif after is False and before is not False:
                     directions.append("tightening")
-                # A schema-valued additionalProperties is compared at its own
-                # child pointer; its ref factoring must not change this node.
+                elif isinstance(before, dict) and isinstance(after, dict):
+                    nested = branch_direction(before, after)
+                    if nested:
+                        directions.append(nested)
             elif key == "uniqueItems":
                 directions.append("tightening" if after is True else "loosening")
             elif key in {"properties", "patternProperties"} and isinstance(before, dict) and isinstance(after, dict):
@@ -369,16 +382,22 @@ def constraint_changes(
                     if nested:
                         directions.append(nested)
             elif key in {"items", "contains", "propertyNames", "not", "if", "then", "else"}:
-                # These nodes are indexed separately outside serialized union
-                # branches; their arbitrary nested interactions are out of scope.
-                continue
-            elif key in {"anyOf", "oneOf", "allOf"} and isinstance(before, list) and isinstance(after, list):
-                nested = union_direction(
-                    [_canonical(branch) for branch in before],
-                    [_canonical(branch) for branch in after],
-                )
-                if nested:
-                    directions.append(nested)
+                if isinstance(before, dict) and isinstance(after, dict):
+                    nested = branch_direction(before, after)
+                    if nested:
+                        directions.append(nested)
+            elif key in {"anyOf", "oneOf", "allOf"}:
+                if before is None:
+                    directions.append("tightening")
+                elif after is None:
+                    directions.append("loosening")
+                elif isinstance(before, list) and isinstance(after, list):
+                    nested = union_direction(
+                        [_canonical(branch) for branch in before],
+                        [_canonical(branch) for branch in after],
+                    )
+                    if nested:
+                        directions.append(nested)
             else:
                 directions.append("loosening")
         if "loosening" in directions:

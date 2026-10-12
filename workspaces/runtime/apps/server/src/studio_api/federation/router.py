@@ -111,7 +111,13 @@ def create_router(context: ApiContext) -> APIRouter:
                 return context.send(request, result)
             except PermissionError as error:
                 return context.send(request, {"error": str(error)}, status=403)
-            except (ValueError, RuntimeError, OSError, sqlite3.Error) as error:
+            except ValueError:
+                return context.send(
+                    request,
+                    {"error": "Invalid request", "location": ["body"]},
+                    status=400,
+                )
+            except (RuntimeError, OSError, sqlite3.Error) as error:
                 return context.send(request, {"error": str(error)}, status=400)
 
         return await run_in_threadpool(dispatch)
@@ -132,8 +138,12 @@ def create_router(context: ApiContext) -> APIRouter:
         try:
             remote = context.remote
             origin = remote.request_origin(headers, peer, port)
-        except ValueError as error:
-            return context.send(request, {"error": str(error)}, status=400)
+        except ValueError:
+            return context.send(
+                request,
+                {"error": "Invalid request", "location": ["header", "origin"]},
+                status=400,
+            )
         if origin is None:
             return context.send(request, {"error": "Tailscale Serve origin required"}, status=403)
 
@@ -194,7 +204,13 @@ def create_router(context: ApiContext) -> APIRouter:
                 )
             except PermissionError as error:
                 return context.send(request, {"error": str(error)}, status=403)
-            except (ValueError, RuntimeError, OSError, sqlite3.Error) as error:
+            except ValueError:
+                return context.send(
+                    request,
+                    {"error": "Invalid request", "location": ["body"]},
+                    status=400,
+                )
+            except (RuntimeError, OSError, sqlite3.Error) as error:
                 return context.send(request, {"error": str(error)}, status=400)
         return await run_in_threadpool(dispatch)
 

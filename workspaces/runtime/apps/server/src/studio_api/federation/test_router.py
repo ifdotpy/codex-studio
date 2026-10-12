@@ -228,6 +228,23 @@ class FederationRouterTests(unittest.TestCase):
             self.assertEqual(self.runtime.service.calls, [(action, raw)])
             self.assertEqual(self.runtime.service.signed_bytes, [(action, raw)])
 
+    def test_malformed_and_non_object_signed_json_use_body_location(self) -> None:
+        service = FederationService(cast("RecordStore", self.runtime))
+        self.runtime.service = cast(FakeService, service)
+        try:
+            with patch.object(service, "enabled", return_value=True):
+                for path in FEDERATION_PATHS:
+                    for raw in (b"{", b"null"):
+                        with self.subTest(path=path, raw=raw):
+                            response = self.post_signed_path(path, raw)
+                            self.assertEqual(response.status_code, 400)
+                            self.assertEqual(
+                                response.json(),
+                                {"error": "Invalid request", "location": ["body"]},
+                            )
+        finally:
+            self.runtime.service = FakeService()
+
     def test_actual_service_validates_models_after_signature_checks(self) -> None:
         class Database:
             def __init__(self, writes: list[tuple[str, object]]) -> None:

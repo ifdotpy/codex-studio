@@ -67,6 +67,7 @@ class RuntimeFixture:
         self.log_path = log_path
         self.calls: list[tuple[str, object]] = []
         self.cancel_status = "running"
+        self.file_size = 3
 
     def monitor_log(self, key: str) -> MonitorDownload:
         exists = self.log_path.is_file()
@@ -76,7 +77,7 @@ class RuntimeFixture:
 
     def file_info(self, agent: str | None, path: str | None, asset: str | None) -> dict[str, JsonValue]:
         self.calls.append(("file_info", (agent, path, asset)))
-        return {"path": path or "/asset", "name": "sample.txt", "mime": "text/plain", "size": 3}
+        return {"path": path or "/asset", "name": "sample.txt", "mime": "text/plain", "size": self.file_size}
 
     def file_content(self, agent: str | None, path: str | None, asset: str | None) -> tuple[bytes, str, str]:
         self.calls.append(("file_content", (agent, path, asset)))
@@ -353,6 +354,21 @@ class IORouterTests(unittest.TestCase):
         self.assertEqual(result.status_code, 200)
         self.assertEqual(result.json(), {"name": "sample.txt", "mime": "text/plain", "base64": "YWJj"})
         self.assertEqual(self.runtime.calls[-1], ("file_content", ("first", "notes.txt", None)))
+
+    def test_file_info_preserves_large_filesystem_size(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            sparse_file = Path(directory) / "large.bin"
+            sparse_file.touch()
+            with sparse_file.open("r+b") as file:
+                file.truncate(2**53 + 1)
+            size = sparse_file.stat().st_size
+            self.assertGreater(size, 2**53 - 1)
+            self.runtime.file_size = size
+            result = self.client.get("/api/file-info?agent=first&path=large.bin")
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.json()["size"], size)
+        schema = self.app.openapi()["components"]["schemas"]["FileInfo"]["properties"]["size"]
+        self.assertEqual(schema["x-integer-domain"], "unsigned64")
 
     def test_monitor_input_forwards_provider_result_and_original_fields(self) -> None:
         response = self.client.post("/api/monitor/input", json={"id": "watch-1", "text": "x", "closeStdin": True})

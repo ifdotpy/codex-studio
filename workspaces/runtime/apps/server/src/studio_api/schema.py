@@ -7,7 +7,13 @@ import math
 import threading
 from typing import cast
 
-from studio_api.models import JsonValue, MAX_SAFE_INTEGER, MIN_SAFE_INTEGER
+from studio_api.models import (
+    JsonValue,
+    MAX_INT64,
+    MAX_SAFE_INTEGER,
+    MIN_INT64,
+    MIN_SAFE_INTEGER,
+)
 
 
 HTTP_METHODS = frozenset({"get", "put", "post", "delete", "options", "head", "patch", "trace"})
@@ -290,14 +296,15 @@ def normalize_optional_parameter_schemas(document: dict[str, JsonValue]) -> None
 def bound_integer_schemas(document: dict[str, JsonValue]) -> None:
     """Normalize bounds declared by validating types; never invent a range.
 
-    SafeInt and SignedSafeInt carry runtime and schema bounds. Exact integer
-    literals/enums carry their own runtime domain and receive equivalent bounds
-    from those values. Missing bounds remain an audit error.
+    Integer aliases carry runtime and schema bounds. Exact integer literals and
+    enums carry their own runtime domain and receive equivalent bounds from
+    those values. Missing bounds remain an audit error.
     """
     def visit(value: JsonValue) -> None:
         if isinstance(value, dict):
             if value.get("type") == "integer":
                 safe_domain = value.pop("x-safe-integer", None)
+                wide_domain = value.get("x-integer-domain")
                 # Pydantic can preserve Field constraints as internal metadata
                 # when SafeInt is nested in an optional union. Normalize those
                 # enforced constraints to their JSON Schema spellings first.
@@ -334,6 +341,24 @@ def bound_integer_schemas(document: dict[str, JsonValue]) -> None:
                         and not isinstance(existing_maximum, bool)
                         else domain_maximum,
                         domain_maximum,
+                    )
+                elif wide_domain in {"unsigned64", "signed64"}:
+                    domain_minimum = MIN_INT64 if wide_domain == "signed64" else 0
+                    existing_minimum = value.get("minimum")
+                    existing_maximum = value.get("maximum")
+                    value["minimum"] = max(
+                        existing_minimum
+                        if isinstance(existing_minimum, (int, float))
+                        and not isinstance(existing_minimum, bool)
+                        else domain_minimum,
+                        domain_minimum,
+                    )
+                    value["maximum"] = min(
+                        existing_maximum
+                        if isinstance(existing_maximum, (int, float))
+                        and not isinstance(existing_maximum, bool)
+                        else MAX_INT64,
+                        MAX_INT64,
                     )
                 exclusive_minimum = value.get("exclusiveMinimum")
                 if (

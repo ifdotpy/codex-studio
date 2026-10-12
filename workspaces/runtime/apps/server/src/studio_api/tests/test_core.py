@@ -1389,7 +1389,7 @@ print(api_schema_hash(openapi_document()))
             {
                 "unknown": "reject",
                 "repeatedScalar": "reject",
-                "integerPattern": "^-?[0-9]+$",
+                "integerPattern": "^[0-9]+$",
                 "numberPattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$",
                 "booleanValues": ["true", "false"],
             },
@@ -1500,7 +1500,7 @@ print(api_schema_hash(openapi_document()))
             for value, status in (
                 ({"paired": True}, 200),
                 ({"invitation": "signed", "expires": 123, "warning": None}, 200),
-                # Contract mismatches fail open with the strict JSON body.
+                # Production contract mismatches fail open with strict JSON.
                 ({"paired": "true"}, 200),
                 ({"paired": True, "unexpected": 1}, 200),
                 ({"paired": False}, 200),

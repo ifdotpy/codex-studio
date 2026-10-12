@@ -32,11 +32,17 @@ def _validate_finite_json(value: object) -> object:
     return value
 
 
-# JavaScript's exact integer range is the cross-runtime wire limit. API integer
-# fields default to non-negative values; signed values use SignedSafeInt only
-# where the domain gives negative numbers meaning.
+# JavaScript's exact integer range is the cross-runtime wire limit. Quantities
+# bounded by physical storage or product work (byte counts, file offsets,
+# counters, sequences and millisecond timestamps) stay in this safe range.
+# Use 64-bit aliases only for values whose source is inherently 64-bit at any
+# scale, such as filesystem identities, nanosecond clocks, or integer hashes.
+# API integer fields default to non-negative values; signed values use
+# SignedSafeInt only where the domain gives negative numbers meaning.
 MAX_SAFE_INTEGER = 9_007_199_254_740_991
 MIN_SAFE_INTEGER = -MAX_SAFE_INTEGER
+MAX_INT64 = 9_223_372_036_854_775_807
+MIN_INT64 = -(2**63)
 
 
 def _validate_safe_int(value: int) -> int:
@@ -50,6 +56,18 @@ def _validate_signed_safe_int(value: int) -> int:
         raise ValueError(
             f"Integer must be between {MIN_SAFE_INTEGER} and {MAX_SAFE_INTEGER}"
         )
+    return value
+
+
+def _validate_uint64(value: int) -> int:
+    if value < 0 or value > MAX_INT64:
+        raise ValueError(f"Integer must be between 0 and {MAX_INT64}")
+    return value
+
+
+def _validate_int64(value: int) -> int:
+    if value < MIN_INT64 or value > MAX_INT64:
+        raise ValueError(f"Integer must be between {MIN_INT64} and {MAX_INT64}")
     return value
 
 
@@ -71,6 +89,16 @@ SignedSafeInt: TypeAlias = Annotated[
     StrictInt,
     AfterValidator(_validate_signed_safe_int),
     Field(json_schema_extra={"x-safe-integer": "signed"}),
+]
+UInt64: TypeAlias = Annotated[
+    StrictInt,
+    AfterValidator(_validate_uint64),
+    Field(json_schema_extra={"x-integer-domain": "unsigned64"}),
+]
+Int64: TypeAlias = Annotated[
+    StrictInt,
+    AfterValidator(_validate_int64),
+    Field(json_schema_extra={"x-integer-domain": "signed64"}),
 ]
 
 

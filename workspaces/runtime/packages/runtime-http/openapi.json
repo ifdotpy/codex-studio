@@ -9479,9 +9479,10 @@
           },
           "current": {
             "items": {
-              "maximum": 9007199254740991,
-              "minimum": 0,
-              "type": "integer"
+              "maximum": 9223372036854775807,
+              "minimum": -9223372036854775808,
+              "type": "integer",
+              "x-integer-domain": "signed64"
             },
             "title": "Current",
             "type": "array"
@@ -9494,9 +9495,10 @@
           },
           "previous": {
             "items": {
-              "maximum": 9007199254740991,
-              "minimum": 0,
-              "type": "integer"
+              "maximum": 9223372036854775807,
+              "minimum": -9223372036854775808,
+              "type": "integer",
+              "x-integer-domain": "signed64"
             },
             "title": "Previous",
             "type": "array"
@@ -9872,9 +9874,10 @@
             "anyOf": [
               {
                 "items": {
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
+                  "maximum": 9223372036854775807,
+                  "minimum": -9223372036854775808,
+                  "type": "integer",
+                  "x-integer-domain": "signed64"
                 },
                 "type": "array"
               },
@@ -9922,9 +9925,10 @@
             "anyOf": [
               {
                 "items": {
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
+                  "maximum": 9223372036854775807,
+                  "minimum": -9223372036854775808,
+                  "type": "integer",
+                  "x-integer-domain": "signed64"
                 },
                 "type": "array"
               },
@@ -25765,10 +25769,11 @@
             "type": "string"
           },
           "size": {
-            "maximum": 9007199254740991,
+            "maximum": 9223372036854775807,
             "minimum": 0,
             "title": "Size",
-            "type": "integer"
+            "type": "integer",
+            "x-integer-domain": "unsigned64"
           }
         },
         "required": [
@@ -46637,6 +46642,17 @@
             "title": "Id",
             "type": "string"
           },
+          "jobIdentity": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Jobidentity"
+          },
           "persistenceErrors": {
             "anyOf": [
               {
@@ -49501,42 +49517,47 @@
             "type": "number"
           },
           "handlerEndedAt": {
-            "maximum": 9007199254740991,
+            "maximum": 9223372036854775807,
             "minimum": 0,
             "title": "Handlerendedat",
-            "type": "integer"
+            "type": "integer",
+            "x-integer-domain": "unsigned64"
           },
           "handlerStartedAt": {
-            "maximum": 9007199254740991,
+            "maximum": 9223372036854775807,
             "minimum": 0,
             "title": "Handlerstartedat",
-            "type": "integer"
+            "type": "integer",
+            "x-integer-domain": "unsigned64"
           },
           "queueDelayMs": {
             "title": "Queuedelayms",
             "type": "number"
           },
           "reservationBeganAt": {
-            "maximum": 9007199254740991,
+            "maximum": 9223372036854775807,
             "minimum": 0,
             "title": "Reservationbeganat",
-            "type": "integer"
+            "type": "integer",
+            "x-integer-domain": "unsigned64"
           },
           "reservationDelayMs": {
             "title": "Reservationdelayms",
             "type": "number"
           },
           "reservationEndedAt": {
-            "maximum": 9007199254740991,
+            "maximum": 9223372036854775807,
             "minimum": 0,
             "title": "Reservationendedat",
-            "type": "integer"
+            "type": "integer",
+            "x-integer-domain": "unsigned64"
           },
           "reservationLockedAt": {
-            "maximum": 9007199254740991,
+            "maximum": 9223372036854775807,
             "minimum": 0,
             "title": "Reservationlockedat",
-            "type": "integer"
+            "type": "integer",
+            "x-integer-domain": "unsigned64"
           },
           "wireReceivedAt": {
             "anyOf": [
@@ -56937,7 +56958,7 @@
           },
           "returncode": {
             "maximum": 9007199254740991,
-            "minimum": 0,
+            "minimum": -9007199254740991,
             "title": "Returncode",
             "type": "integer"
           },
@@ -57027,9 +57048,10 @@
           },
           "gitFile": {
             "items": {
-              "maximum": 9007199254740991,
-              "minimum": 0,
-              "type": "integer"
+              "maximum": 9223372036854775807,
+              "minimum": -9223372036854775808,
+              "type": "integer",
+              "x-integer-domain": "signed64"
             },
             "title": "Gitfile",
             "type": "array"
@@ -57100,9 +57122,10 @@
           },
           "rootFile": {
             "items": {
-              "maximum": 9007199254740991,
-              "minimum": 0,
-              "type": "integer"
+              "maximum": 9223372036854775807,
+              "minimum": -9223372036854775808,
+              "type": "integer",
+              "x-integer-domain": "signed64"
             },
             "title": "Rootfile",
             "type": "array"
@@ -57151,9 +57174,10 @@
           },
           "gitFile": {
             "items": {
-              "maximum": 9007199254740991,
-              "minimum": 0,
-              "type": "integer"
+              "maximum": 9223372036854775807,
+              "minimum": -9223372036854775808,
+              "type": "integer",
+              "x-integer-domain": "signed64"
             },
             "title": "Gitfile",
             "type": "array"
@@ -57164,9 +57188,10 @@
           },
           "rootFile": {
             "items": {
-              "maximum": 9007199254740991,
-              "minimum": 0,
-              "type": "integer"
+              "maximum": 9223372036854775807,
+              "minimum": -9223372036854775808,
+              "type": "integer",
+              "x-integer-domain": "signed64"
             },
             "title": "Rootfile",
             "type": "array"

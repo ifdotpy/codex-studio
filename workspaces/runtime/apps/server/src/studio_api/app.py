@@ -34,6 +34,13 @@ if TYPE_CHECKING:
     from studio_api.context import ApiContext
 
 
+class QueryContractError(Exception):
+    """Raised when a hand-encoded query value fails its route contract."""
+
+    def __init__(self, parameter: str) -> None:
+        self.parameter = parameter
+
+
 def create_app(context: ApiContext) -> FastAPI:
     """Create the API without opening state or starting background services."""
     integer_query_value = re.compile(r"[0-9]+\Z")
@@ -132,10 +139,6 @@ def create_app(context: ApiContext) -> FastAPI:
             if "boolean" in value_types and any(value not in {"true", "false"} for value in values):
                 return name
         return None
-
-    class QueryContractError(Exception):
-        def __init__(self, parameter: str) -> None:
-            self.parameter = parameter
 
     def validate_query_contract(request: Request) -> None:
         problem = query_contract_problem(request)

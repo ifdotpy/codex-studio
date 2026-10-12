@@ -1,8 +1,10 @@
 """OpenAPI schema coverage checks for generation."""
 from __future__ import annotations
 
+import ast
 import unittest
 import json
+import hashlib
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import cast
@@ -11,14 +13,24 @@ from codex_layout import REPOSITORY_ROOT
 from pydantic import TypeAdapter, ValidationError
 from codex_sync_entities import _DTO_MODELS
 from studio_api.models import (
+    MAX_INT64,
     MAX_SAFE_INTEGER,
+    MIN_INT64,
     MIN_SAFE_INTEGER,
     JsonValue,
     SafeInt,
     SafeIntHeader,
     SafeQueryInt,
     SignedSafeInt,
+    Int64,
+    UInt64,
 )
+from studio_api.work.models import (
+    PersistedToolRequest,
+    _record_response_model,
+)
+from codex_records import WorktreeCleanupRecord
+import codex_records as record_contracts
 from studio_api.io.models import TerminalRecord
 from studio_api.work.models import RuleRecord, WorkItem
 from studio_api.generate_types import render
@@ -103,11 +115,51 @@ def sample_document(response_schema: dict[str, JsonValue]) -> dict[str, JsonValu
 
 
 class SchemaContractTests(unittest.TestCase):
+    def test_record_integer_domains_are_explicit_on_typed_dict_fields(self) -> None:
+        source = Path(record_contracts.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        classes = {
+            node.name: node for node in tree.body if isinstance(node, ast.ClassDef)
+        }
+        typed_dicts: set[str] = set()
+        while True:
+            discovered = {
+                name for name, node in classes.items()
+                if any(
+                    isinstance(base, ast.Name)
+                    and (base.id == "TypedDict" or base.id in typed_dicts)
+                    for base in node.bases
+                )
+            }
+            if discovered <= typed_dicts:
+                break
+            typed_dicts.update(discovered)
+
+        checked_fields = 0
+        for name in typed_dicts:
+            for statement in classes[name].body:
+                if not isinstance(statement, ast.AnnAssign):
+                    continue
+                checked_fields += 1
+                bare_integer_nodes = [
+                    child for child in ast.walk(statement.annotation)
+                    if isinstance(child, ast.Name) and child.id == "int"
+                ]
+                with self.subTest(record=name, field=getattr(statement.target, "id", "?")):
+                    self.assertEqual(
+                        bare_integer_nodes,
+                        [],
+                        "record fields must state SafeInt, SignedSafeInt, UInt64, or Int64 explicitly",
+                    )
+        self.assertGreater(checked_fields, 500)
+
     def test_integer_alias_runtime_and_exported_bounds_agree(self) -> None:
         cases = (
             (SafeInt, 0, MAX_SAFE_INTEGER, (-1, MAX_SAFE_INTEGER + 1)),
             (SignedSafeInt, MIN_SAFE_INTEGER, MAX_SAFE_INTEGER,
              (MIN_SAFE_INTEGER - 1, MAX_SAFE_INTEGER + 1)),
+            (UInt64, 0, MAX_INT64, (-1, MAX_INT64 + 1)),
+            (Int64, MIN_INT64, MAX_INT64, (MIN_INT64 - 1, MAX_INT64 + 1)),
             (SafeQueryInt, 0, MAX_SAFE_INTEGER, ("+1", " 1", "1.0", "")),
             (SafeIntHeader, 0, MAX_SAFE_INTEGER, ("+1", " 1", "1.0", "")),
         )
@@ -161,6 +213,58 @@ class SchemaContractTests(unittest.TestCase):
         self.assertLessEqual(exit_integer["minimum"], terminal.exitCode)
         self.assertGreaterEqual(exit_integer["maximum"], terminal.exitCode)
 
+    def test_large_response_producers_fit_their_runtime_and_documented_domains(self) -> None:
+        from codex_agent_management import _file_identity
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            git_file = root / ".git"
+            git_file.write_text("gitdir: .git/worktrees/example\n", encoding="utf-8")
+            git_identity = _file_identity(git_file)
+            root_identity = _file_identity(root)
+            self.assertEqual(git_identity[4], git_file.stat().st_mtime_ns)
+            WorktreeCleanupResponse = _record_response_model(
+                "WorktreeCleanupRecordResponse", WorktreeCleanupRecord
+            )
+            cleanup = WorktreeCleanupResponse.model_validate({
+                    "root": str(root), "repo": str(root), "relative": ".",
+                    "identity": [], "gitFile": git_identity, "rootFile": root_identity,
+            })
+            self.assertEqual(cleanup.gitFile, git_identity)
+
+        monotonic_ns = MAX_SAFE_INTEGER + 1
+        request = PersistedToolRequest.model_validate({
+            "id": "tool-request-1", "stage": "queued",
+            "timing": {"reservationBeganAt": monotonic_ns},
+        })
+        self.assertEqual(request.timing.reservationBeganAt, monotonic_ns)
+
+        document = json.loads(
+            (REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-http/openapi.json")
+            .read_text(encoding="utf-8")
+        )
+        schemas = document["components"]["schemas"]
+        cleanup_file_integer = schemas["WorktreeCleanupRecordResponse"]["properties"]["gitFile"]["items"]
+        timing_integer = schemas["ToolRequestTimingRecordResponse"]["properties"]["reservationBeganAt"]
+        self.assertEqual(cleanup_file_integer["x-integer-domain"], "signed64")
+        self.assertEqual(cleanup_file_integer["minimum"], MIN_INT64)
+        self.assertEqual(cleanup_file_integer["maximum"], MAX_INT64)
+        self.assertEqual(timing_integer["x-integer-domain"], "unsigned64")
+        self.assertEqual(timing_integer["minimum"], 0)
+        self.assertEqual(timing_integer["maximum"], MAX_INT64)
+
+        signal_returncode = -15
+        cleanup_error = WorktreeCleanupResponse.model_validate({
+            "root": str(root), "repo": str(root), "relative": ".", "identity": [],
+            "error": {"message": "terminated", "at": 1.0, "by": "test",
+                      "returncode": signal_returncode},
+        })
+        self.assertEqual(cleanup_error.error.returncode, signal_returncode)
+        returncode_schema = schemas["WorktreeCleanupErrorRecordResponse"]["properties"]["returncode"]
+        self.assertEqual(returncode_schema["type"], "integer")
+        self.assertLessEqual(returncode_schema["minimum"], signal_returncode)
+        self.assertGreaterEqual(returncode_schema["maximum"], signal_returncode)
+
     def test_work_archive_producer_integer_fields_use_safe_runtime_aliases(self) -> None:
         adapter = TypeAdapter(WorkItem)
         item = {
@@ -196,51 +300,69 @@ class SchemaContractTests(unittest.TestCase):
         loosenings, _tightenings = constraint_changes(baseline, candidate)
         accepted_loosenings = {
             ("/components/schemas/DraftDocumentInput/properties/deleted", "property"):
-                "Adds the deleted state to the draft input DTO.",
+                ("absent from closed object", "accepted property", "Adds the deleted state to the draft input DTO."),
             ("/components/schemas/DraftPushRequest/properties/rows/items/properties/newDocumentState/properties/deleted", "property"):
-                "Adds the deleted state to the nested draft push DTO.",
+                ("absent from closed object", "accepted property", "Adds the deleted state to the nested draft push DTO."),
             ("/components/schemas/DraftPushRow/properties/newDocumentState/properties/deleted", "property"):
-                "Adds the deleted state to the draft push row DTO.",
+                ("absent from closed object", "accepted property", "Adds the deleted state to the draft push row DTO."),
             ("/components/schemas/ErrorResponse/properties/location", "property"):
-                "Adds the optional error location field.",
+                ("absent from closed object", "accepted property", "Adds the optional error location field."),
             ("/components/schemas/ErrorResponse/properties/location", "@nullable"):
-                "Allows a null error location.",
+                ("None", "True", "Allows a null error location."),
             ("/components/schemas/ErrorResponse/properties/location", "@nullableBranch"):
-                "Adds the nullable branch for the error location field.",
+                ("None", "['{\"items\":{\"type\":\"string\"}}']", "Adds the nullable branch for the error location field."),
+            ("/components/schemas/RuleList/properties/rules/items/properties/fingerprint", "@nullableBranch"):
+                ("sha256:56c216b5c10586d052770d6813aecaff1352ecf11d836081bf2f7426c961cff6", "sha256:0da4a39db36966f70408d5e4a554f4051ea5f0de4ad7aff40b512e27109f4a1c", "Publishes the recursively typed JSON value for a rule fingerprint; the runtime already accepts nested JSON values."),
+            ("/components/schemas/RuleRecordResponse/properties/fingerprint", "@nullableBranch"):
+                ("sha256:56c216b5c10586d052770d6813aecaff1352ecf11d836081bf2f7426c961cff6", "sha256:0da4a39db36966f70408d5e4a554f4051ea5f0de4ad7aff40b512e27109f4a1c", "Publishes the recursively typed JSON value for a rule fingerprint; the runtime already accepts nested JSON values."),
             ("/paths/~1api~1sync~1drafts/post/requestBody/content/application~1json/schema/properties/rows/items/properties/newDocumentState/properties/deleted", "property"):
-                "Publishes the deleted state in the sync drafts request schema.",
+                ("absent from closed object", "accepted property", "Publishes the deleted state in the sync drafts request schema."),
             ("/paths/~1api~1analytics/get/operationParameters/query/from_time", "parameter"):
-                "Documents the client's from_time filter, which the insights model maps to its legacy 'from' option.",
+                ("'absent'", "'present'", "Documents the client's from_time filter, which the insights model maps to its legacy 'from' option."),
             ("/paths/~1api~1analytics/get/operationParameters/query/to_time", "parameter"):
-                "Documents the client's to_time filter, which the insights model maps to its legacy 'to' option.",
+                ("'absent'", "'present'", "Documents the client's to_time filter, which the insights model maps to its legacy 'to' option."),
             ("/paths/~1api~1monitor~1log/get/operationParameters/header/Range", "parameter"):
-                "Documents the standard optional HTTP Range header already interpreted by the handler.",
+                ("'absent'", "'present'", "Documents the standard optional HTTP Range header already interpreted by the handler."),
             ("/paths/~1api~1sync~1stream/get/operationParameters/header/Last-Event-ID", "parameter"):
-                "Documents the optional event cursor header now parsed by the shared safe-integer type.",
+                ("'absent'", "'present'", "Documents the optional event cursor header now parsed by the shared safe-integer type."),
             ("/paths/~1api~1sync~1stream/get/operationParameters/header/X-Codex-Sync-Protocol", "parameter"):
-                "Documents the optional protocol negotiation header already read by the stream handler.",
+                ("'absent'", "'present'", "Documents the optional protocol negotiation header already read by the stream handler."),
             ("/paths/~1api~1sync~1stream/get/operationParameters/query/apiSchema", "parameter"):
-                "Documents the optional API schema query used by the existing client compatibility handshake.",
-            ("/components/schemas/AgentNativeStatus/properties/error", "@anyOf"):
-                "Clarifies opaque JSON error extensions; the integer code branch is now bounded by SafeInt.",
-            ("/components/schemas/AgentResponse/properties/error", "@anyOf"):
-                "Clarifies opaque JSON error extensions; the integer code branch is now bounded by SafeInt.",
-            ("/components/schemas/BranchResponse/properties/error", "@anyOf"):
-                "Clarifies opaque JSON error extensions; the integer code branch is now bounded by SafeInt.",
-            ("/components/schemas/AgentResponse/properties/nativeStatus", "@anyOf"):
-                "Clarifies the native status union; its integer code branch is bounded by SafeInt.",
-            ("/components/schemas/BranchResponse/properties/nativeStatus", "@anyOf"):
-                "Clarifies the native status union; its integer code branch is bounded by SafeInt.",
-            ("/components/schemas/DesktopResponse/properties/supervisor", "@anyOf"):
-                "Clarifies supervisor diagnostics; typed counters and identifiers are bounded by their runtime aliases.",
-            ("/components/schemas/DiagnosticsResponse/properties/supervisor/properties/health", "@anyOf"):
-                "Clarifies supervisor health diagnostics; typed counters and identifiers are bounded by their runtime aliases.",
-            ("/components/schemas/SupervisorDiagnostics/properties/health", "@anyOf"):
-                "Clarifies supervisor health diagnostics; typed counters and identifiers are bounded by their runtime aliases.",
+                ("'absent'", "'present'", "Documents the optional API schema query used by the existing client compatibility handshake."),
+            ("/components/schemas/SupervisorHandle/properties/jobIdentity", "property"):
+                ("absent from closed object", "accepted property", "Documents the optional nullable job identity already emitted by supervisor handles."),
+            ("/components/schemas/SupervisorHandle/properties/jobIdentity", "@nullable"):
+                ("None", "True", "Supervisor handles may emit a null job identity."),
+            ("/components/schemas/SupervisorHandle/properties/jobIdentity", "@nullableBranch"):
+                ("None", "['{}']", "Adds the nullable branch for the existing supervisor job identity."),
+            ("/components/schemas/SupervisorHealth/properties/handles/items/properties/jobIdentity", "property"):
+                ("absent from closed object", "accepted property", "Publishes the optional nullable job identity on supervisor health handles."),
+            ("/components/schemas/SupervisorHealth/properties/handles/items/properties/jobIdentity", "@nullable"):
+                ("None", "True", "Supervisor health handles may emit a null job identity."),
+            ("/components/schemas/SupervisorHealth/properties/handles/items/properties/jobIdentity", "@nullableBranch"):
+                ("None", "['{}']", "Adds the nullable branch for the existing supervisor health job identity."),
         }
+        def accepted_fragment(pointer: str, value: str) -> str:
+            if pointer in {
+                "/components/schemas/RuleList/properties/rules/items/properties/fingerprint",
+                "/components/schemas/RuleRecordResponse/properties/fingerprint",
+            }:
+                return "sha256:" + hashlib.sha256(value.encode()).hexdigest()
+            return value
+
         self.assertEqual(
-            {(item["pointer"], item["constraint"]) for item in loosenings},
-            set(accepted_loosenings),
+            {
+                (
+                    item["pointer"], item["constraint"],
+                    accepted_fragment(item["pointer"], item["baseline"]),
+                    accepted_fragment(item["pointer"], item["candidate"]),
+                )
+                for item in loosenings
+            },
+            {
+                (path, constraint, before, after)
+                for (path, constraint), (before, after, _reason) in accepted_loosenings.items()
+            },
         )
 
     def test_constraint_diff_detects_five_removed_constraints(self) -> None:
@@ -314,6 +436,186 @@ class SchemaContractTests(unittest.TestCase):
         )
         self.assertEqual(loosenings, [])
         self.assertEqual(tightenings, [])
+
+    def test_constraint_diff_detects_nested_union_and_map_loosenings(self) -> None:
+        baseline_doc: dict[str, JsonValue] = {
+            "paths": {"/fixture": {"get": {"responses": {"200": {
+                "description": "ok",
+                "content": {"application/json": {"schema": {
+                    "$ref": "#/components/schemas/ContractFixture",
+                }}},
+            }}}}},
+            "components": {"schemas": {
+                "ContractFixture": {
+                    "type": "object",
+                    "properties": {
+                        "nativeStatus": {"anyOf": [
+                            {"$ref": "#/components/schemas/NativeStatus"},
+                            {"$ref": "#/components/schemas/NativeStatusValue"},
+                            {"type": "null"},
+                        ]},
+                        "requiredUnion": {"anyOf": [
+                            {"type": "object", "required": ["id"], "properties": {
+                                "id": {"type": "string"},
+                            }},
+                            {"type": "string"},
+                        ]},
+                        "arrayUnion": {"anyOf": [
+                            {"type": "array", "items": {
+                                "type": "integer", "minimum": 0, "maximum": 5,
+                            }},
+                            {"type": "string"},
+                        ]},
+                        "mapUnion": {"anyOf": [
+                            {"type": "object", "properties": {
+                                "values": {"type": "object", "additionalProperties": {
+                                    "type": "object", "additionalProperties": False,
+                                }},
+                            }},
+                            {"type": "string"},
+                        ]},
+                    },
+                },
+                "NativeStatus": {"type": "object", "properties": {
+                    "phase": {"type": "string"},
+                }},
+                "NativeStatusValue": {"type": "string", "enum": ["idle", "retrying"]},
+            }},
+        }
+        baseline = constraint_snapshot(baseline_doc)
+
+        mutations: list[tuple[str, dict[str, JsonValue], str]] = []
+        enum_widened = json.loads(json.dumps(baseline_doc))
+        enum_widened["components"]["schemas"]["NativeStatusValue"]["enum"].append("new")
+        mutations.append((
+            "enum added in nativeStatus union",
+            enum_widened,
+            "/components/schemas/ContractFixture/properties/nativeStatus",
+        ))
+
+        required_removed = json.loads(json.dumps(baseline_doc))
+        required_removed["components"]["schemas"]["ContractFixture"]["properties"][
+            "requiredUnion"
+        ]["anyOf"][0]["required"].clear()
+        mutations.append((
+            "required member removed in union branch",
+            required_removed,
+            "/components/schemas/ContractFixture/properties/requiredUnion",
+        ))
+
+        array_widened = json.loads(json.dumps(baseline_doc))
+        item = array_widened["components"]["schemas"]["ContractFixture"]["properties"][
+            "arrayUnion"
+        ]["anyOf"][0]["items"]
+        item["type"] = "number"
+        item.pop("minimum")
+        item.pop("maximum")
+        mutations.append((
+            "array item widened in union branch",
+            array_widened,
+            "/components/schemas/ContractFixture/properties/arrayUnion",
+        ))
+
+        map_widened = json.loads(json.dumps(baseline_doc))
+        map_widened["components"]["schemas"]["ContractFixture"]["properties"][
+            "mapUnion"
+        ]["anyOf"][0]["properties"]["values"]["additionalProperties"].pop(
+            "additionalProperties"
+        )
+        mutations.append((
+            "additionalProperties removed in map value",
+            map_widened,
+            "/components/schemas/ContractFixture/properties/mapUnion",
+        ))
+
+        # The checker must descend through all applicator keywords and report
+        # constraints below array items and schema-valued map values.
+        for applicator in ("anyOf", "oneOf", "allOf"):
+            item_doc: dict[str, JsonValue] = {
+                "paths": {"/item": {"get": {"responses": {"200": {
+                    "content": {"application/json": {"schema": {
+                        "$ref": "#/components/schemas/Container",
+                    }}},
+                }}}}},
+                "components": {"schemas": {"Container": {
+                    applicator: [
+                        {"type": "array", "items": {
+                            "type": "integer", "minimum": 0, "maximum": 7,
+                        }},
+                        {"type": "string"},
+                    ],
+                }}},
+            }
+            relaxed_item = json.loads(json.dumps(item_doc))
+            relaxed_item["components"]["schemas"]["Container"][applicator][0][
+                "items"
+            ].pop("maximum")
+            item_path = f"/components/schemas/Container"
+            item_changes, _ = constraint_changes(
+                constraint_snapshot(item_doc), constraint_snapshot(relaxed_item)
+            )
+            with self.subTest(applicator=applicator, nested="array-items"):
+                self.assertIn(
+                    (item_path, f"@{applicator}"),
+                    {(change["pointer"], change["constraint"]) for change in item_changes},
+                )
+
+        map_bound_doc: dict[str, JsonValue] = {
+            "paths": {"/map": {"get": {"responses": {"200": {
+                "content": {"application/json": {"schema": {
+                    "$ref": "#/components/schemas/Container",
+                }}},
+            }}}}},
+            "components": {"schemas": {"Container": {"anyOf": [
+                {"type": "object", "additionalProperties": {
+                    "type": "integer", "minimum": 0, "maximum": 7,
+                }},
+                {"type": "string"},
+            ]}}},
+        }
+        relaxed_map_bound = json.loads(json.dumps(map_bound_doc))
+        relaxed_map_bound["components"]["schemas"]["Container"]["anyOf"][0][
+            "additionalProperties"
+        ].pop("maximum")
+        map_bound_changes, _ = constraint_changes(
+            constraint_snapshot(map_bound_doc), constraint_snapshot(relaxed_map_bound)
+        )
+        self.assertIn(
+            ("/components/schemas/Container", "@anyOf"),
+            {(change["pointer"], change["constraint"]) for change in map_bound_changes},
+        )
+
+        for label, mutated_doc, expected_pointer in mutations:
+            with self.subTest(label=label):
+                loosenings, _ = constraint_changes(baseline, constraint_snapshot(mutated_doc))
+                self.assertIn(
+                    (expected_pointer, "@anyOf"),
+                    {(item["pointer"], item["constraint"]) for item in loosenings},
+                )
+
+    def test_accepted_union_change_does_not_cover_native_status_enum_widening(self) -> None:
+        baseline_path = Path(__file__).with_name("openapi_constraint_baseline.json")
+        manifest = json.loads(baseline_path.read_text(encoding="utf-8"))
+        baseline_document = manifest["document"]
+        candidate_document = json.loads(
+            (REPOSITORY_ROOT / manifest["sourcePath"]).read_text(encoding="utf-8")
+        )
+        baseline_document = json.loads(json.dumps(baseline_document))
+        candidate_document["components"]["schemas"]["AgentNativeStatusValue"][
+            "enum"
+        ].append("unreviewed-status")
+
+        loosenings, _ = constraint_changes(
+            constraint_snapshot(baseline_document),
+            constraint_snapshot(candidate_document),
+        )
+        enum_changes = [
+            change for change in loosenings
+            if change["pointer"] == "/components/schemas/AgentNativeStatusValue"
+            and change["constraint"] == "enum"
+        ]
+        self.assertEqual(len(enum_changes), 1)
+        self.assertIn("unreviewed-status", enum_changes[0]["candidate"])
 
     def test_constraint_diff_detects_operation_and_union_loosenings(self) -> None:
         baseline_doc: dict[str, JsonValue] = {
@@ -536,10 +838,10 @@ class SchemaContractTests(unittest.TestCase):
     def test_request_schema_audit_has_only_documented_exceptions(self) -> None:
         report = request_schema_audit()
         self.assertEqual(report["findings"], [])
-        self.assertEqual(report["jsonSchemaExtra"], {"uses": 3, "validationUses": 1})
+        self.assertEqual(report["jsonSchemaExtra"], {"uses": 5, "validationUses": 1})
         self.assertEqual(
-            report["signedRequestModelCoverage"],
-            {"enforcedOperations": 4, "expectedOperations": 4},
+            report["signedRequestModelRegistration"],
+            {"registeredOperations": 4, "expectedOperations": 4},
         )
         exceptions = report["exceptions"]
         self.assertTrue(exceptions)
