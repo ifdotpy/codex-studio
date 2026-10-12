@@ -20,6 +20,7 @@ import unittest
 from unittest.mock import patch
 
 import httpx
+from server_test_waits import HANG_GUARD_SECONDS
 
 
 def run_fixture(mode: str) -> None:
@@ -112,7 +113,7 @@ class BackendShutdownTests(unittest.TestCase):
                                        stderr=subprocess.PIPE, text=True)
             try:
                 assert process.stdout is not None
-                deadline = time.monotonic() + 10
+                deadline = time.monotonic() + HANG_GUARD_SECONDS
                 port = None
                 while time.monotonic() < deadline:
                     readable, _, _ = select.select([process.stdout], [], [], max(0, deadline - time.monotonic()))

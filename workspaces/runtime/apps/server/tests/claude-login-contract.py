@@ -30,7 +30,7 @@ import urllib.error
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 import codex_claude
 from codex_claude_login import LoginManager, verification_url
-from server_test_waits import wait_for_condition
+from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
 
 
 class Accounts:
@@ -342,7 +342,8 @@ os._exit(0)
 """
         env = {**os.environ, 'PYTHONPATH':str(SERVER_SOURCE_ROOT),
                'STUDIO_CLAUDE_BIN':str(self.binary), 'FIXTURE_ROOT':str(self.root), 'FIXTURE_REQUEST':rid}
-        subprocess.run([sys.executable, '-B', '-c', script], env=env, check=True, timeout=20)
+        subprocess.run([sys.executable, '-B', '-c', script], env=env, check=True,
+                       timeout=HANG_GUARD_SECONDS)
         config = self.root / 'claude-logins' / ('config-' + rid)
         pid = int((config / 'native-pid').read_text())
         def child_gone():
@@ -438,7 +439,8 @@ os._exit(0)
 """
         env = {**os.environ, 'PYTHONPATH':str(SERVER_SOURCE_ROOT),
                'FIXTURE_PROFILE':json.dumps(self.profile), 'FIXTURE_ROOT':str(self.root), 'FIXTURE_REQUEST':rid}
-        subprocess.run([sys.executable,'-B','-c',script],env=env,check=True,timeout=20)
+        subprocess.run([sys.executable, '-B', '-c', script], env=env, check=True,
+                       timeout=HANG_GUARD_SECONDS)
         pid = int((self.config / 'native-pid').read_text())
         def child_gone():
             try:
@@ -474,7 +476,8 @@ os._exit(0)
         env = {**os.environ, 'PYTHONPATH':str(SERVER_SOURCE_ROOT),
                'STUDIO_CLAUDE_BIN':str(self.binary), 'FIXTURE_PROFILE':json.dumps(self.profile),
                'FIXTURE_ROOT':str(self.root), 'FIXTURE_REQUEST':rid}
-        subprocess.run([sys.executable, '-B', '-c', script], env=env, check=True, timeout=60)
+        subprocess.run([sys.executable, '-B', '-c', script], env=env, check=True,
+                       timeout=HANG_GUARD_SECONDS)
         pid = int((self.config / 'status-pid').read_text())
         def child_gone():
             try:

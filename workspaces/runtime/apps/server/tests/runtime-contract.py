@@ -1706,12 +1706,14 @@ class RuntimeContract(unittest.TestCase):
             before_retry = dispatch_count[0]
         self.runtime.changed.set()
         with dispatch_changed:
-            self.assertTrue(dispatch_changed.wait_for(lambda: dispatch_count[0] > before_retry, timeout=30),
+            self.assertTrue(dispatch_changed.wait_for(
+                lambda: dispatch_count[0] > before_retry, timeout=HANG_GUARD_SECONDS),
                             'scheduler did not finish a tick after unknown start')
             before_send = dispatch_count[0]
         self.runtime.send(a['id'], 'Additional work must wait')
         with dispatch_changed:
-            self.assertTrue(dispatch_changed.wait_for(lambda: dispatch_count[0] > before_send, timeout=30),
+            self.assertTrue(dispatch_changed.wait_for(
+                lambda: dispatch_count[0] > before_send, timeout=HANG_GUARD_SECONDS),
                             'scheduler did not finish a tick after queued input')
         self.assertTrue(starts_balanced(), 'submitted delivery starts did not finish after queued-input tick')
         self.assertEqual(sum(m == 'turn/start' for m,p in self.runtime.server.calls), 1)

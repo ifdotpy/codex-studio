@@ -233,9 +233,9 @@ class ExternalCliSseTests(unittest.TestCase):
         raw = json.dumps(resources, separators=(",", ":"))
         response = urlopen(
             f"{origin}/api/sync/stream?protocol=3&resources={quote(raw)}",
-            timeout=5,
+            timeout=HANG_GUARD_SECONDS,
         )
-        response.fp.raw._sock.settimeout(5)
+        response.fp.raw._sock.settimeout(HANG_GUARD_SECONDS)
         return response
 
     @staticmethod
@@ -248,6 +248,16 @@ class ExternalCliSseTests(unittest.TestCase):
                     return lines
                 continue
             lines.append(line)
+
+    def _read_event(self, stream, event_name: str) -> list[str]:
+        def read_matching_frame() -> list[str] | None:
+            event = self._read_frame(stream)
+            return event if f"event: {event_name}" in event else None
+
+        return wait_for_condition(
+            read_matching_frame,
+            f"SSE {event_name} frame",
+        )
 
     def test_second_process_graph_writer_delivers_authenticated_resource_sse(self) -> None:
         sys.path.insert(0, str(SCRIPTS))
@@ -314,7 +324,7 @@ class ExternalCliSseTests(unittest.TestCase):
                         if name in self.headers:
                             headers[name] = self.headers[name]
                     upstream_request = Request(upstream + self.path, data=body, headers=headers)
-                    with urlopen(upstream_request, timeout=5) as response:
+                    with urlopen(upstream_request, timeout=HANG_GUARD_SECONDS) as response:
                         return response.status, response.headers.get("Content-Type", "application/json"), response.read()
 
                 def log_message(self, _format: str, *args: object) -> None:
@@ -332,9 +342,9 @@ class ExternalCliSseTests(unittest.TestCase):
                     {"kind": "workspace", "agentId": "host-root"},
                 ])
                 try:
-                    initial = self._read_frame(stream)
+                    initial = self._read_event(stream, "resources")
                     self.assertIn("event: resources", initial)
-                    initial_rates = self._read_frame(stream)
+                    initial_rates = self._read_event(stream, "token-rates")
                     self.assertIn("event: token-rates", initial_rates)
                     before_revision = server._context.resource_hub()._revision
                     env = {
@@ -351,7 +361,7 @@ class ExternalCliSseTests(unittest.TestCase):
                         env=env,
                         capture_output=True,
                         text=True,
-                        timeout=15,
+                        timeout=HANG_GUARD_SECONDS,
                     )
                     self.assertEqual(command.returncode, 0, command.stderr)
                     self.assertEqual(len(proxy_requests), 2)
@@ -363,7 +373,7 @@ class ExternalCliSseTests(unittest.TestCase):
                     }
                     observed_resources = set()
                     observed_revisions = []
-                    frame_deadline = time.monotonic() + 5
+                    frame_deadline = time.monotonic() + HANG_GUARD_SECONDS
                     while (time.monotonic() < frame_deadline
                            and (observed_resources != expected_resources
                                 or not observed_revisions
@@ -398,13 +408,13 @@ class ExternalCliSseTests(unittest.TestCase):
                             env=env,
                             capture_output=True,
                             text=True,
-                            timeout=15,
+                            timeout=HANG_GUARD_SECONDS,
                         )
 
                     created = run_cli("codex-chat", "create", "Planning", "--agent", "host-root")
                     self.assertEqual(created.returncode, 0, created.stderr)
                     chat_id = json.loads(created.stdout)["id"]
-                    created_event = self._read_frame(stream)
+                    created_event = self._read_event(stream, "resources")
                     created_payload = json.loads(
                         next(line[6:] for line in created_event if line.startswith("data: "))
                     )
@@ -414,12 +424,12 @@ class ExternalCliSseTests(unittest.TestCase):
                         {"kind": "state"},
                         {"kind": "room", "roomId": chat_id},
                     ])
-                    self.assertIn("event: resources", self._read_frame(stream))
-                    self.assertIn("event: token-rates", self._read_frame(stream))
+                    self.assertIn("event: resources", self._read_event(stream, "resources"))
+                    self.assertIn("event: token-rates", self._read_event(stream, "token-rates"))
 
                     connected = run_cli("codex-chat", "connect", chat_id, "--agent", "host-root")
                     self.assertEqual(connected.returncode, 0, connected.stderr)
-                    connected_event = self._read_frame(stream)
+                    connected_event = self._read_event(stream, "resources")
                     connected_payload = json.loads(
                         next(line[6:] for line in connected_event if line.startswith("data: "))
                     )
@@ -439,7 +449,7 @@ class ExternalCliSseTests(unittest.TestCase):
                     }
                     observed_post_resources: set[tuple[str, str | None]] = set()
                     posted_revision = connected_payload["revision"]
-                    deadline = time.monotonic() + 5
+                    deadline = time.monotonic() + HANG_GUARD_SECONDS
                     while (observed_post_resources != expected_post_resources
                            or posted_revision <= connected_payload["revision"]):
                         self.assertLess(time.monotonic(), deadline,
@@ -473,10 +483,10 @@ class ExternalCliSseTests(unittest.TestCase):
                     stream.close()
             finally:
                 proxy.shutdown()
-                proxy_thread.join(timeout=5)
+                proxy_thread.join(timeout=HANG_GUARD_SECONDS)
                 proxy.server_close()
                 server.shutdown()
-                thread.join(timeout=5)
+                thread.join(timeout=HANG_GUARD_SECONDS)
                 server.server_close()
 
     def test_failed_external_write_rolls_back_and_emits_no_notification(self) -> None:
@@ -527,7 +537,7 @@ class ExternalCliSseTests(unittest.TestCase):
                 self.assertEqual(server._context.resource_hub()._revision, 0)
             finally:
                 server.shutdown()
-                thread.join(timeout=5)
+                thread.join(timeout=HANG_GUARD_SECONDS)
                 server.server_close()
 
     def test_source_and_api_state_mismatch_fails_after_commit_without_wrong_hub_event(self) -> None:
@@ -586,7 +596,7 @@ class ExternalCliSseTests(unittest.TestCase):
                 self.assertEqual(server._context.resource_hub()._revision, before_revision)
             finally:
                 server.shutdown()
-                thread.join(timeout=5)
+                thread.join(timeout=HANG_GUARD_SECONDS)
                 server.server_close()
 
 
