@@ -8,6 +8,7 @@ export function UnifiedAgentSettings({
   state,
   notify,
   onAccountModalOpenChange,
+  showAccountExclusions = false,
   ...settings
 }: Omit<
   ComponentProps<typeof ExecutionSettings>,
@@ -16,6 +17,7 @@ export function UnifiedAgentSettings({
   state: ReturnType<typeof useAccounts>;
   notify: (message: string) => void;
   onAccountModalOpenChange?: (opened: boolean) => void;
+  showAccountExclusions?: boolean;
 }) {
   return (
     <Accounts
@@ -39,12 +41,14 @@ export function UnifiedAgentSettings({
             onAccountChange={selectAccount}
             accountDisabled={disabled}
           />
-          <AccountExclusionsControl
-            lead={settings.agent}
-            accounts={state.data}
-            refresh={settings.refresh}
-            onError={notify}
-          />
+          {showAccountExclusions && (
+            <AccountExclusionsControl
+              lead={settings.agent}
+              accounts={state.data}
+              refresh={settings.refresh}
+              onError={notify}
+            />
+          )}
         </>
       )}
     />

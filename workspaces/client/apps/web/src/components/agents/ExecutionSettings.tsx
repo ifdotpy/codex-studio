@@ -33,6 +33,7 @@ import {
   type WorkerModelInfo,
 } from "./WorkerModelPicker";
 import { AccountTransferStatus, type Account } from "../Accounts";
+import { layerZIndex } from "../../theme";
 import type { ModelOption } from "../ModelPicker";
 import { ProviderMark, setupAccountName } from "../AccountTiles";
 import { useMediaQuery } from "@mantine/hooks";
@@ -1456,6 +1457,7 @@ function ScopedExecutionSettings({
       <Popover
         opened={opened}
         onChange={setOpened}
+        zIndex={layerZIndex.popover}
         position="top-start"
         width={340}
         shadow="md"

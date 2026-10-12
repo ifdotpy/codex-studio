@@ -423,6 +423,7 @@ test("Daybreak settings", async ({ context }) => {
         effort: "high",
         fast_mode: false,
         daybreak_enabled: true,
+        delegation_depth: 1,
       },
     });
     assert.equal(

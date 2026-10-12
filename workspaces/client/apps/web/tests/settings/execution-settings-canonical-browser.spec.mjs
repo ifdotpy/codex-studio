@@ -724,6 +724,7 @@ test("execution settings canonical browser", async ({ page }) => {
           effort: null,
           fast_mode: false,
           daybreak_enabled: false,
+          delegation_depth: 1,
         },
       );
       // One background refresh after the transfer, one after the model save.

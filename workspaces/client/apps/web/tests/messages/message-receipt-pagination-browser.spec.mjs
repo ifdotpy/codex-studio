@@ -57,7 +57,6 @@ async function runMessageReceiptScenario(
   let server;
   const posts = [];
   const receiptRequests = [];
-  const receiptResponses = [];
   const errors = [];
   let latest;
   let receiptGateReleased = false;
@@ -378,19 +377,6 @@ async function runMessageReceiptScenario(
           ids: JSON.parse(url.searchParams.get("ids")),
         });
     });
-    page.on("response", (response) => {
-      const url = new URL(response.url());
-      if (url.pathname === "/api/messages/receipts") {
-        receiptResponses.push(
-          (async () => ({
-            status: response.status(),
-            schema: response.headers()[API_SCHEMA_HASH_HEADER.toLowerCase()],
-            agent: url.searchParams.get("agent"),
-            body: await response.json(),
-          }))(),
-        );
-      }
-    });
     // Hold the browser request so each scenario controls when the response is
     // fetched relative to transcript observation and durable delivery.
     if (observedFirst)
@@ -459,7 +445,6 @@ async function runMessageReceiptScenario(
     );
 
     if (observedFirst) {
-      const priorReceiptResponseCount = receiptResponses.length;
       await until(
         () => receiptRequestPaused,
         "The app tab did not start a receipt request for the accepted message",
@@ -474,27 +459,23 @@ async function runMessageReceiptScenario(
       assert.equal(hiddenAccepted.receipt?.status, "queued");
       assert.equal(hiddenAccepted.displayPending, false);
       await changeFixture(agent.id, "delivered", target, state.token);
+      const deliveredReceiptResponse = page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return (
+          url.pathname === "/api/messages/receipts" &&
+          url.searchParams.get("agent") === agent.id &&
+          JSON.parse(url.searchParams.get("ids") || "[]").includes(id)
+        );
+      });
       receiptGateReleased = true;
       releaseReceiptGate();
-      let deliveredResponse;
-      await until(async () => {
-        const responses = await Promise.all(
-          receiptResponses.slice(priorReceiptResponseCount),
-        );
-        deliveredResponse = responses.find(
-          (response) =>
-            response.status === 200 &&
-            response.schema === readApiSchemaHash() &&
-            response.agent === agent.id &&
-            response.body.items?.some(
-              (item) =>
-                item.id === id &&
-                item.status === "delivered" &&
-                item.materialized === true,
-            ),
-        );
-        return Boolean(deliveredResponse);
-      }, "The app tab did not receive the exact delivered receipt response");
+      const response = await deliveredReceiptResponse;
+      const deliveredResponse = {
+        status: response.status(),
+        schema: response.headers()[API_SCHEMA_HASH_HEADER.toLowerCase()],
+        agent: new URL(response.url()).searchParams.get("agent"),
+        body: await response.json(),
+      };
       assert.equal(deliveredResponse.status, 200);
       assert.equal(deliveredResponse.schema, readApiSchemaHash());
       assert.equal(deliveredResponse.agent, agent.id);

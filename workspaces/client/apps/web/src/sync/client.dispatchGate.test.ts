@@ -306,6 +306,23 @@ describe("entity pull dispatch gate", () => {
     stop();
   });
 
+  it("reconciles an uncovered stream hint from the retained checkpoint", async () => {
+    const { entitySequence, rows, stop, workspaceId } = await setup();
+    const checkpoint = entitySequence.getEntitySequenceCheckpoint(
+      "state:entities:v1",
+      API_SCHEMA_HASH,
+    );
+    checkpoint.observeEpoch("server-epoch-a");
+    const pulls: number[] = [];
+    configurePulls(workspaceId, pulls);
+
+    mocks.invalidate?.({ epoch: "server-epoch-a", entitySequence: 101 });
+    await vi.waitFor(() => expect(pulls).toEqual([100]));
+
+    expect(rows.get("state:entities:checkpoint")?.seq).toBe(101);
+    stop();
+  });
+
   it("does not repeat an in-flight pull when its checkpoint covers a reconfiguration baseline", async () => {
     const { client, rows, storageInstance, stop, workspaceId } = await setup();
     const pulls: number[] = [];

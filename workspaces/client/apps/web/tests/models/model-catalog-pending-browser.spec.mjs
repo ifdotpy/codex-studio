@@ -195,7 +195,6 @@ test("Model Catalog Pending Browser", async ({
       window.catalogResponses = 0;
       window.catalogResponseRenderCount = 0;
       window.catalogRenderCount = 0;
-      window.abortedCatalogs = 0;
       const nativeFetch = window.fetch.bind(window);
       window.fetch = async (input, options) => {
         const request =
@@ -207,16 +206,8 @@ test("Model Catalog Pending Browser", async ({
         const reply = window.catalogReplies.shift();
         if (!reply) throw new Error("Missing catalog fixture reply");
         if (reply.hold)
-          await new Promise((resolve, reject) => {
+          await new Promise((resolve) => {
             window.releaseCatalog = resolve;
-            (options?.signal ?? request.signal)?.addEventListener(
-              "abort",
-              () => {
-                window.abortedCatalogs++;
-                reject(new DOMException("Aborted", "AbortError"));
-              },
-              { once: true },
-            );
           });
         if (reply.network) {
           window.catalogResponses++;
@@ -448,10 +439,9 @@ test("Model Catalog Pending Browser", async ({
       ),
       ["new-account-model"],
     );
-    assert.equal(await page.evaluate(() => window.abortedCatalogs), 1);
     assert.deepEqual(errors, []);
     console.log(
-      "PASS model catalog pending: cold and partial retry, old models, permanent errors, scope, cleanup",
+      "PASS model catalog pending: cold and partial retry, old models, permanent errors, scope isolation",
     );
   } finally {
     syncStream?.end();

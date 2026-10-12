@@ -7,6 +7,30 @@ import {
 
 afterEach(() => vi.unstubAllGlobals());
 
+function stubProjectionLocks(isHeld = (_name: string) => false) {
+  const request = vi.fn(
+    async (
+      name: string,
+      options: { mode?: "shared" | "exclusive"; ifAvailable?: boolean },
+      callback: (lock: Lock | null) => Promise<unknown> | unknown,
+    ) => {
+      const lock =
+        options.ifAvailable && isHeld(name)
+          ? null
+          : ({ name, mode: options.mode ?? "exclusive" } as Lock);
+      return callback(lock);
+    },
+  );
+  vi.stubGlobal("navigator", { locks: { request } } as unknown as Navigator);
+  return request;
+}
+
+function makeSuccessfulDeleteRequest() {
+  const request = {} as IDBOpenDBRequest;
+  queueMicrotask(() => request.onsuccess?.(new Event("success") as never));
+  return request;
+}
+
 describe("schema-keyed entity cache storage", () => {
   it("uses separate database names for different schema hashes", () => {
     const workspace = "a".repeat(32);
@@ -31,9 +55,10 @@ describe("schema-keyed entity cache storage", () => {
       () =>
         new Promise<IDBDatabaseInfo[]>((resolve) => (finishListing = resolve)),
     );
-    const deleteDatabase = vi.fn<(name: string) => IDBOpenDBRequest>(
-      () => ({}) as IDBOpenDBRequest,
+    const deleteDatabase = vi.fn<(name: string) => IDBOpenDBRequest>(() =>
+      makeSuccessfulDeleteRequest(),
     );
+    stubProjectionLocks();
     vi.stubGlobal("indexedDB", { databases, deleteDatabase });
 
     expect(
@@ -94,6 +119,67 @@ describe("schema-keyed entity cache storage", () => {
     expect(isProjectionDatabaseClosedError(new Error("network offline"))).toBe(
       false,
     );
+  });
+
+  it("skips deletion while another tab holds the stale projection database lock", async () => {
+    const workspace = "a".repeat(32);
+    const currentHash = "1".repeat(64);
+    const staleHash = "2".repeat(64);
+    const staleName = `rxdb-dexie-${entityProjectionDatabaseName(workspace, staleHash)}--0--projections`;
+    const deleteDatabase = vi.fn(() => makeSuccessfulDeleteRequest());
+    const lockRequests = stubProjectionLocks(
+      (name) =>
+        name ===
+        `studio-entity-projection-database:${entityProjectionDatabaseName(workspace, staleHash)}`,
+    );
+    vi.stubGlobal("indexedDB", {
+      databases: async () => [{ name: staleName }],
+      deleteDatabase,
+    });
+
+    deleteOtherEntityProjectionDatabases(workspace, currentHash);
+    await vi.waitFor(() => expect(lockRequests).toHaveBeenCalledOnce());
+    await Promise.resolve();
+
+    expect(lockRequests.mock.calls[0]?.[1]).toEqual({
+      mode: "exclusive",
+      ifAvailable: true,
+    });
+    expect(deleteDatabase).not.toHaveBeenCalled();
+  });
+
+  it("deletes a stale projection database when no tab holds its lock", async () => {
+    const workspace = "a".repeat(32);
+    const currentHash = "1".repeat(64);
+    const staleHash = "2".repeat(64);
+    const staleName = `rxdb-dexie-${entityProjectionDatabaseName(workspace, staleHash)}--0--projections`;
+    const deleteDatabase = vi.fn(() => makeSuccessfulDeleteRequest());
+    stubProjectionLocks();
+    vi.stubGlobal("indexedDB", {
+      databases: async () => [{ name: staleName }],
+      deleteDatabase,
+    });
+
+    deleteOtherEntityProjectionDatabases(workspace, currentHash);
+    await vi.waitFor(() => expect(deleteDatabase).toHaveBeenCalledOnce());
+    expect(deleteDatabase).toHaveBeenCalledWith(staleName);
+  });
+
+  it("skips stale-cache cleanup when Web Locks are unavailable", async () => {
+    const deleteDatabase = vi.fn(() => makeSuccessfulDeleteRequest());
+    vi.stubGlobal("navigator", {} as Navigator);
+    vi.stubGlobal("indexedDB", {
+      databases: async () => [
+        {
+          name: `rxdb-dexie-${entityProjectionDatabaseName("a".repeat(32), "2".repeat(64))}--0--projections`,
+        },
+      ],
+      deleteDatabase,
+    });
+
+    deleteOtherEntityProjectionDatabases("a".repeat(32), "1".repeat(64));
+    await Promise.resolve();
+    expect(deleteDatabase).not.toHaveBeenCalled();
   });
 
   it("does not throw when browser database enumeration is unavailable", () => {

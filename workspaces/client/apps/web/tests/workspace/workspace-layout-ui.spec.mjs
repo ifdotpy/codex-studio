@@ -563,7 +563,7 @@ async function runWorkspaceLayout(
           settings.settingsModal.scrollWidth <=
             settings.settingsModal.clientWidth + 1 &&
           settings.settings.scrollWidth <= settings.settings.clientWidth + 1,
-        `${prefix}: settings with long labels fit the viewport`,
+        `${prefix}: settings with long labels fit the viewport ${JSON.stringify({ modal: settings.settingsModal, panel: settings.settings })}`,
       );
       await page.keyboard.press("Escape");
       await mainAgentSettings.waitFor({ state: "hidden" });

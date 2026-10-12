@@ -573,29 +573,36 @@ describe("OpenAPI transport facade", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps session refresh races ordered", async () => {
-    const resolvers: Array<(response: Response) => void> = [];
-    let onBothStarted: () => void = () => {};
-    const bothStarted = new Promise<void>((resolve) => {
-      onBothStarted = resolve;
-    });
+  it("shares one in-flight session refresh between concurrent callers", async () => {
+    let resolveResponse: ((response: Response) => void) | undefined;
     const fetch = vi.fn(
-      () =>
-        new Promise<Response>((resolve) => {
-          resolvers.push(resolve);
-          if (resolvers.length === 2) onBothStarted();
-        }),
+      () => new Promise<Response>((resolve) => (resolveResponse = resolve)),
     );
     vi.stubGlobal("fetch", fetch);
 
-    const older = refreshSession();
-    const newer = refreshSession();
-    await bothStarted;
-    expect(resolvers).toHaveLength(2);
-    resolvers[1](Response.json({ token: "newer-token" }));
-    await expect(newer).resolves.toMatchObject({ token: "newer-token" });
-    resolvers[0](Response.json({ token: "older-token" }));
-    await expect(older).resolves.toMatchObject({ token: "newer-token" });
+    const first = refreshSession();
+    const second = refreshSession();
+    expect(first).toBe(second);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    resolveResponse?.(Response.json({ token: "shared-token" }));
+    await expect(first).resolves.toMatchObject({ token: "shared-token" });
+    await expect(second).resolves.toMatchObject({ token: "shared-token" });
+  });
+
+  it("starts a new session read after the previous refresh settles", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({ token: "first-token" }))
+      .mockResolvedValueOnce(Response.json({ token: "second-token" }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(refreshSession()).resolves.toMatchObject({
+      token: "first-token",
+    });
+    await expect(refreshSession()).resolves.toMatchObject({
+      token: "second-token",
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it("uses the fixed sync read deadline", async () => {
