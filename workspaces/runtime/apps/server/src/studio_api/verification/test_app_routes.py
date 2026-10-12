@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import inspect
+import json
+from pathlib import Path
 import unittest
 from collections.abc import Iterable
 from typing import ClassVar, cast
@@ -15,149 +17,20 @@ from studio_api.context import ApiContext, HeaderCollection
 from studio_api.core_models import SessionResponse
 
 
-GET_PATHS = frozenset(
-    {
-        "/api/multi-server",
-        "/api/multi-server/audit",
-        "/api/multi-server/v1/identity",
-        "/api/session",
-        "/api/sync/identity",
-        "/api/sync/protocol",
-        "/api/sync/pull",
-        "/api/sync/stream",
-        "/api/costs",
-        "/api/session-cost",
-        "/api/desktop",
-        "/api/diagnostics",
-        "/api/terminals",
-        "/api/terminals/output",
-        "/api/directories",
-        "/api/tool-requests",
-        "/api/analytics",
-        "/api/accounts/claude/login",
-        "/api/accounts",
-        "/api/projects",
-        "/api/questions",
-        "/api/workspace",
-        "/api/workspace/tasks",
-        "/api/work",
-        "/api/queue",
-        "/api/messages/receipts",
-        "/api/changes",
-        "/api/plan",
-        "/api/transcript",
-        "/api/transcript/page",
-        "/api/transcript/item",
-        "/api/transcript/search",
-        "/api/search",
-        "/api/search/item",
-        "/api/checkpoints",
-        "/api/capabilities",
-        "/api/agents/finder-view",
-        "/api/skills",
-        "/api/panel",
-        "/api/profiles",
-        "/api/rules",
-        "/api/monitor/log",
-        "/api/file-info",
-        "/api/file",
-        "/api/limits",
-        "/api/task",
-        "/api/complaint",
-        "/api/agent-chat",
-        "/api/models",
-        "/api/import",
-        "/api/messages",
-    }
-)
+OPENAPI_DOCUMENT = Path(__file__).resolve().parents[6] / "runtime/packages/runtime-http/openapi.json"
+HTTP_METHODS = frozenset({"get", "put", "post", "delete", "options", "head", "patch", "trace"})
 
-POST_PATHS = frozenset(
-    {
-        "/api/multi-server",
-        "/api/multi-server/v1/pair",
-        "/api/multi-server/v1/auto-pair",
-        "/api/servers/orchestration",
-        "/api/federation/v1/pair",
-        "/api/federation/v1/status",
-        "/api/federation/v1/message",
-        "/api/federation/v1/pull",
-        "/api/sync/drafts",
-        "/api/voice/status",
-        "/api/voice/start",
-        "/api/voice/end",
-        "/api/voice/record",
-        "/api/voice/records",
-        "/api/voice/speech",
-        "/api/voice/submit",
-        "/api/voice/audio",
-        "/api/voice/approvals",
-        "/api/voice/approval_speech",
-        "/api/voice/approve",
-        "/api/limits/reset",
-        "/api/terminals/create",
-        "/api/terminals/input",
-        "/api/terminals/resize",
-        "/api/terminals/rename",
-        "/api/terminals/close",
-        "/api/federation",
-        "/api/panel/layout",
-        "/api/peer-teams",
-        "/api/projects",
-        "/api/accounts/claude/login",
-        "/api/accounts/claude/add",
-        "/api/accounts/claude/login/code",
-        "/api/accounts/claude/login/cancel",
-        "/api/accounts/discover",
-        "/api/accounts/register",
-        "/api/accounts/default",
-        "/api/accounts/login/cancel",
-        "/api/accounts/delete",
-        "/api/accounts/disconnect",
-        "/api/accounts/reconnect",
-        "/api/accounts/login",
-        "/api/claude/profiles",
-        "/api/claude/session",
-        "/api/agents/account-transfer",
-        "/api/agents/account",
-        "/api/work",
-        "/api/queue",
-        "/api/plan",
-        "/api/annotation",
-        "/api/organization",
-        "/api/assets",
-        "/api/branch",
-        "/api/checkpoint",
-        "/api/checkpoint/preview",
-        "/api/checkpoint/restore",
-        "/api/tool-requests/cancel",
-        "/api/profiles",
-        "/api/rules",
-        "/api/monitor/input",
-        "/api/native-command",
-        "/api/messages",
-        "/api/rename",
-        "/api/room/delete",
-        "/api/complaints",
-        "/api/conversation/delete",
-        "/api/chats",
-        "/api/connections",
-        "/api/leads",
-        "/api/conversation",
-        "/api/agents",
-        "/api/configure",
-        "/api/connection-recovery",
-        "/api/context-repair",
-        "/api/capacity-retry",
-        "/api/usage-resume",
-        "/api/action",
-        "/api/import",
-        "/api/stop",
-        "/api/monitor/cancel",
-        "/api/questions/delete",
-        "/api/questions/defer",
-        "/api/answer",
+
+def authoritative_api_operations() -> set[tuple[str, str]]:
+    document = json.loads(OPENAPI_DOCUMENT.read_text(encoding="utf-8"))
+    return {
+        (method.upper(), path)
+        for path, item in document["paths"].items()
+        if path.startswith("/api/")
+        for method in item
+        if method in HTTP_METHODS
     }
-)
+
 
 STREAM_OR_FILE_ROUTES = frozenset(
     {
@@ -166,6 +39,18 @@ STREAM_OR_FILE_ROUTES = frozenset(
     }
 )
 HIDDEN_COMPATIBILITY_ROUTES = frozenset({("POST", "/api/voice/{action:path}")})
+
+
+def effective_route_path(path: str) -> str:
+    """Match FastAPI's path_format, which omits converter suffixes."""
+    return path.replace("{action:path}", "{action}")
+
+
+def route_inventory_difference(
+    declared: set[tuple[str, str]], expected: set[tuple[str, str]]
+) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
+    """Return missing schema routes and undeclared concrete API routes."""
+    return expected - declared, declared - expected
 
 
 class VerifierRemote:
@@ -220,9 +105,22 @@ class ApplicationRouteContract(unittest.TestCase):
             if not path.startswith("/api/"):
                 continue
             declared.update((method, path) for method in route.methods or ())
-        expected = {("GET", path) for path in GET_PATHS}
-        expected.update(("POST", path) for path in POST_PATHS)
-        self.assertEqual(expected - declared, set())
+        expected = authoritative_api_operations() | {
+            (method, effective_route_path(path))
+            for method, path in HIDDEN_COMPATIBILITY_ROUTES
+        }
+        missing, extra = route_inventory_difference(declared, expected)
+        self.assertEqual((missing, extra), (set(), set()))
+
+    def test_route_without_schema_entry_is_rejected_by_inventory(self) -> None:
+        expected = authoritative_api_operations() | {
+            (method, effective_route_path(path))
+            for method, path in HIDDEN_COMPATIBILITY_ROUTES
+        }
+        declared = expected | {("GET", "/api/added-without-schema")}
+        missing, extra = route_inventory_difference(declared, expected)
+        self.assertEqual(missing, set())
+        self.assertEqual(extra, {("GET", "/api/added-without-schema")})
 
     def test_api_routes_are_explicit_component_routes_with_response_models(self) -> None:
         for path, route in application_api_routes(self.app):
@@ -236,10 +134,9 @@ class ApplicationRouteContract(unittest.TestCase):
                 self.assertNotIn("{path:path}", route.path)
                 methods = route.methods or set()
                 self.assertTrue(methods.issubset({"GET", "POST", "HEAD", "OPTIONS"}))
-                original_keys = {(method, route.path) for method in methods}
                 effective_keys = {(method, path) for method in methods}
-                if original_keys & HIDDEN_COMPATIBILITY_ROUTES:
-                    self.assertEqual(original_keys, {("POST", "/api/voice/{action:path}")})
+                if route.path == "/api/voice/{action:path}":
+                    self.assertEqual(methods, {"POST"})
                     self.assertFalse(route.include_in_schema)
                 if not any(key in STREAM_OR_FILE_ROUTES for key in effective_keys):
                     self.assertIsNotNone(route.response_model)

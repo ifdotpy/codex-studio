@@ -816,7 +816,10 @@ test("contracts check mode detects an authoritative schema field change without 
     execFileSync("git", ["status", "--porcelain", "--untracked-files=all"], {
       cwd: root,
     }),
-    execFileSync("git", ["diff", "--binary", "HEAD"], { cwd: root }),
+    execFileSync("git", ["diff", "--binary", "HEAD"], {
+      cwd: root,
+      maxBuffer: 32 * 1024 * 1024,
+    }),
   ];
   const directory = mkdtempSync(
     path.join(os.tmpdir(), "codex-contract-drift-"),
@@ -847,7 +850,10 @@ test("contracts check mode detects an authoritative schema field change without 
           ["status", "--porcelain", "--untracked-files=all"],
           { cwd: root },
         ),
-        execFileSync("git", ["diff", "--binary", "HEAD"], { cwd: root }),
+        execFileSync("git", ["diff", "--binary", "HEAD"], {
+          cwd: root,
+          maxBuffer: 32 * 1024 * 1024,
+        }),
       ],
       workingTreeBefore,
       "check mode changed working tree bytes",

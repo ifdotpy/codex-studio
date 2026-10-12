@@ -272,6 +272,8 @@ pub struct NextResult {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SupervisorEvent {
+    /// Journal append sequence; independent stdout and stderr readers can
+    /// interleave in either order.
     pub sequence: EventCursor,
     pub kind: EventKind,
     #[serde(
