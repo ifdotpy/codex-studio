@@ -1394,6 +1394,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "studio-runtime-services",
  "subtle",
  "tokio",
 ]
@@ -1424,6 +1425,18 @@ dependencies = [
  "getrandom",
  "studio-runtime-http",
  "tokio",
+]
+
+[[package]]
+name = "studio-runtime-services"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "studio-runtime-process",
+ "studio-runtime-providers",
+ "studio-runtime-store",
+ "thiserror",
 ]
 
 [[package]]
