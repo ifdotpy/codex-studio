@@ -12,6 +12,7 @@ pub(crate) struct Dependency(&'static str);
 const KNOWN_DEPENDENCIES: &[&str] = &[
     "provider-session/account-rate-limits",
     "provider-session/model-list",
+    "provider-session/app-server",
     "resource-policy/publish-drafts",
     "sync-policy/entity-seeding",
     "sync-policy/entity-window-maintenance",

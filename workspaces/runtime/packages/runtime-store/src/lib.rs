@@ -25,6 +25,7 @@ pub use records::{
 pub use repositories::rules::{RulesRepository, StoredAgent, StoredRule};
 pub use repositories::sync_documents::{EntityRow, SyncDocument, SyncDocumentsRepository};
 pub use repositories::work_items::{StoredQueueEvent, StoredRecord, WorkItemsRepository};
+pub use repositories::terminals::{TerminalRow, TerminalsRepository};
 
 const DATABASE_BUSY_TIMEOUT_MS: u32 = 15_000;
 
