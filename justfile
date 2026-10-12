@@ -70,6 +70,10 @@ rust-http-conformance-ledger:
 test-browser:
     @node {{quote(facade)}} test-browser
 
+[doc("Run the browser smoke subset included in the fast tier.")]
+test-browser-smoke:
+    @node {{quote(facade)}} test-browser-smoke
+
 [doc("Run heavy server suites followed by the full browser project; no load suites.")]
 test-heavy:
     @node {{quote(facade)}} test-heavy

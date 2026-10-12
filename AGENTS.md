@@ -34,13 +34,15 @@ heavy tier. New tests must fit the fast tier. See [docs/testing.md](docs/testing
 for the tier commands and suite lists.
 A direct push to `main` is allowed, but it skips the pull-request checks, so run
 the same fast tier locally first: `just test-fast` (four server shards plus the
-remaining checks: Rust tests, web unit tests, type checks; a few minutes). Push
-only when it passes on the exact commit being pushed. `just test-server-opt-in`
-alone is not enough: it covers neither the convention guards in the server
-shards nor the Rust and web suites, and both gaps have broken `main`. A change to
-the web client also needs `just test-browser`, which hosted CI does not run.
+remaining checks: Rust tests, web unit tests, type checks, and browser smoke; a
+few minutes). Push only when it passes on the exact commit being pushed.
+`just test-server-opt-in` alone is not enough: it covers neither the convention
+guards in the server shards nor the Rust and web suites, and both gaps have
+broken `main`. Browser smoke is included in that fast tier and runs in hosted
+CI.
 The `just test-fast` checks run in hosted CI on every pull request and push to
-`main`; CI splits the server tier across four parallel jobs.
+`main`; CI splits the server tier across four parallel jobs and runs browser
+smoke in its own job.
 
 ## Load testing
 
