@@ -19,8 +19,9 @@
   resolution; this crate mirrors its environment and platform rules. The
   committed `runtime-state-schema.json` is the only schema snapshot.
 - **Focused check:** with the isolated Python environment prepared, run
-  `XDG_CACHE_HOME=/var/tmp/cs-rust-store/cache CARGO_TARGET_DIR=/var/tmp/cs-rust-store/target PYTHON="$(XDG_CACHE_HOME=/var/tmp/cs-rust-store/cache python3 workspaces/runtime/apps/server/src/codex_python.py)" cargo nextest run -p studio-runtime-store`.
-  Python subprocesses create disposable state under `/var/tmp/cs-rust-store/tests`.
+  `XDG_CACHE_HOME=/var/tmp/cs-rust-store/cache XDG_STATE_HOME=/var/tmp/cs-rust-store/state TMPDIR=/var/tmp/cs-rust-store/tests CARGO_TARGET_DIR=/var/tmp/cs-rust-store/target PYTHON="$(XDG_CACHE_HOME=/var/tmp/cs-rust-store/cache python3 workspaces/runtime/apps/server/src/codex_python.py)" cargo nextest run -p studio-runtime-store`.
+  Python subprocesses create disposable state under the system temporary
+  directory (the command sets it to `/var/tmp/cs-rust-store/tests`).
 
 Python connection behavior reproduced in this slice:
 
