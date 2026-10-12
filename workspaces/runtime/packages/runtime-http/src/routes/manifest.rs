@@ -38,6 +38,9 @@ const KNOWN_DEPENDENCIES: &[&str] = &[
     "workspace-state/image-execution",
     "workspace-state/organization-effects",
     "workspace-state/snapshot",
+    "coordination-policy/chat-history",
+    "coordination-policy/room-visibility",
+    "event-driver/message-receipts",
 ];
 
 impl Dependency {

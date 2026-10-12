@@ -10,6 +10,7 @@
 pub mod account_driver;
 pub mod account_policy;
 pub mod agents_create;
+pub mod coordination;
 pub mod event_write;
 pub mod panels;
 pub mod progress_panel;

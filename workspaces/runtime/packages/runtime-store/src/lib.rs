@@ -22,6 +22,7 @@ pub use records::{
     MessageRepository, QueueEvent, QueueEventId, QueueEventRepository, TaskId, TaskRecord,
     TaskRepository, WorkStatus,
 };
+pub use repositories::coordination::{CanvasMessage, ChatGroup, CoordinationRepository};
 pub use repositories::event_write::{EventWriteReceipt, EventWriteRepository};
 pub use repositories::monitors::{MonitorsRepository, StoredMonitor};
 pub use repositories::profiles::{ProfileRecord, ProfileRepository, ProfileRole, ReasoningEffort};
