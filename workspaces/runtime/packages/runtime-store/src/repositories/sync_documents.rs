@@ -178,15 +178,7 @@ impl SyncDocumentsRepository {
         scope: &str,
         payload: &str,
     ) -> StoreResult<bool> {
-        use sha2::{Digest, Sha256};
-
-        let digest = Sha256::digest(payload.as_bytes());
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let mut hash = String::with_capacity(digest.len() * 2);
-        for byte in digest {
-            hash.push(char::from(HEX[usize::from(byte >> 4)]));
-            hash.push(char::from(HEX[usize::from(byte & 0x0f)]));
-        }
+        let hash = hash_payload(payload);
         let current = transaction
             .query_row(
                 "SELECT hash,deleted FROM sync_entities \
@@ -213,7 +205,15 @@ impl SyncDocumentsRepository {
     }
 }
 
-fn next_sequence(connection: &Connection) -> StoreResult<i64> {
+pub(crate) fn hash_payload(payload: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(payload.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+pub(crate) fn next_sequence(connection: &Connection) -> StoreResult<i64> {
     connection
         .query_row(
             "SELECT MAX(entity_seq,document_seq,version_seq)+1 FROM ( \

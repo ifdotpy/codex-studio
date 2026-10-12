@@ -13253,25 +13253,29 @@
           },
           "line": {
             "maximum": 9007199254740991,
-            "minimum": 0,
+            "minimum": 1.0,
             "title": "Line",
             "type": "integer"
           },
           "path": {
+            "maxLength": 4096,
             "title": "Path",
             "type": "string"
           },
           "text": {
+            "maxLength": 32000,
+            "minLength": 1,
             "title": "Text",
             "type": "string"
           },
           "turnId": {
             "anyOf": [
               {
-                "type": "null"
+                "maxLength": 200,
+                "type": "string"
               },
               {
-                "type": "string"
+                "type": "null"
               }
             ],
             "title": "Turnid"
@@ -33857,6 +33861,7 @@
             "title": "Id"
           },
           "text": {
+            "maxLength": 64000,
             "title": "Text",
             "type": "string"
           },
@@ -73231,8 +73236,11 @@
           {
             "in": "query",
             "name": "q",
-            "required": false,
+            "required": true,
             "schema": {
+              "maxLength": 500,
+              "minLength": 1,
+              "title": "Q",
               "type": "string"
             }
           },

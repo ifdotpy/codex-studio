@@ -110,7 +110,15 @@ impl Registry {
                 message: error.to_string(),
             })?;
         let mut stored_schemas = BTreeMap::new();
-        for name in ["WorkItem", "PlanView", "QueueItem", "TranscriptAsset"] {
+        for name in [
+            "AgentRecordResponse",
+            "AnnotationReceipt",
+            "PlanView",
+            "QueueItem",
+            "TaskDetailResponse",
+            "TranscriptAsset",
+            "WorkItem",
+        ] {
             let validator = jsonschema::options()
                 .with_registry(&schema_registry)
                 .with_pattern_options(jsonschema::PatternOptions::regex())

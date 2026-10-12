@@ -24,7 +24,6 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
         optional_read!("runtime_plans"),
         optional_read!("runtime_annotations"),
         optional_read!("runtime_event_meta"),
-        optional_read!("runtime_assets"),
     ],
     triggers: &[],
     conditional_triggers: &[],
@@ -124,15 +123,9 @@ impl WorkItemsRepository {
             .map_err(StoreError::from)
     }
 
-    pub fn assets(
-        connection: &Connection,
-        ids: &[String],
-    ) -> StoreResult<Option<Vec<StoredRecord>>> {
-        if !table_exists(connection, "runtime_assets")? {
-            return Ok(None);
-        }
+    pub fn assets(connection: &Connection, ids: &[String]) -> StoreResult<Vec<StoredRecord>> {
         if ids.is_empty() {
-            return Ok(Some(Vec::new()));
+            return Ok(Vec::new());
         }
         let mut statement = connection.prepare("SELECT record FROM runtime_assets WHERE id=?1")?;
         let mut result = Vec::with_capacity(ids.len());
@@ -148,7 +141,7 @@ impl WorkItemsRepository {
                 });
             }
         }
-        Ok(Some(result))
+        Ok(result)
     }
 }
 

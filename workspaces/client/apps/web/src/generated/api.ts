@@ -5339,7 +5339,7 @@ export interface components {
       /** Text */
       text: string;
       /** Turnid */
-      turnId?: null | string;
+      turnId?: string | null;
     };
     /** AnnotationReceipt */
     AnnotationReceipt: {
@@ -26421,10 +26421,10 @@ export interface operations {
   };
   transcript_search_api_transcript_search_get: {
     parameters: {
-      query?: {
+      query: {
         id?: string;
         limit?: number;
-        q?: string;
+        q: string;
       };
       header?: never;
       path?: never;

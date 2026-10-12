@@ -111,7 +111,6 @@ pub fn prepare_queue(events: Vec<StoredQueueEvent>) -> Result<PreparedQueue, Wor
 pub fn queue_items(
     prepared: PreparedQueue,
     assets: &[Value],
-    assets_present: bool,
 ) -> Result<Vec<Value>, WorkPolicyError> {
     let asset_records = assets
         .iter()
@@ -128,18 +127,15 @@ pub fn queue_items(
                 .and_then(Value::as_array)
                 .into_iter()
                 .flatten();
-            let attachments = if assets_present {
-                ids.map(|value| {
+            let attachments = ids
+                .map(|value| {
                     let id = value.as_str().expect("validated queue asset id");
                     asset_records
                         .get(id)
                         .map(|asset| (*asset).clone())
                         .ok_or_else(|| invalid("runtime_assets", id))
                 })
-                .collect::<Result<Vec<_>, _>>()?
-            } else {
-                Vec::new()
-            };
+                .collect::<Result<Vec<_>, _>>()?;
             let delivery = metadata
                 .get("delivery")
                 .cloned()
@@ -196,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_plan_defaults_and_queue_assets_distinguish_absence_from_dangling() {
+    fn missing_plan_defaults_and_queue_assets_refuse_dangling_assets() {
         assert_eq!(plan_view("agent", "root", None)["text"], "");
         let prepared = prepare_queue(vec![StoredQueueEvent {
             id: "event".into(),
@@ -209,23 +205,8 @@ mod tests {
             valid: true,
         }])
         .expect("queue event is valid");
-        assert_eq!(
-            queue_items(prepared, &[], false).expect("missing asset table is empty")[0]["assets"],
-            json!([])
-        );
-        let prepared = prepare_queue(vec![StoredQueueEvent {
-            id: "event".into(),
-            kind: "user".into(),
-            text: "hello".into(),
-            status: "pending".into(),
-            created: 1.0,
-            error: None,
-            metadata: Some(r#"{"assets":["asset"]}"#.into()),
-            valid: true,
-        }])
-        .expect("queue event is valid");
         assert!(
-            queue_items(prepared, &[], true)
+            queue_items(prepared, &[])
                 .expect_err("dangling asset must be refused")
                 .to_string()
                 .contains("runtime_assets/asset")

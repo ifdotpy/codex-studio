@@ -9,6 +9,7 @@ use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use futures_util::FutureExt;
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use crate::error::{ApiError, error_response, with_api_headers};
@@ -274,9 +275,32 @@ fn has_operation(method: Option<&str>, path: &str) -> bool {
     })
 }
 
-pub(crate) async fn response_safety(request: Request<Body>, next: Next) -> Response {
+pub(crate) async fn response_safety(
+    State(state): State<HttpState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
     let api = request.uri().path().starts_with("/api/");
     let request_id = request.headers().get("x-studio-request-id").cloned();
+    let method = request.method().as_str().to_owned();
+    let path = request.uri().path().to_owned();
+    let if_none_match = request
+        .headers()
+        .get_all(header::IF_NONE_MATCH)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let etag_route = method == "GET"
+        && crate::schema::matching_template(
+            state
+                .etag_operations
+                .iter()
+                .map(|(method, template)| (method.as_str(), template.as_str())),
+            Some(&method),
+            &path,
+        )
+        .is_some();
     let mut response = AssertUnwindSafe(next.run(request))
         .catch_unwind()
         .await
@@ -286,7 +310,151 @@ pub(crate) async fn response_safety(request: Request<Body>, next: Next) -> Respo
     if api {
         response = with_api_headers(response, request_id.as_ref());
     }
+    if etag_route
+        && response.status() == StatusCode::OK
+        && response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("application/json"))
+    {
+        let (parts, body) = response.into_parts();
+        let body = match to_bytes(body, usize::MAX).await {
+            Ok(body) => body,
+            Err(_) => {
+                let response =
+                    error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
+                return if api {
+                    with_api_headers(response, request_id.as_ref())
+                } else {
+                    response
+                };
+            }
+        };
+        let digest = Sha256::digest(&body);
+        let etag = format!(
+            "\"{}\"",
+            digest
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+        let not_modified = if_none_match.iter().any(|value| {
+            value.split(',').any(|candidate| {
+                let candidate = candidate.trim();
+                candidate == "*" || candidate.strip_prefix("W/").unwrap_or(candidate) == etag
+            })
+        });
+        let mut response = Response::from_parts(parts, Body::from(body));
+        if let Ok(value) = HeaderValue::from_str(&etag) {
+            response.headers_mut().insert(header::ETAG, value);
+        }
+        if not_modified {
+            *response.status_mut() = StatusCode::NOT_MODIFIED;
+            *response.body_mut() = Body::empty();
+            response
+                .headers_mut()
+                .insert(header::CONTENT_LENGTH, HeaderValue::from_static("0"));
+            response.headers_mut().remove(header::CONTENT_ENCODING);
+        }
+        return response;
+    }
     response
+}
+
+#[cfg(test)]
+mod response_safety_tests {
+    use axum::Json;
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode, header};
+    use axum::middleware::from_fn_with_state;
+    use axum::routing::get;
+    use serde_json::{Value, json};
+    use tower::ServiceExt;
+
+    use crate::{HttpState, middleware::response_safety};
+
+    async fn rules() -> Json<Value> {
+        Json(json!({"rules": []}))
+    }
+
+    async fn untagged() -> Json<Value> {
+        Json(json!({"value": 1}))
+    }
+
+    fn state() -> HttpState {
+        let mut state = HttpState::new(
+            "token".to_owned(),
+            "workspace".to_owned(),
+            None,
+            "state".to_owned(),
+            1,
+            None,
+            None,
+            None,
+        );
+        state
+            .etag_operations
+            .insert(("GET".to_owned(), "/api/rules".to_owned()));
+        state
+    }
+
+    #[tokio::test]
+    async fn declared_read_etag_supports_weak_if_none_match_and_304() {
+        let state = state();
+        let app = Router::new()
+            .route("/api/rules", get(rules))
+            .layer(from_fn_with_state(state, response_safety));
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/rules")
+                    .body(Body::empty())
+                    .expect("request builds"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(first.status(), StatusCode::OK);
+        let etag = first.headers()[header::ETAG].clone();
+        assert!(etag.to_str().is_ok_and(|value| value.starts_with('"')));
+
+        let second = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/rules")
+                    .header(
+                        header::IF_NONE_MATCH,
+                        format!("W/{}", etag.to_str().expect("ETag header is ASCII")),
+                    )
+                    .body(Body::empty())
+                    .expect("request builds"),
+            )
+            .await
+            .expect("conditional response");
+        assert_eq!(second.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(second.headers()[header::ETAG], etag);
+        assert_eq!(second.headers()[header::CONTENT_LENGTH], "0");
+    }
+
+    #[tokio::test]
+    async fn unregistered_etag_route_keeps_its_regular_json_response() {
+        let app = Router::new()
+            .route("/api/session", get(untagged))
+            .layer(from_fn_with_state(state(), response_safety));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/session")
+                    .body(Body::empty())
+                    .expect("request builds"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(!response.headers().contains_key(header::ETAG));
+    }
 }
 
 fn query_values(query: &str) -> std::collections::BTreeMap<String, Vec<String>> {
@@ -508,12 +676,13 @@ mod tests {
     use axum::Router;
     use axum::body::{Body, to_bytes};
     use axum::http::{Request, StatusCode};
-    use axum::middleware::from_fn;
+    use axum::middleware::from_fn_with_state;
     use axum::routing::get;
     use serde_json::Value;
     use tower::ServiceExt;
 
     use super::response_safety;
+    use crate::HttpState;
 
     async fn panic_handler() -> &'static str {
         panic!("test handler panic")
@@ -523,7 +692,19 @@ mod tests {
     async fn panic_is_converted_to_the_common_server_error_envelope() {
         let app = Router::new()
             .route("/api/panic", get(panic_handler))
-            .layer(from_fn(response_safety));
+            .layer(from_fn_with_state(
+                HttpState::new(
+                    "token".to_owned(),
+                    "workspace".to_owned(),
+                    None,
+                    "state".to_owned(),
+                    1,
+                    None,
+                    None,
+                    None,
+                ),
+                response_safety,
+            ));
         let request = Request::builder()
             .uri("/api/panic")
             .header("x-studio-request-id", "request-1")

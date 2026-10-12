@@ -193,15 +193,15 @@ QueueBody = Annotated[
 
 
 class PlanBody(OperationBody):
-    text: StrictStr
+    text: StrictStr = Field(max_length=64000)
     version: SafeInt
 
 
 class AnnotationBody(OperationBody):
-    path: StrictStr
-    line: SafeInt
-    text: StrictStr
-    turnId: StrictStr | None = None
+    path: StrictStr = Field(max_length=4096)
+    line: SafeInt = Field(ge=1)
+    text: StrictStr = Field(min_length=1, max_length=32000)
+    turnId: StrictStr | None = Field(default=None, max_length=200)
 
 
 class OrganizationBody(ContractModel):
