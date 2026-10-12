@@ -13,6 +13,7 @@ pub(crate) mod scheduler;
 pub(crate) mod sync_documents;
 pub(crate) mod tasks;
 pub(crate) mod transcript;
+pub(crate) mod terminals;
 pub(crate) mod work_items;
 pub(crate) mod workspace_files;
 pub(crate) mod workspace_views;
@@ -34,6 +35,7 @@ pub(crate) const REQUIREMENTS: &[&SchemaRequirements] = &[
     &questions_reads::REQUIREMENTS,
     &scheduler::REQUIREMENTS,
     &sync_documents::REQUIREMENTS,
+    &terminals::REQUIREMENTS,
     &transcript::REQUIREMENTS,
     &work_items::REQUIREMENTS,
     &workspace_files::REQUIREMENTS,
