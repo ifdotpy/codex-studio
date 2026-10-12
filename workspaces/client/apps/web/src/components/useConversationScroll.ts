@@ -42,6 +42,10 @@ export function useConversationScroll(id: string, ready: boolean) {
   const lastHeight = useRef(0);
   const bottomDistance = useRef(0);
   const lastScrollInput = useRef(-Infinity);
+  const hasRecentScrollInput = useCallback(
+    () => performance.now() - lastScrollInput.current < 600,
+    [],
+  );
   const anchor = useRef<{ element: HTMLElement; offset: number } | null>(null);
 
   const persist = () => {
@@ -254,6 +258,7 @@ export function useConversationScroll(id: string, ready: boolean) {
     subscribeFollow,
     setFollow,
     onScroll,
+    hasRecentScrollInput,
     remember,
     revealRequest,
     getAnchorId,

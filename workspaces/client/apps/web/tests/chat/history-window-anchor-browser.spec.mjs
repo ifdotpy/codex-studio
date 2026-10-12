@@ -5,7 +5,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "../playwright.mjs";
 
-async function createHarness(browser, start, count) {
+async function createHarness(
+  browser,
+  start,
+  count,
+  disableNativeAnchoring = true,
+) {
   const root = fileURLToPath(new URL("../..", import.meta.url));
   const require = createRequire(join(root, "package.json"));
   const cacheDir = await mkdtemp(join(tmpdir(), "history-window-anchor-vite-"));
@@ -53,6 +58,7 @@ const makeRows = (start, count) => Array.from({length: count}, (_, n) => {
 function Harness() {
   const [rows, setRows] = useState(() => makeRows(${start}, ${count}));
   const scroll = useRef(null);
+  const hasRecentScrollInput = React.useCallback(() => performance.now() - (window.__lastInput ?? -Infinity) < 600, []);
   window.scrollToTopAsUser = () => {
     const root = scroll.current;
     root.dispatchEvent(new WheelEvent("wheel", {deltaY: -1}));
@@ -87,8 +93,8 @@ function Harness() {
     root.removeEventListener("scroll", holdScroll, true);
     flushSync(() => setRows(current => [...makeRows(0, 120), ...current]));
   };
-  return <div id="messages" ref={scroll} style={{height: 500, overflow: "auto", overflowAnchor: "none", position: "relative"}}>
-    <HistoryWindow rows={rows} scrollContainer={scroll} hasRecentScrollInput={() => performance.now() - (window.__lastInput ?? -Infinity) < 600} storageKey="history-window-anchor-audit" render={row => <article data-message={row.items[0].id} style={{height: 72, minHeight: 72, boxSizing: "border-box"}}>{row.items[0].text}</article>} />
+  return <div id="messages" ref={scroll} style={{height: 500, overflow: "auto", overflowAnchor: ${disableNativeAnchoring ? '"none"' : '"auto"'}, position: "relative"}}>
+    <HistoryWindow rows={rows} scrollContainer={scroll} hasRecentScrollInput={hasRecentScrollInput} storageKey="history-window-anchor-audit" render={row => <article data-message={row.items[0].id} style={{height: 72, minHeight: 72, boxSizing: "border-box"}}>{row.items[0].text}</article>} />
   </div>;
 }
 const root = document.querySelector("#root");
@@ -150,9 +156,9 @@ test("forward paging keeps the reading row mounted and at its viewport offset", 
   browser,
 }) => {
   test.setTimeout(90_000);
-  const { page, close } = await createHarness(browser, 0, 160);
+  const { page, close } = await createHarness(browser, 0, 160, false);
   try {
-    const anchor = page.locator('[data-message="message-20"]');
+    const anchor = page.locator('[data-message="message-19"]');
     await page.evaluate(() => window.scrollToMessage(20));
     await expect(anchor).toBeAttached();
     await waitForFrames(page);
@@ -163,7 +169,7 @@ test("forward paging keeps the reading row mounted and at its viewport offset", 
         node.getBoundingClientRect().top -
         document.querySelector("#messages").getBoundingClientRect().top,
     );
-    expect(originalOffset).toBeCloseTo(16, 0);
+    expect(originalOffset).toBeCloseTo(-56, 0);
     await page.evaluate(() => window.appendForwardPage());
     await page.evaluate(async () => {
       for (let frame = 0; frame < 25; frame++)
@@ -172,7 +178,7 @@ test("forward paging keeps the reading row mounted and at its viewport offset", 
     });
     const restored = await page.evaluate(() => {
       const root = document.querySelector("#messages");
-      const message = document.querySelector('[data-message="message-20"]');
+      const message = document.querySelector('[data-message="message-19"]');
       return message
         ? {
             connected: !!message.closest("[data-history-row]"),

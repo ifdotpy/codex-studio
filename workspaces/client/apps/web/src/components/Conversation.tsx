@@ -93,7 +93,10 @@ import { reportPromptComposerRender } from "./prompt-composer/renderProbe";
 import Requests from "./questions/Requests";
 import MessageDate from "./conversation/transcript/MessageDate";
 import TurnHistory from "./conversation/transcript/TurnHistory";
-import { revealHistoryMessage } from "./conversation/transcript/historyWindowModel";
+import {
+  resetHistoryWindowAnchor,
+  revealHistoryMessage,
+} from "./conversation/transcript/historyWindowModel";
 import { isEmptyAssistantMessage } from "./turnHistoryModel";
 import { Dictation } from "./Dictation";
 import RealtimeVoice from "./RealtimeVoice";
@@ -474,6 +477,7 @@ export default function Conversation(p: {
     subscribeFollow,
     setFollow,
     onScroll,
+    hasRecentScrollInput,
     remember,
     revealRequest,
     getAnchorId,
@@ -485,6 +489,7 @@ export default function Conversation(p: {
   const navigateToMessage = async (id: string) => {
     const root = scroll.current;
     if (!root) return;
+    resetHistoryWindowAnchor(root);
     const chat = p.id;
     const attempt = ++navigationAttempt.current;
     setFollow(false);
@@ -535,6 +540,7 @@ export default function Conversation(p: {
     void navigateToMessage(id).catch((error) => p.notify(errorText(error)));
   });
   const returnToLatest = () => {
+    if (scroll.current) resetHistoryWindowAnchor(scroll.current);
     navigationAttempt.current++;
     showLatest();
     setHighlighted(null);
@@ -1340,6 +1346,7 @@ export default function Conversation(p: {
         items={transcriptItems}
         scrollContainer={scroll}
         rememberScroll={remember}
+        hasRecentScrollInput={hasRecentScrollInput}
         agent={managed && !p.room ? agent : undefined}
         currentTurn={agent?.turnId || undefined}
         enabled={managed && !p.room}

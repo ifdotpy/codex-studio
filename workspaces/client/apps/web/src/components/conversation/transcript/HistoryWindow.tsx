@@ -17,6 +17,7 @@ import {
   historyOffsets,
   historyWindowAnchor,
   historyWindowRange,
+  historyRowsCanRestoreAnchor,
 } from "./historyWindowModel";
 
 type WindowAnchor = { id: string; offset: number; kind?: "message" | "row" };
@@ -28,12 +29,14 @@ export default function HistoryWindow({
   render,
   storageKey,
   rememberScroll,
+  hasRecentScrollInput,
 }: {
   rows: HistoryGroup[];
   scrollContainer?: RefObject<HTMLDivElement | null>;
   render: (row: HistoryGroup, revealedMessage?: string) => ReactNode;
   storageKey: string;
   rememberScroll?: () => void;
+  hasRecentScrollInput?: () => boolean;
 }) {
   const body = useRef<HTMLDivElement>(null);
   const scheduleUpdate = useRef<() => void>(() => {});
@@ -56,6 +59,8 @@ export default function HistoryWindow({
   const restoreViewportAnchor = useRef<(anchor: WindowAnchor) => void>(
     () => {},
   );
+  const persistViewportAnchor = useRef<() => void>(() => {});
+  const captureAnchorAfterUpdate = useRef(false);
   const previousRows = useRef(rows);
   const [requested, setRequested] = useState<string | null>(
     () => storedAnchor.current?.id || null,
@@ -84,6 +89,19 @@ export default function HistoryWindow({
     const root = scrollContainer?.current;
     const node = body.current;
     if (!root || !node) return;
+    let frame = 0;
+    let viewportRestoreFrame = 0;
+    const resetAnchor = () => {
+      if (viewportRestoreFrame) cancelAnimationFrame(viewportRestoreFrame);
+      viewportRestoreFrame = 0;
+      captureAnchorAfterUpdate.current = false;
+      viewportAnchor.current = null;
+      storedAnchor.current = null;
+      restoringAnchor.current = null;
+      setRequested(null);
+      setRevealedMessage(undefined);
+      save(`${storageKey}:window-anchor`, null);
+    };
     const reveal = (event: Event) => {
       const id: unknown = (event as CustomEvent).detail;
       if (typeof id !== "string") return;
@@ -94,10 +112,12 @@ export default function HistoryWindow({
       }
     };
     root.addEventListener("studio-history-reveal", reveal);
+    root.addEventListener("studio-history-reset-anchor", resetAnchor);
     if (!active)
-      return () => root.removeEventListener("studio-history-reveal", reveal);
-    let frame = 0;
-    let viewportRestoreFrame = 0;
+      return () => {
+        root.removeEventListener("studio-history-reveal", reveal);
+        root.removeEventListener("studio-history-reset-anchor", resetAnchor);
+      };
     const persistAnchor = () => {
       const bounds = root.getBoundingClientRect();
       const row = Array.from(
@@ -162,15 +182,29 @@ export default function HistoryWindow({
           ? null
           : id,
       );
+      if (captureAnchorAfterUpdate.current) {
+        captureAnchorAfterUpdate.current = false;
+        requestAnimationFrame(() => persistViewportAnchor.current());
+      }
     };
     const schedule = () => {
       if (!frame) frame = requestAnimationFrame(update);
     };
     scheduleUpdate.current = schedule;
     const scrolled = () => {
+      if (hasRecentScrollInput?.()) {
+        if (viewportRestoreFrame) cancelAnimationFrame(viewportRestoreFrame);
+        viewportRestoreFrame = 0;
+        restoringAnchor.current = null;
+        viewportAnchor.current = null;
+        storedAnchor.current = null;
+        save(`${storageKey}:window-anchor`, null);
+      }
+      captureAnchorAfterUpdate.current = true;
       schedule();
       persistAnchor();
     };
+    persistViewportAnchor.current = persistAnchor;
     let focusOwner: string | undefined;
     const pin = () => {
       const selection = document.getSelection();
@@ -309,21 +343,24 @@ export default function HistoryWindow({
     return () => {
       scheduleUpdate.current = () => {};
       restoreViewportAnchor.current = () => {};
+      persistViewportAnchor.current = () => {};
       if (frame) cancelAnimationFrame(frame);
       if (viewportRestoreFrame) cancelAnimationFrame(viewportRestoreFrame);
       observer.disconnect();
       root.removeEventListener("scroll", scrolled);
       root.removeEventListener("studio-history-reveal", reveal);
+      root.removeEventListener("studio-history-reset-anchor", resetAnchor);
       document.removeEventListener("selectionchange", pin);
       document.removeEventListener("focusin", focusChanged);
       document.removeEventListener("focusout", focusChanged);
     };
-  }, [active, scrollContainer, storageKey]);
+  }, [active, hasRecentScrollInput, scrollContainer, storageKey]);
   useLayoutEffect(() => {
     scheduleUpdate.current();
     if (previousRows.current !== rows) {
+      const previous = previousRows.current;
       previousRows.current = rows;
-      if (viewportAnchor.current)
+      if (viewportAnchor.current && historyRowsCanRestoreAnchor(previous, rows))
         restoreViewportAnchor.current(viewportAnchor.current);
     }
   }, [rows, offsets]);
