@@ -4,6 +4,8 @@ Owns the Studio backend, command entry points, VM guest service, and runtime
 prompts. The server owns SQLite and orchestration; the renderer accesses it over
 HTTP, and native privileges stay in the isolated Electron main process.
 
+Queue revision values are opaque server-local tokens; clients compare snapshots only within the same server.
+
 ## Apps and navigation
 
 - [`apps/server/`](apps/server/): Python backend and command entry points; see

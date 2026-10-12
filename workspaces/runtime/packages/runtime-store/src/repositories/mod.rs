@@ -5,6 +5,7 @@ pub(crate) mod messages;
 pub(crate) mod rules;
 pub(crate) mod sync_documents;
 pub(crate) mod tasks;
+pub(crate) mod work_items;
 
 use crate::schema::SchemaRequirements;
 
@@ -16,6 +17,7 @@ pub(crate) const REQUIREMENTS: &[&SchemaRequirements] = &[
     &messages::REQUIREMENTS,
     &rules::REQUIREMENTS,
     &sync_documents::REQUIREMENTS,
+    &work_items::REQUIREMENTS,
 ];
 
 #[cfg(test)]

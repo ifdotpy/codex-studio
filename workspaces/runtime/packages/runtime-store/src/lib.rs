@@ -11,7 +11,8 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior};
+pub use rusqlite::Connection;
+use rusqlite::{OpenFlags, Transaction, TransactionBehavior};
 use thiserror::Error;
 
 pub use path::resolve_state_dir;
@@ -22,6 +23,7 @@ pub use records::{
 };
 pub use repositories::rules::{RulesRepository, StoredAgent, StoredRule};
 pub use repositories::sync_documents::{EntityRow, SyncDocument, SyncDocumentsRepository};
+pub use repositories::work_items::{StoredQueueEvent, StoredRecord, WorkItemsRepository};
 
 const DATABASE_BUSY_TIMEOUT_MS: u32 = 15_000;
 
