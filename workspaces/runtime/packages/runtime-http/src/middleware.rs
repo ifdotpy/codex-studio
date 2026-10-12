@@ -392,6 +392,7 @@ mod response_safety_tests {
             1,
             None,
             None,
+            None,
         );
         state
             .etag_operations
@@ -698,6 +699,7 @@ mod tests {
                     None,
                     "state".to_owned(),
                     1,
+                    None,
                     None,
                     None,
                 ),
