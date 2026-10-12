@@ -8,6 +8,7 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
+use studio_runtime_services::event_write::{self, AnnotationWrite, EventWriteError, PlanWrite};
 use studio_runtime_services::work_policy::{self, WorkPolicyError};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, Connection, StoredRecord, WorkItemsRepository,
@@ -19,8 +20,6 @@ use crate::validation::Registry;
 
 const WORK_DEPENDENCY: [Dependency; 1] = [Dependency::new("event-driver/work-items")];
 const QUEUE_DEPENDENCY: [Dependency; 1] = [Dependency::new("event-driver/queue-mutations")];
-const PLAN_DEPENDENCY: [Dependency; 1] = [Dependency::new("event-driver/plan-updates")];
-const ANNOTATION_DEPENDENCY: [Dependency; 1] = [Dependency::new("event-driver/annotations")];
 const ORGANIZATION_DEPENDENCY: [Dependency; 1] =
     [Dependency::new("workspace-state/organization-effects")];
 
@@ -39,16 +38,8 @@ pub(crate) fn routes() -> RouteGroup {
             queue_action,
         ),
         get("/api/plan", OperationStatus::Implemented, plan),
-        post(
-            "/api/plan",
-            OperationStatus::partial(&PLAN_DEPENDENCY),
-            save_plan,
-        ),
-        post(
-            "/api/annotation",
-            OperationStatus::partial(&ANNOTATION_DEPENDENCY),
-            annotation,
-        ),
+        post("/api/plan", OperationStatus::Implemented, save_plan),
+        post("/api/annotation", OperationStatus::Implemented, annotation),
         post(
             "/api/organization",
             OperationStatus::partial(&ORGANIZATION_DEPENDENCY),
@@ -249,15 +240,87 @@ pub(crate) async fn queue_action(ApiJson(body): ApiJson<Value>) -> Result<Json<V
     validate_queue_action(&body)?;
     Err(dependency_error("POST", "/api/queue", &QUEUE_DEPENDENCY))
 }
-pub(crate) async fn save_plan(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    Err(dependency_error("POST", "/api/plan", &PLAN_DEPENDENCY))
+pub(crate) async fn save_plan(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let agent_id = optional_string(&body, "agent")
+        .map(str::to_owned)
+        .unwrap_or_else(|| state.workspace_id.clone());
+    let expected_version = body
+        .get("version")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid request"))?;
+    let text = required_string(&body, "text")?.to_owned();
+    let signature = request_signature(&body)?;
+    let input = PlanWrite {
+        agent_id,
+        request_id: optional_string(&body, "id").map(str::to_owned),
+        expected_version,
+        text,
+        signature,
+    };
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let validators = state.validators.clone();
+    let wake = state.event_wake.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let result = store
+            .transaction_with_error(|connection| {
+                event_write::save_plan_validated(connection, input, |record| {
+                    validators.validate_stored("PlanView", record)
+                })
+            })
+            .map_err(write_error)?;
+        if result.event_inserted {
+            wake.notify_one();
+        }
+        Ok(result.record)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(result))
 }
-pub(crate) async fn annotation(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    Err(dependency_error(
-        "POST",
-        "/api/annotation",
-        &ANNOTATION_DEPENDENCY,
-    ))
+
+pub(crate) async fn annotation(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let agent_id = optional_string(&body, "agent")
+        .map(str::to_owned)
+        .unwrap_or_else(|| state.workspace_id.clone());
+    let line = body
+        .get("line")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid request"))?;
+    let signature = python_operation_signature(&body)?;
+    let input = AnnotationWrite {
+        agent_id,
+        id: optional_string(&body, "id").map(str::to_owned),
+        path: required_string(&body, "path")?.to_owned(),
+        line,
+        text: required_string(&body, "text")?.to_owned(),
+        turn_id: optional_string(&body, "turnId").map(str::to_owned),
+        signature,
+    };
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let validators = state.validators.clone();
+    let wake = state.event_wake.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let result = store
+            .transaction_with_error(|connection| {
+                event_write::annotate_validated(connection, input, |record| {
+                    validators.validate_stored("AnnotationReceipt", record)
+                })
+            })
+            .map_err(write_error)?;
+        if result.event_inserted {
+            wake.notify_one();
+        }
+        Ok(result.record)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(result))
 }
 pub(crate) async fn organization(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
     Err(dependency_error(
@@ -269,6 +332,104 @@ pub(crate) async fn organization(ApiJson(_body): ApiJson<Value>) -> Result<Json<
 
 fn dependency_error(method: &str, path: &str, dependencies: &[Dependency]) -> ApiError {
     dependency_unavailable(method, path, dependencies).unwrap_or_else(|_| ApiError::internal())
+}
+
+fn optional_string<'a>(body: &'a Value, field: &str) -> Option<&'a str> {
+    body.get(field).and_then(Value::as_str)
+}
+
+fn required_string<'a>(body: &'a Value, field: &str) -> Result<&'a str, ApiError> {
+    optional_string(body, field)
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid request"))
+}
+
+fn request_signature(body: &Value) -> Result<String, ApiError> {
+    use sha2::{Digest, Sha256};
+
+    let bytes = serde_json::to_vec(body).map_err(|_| ApiError::internal())?;
+    let digest = Sha256::digest(bytes);
+    let mut signature = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        write!(&mut signature, "{byte:02x}").map_err(|_| ApiError::internal())?;
+    }
+    Ok(signature)
+}
+
+fn python_operation_signature(body: &Value) -> Result<String, ApiError> {
+    use sha2::{Digest, Sha256};
+    let mut value = body.clone();
+    let object = value.as_object_mut().ok_or_else(ApiError::internal)?;
+    object.entry("agent").or_insert(Value::Null);
+    let object = value.as_object().ok_or_else(ApiError::internal)?;
+    let mut keys = object.keys().collect::<Vec<_>>();
+    keys.sort();
+    let canonical = format!(
+        "{{{}}}",
+        keys.into_iter()
+            .map(|key| {
+                let encoded = match &object[key] {
+                    Value::String(value) => python_quote(value),
+                    Value::Null | Value::Bool(_) | Value::Number(_) => object[key].to_string(),
+                    _ => return Err(ApiError::internal()),
+                };
+                Ok(format!("{}: {encoded}", python_quote(key)))
+            })
+            .collect::<Result<Vec<_>, ApiError>>()?
+            .join(", ")
+    );
+    let digest = Sha256::digest(canonical.as_bytes());
+    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn python_quote(value: &str) -> String {
+    let mut out = String::from("\"");
+    for c in value.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c < ' ' => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c if c as u32 > 0x7f => {
+                let n = c as u32;
+                if n <= 0xffff {
+                    out.push_str(&format!("\\u{n:04x}"));
+                } else {
+                    let n = n - 0x10000;
+                    out.push_str(&format!(
+                        "\\u{:04x}\\u{:04x}",
+                        0xd800 + (n >> 10),
+                        0xdc00 + (n & 0x3ff)
+                    ));
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn write_error(error: EventWriteError) -> ApiError {
+    match error {
+        EventWriteError::RuleDriverUnavailable => ApiError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            "Not implemented: requires rule-driver/event-rules",
+        ),
+        EventWriteError::RemoteEventsUnavailable => ApiError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            "Not implemented: requires cross-server/remote-events",
+        ),
+        EventWriteError::InvalidRequest(message) | EventWriteError::Conflict(message) => {
+            ApiError::new(StatusCode::BAD_REQUEST, message)
+        }
+        EventWriteError::InvalidStoredObject { object, id } => invalid_stored(object, &id),
+        EventWriteError::Store(_) | EventWriteError::Clock => ApiError::internal(),
+    }
 }
 
 fn validate_queue_action(body: &Value) -> Result<(), ApiError> {

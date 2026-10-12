@@ -1,5 +1,6 @@
 pub mod account_state;
 pub(crate) mod agents;
+pub(crate) mod event_write;
 pub(crate) mod events;
 pub(crate) mod messages;
 pub(crate) mod profiles;
@@ -17,6 +18,7 @@ pub(crate) const REQUIREMENTS: &[&SchemaRequirements] = &[
     &account_state::REQUIREMENTS,
     &tasks::REQUIREMENTS,
     &events::REQUIREMENTS,
+    &event_write::REQUIREMENTS,
     &messages::REQUIREMENTS,
     &profiles::REQUIREMENTS,
     &rules::REQUIREMENTS,

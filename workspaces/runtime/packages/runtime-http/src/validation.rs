@@ -112,6 +112,7 @@ impl Registry {
         let mut stored_schemas = BTreeMap::new();
         for name in [
             "AgentRecordResponse",
+            "AnnotationReceipt",
             "PlanView",
             "QueueItem",
             "TaskDetailResponse",

@@ -6,6 +6,7 @@ use axum::response::Response;
 use axum::routing::any;
 use std::sync::Arc;
 use studio_runtime_store::RuntimeStore;
+use tokio::sync::Notify;
 
 use crate::error::error_response;
 use crate::middleware;
@@ -25,6 +26,7 @@ pub struct HttpState {
     pub(crate) store: Option<Arc<RuntimeStore>>,
     pub(crate) account_policy:
         Option<Arc<studio_runtime_services::account_policy::AccountPolicyState>>,
+    pub(crate) event_wake: Arc<Notify>,
 }
 
 impl HttpState {
@@ -49,7 +51,13 @@ impl HttpState {
             validators: Registry::default(),
             store,
             account_policy,
+            event_wake: Arc::new(Notify::new()),
         }
+    }
+
+    /// Shared post-commit signal for durable event writers and the scheduler.
+    pub fn event_wake_handle(&self) -> Arc<Notify> {
+        Arc::clone(&self.event_wake)
     }
 }
 
