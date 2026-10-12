@@ -1,3 +1,4 @@
+pub mod account_state;
 pub(crate) mod agents;
 pub(crate) mod events;
 pub(crate) mod messages;
@@ -9,6 +10,7 @@ use crate::schema::SchemaRequirements;
 
 pub(crate) const REQUIREMENTS: &[&SchemaRequirements] = &[
     &agents::REQUIREMENTS,
+    &account_state::REQUIREMENTS,
     &tasks::REQUIREMENTS,
     &events::REQUIREMENTS,
     &messages::REQUIREMENTS,
@@ -18,7 +20,7 @@ pub(crate) const REQUIREMENTS: &[&SchemaRequirements] = &[
 
 #[cfg(test)]
 mod tests {
-    use super::{agents, events, messages, sync_documents, tasks};
+    use super::{account_state, agents, events, messages, sync_documents, tasks};
     use crate::records::{
         AgentId, AgentRecord, AgentRepository, AgentStatus, ChatMessage, ChatMessageId,
         MessageRepository, QueueEvent, QueueEventId, QueueEventRepository, TaskId, TaskRecord,
@@ -26,12 +28,17 @@ mod tests {
     };
     use rusqlite::Connection;
     use serde_json::Value;
+    use serde_json::json;
     use std::collections::BTreeMap;
     use sync_documents::SyncDocumentsRepository;
 
     fn database_with(requirements: &crate::schema::SchemaRequirements) -> Connection {
         let connection = Connection::open_in_memory().expect("memory SQLite opens");
-        for table in requirements.tables {
+        for table in requirements
+            .tables
+            .iter()
+            .chain(requirements.bootstrap_tables)
+        {
             let columns = table
                 .columns
                 .iter()
@@ -113,6 +120,21 @@ mod tests {
         };
         MessageRepository::put(&db, &message).expect("message write uses declared objects");
         MessageRepository::get(&db, &message.id).expect("message read uses declared objects");
+
+        let db = database_with(&account_state::REQUIREMENTS);
+        db.execute(
+            "INSERT INTO sync_entities(collection, id, payload, deleted) VALUES ('workspace', 'current', ?1, 0)",
+            [json!({"value": {"rateLimitsByAccount": {
+                "alpha": {"accountKey": "alpha", "data": {"status": "ready"}}
+            }}}).to_string()],
+        )
+        .expect("fixture row uses declared columns");
+        account_state::limits_snapshots(&db).expect("account limits read uses only declared table");
+        assert!(
+            account_state::authentication_recovery_account_keys(&db, 2_000.0)
+                .expect("declared resume table query succeeds")
+                .is_empty()
+        );
     }
 
     #[test]

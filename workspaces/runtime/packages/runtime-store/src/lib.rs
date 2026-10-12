@@ -3,6 +3,9 @@ mod path;
 mod records;
 mod repositories;
 mod schema;
+pub use schema::sha256_hex;
+
+pub use repositories::account_state;
 
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
