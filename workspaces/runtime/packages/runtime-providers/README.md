@@ -141,6 +141,33 @@ The reader does not execute user handlers. Claude requests use `claude:` IDs;
 driver's owner calls `pump_next` to apply incoming frames and deliver callback
 work; it calls `close` after its transport owner has ended the read half.
 
+### Session state transitions
+
+The Python reader resolves responses as it reads them while `wait` can time out
+independently (`codex_runtime.py:706,1382-1410`). This driver checks an injected
+deadline at each pump boundary before consuming a queued frame. A response that
+is queued at an elapsed deadline first makes unresolved work unknown; the
+subsequent response is retained as late evidence. A response pumped before the
+deadline resolves normally.
+
+| State          | Accepted events                                                                                                                                             | Pending request disposition                                                                                                                                                                                     |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Initializing` | Initialize reply, inbound provider frame, deadline, transport loss, close. New ordinary submits are rejected.                                               | Successful initialize resolves its waiter, writes `initialized`, then enters `Ready`. Initialize error, deadline, or transport loss enters `Lost`; unresolved waiters resolve `Unknown`. Close enters `Closed`. |
+| `Ready`        | Submit, matching/orphan/duplicate reply, provider request or notification, Claude cancel, deadline, transport loss, close.                                  | Matching replies resolve their waiter. Deadline or transport loss enters `Lost` and resolves every unresolved waiter `Unknown`; close does the same and enters `Closed`.                                        |
+| `Lost`         | Late reply evidence, provider requests/notifications, repeated transport loss, and explicit close. New submits are rejected; unmatched replies are ignored. | Matched late replies resolve the retained ticket with `late: true`; inbound provider frames still dispatch in order. Close enters `Closed` and clears retained entries without resolving them twice.            |
+| `Closed`       | Repeated close or any late frame.                                                                                                                           | No pending entries remain; all frames and duplicate close events are ignored.                                                                                                                                   |
+
+Python write failures mark the transport failed and preserve the submitted
+request as `SubmissionUnknown` (`codex_runtime.py:637-681,688-703`). Its reader
+matches responses by ID and ignores unknown or duplicate IDs (`:1404-1410`).
+Claude removes canceled request entries from its pending map
+([bridge.mjs:208](../../../providers/apps/claude-bridge/bridge.mjs#L208)); a later
+canceled reply is therefore an ignored orphan. This Rust slice serializes the
+five required methods and requires a thread ID so each lane has a release key.
+The Node bridge also sequences `thread/rollback`, `claude/settings`,
+`claude/state`, and `thread/compact/start`; those remain in the Python/Node
+adapter layer.
+
 The vertical caller tests cover the request shapes used by Python for turn start
 and interrupt ([runtime](../../apps/server/src/codex_runtime.py#L7129),
 [interrupt](../../apps/server/src/codex_runtime.py#L10690)), account read

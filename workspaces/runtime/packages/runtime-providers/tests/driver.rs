@@ -1,4 +1,6 @@
 use std::io::{self, Read, Write};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 
 use serde_json::json;
@@ -28,6 +30,31 @@ impl Read for ChunkReader {
     }
 }
 
+struct AcknowledgedReader {
+    chunks: mpsc::Receiver<Option<Vec<u8>>>,
+    read_ack: mpsc::Sender<()>,
+}
+impl Read for AcknowledgedReader {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        match self.chunks.recv() {
+            Ok(Some(chunk)) => {
+                let count = output.len().min(chunk.len());
+                output[..count].copy_from_slice(&chunk[..count]);
+                self.read_ack
+                    .send(())
+                    .map_err(|_| io::ErrorKind::BrokenPipe)?;
+                Ok(count)
+            }
+            Ok(None) | Err(_) => {
+                self.read_ack
+                    .send(())
+                    .map_err(|_| io::ErrorKind::BrokenPipe)?;
+                Ok(0)
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct Sink;
 impl Write for Sink {
@@ -49,6 +76,34 @@ impl Write for FailedWriter {
     }
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+struct ControlledWriter(Arc<AtomicBool>);
+impl Write for ControlledWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.0.load(Ordering::SeqCst) {
+            Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "scripted failure",
+            ))
+        } else {
+            Ok(bytes.len())
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct ManualClock(AtomicU64);
+impl ManualClock {
+    fn set(&self, now_ms: u64) {
+        self.0.store(now_ms, Ordering::SeqCst);
+    }
+    fn now_ms(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
     }
 }
 
@@ -224,6 +279,237 @@ fn transport_error_mid_frame_marks_waiters_unknown() {
         }
     )));
     driver.close().expect("scripted test operation");
+}
+
+#[test]
+fn write_failure_from_submit_returns_unknown_request_identity_and_loses_session() {
+    let (chunks_tx, chunks_rx) = mpsc::channel();
+    let fail_write = Arc::new(AtomicBool::new(false));
+    let mut driver = ConnectionDriver::start(
+        ChunkReader { chunks: chunks_rx, current: Vec::new(), closed: false },
+        ControlledWriter(fail_write.clone()),
+        Noop,
+        DriverConfig {
+            generation: 7,
+            claude: false,
+            now_ms: 0,
+            timeout_ms: 100,
+            initialize_params: json!({"clientInfo":{"name":"codex_agents_canvas","version":"1.0.0"},"capabilities":{"experimentalApi":true}}),
+        },
+    ).expect("scripted test operation");
+    chunks_tx
+        .send(Some(json_line(json!({"id":1,"result":{}}))))
+        .expect("scripted test operation");
+    driver.pump_next(0).expect("scripted test operation");
+    fail_write.store(true, Ordering::SeqCst);
+    let error = driver
+        .submit(Method::ModelList, json!({}), None, false, 1, 50)
+        .expect_err("scripted writer failure");
+    match error {
+        studio_runtime_providers::DriverError::Io { unresolved, .. } => assert!(
+            unresolved.iter().any(|action| matches!(
+                action,
+                studio_runtime_providers::Action::Resolve {
+                    ticket: studio_runtime_providers::RequestTicket {
+                        id: studio_runtime_providers::RequestId::Number(2),
+                        ..
+                    },
+                    outcome: studio_runtime_providers::RequestOutcome::Unknown,
+                }
+            )),
+            "write error must expose request ID and unknown outcome: {unresolved:?}"
+        ),
+        other => panic!("expected I/O error carrying settlement actions, got {other:?}"),
+    }
+    assert!(matches!(
+        driver.submit(Method::AccountRead, json!({}), None, false, 2, 50),
+        Err(studio_runtime_providers::DriverError::Session(
+            studio_runtime_providers::SessionError::NotReady
+        ))
+    ));
+    chunks_tx.send(None).expect("scripted test operation");
+    driver.close().expect("scripted test operation");
+}
+
+#[test]
+fn pump_one_returns_deadline_unknown_actions_when_queue_is_empty() {
+    let (chunks_tx, chunks_rx) = mpsc::channel();
+    let mut driver = ConnectionDriver::start(
+        ChunkReader {
+            chunks: chunks_rx,
+            current: Vec::new(),
+            closed: false,
+        },
+        Sink,
+        Noop,
+        DriverConfig {
+            generation: 8,
+            claude: false,
+            now_ms: 0,
+            timeout_ms: 100,
+            initialize_params: json!({}),
+        },
+    )
+    .expect("scripted test operation");
+    chunks_tx
+        .send(Some(json_line(json!({"id":1,"result":{}}))))
+        .expect("scripted test operation");
+    driver.pump_next(0).expect("scripted test operation");
+    let (ticket, _) = driver
+        .submit(Method::ModelList, json!({}), None, false, 1, 5)
+        .expect("scripted test operation");
+    let error = driver.pump_one(6).expect_err("scripted deadline");
+    let detail = format!("{error:?}");
+    assert!(
+        detail.contains(&format!("{:?}", ticket.id)) && detail.contains("Unknown"),
+        "{detail}"
+    );
+    chunks_tx.send(None).expect("scripted test operation");
+    driver.close().expect("scripted test operation");
+}
+
+#[test]
+fn pump_next_preserves_deadline_actions_after_receiving_a_frame() {
+    let (chunks_tx, chunks_rx) = mpsc::channel();
+    let mut driver = ConnectionDriver::start(
+        ChunkReader {
+            chunks: chunks_rx,
+            current: Vec::new(),
+            closed: false,
+        },
+        Sink,
+        Noop,
+        DriverConfig {
+            generation: 9,
+            claude: false,
+            now_ms: 0,
+            timeout_ms: 100,
+            initialize_params: json!({}),
+        },
+    )
+    .expect("scripted test operation");
+    chunks_tx
+        .send(Some(json_line(json!({"id":1,"result":{}}))))
+        .expect("scripted test operation");
+    driver.pump_next(0).expect("scripted test operation");
+    let (ticket, _) = driver
+        .submit(Method::ModelList, json!({}), None, false, 1, 5)
+        .expect("scripted test operation");
+    chunks_tx
+        .send(Some(json_line(
+            json!({"method":"turn/started","params":{}}),
+        )))
+        .expect("scripted test operation");
+    let error = driver.pump_next(6).expect_err("scripted deadline");
+    let detail = format!("{error:?}");
+    assert!(
+        detail.contains(&format!("{:?}", ticket.id)) && detail.contains("Unknown"),
+        "{detail}"
+    );
+    chunks_tx.send(None).expect("scripted test operation");
+    driver.close().expect("scripted test operation");
+}
+
+#[test]
+fn pump_next_with_advanced_injected_clock_expires_without_blocking() {
+    let (chunks_tx, chunks_rx) = mpsc::channel();
+    let mut driver = ConnectionDriver::start(
+        ChunkReader {
+            chunks: chunks_rx,
+            current: Vec::new(),
+            closed: false,
+        },
+        Sink,
+        Noop,
+        DriverConfig {
+            generation: 10,
+            claude: false,
+            now_ms: 0,
+            timeout_ms: 100,
+            initialize_params: json!({}),
+        },
+    )
+    .expect("scripted test operation");
+    chunks_tx
+        .send(Some(json_line(json!({"id":1,"result":{}}))))
+        .expect("scripted test operation");
+    driver.pump_next(0).expect("scripted test operation");
+    let (ticket, _) = driver
+        .submit(Method::ModelList, json!({}), None, false, 1, 5)
+        .expect("scripted test operation");
+    let clock = ManualClock::default();
+    clock.set(6);
+    let error = driver
+        .pump_next_with_clock(|| clock.now_ms())
+        .expect_err("advanced scripted clock expires pending request");
+    let detail = format!("{error:?}");
+    assert!(
+        detail.contains(&format!("{:?}", ticket.id)) && detail.contains("Unknown"),
+        "{detail}"
+    );
+    chunks_tx.send(None).expect("scripted test operation");
+    driver.close().expect("scripted test operation");
+}
+
+#[test]
+fn pump_one_expires_before_queued_response_at_deadline_but_accepts_response_before_it() {
+    for (now_ms, expected_late) in [(4, false), (6, true)] {
+        let (chunks_tx, chunks_rx) = mpsc::channel();
+        let (read_ack_tx, read_ack_rx) = mpsc::channel();
+        let mut driver = ConnectionDriver::start(
+            AcknowledgedReader {
+                chunks: chunks_rx,
+                read_ack: read_ack_tx,
+            },
+            Sink,
+            Noop,
+            DriverConfig {
+                generation: 11,
+                claude: false,
+                now_ms: 0,
+                timeout_ms: 100,
+                initialize_params: json!({}),
+            },
+        )
+        .expect("scripted test operation");
+        chunks_tx
+            .send(Some(json_line(json!({"id":1,"result":{}}))))
+            .expect("scripted test operation");
+        driver.pump_next(0).expect("scripted test operation");
+        read_ack_rx
+            .recv()
+            .expect("reader consumed initialization reply");
+        let (ticket, _) = driver
+            .submit(Method::ModelList, json!({}), None, false, 1, 4)
+            .expect("scripted test operation");
+        chunks_tx
+            .send(Some(json_line(
+                json!({"id":ticket.id,"result":{"ok":true}}),
+            )))
+            .expect("scripted test operation");
+        read_ack_rx
+            .recv()
+            .expect("reader consumed scripted response");
+        chunks_tx.send(None).expect("scripted test operation");
+        read_ack_rx.recv().expect("reader consumed scripted EOF");
+        let result = driver.pump_one(now_ms);
+        let detail = match result {
+            Ok(actions) => format!("{actions:?}"),
+            Err(error) => format!("{error:?}"),
+        };
+        if expected_late {
+            assert!(
+                detail.contains("Unknown") && detail.contains("late: true"),
+                "now={now_ms} result={detail}"
+            );
+        } else {
+            assert!(
+                detail.contains("late: false"),
+                "now={now_ms} result={detail}"
+            );
+        }
+        driver.close().expect("scripted test operation");
+    }
 }
 
 #[test]

@@ -308,6 +308,181 @@ fn orderly_close_makes_pending_unknown_and_drops_later_replies() {
 }
 
 #[test]
+fn initialization_error_moves_session_to_lost_without_initialized_notification() {
+    let (mut session, _) =
+        SessionState::new(31, false, 0, 20, json!({})).expect("scripted test operation");
+    let actions = session
+        .receive(Frame::Response {
+            id: RequestId::Number(1),
+            body: ResponseBody::Error(json!({"code":-1,"message":"no init"})),
+            fields: Default::default(),
+        })
+        .expect("scripted test operation");
+    assert_eq!(session.lifecycle(), Lifecycle::Lost);
+    assert!(
+        !actions
+            .iter()
+            .any(|action| matches!(action, Action::Write(_)))
+    );
+    assert!(matches!(
+        session.submit(Method::ModelList, json!({}), 1, 20, None, false),
+        Err(studio_runtime_providers::SessionError::NotReady)
+    ));
+}
+
+#[test]
+fn missing_claude_thread_id_is_rejected_without_claiming_a_serial_lane() {
+    let mut session = state(true);
+    assert!(
+        session
+            .submit(Method::TurnStart, json!({}), 1, 20, None, false)
+            .is_err()
+    );
+    let (ticket, actions) = session
+        .submit(
+            Method::TurnStart,
+            json!({"threadId":"t"}),
+            1,
+            20,
+            Some("t".into()),
+            false,
+        )
+        .expect("scripted test operation");
+    assert_eq!(
+        ticket.id,
+        RequestId::String("claude:00000000000000000000000000000002".into())
+    );
+    assert_eq!(outgoing(&actions).len(), 1);
+}
+
+#[test]
+fn frame_encoding_failure_does_not_register_or_claim_the_thread_lane() {
+    let mut session = state(true);
+    let too_large = json!({"blob":"x".repeat(studio_runtime_providers::MAX_FRAME_BYTES)});
+    assert!(matches!(
+        session.submit(Method::TurnStart, too_large, 1, 20, Some("t".into()), false,),
+        Err(studio_runtime_providers::SessionError::Codec(
+            studio_runtime_providers::CodecError::FrameTooLarge { .. }
+        ))
+    ));
+    let (ticket, actions) = session
+        .submit(
+            Method::TurnStart,
+            json!({"threadId":"t"}),
+            1,
+            20,
+            Some("t".into()),
+            false,
+        )
+        .expect("scripted test operation");
+    assert_eq!(
+        ticket.id,
+        RequestId::String("claude:00000000000000000000000000000002".into())
+    );
+    assert_eq!(outgoing(&actions).len(), 1);
+    assert_eq!(session.lifecycle(), Lifecycle::Ready);
+}
+
+#[test]
+fn every_lifecycle_transition_and_pending_disposition_is_exercised() {
+    let (mut initializing, _) =
+        SessionState::new(41, false, 0, 20, json!({})).expect("scripted test operation");
+    assert_eq!(initializing.lifecycle(), Lifecycle::Initializing);
+    let ready = initializing
+        .receive(Frame::Response {
+            id: RequestId::Number(1),
+            body: ResponseBody::Result(json!({})),
+            fields: Default::default(),
+        })
+        .expect("scripted test operation");
+    assert!(
+        ready
+            .iter()
+            .any(|action| matches!(action, Action::Write(_)))
+    );
+    assert_eq!(initializing.lifecycle(), Lifecycle::Ready);
+
+    let (lost_ticket, _) = initializing
+        .submit(Method::ModelList, json!({}), 0, 20, None, false)
+        .expect("scripted test operation");
+    let lost = initializing.transport_lost();
+    assert!(lost.iter().any(|action| matches!(
+        action,
+        Action::Resolve {
+            outcome: RequestOutcome::Unknown,
+            ..
+        }
+    )));
+    assert_eq!(initializing.lifecycle(), Lifecycle::Lost);
+    let closed = initializing.close();
+    assert_eq!(initializing.lifecycle(), Lifecycle::Closed);
+    assert!(
+        closed.is_empty(),
+        "already-unknown waiters are not resolved twice"
+    );
+    assert!(
+        initializing
+            .receive(Frame::Notification(
+                studio_runtime_providers::NotificationFrame {
+                    method: Method::TurnStarted,
+                    params: None,
+                    fields: Default::default(),
+                }
+            ))
+            .expect("scripted test operation")
+            .is_empty()
+    );
+    assert!(
+        initializing
+            .receive(Frame::Response {
+                id: lost_ticket.id,
+                body: ResponseBody::Result(json!({})),
+                fields: Default::default(),
+            })
+            .expect("scripted test operation")
+            .is_empty()
+    );
+
+    let (mut failed_init, _) =
+        SessionState::new(42, false, 0, 20, json!({})).expect("scripted test operation");
+    failed_init
+        .receive(Frame::Response {
+            id: RequestId::Number(1),
+            body: ResponseBody::Error(json!({"code":-1})),
+            fields: Default::default(),
+        })
+        .expect("scripted test operation");
+    assert_eq!(failed_init.lifecycle(), Lifecycle::Lost);
+
+    let (mut closed_init, _) =
+        SessionState::new(43, false, 0, 20, json!({})).expect("scripted test operation");
+    closed_init.close();
+    assert_eq!(closed_init.lifecycle(), Lifecycle::Closed);
+
+    let (mut ready_close, _) =
+        SessionState::new(44, false, 0, 20, json!({})).expect("scripted test operation");
+    ready_close
+        .receive(Frame::Response {
+            id: RequestId::Number(1),
+            body: ResponseBody::Result(json!({})),
+            fields: Default::default(),
+        })
+        .expect("scripted test operation");
+    ready_close
+        .submit(Method::ModelList, json!({}), 1, 20, None, false)
+        .expect("scripted test operation");
+    let close_actions = ready_close.close();
+    assert_eq!(ready_close.lifecycle(), Lifecycle::Closed);
+    assert!(close_actions.iter().any(|action| matches!(
+        action,
+        Action::Resolve {
+            outcome: RequestOutcome::Unknown,
+            ..
+        }
+    )));
+}
+
+#[test]
 fn every_claude_serialized_method_waits_behind_same_thread_operation() {
     for method in [
         Method::TurnSteer,
