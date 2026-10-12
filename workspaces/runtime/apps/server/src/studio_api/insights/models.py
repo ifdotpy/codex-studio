@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import ConfigDict, Field
 
-from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel
+from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel, SafeInt, SafeQueryInt, SignedSafeInt
 
 
 class AnalyticsScope(ContractStrEnum):
@@ -16,24 +16,20 @@ class AnalyticsScope(ContractStrEnum):
 
 
 class LegacyQueryModel(ContractModel):
-    """Strict declared query fields while retaining the old ignored-extra behavior."""
+    """Strictly reject extras; the shared API boundary checks names first."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
 
 class AnalyticsQuery(LegacyQueryModel):
     agent: str | None = None
-    # The handler converts this schema-enumerated string to AnalyticsScope
-    # itself so invalid values retain the legacy "Unknown analytics scope" 400.
-    scope: str = Field(
-        default=AnalyticsScope.AGENT.value,
-        json_schema_extra={"enum": [scope.value for scope in AnalyticsScope]},
-    )
-    from_time: str | None = Field(default=None, alias="from")
-    to_time: str | None = Field(default=None, alias="to")
-    limit: str | None = None
-    offset: str | None = None
-    export: str = "0"
+    # One enum declaration drives both request validation and OpenAPI.
+    scope: AnalyticsScope = AnalyticsScope.AGENT
+    from_time: float | None = Field(default=None, strict=False, ge=0)
+    to_time: float | None = Field(default=None, strict=False, ge=0)
+    limit: SafeQueryInt | None = None
+    offset: SafeQueryInt | None = None
+    export: Literal["1"] | None = None
     tool: str | None = None
     timing: str | None = None
     view: str | None = None
@@ -46,13 +42,15 @@ class AnalyticsQuery(LegacyQueryModel):
     def service_options(self) -> dict[str, str]:
         """Return only supplied legacy keys, preserving string query values."""
         options = self.model_dump(
-            mode="json", by_alias=True, exclude_unset=True, exclude_none=True
+            mode="json", exclude_unset=True, exclude_none=True
         )
-        if "scope" in options:
-            try:
-                options["scope"] = AnalyticsScope(options["scope"]).value
-            except ValueError:
-                raise ValueError("Unknown analytics scope") from None
+        for key in ("from_time", "to_time", "limit", "offset"):
+            if key in options:
+                options[key] = str(options[key])
+        if "from_time" in options:
+            options["from"] = options.pop("from_time")
+        if "to_time" in options:
+            options["to"] = options.pop("to_time")
         return options
 
 
@@ -65,12 +63,12 @@ class AnalyticsFilters(ContractModel):
 
 
 class AnalyticsTokens(ContractModel):
-    inputTokens: int | float | None = None
-    outputTokens: int | float | None = None
-    cachedInputTokens: int | float | None = None
-    cacheWriteInputTokens: int | float | None = None
-    reasoningOutputTokens: int | float | None = None
-    totalTokens: int | float | None = None
+    inputTokens: SafeInt | float | None = None
+    outputTokens: SafeInt | float | None = None
+    cachedInputTokens: SafeInt | float | None = None
+    cacheWriteInputTokens: SafeInt | float | None = None
+    reasoningOutputTokens: SafeInt | float | None = None
+    totalTokens: SafeInt | float | None = None
 
 
 class AnalyticsProviderTokens(AnalyticsTokens):
@@ -101,43 +99,43 @@ class AnalyticsUsageAssociation(AnalyticsStoredRecord):
 
 
 class AnalyticsSummary(ContractModel):
-    agents: int
-    turns: int
-    usageSamples: int
-    provisionalUsageSamples: int
-    exactResponseSamples: int
-    legacyUsageSamples: int
-    modelToolCalls: int
-    protocolToolCalls: int
-    observedToolRows: int
-    toolCalls: int
-    failedToolCalls: int
-    modelFailedToolCalls: int
-    protocolFailedToolCalls: int
-    compactions: int
-    inputBytes: int | None
-    outputBytes: int | None
-    modelInputBytes: int | None
-    modelOutputBytes: int | None
-    protocolInputBytes: int | None
-    protocolOutputBytes: int | None
-    durationMs: int | float | None
-    modelDurationMs: int | float | None
-    protocolDurationMs: int | float | None
+    agents: SafeInt
+    turns: SafeInt
+    usageSamples: SafeInt
+    provisionalUsageSamples: SafeInt
+    exactResponseSamples: SafeInt
+    legacyUsageSamples: SafeInt
+    modelToolCalls: SafeInt
+    protocolToolCalls: SafeInt
+    observedToolRows: SafeInt
+    toolCalls: SafeInt
+    failedToolCalls: SafeInt
+    modelFailedToolCalls: SafeInt
+    protocolFailedToolCalls: SafeInt
+    compactions: SafeInt
+    inputBytes: SafeInt | None
+    outputBytes: SafeInt | None
+    modelInputBytes: SafeInt | None
+    modelOutputBytes: SafeInt | None
+    protocolInputBytes: SafeInt | None
+    protocolOutputBytes: SafeInt | None
+    durationMs: SafeInt | float | None
+    modelDurationMs: SafeInt | float | None
+    protocolDurationMs: SafeInt | float | None
     tokens: AnalyticsTokens
-    tokenObservations: dict[str, int]
-    cacheHitRate: int | float | None
-    cacheHitRateSamples: int
-    cacheHitRateTotalSamples: int
-    peakContextTokens: int | float | None
-    peakContextPercent: int | float | None
-    baselineMissingSamples: int
+    tokenObservations: dict[str, SafeInt]
+    cacheHitRate: SafeInt | float | None
+    cacheHitRateSamples: SafeInt
+    cacheHitRateTotalSamples: SafeInt
+    peakContextTokens: SafeInt | float | None
+    peakContextPercent: SafeInt | float | None
+    baselineMissingSamples: SafeInt
 
 
 class AnalyticsPagination(ContractModel):
-    limit: int
-    offset: int
-    total: int
+    limit: SafeInt
+    offset: SafeInt
+    total: SafeInt
     hasMore: bool
 
 
@@ -147,7 +145,7 @@ class AnalyticsPage(ContractModel):
 
 
 class AnalyticsCaptureErrorRecord(ContractModel):
-    at: int | float
+    at: SafeInt | float
     operation: str
     error: str
     code: str | None = None
@@ -155,7 +153,7 @@ class AnalyticsCaptureErrorRecord(ContractModel):
 
 
 class AnalyticsCaptureErrors(ContractModel):
-    count: int
+    count: SafeInt
     last: AnalyticsCaptureErrorRecord | None
 
 
@@ -163,7 +161,7 @@ class AnalyticsCoverage(ContractModel):
     trackingSince: float
     captureErrors: AnalyticsCaptureErrors
     historyErrors: list[AnalyticsHistoryRecord]
-    provisionalUsageSamples: int
+    provisionalUsageSamples: SafeInt
     tokenAttribution: Literal["provider_usage_only"]
     payloadMeasurement: Literal["observed_protocol_payload"]
     history: Literal["live_and_stored_history"]
@@ -171,12 +169,12 @@ class AnalyticsCoverage(ContractModel):
 
 
 class AnalyticsDuration(ContractModel):
-    count: int
-    min: int | float | None
-    max: int | float | None
-    mean: int | float | None
-    p50: int | float | None
-    p95: int | float | None
+    count: SafeInt
+    min: SafeInt | float | None
+    max: SafeInt | float | None
+    mean: SafeInt | float | None
+    p50: SafeInt | float | None
+    p95: SafeInt | float | None
 
 
 class AnalyticsAgentRecord(AnalyticsStoredRecord):
@@ -195,18 +193,18 @@ class AnalyticsAgentRecord(AnalyticsStoredRecord):
     daybreakEnabled: bool | None = None
     cyberAccessProgram: str | None = None
     cwd: str | None = None
-    deletedAt: int | float | None = None
+    deletedAt: SafeInt | float | None = None
 
 
 class AnalyticsAgentTotal(AnalyticsAgentRecord):
     tokens: AnalyticsTokens
-    usageSamples: int
-    toolCalls: int
-    modelToolCalls: int
-    protocolToolCalls: int
-    failedToolCalls: int
-    protocolFailedToolCalls: int
-    compactions: int
+    usageSamples: SafeInt
+    toolCalls: SafeInt
+    modelToolCalls: SafeInt
+    protocolToolCalls: SafeInt
+    failedToolCalls: SafeInt
+    protocolFailedToolCalls: SafeInt
+    compactions: SafeInt
     duration: AnalyticsDuration
     protocolDuration: AnalyticsDuration
 
@@ -233,8 +231,8 @@ class AnalyticsUsageRecord(AnalyticsEventMetadata):
     accountKey: str
     accountHistory: list[JsonValue]
     id: str
-    at: int | float
-    recordedAt: int | float
+    at: SafeInt | float
+    recordedAt: SafeInt | float
     source: str
     timestampSource: str
     last: AnalyticsProviderTokens
@@ -244,7 +242,7 @@ class AnalyticsUsageRecord(AnalyticsEventMetadata):
     # `raw` and the raw token record preserve provider-defined wire metadata.
     raw: JsonValue | None = None
     counterDomain: Literal["response", "nativeNotice"]
-    modelContextWindow: int | float | None
+    modelContextWindow: SafeInt | float | None
     reset: bool | None
     baselineMissing: bool
     fingerprint: str | None = None
@@ -255,7 +253,7 @@ class AnalyticsUsageRecord(AnalyticsEventMetadata):
     requestUsage: AnalyticsProviderTokens | None = None
     # A native usage notice may enrich an existing response row with these
     # fields; older and response-only records legitimately omit them.
-    noticeAt: int | float | None = None
+    noticeAt: SafeInt | float | None = None
     noticeLast: AnalyticsProviderTokens | None = None
     noticeTotal: AnalyticsProviderTokens | None = None
     usageSource: str | None = None
@@ -263,41 +261,41 @@ class AnalyticsUsageRecord(AnalyticsEventMetadata):
 
 class AnalyticsTurnRecord(AnalyticsEventMetadata):
     id: str | None = None
-    at: int | float | None = None
-    startedAt: int | float | None = None
-    finishedAt: int | float | None = None
-    firstOutputAt: int | float | None = None
-    durationMs: int | float | None = None
-    firstOutputDelayMs: int | float | None = None
+    at: SafeInt | float | None = None
+    startedAt: SafeInt | float | None = None
+    finishedAt: SafeInt | float | None = None
+    firstOutputAt: SafeInt | float | None = None
+    durationMs: SafeInt | float | None = None
+    firstOutputDelayMs: SafeInt | float | None = None
     status: str
     source: str | None = None
     error: JsonValue | None = None
     terminalSource: str | None = None
-    nativeDurationMs: int | float | None = None
-    nativeTimeToFirstTokenMs: int | float | None = None
+    nativeDurationMs: SafeInt | float | None = None
+    nativeTimeToFirstTokenMs: SafeInt | float | None = None
 
 
 class AnalyticsPayloadImage(ContractModel):
-    bytes: int | None
-    width: int | None
-    height: int | None
+    bytes: SafeInt | None
+    width: SafeInt | None
+    height: SafeInt | None
 
 
 class AnalyticsPayloadMeasure(ContractModel):
-    bytes: int
-    chars: int
-    lines: int
-    imageCount: int
-    imageBytes: int | None
+    bytes: SafeInt
+    chars: SafeInt
+    lines: SafeInt
+    imageCount: SafeInt
+    imageBytes: SafeInt | None
     images: list[AnalyticsPayloadImage]
     format: Literal["text", "json"]
 
 
 class AnalyticsStreamMeasure(ContractModel):
-    bytes: int
-    chars: int
-    lines: int
-    deltas: int
+    bytes: SafeInt
+    chars: SafeInt
+    lines: SafeInt
+    deltas: SafeInt
 
 
 class AnalyticsItemRecord(AnalyticsEventMetadata):
@@ -306,12 +304,12 @@ class AnalyticsItemRecord(AnalyticsEventMetadata):
     accountHistory: list[JsonValue]
     id: str
     itemId: str | None = None
-    at: int | float
-    recordedAt: int | float
-    firstRecordedAt: int | float | None = None
-    firstSourceAt: int | float | None = None
-    startedAt: int | float | None = None
-    finishedAt: int | float | None = None
+    at: SafeInt | float
+    recordedAt: SafeInt | float
+    firstRecordedAt: SafeInt | float | None = None
+    firstSourceAt: SafeInt | float | None = None
+    startedAt: SafeInt | float | None = None
+    finishedAt: SafeInt | float | None = None
     source: str
     timestampSource: str
     type: str
@@ -331,11 +329,11 @@ class AnalyticsItemRecord(AnalyticsEventMetadata):
     command: str | None = None
     cwd: str | None = None
     server: str | None = None
-    exitCode: int | None = None
-    processId: str | int | None = None
+    exitCode: SignedSafeInt | None = None
+    processId: str | SafeInt | None = None
     compactionMetadata: JsonValue | None = None
     error: str | None = None
-    durationMs: int | float | None = None
+    durationMs: SafeInt | float | None = None
     durationSource: str | None = None
     coverage: str | None = None
     payloadTruncated: bool | None = None
@@ -344,14 +342,14 @@ class AnalyticsItemRecord(AnalyticsEventMetadata):
 
 class AnalyticsRateLimitRecord(ContractModel):
     accountKey: str
-    at: int | float
+    at: SafeInt | float
     # Raw provider allowance schemas vary by account/provider version.
     data: JsonValue
 
 
 class AnalyticsHistoryContext(AnalyticsStoredRecord):
     threadId: str | None = None
-    window: int | float | None = None
+    window: SafeInt | float | None = None
     turnId: str | None = None
     model: str | None = None
     effort: str | None = None
@@ -362,10 +360,10 @@ class AnalyticsHistoryContext(AnalyticsStoredRecord):
 
 
 class AnalyticsFilesystemRemap(ContractModel):
-    previous: list[int]
-    current: list[int]
-    offset: int
-    at: int | float
+    previous: list[SafeInt]
+    current: list[SafeInt]
+    offset: SafeInt
+    at: SafeInt | float
     proof: Literal["samePathInodeHeaderAnchor"]
 
 
@@ -374,25 +372,25 @@ class AnalyticsHistoryRecord(AnalyticsStoredRecord):
     agent: str | None = None
     accountKey: str | None = None
     threadId: str | None = None
-    deletedAt: int | float | None = None
-    offset: int | None = None
-    importedRecords: int | None = None
-    malformedLines: int | None = None
+    deletedAt: SafeInt | float | None = None
+    offset: SafeInt | None = None
+    importedRecords: SafeInt | None = None
+    malformedLines: SafeInt | None = None
     status: str | None = None
     error: str | None = None
-    updated: int | float | None = None
+    updated: SafeInt | float | None = None
     path: str | None = None
-    fileBytes: int | None = None
-    identity: list[int] | None = None
-    filesystemIdentity: list[int] | None = None
+    fileBytes: SafeInt | None = None
+    identity: list[SafeInt] | None = None
+    filesystemIdentity: list[SafeInt] | None = None
     filesystemRemap: AnalyticsFilesystemRemap | None = None
-    filesystemRemapCount: int | None = None
+    filesystemRemapCount: SafeInt | None = None
     anchor: str | None = None
     validated: bool | None = None
     context: AnalyticsHistoryContext | None = None
     coverage: str | None = None
-    wrongThreadRecord: int | None = None
-    consecutiveFailures: int | None = None
+    wrongThreadRecord: SafeInt | None = None
+    consecutiveFailures: SafeInt | None = None
     errorPersisted: bool | None = None
     errorPersistenceError: str | None = None
 
@@ -401,24 +399,24 @@ class AnalyticsTool(ContractModel):
     name: str
     type: str
     payloadBoundary: str
-    calls: int
-    failed: int
-    inputBytes: int | None
-    outputBytes: int | None
-    modelInputBytes: int | None
-    modelOutputBytes: int | None
-    durationMs: int | float | None
-    imageCount: int | None
-    inputMeasurements: int
-    outputMeasurements: int
+    calls: SafeInt
+    failed: SafeInt
+    inputBytes: SafeInt | None
+    outputBytes: SafeInt | None
+    modelInputBytes: SafeInt | None
+    modelOutputBytes: SafeInt | None
+    durationMs: SafeInt | float | None
+    imageCount: SafeInt | None
+    inputMeasurements: SafeInt
+    outputMeasurements: SafeInt
     duration: AnalyticsDuration
 
 
 class AnalyticsItemCount(ContractModel):
     type: str
-    count: int
-    bytes: int | None
-    chars: int | None
+    count: SafeInt
+    bytes: SafeInt | None
+    chars: SafeInt | None
 
 
 class AnalyticsItemBreakdown(ContractModel):
@@ -426,17 +424,17 @@ class AnalyticsItemBreakdown(ContractModel):
     payloadBoundary: str | None
     category: str | None
     role: str | None
-    count: int
-    inputBytes: int | None
-    outputBytes: int | None
-    inputMeasurements: int
-    outputMeasurements: int
+    count: SafeInt
+    inputBytes: SafeInt | None
+    outputBytes: SafeInt | None
+    inputMeasurements: SafeInt
+    outputMeasurements: SafeInt
 
 
 class AnalyticsGroupTotal(ContractModel):
     model: str | None = None
     accountKey: str | None = None
-    samples: int
+    samples: SafeInt
     tokens: AnalyticsTokens
 
 
@@ -445,27 +443,27 @@ class AnalyticsNotification(AnalyticsStoredRecord):
     agent: str
     root: str | None = None
     method: str
-    hour: int | float
-    count: int
-    bytes: int
+    hour: SafeInt | float
+    count: SafeInt
+    bytes: SafeInt
 
 
 class AnalyticsMonitor(ContractModel):
     id: str | None
     agent: str | None
     status: str | None
-    created: int | float | None
-    finished: int | float | None
-    bytes: int | None
-    exitCode: int | None
+    created: SafeInt | float | None
+    finished: SafeInt | float | None
+    bytes: SafeInt | None
+    exitCode: SignedSafeInt | None
     error: str | None
-    timeout_ms: int | float | None
+    timeout_ms: SafeInt | float | None
 
 
 class AnalyticsOperationCounts(ContractModel):
     monitors: list[AnalyticsMonitor]
-    eventCounts: dict[str, int]
-    approvalCounts: dict[str, int]
+    eventCounts: dict[str, SafeInt]
+    approvalCounts: dict[str, SafeInt]
 
 
 class AnalyticsResponse(ResponseModel):
@@ -486,18 +484,18 @@ class AnalyticsResponse(ResponseModel):
     turns: list[AnalyticsTurnRecord] | None = None
     timeline: list[AnalyticsUsageRecord] | None = None
     chartBuckets: list[AnalyticsUsageRecord] | None = None
-    timelineTotal: int | None = None
+    timelineTotal: SafeInt | None = None
     provisionalUsage: list[AnalyticsUsageRecord] | None = None
     calls: list[AnalyticsItemRecord] | None = None
     items: list[AnalyticsItemCount] | None = None
     itemRecords: list[AnalyticsItemRecord] | None = None
-    itemRecordsTotal: int | None = None
+    itemRecordsTotal: SafeInt | None = None
     itemBreakdown: list[AnalyticsItemBreakdown] | None = None
     compactions: list[AnalyticsItemRecord] | None = None
     compactionSnapshots: list[AnalyticsItemRecord] | None = None
     pagination: AnalyticsPagination | None = None
     detailPagination: AnalyticsPage | None = None
-    at: int | float | None = None
+    at: SafeInt | float | None = None
     id: str | None = None
     runId: str | None = None
     attemptId: str | None = None
@@ -509,9 +507,9 @@ class AnalyticsResponse(ResponseModel):
     accountKey: str | None = None
     accountLabel: str | None = None
     provider: str | None = None
-    turnDurationMs: int | float | None = None
+    turnDurationMs: SafeInt | float | None = None
     # MessageInfo returns the observed per-response rate as a scalar number.
-    responseRate: int | float | None = None
+    responseRate: SafeInt | float | None = None
     tokens: AnalyticsProviderTokens | None = None
 
 class AccountCostData(ContractModel):
@@ -520,24 +518,24 @@ class AccountCostData(ContractModel):
     kind: str | None = None
     currency: str | None = None
     currencyCode: str | None = None
-    billedUSD: int | float | None = None
-    todayUSD: int | float | None = None
-    last30DaysUSD: int | float | None = None
-    todayTokens: int | float | None = None
-    last30DaysTokens: int | float | None = None
+    billedUSD: SafeInt | float | None = None
+    todayUSD: SafeInt | float | None = None
+    last30DaysUSD: SafeInt | float | None = None
+    todayTokens: SafeInt | float | None = None
+    last30DaysTokens: SafeInt | float | None = None
     sourceUpdatedAt: str | float | None = None
     sourceDay: str | None = None
     # Coverage keys vary by provider scanner version; values remain JSON-only.
     coverage: JsonValue | None = None
     unknownModels: list[str] | None = None
-    historyDays: int | None = None
+    historyDays: SafeInt | None = None
     accountId: str | None = None
     note: str | None = None
-    modelBreakdown: dict[str, int | float] | None = None
+    modelBreakdown: dict[str, SafeInt | float] | None = None
 
 
 class AccountCostResponse(ResponseModel):
-    at: int | float | None
+    at: SafeInt | float | None
     checkedAt: float | None = None
     sourceFingerprint: str | None = Field(default=None, exclude=True)
     error: str | None
@@ -548,20 +546,20 @@ class AccountCostResponse(ResponseModel):
 
 
 class CostBreakdown(ContractModel):
-    providers: dict[str, int | float]
-    models: dict[str, int | float]
+    providers: dict[str, SafeInt | float]
+    models: dict[str, SafeInt | float]
 
 
 class SessionCostResponse(ResponseModel):
     rootId: str
-    generation: int | None = None
-    totalUSD: int | float | None
-    pricedSamples: int
+    generation: SafeInt | None = None
+    totalUSD: SafeInt | float | None
+    pricedSamples: SafeInt
     breakdown: CostBreakdown
     unknownModels: list[str]
     estimated: bool
     pricingState: Literal["loading", "ready"]
-    cacheAgeSeconds: int | float
+    cacheAgeSeconds: SafeInt | float
     refreshing: bool
     claudeHistoryIncomplete: bool | None = None
     method: str | None = None

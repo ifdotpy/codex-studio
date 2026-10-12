@@ -416,12 +416,21 @@ export function setWorkspace(value: string) {
 }
 
 export class ApiError extends Error {
+  public readonly outcome?: string;
+  public readonly catalogPending?: boolean;
+
   constructor(
     message: unknown,
     public status: number,
-    public readonly details: unknown = message,
+    public readonly response: unknown = message,
+    public readonly location?: string[],
   ) {
     super(displayError(message) || `Request failed (${status})`);
+    if (isRecord(response)) {
+      if (typeof response.outcome === "string") this.outcome = response.outcome;
+      if (typeof response.catalogPending === "boolean")
+        this.catalogPending = response.catalogPending;
+    }
   }
 }
 
@@ -456,7 +465,13 @@ function errorPayload(value: unknown, status: number): ApiError {
     : typeof value === "string"
       ? value
       : `Request failed (${status})`;
-  return new ApiError(message, status, value);
+  const location =
+    isRecord(value) && Array.isArray(value.location)
+      ? value.location.filter(
+          (part): part is string => typeof part === "string",
+        )
+      : undefined;
+  return new ApiError(message, status, value, location);
 }
 
 function requestController(options: ApiOptions, timeoutMs: number | undefined) {

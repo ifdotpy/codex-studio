@@ -377,8 +377,8 @@ test("analytics ui", async ({ browser: _browser }) => {
         out.filters = {
           agent: q.get("agent"),
           scope: q.get("scope") || "all",
-          from: q.has("from") ? Number(q.get("from")) : null,
-          to: q.has("to") ? Number(q.get("to")) : null,
+          from: q.has("from_time") ? Number(q.get("from_time")) : null,
+          to: q.has("to_time") ? Number(q.get("to_time")) : null,
           tool: q.get("tool"),
         };
       }
@@ -491,7 +491,7 @@ test("analytics ui", async ({ browser: _browser }) => {
     );
     await dialog.getByLabel("Analytics period").selectOption("86400");
     await poll(
-      () => Number(observed.at(-1)?.from) > now - 86410,
+      () => Number(observed.at(-1)?.from_time) > now - 86410,
       "Period query",
     );
     await dialog.getByLabel("Analytics tool").selectOption(longName);

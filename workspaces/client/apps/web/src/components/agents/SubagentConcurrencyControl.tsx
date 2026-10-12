@@ -286,11 +286,7 @@ function ScopedConcurrencyControl({
       }
       refreshConfirmed(generation);
     } catch (cause) {
-      const details =
-        cause instanceof ApiError
-          ? (cause.details as { outcome?: string })
-          : undefined;
-      if (details?.outcome === "not_applied") {
+      if (cause instanceof ApiError && cause.outcome === "not_applied") {
         try {
           const disk = JSON.parse(
             localStorage.getItem(storageKey) || "{}",

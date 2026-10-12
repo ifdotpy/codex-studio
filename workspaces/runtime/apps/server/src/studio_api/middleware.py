@@ -15,6 +15,7 @@ from starlette.datastructures import QueryParams
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from studio_api.context import ApiContext
+from studio_api.models import JsonValue
 from studio_api.schema import (
     API_SCHEMA_HASH_HEADER,
     API_SCHEMA_HASH_PARAM,
@@ -40,6 +41,7 @@ VOICE_AUDIO_BODY_LIMIT = 6 * 1024 * 1024
 FEDERATION_BODY_LIMIT = 256 * 1024
 REQUEST_READ_TIMEOUT_SECONDS = 10.0
 API_SCHEMA_HASH_WAIT_TIMEOUT_SECONDS = 10.0
+OPTIONAL_JSON_BODY_PATHS = frozenset({"/api/accounts/discover"})
 
 
 class HeaderView:
@@ -136,8 +138,16 @@ class HttpTraceMiddleware:
                     pass
 
 
-def _error_response(status: int, error: str) -> tuple[Message, Message]:
-    body = json.dumps({"error": error}, ensure_ascii=False, separators=(",", ":")).encode()
+def _error_response(
+    status: int, error: str, location: list[str] | None = None,
+) -> tuple[Message, Message]:
+    value: dict[str, JsonValue] = {"error": error}
+    if location is not None:
+        location_value: list[JsonValue] = []
+        for part in location:
+            location_value.append(part)
+        value["location"] = location_value
+    body = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
     start: Message = {
         "type": "http.response.start", "status": status,
         "headers": [
@@ -155,8 +165,10 @@ async def _reject(
     status: int,
     error: str,
     headers: list[tuple[bytes, bytes]] | None = None,
+    *,
+    location: list[str] | None = None,
 ) -> None:
-    start, body = _error_response(status, error)
+    start, body = _error_response(status, error, location)
     if headers:
         start["headers"].extend(headers)
     await send(start)
@@ -313,6 +325,15 @@ class RequestBoundary:
             )
             return
 
+        if (
+            method in {"POST", "PUT", "PATCH"}
+            and path in OPTIONAL_JSON_BODY_PATHS
+            and headers.get("content-length") in (None, "0")
+            and headers.get("transfer-encoding") is None
+        ):
+            await self._dispatch(scope, receive, send)
+            return
+
         if method not in {"POST", "PUT", "PATCH"}:
             await self._dispatch(scope, receive, send)
             return
@@ -320,20 +341,20 @@ class RequestBoundary:
         limit = _request_limit(path)
         content_type = (headers.get("content-type") or "").split(";", 1)[0].strip().lower()
         if content_type != "application/json":
-            await _reject(send, 415, "JSON required")
+            await _reject(send, 415, "JSON required", location=["body"])
             return
         content_length = headers.get("content-length")
         declared: int | None = None
         if content_length is None:
-            await _reject(send, 413, "Invalid request size")
+            await _reject(send, 413, "Invalid request size", location=["body"])
             return
         try:
             declared = int(content_length)
         except ValueError:
-            await _reject(send, 400, "Invalid request size")
+            await _reject(send, 400, "Invalid request size", location=["body"])
             return
         if declared <= 0:
-            await _reject(send, 413, "Invalid request size")
+            await _reject(send, 413, "Invalid request size", location=["body"])
             return
         if declared > limit:
             await _reject(send, 413, "Invalid request size")
@@ -349,7 +370,7 @@ class RequestBoundary:
                     raise TimeoutError
                 message = await asyncio.wait_for(receive(), remaining)
             except TimeoutError:
-                await _reject(send, 408, "Request body timed out")
+                await _reject(send, 408, "Request body timed out", location=["body"])
                 return
             if message["type"] == "http.disconnect":
                 return
@@ -357,24 +378,24 @@ class RequestBoundary:
                 continue
             body.extend(message.get("body", b""))
             if len(body) > limit:
-                await _reject(send, 413, "Invalid request size")
+                await _reject(send, 413, "Invalid request size", location=["body"])
                 return
             more = message.get("more_body", False)
 
         if not body:
-            await _reject(send, 413, "Invalid request size")
+            await _reject(send, 413, "Invalid request size", location=["body"])
             return
         if len(body) != declared:
-            await _reject(send, 400, "Incomplete request")
+            await _reject(send, 400, "Incomplete request", location=["body"])
             return
         if not federation:
             try:
                 decoded = json.loads(body)
             except (ValueError, UnicodeDecodeError):
-                await _reject(send, 400, "Invalid JSON")
+                await _reject(send, 400, "Invalid JSON", location=["body"])
                 return
             if not isinstance(decoded, dict):
-                await _reject(send, 400, "JSON object required")
+                await _reject(send, 400, "JSON object required", location=["body"])
                 return
             workspace = headers.get("x-canvas-workspace")
             if workspace is not None or path == "/api/sync/drafts":

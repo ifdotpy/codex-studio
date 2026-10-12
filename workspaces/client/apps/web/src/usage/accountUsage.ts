@@ -10,7 +10,7 @@ type AccountRateLimitsDto = components["schemas"]["AccountRateLimitsDto"];
 type UsageLimitsResponse = GetResult<"/api/limits">;
 type ClientLimitMetadata = { loading?: boolean; stale?: boolean };
 export type AccountLimitsReadError = Pick<ApiError, "message" | "status"> & {
-  details: JsonValue;
+  location?: string[];
 };
 export type AccountLimitsSnapshot =
   | (Pick<AccountRateLimitsDto, "accountKey" | "at" | "data" | "error"> &
@@ -60,7 +60,9 @@ function isAccountLimitsSnapshot(
         typeof readError.message !== "string" ||
         typeof readError.status !== "number" ||
         !Number.isFinite(readError.status) ||
-        !("details" in readError))) ||
+        (readError.location !== undefined &&
+          (!Array.isArray(readError.location) ||
+            !readError.location.every((part) => typeof part === "string"))))) ||
     (limits.readAt !== undefined &&
       limits.readAt !== null &&
       (typeof limits.readAt !== "number" || !Number.isFinite(limits.readAt))) ||

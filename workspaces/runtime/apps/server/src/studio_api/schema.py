@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import threading
 from typing import cast
 
-from studio_api.models import JsonValue
+from studio_api.models import JsonValue, MAX_SAFE_INTEGER
 
 
 HTTP_METHODS = frozenset({"get", "put", "post", "delete", "options", "head", "patch", "trace"})
@@ -17,7 +18,6 @@ JSON_VALUE_SCHEMA: dict[str, JsonValue] = {
     "anyOf": [
         {"type": "null"},
         {"type": "boolean"},
-        {"type": "integer"},
         {"type": "number"},
         {"type": "string"},
         {"type": "array", "items": {"$ref": JSON_VALUE_REF}},
@@ -56,7 +56,17 @@ def openapi_document() -> dict[str, JsonValue]:
 
     app = create_app(ApiContext.for_schema())
     document = cast(dict[str, JsonValue], json.loads(json.dumps(app.openapi())))
+    normalize_json_value_schema(document)
+    normalize_optional_header_parameters(document)
+    bound_integer_schemas(document)
     _normalize_schema_union_order(document)
+    document["x-query-parameter-contract"] = {
+        "unknown": "reject",
+        "repeatedScalar": "reject",
+        "integerPattern": "^-?[0-9]+$",
+        "numberPattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$",
+        "booleanValues": ["true", "false"],
+    }
     return document
 
 
@@ -207,8 +217,80 @@ def normalize_json_value_schema(document: dict[str, JsonValue]) -> None:
     schemas["JsonValue"] = JSON_VALUE_SCHEMA
 
 
+def normalize_optional_header_parameters(document: dict[str, JsonValue]) -> None:
+    """Represent optional headers as absent parameters, not nullable values."""
+    paths = _object(document.get("paths"))
+    if paths is None:
+        return
+    for path_item in paths.values():
+        path = _object(path_item)
+        if path is None:
+            continue
+        for operation in path.values():
+            operation_object = _object(operation)
+            if operation_object is None:
+                continue
+            parameters = operation_object.get("parameters")
+            if not isinstance(parameters, list):
+                continue
+            for parameter in parameters:
+                parameter_object = _object(parameter)
+                if parameter_object is None or parameter_object.get("in") != "header":
+                    continue
+                schema = _object(parameter_object.get("schema"))
+                if schema is None:
+                    continue
+                branches = schema.get("anyOf")
+                if not isinstance(branches, list):
+                    continue
+                non_null = [
+                    branch for branch in branches
+                    if not isinstance(branch, dict) or branch.get("type") != "null"
+                ]
+                if len(non_null) == 1 and isinstance(non_null[0], dict):
+                    schema.clear()
+                    schema.update(non_null[0])
+
+
+def bound_integer_schemas(document: dict[str, JsonValue]) -> None:
+    """Give each integer branch a portable safe-integer range.
+
+    Model aliases carry runtime validation bounds. This document pass also
+    bounds integer literals and generated shared DTOs. JsonValue is represented
+    by the JSON number type, which already includes integral values.
+    """
+    def visit(value: JsonValue) -> None:
+        if isinstance(value, dict):
+            if value.get("type") == "integer":
+                if "minimum" not in value:
+                    exclusive_minimum = value.get("exclusiveMinimum")
+                    value["minimum"] = (
+                        math.floor(exclusive_minimum) + 1
+                        if isinstance(exclusive_minimum, (int, float))
+                        else 0
+                    )
+                if "maximum" not in value:
+                    exclusive_maximum = value.get("exclusiveMaximum")
+                    value["maximum"] = (
+                        math.ceil(exclusive_maximum) - 1
+                        if isinstance(exclusive_maximum, (int, float))
+                        else MAX_SAFE_INTEGER
+                    )
+                const = value.get("const")
+                if isinstance(const, int) and not isinstance(const, bool):
+                    value["minimum"] = const
+                    value["maximum"] = const
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(document)
+
+
 def remove_orphan_fastapi_validation_schemas(document: dict[str, JsonValue]) -> None:
-    """Drop FastAPI's unused default-422 models after routes document legacy 400s.
+    """Drop FastAPI's unused validation models after errors use the 400 envelope.
 
     FastAPI may leave these component definitions behind after the app removes
     its generated 422 response declarations. They are not part of the wire
@@ -259,6 +341,11 @@ def _schema_errors(
         return [f"{location}: schema is not an object"]
 
     errors: list[str] = []
+    if schema.get("type") == "integer":
+        if "minimum" not in schema:
+            errors.append(f"{location}: integer schema has no minimum")
+        if "maximum" not in schema:
+            errors.append(f"{location}: integer schema has no maximum")
     reference = schema.get("$ref")
     if reference is not None:
         if not isinstance(reference, str):
@@ -524,7 +611,7 @@ def validate_contract_schemas(document: dict[str, JsonValue]) -> None:
 
 
 def validate_error_responses(document: dict[str, JsonValue]) -> None:
-    """Require the shared legacy 400 shape and reject FastAPI's default 422."""
+    """Require shared error envelopes and keep request validation at status 400."""
     paths = _object(document.get("paths"))
     if paths is None:
         raise ValueError("OpenAPI document has no paths")
@@ -557,12 +644,8 @@ def validate_error_responses(document: dict[str, JsonValue]) -> None:
             schema = _object(media.get("schema")) if media else None
             if schema is None or schema.get("$ref") != "#/components/schemas/ErrorResponse":
                 failures.append(f"{method.upper()} {path}: 400 must use ErrorResponse")
-            generated_422 = _object(responses.get("422")) if responses else None
-            generated_content = _object(generated_422.get("content")) if generated_422 else None
-            generated_media = _object(generated_content.get("application/json")) if generated_content else None
-            generated_schema = _object(generated_media.get("schema")) if generated_media else None
-            if generated_schema and generated_schema.get("$ref") == "#/components/schemas/HTTPValidationError":
-                failures.append(f"{method.upper()} {path}: default FastAPI 422 conflicts with legacy 400 validation")
+            if responses and "422" in responses:
+                failures.append(f"{method.upper()} {path}: request validation must use status 400")
     if failures:
         raise ValueError("\n".join(failures))
 

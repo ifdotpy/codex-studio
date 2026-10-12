@@ -173,7 +173,7 @@ test("Structured operational errors ui", async ({
           },
         });
       if (url.pathname === "/api/complaint")
-        return fulfill({ status: 503, json: { error: messageFailure } });
+        return fulfill({ status: 503, json: messageFailure });
       if (url.pathname === "/api/panel" && getFailure !== undefined)
         return fulfill({ status: 503, json: getFailure });
       if (url.pathname === "/api/workspace/tasks")
@@ -217,9 +217,9 @@ test("Structured operational errors ui", async ({
     await page.goto(server.resolvedUrls.local[0] + "check");
     await page.waitForFunction(() => !!window.renderCase);
     const value = {
-      message: { message: "Structured operation failed" },
-      code: "E_FIXTURE",
-      data: { retryable: false, attempt: 7 },
+      error: "Structured operation failed",
+      code: "access_failed",
+      metadata: { retryable: false, attempt: 7 },
     };
     messageFailure = value;
     for (const which of [
@@ -264,7 +264,7 @@ test("Structured operational errors ui", async ({
           .getByRole("button", { name: "Error details", exact: true })
           .first()
           .click();
-        assert.match(await page.locator("body").innerText(), /E_FIXTURE/);
+        assert.match(await page.locator("body").innerText(), /access_failed/);
         assert.match(await page.locator("body").innerText(), /"attempt": 7/);
       }
       assert.deepEqual(
@@ -334,14 +334,11 @@ test("Structured operational errors ui", async ({
     const beforeGetFailures = writes.length;
     for (const body of [
       {
-        error: { message: "Structured GET failure", code: "GET_CODE" },
-        requestId: "get-envelope",
-        details: { attempt: 11 },
+        error: "Structured GET failure",
+        code: "access_failed",
       },
       {
         message: "Message-only GET failure",
-        requestId: "get-message",
-        details: { attempt: 12 },
       },
       null,
     ]) {
@@ -356,7 +353,7 @@ test("Structured operational errors ui", async ({
         beforeGetFailures,
         "Read errors cannot send callback requests",
       );
-      if (body) {
+      if (body?.code) {
         await page.getByRole("button", { name: /Error details/ }).click();
         const dialog = page.getByRole("dialog");
         await dialog
@@ -364,12 +361,8 @@ test("Structured operational errors ui", async ({
           .click();
         const detail = await dialog.innerText();
         assert.ok(
-          detail.includes(body.requestId),
-          "Progress errors retain the request identity",
-        );
-        assert.ok(
-          detail.includes(body.error?.code || String(body.details.attempt)),
-          "Progress errors retain their diagnostic fields",
+          detail.includes(body.code),
+          "Progress errors retain the typed error code",
         );
         await page.keyboard.press("Escape");
       }

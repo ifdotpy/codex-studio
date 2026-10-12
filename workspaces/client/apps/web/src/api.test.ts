@@ -87,7 +87,10 @@ describe("OpenAPI transport facade", () => {
 
   it("preserves structured download errors after OpenAPI parsing", async () => {
     const fetch = vi.fn(async () =>
-      Response.json({ error: "Monitor log is unavailable" }, { status: 403 }),
+      Response.json(
+        { error: "Monitor log is unavailable", location: ["query", "id"] },
+        { status: 403 },
+      ),
     );
     vi.stubGlobal("fetch", fetch);
 
@@ -95,7 +98,7 @@ describe("OpenAPI transport facade", () => {
     await expect(request).rejects.toMatchObject({
       name: "Error",
       status: 403,
-      details: { error: "Monitor log is unavailable" },
+      location: ["query", "id"],
       message: "Monitor log is unavailable",
     });
     expect(fetch).toHaveBeenCalledTimes(1);

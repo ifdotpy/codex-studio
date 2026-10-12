@@ -10,6 +10,7 @@ remain separate contracts; known disagreements are checked in
 
 from typing import Literal, Protocol, TYPE_CHECKING, overload
 from typing_extensions import NotRequired, TypedDict
+from pydantic import ConfigDict
 
 if TYPE_CHECKING:
     import sqlite3
@@ -791,6 +792,9 @@ class NativeSafetyBufferingRecord(TypedDict):
     fasterModel: NotRequired[str]
 
 
+setattr(NativeSafetyBufferingRecord, "__pydantic_config__", ConfigDict(extra="forbid"))
+
+
 class NativeSafetyRetryRecord(TypedDict):
     agent: NotRequired[str]
     id: NotRequired[str | None]
@@ -855,6 +859,9 @@ class NativeNoticeRecord(TypedDict):
     message: str
     details: NotRequired[JsonValue]
     at: float
+
+
+setattr(NativeNoticeRecord, "__pydantic_config__", ConfigDict(extra="forbid"))
 
 
 class ConnectionCheckRecord(TypedDict):

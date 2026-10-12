@@ -382,8 +382,6 @@ class AccountStore:
 
     def set_name(self, key, label, request_id):
         """Save a short account label once for an exact request."""
-        if not isinstance(label, str) or len(label.strip()) > 32:
-            raise ValueError("The account name must contain at most 32 characters")
         try:
             request = str(uuid.UUID(request_id))
         except (ValueError, TypeError, AttributeError):

@@ -93,6 +93,28 @@ class TransferRuntimeFixture:
 
 
 class SyncEntityContractTests(unittest.TestCase):
+    def test_closed_typed_dicts_reject_unmodeled_projection_fields(self) -> None:
+        from pydantic import TypeAdapter
+        from codex_records import NativeNoticeRecord, NativeSafetyBufferingRecord
+        from studio_api.sync.models import ProviderVersionWarningDto
+
+        closed_shapes = (
+            (NativeSafetyBufferingRecord, {"unknown": True}),
+            (NativeNoticeRecord, {
+                "id": "notice", "accountKey": "default", "connectionId": "connection",
+                "message": "Notice", "at": 1.0, "unknown": True,
+            }),
+            (ProviderVersionWarningDto, {
+                "id": "warning", "accountKey": "default", "provider": "codex",
+                "version": "1", "baseline": "2", "message": "Update", "at": 1.0,
+                "unknown": True,
+            }),
+        )
+        for record_type, value in closed_shapes:
+            with self.subTest(record_type=record_type.__name__):
+                with self.assertRaises(ValidationError):
+                    TypeAdapter(record_type).validate_python(value)
+
     def test_worker_delegation_depth_defaults_and_bounds(self) -> None:
         defaults = {"model": None, "effort": None, "fastMode": False}
         self.assertEqual(WorkerDefaultsDto.model_validate(defaults).delegationDepth, 1)
@@ -750,7 +772,7 @@ class SyncEntityContractTests(unittest.TestCase):
                 "payload": json.dumps({
                     "id": "device:lead", "device": "device", "session": "lead", "text": "draft"
                 }),
-                "_deleted": False,
+                "deleted": False,
             }
         }
         request = DraftPushRequest.model_validate({"rows": [row]})

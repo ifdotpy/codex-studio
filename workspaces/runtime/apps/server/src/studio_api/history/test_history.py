@@ -217,14 +217,16 @@ class HistoryRouteTests(unittest.TestCase):
         self.app.include_router(create_router(cast("ApiContext", self.context)))
 
         @self.app.exception_handler(RequestValidationError)
-        async def request_error(_request: Request, _error: RequestValidationError) -> JSONResponse:
-            return JSONResponse({"error": "Invalid request"}, status_code=400)
+        async def request_error(_request: Request, error: RequestValidationError) -> JSONResponse:
+            problems = error.errors()
+            location = [str(part) for part in problems[0].get("loc", ())] if problems else []
+            return JSONResponse({"error": "Invalid request", "location": location}, status_code=400)
 
         self.client = TestClient(self.app)
 
-    def test_transcript_query_uses_first_value_and_preserves_pagination_contract(self) -> None:
+    def test_transcript_query_uses_declared_values_and_preserves_pagination_contract(self) -> None:
         response = self.client.get(
-            "/api/transcript/page?id=agent-1&limit=&limit=17&limit=4"
+            "/api/transcript/page?id=agent-1&limit=17"
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["historyVersion"], "thread:checkpoint")
@@ -316,7 +318,11 @@ class HistoryRouteTests(unittest.TestCase):
                     "/api/branch",
                     json={"agent": "agent-1", "message_id": "m-1", "id": "request-1", "before": before},
                 )
-                self.assertGreaterEqual(response.status_code, 400)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json(), {
+                    "error": "Invalid request",
+                    "location": ["body", "before"],
+                })
         self.assertFalse(any(name == "branch" for name, _ in self.context.runtime.calls))
 
     def test_branch_passes_stable_request_identity_without_rewriting_keys(self) -> None:

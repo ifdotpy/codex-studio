@@ -460,12 +460,10 @@ export default function Analytics({
     () => ({
       agent: agent.id,
       scope,
-      limit: "30",
-      offset: String(offset),
-      to: String(snapshotAt),
-      ...(period !== "all"
-        ? { from: String(snapshotAt - Number(period)) }
-        : {}),
+      limit: 30,
+      offset,
+      to_time: snapshotAt,
+      ...(period !== "all" ? { from_time: snapshotAt - Number(period) } : {}),
       ...(tool ? { tool } : {}),
     }),
     [agent.id, scope, period, tool, offset, snapshotAt],
@@ -485,10 +483,9 @@ export default function Analytics({
           ...query,
           view: "detail",
           detail,
-          limit: "100",
-          offset: String(
+          limit: 100,
+          offset:
             (data[detail]?.length || 0) + (olderDetails[detail]?.length || 0),
-          ),
         },
       });
       if (detail === "turns")

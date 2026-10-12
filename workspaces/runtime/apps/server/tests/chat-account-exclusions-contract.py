@@ -11,6 +11,8 @@ import json
 import sqlite3
 import threading
 import unittest
+
+from pydantic import ValidationError
 from types import SimpleNamespace
 
 from codex_agent_move import AgentMoves
@@ -154,10 +156,14 @@ class ChatAccountExclusions(unittest.TestCase):
         transfers = AccountTransfers(runtime)
         with self.assertRaisesRegex(ValueError, "disabled for this chat"):
             transfers.request("lead", "second", "47c243b6-18d0-49be-a127-72ccfd57a5e8")
-        with self.assertRaisesRegex(ValueError, "unique"):
+        self.assertEqual(
             ConversationRequest(id="lead", excluded_account_keys=["second", "second"])
-        with self.assertRaisesRegex(ValueError, "non-empty"):
+            .excluded_account_keys,
+            {"second"},
+        )
+        with self.assertRaises(ValidationError) as caught:
             ConversationRequest(id="lead", excluded_account_keys=[""])
+        self.assertEqual(caught.exception.errors()[0]["loc"], ("excluded_account_keys", 0))
 
 
 if __name__ == "__main__":

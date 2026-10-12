@@ -116,7 +116,7 @@ class SystemApiTests(unittest.TestCase):
         (self.root / ".private").mkdir()
         (self.root / "plain-file").write_text("fixture", encoding="utf-8")
 
-        response = self.client.get(f"/api/directories?path=&path={self.root}&path=/does/not/exist")
+        response = self.client.get(f"/api/directories?path={self.root}")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {
@@ -180,7 +180,7 @@ class SystemApiTests(unittest.TestCase):
             self.context.canvas.runtime = runtime
             native.return_value = native_status
             self.context.remote.origin = lambda: None
-            response = self.client.get("/api/desktop?account_key=&account_key=fixture-account")
+            response = self.client.get("/api/desktop?account_key=fixture-account")
 
         self.assertEqual(response.status_code, 200)
         body = response.json()

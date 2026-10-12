@@ -6,15 +6,15 @@ from typing import Annotated, Literal
 
 from pydantic import Field, RootModel, StrictBool, StrictFloat, StrictInt, StrictStr, model_validator
 
-from studio_api.models import ContractModel, SyncEntity
+from studio_api.models import ContractModel, SafeInt, SyncEntity
 from studio_api.schema import API_SCHEMA_MISMATCH_FIELD
 
 MAX_SAFE_REVISION = 9_007_199_254_740_991
 MAX_ENTITY_CHANGE_DOCUMENTS = 512
 MAX_ENTITY_CHANGE_BYTES = 262_144
-ResourceRevision = Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_REVISION)]
+ResourceRevision = Annotated[SafeInt, Field(ge=0, le=MAX_SAFE_REVISION)]
 NonEmptyIdentifier = Annotated[StrictStr, Field(min_length=1)]
-NonNegativeFiniteNumber = Annotated[StrictInt, Field(ge=0)] | Annotated[
+NonNegativeFiniteNumber = SafeInt | Annotated[
     StrictFloat, Field(ge=0, allow_inf_nan=False)
 ]
 

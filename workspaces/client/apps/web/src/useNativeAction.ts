@@ -34,11 +34,13 @@ function isActionRequest(value: unknown): value is Request {
 export function isDefinitivelyNotApplied(error: unknown): boolean {
   if (
     !(error instanceof ApiError) ||
-    !error.details ||
-    typeof error.details !== "object"
+    !error.response ||
+    typeof error.response !== "object"
   )
     return false;
-  return "outcome" in error.details && error.details.outcome === "not_applied";
+  return (
+    "outcome" in error.response && error.response.outcome === "not_applied"
+  );
 }
 
 export function useNativeAction(

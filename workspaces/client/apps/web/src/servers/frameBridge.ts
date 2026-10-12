@@ -56,7 +56,18 @@ export function useServerFrame(
                     error: {
                       message: errorText(failure),
                       ...(failure instanceof ApiError
-                        ? { status: failure.status, payload: failure.details }
+                        ? {
+                            status: failure.status,
+                            ...(failure.location
+                              ? { location: failure.location }
+                              : {}),
+                            ...(failure.outcome
+                              ? { outcome: failure.outcome }
+                              : {}),
+                            ...(failure.catalogPending !== undefined
+                              ? { catalogPending: failure.catalogPending }
+                              : {}),
+                          }
                         : {}),
                     },
                   }

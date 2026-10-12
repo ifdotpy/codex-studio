@@ -625,7 +625,7 @@ function ScopedExecutionSettings({
     } catch (failure) {
       const rejected =
         failure instanceof ApiError &&
-        [400, 401, 403, 404, 409, 422].includes(failure.status);
+        [400, 401, 403, 404, 409].includes(failure.status);
       if (!confirmed && (!request.next_turn || rejected)) {
         if (mounted.current) setPending(previousPending);
         if (request.next_turn) {

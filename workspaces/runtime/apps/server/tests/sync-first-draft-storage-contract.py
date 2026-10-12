@@ -47,7 +47,7 @@ try:
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_agents'"
         ).fetchone()
     row = {"newDocumentState": {
-        "id": "phone:storage:storage", "seq": 0, "_deleted": False,
+        "id": "phone:storage:storage", "seq": 0, "deleted": False,
         "payload": json.dumps({"text": "storage setup", "session": "storage", "device": "phone"}),
     }}
     request = urllib.request.Request(

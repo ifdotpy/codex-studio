@@ -1830,8 +1830,7 @@ export function entityPullFixture(snapshot, optionsOrAfter = {}) {
 
 /**
  * Parse /api/sync/pull query semantics shared by the browser and Node fixtures.
- * The real API accepts negative integer cursors (the store clamps them to zero)
- * and returns 400 for malformed integers and unknown scopes.
+ * The real API rejects negative and malformed cursors and unknown scopes.
  * @param {string | URL} requestUrl
  * @returns {{ ok: true, params: Required<Pick<EntityPullFixtureOptions, "scope" | "after" | "limit" | "fresh" | "initialHigh" | "reset">> & Pick<EntityPullFixtureOptions, "priorityId"> } | { ok: false, status: number, body: JsonObject }}
  */
@@ -1854,22 +1853,19 @@ export function validateSyncPullRequest(requestUrl) {
       numbers[key] = fallback;
       continue;
     }
-    if (!/^[+-]?\d+$/.test(raw))
+    if (!/^-?\d+$/.test(raw))
       return {
         ok: false,
         status: 400,
-        body: {
-          error: "Invalid request",
-          details: [
-            {
-              location: ["query", key],
-              message:
-                "Input should be a valid integer, unable to parse string as an integer",
-            },
-          ],
-        },
+        body: { error: "Invalid request", location: ["query", key] },
       };
     numbers[key] = Number(raw);
+    if (numbers[key] < 0)
+      return {
+        ok: false,
+        status: 400,
+        body: { error: "Invalid request", location: ["query", key] },
+      };
   }
   const supportedScope =
     scope === "state:entities:v1" ||

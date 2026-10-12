@@ -80,11 +80,17 @@ it("preserves definitive API errors and uncertain timeouts without a retry", asy
     kind: "studio-sidebar-result",
     serverId: "remote",
     correlation: sent.correlation,
-    error: { message: "Conflict", status: 409, payload: { revision: 2 } },
+    error: {
+      message: "Conflict",
+      status: 409,
+      location: ["body", "revision"],
+      outcome: "not_applied",
+    },
   });
   expect(await rejected).toMatchObject({
     status: 409,
-    details: { revision: 2 },
+    location: ["body", "revision"],
+    outcome: "not_applied",
   });
   expect(await rejected).toBeInstanceOf(ApiError);
   const unknown = rpc

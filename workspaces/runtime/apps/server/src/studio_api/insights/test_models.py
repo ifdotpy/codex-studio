@@ -16,9 +16,9 @@ from studio_api.insights.models import (
 
 
 class InsightsModelTests(unittest.TestCase):
-    def test_analytics_query_preserves_wire_string_values_and_aliases(self) -> None:
+    def test_analytics_query_preserves_wire_string_values(self) -> None:
         query = AnalyticsQuery.model_validate(
-            {"scope": "team", "from": "10.5", "limit": "20", "view": "detail"}
+            {"scope": "team", "from_time": 10.5, "limit": 20, "view": "detail"}
         )
 
         self.assertEqual(AnalyticsScope(query.scope), AnalyticsScope.TEAM)
@@ -28,12 +28,10 @@ class InsightsModelTests(unittest.TestCase):
         )
 
     def test_analytics_query_rejects_unknown_closed_values(self) -> None:
-        with self.assertRaisesRegex(ValueError, "Unknown analytics scope"):
+        with self.assertRaises(ValidationError):
             AnalyticsQuery.model_validate({"scope": "workspace"}).service_options()
-        self.assertEqual(
-            AnalyticsQuery.model_validate({"legacyUnknown": "ignored"}).service_options(),
-            {},
-        )
+        with self.assertRaises(ValidationError):
+            AnalyticsQuery.model_validate({"legacyUnknown": "ignored"})
 
     def test_cost_responses_keep_nulls_and_reject_unknown_fields(self) -> None:
         cost = AccountCostResponse.model_validate(

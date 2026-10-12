@@ -146,8 +146,9 @@ test("accounts names save, clear, keys, exact retry, and themes", async ({
       .getByRole("button", { name: "Edit name for personal@example.com" })
       .click();
     await input.fill("x".repeat(33));
-    await row.getByRole("button", { name: "Save", exact: true }).click();
-    await expect(row.getByText("Use at most 32 characters.")).toBeVisible();
+    await expect(
+      row.getByRole("button", { name: "Save", exact: true }),
+    ).toBeDisabled();
     expect(f.bodies).toHaveLength(1);
     await input.fill("");
     f.loseNextResponse();

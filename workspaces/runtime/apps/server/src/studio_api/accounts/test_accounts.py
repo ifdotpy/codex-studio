@@ -502,7 +502,9 @@ class AccountsRouterTests(unittest.TestCase):
 
         @self.app.exception_handler(RequestValidationError)
         def request_error(_request: object, _error: RequestValidationError) -> JSONResponse:
-            payload = ErrorResponse(error="Invalid request").wire_dump()
+            problems = _error.errors()
+            location = [str(part) for part in problems[0].get("loc", ())] if problems else []
+            payload = ErrorResponse(error="Invalid request", location=location).wire_dump()
             return JSONResponse(status_code=400, content=payload)
 
         self.client = TestClient(self.app)
@@ -550,10 +552,18 @@ class AccountsRouterTests(unittest.TestCase):
                     self.assertEqual(next(row for row in retry.json()["accounts"] if row["id"] == key)["label"], "")
                     with self.assertRaisesRegex(ValueError, "different content"):
                         self.client.post("/api/accounts/name", json={**body, "label": "Work 2"})
-                    for invalid in ("x" * 33, None, 123):
-                        response = self.client.post("/api/accounts/name", json={**body, "label": invalid, "request_id": str(uuid4())})
+                    for invalid in ("x" * 33, None, 123, "\ud800"):
+                        invalid_body = {**body, "label": invalid, "request_id": str(uuid4())}
+                        if invalid == "\ud800":
+                            response = self.client.post(
+                                "/api/accounts/name",
+                                content=json.dumps(invalid_body, ensure_ascii=True).encode("utf-8"),
+                                headers={"Content-Type": "application/json"},
+                            )
+                        else:
+                            response = self.client.post("/api/accounts/name", json=invalid_body)
                         self.assertEqual(response.status_code, 400)
-                    boundary = self.client.post("/api/accounts/name", json={**body, "label": " " + "😀" * 32 + " ", "request_id": str(uuid4())})
+                    boundary = self.client.post("/api/accounts/name", json={**body, "label": "😀" * 32, "request_id": str(uuid4())})
                     self.assertEqual(boundary.status_code, 200)
                     invalid_id = self.client.post("/api/accounts/name", json={**body, "request_id": "invalid"})
                     self.assertEqual(invalid_id.status_code, 400)
@@ -773,6 +783,42 @@ class AccountsRouterTests(unittest.TestCase):
         self.assertEqual(operation["requestBody"]["content"]["application/json"]["schema"]["$ref"].split("/")[-1], "AccountDiscoverRequest")
         self.assertEqual(self.client.post("/api/accounts/discover").status_code, 200)
         self.assertEqual(self.client.post("/api/accounts/discover", json={}).status_code, 200)
+        null_body = self.client.post("/api/accounts/discover", json=None)
+        self.assertEqual(null_body.status_code, 400)
+        self.assertEqual(null_body.json()["location"], ["body"])
+
+        from studio_api.middleware import RequestBoundary
+
+        boundary_context = ApiContext.for_schema()
+        boundary_context.remote = SimpleNamespace(
+            request_origin=lambda _headers, _peer, _port: "http://testserver",
+        )
+        boundary = RequestBoundary(self.app, boundary_context)
+        headers = {"X-Canvas-Token": boundary_context.token}
+        with TestClient(boundary) as client:
+            self.assertEqual(
+                client.post("/api/accounts/discover", headers=headers).status_code,
+                200,
+            )
+            self.assertEqual(
+                client.post("/api/accounts/discover", json={}, headers=headers).status_code,
+                200,
+            )
+            null_response = client.post(
+                "/api/accounts/discover", json=None, headers=headers,
+            )
+            self.assertEqual(null_response.status_code, 400)
+            self.assertEqual(null_response.json()["location"], ["body"])
+            missing_required = client.post("/api/accounts/register", headers=headers)
+            self.assertEqual(missing_required.status_code, 415)
+            self.assertEqual(missing_required.json()["location"], ["body"])
+            invalid_json = client.post(
+                "/api/accounts/discover",
+                content=b"not-json",
+                headers={**headers, "Content-Type": "application/json"},
+            )
+            self.assertEqual(invalid_json.status_code, 400)
+            self.assertEqual(invalid_json.json()["location"], ["body"])
 
     def test_discover_rejects_unknown_body_before_account_scan(self) -> None:
         with patch.object(self.store, "discover", wraps=self.store.discover) as discover:
@@ -830,25 +876,27 @@ class AccountsRouterTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         peer_manage.assert_not_called()
 
-    def test_legacy_first_nonempty_account_and_singleton_cached_behavior(self) -> None:
-        cached = self.client.get("/api/limits?account_key=&account_key=first&account_key=second&cached=1")
+    def test_scalar_account_and_cached_query_behavior(self) -> None:
+        cached = self.client.get("/api/limits?account_key=first&cached=1")
         self.assertEqual(cached.status_code, 200)
         self.assertEqual(cached.json()["accountKey"], "first")
         self.assertEqual(self.runtime.limit_reads, [])
-        repeated = self.client.get("/api/limits?account_key=first&cached=1&cached=1")
+        repeated = self.client.get("/api/limits?account_key=first&cached=1")
         self.assertEqual(repeated.status_code, 200)
         self.assertEqual(repeated.json()["data"]["accountId"], "first")
-        self.assertEqual(self.runtime.limit_reads, ["first"])
+        self.assertEqual(self.runtime.limit_reads, [])
 
-    def test_models_workers_flag_requires_single_value_and_query_schema_is_visible(self) -> None:
+    def test_models_scalar_query_and_schema_are_visible(self) -> None:
         with patch("codex_worker_accounts.catalog", return_value={"data": [{"model": "worker/model"}]}) as worker_catalog:
-            repeated = self.client.get("/api/models?account_key=&account_key=first&account_key=second&workers=1&workers=1")
+            repeated = self.client.get("/api/models?account_key=second&workers=1")
             self.assertEqual(repeated.status_code, 200)
-            self.assertEqual(self.runtime.catalog_reads, ["first"])
-            self.assertEqual(worker_catalog.call_count, 0)
+            self.assertEqual(self.runtime.catalog_reads, [])
             singleton = self.client.get("/api/models?account_key=first&workers=1")
             self.assertEqual(singleton.status_code, 200)
-            worker_catalog.assert_called_once_with(self.runtime, "first")
+            self.assertEqual(
+                [args[1] for args, _kwargs in worker_catalog.call_args_list],
+                ["second", "first"],
+            )
         operation = self.app.openapi()["paths"]["/api/limits"]["get"]
         self.assertEqual({param["name"] for param in operation["parameters"]}, {"account_key", "cached"})
         self.assertIn("400", operation["responses"])
@@ -920,7 +968,7 @@ class AccountsRouterTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json(), {"error": "Catalog is unavailable"})
 
-    def test_models_route_forwards_only_singleton_explicit_retry(self) -> None:
+    def test_models_route_forwards_declared_explicit_retry(self) -> None:
         from codex_catalog import DISPLAY_RETRY
 
         seen: list[bool] = []
@@ -932,11 +980,7 @@ class AccountsRouterTests(unittest.TestCase):
         with patch.object(self.runtime, "catalog", side_effect=catalog):
             self.assertEqual(self.client.get("/api/models").status_code, 200)
             self.assertEqual(self.client.get("/api/models?retry=1").status_code, 200)
-            self.assertEqual(
-                self.client.get("/api/models?retry=1&retry=1").status_code,
-                200,
-            )
-        self.assertEqual(seen, [False, True, False])
+        self.assertEqual(seen, [False, True])
 
     def test_real_reset_producer_reuses_exact_request_after_retry(self) -> None:
         fixture_path = Path(__file__).resolve().parents[3] / "tests" / "runtime-accounts-contract.py"

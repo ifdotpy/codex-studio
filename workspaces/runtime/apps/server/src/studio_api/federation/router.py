@@ -159,7 +159,7 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post(
         FEDERATION_PATHS[0],
         response_model=SignedPairResponse,
-        responses=api_write_responses(errors=(404,)),
+        responses=api_write_responses(errors=(400, 404, 413, 415)),
         openapi_extra=_openapi_body("PairRequest"),
     )
     async def pair(request: Request) -> Response:
@@ -169,7 +169,7 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post(
         FEDERATION_PATHS[1],
         response_model=SignedStatusResponse,
-        responses=api_write_responses(errors=(404,)),
+        responses=api_write_responses(errors=(400, 404, 413, 415)),
         openapi_extra=_openapi_body("StatusRequest"),
     )
     async def status(request: Request) -> Response:
@@ -179,7 +179,7 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post(
         FEDERATION_PATHS[2],
         response_model=SignedMessageResponse,
-        responses=api_write_responses(errors=(404,)),
+        responses=api_write_responses(errors=(400, 404, 413, 415)),
         openapi_extra=_openapi_body("MessageRequest"),
     )
     async def message(request: Request) -> Response:
@@ -189,7 +189,7 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.post(
         FEDERATION_PATHS[3],
         response_model=SignedPullResponse,
-        responses=api_write_responses(errors=(404,)),
+        responses=api_write_responses(errors=(400, 404, 413, 415)),
         openapi_extra=_openapi_body("PullRequest"),
     )
     async def pull(request: Request) -> Response:

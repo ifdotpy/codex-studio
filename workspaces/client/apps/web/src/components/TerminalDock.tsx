@@ -542,11 +542,9 @@ function ShellView({
         const value = await get("/api/terminals/output", {
           query: {
             id: shell.id,
-            history: ["1"],
-            offset: String(offset),
-            limit: String(
-              Math.min(65536, end === undefined ? 65536 : end - offset),
-            ),
+            history: "1",
+            offset,
+            limit: Math.min(65536, end === undefined ? 65536 : end - offset),
           },
         });
         if (downloadAttempt.current !== attempt) return;
@@ -706,7 +704,7 @@ function ShellView({
           { kind: "terminal", terminalId: shell.id },
           async () => {
             const output = await get("/api/terminals/output", {
-              query: { id: shell.id, offset: String(offset) },
+              query: { id: shell.id, offset },
             });
             if (disposed) return;
             if (output.truncated) {

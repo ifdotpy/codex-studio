@@ -10,7 +10,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from starlette.responses import Response
 
 from studio_api.models import JsonValue
-from studio_api.request_helpers import body_data, first_nonempty_query
+from studio_api.request_helpers import body_data
 from studio_api.responses import api_read_responses, api_write_responses
 from .events import publish_account_change
 from .models import (
@@ -181,13 +181,10 @@ def create_router(context: ApiContext) -> APIRouter:
         from codex_catalog import CatalogPending, CatalogUnavailable, DISPLAY_READ, DISPLAY_RETRY
 
         display = DISPLAY_READ.set(True)
-        retry = DISPLAY_RETRY.set(
-            query.retry == "1" and request.query_params.getlist("retry") == ["1"]
-        )
+        retry = DISPLAY_RETRY.set(query.retry == "1")
         try:
-            account_key = first_nonempty_query(request, "account_key", query.account_key) or "default"
-            workers = [value for value in request.query_params.getlist("workers") if value]
-            if workers == ["1"]:
+            account_key = query.account_key or "default"
+            if query.workers == "1":
                 from codex_worker_accounts import catalog
 
                 worker_catalog = cast(Callable[[RuntimePort, str], JsonValue], catalog)
@@ -217,10 +214,9 @@ def create_router(context: ApiContext) -> APIRouter:
         query: Annotated[LimitsQuery, Query()],
     ) -> Response:
         runtime = _runtime(context)
-        account_key = first_nonempty_query(request, "account_key", query.account_key) or "default"
-        cached = [value for value in request.query_params.getlist("cached") if value]
+        account_key = query.account_key or "default"
         current = runtime.rate_limits_for(account_key)
-        if cached == ["1"] and (current.get("data") is not None or current.get("error")):
+        if query.cached == "1" and (current.get("data") is not None or current.get("error")):
             return context.send(request, current)
         if current.get("data") is not None:
             runtime.refresh_limits_background(account_key)
@@ -232,8 +228,7 @@ def create_router(context: ApiContext) -> APIRouter:
         request: Request,
         query: Annotated[ClaudeLoginQuery, Query()],
     ) -> Response:
-        selected = first_nonempty_query(request, "request_id", query.request_id)
-        return context.send(request, _claude_login(_runtime(context)).status(selected))
+        return context.send(request, _claude_login(_runtime(context)).status(query.request_id))
 
     @router.post("/api/accounts/claude/login", response_model=ClaudeLoginResponse, responses=_WRITE_RESPONSES)
     def claude_login_start(request: Request, body: Annotated[ClaudeStartRequest, Body()]) -> Response:
@@ -255,7 +250,11 @@ def create_router(context: ApiContext) -> APIRouter:
             before = service.status(body.login_id)
         except ValueError:
             before = None
-        result = service.start_add(body.email, body.label, body.login_id)
+        result = service.start_add(
+            body.email.strip() if body.email is not None else None,
+            body.label.strip() if body.label is not None else None,
+            body.login_id,
+        )
         _publish_login_if_changed(runtime, before, result)
         return context.send(request, result)
 

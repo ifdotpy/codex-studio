@@ -121,12 +121,13 @@ function AccountNameEditor({
   const fallback = account.email?.split("@")[0] || "Account";
   const save = async () => {
     if (lock.current || disabled) return;
-    if ([...name.trim()].length > 32) {
+    const label = name.trim();
+    if ([...label].length > 32) {
       setError("Use at most 32 characters.");
       return;
     }
-    if (request.current?.label !== name)
-      request.current = { label: name, request_id: crypto.randomUUID() };
+    if (request.current?.label !== label)
+      request.current = { label, request_id: crypto.randomUUID() };
     lock.current = true;
     setBusy(true);
     setError("");
@@ -182,7 +183,7 @@ function AccountNameEditor({
               type="submit"
               actionRole="primary"
               loading={busy}
-              disabled={disabled}
+              disabled={disabled || [...name.trim()].length > 32}
             >
               Save
             </ActionButton>

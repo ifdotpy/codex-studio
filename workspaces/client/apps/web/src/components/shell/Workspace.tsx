@@ -1249,6 +1249,13 @@ function Profiles(c: Context) {
             className="workspace-form"
             onSubmit={async (e) => {
               e.preventDefault();
+              if (
+                !launch.prompt.trim() ||
+                Array.from(launch.prompt).length > 32000
+              ) {
+                c.notify("Enter a task with at most 32,000 characters.");
+                return;
+              }
               setBusy(true);
               try {
                 const worker = await c.run("/api/agents", {
@@ -1275,10 +1282,19 @@ function Profiles(c: Context) {
               label="Task for this subagent"
               required
               minRows={5}
+              maxLength={64000}
               value={launch.prompt}
               onChange={(e) => setLaunch({ ...launch, prompt: e.target.value })}
             />
-            <Button variant="filled" type="submit" loading={busy}>
+            <Button
+              variant="filled"
+              type="submit"
+              loading={busy}
+              disabled={
+                !launch.prompt.trim() ||
+                Array.from(launch.prompt).length > 32000
+              }
+            >
               Start subagent
             </Button>
           </form>

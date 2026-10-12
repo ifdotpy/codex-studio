@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import Field
+from pydantic import Field, StrictInt
 
-from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel
+from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel, SafeInt
 
 PROTOCOL_VERSION = 1
 MAX_BATCH = 50
@@ -93,7 +93,7 @@ class FederationPeer(ContractModel):
 class FederationInvite(ContractModel):
     id: str
     created: float
-    expires: int
+    expires: SafeInt
     status: InviteStatus
     expectedUser: str | None = None
 
@@ -118,17 +118,17 @@ class FederationIdentity(ContractModel):
 
 
 class FederationSnapshot(ResponseModel):
-    version: int
+    version: SafeInt
     enabled: bool
     identity: FederationIdentity | None
     peers: list[FederationPeer]
     invites: list[FederationInvite]
     rooms: list[FederationRoom]
-    queued: int
+    queued: SafeInt
 
 
 class FederationInvitation(ContractModel):
-    protocol: Literal[1]
+    protocol: SafeInt = Field(ge=PROTOCOL_VERSION, le=PROTOCOL_VERSION)
     inviteId: str
     token: str
     stateId: str
@@ -138,12 +138,12 @@ class FederationInvitation(ContractModel):
     publicKey: str
     tailscaleUser: str | None = None
     tailscaleStatus: TailscaleStatus | None = None
-    expires: int
+    expires: SafeInt
 
 
 class CreateInviteResponse(ResponseModel):
     invitation: FederationInvitation
-    expires: int
+    expires: SafeInt
     warning: str
 
 
@@ -220,7 +220,7 @@ ManagementRequest: TypeAlias = Annotated[
 
 
 class PairRequest(ContractModel):
-    protocol: Literal[1]
+    protocol: SafeInt = Field(ge=PROTOCOL_VERSION, le=PROTOCOL_VERSION)
     inviteId: str
     token: str
     stateId: str
@@ -233,11 +233,11 @@ class PairRequest(ContractModel):
 
 
 class StatusRequest(ContractModel):
-    protocol: Literal[1]
+    protocol: SafeInt = Field(ge=PROTOCOL_VERSION, le=PROTOCOL_VERSION)
 
 
 class SignedEnvelope(ContractModel):
-    protocol: Literal[1]
+    protocol: SafeInt = Field(ge=PROTOCOL_VERSION, le=PROTOCOL_VERSION)
     senderServer: str
     id: str = Field(max_length=128)
     kind: MessageKind
@@ -245,14 +245,14 @@ class SignedEnvelope(ContractModel):
     payload: JsonValue = Field(
         description="Kind-specific extensible payload covered by the envelope signature; the federation service validates it before storing.",
     )
-    created: int | float
-    timestamp: int
+    created: SafeInt | float
+    timestamp: SafeInt
     nonce: str = Field(min_length=16, max_length=128)
     signature: str
 
 
 class MessageRequest(ContractModel):
-    protocol: Literal[1]
+    protocol: SafeInt = Field(ge=PROTOCOL_VERSION, le=PROTOCOL_VERSION)
     envelope: SignedEnvelope
 
 
@@ -262,7 +262,7 @@ class FederationAck(ContractModel):
 
 
 class PullRequest(ContractModel):
-    protocol: Literal[1]
+    protocol: SafeInt = Field(ge=PROTOCOL_VERSION, le=PROTOCOL_VERSION)
     acks: list[FederationAck] = Field(default_factory=list, max_length=MAX_BATCH)
 
 
@@ -285,7 +285,7 @@ class MessageReceipt(ContractModel):
     messageId: str
     accepted: Literal[True]
     room: str
-    sequence: int | None
+    sequence: SafeInt | None
 
 
 class FederationAckResult(ContractModel):
@@ -302,7 +302,7 @@ class PullResult(ContractModel):
 
 class SignedPairResponse(ResponseModel):
     stateId: str
-    timestamp: int
+    timestamp: SafeInt
     nonce: str
     result: SignedPairResult
     signature: str
@@ -310,7 +310,7 @@ class SignedPairResponse(ResponseModel):
 
 class SignedStatusResponse(ResponseModel):
     stateId: str
-    timestamp: int
+    timestamp: SafeInt
     nonce: str
     result: SignedStatusResult
     signature: str
@@ -318,7 +318,7 @@ class SignedStatusResponse(ResponseModel):
 
 class SignedMessageResponse(ResponseModel):
     stateId: str
-    timestamp: int
+    timestamp: SafeInt
     nonce: str
     result: MessageReceipt
     signature: str
@@ -326,7 +326,7 @@ class SignedMessageResponse(ResponseModel):
 
 class SignedPullResponse(ResponseModel):
     stateId: str
-    timestamp: int
+    timestamp: SafeInt
     nonce: str
     result: PullResult
     signature: str

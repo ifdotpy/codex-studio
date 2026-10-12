@@ -4,14 +4,12 @@ from __future__ import annotations
 
 from contextlib import AbstractContextManager
 import sqlite3
-from typing import TYPE_CHECKING, Any, Annotated, Callable, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Annotated, Callable, Protocol, cast
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.exceptions import RequestValidationError
-from pydantic import ValidationError
 from starlette.responses import Response
 
-from studio_api.models import ContractModel, ErrorResponse, JsonValue
+from studio_api.models import ErrorResponse, JsonValue
 from codex_sync_entities import project
 from studio_api.history.models import (
     BranchRequest,
@@ -37,8 +35,6 @@ from studio_api.history.models import (
 
 if TYPE_CHECKING:
     from studio_api.context import ApiContext
-
-QueryContract = TypeVar("QueryContract", bound=ContractModel)
 
 ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     400: {"model": ErrorResponse},
@@ -88,21 +84,6 @@ class TranscriptCanvas(Protocol):
     def transcript(self, agent: str | None) -> JsonValue: ...
 
 
-def _first_query(request: Request, model: type[QueryContract]) -> QueryContract:
-    """Revalidate the first nonblank value, matching the legacy parser."""
-    allowed = model.model_fields
-    values: dict[str, str] = {}
-    for name, value in request.query_params.multi_items():
-        if name in allowed and value != "" and name not in values:
-            values[name] = value
-    try:
-        return model.model_validate(values)
-    except ValidationError as error:
-        # The shared app handler maps request validation failures to the legacy
-        # 400 contract. A bare Pydantic ValidationError would look like a 500.
-        raise RequestValidationError(error.errors()) from error
-
-
 def _history_item(runtime: object, agent: str | None, message_id: str | None) -> JsonValue:
     from codex_transcript_history import history_item
 
@@ -135,7 +116,6 @@ def create_router(context: ApiContext) -> APIRouter:
         request: Request,
         query: Annotated[TranscriptQuery, Depends()],
     ) -> Response:
-        query = _first_query(request, TranscriptQuery)
         runtime = _history_runtime(context)
         if runtime is None:
             return context.send(request, {"error": "Not found"}, status=404)
@@ -157,7 +137,6 @@ def create_router(context: ApiContext) -> APIRouter:
         request: Request,
         query: Annotated[TranscriptItemQuery, Depends()],
     ) -> Response:
-        query = _first_query(request, TranscriptItemQuery)
         runtime = _history_runtime(context)
         if runtime is None:
             return context.send(request, {"error": "Not found"}, status=404)
@@ -169,7 +148,6 @@ def create_router(context: ApiContext) -> APIRouter:
         request: Request,
         query: Annotated[TranscriptSearchQuery, Depends()],
     ) -> Response:
-        query = _first_query(request, TranscriptSearchQuery)
         runtime = _history_runtime(context)
         if runtime is None:
             return context.send(request, {"error": "Not found"}, status=404)
@@ -189,7 +167,6 @@ def create_router(context: ApiContext) -> APIRouter:
         request: Request,
         query: Annotated[TranscriptItemQuery, Depends()],
     ) -> Response:
-        query = _first_query(request, TranscriptItemQuery)
         runtime = _history_runtime(context)
         if runtime is None:
             return context.send(request, {"error": "Not found"}, status=404)
@@ -198,7 +175,6 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.get("/api/search", response_model=SearchResponse,
                 responses=ERROR_RESPONSES)
     def search(request: Request, query: Annotated[SearchQuery, Depends()]) -> Response:
-        query = _first_query(request, SearchQuery)
         runtime = _history_runtime(context)
         if runtime is None:
             return context.send(request, {"error": "Not found"}, status=404)
@@ -216,7 +192,6 @@ def create_router(context: ApiContext) -> APIRouter:
         request: Request,
         query: Annotated[CheckpointsQuery, Depends()],
     ) -> Response:
-        query = _first_query(request, CheckpointsQuery)
         runtime = _history_runtime(context)
         if runtime is None:
             return context.send(request, {"error": "Not found"}, status=404)
@@ -229,7 +204,6 @@ def create_router(context: ApiContext) -> APIRouter:
         request: Request,
         query: Annotated[TranscriptQuery, Depends()],
     ) -> Response:
-        query = _first_query(request, TranscriptQuery)
         agent = query.id if query.id is not None else ""
         return context.send(request, _canvas_transcript(context.canvas, agent))
 

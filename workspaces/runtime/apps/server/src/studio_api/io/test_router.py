@@ -18,7 +18,7 @@ from starlette.requests import ClientDisconnect
 from starlette.types import Message, Scope
 
 from studio_api.io.router import ClosingFileResponse, IOContext, _monitor_log_response, create_router
-from studio_api.models import JsonValue, ResponseModel
+from studio_api.models import JsonValue, MAX_SAFE_INTEGER, ResponseModel
 
 if TYPE_CHECKING:
     from studio_api.context import ApiContext
@@ -165,18 +165,30 @@ class IORouterTests(unittest.TestCase):
         self.client.close()
         self.temp.cleanup()
 
-    def test_terminal_query_modes_preserve_parse_qs_first_value_and_blank_rules(self) -> None:
-        live = self.client.get("/api/terminals/output?id=&id=term&offset=&offset=7")
+    def test_terminal_query_modes_use_single_scalar_values(self) -> None:
+        live = self.client.get("/api/terminals/output?id=term&offset=7")
         self.assertEqual(live.status_code, 200)
         self.assertEqual(live.json(), {"text": "tail", "offset": 4, "truncated": False,
                                        "status": "running", "exitCode": None, "error": None})
         self.assertEqual(self.context.terminals().calls[-1], ("output", ("term", "7")))
-        history = self.client.get("/api/terminals/output?id=term&history=&history=1&offset=3")
+        history = self.client.get("/api/terminals/output?id=term&history=1&offset=3")
         self.assertEqual(history.status_code, 200)
         self.assertEqual(self.context.terminals().calls[-1], ("history", ("term", "3", "65536")))
-        not_history = self.client.get("/api/terminals/output?id=term&history=1&history=1")
+        not_history = self.client.get("/api/terminals/output?id=term")
         self.assertEqual(not_history.status_code, 200)
         self.assertEqual(self.context.terminals().calls[-1][0], "output")
+
+    def test_terminal_query_integer_uses_safe_decimal_lexical_forms(self) -> None:
+        valid = ("0", "1", str(MAX_SAFE_INTEGER), "01")
+        invalid = (str(MAX_SAFE_INTEGER + 1), "+1", " 1", "1.0", "")
+        for value in valid:
+            with self.subTest(value=value):
+                response = self.client.get("/api/terminals/output", params={"id": "term", "offset": value})
+                self.assertEqual(response.status_code, 200)
+        for value in invalid:
+            with self.subTest(value=value):
+                response = self.client.get("/api/terminals/output", params={"id": "term", "offset": value})
+                self.assertEqual(response.status_code, 400)
 
     def test_query_models_are_published_to_openapi(self) -> None:
         paths = self.app.openapi()["paths"]
@@ -184,6 +196,17 @@ class IORouterTests(unittest.TestCase):
         file_names = {item["name"] for item in paths["/api/file"]["get"]["parameters"]}
         self.assertTrue({"id", "offset", "history", "limit"}.issubset(terminal_names))
         self.assertEqual(file_names, {"agent", "path", "asset"})
+        log_parameters = {
+            item["name"]: item
+            for item in paths["/api/monitor/log"]["get"]["parameters"]
+        }
+        range_schema = log_parameters["Range"]["schema"]
+        range_value_schema = next(
+            alternative
+            for alternative in range_schema["anyOf"]
+            if alternative.get("type") != "null"
+        )
+        self.assertEqual(range_value_schema, {"type": "string"})
         log_responses = paths["/api/monitor/log"]["get"]["responses"]
         self.assertEqual(set(log_responses["200"]["content"]), {"text/plain"})
         self.assertEqual(set(log_responses["206"]["content"]), {"text/plain"})
@@ -326,7 +349,7 @@ class IORouterTests(unittest.TestCase):
                 "server": ("127.0.0.1", 80)}
 
     def test_file_query_and_base64_wire_shape(self) -> None:
-        result = self.client.get("/api/file?agent=first&agent=second&path=&path=notes.txt")
+        result = self.client.get("/api/file?agent=first&path=notes.txt")
         self.assertEqual(result.status_code, 200)
         self.assertEqual(result.json(), {"name": "sample.txt", "mime": "text/plain", "base64": "YWJj"})
         self.assertEqual(self.runtime.calls[-1], ("file_content", ("first", "notes.txt", None)))

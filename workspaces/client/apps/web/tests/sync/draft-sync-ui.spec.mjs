@@ -95,6 +95,10 @@ test("Draft sync ui", async ({
         ).json()
       ).documents;
     const push = async (value, previous) => {
+      const toApiDocument = (document) => {
+        const { _deleted, ...state } = document;
+        return { ...state, deleted: _deleted === true };
+      };
       const response = await fetch(origin + "/api/sync/drafts", {
         method: "POST",
         headers: {
@@ -106,12 +110,15 @@ test("Draft sync ui", async ({
         body: JSON.stringify({
           rows: [
             {
-              newDocumentState: {
+              newDocumentState: toApiDocument({
                 id: value.id,
                 seq: 0,
                 payload: JSON.stringify(value),
-              },
-              ...(previous ? { assumedMasterState: previous } : {}),
+                _deleted: false,
+              }),
+              ...(previous
+                ? { assumedMasterState: toApiDocument(previous) }
+                : {}),
             },
           ],
         }),
@@ -912,6 +919,10 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
         { workspaceId, id },
       );
     const sendRemote = async (value, previous) => {
+      const toApiDocument = (document) => {
+        const { _deleted, ...state } = document;
+        return { ...state, deleted: _deleted === true };
+      };
       const response = await fetch(`${origin}/api/sync/drafts`, {
         method: "POST",
         headers: {
@@ -923,12 +934,13 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
         body: JSON.stringify({
           rows: [
             {
-              newDocumentState: {
+              newDocumentState: toApiDocument({
                 id: value.id,
                 seq: 0,
                 payload: JSON.stringify(value),
-              },
-              assumedMasterState: previous,
+                _deleted: false,
+              }),
+              assumedMasterState: toApiDocument(previous),
             },
           ],
         }),

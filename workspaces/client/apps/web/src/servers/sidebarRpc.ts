@@ -65,10 +65,23 @@ export function createSidebarRpcClient(
     pending.delete(event.data.correlation);
     clearTimeout(request.timer);
     if (event.data.error) {
-      const { message, status, payload } = event.data.error;
+      const { message, status, location, outcome, catalogPending } =
+        event.data.error;
       request.reject(
         typeof status === "number"
-          ? new ApiError(message, status, payload)
+          ? new ApiError(
+              message,
+              status,
+              {
+                error: message,
+                ...(Array.isArray(location) ? { location } : {}),
+                ...(typeof outcome === "string" ? { outcome } : {}),
+                ...(typeof catalogPending === "boolean"
+                  ? { catalogPending }
+                  : {}),
+              },
+              Array.isArray(location) ? location : undefined,
+            )
           : new Error(message),
       );
     } else request.resolve(event.data.result);

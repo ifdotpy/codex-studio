@@ -150,11 +150,11 @@ def error_response(
     error: str,
     status: int,
     *,
-    details: JsonValue | None = None,
+    location: list[str] | None = None,
     headers: Mapping[str, str] | None = None,
 ) -> Response:
     """Return the existing `{error: ...}` shape through the common validator."""
-    value = ErrorResponse(error=error, details=details) if details is not None else ErrorResponse(error=error)
+    value = ErrorResponse(error=error, location=location) if location is not None else ErrorResponse(error=error)
     response = context.send(request, value, status=status)
     if headers:
         response.headers.update(headers)
@@ -237,6 +237,7 @@ def install_error_response_docs(app: FastAPI) -> None:
                 responses = operation.setdefault("responses", {})
                 if not isinstance(responses, dict):
                     continue
+                responses.pop("422", None)
                 response_413 = responses.get("413")
                 if isinstance(response_413, dict) and (
                     method.upper() in WRITE_METHODS
@@ -251,17 +252,7 @@ def install_error_response_docs(app: FastAPI) -> None:
                     }
                     if status == 413 and method.upper() in WRITE_METHODS:
                         documented_response["description"] = OPENAPI_413_DESCRIPTION
-                    responses.setdefault(
-                        str(status),
-                        documented_response,
-                    )
-                generated_validation = responses.get("422")
-                if isinstance(generated_validation, dict) and "model" not in operation.get("responses", {}).get("422", {}):
-                    schema_value = generated_validation.get("content", {})
-                    application_json = schema_value.get("application/json", {}) if isinstance(schema_value, dict) else {}
-                    detail_schema = application_json.get("schema", {}) if isinstance(application_json, dict) else {}
-                    if isinstance(detail_schema, dict) and detail_schema.get("$ref") == "#/components/schemas/HTTPValidationError":
-                        responses.pop("422", None)
+                    responses.setdefault(str(status), documented_response)
         app.openapi_schema = schema
         return cast(dict[str, JsonValue], schema)
 

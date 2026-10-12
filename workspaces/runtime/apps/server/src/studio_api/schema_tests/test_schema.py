@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import cast
 
 from codex_sync_entities import _DTO_MODELS
@@ -9,12 +11,18 @@ from studio_api.models import JsonValue
 from studio_api.generate_types import render
 from studio_api.schema import (
     entity_schema_names,
+    bound_integer_schemas,
     normalize_json_value_schema,
     remove_orphan_fastapi_validation_schemas,
     JSON_VALUE_SCHEMA,
     validate_error_responses,
     validate_contract_schemas,
     openapi_document,
+)
+from studio_api.request_schema_audit import (
+    _contradictory_union_findings,
+    _json_schema_extra_findings,
+    request_schema_audit,
 )
 
 
@@ -71,10 +79,77 @@ def sample_document(response_schema: dict[str, JsonValue]) -> dict[str, JsonValu
         },
     }
     normalize_json_value_schema(document)
+    bound_integer_schemas(document)
     return document
 
 
 class SchemaContractTests(unittest.TestCase):
+    def test_generated_document_bounds_every_integer_schema(self) -> None:
+        document = openapi_document()
+
+        def visit(value: JsonValue, pointer: str = "") -> None:
+            if isinstance(value, dict):
+                if value.get("type") == "integer":
+                    self.assertIn("minimum", value, pointer)
+                    self.assertIn("maximum", value, pointer)
+                for key, child in value.items():
+                    visit(child, f"{pointer}/{key}")
+            elif isinstance(value, list):
+                for index, child in enumerate(value):
+                    visit(child, f"{pointer}/{index}")
+
+        visit(document)
+
+    def test_integer_schema_bounder_preserves_domains_and_bounds_consts(self) -> None:
+        document: dict[str, JsonValue] = {
+            "anyOf": [
+                {"type": "integer"},
+                {"type": "integer", "minimum": 4, "maximum": 7},
+                {"type": "integer", "const": 1},
+            ]
+        }
+        bound_integer_schemas(document)
+        variants = document["anyOf"]
+        assert isinstance(variants, list)
+        self.assertEqual(variants[0], {"type": "integer", "minimum": 0, "maximum": 9_007_199_254_740_991})
+        self.assertEqual(variants[1], {"type": "integer", "minimum": 4, "maximum": 7})
+        self.assertEqual(variants[2], {"type": "integer", "const": 1, "minimum": 1, "maximum": 1})
+
+    def test_schema_audit_rejects_types_excluded_by_union_branches(self) -> None:
+        findings = _contradictory_union_findings({
+            "parameters": [{
+                "name": "Last-Event-ID",
+                "schema": {"type": "integer", "anyOf": [{"type": "null"}, {"type": "string"}]},
+            }],
+        })
+        self.assertEqual(findings, [{
+            "kind": "type_excluded_by_union",
+            "location": "openapi/parameters/0/schema",
+            "keyword": "anyOf",
+        }])
+
+    def test_request_schema_audit_has_only_documented_exceptions(self) -> None:
+        report = request_schema_audit()
+        self.assertEqual(report["findings"], [])
+        self.assertEqual(report["jsonSchemaExtra"], {"uses": 0, "validationUses": 0})
+        exceptions = report["exceptions"]
+        self.assertTrue(exceptions)
+        self.assertIsInstance(exceptions, list)
+        assert isinstance(exceptions, list)
+        self.assertTrue(all(isinstance(item, dict) and "exception" in item for item in exceptions))
+
+    def test_schema_extra_audit_rejects_schema_only_validation_keywords(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "route.py").write_text(
+                'query = Query(json_schema_extra={"pattern": "^[0-9]+$"})\n',
+                encoding="utf-8",
+            )
+            findings, counts = _json_schema_extra_findings(root)
+        self.assertEqual(counts, {"uses": 1, "validationUses": 1})
+        self.assertEqual(findings[0]["kind"], "schema_only_validation_constraint")
+        self.assertEqual(findings[0]["keywords"], "pattern")
+
     def test_accepts_referenced_and_explicit_success_schema(self) -> None:
         document = sample_document({"$ref": "#/components/schemas/AgentEntityDto"})
         validate_contract_schemas(document)
@@ -105,7 +180,7 @@ class SchemaContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "400 must use ErrorResponse"):
             validate_error_responses(document)
 
-    def test_rejects_fastapi_default_422_validation_schema(self) -> None:
+    def test_rejects_422_validation_response(self) -> None:
         document = sample_document({"type": "string"})
         responses = _responses(document)
         responses["422"] = {
@@ -115,7 +190,7 @@ class SchemaContractTests(unittest.TestCase):
                 }
             }
         }
-        with self.assertRaisesRegex(ValueError, "default FastAPI 422"):
+        with self.assertRaisesRegex(ValueError, "request validation must use status 400"):
             validate_error_responses(document)
 
     def test_rejects_success_with_missing_schema(self) -> None:
@@ -199,6 +274,20 @@ class SchemaContractTests(unittest.TestCase):
             {"oneOf": [{"type": "string"}, {}]}
         )
         with self.assertRaisesRegex(ValueError, r"oneOf\[1\].*no type or validation shape"):
+            validate_contract_schemas(document)
+
+    def test_rejects_integer_schema_without_bounds(self) -> None:
+        document = sample_document({"type": "integer"})
+        paths = cast(dict[str, JsonValue], document["paths"])
+        example_path = cast(dict[str, JsonValue], paths["/api/example"])
+        get_operation = cast(dict[str, JsonValue], example_path["get"])
+        responses = cast(dict[str, JsonValue], get_operation["responses"])
+        response = cast(dict[str, JsonValue], responses["200"])
+        content = cast(dict[str, JsonValue], response["content"])
+        media = cast(dict[str, JsonValue], content["application/json"])
+        schema = cast(dict[str, JsonValue], media["schema"])
+        schema.pop("minimum")
+        with self.assertRaisesRegex(ValueError, "integer schema has no minimum"):
             validate_contract_schemas(document)
 
     def test_rejects_query_parameter_without_schema(self) -> None:
