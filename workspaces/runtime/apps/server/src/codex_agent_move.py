@@ -25,6 +25,14 @@ from codex_mcp_capabilities import prompt_catalog, instruction_proofs, instructi
 
 CHUNK = 96 * 1024
 DEADLINE = 300
+# The transfer deadline grows with the native history at this floor rate.
+MIN_TRANSFER_RATE = 64 * 1024
+# Source phases before any import on the target: a chat held there can be released.
+RELEASABLE = frozenset({'waiting', 'exported'})
+
+
+def transfer_deadline(files: list[dict[str, Any]], start: float) -> float:
+    return start + DEADLINE + sum(int(entry['size']) for entry in files) / MIN_TRANSFER_RATE
 _TERMINAL = {'complete', 'unknown', 'failed'}
 
 
@@ -513,9 +521,9 @@ class AgentMoves:
             with self.lock:
                 if key in self.running or self.runtime.closed:
                     continue
-                # A move that stopped before any transfer is released whenever the target
-                # confirms it (_release_unsent), also after its deadline.
-                if operation.get('uncertainPhase') != 'waiting' and (
+                # A move held before any import on the target is released when the target
+                # confirms that it cannot start (_release_untransferred), also after the deadline.
+                if operation.get('uncertainPhase') not in RELEASABLE and (
                         operation.get('recoveryExpiredAt') or self._expire(operation)):
                     continue
                 self.running.add(key)
@@ -551,15 +559,16 @@ class AgentMoves:
     def _reconcile(self, operation: dict[str, Any]) -> None:
         key = operation['id']
         try:
-            if operation.get('uncertainPhase') == 'waiting':
-                self._release_unsent(operation)
-                return
-            if self._expire(operation):
+            phase = operation['uncertainPhase']
+            if phase not in RELEASABLE and self._expire(operation):
                 return
             # A fresh read identity observes newer state; it cannot resume or start input.
             target = self._exchange(operation['server'], 'move_status', {'move': key},
                                     identity(key, 'status', str(int(time.time() // 20))))
-            phase = operation['uncertainPhase']
+            if self._release_untransferred(operation, target) or phase == 'waiting':
+                return
+            if operation.get('recoveryExpiredAt') or self._expire(operation):
+                return
             if phase == 'exported' and target['phase'] == 'receiving':
                 # Begin and chunks are immutable compare-and-set writes. The
                 # target receipt proves the same transfer exists; exact chunks
@@ -615,33 +624,38 @@ class AgentMoves:
         with self.runtime.db() as db:
             self._save(db, operation)
 
-    def _release_unsent(self, operation: dict[str, Any]) -> None:
-        """A move that stopped while the source exported sent the target only its check. When
-        the target confirms that it has no import, the chat stays here and takes input again.
-        No native input was repeated."""
+    def _release_untransferred(self, operation: dict[str, Any], target: dict[str, Any]) -> bool:
+        """Release a held move whose target can never start the chat. Before export the target
+        has only the check; its answer not_started proves that. After export the target
+        imports only on move_prepare, which the source never sent, and it refuses every
+        action after its deadline, which never exceeds the source deadline. A target that
+        reports an import for a move held before export keeps it held. The chat stays here
+        and takes input again. No native input was repeated."""
         key = operation['id']
-        target = self._exchange(operation['server'], 'move_status', {'move': key},
-                                identity(key, 'status', str(int(time.time() // 20))))
-        if target.get('phase') != 'not_started':
-            return
+        phase = operation.get('uncertainPhase')
+        expired = time.time() >= operation.get('deadline', operation['created'] + DEADLINE)
+        if not ((phase == 'waiting' and target.get('phase') == 'not_started')
+                or (phase == 'exported' and expired and target.get('phase') != 'active')):
+            return False
+        reason = ('The move stopped before any transfer' if target.get('phase') == 'not_started'
+                  else 'The move did not finish before its deadline')
         with self.runtime.lock, self.runtime.db() as db:
             current = self._get(db, key)
-            if not current or current['phase'] != 'unknown' or current.get('uncertainPhase') != 'waiting':
-                return
-            current.update(phase='failed', releasedAt=time.time(),
-                           error='The move stopped before any transfer. The chat stays on this server')
+            if not current or current['phase'] != 'unknown' or current.get('uncertainPhase') != phase:
+                return False
+            current.update(phase='failed', releasedAt=time.time(), error=reason + '. The chat stays on this server')
             self._save(db, current)
             agent = self.runtime.agent(current['agent'], db)
             if agent.get('executionMove', {}).get('id') == key:
                 agent.pop('executionMove')
-                agent['error'] = ('The move stopped before any transfer. The chat stays on this server; '
-                                  'ask for the move again')
+                agent['error'] = reason + '. The chat stays on this server; ask for the move again'
                 pending = db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND status='pending'",
                                      (agent['id'],)).fetchone()
                 if agent.get('status') == 'queued' and not agent.get('inFlight') and not pending:
                     agent['status'] = 'waiting'
                 self.runtime.put(db, 'agents', agent)
             self.runtime.changed.set()
+        return True
 
     def _export(self, operation: dict[str, Any]) -> dict[str, Any]:
         agent = self.runtime.agent(operation['agent'])
@@ -694,14 +708,15 @@ class AgentMoves:
             if field.startswith(('imageWorkspace', 'workerBase', 'worktree')) or field in {'cwd', 'sourceCwd'}}
         archived_agent.setdefault('executionArchives', []).append({'move': operation['id'], 'server': self.service.server_id,
             'threadId': agent['threadId'], 'accountKey': agent.get('accountKey', 'default'), 'workspace': workspace_archive, 'at': operation['created']})
+        files = [{'name': name, 'size': (folder / name).stat().st_size,
+                  'sha256': hashlib.sha256((folder / name).read_bytes()).hexdigest()} for name in ('native.zip',)]
+        operation['deadline'] = max(operation['deadline'], transfer_deadline(files, time.time()))
         descriptor = {'move': operation['id'], 'deadline': operation['deadline'], 'fingerprint': operation['fingerprint'], 'acceptedResult': operation['result'], 'agent': archived_agent,
                       'workspaceArchive': workspace_archive,
                       'nativeThread': agent['threadId'], 'nativeParameters': parameters, 'bridgeSession': bridge_session,
                       'target': operation['target'], 'preflight': operation['preflight'],
                       'cwd': operation['args']['cwd'], 'note': operation['args'].get('note', ''), 'link': link,
-                      'files': [{'name': name, 'size': (folder / name).stat().st_size,
-                                 'sha256': hashlib.sha256((folder / name).read_bytes()).hexdigest()}
-                                for name in ('native.zip',)]}
+                      'files': files}
         if len(request_body(identity(operation['id'], 'begin'), 'move_begin', descriptor).encode()) > MAX_REQUEST:
             raise ValueError('The exact native settings exceed 256 KiB after compression. No instructions were truncated')
         return descriptor
@@ -928,6 +943,11 @@ class AgentMoves:
             operation = self._get(db, identity(move, 'target'))
             if action == 'move_begin':
                 self._check_deadline({'deadline': payload['deadline'], 'created': time.time()})
+                files = payload.get('files')
+                if not isinstance(files, list) or not files or any(
+                        not isinstance(entry, dict) or type(entry.get('size')) is not int
+                        or not 0 <= entry['size'] <= MAX_HISTORY_BYTES + 1024 * 1024 for entry in files):
+                    raise ValueError('The move history files are invalid')
                 if payload.get('link', {}).get('home') != payload.get('preflight', {}).get('routeHome'):
                     raise PermissionError('The source move identity differs from the paired server')
                 if payload['preflight']['sourceServer'] != principal:
@@ -945,7 +965,7 @@ class AgentMoves:
                         raise ValueError('The destination already has this Studio identity')
                 operation = {'id': identity(move, 'target'), 'move': move, 'side': 'target', 'principal': principal,
                              'descriptor': copy.deepcopy(payload), 'phase': 'receiving', 'created': time.time(),
-                             'deadline': min(payload['deadline'], time.time() + DEADLINE)}
+                             'deadline': min(payload['deadline'], transfer_deadline(payload['files'], time.time()))}
                 self._save(db, operation)
                 return {'phase': 'receiving'}
             if operation is None and action == 'move_status':
