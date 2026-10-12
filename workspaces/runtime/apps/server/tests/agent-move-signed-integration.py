@@ -780,7 +780,7 @@ class Moves(f.SignedIntegration):
         key = accepted['requestId']
         with patch.object(service, '_exchange', side_effect=lost_chunks):
             service.tick()
-            f.fixture.f.eventually(lambda: not service.running, timeout=DEADLINE)
+            f.fixture.f.eventually(lambda: not service.running)
         with self.a.runtime.db() as db:
             operation = service._get(db, key)
             self.assertEqual((operation['phase'], operation['uncertainPhase']), ('unknown', 'exported'))
@@ -793,7 +793,7 @@ class Moves(f.SignedIntegration):
             receiving['deadline'] = time.time() - 1
             target._save(db, receiving)
         service.tick()
-        f.fixture.f.eventually(lambda: not service.running, timeout=DEADLINE)
+        f.fixture.f.eventually(lambda: not service.running)
         with self.a.runtime.read_db() as db:
             released = service._get(db, key)
         self.assertEqual(released['phase'], 'failed')
