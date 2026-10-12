@@ -19,6 +19,7 @@ pub use records::{
 };
 pub use repositories::rules::{RulesRepository, StoredAgent, StoredRule};
 pub use repositories::sync_documents::{EntityRow, SyncDocument, SyncDocumentsRepository};
+pub use repositories::workspace_files::{StoredWorkspaceAsset, WorkspaceFilesRepository};
 
 const DATABASE_BUSY_TIMEOUT_MS: u32 = 15_000;
 
