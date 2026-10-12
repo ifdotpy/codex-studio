@@ -8,6 +8,9 @@ from typing import Literal, TypeAlias
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel
+from codex_nested_delegation import (
+    DEFAULT_DELEGATION_DEPTH, MAX_DELEGATION_DEPTH, MIN_DELEGATION_DEPTH,
+)
 from studio_api.sync.models import (
     AgentEntityDto,
     CapacityRetryDto,
@@ -227,6 +230,12 @@ class WorkerDefaults(ContractModel):
     fast_mode: bool
     daybreak_enabled: bool | None = None
     account_key: str | None = Field(default=None, max_length=200)
+    delegation_depth: int = Field(
+        default=DEFAULT_DELEGATION_DEPTH,
+        strict=True,
+        ge=MIN_DELEGATION_DEPTH,
+        le=MAX_DELEGATION_DEPTH,
+    )
 
     @field_validator("effort")
     @classmethod

@@ -1200,6 +1200,12 @@ class Moves(f.SignedIntegration):
         self.assertTrue(reply['cacheLossApproved'])
 
     def test_local_move_preserves_history_and_the_old_workspace(self):
+        defaults = self.a.runtime.worker_defaults(self.a.runtime.agent(self.lead['id']))
+        defaults['delegationDepth'] = 2
+        with self.a.runtime.lock, self.a.runtime.db() as db:
+            lead = self.a.runtime.agent(self.lead['id'], db)
+            lead['workerDefaults'] = defaults
+            self.a.runtime.put(db, 'agents', lead)
         service = self.a.runtime.multi_server().moves()
         destination = self.a.folder / 'prepared-local'
         destination.mkdir()
@@ -1211,8 +1217,22 @@ class Moves(f.SignedIntegration):
         self.assertFalse(moved.get('executionMove'), moved.get('error'))
         self.assertEqual(moved['cwd'], str(destination))
         self.assertEqual(moved['executionArchives'][-1]['workspace']['cwd'], self.lead['cwd'])
+        self.assertEqual(moved['workerDefaults']['delegationDepth'], 2)
         self.assertFalse(moved.get('movedTo'))
         self.assertEqual(len(self.events(self.a, moved['id'], 'followup')), 1)
+        worker = self.a.runtime.create(
+            {'name': 'Moved policy worker', 'prompt': 'Delegate', 'role': 'implementer',
+             'model': 'gpt-6-astra', 'fast_mode': False},
+            parent=moved['id'], defer=True,
+        )
+        with self.a.runtime.lock, self.a.runtime.db() as db:
+            worker['autoWake'] = True
+            self.a.runtime.put(db, 'agents', worker)
+        grandchild = self.a.runtime.spawn_agents(worker, {'agents': [{
+            'name': 'Moved policy grandchild', 'prompt': 'Retained depth', 'role': 'implementer',
+            'model': 'gpt-6-astra', 'fast_mode': False,
+        }]}, 'moved-depth-retained')['agents'][0]
+        self.assertEqual(self.a.runtime.agent(grandchild['id'])['parentId'], worker['id'])
 
     def test_return_to_the_original_home_keeps_the_identity_and_task_board(self):
         moved = self.finish_move(self.lead)
@@ -1246,6 +1266,31 @@ class Moves(f.SignedIntegration):
         result = json.loads(self.events(self.a, self.lead['id'], 'child_result')[0]['text'])
         self.assertEqual(result['agent_id'], worker['id'])
         self.assertEqual(result['result'], 'Moved result')
+
+    def test_worker_move_carries_root_delegation_depth_in_remote_link(self):
+        defaults = self.a.runtime.worker_defaults(self.a.runtime.agent(self.lead['id']))
+        defaults['delegationDepth'] = 2
+        with self.a.runtime.lock, self.a.runtime.db() as db:
+            lead = self.a.runtime.agent(self.lead['id'], db)
+            lead['workerDefaults'] = defaults
+            self.a.runtime.put(db, 'agents', lead)
+        worker = self.a.runtime.create(
+            {'name': 'Movable policy worker', 'prompt': 'Continue', 'role': 'implementer'},
+            parent=self.lead['id'], defer=True,
+        )
+        with self.a.runtime.lock, self.a.runtime.db() as db:
+            worker['autoWake'] = True
+            self.a.runtime.put(db, 'agents', worker)
+        worker = self.a.runtime.prepare(worker)
+        service = self.a.runtime.multi_server().moves()
+        reply = service.start(worker, {
+            'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': 'worker-depth-link',
+        }, 'worker-depth-link')
+        with self.a.runtime.read_db() as db:
+            operation = service._get(db, reply['requestId'])
+        descriptor = service._export(operation)
+        self.assertEqual(descriptor['link']['root'], self.lead['id'])
+        self.assertEqual(descriptor['link']['defaults']['delegationDepth'], 2)
 
 
 if __name__ == '__main__':

@@ -445,21 +445,24 @@ class VmAgents(unittest.TestCase):
         exec(compile(ast.Module(body=original_methods, type_ignores=[]), '<pre-vm-runtime>', 'exec'), namespace)
         before = namespace['new_thread_params']
         lead = self.runtime.new_lead({'cwd': str(self.project), 'workspaceMode': 'worktree'})
+        worker = self.worker(lead)
         for provider in ('codex', 'claude'):
             for is_lead in (True, False):
                 with self.subTest(provider=provider, is_lead=is_lead):
-                    actor = {**lead, 'threadId': 'existing-thread', 'isLead': is_lead,
+                    actor = {**(lead if is_lead else worker), 'threadId': 'existing-thread', 'isLead': is_lead,
                              'role': 'orchestrator' if is_lead else 'implementer', 'provider': provider}
                     role_text = self.runtime.role_guidance(actor)
                     from codex_session_tools import session_tool_name, LEGACY_MOVE
                     role_name = 'codex-orchestrator' if is_lead else 'codex-subagent'
+                    legacy_role = is_lead and session_tool_name(actor) == LEGACY_MOVE
                     role_file = '.agents/skills/' + role_name + ('/references/legacy-move-role.md'
-                        if is_lead and session_tool_name(actor) == LEGACY_MOVE else '/SKILL.md')
-                    original_role = subprocess.check_output(['git', 'show',
-                        'dd9c89e12835f4ce2ae1f795259d6655f8e33e3c:' + role_file], text=True).strip()
+                        if legacy_role else ('/references/native-role.md' if actor.get('threadId') else '/SKILL.md'))
+                    original_role = (REPOSITORY_ROOT / role_file).read_text().strip()
                     self.assertIn('\n' + original_role + '\n[End Studio role skill]', role_text)
                     read_text = Path.read_text
-                    role_path = REPOSITORY_ROOT / role_file
+                    # The historical constructor always reads SKILL.md, while
+                    # current existing sessions may use native-role.md.
+                    role_path = REPOSITORY_ROOT / '.agents' / 'skills' / role_name / ('references/legacy-move-role.md' if legacy_role else 'SKILL.md')
                     def historical_text(path, *args, **kwargs):
                         return original_role if path == role_path else read_text(path, *args, **kwargs)
                     with patch.object(Path, 'read_text', historical_text), \

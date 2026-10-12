@@ -32,6 +32,7 @@ from studio_api.sync.models import (
     SyncDocument,
     SyncPullResponse,
     WorkspaceEntityDto,
+    WorkerDefaultsDto,
 )
 
 
@@ -92,6 +93,13 @@ class TransferRuntimeFixture:
 
 
 class SyncEntityContractTests(unittest.TestCase):
+    def test_worker_delegation_depth_defaults_and_bounds(self) -> None:
+        defaults = {"model": None, "effort": None, "fastMode": False}
+        self.assertEqual(WorkerDefaultsDto.model_validate(defaults).delegationDepth, 1)
+        for value in (0, 4, True, 1.5, "2"):
+            with self.subTest(value=value), self.assertRaises(ValidationError):
+                WorkerDefaultsDto.model_validate({**defaults, "delegationDepth": value})
+
     def test_main_snapshot_only_agent_fields_stay_off_entity_dto(self) -> None:
         agent = project("agent", {
             "id": "worker-a", "kind": "agent", "workerBaseBehindMain": 182,
