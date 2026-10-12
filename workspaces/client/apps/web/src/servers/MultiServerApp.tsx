@@ -895,12 +895,7 @@ export default function MultiServerApp() {
       </div>
     </Modal>
   );
-  if (
-    !uiOnly &&
-    !paired.length &&
-    accountsServers.length === servers.length &&
-    !manager
-  )
+  if (!uiOnly && !paired.length && accountsServers.length === servers.length)
     return (
       <ServerSettingsContext.Provider
         value={{
