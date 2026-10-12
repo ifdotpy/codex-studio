@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  historyWindowIndices,
   historyOffsets,
   historyWindowRange,
   HISTORY_ROW_ITEMS,
@@ -114,6 +115,31 @@ describe("history windows", () => {
       600,
     );
     expect(empty.end - empty.start).toBeLessThanOrEqual(HISTORY_WINDOW_ROWS);
+  });
+  it("retains a message anchor when a forward page moves the viewport window", () => {
+    const priorRows: HistoryGroup[] = Array.from(
+      { length: 100 },
+      (_, index) => ({
+        id: `m${index}`,
+        items: [{ id: `m${index}`, text: "Answer", role: "assistant" }],
+      }),
+    );
+    const page = Array.from({ length: 20 }, (_, index) => ({
+      id: `m${100 + index}`,
+      items: [
+        { id: `m${100 + index}`, text: "Later answer", role: "assistant" },
+      ],
+    }));
+    const rows = [...priorRows, ...page];
+    const offsets = Array.from(
+      { length: rows.length + 1 },
+      (_, index) => index * 200,
+    );
+    const range = historyWindowRange(offsets, 16_000, 700);
+    const visible = rows.slice(range.start, range.end).map((row) => row.id);
+    expect(visible).not.toContain("m10");
+    const indices = historyWindowIndices(rows, visible, [], [null, "m10"]);
+    expect(indices).toContain(10);
   });
   it("uses measured heights, including a hidden row", () => {
     const rows: HistoryGroup[] = [0, 1, 2].map((id) => ({

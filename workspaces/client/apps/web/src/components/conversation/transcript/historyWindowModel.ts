@@ -74,6 +74,31 @@ export function historyWindowAnchor(rows: HistoryGroup[], id: string) {
   return row ? { row, item: row.items[0] } : undefined;
 }
 
+export function historyWindowIndices(
+  rows: HistoryGroup[],
+  visible: string[],
+  pinned: string[],
+  anchors: (string | null | undefined)[],
+): number[] {
+  const keep = new Set([
+    ...visible,
+    ...pinned,
+    ...anchors.flatMap((id) =>
+      id ? [historyWindowAnchor(rows, id)?.row.id || id] : [],
+    ),
+  ]);
+  return rows.flatMap((row, index) => (keep.has(row.id) ? [index] : []));
+}
+
+/** Row-list changes that begin with a prepend are user navigation, not reflow. */
+export function historyRowsCanRestoreAnchor(
+  previous: HistoryGroup[],
+  current: HistoryGroup[],
+): boolean {
+  if (!previous.length || !current.length) return false;
+  return current[0].id === previous[0].id;
+}
+
 export function historyOffsets(
   rows: HistoryGroup[],
   heights: ReadonlyMap<string, number>,
@@ -123,4 +148,8 @@ export function historyWindowRange(
 
 export function revealHistoryMessage(root: HTMLElement, id: string) {
   root.dispatchEvent(new CustomEvent("studio-history-reveal", { detail: id }));
+}
+
+export function resetHistoryWindowAnchor(root: HTMLElement) {
+  root.dispatchEvent(new CustomEvent("studio-history-reset-anchor"));
 }

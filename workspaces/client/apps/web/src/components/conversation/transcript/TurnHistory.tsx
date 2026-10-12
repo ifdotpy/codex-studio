@@ -366,6 +366,7 @@ export default function TurnHistory({
   agent,
   scrollContainer,
   rememberScroll,
+  hasRecentScrollInput,
 }: {
   items: Message[];
   agent?: Agent;
@@ -377,6 +378,7 @@ export default function TurnHistory({
   onJump: (id: string) => void;
   scrollContainer?: RefObject<HTMLDivElement | null>;
   rememberScroll?: () => void;
+  hasRecentScrollInput?: () => boolean;
 }) {
   reportPromptComposerRender("turn-history", agentId);
   const { items, loading, failed, retry } = useTurnErrors(
@@ -442,6 +444,7 @@ export default function TurnHistory({
       rows={rows}
       storageKey={storageKey}
       rememberScroll={rememberScroll}
+      hasRecentScrollInput={hasRecentScrollInput}
       scrollContainer={scrollContainer}
       render={(group, revealedMessage) => {
         const outcomeTurn = group.turns?.at(-1) || group;
