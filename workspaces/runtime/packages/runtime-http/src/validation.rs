@@ -12,8 +12,6 @@ use serde_json::{Map, Value, json};
 
 const OPENAPI: &[u8] = include_bytes!("../openapi.json");
 const OPENAPI_URI: &str = "https://codex-studio.invalid/openapi.json";
-// Flip this once the schema-tightening document has safe integer bounds everywhere.
-const REQUIRE_SAFE_INTEGER_BOUNDS: bool = false;
 const MAX_SAFE_INTEGER: i128 = 9_007_199_254_740_991;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -301,29 +299,27 @@ fn compile_operation(
     operation: &Value,
 ) -> Result<OperationValidator, String> {
     let mut output = OperationValidator::default();
-    if REQUIRE_SAFE_INTEGER_BOUNDS {
-        let operation_id = operation
-            .get("operationId")
-            .and_then(Value::as_str)
-            .unwrap_or(path);
-        if let Some(schema) = operation.pointer("/requestBody/content/application~1json/schema") {
-            check_safe_integer_bounds(
-                document,
-                schema,
-                "/requestBody/content/application~1json/schema",
-                operation_id,
-            )?;
-        }
-        if let Some(parameters) = operation.get("parameters").and_then(Value::as_array) {
-            for (index, parameter) in parameters.iter().enumerate() {
-                if let Some(schema) = parameter.get("schema") {
-                    check_safe_integer_bounds(
-                        document,
-                        schema,
-                        &format!("/parameters/{index}/schema"),
-                        operation_id,
-                    )?;
-                }
+    let operation_id = operation
+        .get("operationId")
+        .and_then(Value::as_str)
+        .unwrap_or(path);
+    if let Some(schema) = operation.pointer("/requestBody/content/application~1json/schema") {
+        check_safe_integer_bounds(
+            document,
+            schema,
+            "/requestBody/content/application~1json/schema",
+            operation_id,
+        )?;
+    }
+    if let Some(parameters) = operation.get("parameters").and_then(Value::as_array) {
+        for (index, parameter) in parameters.iter().enumerate() {
+            if let Some(schema) = parameter.get("schema") {
+                check_safe_integer_bounds(
+                    document,
+                    schema,
+                    &format!("/parameters/{index}/schema"),
+                    operation_id,
+                )?;
             }
         }
     }
@@ -490,19 +486,17 @@ fn check_safe_integer_bounds(
                 schema
                     .get(name)
                     .and_then(Value::as_number)
-                    .and_then(|number| {
-                        number
-                            .as_i64()
-                            .map(i128::from)
-                            .or_else(|| number.as_u64().map(i128::from))
+                    .and_then(|number| number.as_f64())
+                    .filter(|value| {
+                        value.is_finite()
+                            && value.fract() == 0.0
+                            && (-(MAX_SAFE_INTEGER as f64)..=(MAX_SAFE_INTEGER as f64))
+                                .contains(value)
                     })
             };
             let minimum = bound("minimum");
             let maximum = bound("maximum");
-            if !minimum.is_some_and(|value| (-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(&value))
-                || !maximum
-                    .is_some_and(|value| (-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(&value))
-            {
+            if minimum.is_none() || maximum.is_none() {
                 return Err(format!(
                     "{operation_id} {pointer}: integer schema requires minimum and maximum within ±{MAX_SAFE_INTEGER}"
                 ));
@@ -1275,7 +1269,7 @@ mod tests {
         });
         let operation = json!({
             "parameters":[
-                {"name":"X-Codex-Sync-Protocol","in":"header","required":true,"schema":{"type":"integer","enum":[3]}},
+                {"name":"X-Codex-Sync-Protocol","in":"header","required":true,"schema":{"type":"integer","minimum":0,"maximum":9007199254740991_i64,"enum":[3]}},
                 {"name":"protocol","in":"query","required":true,"schema":{"type":"string","enum":["3"]}}
             ]
         });
@@ -1299,7 +1293,8 @@ mod tests {
         );
         let impossible = json!({
             "parameters":[{"name":"Last-Event-ID","in":"header","schema":{
-                "type":"integer","anyOf":[{"type":"null"},{"type":"string"}]
+                "type":"integer","minimum":0,"maximum":9007199254740991_i64,
+                "anyOf":[{"type":"null"},{"type":"string"}]
             }}]
         });
         assert!(
@@ -1316,7 +1311,7 @@ mod tests {
         let document = json!({"components":{"schemas":{}},"paths":{"/x":{}}});
         let accepted = [
             json!({"type":"string"}),
-            json!({"anyOf":[{"type":"integer"},{"type":"null"}]}),
+            json!({"anyOf":[{"type":"integer","minimum":-9007199254740991_i64,"maximum":9007199254740991_i64},{"type":"null"}]}),
             json!({"type":"array","items":{"type":"string"}}),
         ];
         for schema in accepted {
@@ -1485,6 +1480,11 @@ mod tests {
 
         let safe_schema = json!({"type":"integer","minimum":-9007199254740991_i64,"maximum":9007199254740991_i64});
         assert!(check_safe_integer_bounds(&document, &safe_schema, "/query/limit", "find").is_ok());
+        let integral_float_spelling = json!({"type":"integer","minimum":1.0,"maximum":3.0});
+        assert!(
+            check_safe_integer_bounds(&document, &integral_float_spelling, "/query/depth", "find")
+                .is_ok()
+        );
         let opaque = json!({"$ref":"#/components/schemas/JsonValue"});
         assert!(check_safe_integer_bounds(&document, &opaque, "/body/payload", "send").is_ok());
     }

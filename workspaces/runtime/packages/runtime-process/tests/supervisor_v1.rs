@@ -414,10 +414,11 @@ print(json.dumps({'id': message['id'], 'result': {'echo': text}}), flush=True)
     let mut cursor = ready.sequence;
     let mut stdout_payloads = Vec::new();
     let mut stderr_text = String::new();
+    let mut stderr_seen = false;
     let mut exit_code = None;
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut readers_drained = false;
-    while Instant::now() < deadline && !readers_drained {
+    while Instant::now() < deadline && !(readers_drained && stderr_seen) {
         let result = client
             .next(CursorRequest {
                 handle: handle.clone(),
@@ -429,11 +430,14 @@ print(json.dumps({'id': message['id'], 'result': {'echo': text}}), flush=True)
             cursor = event.sequence;
             match event.kind {
                 EventKind::Stdout => stdout_payloads.push(event.payload),
-                EventKind::Stderr => stderr_text.push_str(
-                    event.payload["data"]
-                        .as_str()
-                        .expect("stderr event payload contains text"),
-                ),
+                EventKind::Stderr => {
+                    stderr_text.push_str(
+                        event.payload["data"]
+                            .as_str()
+                            .expect("stderr event payload contains text"),
+                    );
+                    stderr_seen = stderr_text.contains("stderr:hello-from-rust");
+                }
                 EventKind::Exit => {
                     exit_code = Some(
                         event.payload["returnCode"]
@@ -451,13 +455,16 @@ print(json.dumps({'id': message['id'], 'result': {'echo': text}}), flush=True)
         readers_drained,
         "supervisor output readers did not drain before timeout"
     );
+    assert!(
+        stderr_seen,
+        "timed out waiting for expected stderr stream event"
+    );
     assert_eq!(exit_code, Some(0));
     assert!(
         stdout_payloads
             .iter()
             .any(|payload| payload["result"]["echo"] == "hello-from-rust")
     );
-    assert!(stderr_text.contains("stderr:hello-from-rust"));
     client
         .ack(AckRequest {
             handle: handle.clone(),

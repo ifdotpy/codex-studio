@@ -114,6 +114,9 @@ converted generically according to their declared schema type. Integer
 parameter text accepts ASCII decimal digits (and a leading minus where the
 schema permits negative values); leading zeroes are accepted, while plus signs,
 whitespace, underscores, and decimal points are rejected.
+The tightened document declares scalar headers for `Last-Event-ID` and
+`X-Codex-Sync-Protocol` on `/api/sync/stream`, and `Range` on `/api/monitor/log`;
+the generated request corpus contains cases for all three headers.
 
 The shared middleware checks byte limits before parsing, including on
 federation paths that bypass the general JSON prebuffer. Missing optional bodies
@@ -142,19 +145,21 @@ Query names are checked against the operation's declared OpenAPI parameter
 names before schema validation. OpenAPI does not express rejection of an
 undeclared query name as a request-level rule, so the shared validator applies
 this one global rule and reports the first unknown name at `query/<name>`.
-The optional safe-integer audit switch in the validator checks request schemas
-when each operation is compiled. Production startup compiles registered route
-operations only; the fast-tier all-authority compile test is what checks every
-operation in the document when this switch is enabled.
+Validator compilation always checks request schemas for integer fields bounded
+within ±9,007,199,254,740,991. Integral bounds are accepted whether the JSON
+document spells them as integers or as integral decimals. The check covers
+request bodies and parameters; free-form `JsonValue` stays opaque, and response
+fields such as the deliberate 64-bit aliases and `FileInfo.size` are outside its
+scope. Production startup compiles registered route operations only. The
+all-authority compile test in the fast tier checks all 160 documented operations.
 
 Run the shared corpus differential with the prepared Python interpreter using
 `python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/tests/http_runtime_extractor_differential.py`.
 
 ### Known differences from the Python server
 
-- Validation errors use a short `error` and one `location`; the Python boundary
-  is being aligned to that envelope. The differential compares validation
-  acceptance and status, and checks the envelope shape on refusals.
+- Validation errors use a short `error` and one `location`; the differential
+  checks the envelope shape on refusals.
 - Rust rejects JSON nested beyond 127 containers to bound parser stack use.
   The real Python boundary uses `json.loads` and its runtime recursion guard.
 - JSON Schema considers an integral JSON decimal such as `1.0` an integer,
@@ -165,24 +170,28 @@ Run the shared corpus differential with the prepared Python interpreter using
 - Free-form `JsonValue` is opaque. `serde_json` preserves integers through
   `u64::MAX`; larger integer tokens are carried as `f64`, so precision can be
   lost above `2^64`. This is accepted for opaque payloads because no client
-  produces such integers. Typed integer fields are being bounded by the
-  schema-tightening change; until it lands, the differential allows only the
-  exact observed out-of-range integer cases whose Rust value is an `f64` while
-  Python retains an integer.
+  produces such integers. The differential permits this only at a `JsonValue`
+  schema pointer and normalizes the exact numeric leaf before strictly comparing
+  the rest of the observation.
+- Echoed values whose OpenAPI schema is `number` compare by numeric value, so
+  `1` and `1.0` are equal. All other types remain strictly typed: booleans are
+  never numbers, and an `integer` value must be integral on both sides.
 - Parameter strings are converted by their declared schema. Integer parameter
   text accepts ASCII decimal digits, leading zeroes, and a leading minus only
   where negative values are allowed; plus signs, spaces, underscores,
   decimals, and empty values are rejected. Repeated scalar query parameters
   are rejected even when names are percent-encoded or all values are empty;
   arrays retain repeated occurrences.
-- The finite expected-difference table has temporary entries for known
-  pre-tightening Python/OpenAPI differences and permanent entries for the
-  rename, draft identity, and preference key/scope rules. Each entry names an
-  operation and generated case, the status from both sides, and its cause. Any
-  unlisted mismatch, exception, 5xx, or accepted-value difference fails the
-  differential. For generated predicate classes, a 400 refusal from both sides
-  is recorded as agreement when Rust includes its located error envelope; each
-  class must still contain at least one case with its exact expected difference.
+- The finite expected-difference table contains exact permanent cases for the
+  rename identity, draft identity, preference key/scope, queue message identity,
+  and RuleBody date-window rules, plus the opaque-`JsonValue` precision rule.
+  Model and handler rules are listed in Python's request-schema exception
+  inventory; the differential covers validation/extraction and does not test
+  handler-only protocol negotiation. Any unlisted mismatch, exception, 5xx, or
+  accepted-value difference fails the differential. A 400 refusal from both
+  sides is recorded as agreement for the opaque precision predicate when Rust
+  includes its located error envelope; the predicate must still produce at
+  least one exact normalized difference.
   Agreement counts are reported per cause. The differential stubs route
   handlers, so handler-level rules are exercised separately: rename identity by
   `studio_api.tests.test_main_integration.MainIntegrationTests.test_delivery_and_smart_rename_require_identity_before_dispatch`,
