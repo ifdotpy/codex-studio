@@ -40,7 +40,7 @@ class NativeContinuation(unittest.TestCase):
                 result = runtime.monitor(lead['id'], {'command': shlex.quote(sys.executable) + ' -c ' + shlex.quote(code),
                                                      'timeout_ms': 10000}, approved=True)
                 key = result['id']
-                f.f.eventually(lambda: event(key) is not None and event(key)['status'] == 'delivered', timeout=15)
+                f.f.eventually(lambda: event(key) is not None and event(key)['status'] == 'delivered')
                 self.assertEqual(len(starts()), before + 1)
                 self.assertIn(key, starts()[-1]['input'][0]['text'])
                 terminal = record(key)
@@ -54,9 +54,9 @@ class NativeContinuation(unittest.TestCase):
                 result = runtime.monitor(lead['id'], {'command': 'printf CANCEL_READY; exec sleep 30',
                                                      'timeout_ms': 40000}, approved=True)
                 key = result['id']
-                f.f.eventually(lambda: 'CANCEL_READY' in record(key)['tail'], timeout=15)
+                f.f.eventually(lambda: 'CANCEL_READY' in record(key)['tail'])
                 runtime.cancel_monitor(key)
-                f.f.eventually(lambda: event(key) is not None and event(key)['status'] == 'delivered', timeout=15)
+                f.f.eventually(lambda: event(key) is not None and event(key)['status'] == 'delivered')
                 self.assertEqual(len(starts()), before + 1)
                 terminal = record(key)
                 self.assertEqual(terminal['status'], 'cancelled')

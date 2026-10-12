@@ -195,7 +195,7 @@ class Moves(f.SignedIntegration):
         self.assertTrue(self.a.runtime.agent(actor['id']).get('executionMove'))
         self.a.runtime.multi_server().moves().tick()
         # The move contract permits 300 seconds, including signed transport and storage.
-        f.fixture.f.eventually(lambda: not self.a.runtime.multi_server().moves().running, timeout=DEADLINE)
+        f.fixture.f.eventually(lambda: not self.a.runtime.multi_server().moves().running)
         source = self.a.runtime.agent(actor['id'])
         self.assertNotEqual(source.get('executionMove', {}).get('phase'), 'unknown')
         self.assertEqual(source['movedTo']['server'], self.b.server_id)
@@ -567,7 +567,7 @@ class Moves(f.SignedIntegration):
         with patch.object(service, '_exchange', side_effect=lost_reply):
             for _ in range(3):
                 service.tick()
-                f.fixture.f.eventually(lambda: not service.running, timeout=DEADLINE)
+                f.fixture.f.eventually(lambda: not service.running)
         actor = self.a.runtime.agent(self.lead['id'])
         self.assertFalse(actor.get('executionMove'), actor.get('error'))
         self.assertEqual(actor['movedTo']['server'], self.b.server_id)
@@ -754,7 +754,7 @@ class Moves(f.SignedIntegration):
             'request_id': 'late-activation'}, 'late-activation')
         with patch.object(service, '_exchange', side_effect=before_activation):
             service.tick()
-            f.fixture.f.eventually(lambda: not service.running, timeout=DEADLINE)
+            f.fixture.f.eventually(lambda: not service.running)
         target = self.b.runtime.multi_server().moves()
         from codex_multi_server_orchestration import identity
         with self.b.runtime.db() as db:
@@ -811,7 +811,7 @@ class Moves(f.SignedIntegration):
         self.assertFalse([1 for method, _ in source.calls if method == 'thread/unsubscribe'])
         self.assertFalse([1 for method, _ in self.b.runtime.server.calls if method in {'thread/resume', 'turn/start'}])
         service.tick()
-        f.fixture.f.eventually(lambda: not service.running, timeout=DEADLINE)
+        f.fixture.f.eventually(lambda: not service.running)
         self.assertFalse(service.running)
         self.assertFalse([1 for method, _ in self.b.runtime.server.calls if method in {'thread/resume', 'turn/start'}])
 
@@ -903,7 +903,7 @@ class Moves(f.SignedIntegration):
 
     def run_moves(self, service):
         service.tick()
-        f.fixture.f.eventually(lambda: not service.running, timeout=DEADLINE)
+        f.fixture.f.eventually(lambda: not service.running)
 
     def test_claude_tools_announced_after_the_check_move_after_a_second_check(self):
         service, key = self.start_claude_move('late-tools')
