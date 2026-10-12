@@ -41,6 +41,9 @@ const KNOWN_DEPENDENCIES: &[&str] = &[
     "coordination-policy/chat-history",
     "coordination-policy/room-visibility",
     "event-driver/message-receipts",
+    "event-driver/message-send",
+    "federation-driver/rooms",
+    "agent-discovery/launcher-status",
 ];
 
 impl Dependency {
