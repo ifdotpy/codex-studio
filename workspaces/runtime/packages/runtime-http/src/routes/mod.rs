@@ -3,6 +3,7 @@ pub(crate) mod extractors;
 pub(crate) mod manifest;
 
 mod desktop;
+mod panels;
 mod session;
 mod sync;
 mod sync_documents;
@@ -14,6 +15,7 @@ pub(crate) fn groups() -> Vec<RouteGroup> {
         session::routes(),
         sync::routes(),
         sync_documents::routes(),
+        panels::routes(),
         desktop::routes(),
     ]
 }
