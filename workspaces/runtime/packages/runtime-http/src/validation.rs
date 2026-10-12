@@ -1341,15 +1341,16 @@ mod tests {
 
     #[test]
     fn query_arrays_follow_the_declared_schema_and_undeclared_names_are_rejected_globally() {
-        let registry = Registry::compile(&[
-            ("GET".to_owned(), "/api/terminals/output".to_owned()),
-            ("GET".to_owned(), "/api/session".to_owned()),
-        ])
-        .expect("query schemas compile");
-        let validated = registry
-            .validate_route(
-                "GET",
-                "/api/terminals/output",
+        // The committed document declares no array parameter, so the array form uses a fixture.
+        let document = json!({"components":{"schemas":{}},"paths":{"/x":{}}});
+        let operation = json!({"parameters":[{
+            "name":"history","in":"query","schema":{"type":"array","items":{"type":"string"}}
+        }]});
+        let compiled = compile_for_test(&document, "/x", &operation).expect("array query compiles");
+        let arrays = Registry(Arc::new(BTreeMap::from([("GET /x".to_owned(), compiled)])));
+        let validated = arrays
+            .validate(
+                "GET /x",
                 RawRequest {
                     query: BTreeMap::from([(
                         "history".to_owned(),
@@ -1360,6 +1361,8 @@ mod tests {
             )
             .expect("array query values validate");
         assert_eq!(validated.query["history"], json!(["before", "after"]));
+        let registry = Registry::compile(&[("GET".to_owned(), "/api/session".to_owned())])
+            .expect("query schemas compile");
         let unspecified = registry.validate_route(
             "GET",
             "/api/session",
