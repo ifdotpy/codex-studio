@@ -12473,12 +12473,11 @@ export interface components {
     ProviderUpdateNotice: {
       /** Availableversion */
       availableVersion: string;
-      /** Installedversion */
-      installedVersion: string;
-      /** Provider */
-      provider: string;
-      /** Source */
-      source: string;
+      /**
+       * Source
+       * @constant
+       */
+      source: "installed";
     };
     /** ProviderVersion */
     ProviderVersion: {
@@ -12534,6 +12533,12 @@ export interface components {
       baseline: string;
       /** Id */
       id: string;
+      /**
+       * Level
+       * @default warning
+       * @enum {string}
+       */
+      level?: "warning" | "info";
       /** Message */
       message: string;
       /** Provider */
@@ -12554,6 +12559,11 @@ export interface components {
       baseline: string;
       /** Id */
       id: string;
+      /**
+       * Level
+       * @enum {string}
+       */
+      level?: "warning" | "info";
       /** Message */
       message: string;
       /** Provider */

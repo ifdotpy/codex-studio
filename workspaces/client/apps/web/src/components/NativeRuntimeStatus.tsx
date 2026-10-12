@@ -239,7 +239,12 @@ export default function NativeRuntimeStatus({
                         {providerStatus[provider.status]}
                       </span>
                     </div>
-                    <ProviderUpdateNotice notice={provider.updateNotice} />
+                    <ProviderUpdateNotice
+                      notice={provider.updateNotice}
+                      provider={provider.provider}
+                      providerLabel={label}
+                      installedVersion={provider.installedVersion}
+                    />
                     <small>
                       Running version: {provider.runningVersion || "Unknown"}
                     </small>

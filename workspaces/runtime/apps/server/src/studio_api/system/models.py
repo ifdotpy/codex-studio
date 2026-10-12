@@ -152,11 +152,8 @@ class ProviderVersion(ContractModel):
 class ProviderUpdateNotice(ContractModel):
     """A newer installed version is available but is not in use yet."""
 
-    provider: str
-    installedVersion: str
     availableVersion: str
-    # Keep sources extensible for a future upstream release check.
-    source: str
+    source: Literal["installed"]
 
 
 class ProviderVersionWarning(ContractModel):
@@ -167,6 +164,7 @@ class ProviderVersionWarning(ContractModel):
     baseline: str
     message: str
     at: float
+    level: Literal["warning", "info"] = "warning"
 
 
 class ProviderVersions(ContractModel):

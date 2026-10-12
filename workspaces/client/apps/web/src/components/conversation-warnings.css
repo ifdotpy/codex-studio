@@ -6,6 +6,10 @@
   color: var(--studio-warning-hover);
 }
 
+.conversation-info-trigger {
+  color: var(--mantine-color-blue-6);
+}
+
 .conversation-warning-list {
   display: grid;
   gap: 12px;

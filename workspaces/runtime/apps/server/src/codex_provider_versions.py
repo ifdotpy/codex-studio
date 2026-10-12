@@ -41,16 +41,18 @@ def version_warning(provider, version, *, source="running"):
     }
 
 
-def _codex_version(server, _account, runtime=None):
+def _codex_version(_provider, server, _account, runtime):
     from codex_native_runtime import _version
     version = _version(server)
     available = None
     updates = getattr(runtime, "native_runtime_updates", None)
     if updates is not None:
         try:
+            # selected() is the approved, persisted candidate that the updater
+            # will try to apply to Codex connections when safe rotation permits.
             selected = updates.selected()
             available = selected.get("version") if isinstance(selected, dict) else None
-        except (OSError, TypeError, ValueError):
+        except Exception:
             pass
     return {
         "runningVersion": version,
@@ -78,7 +80,7 @@ def _read_claude_executable(profile):
     return output, None
 
 
-def _claude_version(server, account):
+def _claude_version(_provider, server, account, _runtime):
     # AppServer retains the options used to launch this connection. Account
     # settings can change while that bridge stays alive, so inspect both paths.
     launched_profile = {"claudeOptions": getattr(server, "provider_options", {})}
@@ -107,12 +109,7 @@ def _diagnostic(account_key, provider, versions):
     running = versions.get("runningVersion")
     installed = versions.get("installedVersion")
     configured = versions.get("configuredVersion")
-    update_notice = compare_versions(
-        provider,
-        installed,
-        versions.get("availableVersion"),
-        source=versions.get("availableSource") or "installed",
-    )
+    update_notice = compare_versions(provider, installed, versions.get("availableVersion"))
     warning = version_warning(provider, running) if running else None
     if warning is None and installed:
         warning = version_warning(provider, installed, source="launchedExecutable")
@@ -135,7 +132,7 @@ def _diagnostic(account_key, provider, versions):
         "runningVersion": running,
         "installedVersion": installed,
         "configuredVersion": configured,
-        "updateNotice": update_notice.as_api_value() if update_notice else None,
+        "updateNotice": update_notice.model_dump(by_alias=True) if update_notice else None,
         "baseline": baseline,
         "error": versions.get("error"),
         "message": warning["message"] if warning else versions.get("runningNote") or
@@ -264,7 +261,7 @@ class ProviderVersionMonitor:
                 if provider not in TESTED_BASELINES or provider not in VERSION_READERS:
                     providers.append(_unknown_provider(account_key, provider))
                     continue
-                versions = (self.read_version(provider, server, account) if self.read_version
+                versions = (self.read_version(provider, server, account, runtime) if self.read_version
                             else VERSION_READERS[provider](server, account, runtime))
                 if not isinstance(versions, dict):
                     raise ValueError("Provider version reader returned no status object")
@@ -318,17 +315,42 @@ class ProviderVersionMonitor:
     def status(self):
         with self.lock:
             providers = [dict(item) for item in self.providers]
+            warnings = [
+                {"id": row["id"], "accountKey": row["accountKey"],
+                 "provider": row["provider"], "version": row.get("runningVersion") or
+                 row.get("installedVersion") or row.get("configuredVersion"),
+                 "baseline": row["baseline"], "message": row["message"], "at": row["at"]}
+                for row in providers
+                if row["status"] == "outdated" and row.get("message")
+            ]
+            for row in providers:
+                notice = row.get("updateNotice")
+                if not notice:
+                    continue
+                current = row.get("installedVersion") or "unknown"
+                available = notice["availableVersion"]
+                label = PROVIDER_LABELS.get(row["provider"], row["provider"])
+                message = (
+                    f"A newer installed {label} version is selected for runtime updates, "
+                    f"but this connection is still using {current}. Available: {available}."
+                    if row["provider"] == "codex" else
+                    f"A newer installed {label} version is not in use on this connection yet. "
+                    f"Current: {current} · Available: {available}."
+                )
+                warnings.append({
+                    "id": f"provider-update:{row['accountKey']}",
+                    "accountKey": row["accountKey"],
+                    "provider": row["provider"],
+                    "version": available,
+                    "baseline": current,
+                    "message": message,
+                    "at": row["at"],
+                    "level": "info",
+                })
             return {
                 "checkedAt": self.checked_at,
                 "providers": providers,
-                "warnings": [
-                    {"id": row["id"], "accountKey": row["accountKey"],
-                     "provider": row["provider"], "version": row.get("runningVersion") or
-                     row.get("installedVersion") or row.get("configuredVersion"),
-                     "baseline": row["baseline"], "message": row["message"], "at": row["at"]}
-                    for row in providers
-                    if row["status"] == "outdated" and row.get("message")
-                ],
+                "warnings": warnings,
             }
 
 

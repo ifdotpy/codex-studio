@@ -6,9 +6,10 @@ import ProviderUpdateNotice from "./ProviderUpdateNotice";
 test("names installed Claude Code versions that are not in use yet", () => {
   const markup = renderToStaticMarkup(
     createElement(ProviderUpdateNotice, {
+      provider: "claude",
+      providerLabel: "Claude Code",
+      installedVersion: "2.1.278",
       notice: {
-        provider: "claude",
-        installedVersion: "2.1.278",
         availableVersion: "2.2.0",
         source: "installed",
       },
@@ -20,8 +21,28 @@ test("names installed Claude Code versions that are not in use yet", () => {
   expect(markup).toContain("Current: 2.1.278 · Available: 2.2.0");
 });
 
-test("renders no notice when the available version is unknown", () => {
+test("renders no notice when no newer installed version is available", () => {
   expect(
-    renderToStaticMarkup(createElement(ProviderUpdateNotice, { notice: null })),
+    renderToStaticMarkup(
+      createElement(ProviderUpdateNotice, {
+        provider: "codex",
+        providerLabel: "Codex CLI",
+        installedVersion: "0.153.4",
+        notice: null,
+      }),
+    ),
   ).toBe("");
+});
+
+test("explains that a selected Codex version is not in use yet", () => {
+  const markup = renderToStaticMarkup(
+    createElement(ProviderUpdateNotice, {
+      provider: "codex",
+      providerLabel: "Codex CLI",
+      installedVersion: "0.153.4",
+      notice: { availableVersion: "0.154.0", source: "installed" },
+    }),
+  );
+  expect(markup).toContain("selected for runtime updates");
+  expect(markup).toContain("Current: 0.153.4 · Available: 0.154.0");
 });

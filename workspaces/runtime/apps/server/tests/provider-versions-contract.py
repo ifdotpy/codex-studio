@@ -84,18 +84,65 @@ class ProviderVersionContract(unittest.TestCase):
                     notice = compare_versions(provider, installed, available)
                     self.assertEqual(notice is not None, expected)
                     if notice:
-                        self.assertEqual(notice.provider, provider)
-                        self.assertEqual(notice.installed_version, installed)
-                        self.assertEqual(notice.available_version, available)
+                        self.assertEqual(notice.availableVersion, available)
                         self.assertEqual(notice.source, "installed")
 
     def test_unavailable_codex_candidate_produces_no_notice(self):
         from codex_provider_versions import _codex_version
 
         with patch("codex_native_runtime._version", return_value="1.0.0"):
-            versions = _codex_version(Server(), {}, Runtime())
+            versions = _codex_version("codex", Server(), {}, Runtime())
         self.assertIsNone(versions["availableVersion"])
         self.assertIsNone(_diagnostic("work", "codex", versions)["updateNotice"])
+
+    def test_selected_codex_candidate_produces_notice(self):
+        from codex_provider_versions import _codex_version
+
+        class Updates:
+            def selected(self):
+                return {"version": "0.154.0"}
+
+        runtime = Runtime()
+        runtime.native_runtime_updates = Updates()
+        with patch("codex_native_runtime._version", return_value="0.153.4"):
+            versions = _codex_version("codex", Server(), {}, runtime)
+        self.assertEqual(
+            _diagnostic("work", "codex", versions)["updateNotice"],
+            {"availableVersion": "0.154.0", "source": "installed"},
+        )
+
+    def test_unreadable_selected_codex_candidate_produces_no_notice(self):
+        from codex_provider_versions import _codex_version
+
+        class Updates:
+            def selected(self):
+                raise RuntimeError("candidate store unavailable")
+
+        runtime = Runtime()
+        runtime.native_runtime_updates = Updates()
+        with patch("codex_native_runtime._version", return_value="0.153.4"):
+            versions = _codex_version("codex", Server(), {}, runtime)
+        self.assertIsNone(_diagnostic("work", "codex", versions)["updateNotice"])
+
+    def test_update_notice_is_projected_as_an_informational_runtime_notice(self):
+        monitor = ProviderVersionMonitor()
+        monitor.providers = [{
+            "id": "provider-version:work",
+            "accountKey": "work",
+            "provider": "codex",
+            "status": "current",
+            "runningVersion": "0.153.4",
+            "installedVersion": "0.153.4",
+            "configuredVersion": None,
+            "updateNotice": {"availableVersion": "0.154.0", "source": "installed"},
+            "baseline": "0.153.4",
+            "message": None,
+            "at": 1.0,
+        }]
+        notice = monitor.status()["warnings"][0]
+        self.assertEqual(notice["level"], "info")
+        self.assertIn("selected for runtime updates", notice["message"])
+        self.assertIn("still using 0.153.4", notice["message"])
 
     def test_baseline_means_lowest_version_recorded_in_repo_evidence(self):
         self.assertIsNone(version_warning("codex", "codex-cli 0.153.4"))
@@ -114,7 +161,7 @@ class ProviderVersionContract(unittest.TestCase):
         account = {"provider": "claude", "claudeOptions": {"binaryPath": "/profile/claude"}}
         with patch("codex_provider_versions._read_claude_executable",
                    side_effect=[("Claude Code 2.1.277", None), ("Claude Code 2.2.0", None)]) as read:
-            versions = _claude_version(server, account)
+            versions = _claude_version("claude", server, account, Runtime())
         self.assertEqual(read.call_args_list[0].args[0], {
             "claudeOptions": {"binaryPath": "/launched/claude"},
         })
@@ -275,7 +322,7 @@ class ProviderVersionContract(unittest.TestCase):
         started = threading.Event()
         release = threading.Event()
 
-        def read(provider, _server, _account):
+        def read(provider, _server, _account, _runtime):
             started.set()
             release.wait(2)
             return {"runningVersion": "0.153.3", "installedVersion": "0.153.3"} \
@@ -306,7 +353,7 @@ class ProviderVersionContract(unittest.TestCase):
         started = threading.Event()
         release = threading.Event()
 
-        def read(_provider, server, _account):
+        def read(_provider, server, _account, _runtime):
             if server is old:
                 started.set()
                 release.wait(2)

@@ -1,8 +1,9 @@
 """Compare provider executables and describe newer installed versions."""
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
+
+from studio_api.system.models import ProviderUpdateNotice
 
 
 VERSION_PATTERN = re.compile(
@@ -31,41 +32,18 @@ def parse_version(value: object) -> VersionKey | None:
     )
 
 
-@dataclass(frozen=True, slots=True)
-class ProviderUpdateNotice:
-    """A newer installed version is available but is not in use yet."""
-
-    provider: str
-    installed_version: str
-    available_version: str
-    source: str
-
-    def as_api_value(self) -> dict[str, str]:
-        return {
-            "provider": self.provider,
-            "installedVersion": self.installed_version,
-            "availableVersion": self.available_version,
-            "source": self.source,
-        }
-
-
 def compare_versions(
     provider: str,
     installed_version: str | None,
     available_version: str | None,
-    *,
-    source: str = "installed",
 ) -> ProviderUpdateNotice | None:
     """Return a notice only when a readable installed candidate is newer."""
+    if provider not in {"codex", "claude"}:
+        return None
     if installed_version is None or available_version is None:
         return None
     installed = parse_version(installed_version)
     available = parse_version(available_version)
     if installed is None or available is None or available <= installed:
         return None
-    return ProviderUpdateNotice(
-        provider=provider,
-        installed_version=installed_version,
-        available_version=available_version,
-        source=source,
-    )
+    return ProviderUpdateNotice(availableVersion=available_version, source="installed")
