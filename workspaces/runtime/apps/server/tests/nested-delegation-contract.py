@@ -119,6 +119,21 @@ class NestedDelegationContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "delegation depth"):
             self.spawn(worker, "new-child-after-lowering")
 
+    def test_worker_defaults_update_without_depth_preserves_chat_policy(self):
+        self.set_depth(2)
+        defaults = self.runtime.agent(self.lead["id"])["workerDefaults"]
+        self.runtime.conversation_settings(self.lead["id"], {
+            "worker_defaults": {
+                "model": defaults["model"],
+                "effort": defaults["effort"],
+                "fast_mode": defaults["fastMode"],
+            },
+        })
+        self.assertEqual(self.runtime.agent(self.lead["id"])["workerDefaults"]["delegationDepth"], 2)
+        worker = self.spawn(self.lead, "after-settings-update")
+        child = self.spawn(worker, "after-settings-update-child")
+        self.assertEqual(child["parentId"], worker["id"])
+
     def test_root_team_size_limit_counts_descendants_at_every_level(self):
         self.set_depth(2)
         self.runtime.configure(self.lead["id"], {"maxAgents": 2})

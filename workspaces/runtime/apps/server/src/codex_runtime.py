@@ -4505,13 +4505,17 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             raise ValueError("Fast mode is not supported by the selected model")
         return effort, effort if effort is not None else info.get("defaultReasoningEffort")
 
-    def validate_worker_defaults(self, value, root_model, catalog):
+    def validate_worker_defaults(self, value, root_model, catalog, existing=None):
         from codex_nested_delegation import DEFAULT_DELEGATION_DEPTH
         if (not isinstance(value, dict) or not {"model", "effort", "fast_mode"} <= set(value)
                 or set(value) - {"model", "effort", "fast_mode", "daybreak_enabled", "account_key",
                                  "delegation_depth"}):
             raise ValueError("worker_defaults needs model, effort and fast_mode")
-        depth = value.get("delegation_depth", DEFAULT_DELEGATION_DEPTH)
+        existing_defaults = existing if isinstance(existing, dict) else {}
+        depth = value.get(
+            "delegation_depth",
+            existing_defaults.get("delegationDepth", DEFAULT_DELEGATION_DEPTH),
+        )
         if value["model"] is not None and (not isinstance(value["model"], str) or not value["model"].strip()):
             raise ValueError("Default model must be a model name or null")
         from codex_worker_accounts import selected_account
@@ -5222,7 +5226,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                          daybreakEnabled=daybreak, cyberAccessProgram=program)
                 a["executionSettingsAccountKey"] = a.get("accountKey", "default")
             if "worker_defaults" in data:
-                a["workerDefaults"] = self.validate_worker_defaults(data["worker_defaults"], a["model"], worker_catalog)
+                a["workerDefaults"] = self.validate_worker_defaults(
+                    data["worker_defaults"], a["model"], worker_catalog, a.get("workerDefaults")
+                )
             if "review_defaults" in data:  # type: ignore[call-arg]  # typed-update
                 a["reviewDefaults"] = self.validate_review_defaults(data["review_defaults"], review_catalog)
             if "cwd" in data:
