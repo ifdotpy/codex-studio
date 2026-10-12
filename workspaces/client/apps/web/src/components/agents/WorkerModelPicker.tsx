@@ -314,6 +314,23 @@ function subscribeModelCatalog(
   };
 }
 
+/** One read of an account's subagent models, parsed like useWorkerModels. */
+export async function readWorkerModels(
+  reader: ContextType<typeof ModelCatalogReader>,
+  accountKey: string,
+  workers = false,
+): Promise<WorkerModelInfo[]> {
+  const data = await reader.read({
+    query: { account_key: accountKey, workers: workers ? "1" : undefined },
+  });
+  return Array.isArray(data.data)
+    ? data.data.flatMap((row) => {
+        const parsed = modelInfo(row);
+        return parsed ? [parsed] : [];
+      })
+    : [];
+}
+
 export function useWorkerModels(
   accountKey: string,
   enabled: boolean,
