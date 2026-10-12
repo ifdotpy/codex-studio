@@ -3,6 +3,7 @@ import { writePreferenceEdit } from "../sync/uiPreferenceStore";
 import { useUiPreferenceSync } from "./useUiPreferenceSync";
 import StudioSettingsTabs, {
   isStudioSettingsTab,
+  type StudioSettingsTab,
 } from "../components/StudioSettingsTabs";
 import { ServerSettingsContext } from "./ServerSettingsContext";
 import { useServerDiscovery } from "./useServerDiscovery";
@@ -94,7 +95,13 @@ export default function MultiServerApp() {
   const [manager, setManager] = useState(uiOnly && !paired.length);
   const managerRef = useRef(manager);
   managerRef.current = manager;
-  const [managerTab, setManagerTab] = useState("servers");
+  const [managerTab, setManagerTab] = useState<StudioSettingsTab>(
+    uiOnly ? "servers" : "accounts",
+  );
+  const openManager = () => {
+    setManagerTab("servers");
+    setManager(true);
+  };
   const restoreManagerAfterFrameDialog = useRef(false);
   const restoreAccountActionFocus = useRef<string | null>(null);
   const discovery = useServerDiscovery(
@@ -901,8 +908,12 @@ export default function MultiServerApp() {
         value={{
           server: localServer(),
           panel: management,
-          activate: () => setManager(true),
-          close: () => setManager(false),
+          settingsOpen: manager,
+          settingsTab: managerTab,
+          setSettingsOpen: setManager,
+          setSettingsTab: (tab) => {
+            if (isStudioSettingsTab(tab)) setManagerTab(tab);
+          },
         }}
       >
         <App />
@@ -933,7 +944,7 @@ export default function MultiServerApp() {
           <ActionIcon
             aria-label="Studio settings"
             variant="subtle"
-            onClick={() => setManager(true)}
+            onClick={openManager}
           >
             <Settings size={18} />
           </ActionIcon>
@@ -967,7 +978,7 @@ export default function MultiServerApp() {
                 setMobileOpen(false);
                 setSidebarHidden(true);
               }}
-              settings={() => setManager(true)}
+              settings={openManager}
               search={() => setSearchOpen(true)}
               notify={setFailure}
               notice={failure}
@@ -981,7 +992,7 @@ export default function MultiServerApp() {
                 <Button
                   variant="subtle"
                   aria-label="Studio settings"
-                  onClick={() => setManager(true)}
+                  onClick={openManager}
                 >
                   Settings
                 </Button>
@@ -1000,7 +1011,7 @@ export default function MultiServerApp() {
         {!servers.length && (
           <div className="startup">
             <p>No server is paired.</p>
-            <Button onClick={() => setManager(true)}>Open Settings</Button>
+            <Button onClick={openManager}>Open Settings</Button>
           </div>
         )}
         {servers

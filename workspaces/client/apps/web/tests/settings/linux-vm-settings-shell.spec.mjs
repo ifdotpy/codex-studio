@@ -134,3 +134,132 @@ test("paired-server settings still hand off between shell and local frame", asyn
     await local.close();
   }
 });
+
+test("settings follow paired-server topology changes without stale reopening", async ({
+  page,
+}) => {
+  page.setDefaultTimeout(12000);
+  const local = await fixture("Local");
+  const remote = {
+    id: "remote",
+    label: "Remote",
+    origin: "https://remote.tailnet.ts.net",
+    credentialId: "fixture-credential",
+  };
+  try {
+    await page.goto(local.origin + "/?studio-navigation=classic");
+    await page.locator("#message").waitFor();
+    await page
+      .getByRole("button", { name: "Studio settings", exact: true })
+      .click();
+    const settings = page.getByRole("dialog", {
+      name: "Studio settings",
+      exact: true,
+    });
+    await expect(settings).toBeVisible();
+    await settings.getByRole("tab", { name: "Servers", exact: true }).click();
+    await expect(
+      settings.getByRole("tab", { name: "Servers", exact: true }),
+    ).toHaveAttribute("aria-selected", "true");
+    await page.evaluate((server) => {
+      localStorage.setItem(
+        "studio-paired-servers-v1",
+        JSON.stringify([server]),
+      );
+      window.dispatchEvent(new Event("studio-server-registry"));
+    }, remote);
+    await expect(
+      page.getByRole("combobox", { name: "Studio server" }),
+    ).toHaveValue("local");
+    await expect(settings).toBeVisible();
+    await expect(
+      settings.getByRole("tab", { name: "Servers", exact: true }),
+    ).toHaveAttribute("aria-selected", "true");
+    await settings.getByRole("button", { name: "Remove from this UI" }).click();
+
+    const directSettings = page.getByRole("dialog", {
+      name: "Studio settings",
+      exact: true,
+    });
+    await expect(directSettings).toBeVisible();
+    await expect(
+      directSettings.getByRole("region", { name: "Servers", exact: true }),
+    ).toBeVisible();
+    await directSettings.getByRole("button", { name: "Close" }).click();
+    await expect(directSettings).toBeHidden();
+
+    await page.evaluate((server) => {
+      localStorage.setItem(
+        "studio-paired-servers-v1",
+        JSON.stringify([server]),
+      );
+      window.dispatchEvent(new Event("studio-server-registry"));
+    }, remote);
+    await expect(
+      page.getByRole("dialog", { name: "Studio settings", exact: true }),
+    ).toBeHidden();
+  } finally {
+    await local.close();
+  }
+});
+
+test("reopening shell settings resets a frame-owned tab to Servers", async ({
+  page,
+}) => {
+  page.setDefaultTimeout(12000);
+  const local = await fixture("Local");
+  try {
+    await page.route("**/api/linux-vm/settings", (route) =>
+      route.fulfill({ json: linuxVmConfiguration }),
+    );
+    await page.addInitScript(() => {
+      localStorage.setItem(
+        "studio-paired-servers-v1",
+        JSON.stringify([
+          {
+            id: "remote",
+            label: "Remote",
+            origin: "https://remote.tailnet.ts.net",
+            credentialId: "fixture-credential",
+          },
+        ]),
+      );
+    });
+    await page.goto(local.origin + "/?studio-navigation=classic");
+    await page
+      .getByRole("combobox", { name: "Studio server" })
+      .selectOption("local");
+    const localFrame = page.frameLocator('iframe[src*="studio-server=local"]');
+    await expect(localFrame.locator("#message")).toBeVisible();
+    await page
+      .getByRole("button", { name: "Studio settings", exact: true })
+      .click();
+    const shellSettings = page.getByRole("dialog", {
+      name: "Studio settings",
+      exact: true,
+    });
+    await expect(shellSettings).toBeVisible();
+    await shellSettings
+      .getByRole("tab", { name: "Linux VM", exact: true })
+      .click();
+    await expect(shellSettings).toBeHidden();
+    const frameSettings = localFrame.getByRole("dialog", {
+      name: "Studio settings",
+      exact: true,
+    });
+    await expect(frameSettings).toBeVisible();
+
+    await page
+      .getByRole("button", { name: "Studio settings", exact: true })
+      .click();
+    await expect(shellSettings).toBeVisible();
+    await expect(
+      shellSettings.getByRole("tab", { name: "Servers", exact: true }),
+    ).toHaveAttribute("aria-selected", "true");
+    await expect(
+      shellSettings.getByRole("region", { name: "Servers", exact: true }),
+    ).toBeVisible();
+  } finally {
+    await local.close();
+  }
+});

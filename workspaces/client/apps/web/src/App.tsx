@@ -314,10 +314,18 @@ export default function App() {
   );
   const mobileClient = useMediaQuery("(max-width: 760px)");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [studioSettingsOpen, setStudioSettingsOpen] = useState(false);
-  const [studioSettingsTab, setStudioSettingsTab] =
+  const [localStudioSettingsOpen, setLocalStudioSettingsOpen] = useState(false);
+  const [localStudioSettingsTab, setLocalStudioSettingsTab] =
     useState<StudioSettingsTab>("accounts");
   const serverSettings = useServerSettings();
+  const studioSettingsOpen =
+    serverSettings?.settingsOpen ?? localStudioSettingsOpen;
+  const studioSettingsTab =
+    serverSettings?.settingsTab ?? localStudioSettingsTab;
+  const setStudioSettingsOpen =
+    serverSettings?.setSettingsOpen ?? setLocalStudioSettingsOpen;
+  const setStudioSettingsTab =
+    serverSettings?.setSettingsTab ?? setLocalStudioSettingsTab;
   useEffect(() => {
     if (!studioSettingsOpen) return;
     if (
@@ -335,7 +343,7 @@ export default function App() {
         },
         serverParentOrigin,
       );
-    } else if (studioSettingsTab === "servers") serverSettings?.activate();
+    }
   }, [studioSettingsOpen, studioSettingsTab]);
   const activateSettingsTab = (value: string | null) => {
     if (!isStudioSettingsTab(value)) return;
@@ -2961,7 +2969,6 @@ export default function App() {
         closeOnClickOutside={!accountModalOpen}
         onClose={() => {
           setStudioSettingsOpen(false);
-          serverSettings?.close();
         }}
         size={modalSizes.settings}
         title="Studio settings"
