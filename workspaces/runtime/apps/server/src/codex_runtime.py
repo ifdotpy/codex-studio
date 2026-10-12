@@ -1843,6 +1843,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self._fast_delivery_enabled = True
             self.scheduler = threading.Thread(target=self.schedule, daemon=True)
             self.scheduler.start()
+            self.start_review_archives()
             startup_memory_mark("runtime-init-complete")
             if server_factory is AppServer:
                 self.analytics_history_start()

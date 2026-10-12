@@ -100,6 +100,7 @@ class _WorkHost(RecordStore, Protocol):
     def work_action(self: '_WorkHost', agent_id: 'str', data: 'dict[str, Any]', key: 'str | None'=None, actor: 'str | None'=None, epoch: 'int | None'=None) -> 'dict[str, Any]': ...
     def accepted_archive_tick(self: '_WorkHost') -> 'None': ...
     def setup_work(self: '_WorkHost', db: 'sqlite3.Connection') -> 'None': ...
+    def start_review_archives(self: '_WorkHost') -> 'None': ...
     def _search_phase(self: '_WorkHost', db: 'sqlite3.Connection') -> 'str': ...
     def search_is_indexed(self: '_WorkHost', db: 'sqlite3.Connection', key: 'str') -> 'bool': ...
     def _index_search_next(self: '_WorkHost', db: 'sqlite3.Connection', key: 'str', agent: 'str', kind: 'str', body: 'str') -> 'None': ...
@@ -688,12 +689,18 @@ class WorkMixin:
             db.execute("CREATE TABLE IF NOT EXISTS runtime_search_indexed (id TEXT PRIMARY KEY)")
         if phase not in {"dropping", "complete"} and db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_search'").fetchone():
             self.setup_search_rows(db)
-        for row in db.execute(
-                "SELECT id,record FROM runtime_agents WHERE json_type(record,'$.reviewArchiveScheduled')='text'"):
-            child = json.loads(row['record'])
+        # An archive writes the database. Start it after the startup
+        # transaction, which a concurrent writer makes fail as locked.
+        self._startup_review_archives = [
+            (child['rootId'], child.get('parentId'), child['id'], child['reviewArchiveScheduled'])
+            for child in (json.loads(row['record']) for row in db.execute(
+                "SELECT id,record FROM runtime_agents WHERE json_type(record,'$.reviewArchiveScheduled')='text'"))]
+
+    def start_review_archives(self: "_WorkHost") -> "None":
+        for lead_id, parent_id, child_id, event_id in self.__dict__.pop("_startup_review_archives", ()):
             self.delivery_executor().submit(
-                _archive_reviewer, self, child['rootId'], child.get('parentId'),  # type: ignore[arg-type]  # typed-narrowing: Runtime is concrete mixin host
-                child['id'], child['reviewArchiveScheduled'])
+                _archive_reviewer, self, lead_id, parent_id,  # type: ignore[arg-type]  # typed-narrowing: Runtime is concrete mixin host
+                child_id, event_id)
 
     def setup_search_rows(self: "_WorkHost", db: "sqlite3.Connection") -> "None":
         # FTS UNINDEXED columns cannot support an equality lookup. Keep the

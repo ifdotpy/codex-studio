@@ -387,6 +387,43 @@ class WorkerLifecycleRestartContract(unittest.TestCase):
         self.assertTrue(agent.get('deletedAt'))
         self.assertEqual(agent['agentArchive']['reason'], 'Reviewer result delivered to parent')
 
+    def test_review_archive_waits_for_the_end_of_startup(self):
+        repo = self.make_repo()
+        worker_id, _worktree = self.make_worktree_worker(repo)
+        event_id = 'review-delivered-before-startup'
+        with self.runtime.lock, self.runtime.db() as db:
+            lead = self.runtime.agent(self.lead['id'], db)
+            self.runtime.enqueue(db, lead, 'work_review', 'Review passed', event_id)
+            db.execute("UPDATE runtime_events SET status='delivered' WHERE id=?", (event_id,))
+            child = self.runtime.agent(worker_id, db)
+            child['reviewArchiveScheduled'] = event_id
+            self.runtime.put(db, 'agents', child)
+        runtime_type = type(self.runtime)
+        real_executor = runtime_type.delivery_executor
+        submitted = []
+
+        class Recorder:
+            def __init__(self, runtime):
+                self.runtime = runtime
+
+            def submit(self, fn, *args, **kwargs):
+                # The archive writes the database; startup holds a write
+                # transaction until it marks fast delivery ready.
+                submitted.append((fn.__name__, bool(self.runtime.__dict__.get('_fast_delivery_enabled'))))
+                return real_executor(self.runtime).submit(fn, *args, **kwargs)
+
+        with patch.object(runtime_type, 'delivery_executor', lambda runtime: Recorder(runtime)):
+            self.restart_runtime()
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                agent = self.runtime.agent(worker_id)
+                if agent.get('deletedAt'):
+                    break
+                time.sleep(.05)
+        archives = [ready for name, ready in submitted if name == '_archive_reviewer']
+        self.assertEqual(archives, [True])
+        self.assertTrue(agent.get('deletedAt'))
+
     def test_archive_cleanup_recovers_after_ref_removal_and_metadata_boundaries(self):
         import codex_agent_management as management
         repo = self.make_repo()
