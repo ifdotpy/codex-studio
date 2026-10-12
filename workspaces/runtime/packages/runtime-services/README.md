@@ -31,5 +31,7 @@ Dependency direction:
 operations ← store, providers, process ← services ← http ← runtime-server
 ```
 
+Profile text uses Rust `trim()`; it intentionally does not emulate Python `str.strip()` for U+001C–U+001F.
+
 The plan that assigns services to slices is
 [`docs/plans/rust-runtime-work-breakdown.md`](../../../../docs/plans/rust-runtime-work-breakdown.md).
