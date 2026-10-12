@@ -426,9 +426,32 @@ function ScopedExecutionSettings({
     ...new Set(connectedAccounts.map((account) => account.provider || "codex")),
   ].filter((provider) => role !== "review" || provider === "codex");
   const chooseAccount = (key: string | null) => {
+    setWantedModel(null);
     if (teamDefaults) void changeAccount(key);
     else if (key) onAccountChange?.(key);
   };
+  const leadProvider =
+    accounts.find((account) => account.id === accountOf(agent))?.provider ||
+    agent.provider ||
+    "codex";
+  // Another provider's tab lists that provider's models. Choosing one first moves
+  // the subagents to the provider's first ready account; the model follows.
+  const browseAccount =
+    role === "worker" &&
+    teamDefaults &&
+    pickerProvider !== (activeAccount?.provider || leadProvider)
+      ? connectedAccounts.find(
+          (account) => (account.provider || "codex") === pickerProvider,
+        )
+      : undefined;
+  const browseCatalog = useWorkerModels(
+    browseAccount?.id || "",
+    !!browseAccount && (opened || !!settingsRow),
+  );
+  const [wantedModel, setWantedModel] = useState<{
+    account: string;
+    model: string;
+  } | null>(null);
   useEffect(() => {
     // Keep the confirmed default until the snapshot carries the change.
     if (
@@ -942,24 +965,55 @@ function ScopedExecutionSettings({
     }
   };
   const mobile = useMediaQuery("(max-width: 760px)");
-  const pickerModel =
-    role === "review"
+  useEffect(() => {
+    // Apply a model chosen on another provider's tab once its account is in effect.
+    if (!wantedModel) return;
+    if (error) {
+      setWantedModel(null);
+      return;
+    }
+    if (saving || current.account_key !== wantedModel.account || !catalogKnown)
+      return;
+    setWantedModel(null);
+    if (infoFor(catalog, wantedModel.model))
+      void change({ model: wantedModel.model });
+  }, [wantedModel, error, saving, current.account_key, catalogKnown, catalog]);
+  const pickerModel = browseAccount
+    ? wantedModel?.model || ""
+    : role === "review"
       ? reviewCurrent.model || DEFAULT
       : current.model || DEFAULT;
-  const pickerModels = (role === "review" ? reviewOptions : modelOptions)
-    .filter((row) => {
-      if (row.value === DEFAULT) return role !== "orchestrator";
-      const model = infoFor(catalog, row.value);
-      return (
-        !!model &&
-        !model.hidden &&
-        (role === "review" ||
-          (model.provider ||
-            activeAccount?.provider ||
-            agent.provider ||
-            "codex") === pickerProvider)
-      );
-    })
+  const browseOptions: ModelOption[] = browseCatalog.models
+    .filter(
+      (row) =>
+        !isDaybreakAlias(row.model) &&
+        !row.hidden &&
+        (row.provider || pickerProvider) === pickerProvider,
+    )
+    .map((row) => ({
+      value: row.model,
+      label: displayModel(browseCatalog, row.model),
+      description: row.description || undefined,
+      isDefault: !!row.isDefault,
+      disabled: !supportsDaybreakMode(row, false),
+    }));
+  const pickerModels = (
+    browseAccount
+      ? browseOptions
+      : (role === "review" ? reviewOptions : modelOptions).filter((row) => {
+          if (row.value === DEFAULT) return role !== "orchestrator";
+          const model = infoFor(catalog, row.value);
+          return (
+            !!model &&
+            !model.hidden &&
+            (role === "review" ||
+              (model.provider ||
+                activeAccount?.provider ||
+                agent.provider ||
+                "codex") === pickerProvider)
+          );
+        })
+  )
     .map((row) => ({
       ...row,
       label:
@@ -967,7 +1021,9 @@ function ScopedExecutionSettings({
           ? role === "review"
             ? "Same as caller"
             : "Same as main agent"
-          : displayModel(catalog, row.value),
+          : browseAccount
+            ? row.label
+            : displayModel(catalog, row.value),
     }))
     // One row per model name: a default alias and the model it resolves to
     // read the same. Keep the current choice, else the recommended alias.
@@ -1006,7 +1062,7 @@ function ScopedExecutionSettings({
         accounts={connectedAccounts}
         accountKey={teamDefaults ? current.account_key || "" : accountOf(agent)}
         onAccount={chooseAccount}
-        automaticAccount={role === "worker"}
+        automaticAccount={role === "worker" && pickerProvider === leadProvider}
         accountDisabled={
           saving || accountDisabled || (!teamDefaults && !onAccountChange)
         }
@@ -1016,7 +1072,10 @@ function ScopedExecutionSettings({
           role === "review" ? "Default review model" : prefix + " model"
         }
         onModel={(value) => {
-          if (role === "review")
+          if (browseAccount) {
+            setWantedModel({ account: browseAccount.id, model: value });
+            void changeAccount(browseAccount.id);
+          } else if (role === "review")
             void changeReview({ model: value === DEFAULT ? null : value });
           else void change({ model: value === DEFAULT ? null : value });
         }}
@@ -1043,7 +1102,9 @@ function ScopedExecutionSettings({
       />
       {role === "worker" && !onDraftChange && (
         <p className="notice">
-          For new subagents. An account change also moves existing ones.
+          {browseAccount
+            ? `A model here moves the subagents to ${setupAccountName(browseAccount)}. Choose another account above to use it instead.`
+            : "For new subagents. An account change also moves existing ones."}
         </p>
       )}
       {teamDefaults && shownTransfer && (

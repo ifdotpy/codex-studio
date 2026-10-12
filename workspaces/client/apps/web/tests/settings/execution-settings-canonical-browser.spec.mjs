@@ -676,13 +676,25 @@ test("execution settings canonical browser", async ({ page }) => {
                 provider: "claude",
                 reason: "Uses claude",
               },
+              {
+                id: "w-claude-2",
+                name: "Claude helper",
+                provider: "claude",
+                reason: "Uses claude",
+              },
             ],
           },
         }),
       );
-      await dialog
-        .getByText("Claude worker left on source (claude): Uses claude")
-        .waitFor();
+      // Members with one reason share one line, and each line has its own row.
+      const leftLine = dialog.getByText(
+        "Claude worker, Claude helper left on source (claude): Uses claude",
+      );
+      await leftLine.waitFor();
+      assert.equal(
+        await leftLine.evaluate((node) => getComputedStyle(node).display),
+        "block",
+      );
       assert.equal(
         await modelValue(model),
         "gpt-5.6-luna",
