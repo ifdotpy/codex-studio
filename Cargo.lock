@@ -1452,10 +1452,12 @@ dependencies = [
 name = "studio-runtime-services"
 version = "0.1.0"
 dependencies = [
+ "getrandom",
  "jsonschema",
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "studio-runtime-process",
  "studio-runtime-providers",
  "studio-runtime-store",

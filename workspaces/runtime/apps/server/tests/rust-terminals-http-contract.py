@@ -87,23 +87,32 @@ class TerminalsHTTPContract(unittest.TestCase):
     def test_persisted_listing_and_output_read_python_written_state(self) -> None:
         listing = self.backend.request("GET", "/api/terminals", headers=self.headers())
         self.assertEqual(listing.status, 200, listing.body[:1000])
-        self.assertEqual([item["id"] for item in listing.json()["items"]], [self.terminal_id])
+        self.assertEqual(listing.json(), {"items": [{
+            "id": self.terminal_id, "agent": "fixture-agent", "title": "Archived output",
+            "cwd": str(self.backend.cwd), "status": "exited", "created": 1.0,
+            "updated": 2.0, "exitCode": 0,
+        }]})
 
         current = self.backend.request(
             "GET", f"/api/terminals/output?id={self.terminal_id}&offset=6", headers=self.headers(),
         )
         self.assertEqual(current.status, 200, current.body[:1000])
-        self.assertEqual(current.json()["text"], "Ж🙂-omega")
-        self.assertEqual(current.json()["offset"], len("alpha-Ж🙂-omega"))
+        self.assertEqual(current.json(), {
+            "text": "Ж🙂-omega", "offset": len("alpha-Ж🙂-omega"), "truncated": False,
+            "status": "exited", "exitCode": 0, "error": None,
+        })
 
         history = self.backend.request(
             "GET", f"/api/terminals/output?id={self.terminal_id}&history=1&offset=0&limit=7",
             headers=self.headers(),
         )
         self.assertEqual(history.status, 200, history.body[:1000])
-        self.assertEqual(history.json()["text"], "alpha-Ж")
-        self.assertTrue(history.json()["hasMore"])
-        self.assertEqual(history.json()["availableOffset"], len("alpha-Ж🙂-omega"))
+        self.assertEqual(history.json(), {
+            "text": "alpha-Ж", "offset": len("alpha-Ж"),
+            "availableOffset": len("alpha-Ж🙂-omega"), "historyStart": 0,
+            "hasMore": True, "truncated": False, "status": "exited", "exitCode": 0,
+            "error": None,
+        })
 
     def test_invalid_bodies_are_refused_before_terminal_mutation(self) -> None:
         bodies = {
@@ -121,6 +130,13 @@ class TerminalsHTTPContract(unittest.TestCase):
             self.assertEqual(response.status, 400, (path, response.body[:1000]))
             with sqlite3.connect(database_path) as database:
                 self.assertEqual(terminal_tables(database), before, path)
+        for query in ("history=1&limit=0", "history=1&offset=-1"):
+            response = self.backend.request(
+                "GET", f"/api/terminals/output?id={self.terminal_id}&{query}", headers=self.headers(),
+            )
+            self.assertEqual(response.status, 400, (query, response.body[:1000]))
+            with sqlite3.connect(database_path) as database:
+                self.assertEqual(terminal_tables(database), before, query)
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_live_operations_name_the_missing_provider_session(self) -> None:

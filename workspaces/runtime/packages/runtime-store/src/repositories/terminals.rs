@@ -51,6 +51,32 @@ pub struct TerminalRow {
 pub struct TerminalsRepository;
 
 impl TerminalsRepository {
+    pub fn append_and_retain(
+        transaction: &rusqlite::Transaction<'_>,
+        id: &str,
+        row: &TerminalRow,
+        text: &str,
+        limit: usize,
+    ) -> StoreResult<(String, i64)> {
+        if !text.is_empty() {
+            if !row.output.is_empty() && Self::archive_start(transaction, id)?.is_none() {
+                Self::append_output(transaction, id, row.offset, &row.output)?;
+            }
+            Self::append_output(
+                transaction,
+                id,
+                row.offset + row.output.chars().count() as i64,
+                text,
+            )?;
+        }
+        let output = row.output.clone() + text;
+        let dropped = output.chars().count().saturating_sub(limit);
+        Ok((
+            output.chars().skip(dropped).collect(),
+            row.offset + dropped as i64,
+        ))
+    }
+
     pub fn list(connection: &Connection) -> StoreResult<Vec<(String, String)>> {
         let mut statement =
             connection.prepare("SELECT id,record FROM user_terminals ORDER BY rowid")?;
@@ -175,14 +201,32 @@ impl TerminalsRepository {
         start: i64,
         text: &str,
     ) -> StoreResult<()> {
-        let mut position = start;
+        let previous: Option<(i64, i64, String)> = transaction.query_row(
+            "SELECT start,end,text FROM user_terminal_output WHERE terminal=?1 ORDER BY start DESC LIMIT 1",
+            [id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).optional()?;
+        let mut text = text;
+        let mut start = start;
+        if let Some((chunk_start, end, mut previous)) =
+            previous.filter(|(_, end, value)| *end == start && value.chars().count() < 65_536)
+        {
+            let count = text.chars().count().min(65_536 - previous.chars().count());
+            let added = text.chars().take(count).collect::<String>();
+            previous.push_str(&added);
+            transaction.execute(
+                "UPDATE user_terminal_output SET end=?1,text=?2 WHERE terminal=?3 AND start=?4",
+                params![end + count as i64, previous, id, chunk_start],
+            )?;
+            start += count as i64;
+            text = &text[added.len()..];
+        }
         for chunk in text.chars().collect::<Vec<_>>().chunks(65_536) {
             let value = chunk.iter().collect::<String>();
             transaction.execute(
                 "INSERT INTO user_terminal_output(terminal,start,end,text) VALUES (?1,?2,?3,?4)",
-                params![id, position, position + chunk.len() as i64, value],
+                params![id, start, start + chunk.len() as i64, value],
             )?;
-            position += chunk.len() as i64;
+            start += chunk.len() as i64;
         }
         Ok(())
     }
@@ -206,16 +250,6 @@ impl TerminalsRepository {
                 |row| row.get(0),
             )
             .optional()
-            .map_err(StoreError::from)
-    }
-
-    pub fn has_archive(connection: &Connection, id: &str) -> StoreResult<bool> {
-        connection
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM user_terminal_output WHERE terminal=?1)",
-                [id],
-                |row| row.get(0),
-            )
             .map_err(StoreError::from)
     }
 
@@ -243,5 +277,31 @@ impl TerminalsRepository {
             params![id, sequence],
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::Connection;
+
+    use super::TerminalsRepository;
+
+    #[test]
+    fn output_deltas_fill_the_previous_partial_chunk() {
+        let mut database = Connection::open_in_memory().expect("memory database");
+        database.execute_batch("CREATE TABLE user_terminal_output(terminal TEXT,start INTEGER,end INTEGER,text TEXT)").expect("archive table");
+        for (start, text) in [(0, "a"), (1, "b"), (2, "c"), (3, "d")] {
+            let transaction = database.transaction().expect("transaction");
+            TerminalsRepository::append_output(&transaction, "term", start, text).expect("append");
+            transaction.commit().expect("commit");
+        }
+        let (start, end, text): (i64, i64, String) = database
+            .query_row(
+                "SELECT start,end,text FROM user_terminal_output WHERE terminal='term'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("single packed history row");
+        assert_eq!((start, end, text.as_str()), (0, 4, "abcd"));
     }
 }

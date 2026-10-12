@@ -1,12 +1,10 @@
 //! Persisted terminal reads and session-dependent terminal operations.
 
 use super::extractors::{ApiJson, QueryParams};
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get, post};
+use super::manifest::{Dependency, OperationStatus, RouteGroup, get, post};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 use serde_json::Value;
 use studio_runtime_services::terminal_driver::{self, TerminalError};
 
@@ -16,39 +14,32 @@ use crate::router::HttpState;
 const SESSION_DEPENDENCIES: [Dependency; 1] = [Dependency::new("provider-session/app-server")];
 
 pub(crate) fn routes() -> RouteGroup {
-    RouteGroup::new(vec![
+    let mut routes = vec![
         get("/api/terminals", OperationStatus::Implemented, listing),
         get(
             "/api/terminals/output",
             OperationStatus::Implemented,
             output,
         ),
-        post(
+    ];
+    routes.extend(
+        [
             "/api/terminals/create",
-            OperationStatus::partial(&SESSION_DEPENDENCIES),
-            create,
-        ),
-        post(
             "/api/terminals/input",
-            OperationStatus::partial(&SESSION_DEPENDENCIES),
-            input,
-        ),
-        post(
             "/api/terminals/resize",
-            OperationStatus::partial(&SESSION_DEPENDENCIES),
-            resize,
-        ),
-        post(
             "/api/terminals/rename",
-            OperationStatus::partial(&SESSION_DEPENDENCIES),
-            rename,
-        ),
-        post(
             "/api/terminals/close",
-            OperationStatus::partial(&SESSION_DEPENDENCIES),
-            close,
-        ),
-    ])
+        ]
+        .into_iter()
+        .map(|path| {
+            post(
+                path,
+                OperationStatus::partial(&SESSION_DEPENDENCIES),
+                refuse,
+            )
+        }),
+    );
+    RouteGroup::new(routes)
 }
 
 async fn listing(State(state): State<HttpState>) -> Result<Json<Value>, ApiError> {
@@ -57,9 +48,9 @@ async fn listing(State(state): State<HttpState>) -> Result<Json<Value>, ApiError
         .await
         .map_err(|_| ApiError::internal())?
         .map_err(terminal_error)?;
-    Ok(Json(generated_json::<crate::generated::TerminalList>(
-        result,
-    )?))
+    Ok(Json(
+        super::generated_json::<crate::generated::TerminalList>(result)?,
+    ))
 }
 
 async fn output(
@@ -91,30 +82,19 @@ async fn output(
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(terminal_error)?;
-    Ok(Json(generated_json::<crate::generated::TerminalOutput>(
-        result,
-    )?))
+    Ok(Json(super::generated_json::<
+        crate::generated::TerminalOutput,
+    >(result)?))
 }
 
-async fn create(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    Err(dependency_error("POST", "/api/terminals/create"))
-}
-async fn input(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    Err(dependency_error("POST", "/api/terminals/input"))
-}
-async fn resize(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    Err(dependency_error("POST", "/api/terminals/resize"))
-}
-async fn rename(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    Err(dependency_error("POST", "/api/terminals/rename"))
-}
-async fn close(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    Err(dependency_error("POST", "/api/terminals/close"))
-}
-
-fn dependency_error(method: &str, path: &str) -> ApiError {
-    dependency_unavailable(method, path, &SESSION_DEPENDENCIES)
-        .unwrap_or_else(|_| ApiError::internal())
+async fn refuse(
+    path: axum::extract::MatchedPath,
+    ApiJson(_body): ApiJson<Value>,
+) -> Result<Json<Value>, ApiError> {
+    Err(
+        super::manifest::dependency_unavailable("POST", path.as_str(), &SESSION_DEPENDENCIES)
+            .unwrap_or_else(|_| ApiError::internal()),
+    )
 }
 
 fn terminal_error(error: TerminalError) -> ApiError {
@@ -134,12 +114,4 @@ fn terminal_error(error: TerminalError) -> ApiError {
         ),
         _ => ApiError::internal(),
     }
-}
-
-fn generated_json<T>(value: Value) -> Result<Value, ApiError>
-where
-    T: DeserializeOwned + Serialize,
-{
-    let dto = serde_json::from_value::<T>(value).map_err(|_| ApiError::internal())?;
-    serde_json::to_value(dto).map_err(|_| ApiError::internal())
 }
