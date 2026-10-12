@@ -207,6 +207,41 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
           .count(),
         0,
       );
+      // Another provider's tab lists its models; a model there moves the
+      // subagents to that provider's first account and then applies.
+      await page
+        .getByLabel("Subagent account provider", { exact: true })
+        .locator("label")
+        .filter({ hasText: "Codex" })
+        .click();
+      const luna = page.getByRole("option", { name: "Luna 6", exact: true });
+      await expect(luna).toBeVisible();
+      const mark = await page.evaluate(() => window.calls.length);
+      await luna.click();
+      await page.waitForFunction(
+        (mark) =>
+          window.calls
+            .slice(mark)
+            .some(
+              (call) =>
+                call.endpoint === "/api/agents/account-transfer" &&
+                call.account_key === "account-0",
+            ),
+        mark,
+      );
+      await page.waitForFunction(
+        (mark) =>
+          window.calls
+            .slice(mark)
+            .some(
+              (call) =>
+                call.endpoint === "/api/conversation" &&
+                call.worker_defaults?.account_key === "account-0" &&
+                call.worker_defaults?.model === "gpt-6-luna",
+            ),
+        mark,
+      );
+      await expect(luna).toHaveAttribute("aria-selected", "true");
       await page.getByRole("button", { name: "Review", exact: true }).click();
       await expect(
         page.getByText("Uses the caller account", { exact: true }),

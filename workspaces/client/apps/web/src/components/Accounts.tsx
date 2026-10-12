@@ -362,6 +362,33 @@ export function AccountTransferStatus({
   const left = Array.isArray(transfer.leftOnSource)
     ? transfer.leftOnSource
     : [];
+  // One line per reason: a team move can leave many subagents for one reason.
+  const leftGroups = [
+    ...left
+      .reduce(
+        (groups, member) => {
+          const key = JSON.stringify([member.provider, member.reason]);
+          const group = groups.get(key) || {
+            key,
+            provider: member.provider,
+            reason: member.reason,
+            names: [] as string[],
+          };
+          group.names.push(String(member.name || "Agent"));
+          return groups.set(key, group);
+        },
+        new Map<
+          string,
+          {
+            key: string;
+            provider: (typeof left)[number]["provider"];
+            reason: (typeof left)[number]["reason"];
+            names: string[];
+          }
+        >(),
+      )
+      .values(),
+  ];
   const blocked = Array.isArray(transfer.blocked) ? transfer.blocked : [];
   const interrupted = Array.isArray(transfer.interrupted)
     ? transfer.interrupted
@@ -407,10 +434,10 @@ export function AccountTransferStatus({
             {member.name || "Agent"} blocked: {member.reason}
           </small>
         ))}
-        {left.map((member) => (
-          <small key={String(member.id)}>
-            {member.name || "Agent"} left on source ({member.provider}):{" "}
-            {member.reason}
+        {leftGroups.map((group) => (
+          <small key={group.key}>
+            {group.names.join(", ")} left on source ({group.provider}):{" "}
+            {group.reason}
           </small>
         ))}
         <div className="account-transfer-actions">
