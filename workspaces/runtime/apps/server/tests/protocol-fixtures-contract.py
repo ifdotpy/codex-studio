@@ -23,7 +23,7 @@ from server_test_waits import wait_for_condition
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "provider-replay"
-PROTOCOL_FIXTURE = FIXTURES / "supervisor-v1-http.json"
+PROTOCOL_FIXTURE = Path(__file__).parent / "fixtures" / "supervisor-protocol" / "supervisor-v1-http.json"
 
 
 def assert_frame_matches(actual: object, expected: object, state: Path) -> None:

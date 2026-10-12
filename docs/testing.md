@@ -185,10 +185,11 @@ STUDIO_HTTP_BACKEND_COMMAND='/path/to/codex-backend' \
 
 The fixture checker consumes the existing
 `restart-mid-turn-supervisor-replay.json` provider transcript and the
-`supervisor-v1-http.json` socket frames, then checks the public transcript and
-message receipt. The fixture's supervisor response projections were captured
-from the disposable supervisor. Its negative control changes the expected
-health protocol on a live exchange and requires the same frame checker to fail.
+`workspaces/runtime/apps/server/tests/fixtures/supervisor-protocol/supervisor-v1-http.json`
+socket frames, then checks the public transcript and message receipt. The fixture's supervisor
+response projections were captured from the disposable supervisor. Its negative
+control changes the expected health protocol on a live exchange and requires
+the same frame checker to fail.
 The checker currently executes Unix sockets; Windows named-pipe execution is not
 covered by this checker.
 
