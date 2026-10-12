@@ -65,7 +65,10 @@ pub(crate) async fn work(
     read_agent(state, agent_id, |connection, agent, validators| {
         let records = WorkItemsRepository::work(connection).map_err(|_| ApiError::internal())?;
         let records = stored_values("runtime_work", "WorkItem", records, validators, false)?;
-        Ok(work_policy::work_list(&agent.root_id.0, &records))
+        let root_id = agent
+            .root_id()
+            .ok_or_else(|| invalid_stored("runtime_agents", &agent.id().0))?;
+        Ok(work_policy::work_list(&root_id.0, &records))
     })
     .await
     .map(Json)
@@ -77,8 +80,13 @@ pub(crate) async fn queue(
 ) -> Result<Json<Value>, ApiError> {
     let agent_id = query_string(&query, "agent")?;
     read_agent(state, agent_id, |connection, agent, validators| {
+        let record_id = agent.id().0.as_str();
+        let epoch = agent
+            .epoch()
+            .ok_or_else(|| invalid_stored("runtime_agents", record_id))?;
         let prepared = work_policy::prepare_queue(
-            WorkItemsRepository::queue(connection, &agent.id.0, agent.epoch).map_err(|_| ApiError::internal())?,
+            WorkItemsRepository::queue(connection, record_id, epoch)
+                .map_err(|_| ApiError::internal())?,
         ).map_err(stored_error)?;
         let assets = WorkItemsRepository::assets(connection, &prepared.asset_ids).map_err(|_| ApiError::internal())?;
         let assets_present = assets.is_some();
@@ -107,12 +115,13 @@ pub(crate) async fn plan(
 ) -> Result<Json<Value>, ApiError> {
     let agent_id = query_string(&query, "agent")?;
     read_agent(state, agent_id, |connection, agent, validators| {
+        let record_id = agent.id().0.as_str();
         let stored =
-            WorkItemsRepository::plan(connection, &agent.id.0).map_err(|_| ApiError::internal())?;
+            WorkItemsRepository::plan(connection, record_id).map_err(|_| ApiError::internal())?;
         let record = match stored {
             None => None,
             Some(row) => {
-                if row.id != agent.id.0 {
+                if row.id != record_id {
                     return Err(invalid_stored("runtime_plans", &row.id));
                 }
                 let value = record_value("runtime_plans", &row)?;
@@ -122,11 +131,10 @@ pub(crate) async fn plan(
                 Some(value)
             }
         };
-        Ok(work_policy::plan_view(
-            &agent.id.0,
-            &agent.root_id.0,
-            record,
-        ))
+        let root_id = agent
+            .root_id()
+            .ok_or_else(|| invalid_stored("runtime_agents", record_id))?;
+        Ok(work_policy::plan_view(record_id, &root_id.0, record))
     })
     .await
     .map(Json)
@@ -145,7 +153,7 @@ where
             .map_err(|_| invalid_stored("runtime_agents", &id))?;
         let agent =
             agent.ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid request"))?;
-        if agent.id.0 != id {
+        if agent.id().0.as_str() != id {
             return Err(invalid_stored("runtime_agents", &id));
         }
         if !is_live(&agent) {
@@ -158,16 +166,13 @@ where
 }
 
 fn is_live(agent: &AgentRecord) -> bool {
-    !agent
-        .extra
-        .get("deletedAt")
-        .is_some_and(|value| match value {
-            Value::Null => false,
-            Value::Bool(value) => *value,
-            Value::Number(value) => value.as_f64().is_some_and(|number| number != 0.0),
-            Value::String(value) => !value.is_empty(),
-            _ => true,
-        })
+    !agent.get("deletedAt").is_some_and(|value| match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::Number(value) => value.as_f64().is_some_and(|number| number != 0.0),
+        Value::String(value) => !value.is_empty(),
+        _ => true,
+    })
 }
 
 fn stored_values(
@@ -208,15 +213,19 @@ fn record_value(object: &'static str, row: &StoredRecord) -> Result<Value, ApiEr
 }
 
 fn queue_revision(agent: &AgentRecord, items: &[Value]) -> Result<String, ApiError> {
-    let revision = match agent.extra.get("queueMutationRevision") {
+    let record_id = agent.id().0.as_str();
+    let revision = match agent.get("queueMutationRevision") {
         None => 0,
         Some(value) => value
             .as_i64()
             .filter(|revision| *revision >= 0)
-            .ok_or_else(|| invalid_stored("runtime_agents", &agent.id.0))?,
+            .ok_or_else(|| invalid_stored("runtime_agents", record_id))?,
     };
-    let bytes = serde_json::to_vec(&json!([agent.epoch, revision, items]))
-        .map_err(|_| ApiError::internal())?;
+    let epoch = agent
+        .epoch()
+        .ok_or_else(|| invalid_stored("runtime_agents", record_id))?;
+    let bytes =
+        serde_json::to_vec(&json!([epoch, revision, items])).map_err(|_| ApiError::internal())?;
     Ok(Sha256::digest(bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))

@@ -22,10 +22,10 @@ pub fn visible_rules(
             .map_err(|_| invalid_object("agents", agent.id.clone()))?;
         let record = serde_json::from_value::<AgentRecord>(value)
             .map_err(|_| invalid_object("agents", agent.id.clone()))?;
-        if record.id.0 != agent.id {
+        if record.id().0 != agent.id {
             return Err(invalid_object("agents", agent.id));
         }
-        let deleted = match record.extra.get("deletedAt") {
+        let deleted = match record.get("deletedAt") {
             None => false,
             Some(Value::Number(value)) => value.as_f64().is_some_and(|number| number != 0.0),
             _ => return Err(invalid_object("agents", agent.id)),

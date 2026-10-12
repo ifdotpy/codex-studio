@@ -58,12 +58,12 @@ fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
         .transaction(|tx| {
             let mut agent = AgentRepository::get(tx, &AgentId::from("fixture-agent"))?
                 .expect("seeded agent exists");
-            agent.extra.insert("rustWrite".into(), json!(true));
+            agent.set("rustWrite", json!(true));
             AgentRepository::put(tx, &agent)?;
 
             let mut task = TaskRepository::get(tx, &TaskId::from("fixture-task"))?
                 .expect("seeded task exists");
-            task.extra.insert("rustWrite".into(), json!(true));
+            task.set("rustWrite", json!(true));
             TaskRepository::put(tx, &task)?;
 
             QueueEventRepository::put(
@@ -110,7 +110,7 @@ fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
         AgentRepository::get(&reader, &AgentId::from("fixture-agent"))
             .expect("agent reads")
             .expect("agent exists")
-            .extra["rustWrite"],
+            .value()["rustWrite"],
         true
     );
     drop(reader);

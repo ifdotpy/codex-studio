@@ -54,6 +54,8 @@ pub enum StoreError {
     CommitOutcomeUnknown(rusqlite::Error),
     #[error("stored JSON record is invalid: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("invalid stored object {table}/{id}")]
+    InvalidStoredObject { table: &'static str, id: String },
     #[error("runtime store writer mutex was poisoned")]
     WriterPoisoned,
 }

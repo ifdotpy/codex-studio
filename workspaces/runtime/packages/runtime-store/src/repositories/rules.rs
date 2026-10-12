@@ -1,9 +1,12 @@
 //! Read persisted rule and owner records for the rules list.
 
-use rusqlite::{Connection, params};
+use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
+use crate::StoreResult;
+use crate::records::{AgentRecord, JsonRecord, Table};
 use crate::schema::{SchemaRequirements, TableRequirement};
-use crate::{StoreError, StoreResult};
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[
@@ -40,30 +43,73 @@ pub struct StoredAgent {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RulesRepository;
 
-impl RulesRepository {
-    pub fn list(connection: &Connection) -> StoreResult<(Vec<StoredRule>, Vec<StoredAgent>)> {
-        let rules = read_records(connection, "runtime_rules")?
-            .into_iter()
-            .map(|(id, record)| StoredRule { id, record })
-            .collect();
-        let agents = read_records(connection, "runtime_agents")?
-            .into_iter()
-            .map(|(id, record)| StoredAgent { id, record })
-            .collect();
-        Ok((rules, agents))
+#[derive(Clone, Debug, PartialEq)]
+struct RuleRecord {
+    id: String,
+    value: Value,
+}
+
+impl Serialize for RuleRecord {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.value.serialize(serializer)
     }
 }
 
-fn read_records(connection: &Connection, table: &str) -> StoreResult<Vec<(String, String)>> {
-    let mut statement =
-        connection.prepare(&format!("SELECT id,record FROM {table} ORDER BY rowid"))?;
-    let rows = statement.query_map(params![], |row| {
-        let id: String = row.get(0)?;
-        let record: String = row.get(1)?;
-        Ok((id, record))
-    })?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(StoreError::from)
+impl<'de> Deserialize<'de> for RuleRecord {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        let id = value
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| serde::de::Error::custom("record id must be a string"))?;
+        Ok(Self {
+            id: id.to_owned(),
+            value,
+        })
+    }
+}
+
+impl JsonRecord for RuleRecord {
+    type Id = String;
+
+    const TABLE: &'static str = "runtime_rules";
+    const SCHEMA: &'static str = "JsonObject";
+
+    fn id(&self) -> &Self::Id {
+        &self.id
+    }
+}
+
+impl RulesRepository {
+    pub fn list(connection: &Connection) -> StoreResult<(Vec<StoredRule>, Vec<StoredAgent>)> {
+        let rules = Table::<RuleRecord>::new(connection)
+            .list()?
+            .into_iter()
+            .map(|record| {
+                Ok(StoredRule {
+                    id: record.id,
+                    record: serde_json::to_string(&record.value)?,
+                })
+            })
+            .collect::<StoreResult<Vec<_>>>()?;
+        let agents = Table::<AgentRecord>::new(connection)
+            .list()?
+            .into_iter()
+            .map(|record| {
+                Ok(StoredAgent {
+                    id: record.id().0.clone(),
+                    record: serde_json::to_string(&record)?,
+                })
+            })
+            .collect::<StoreResult<Vec<_>>>()?;
+        Ok((rules, agents))
+    }
 }
 
 #[cfg(test)]
