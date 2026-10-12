@@ -8,7 +8,8 @@ use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior};
+pub use rusqlite::Connection;
+use rusqlite::{OpenFlags, Transaction, TransactionBehavior};
 use thiserror::Error;
 
 pub use path::resolve_state_dir;
