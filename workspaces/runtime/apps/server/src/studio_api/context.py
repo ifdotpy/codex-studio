@@ -525,13 +525,12 @@ class ApiContext:
                     error_body = ErrorResponse(error=str(error_value)).wire_dump()
                     data = json.dumps(error_body, ensure_ascii=False, separators=(",", ":")).encode()
                 else:
-                    # Reads fail open: a contract mismatch in stored or live data
-                    # must not take a read endpoint down. Send the strict JSON
-                    # body as is and log the exact mismatch for a DTO correction.
-                    # Writes keep the strict failure without a retry hint.
+                    # Fail open: a contract mismatch in stored or live data must
+                    # not take an endpoint down, and after a write the change is
+                    # already durable, so an error would misreport it. Send the
+                    # strict JSON body as is and log the exact mismatch for a DTO
+                    # correction.
                     try:
-                        if request.method not in ("GET", "HEAD"):
-                            raise ValueError("write response contract failure")
                         data = json.dumps(body_value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
                     except (TypeError, ValueError):
                         data = json.dumps({"error": "The server could not validate its response"}).encode()
