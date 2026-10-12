@@ -269,13 +269,11 @@ impl EventWriteRepository {
         }
         if value.get("name").and_then(Value::as_str) == Some(name)
             && value.get("manualName").and_then(Value::as_bool) == Some(true)
-            && value.get("needsTitle").and_then(Value::as_bool) == Some(false)
         {
             return Ok(());
         }
         value.insert("name".to_owned(), Value::String(name.to_owned()));
         value.insert("manualName".to_owned(), Value::Bool(true));
-        value.insert("needsTitle".to_owned(), Value::Bool(false));
         let payload = serde_json::to_string(&payload)?;
         let hash = hash_payload(&payload);
         let sequence = next_sequence(transaction)?;
@@ -334,7 +332,7 @@ mod tests {
                 "CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
                  CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);
-                 INSERT INTO sync_entities VALUES('agent','a',1,'old','{\"collection\":\"agent\",\"id\":\"a\",\"value\":{\"id\":\"a\",\"name\":\"Old\",\"manualName\":false,\"needsTitle\":true,\"role\":\"orchestrator\"}}',0);",
+                 INSERT INTO sync_entities VALUES('agent','a',1,'old','{\"collection\":\"agent\",\"id\":\"a\",\"value\":{\"id\":\"a\",\"name\":\"Old\",\"manualName\":false,\"role\":\"orchestrator\"}}',0);",
             )
             .expect("projection fixture creates");
         let transaction = connection.transaction().expect("transaction begins");
@@ -359,7 +357,7 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&payload)
                 .expect("updated projection remains JSON")["value"],
-            json!({"id":"a","name":"New","manualName":true,"needsTitle":false,"role":"orchestrator"})
+            json!({"id":"a","name":"New","manualName":true,"role":"orchestrator"})
         );
     }
 
