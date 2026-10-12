@@ -12,6 +12,8 @@ import sys
 import unittest
 from urllib.parse import urlencode
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
 from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
