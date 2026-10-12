@@ -205,6 +205,7 @@ it("cleans only the selected server when workspace ids overlap", async () => {
       `rxdb-dexie-${entityProjectionDatabaseName(workspace, stale, owner)}--0--projections`,
   );
   const deleteDatabase = vi.fn(() => ({}));
+  stubProjectionLocks();
   vi.stubGlobal("indexedDB", {
     databases: async () => names.map((name) => ({ name })),
     deleteDatabase,
