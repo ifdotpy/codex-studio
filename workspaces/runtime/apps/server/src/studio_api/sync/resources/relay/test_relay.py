@@ -249,6 +249,16 @@ class ExternalCliSseTests(unittest.TestCase):
                 continue
             lines.append(line)
 
+    def _read_event(self, stream, event_name: str) -> list[str]:
+        def read_matching_frame() -> list[str] | None:
+            event = self._read_frame(stream)
+            return event if f"event: {event_name}" in event else None
+
+        return wait_for_condition(
+            read_matching_frame,
+            f"SSE {event_name} frame",
+        )
+
     def test_second_process_graph_writer_delivers_authenticated_resource_sse(self) -> None:
         sys.path.insert(0, str(SCRIPTS))
         from codex_canvas import Canvas
@@ -332,9 +342,9 @@ class ExternalCliSseTests(unittest.TestCase):
                     {"kind": "workspace", "agentId": "host-root"},
                 ])
                 try:
-                    initial = self._read_frame(stream)
+                    initial = self._read_event(stream, "resources")
                     self.assertIn("event: resources", initial)
-                    initial_rates = self._read_frame(stream)
+                    initial_rates = self._read_event(stream, "token-rates")
                     self.assertIn("event: token-rates", initial_rates)
                     before_revision = server._context.resource_hub()._revision
                     env = {
@@ -404,7 +414,7 @@ class ExternalCliSseTests(unittest.TestCase):
                     created = run_cli("codex-chat", "create", "Planning", "--agent", "host-root")
                     self.assertEqual(created.returncode, 0, created.stderr)
                     chat_id = json.loads(created.stdout)["id"]
-                    created_event = self._read_frame(stream)
+                    created_event = self._read_event(stream, "resources")
                     created_payload = json.loads(
                         next(line[6:] for line in created_event if line.startswith("data: "))
                     )
@@ -414,12 +424,12 @@ class ExternalCliSseTests(unittest.TestCase):
                         {"kind": "state"},
                         {"kind": "room", "roomId": chat_id},
                     ])
-                    self.assertIn("event: resources", self._read_frame(stream))
-                    self.assertIn("event: token-rates", self._read_frame(stream))
+                    self.assertIn("event: resources", self._read_event(stream, "resources"))
+                    self.assertIn("event: token-rates", self._read_event(stream, "token-rates"))
 
                     connected = run_cli("codex-chat", "connect", chat_id, "--agent", "host-root")
                     self.assertEqual(connected.returncode, 0, connected.stderr)
-                    connected_event = self._read_frame(stream)
+                    connected_event = self._read_event(stream, "resources")
                     connected_payload = json.loads(
                         next(line[6:] for line in connected_event if line.startswith("data: "))
                     )
