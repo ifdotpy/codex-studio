@@ -2,6 +2,8 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 set positional-arguments
 
 facade := justfile_directory() / "workspaces/tooling/apps/repository-checks/facade.mjs"
+rust-target := env_var_or_default("CARGO_TARGET_DIR", justfile_directory() / "target")
+rust-http-server := rust-target / "debug/studio-runtime-server"
 
 [doc("List pnpm, Cargo, and Python server packages discovered from their manifests.")]
 packages:
@@ -58,6 +60,11 @@ test-server-opt-in category="automated":
 [doc("Run one exact load-class server suite after printing its manual-run conditions.")]
 test-server-load suite="":
     @node {{quote(facade)}} test-server-load {{quote(suite)}}
+
+[doc("Measure Rust HTTP operation and discovered harness-suite conformance; writes a ledger under docs/verification.")]
+rust-http-conformance-ledger:
+    @cargo build -p studio-runtime-server
+    @STUDIO_HTTP_BACKEND_COMMAND={{quote(rust-http-server)}} python3 workspaces/runtime/apps/server/tests/http_runtime_conformance_ledger.py --output docs/verification/rust-runtime-http-conformance-ledger.json --summary docs/verification/rust-runtime-http-conformance-summary.md
 
 [doc("Run the full web browser project with its 900-second global cap.")]
 test-browser:

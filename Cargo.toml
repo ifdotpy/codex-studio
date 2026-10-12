@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "workspaces/runtime/apps/diagnostics",
     "workspaces/runtime/apps/runtime-server",
+    "workspaces/runtime/apps/runtime-http-codegen",
     "workspaces/runtime/packages/operations",
     "workspaces/runtime/packages/operations-python",
     "workspaces/runtime/packages/runtime-providers",

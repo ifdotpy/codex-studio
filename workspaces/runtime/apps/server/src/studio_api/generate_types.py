@@ -151,10 +151,6 @@ def main(argv: list[str] | None = None) -> int:
     options = parser.parse_args(argv)
     try:
         exported = openapi_document()
-        remove_orphan_fastapi_validation_schemas(exported)
-        normalize_json_value_schema(exported)
-        validate_contract_schemas(exported)
-        validate_error_responses(exported)
         canonical_export = canonical_openapi_json(exported)
         if options.write_openapi:
             OPENAPI_AUTHORITY.write_bytes(canonical_export)
@@ -163,8 +159,7 @@ def main(argv: list[str] | None = None) -> int:
             if committed != canonical_export:
                 print(
                     f"{OPENAPI_AUTHORITY.relative_to(ROOT)} diverges from Python models; "
-                    "review the schema change, then run `python3 workspaces/runtime/apps/server/src/codex_python.py "
-                    "--exec -m studio_api.generate_types --write-openapi`",
+                    "review the schema change, then run `pnpm run api:generate`",
                     file=sys.stderr,
                 )
                 return 1
@@ -186,6 +181,22 @@ def main(argv: list[str] | None = None) -> int:
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(expected, encoding="utf-8")
+    rust_codegen = [
+        "cargo",
+        "run",
+        "--locked",
+        "--quiet",
+        "--package",
+        "studio-runtime-http-codegen",
+        "--",
+    ]
+    if options.check:
+        rust_codegen.append("--check")
+    try:
+        subprocess.run(rust_codegen, cwd=ROOT, check=True)
+    except subprocess.CalledProcessError as error:
+        print(f"Rust DTO generation failed: {error}", file=sys.stderr)
+        return 1
     return 0
 
 

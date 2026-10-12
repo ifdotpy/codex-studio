@@ -1299,10 +1299,7 @@ pub struct WorkResultRecordVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WorkInboxEntry {
@@ -1376,10 +1373,7 @@ pub struct WorkViewRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum WorkViewRecordResponseStatus {
@@ -1510,10 +1504,7 @@ pub struct WorkResultRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum WorkInboxEntryKind {
@@ -1543,10 +1534,7 @@ pub struct WorkDecisionRecordVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WorkDecisionRecordResponse {
@@ -1579,10 +1567,7 @@ pub struct WorkDecisionRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum WorkDecisionRecordResponseDecision {
@@ -2126,10 +2111,7 @@ pub struct WorkArchiveRecordWorktreeVariantVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct WorkArchiveRecordWorktreeVariant {
@@ -2146,20 +2128,14 @@ pub struct WorkArchiveRecordVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct WorkArchiveIntentRecordVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WorkArchiveIntentRecordResponse {
@@ -2204,10 +2180,7 @@ pub struct WorkArchiveIntentRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct WorkArchiveRecordResponse {
@@ -2234,10 +2207,7 @@ pub struct WorkArchiveRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum WorkArchiveIntentRecordResponseStatus {
@@ -2502,7 +2472,7 @@ pub struct WorkItem {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub releases: Option<Option<Vec<Option<Box<JsonValue>>>>>,
+    pub releases: Option<Option<Vec<JsonValue>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub results: Option<Vec<WorkResultRecord>>,
     #[serde(rename = "rootId")]
@@ -2514,10 +2484,7 @@ pub struct WorkItem {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WorkResultRecord {
@@ -2554,7 +2521,7 @@ pub struct WorkResultRecord {
     >,
 }
 ///Array variant in union
-pub type JsonValueArrayInlineBCED52B3C0C08A5A = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInlineBCED52B3C0C08A5A = Vec<JsonValue>;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum WorkItemUpdated {
@@ -2657,7 +2624,7 @@ impl AsRef<str> for WorkDecisionRecordDecision {
     }
 }
 ///Array variant in union
-pub type JsonValueArrayInline66E31835CACBB993 = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInline66E31835CACBB993 = Vec<JsonValue>;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WorkArchiveIntentRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2733,9 +2700,9 @@ pub type WorkArchiveRecordWorktreeAdditionalPropertyArray = Vec<
     Option<WorkArchiveRecordWorktreeAdditionalPropertyItemUnion>,
 >;
 ///Array variant in union
-pub type JsonValueArrayInline67F41FF2F7FDE56F = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInline67F41FF2F7FDE56F = Vec<JsonValue>;
 ///Array variant in union
-pub type JsonValueArrayInline17456ABFADE51C1B = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInline17456ABFADE51C1B = Vec<JsonValue>;
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum WorkArchiveIntentRecordStatus {
     #[default]
@@ -2766,7 +2733,7 @@ impl AsRef<str> for WorkArchiveIntentRecordStatus {
     }
 }
 ///Array variant in union
-pub type JsonValueArrayInline2085048442A660AD = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInline2085048442A660AD = Vec<JsonValue>;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct VoiceStatusResponse {
     #[serde(
@@ -3072,10 +3039,7 @@ pub struct VoiceRecordRequestPayload {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum VoiceRecordKind {
@@ -3145,7 +3109,7 @@ pub struct VoiceDeliveryResponse {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub waiting_for: Option<Option<Vec<Option<Box<JsonValue>>>>>,
+    pub waiting_for: Option<Option<Vec<JsonValue>>>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum VoiceDeliveryState {
@@ -3210,7 +3174,7 @@ pub struct VoiceApprovalsResponse {
         deserialize_with = "tri_state_serde::deserialize"
     )]
     pub sync_entities_after: Option<Option<i64>>,
-    pub requests: Vec<Option<Box<JsonValue>>>,
+    pub requests: Vec<JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct VoiceApprovalResponse {
@@ -4552,7 +4516,7 @@ pub struct TranscriptMessageRecord {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub details: Option<Option<Box<JsonValue>>>,
+    pub details: Option<Option<JsonValue>>,
     pub id: String,
     #[serde(
         skip_serializing_if = "Option::is_none",
@@ -4578,7 +4542,7 @@ pub struct TranscriptMessageRecord {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub native_error: Option<Option<Box<JsonValue>>>,
+    pub native_error: Option<Option<JsonValue>>,
     #[serde(
         rename = "nativeHook",
         skip_serializing_if = "Option::is_none",
@@ -4628,7 +4592,7 @@ pub struct TranscriptMessageRecord {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub previous_error: Option<Option<Box<JsonValue>>>,
+    pub previous_error: Option<Option<JsonValue>>,
     #[serde(
         rename = "reasoningMs",
         skip_serializing_if = "Option::is_none",
@@ -4725,10 +4689,7 @@ pub struct TranscriptMessageRecord {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum TranscriptMessageRecordRequestedDelivery {
@@ -4767,10 +4728,7 @@ pub struct TranscriptMessageRecordNativeReview {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum TranscriptMessageRecordNativeNotice {
@@ -4806,10 +4764,7 @@ pub struct TranscriptMessageRecordNativeHook {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum TranscriptMessageRecordDeliveryStatus {
@@ -4944,7 +4899,7 @@ pub struct TranscriptItemResponse {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub details: Option<Option<Box<JsonValue>>>,
+    pub details: Option<Option<JsonValue>>,
     pub id: String,
     #[serde(
         skip_serializing_if = "Option::is_none",
@@ -4970,7 +4925,7 @@ pub struct TranscriptItemResponse {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub native_error: Option<Option<Box<JsonValue>>>,
+    pub native_error: Option<Option<JsonValue>>,
     #[serde(
         rename = "nativeHook",
         skip_serializing_if = "Option::is_none",
@@ -5020,7 +4975,7 @@ pub struct TranscriptItemResponse {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub previous_error: Option<Option<Box<JsonValue>>>,
+    pub previous_error: Option<Option<JsonValue>>,
     #[serde(
         rename = "reasoningMs",
         skip_serializing_if = "Option::is_none",
@@ -5117,10 +5072,7 @@ pub struct TranscriptItemResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum TranscriptItemResponseRequestedDelivery {
@@ -5159,10 +5111,7 @@ pub struct TranscriptItemResponseNativeReview {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum TranscriptItemResponseNativeNotice {
@@ -5198,10 +5147,7 @@ pub struct TranscriptItemResponseNativeHook {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum TranscriptItemResponseDeliveryStatus {
@@ -5598,10 +5544,7 @@ pub struct TerminalRecord {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum TerminalState {
@@ -11311,7 +11254,7 @@ pub struct WorkEntityDto {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub archive: Option<Option<Box<JsonValue>>>,
+    pub archive: Option<Option<JsonValue>>,
     pub id: String,
     #[serde(
         rename = "rootId",
@@ -12175,20 +12118,14 @@ pub struct StartAttemptRecordResponseVariantVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct StartAttemptRecordResponseVariantInlineVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone)]
 pub enum SpeechApiVoiceSpeechPostResponse {
@@ -12730,10 +12667,7 @@ pub struct ServerOperationRequestPayload {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ServerIdentityResponse {
@@ -12982,7 +12916,7 @@ pub struct SearchItemResponse {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub details: Option<Option<Box<JsonValue>>>,
+    pub details: Option<Option<JsonValue>>,
     #[serde(
         rename = "displayStatus",
         skip_serializing_if = "Option::is_none",
@@ -13044,19 +12978,15 @@ pub struct SearchItemResponse {
         deserialize_with = "tri_state_serde::deserialize"
     )]
     pub name: Option<Option<String>>,
-    #[serde(
-        skip_serializing_if = "Option::is_none",
-        default,
-        deserialize_with = "tri_state_serde::deserialize"
-    )]
-    pub native: Option<Option<Box<JsonValue>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native: Option<JsonValue>,
     #[serde(
         rename = "nativeError",
         skip_serializing_if = "Option::is_none",
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub native_error: Option<Option<Box<JsonValue>>>,
+    pub native_error: Option<Option<JsonValue>>,
     #[serde(
         rename = "nativeHook",
         skip_serializing_if = "Option::is_none",
@@ -13123,7 +13053,7 @@ pub struct SearchItemResponse {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub previous_error: Option<Option<Box<JsonValue>>>,
+    pub previous_error: Option<Option<JsonValue>>,
     #[serde(
         rename = "projectPath",
         skip_serializing_if = "Option::is_none",
@@ -13131,12 +13061,8 @@ pub struct SearchItemResponse {
         deserialize_with = "tri_state_serde::deserialize"
     )]
     pub project_path: Option<Option<String>>,
-    #[serde(
-        skip_serializing_if = "Option::is_none",
-        default,
-        deserialize_with = "tri_state_serde::deserialize"
-    )]
-    pub radio: Option<Option<Box<JsonValue>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub radio: Option<JsonValue>,
     #[serde(
         rename = "readAt",
         skip_serializing_if = "Option::is_none",
@@ -13246,7 +13172,7 @@ pub struct SearchItemResponse {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub steps: Option<Option<Vec<Option<Box<JsonValue>>>>>,
+    pub steps: Option<Option<Vec<JsonValue>>>,
     #[serde(
         skip_serializing_if = "Option::is_none",
         default,
@@ -13330,10 +13256,7 @@ pub struct SearchItemResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WorkResultDto {
@@ -13429,10 +13352,7 @@ pub struct SearchItemResponseNativeReview {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum SearchItemResponseNativeNotice {
@@ -13468,10 +13388,7 @@ pub struct SearchItemResponseNativeHook {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WorkDecisionDto {
@@ -13584,10 +13501,7 @@ pub struct TranscriptInput {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum TranscriptInputRequestedDelivery {
@@ -13923,10 +13837,7 @@ pub struct RuleRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RuleRestartCheckRecordResponse {
@@ -13951,10 +13862,7 @@ pub struct RuleRestartCheckRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum RuleRecordResponseKind {
@@ -24395,20 +24303,14 @@ pub struct RequestRecordResponseVariantVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct RequestRecordResponseVariantInlineVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RequestInboxEntry {
@@ -24550,10 +24452,7 @@ pub struct RequestRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -24630,9 +24529,9 @@ pub type RequestRecordResponseAnswerErrorArray = Vec<
     Option<RequestRecordResponseAnswerErrorItemUnion>,
 >;
 ///Array variant in union
-pub type JsonValueArrayInlineDDFF197CC7F5D8A9 = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInlineDDFF197CC7F5D8A9 = Vec<JsonValue>;
 ///Array variant in union
-pub type JsonValueArrayInline3D60C41A4B6BFA3E = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInline3D60C41A4B6BFA3E = Vec<JsonValue>;
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum RequestInboxEntryKind {
     #[default]
@@ -24739,7 +24638,7 @@ pub struct RequestEntityDto {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub result: Option<Option<Box<JsonValue>>>,
+    pub result: Option<Option<JsonValue>>,
     #[serde(
         skip_serializing_if = "Option::is_none",
         default,
@@ -24840,7 +24739,7 @@ pub struct RequestPreviewDto {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub changes: Option<Option<Box<JsonValue>>>,
+    pub changes: Option<Option<JsonValue>>,
     #[serde(
         skip_serializing_if = "Option::is_none",
         default,
@@ -24868,20 +24767,14 @@ pub struct RequestPreviewDto {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct RequestPreviewDtoPermissions {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -24898,7 +24791,7 @@ pub struct RequestParamsDto {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub changes: Option<Option<Box<JsonValue>>>,
+    pub changes: Option<Option<JsonValue>>,
     #[serde(
         skip_serializing_if = "Option::is_none",
         default,
@@ -24965,10 +24858,7 @@ pub struct RequestParamsDto {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RequestSchemaDto {
@@ -24982,10 +24872,7 @@ pub struct RequestSchemaDto {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct RequestSchemaDtoProperties {
@@ -25004,7 +24891,7 @@ pub struct RequestSchemaPropertyDto {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub r#enum: Option<Option<Vec<Option<Box<JsonValue>>>>>,
+    pub r#enum: Option<Option<Vec<JsonValue>>>,
     #[serde(
         skip_serializing_if = "Option::is_none",
         default,
@@ -25046,10 +24933,7 @@ pub struct RequestSchemaPropertyDto {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -25086,10 +24970,7 @@ pub struct RequestQuestionDto {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct RequestQuestionOptionDto {
@@ -25110,24 +24991,18 @@ pub struct RequestQuestionOptionDto {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub value: Option<Option<Box<JsonValue>>>,
+    pub value: Option<Option<JsonValue>>,
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct RequestParamsDtoPermissions {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -25142,10 +25017,7 @@ pub struct RequestAnswerRecordResponseVariantVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct RequestAnswerRecordResponse {
@@ -25178,10 +25050,7 @@ pub struct RequestAnswerRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -25218,7 +25087,7 @@ pub type RequestAnswerRecordResponseAnswerArray = Vec<
     Option<RequestAnswerRecordResponseAnswerItemUnion>,
 >;
 ///Array variant in union
-pub type JsonValueArrayInline5C4A460FF22D149B = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInline5C4A460FF22D149B = Vec<JsonValue>;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RenameResponse {
     #[serde(
@@ -27075,7 +26944,7 @@ pub struct ServerOperationResponse {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub value: Option<Option<Box<JsonValue>>>,
+    pub value: Option<Option<JsonValue>>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -27110,7 +26979,7 @@ pub struct RemoteProjectRegistrationResponse {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub value: Option<Option<Box<JsonValue>>>,
+    pub value: Option<Option<JsonValue>>,
 }
 #[derive(Debug, Clone)]
 pub enum ProjectWriteApiProjectsPostRequest {
@@ -27676,10 +27545,7 @@ pub struct ProjectMutationRecord {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum ProjectMutationRecordWorkerEnvironment {
@@ -28304,10 +28170,7 @@ pub struct Project {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum ProjectWorkerEnvironment {
@@ -28837,7 +28700,7 @@ pub struct PreferencePushRequestFields {
 pub struct PreferenceField {
     ///Constraint: minimum=0, maximum=9007199254740991
     pub timestamp: i64,
-    pub value: Option<Box<JsonValue>>,
+    pub value: JsonValue,
     ///Constraint: minLength=1, maxLength=128
     pub writer: String,
 }
@@ -28867,17 +28730,14 @@ pub struct PlanView {
     #[serde(rename = "rootId")]
     pub root_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub steps: Option<Vec<Option<Box<JsonValue>>>>,
+    pub steps: Option<Vec<JsonValue>>,
     pub text: String,
     pub updated: Option<PlanViewUpdated>,
     pub version: i64,
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -30791,10 +30651,7 @@ pub struct PeerProjectResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ProjectRegistration {
@@ -30805,10 +30662,7 @@ pub struct ProjectRegistration {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum ProjectRegistrationAction {
@@ -30857,10 +30711,7 @@ pub struct ProjectLocation {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ProjectFolder {
@@ -30876,10 +30727,7 @@ pub struct ProjectFolder {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ProjectAlias {
@@ -30891,10 +30739,7 @@ pub struct ProjectAlias {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PeerTeam {
@@ -30904,10 +30749,7 @@ pub struct PeerTeam {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum PeerProjectResponseWorkerEnvironment {
@@ -31914,50 +31756,35 @@ pub struct NativeReviewRecordResponseVariantVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct NativeReviewRecordResponseVariantInlineVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct NativeReviewRecordResponseVariantInline5CEFCF57B2EC992CVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct NativeReleaseRecordResponseVariantVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct NativeReleaseRecordResponseVariantInlineVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct NativePlanPayload {
@@ -31968,7 +31795,7 @@ pub struct NativePlanPayload {
     )]
     pub explanation: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub plan: Option<Vec<Option<Box<JsonValue>>>>,
+    pub plan: Option<Vec<JsonValue>>,
     #[serde(
         rename = "threadId",
         skip_serializing_if = "Option::is_none",
@@ -31986,20 +31813,14 @@ pub struct NativePlanPayload {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct NativeNoticeRecordVariantVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -32053,16 +31874,13 @@ pub type NativeNoticeRecordDetailsArray = Vec<
     Option<NativeNoticeRecordDetailsItemUnion>,
 >;
 ///Array variant in union
-pub type JsonValueArrayInlineC7EE5BA5A40C4BDE = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInlineC7EE5BA5A40C4BDE = Vec<JsonValue>;
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct NativeNameFailureRecordResponseVariantVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct NativeCommandResponse {
@@ -32104,7 +31922,7 @@ pub struct NativeCommandResponse {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub receipt: Option<Option<Box<JsonValue>>>,
+    pub receipt: Option<Option<JsonValue>>,
     #[serde(
         skip_serializing_if = "Option::is_none",
         default,
@@ -32123,7 +31941,7 @@ pub struct NativeCommandResponse {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub waiting_for: Option<Option<Box<JsonValue>>>,
+    pub waiting_for: Option<Option<JsonValue>>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum NativeCommandEventStatus {
@@ -32360,7 +32178,7 @@ pub struct NativeActionResponse {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub result: Option<Option<Box<JsonValue>>>,
+    pub result: Option<Option<JsonValue>>,
     #[serde(
         rename = "rpcMethod",
         skip_serializing_if = "Option::is_none",
@@ -32642,10 +32460,7 @@ pub struct NativeActionReceipt {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum NativeActionReceiptStatus {
@@ -32722,10 +32537,7 @@ pub struct NativeActionOutcome {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum NativeActionOutcomeStatus {
@@ -32975,10 +32787,7 @@ pub struct MonitorRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -33390,10 +33199,7 @@ pub struct ProviderModel {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MessageRequest {
@@ -33408,7 +33214,7 @@ pub struct SignedEnvelope {
     pub kind: MessageKind,
     ///Constraint: minLength=16, maxLength=128
     pub nonce: String,
-    pub payload: Option<Box<JsonValue>>,
+    pub payload: JsonValue,
     pub protocol: i64,
     ///Constraint: maxLength=128
     pub room: String,
@@ -33556,7 +33362,7 @@ pub struct StudioApiWorkModelsMessageReceipt {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub waiting_for: Option<Option<Vec<Option<Box<JsonValue>>>>>,
+    pub waiting_for: Option<Option<Vec<JsonValue>>>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum StudioApiWorkModelsMessageReceiptStatus {
@@ -33694,7 +33500,7 @@ pub enum MessageRecordAt {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ManagedMessageBody {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub assets: Option<Vec<Option<Box<JsonValue>>>>,
+    pub assets: Option<Vec<JsonValue>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delivery: Option<ManagedMessageBodyDelivery>,
     pub id: String,
@@ -33732,7 +33538,7 @@ impl ManagedMessageBodyBuilder {
     }
     #[doc = concat!("Set the optional `", "assets", "` request field.")]
     #[must_use]
-    pub fn assets(mut self, assets: Vec<Option<Box<JsonValue>>>) -> Self {
+    pub fn assets(mut self, assets: Vec<JsonValue>) -> Self {
         self.value.assets = Some(assets);
         self
     }
@@ -38750,10 +38556,7 @@ pub struct UsageLimitsData {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct UsageLimitsDataRateLimitsByLimitId {
@@ -38776,10 +38579,7 @@ pub struct RateLimitResetCredits {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RateLimitResetCredit {
@@ -38804,10 +38604,7 @@ pub struct RateLimitResetCredit {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -38873,10 +38670,7 @@ pub struct RateLimitBucket {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct RateLimitWindow {
@@ -38976,40 +38770,21 @@ pub struct LazyAccountTransferSourceRecordResponseVariantVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct LazyAccountTransferSourceRecordResponseVariantInlineVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct LazyAccountTransferSourceRecordResponseVariantInlineFFF1E6EC2EA2AFBBVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
-}
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
-pub struct JsonValueVariant {
-    /// Additional properties matching the spec's
-    /// `additionalProperties` value schema.
-    #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -39048,7 +38823,7 @@ pub struct ImportListResponse {
     )]
     pub sync_entities_after: Option<Option<i64>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<Vec<Option<Box<JsonValue>>>>,
+    pub data: Option<Vec<JsonValue>>,
     #[serde(
         rename = "nextCursor",
         skip_serializing_if = "Option::is_none",
@@ -39056,6 +38831,27 @@ pub struct ImportListResponse {
         deserialize_with = "tri_state_serde::deserialize"
     )]
     pub next_cursor: Option<Option<String>>,
+}
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct HTTPValidationError {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<Vec<ValidationError>>,
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ValidationError {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ctx: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<serde_json::Value>,
+    pub loc: Vec<ValidationErrorLocItemUnion>,
+    pub msg: String,
+    pub r#type: String,
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum ValidationErrorLocItemUnion {
+    Integer(i64),
+    String(String),
 }
 #[derive(Debug, Clone)]
 pub enum FinderViewApiAgentsFinderViewGetResponse {
@@ -39677,7 +39473,7 @@ pub struct ErrorResponse {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub details: Option<Option<Box<JsonValue>>>,
+    pub details: Option<Option<JsonValue>>,
     pub error: String,
     #[serde(
         skip_serializing_if = "Option::is_none",
@@ -39734,10 +39530,7 @@ pub struct ErrorResponseMetadata {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EntityChangeBatch {
@@ -39753,20 +39546,14 @@ pub struct EmptyTransferRecoveryRecordResponseVariantVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct EmptyTransferRecoveryRecordResponseVariantInlineVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EdgeEntityDto {
@@ -41068,10 +40855,7 @@ pub struct ExecutionRunVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ExecutionRecovery {
@@ -41313,10 +41097,7 @@ pub struct ExecutionRecoveryVariantInline {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -41329,10 +41110,7 @@ pub struct ExecutionRecoveryVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ExecutionHeldOperation {
@@ -41446,10 +41224,7 @@ pub struct ExecutionNodeVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ExecutionEffect {
@@ -41948,30 +41723,21 @@ pub struct ExecutionClaudeInputSource {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ExecutionClaudeInputInputItem {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ExecutionClaudeInputConfiguration {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone)]
 pub enum ExecutionAttemptReviewTargetInline {
@@ -43452,12 +43218,8 @@ pub struct SupervisorHealth {
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct SupervisorRecovery {
-    #[serde(
-        skip_serializing_if = "Option::is_none",
-        default,
-        deserialize_with = "tri_state_serde::deserialize"
-    )]
-    pub blocked: Option<Option<Box<JsonValue>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<JsonValue>,
     #[serde(
         skip_serializing_if = "Option::is_none",
         default,
@@ -43721,20 +43483,14 @@ pub struct NativeCandidateIdentity {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct NativeCandidateCompanionIdentity {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct NativeBinary {
@@ -43799,30 +43555,21 @@ pub struct NativeBinarySourceIdentity {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct NativeBinaryCompanions {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct NativeBinaryChecks {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct NativeAccountUpdate {
@@ -44016,12 +43763,8 @@ pub struct LinuxVMStatus {
         deserialize_with = "tri_state_serde::deserialize"
     )]
     pub free_host_bytes: Option<Option<i64>>,
-    #[serde(
-        skip_serializing_if = "Option::is_none",
-        default,
-        deserialize_with = "tri_state_serde::deserialize"
-    )]
-    pub layr: Option<Option<Box<JsonValue>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layr: Option<JsonValue>,
     #[serde(
         skip_serializing_if = "Option::is_none",
         default,
@@ -44043,10 +43786,7 @@ pub struct LinuxVMStatus {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LinuxVMShareStatus {
@@ -45576,20 +45316,14 @@ pub struct ContextRepairWaitRecordResponseVariantVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ContextRepairWaitRecordResponseVariantInlineVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ContextRepairResponse {
@@ -45613,37 +45347,28 @@ pub struct ContextRepairResponse {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub repair: Option<Option<Box<JsonValue>>>,
+    pub repair: Option<Option<JsonValue>>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ContextRepairRecordResponseVariantVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ContextRepairRecordResponseVariantInlineVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ConnectionRecoveryRecordResponseVariantVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ConfigureResponse {
@@ -45749,10 +45474,7 @@ pub struct ComplaintRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum ComplaintRecordResponseStatus {
@@ -47398,10 +47120,7 @@ pub struct ClaudeLoginResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum ClaudeLoginResponseStatus {
@@ -47768,20 +47487,14 @@ pub struct CheckpointSummary {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct CheckpointSummaryData {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CheckpointCaptureResponse {
@@ -47918,20 +47631,14 @@ pub struct CheckpointCaptureResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct CheckpointCaptureResponseData {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ChatReceipt {
@@ -48657,8 +48364,8 @@ pub struct CapabilitiesResponse {
     )]
     pub effort: Option<Option<String>>,
     pub errors: Vec<String>,
-    pub managed: Vec<Option<Box<JsonValue>>>,
-    pub mcp: Vec<Option<Box<JsonValue>>>,
+    pub managed: Vec<JsonValue>,
+    pub mcp: Vec<JsonValue>,
     pub model: String,
     #[serde(rename = "nativeInventory")]
     pub native_inventory: String,
@@ -48666,7 +48373,7 @@ pub struct CapabilitiesResponse {
     #[serde(rename = "observedNative")]
     pub observed_native: Vec<String>,
     pub role: StudioApiAgentsModelsAgentRole,
-    pub servers: Vec<Option<Box<JsonValue>>>,
+    pub servers: Vec<JsonValue>,
     #[serde(
         rename = "serversCursor",
         skip_serializing_if = "Option::is_none",
@@ -48674,7 +48381,7 @@ pub struct CapabilitiesResponse {
         deserialize_with = "tri_state_serde::deserialize"
     )]
     pub servers_cursor: Option<Option<String>>,
-    pub skills: Vec<Option<Box<JsonValue>>>,
+    pub skills: Vec<JsonValue>,
     #[serde(
         rename = "skillsCursor",
         skip_serializing_if = "Option::is_none",
@@ -49957,10 +49664,7 @@ pub struct ToolRequestRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ToolRequestTimingRecordResponse {
@@ -50005,10 +49709,7 @@ pub struct ToolRequestTimingRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -50107,10 +49808,7 @@ pub struct MovedToolRequestResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum MovedToolRequestResponseStage {
@@ -50181,10 +49879,7 @@ pub struct MissingToolRequestResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum MissingToolRequestResponseStage {
@@ -50243,20 +49938,14 @@ pub struct BudgetWaitRecordResponseVariantVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct BrowserRecoveryRecordResponseVariantVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BranchResponse {
@@ -50887,7 +50576,7 @@ pub struct BranchResponse {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub quick_create: Option<Option<Box<JsonValue>>>,
+    pub quick_create: Option<Option<JsonValue>>,
     #[serde(
         rename = "readState",
         skip_serializing_if = "Option::is_none",
@@ -51057,7 +50746,7 @@ pub struct BranchResponse {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub voice_state: Option<Option<Box<JsonValue>>>,
+    pub voice_state: Option<Option<JsonValue>>,
     #[serde(
         rename = "workerDefaults",
         skip_serializing_if = "Option::is_none",
@@ -51344,10 +51033,7 @@ pub struct AssetRecord {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -51665,10 +51351,7 @@ pub struct AnswerBody {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 impl AnswerBody {
     /// Construct this request with every required wire field.
@@ -51767,10 +51450,7 @@ impl AnswerBodyBuilder {
     #[must_use]
     pub fn additional_properties(
         mut self,
-        additional_properties: ::std::collections::BTreeMap<
-            String,
-            Option<Box<JsonValue>>,
-        >,
+        additional_properties: ::std::collections::BTreeMap<String, JsonValue>,
     ) -> Self {
         self.value.additional_properties = additional_properties;
         self
@@ -51817,20 +51497,14 @@ pub struct AnswerBodyContent {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct AnswerBodyAnswers {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AnnotationRecord {
@@ -52194,7 +51868,7 @@ pub struct AnalyticsResponse {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AnalyticsUsageRecord {
     #[serde(rename = "accountHistory")]
-    pub account_history: Vec<Option<Box<JsonValue>>>,
+    pub account_history: Vec<JsonValue>,
     #[serde(rename = "accountKey")]
     pub account_key: String,
     #[serde(rename = "agentId")]
@@ -52296,14 +51970,14 @@ pub struct AnalyticsUsageRecord {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub raw: Option<Option<Box<JsonValue>>>,
+    pub raw: Option<Option<JsonValue>>,
     #[serde(
         rename = "rawTokenUsageRecord",
         skip_serializing_if = "Option::is_none",
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub raw_token_usage_record: Option<Option<Box<JsonValue>>>,
+    pub raw_token_usage_record: Option<Option<JsonValue>>,
     #[serde(rename = "recordedAt")]
     pub recorded_at: AnalyticsUsageRecordRecordedAt,
     #[serde(
@@ -52358,10 +52032,7 @@ pub struct AnalyticsUsageRecord {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -52421,7 +52092,7 @@ pub struct AnalyticsTurnRecord {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub account_history: Option<Option<Vec<Option<Box<JsonValue>>>>>,
+    pub account_history: Option<Option<Vec<JsonValue>>>,
     #[serde(
         rename = "accountKey",
         skip_serializing_if = "Option::is_none",
@@ -52476,7 +52147,7 @@ pub struct AnalyticsTurnRecord {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub error: Option<Option<Box<JsonValue>>>,
+    pub error: Option<Option<JsonValue>>,
     #[serde(
         rename = "fastMode",
         skip_serializing_if = "Option::is_none",
@@ -52584,10 +52255,7 @@ pub struct AnalyticsTurnRecord {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -52820,7 +52488,7 @@ pub struct AnalyticsRateLimitRecord {
     #[serde(rename = "accountKey")]
     pub account_key: String,
     pub at: AnalyticsRateLimitRecordAt,
-    pub data: Option<Box<JsonValue>>,
+    pub data: JsonValue,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -52881,10 +52549,7 @@ pub struct AnalyticsNotification {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -52926,7 +52591,7 @@ pub enum AnalyticsMonitorCreated {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AnalyticsItemRecord {
     #[serde(rename = "accountHistory")]
-    pub account_history: Vec<Option<Box<JsonValue>>>,
+    pub account_history: Vec<JsonValue>,
     #[serde(rename = "accountKey")]
     pub account_key: String,
     #[serde(rename = "agentId")]
@@ -52964,7 +52629,7 @@ pub struct AnalyticsItemRecord {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub compaction_metadata: Option<Option<Box<JsonValue>>>,
+    pub compaction_metadata: Option<Option<JsonValue>>,
     #[serde(
         skip_serializing_if = "Option::is_none",
         default,
@@ -53181,10 +52846,7 @@ pub struct AnalyticsItemRecord {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AnalyticsStreamMeasure {
@@ -53551,10 +53213,7 @@ pub struct AnalyticsHistoryRecord {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -53633,10 +53292,7 @@ pub struct AnalyticsHistoryContext {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AnalyticsUsageAssociation {
@@ -53649,10 +53305,7 @@ pub struct AnalyticsUsageAssociation {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AnalyticsPendingUsage {
@@ -53664,10 +53317,7 @@ pub struct AnalyticsPendingUsage {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct AnalyticsProviderTokens {
@@ -53720,10 +53370,7 @@ pub struct AnalyticsProviderTokens {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -53911,7 +53558,7 @@ pub struct AnalyticsAgentTotal {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub account_history: Option<Option<Vec<Option<Box<JsonValue>>>>>,
+    pub account_history: Option<Option<Vec<JsonValue>>>,
     #[serde(
         rename = "accountKey",
         skip_serializing_if = "Option::is_none",
@@ -54019,10 +53666,7 @@ pub struct AnalyticsAgentTotal {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct AnalyticsTokens {
@@ -54158,7 +53802,7 @@ pub struct AnalyticsAgentRecord {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub account_history: Option<Option<Vec<Option<Box<JsonValue>>>>>,
+    pub account_history: Option<Option<Vec<JsonValue>>>,
     #[serde(
         rename = "accountKey",
         skip_serializing_if = "Option::is_none",
@@ -54249,10 +53893,7 @@ pub struct AnalyticsAgentRecord {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -54283,10 +53924,7 @@ pub struct AmbiguousToolRequestResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum AmbiguousToolRequestResponseStage {
@@ -54957,7 +54595,7 @@ pub struct AgentResponse {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub quick_create: Option<Option<Box<JsonValue>>>,
+    pub quick_create: Option<Option<JsonValue>>,
     #[serde(
         rename = "readState",
         skip_serializing_if = "Option::is_none",
@@ -55127,7 +54765,7 @@ pub struct AgentResponse {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub voice_state: Option<Option<Box<JsonValue>>>,
+    pub voice_state: Option<Option<JsonValue>>,
     #[serde(
         rename = "workerDefaults",
         skip_serializing_if = "Option::is_none",
@@ -55485,7 +55123,7 @@ pub struct QuestionEntry {
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AnswerHistoryEntry {
-    pub answer: Option<Box<JsonValue>>,
+    pub answer: JsonValue,
     pub id: String,
     #[serde(rename = "isSecret")]
     pub is_secret: bool,
@@ -55619,20 +55257,14 @@ pub struct AgentRecordResponseVariantVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct AgentRecordResponseVariantInlineVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AgentRecordResponse {
@@ -56407,10 +56039,7 @@ pub struct AgentRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct UsageResumeRecordResponse {
@@ -56500,10 +56129,7 @@ pub struct UsageResumeRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum UsageResumeRecordResponseStatus {
@@ -56607,10 +56233,7 @@ pub struct TurnRecoveryRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ReviewDefaultsRecordResponse {
@@ -56633,10 +56256,7 @@ pub struct ReviewDefaultsRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct RestartRecoveryRecordResponse {
@@ -56692,10 +56312,7 @@ pub struct RestartRecoveryRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RemoteWorkerLinkRecordResponse {
@@ -56718,10 +56335,7 @@ pub struct RemoteWorkerLinkRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RemoteParentLinkRecordResponse {
@@ -56744,10 +56358,7 @@ pub struct RemoteParentLinkRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ReadStateRecordResponse {
@@ -56774,10 +56385,7 @@ pub struct ReadStateRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PreparedContextRecordResponse {
@@ -56802,10 +56410,7 @@ pub struct PreparedContextRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PreparedContextRecordResponseVersions {
@@ -56847,10 +56452,7 @@ pub struct NativeTurnErrorRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct NativeToolUpdateRecordResponse {
@@ -56877,10 +56479,7 @@ pub struct NativeToolUpdateRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct NativeToolSourceRecordResponse {
@@ -56907,10 +56506,7 @@ pub struct NativeToolSourceRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct NativeThreadBlockRecordResponse {
@@ -56935,10 +56531,7 @@ pub struct NativeThreadBlockRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct NativeSafetyRetryViewRecordResponse {
@@ -57043,10 +56636,7 @@ pub struct NativeSafetyRetryViewRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum NativeSafetyRetryViewRecordResponseStage {
@@ -57138,10 +56728,7 @@ pub struct NativeSafetyBufferingRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct NativeReviewRecordResponse {
@@ -57198,10 +56785,7 @@ pub struct NativeReviewRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -57308,11 +56892,11 @@ pub type NativeReviewRecordResponseErrorArray = Vec<
     Option<NativeReviewRecordResponseErrorItemUnion>,
 >;
 ///Array variant in union
-pub type JsonValueArrayInlineF7AE3ED6489DE701 = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInlineF7AE3ED6489DE701 = Vec<JsonValue>;
 ///Array variant in union
-pub type JsonValueArrayInline7B99ACCEF8935F46 = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInline7B99ACCEF8935F46 = Vec<JsonValue>;
 ///Array variant in union
-pub type JsonValueArrayInline72A3D664EF1B35CF = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInline72A3D664EF1B35CF = Vec<JsonValue>;
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct NativeReleaseRecordResponse {
     #[serde(
@@ -57422,10 +57006,7 @@ pub struct NativeReleaseRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum NativeReleaseRecordResponsePhase {
@@ -57536,9 +57117,9 @@ pub type NativeReleaseRecordResponseErrorArray = Vec<
     Option<NativeReleaseRecordResponseErrorItemUnion>,
 >;
 ///Array variant in union
-pub type JsonValueArrayInlineDFAEEF774DB96FC3 = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInlineDFAEEF774DB96FC3 = Vec<JsonValue>;
 ///Array variant in union
-pub type JsonValueArrayInlineA14FD4693EBC55A4 = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInlineA14FD4693EBC55A4 = Vec<JsonValue>;
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct NativeNameSyncedRecordResponse {
     #[serde(
@@ -57564,10 +57145,7 @@ pub struct NativeNameSyncedRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct NativeNameFailureRecordResponse {
@@ -57600,10 +57178,7 @@ pub struct NativeNameFailureRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct NativeNameIdentityRecordResponse {
@@ -57629,10 +57204,7 @@ pub struct NativeNameIdentityRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -57669,7 +57241,7 @@ pub type NativeNameFailureRecordResponseErrorArray = Vec<
     Option<NativeNameFailureRecordResponseErrorItemUnion>,
 >;
 ///Array variant in union
-pub type JsonValueArrayInline0C31D19F8543BDA2 = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInline0C31D19F8543BDA2 = Vec<JsonValue>;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MovePointerRecordResponse {
     #[serde(
@@ -57698,10 +57270,7 @@ pub struct MovePointerRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct LazyAccountTransferRecordResponse {
@@ -57735,10 +57304,7 @@ pub struct LazyAccountTransferRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum AgentRecordResponseWorktreePreparation {
@@ -58057,10 +57623,7 @@ pub struct WorktreeCleanupRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WorktreeRegistrationRepairRecordResponse {
@@ -58086,10 +57649,7 @@ pub struct WorktreeRegistrationRepairRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -58132,10 +57692,7 @@ pub struct WorktreeCleanupErrorRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct WorkspaceWaitRecordResponse {
@@ -58164,10 +57721,7 @@ pub struct WorkspaceWaitRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -58226,10 +57780,7 @@ pub struct ParkReceiptRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ImageWorkspaceCleanupResultRecordResponse {
@@ -58262,10 +57813,7 @@ pub struct ImageWorkspaceCleanupResultRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ImageWorkspaceCleanupResultRecordResponseRestoreHeads {
@@ -58358,10 +57906,7 @@ pub struct EmptyTransferRecoveryRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct LazyAccountTransferSourceRecordResponse {
@@ -58471,10 +58016,7 @@ pub struct LazyAccountTransferSourceRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WorkerDefaultsRecordResponse {
@@ -58515,10 +58057,7 @@ pub struct WorkerDefaultsRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PendingSettingsRecordResponse {
@@ -58565,10 +58104,7 @@ pub struct PendingSettingsRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum LazyAccountTransferSourceRecordResponseProvider {
@@ -58711,11 +58247,11 @@ pub type LazyAccountTransferSourceRecordResponseCyberAccessProgramArray = Vec<
     Option<LazyAccountTransferSourceRecordResponseCyberAccessProgramItemUnion>,
 >;
 ///Array variant in union
-pub type JsonValueArrayInlineBE970DE9750D5EAB = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInlineBE970DE9750D5EAB = Vec<JsonValue>;
 ///Array variant in union
-pub type JsonValueArrayInlineBC6D62F5DC482D50 = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInlineBC6D62F5DC482D50 = Vec<JsonValue>;
 ///Array variant in union
-pub type JsonValueArrayInline8E9DAB308E513655 = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInline8E9DAB308E513655 = Vec<JsonValue>;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum EmptyTransferRecoveryRecordResponseSourceHistoryMissingItemUnion {
@@ -58751,7 +58287,7 @@ pub struct EmptyTransferRecoveryRecordResponseVariantInline {
     >,
 }
 ///Array variant in union
-pub type JsonValueArrayInline7891403CADE04FAA = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInline7891403CADE04FAA = Vec<JsonValue>;
 ///Array variant in union
 pub type EmptyTransferRecoveryRecordResponseSourceHistoryMissingArray = Vec<
     Option<EmptyTransferRecoveryRecordResponseSourceHistoryMissingItemUnion>,
@@ -58791,7 +58327,7 @@ pub struct EmptyTransferRecoveryRecordResponseVariant {
     >,
 }
 ///Array variant in union
-pub type JsonValueArrayInlineBBC368477ED1DD85 = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInlineBBC368477ED1DD85 = Vec<JsonValue>;
 ///Array variant in union
 pub type EmptyTransferRecoveryRecordResponseErrorArray = Vec<
     Option<EmptyTransferRecoveryRecordResponseErrorItemUnion>,
@@ -58840,10 +58376,7 @@ pub struct DisconnectRecoveryRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct StartAttemptRecordResponse {
@@ -58935,10 +58468,7 @@ pub struct StartAttemptRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct StartModelSettingsRecordResponse {
@@ -58973,10 +58503,7 @@ pub struct StartModelSettingsRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -59100,9 +58627,9 @@ impl AsRef<str> for StartAttemptRecordResponseExecutionOutcome {
     }
 }
 ///Array variant in union
-pub type JsonValueArrayInlineC9C912EBA0BE4107 = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInlineC9C912EBA0BE4107 = Vec<JsonValue>;
 ///Array variant in union
-pub type JsonValueArrayInline5BEC151EE1B53A6C = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInline5BEC151EE1B53A6C = Vec<JsonValue>;
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct DeliveredModeRecordResponse {
     #[serde(
@@ -59134,10 +58661,7 @@ pub struct DeliveredModeRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -59172,10 +58696,7 @@ pub struct ConvertedFromLeadRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum ConvertedFromLeadRecordResponseBy {
@@ -59223,10 +58744,7 @@ pub struct ContextUsageRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ContextRepairWaitRecordResponse {
@@ -59298,10 +58816,7 @@ pub struct ContextRepairWaitRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -59338,7 +58853,7 @@ pub struct ContextRepairWaitRecordResponseVariantInline {
     >,
 }
 ///Array variant in union
-pub type JsonValueArrayInline9CF62F7F36B70970 = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInline9CF62F7F36B70970 = Vec<JsonValue>;
 ///Array variant in union
 pub type ContextRepairWaitRecordResponseLastTaskCheckErrorArray = Vec<
     Option<ContextRepairWaitRecordResponseLastTaskCheckErrorItemUnion>,
@@ -59394,7 +58909,7 @@ pub struct ContextRepairWaitRecordResponseVariant {
     >,
 }
 ///Array variant in union
-pub type JsonValueArrayInline404C540AF5CBDF0B = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInline404C540AF5CBDF0B = Vec<JsonValue>;
 ///Array variant in union
 pub type ContextRepairWaitRecordResponseErrorArray = Vec<
     Option<ContextRepairWaitRecordResponseErrorItemUnion>,
@@ -59475,10 +58990,7 @@ pub struct ContextRepairRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct HistoricalInputProofRecordResponse {
@@ -59511,10 +59023,7 @@ pub struct HistoricalInputProofRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ContextRepairSourceRecordResponse {
@@ -59547,10 +59056,7 @@ pub struct ContextRepairSourceRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ContextRepairSourceCleanupRecordResponse {
@@ -59583,10 +59089,7 @@ pub struct ContextRepairSourceCleanupRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ContextRepairSnapshotRecordResponse {
@@ -59647,10 +59150,7 @@ pub struct ContextRepairSnapshotRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -59719,7 +59219,7 @@ pub struct ContextRepairRecordResponseVariantInline {
     >,
 }
 ///Array variant in union
-pub type JsonValueArrayInlineFBABF66DCFB6C07D = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInlineFBABF66DCFB6C07D = Vec<JsonValue>;
 ///Array variant in union
 pub type ContextRepairRecordResponseResultArray = Vec<
     Option<ContextRepairRecordResponseResultItemUnion>,
@@ -59775,7 +59275,7 @@ pub struct ContextRepairRecordResponseVariant {
     >,
 }
 ///Array variant in union
-pub type JsonValueArrayInline99E5894218DABBD6 = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInline99E5894218DABBD6 = Vec<JsonValue>;
 ///Array variant in union
 pub type ContextRepairRecordResponseErrorArray = Vec<
     Option<ContextRepairRecordResponseErrorItemUnion>,
@@ -59833,10 +59333,7 @@ pub struct ConnectionRecoveryRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -59871,7 +59368,7 @@ pub struct ConnectionRecoveryRecordResponseVariant {
     >,
 }
 ///Array variant in union
-pub type JsonValueArrayInline227FEB0CFEF3E565 = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInline227FEB0CFEF3E565 = Vec<JsonValue>;
 ///Array variant in union
 pub type ConnectionRecoveryRecordResponsePreviousErrorArray = Vec<
     Option<ConnectionRecoveryRecordResponsePreviousErrorItemUnion>,
@@ -59922,10 +59419,7 @@ pub struct ConnectionCheckRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct CleanedImageWorkspaceRecordResponse {
@@ -59993,10 +59487,7 @@ pub struct CleanedImageWorkspaceRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct CleanedImageWorkspaceRecordResponseRestoreHeads {
@@ -60042,10 +59533,7 @@ pub struct ImageWorkspaceCollectResultRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -60097,10 +59585,7 @@ pub struct ImageWorkspaceCollectRepositoryRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ClaudePreInputRetryRecordResponse {
@@ -60155,10 +59640,7 @@ pub struct ClaudePreInputRetryRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct SupervisorIdentityRecordResponse {
@@ -60185,10 +59667,7 @@ pub struct SupervisorIdentityRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum ClaudePreInputRetryRecordResponseOutcome {
@@ -60277,10 +59756,7 @@ pub struct CapacityRetryRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct BudgetWaitRecordResponse {
@@ -60337,10 +59813,7 @@ pub struct BudgetWaitRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StartActionIdentityRecordResponse {
@@ -60366,10 +59839,7 @@ pub struct StartActionIdentityRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -60422,7 +59892,7 @@ pub struct BudgetWaitRecordResponseVariant {
     >,
 }
 ///Array variant in union
-pub type JsonValueArrayInlineF51FCD5AE53DDB72 = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInlineF51FCD5AE53DDB72 = Vec<JsonValue>;
 ///Array variant in union
 pub type BudgetWaitRecordResponseAdmissionArray = Vec<
     Option<BudgetWaitRecordResponseAdmissionItemUnion>,
@@ -60506,10 +59976,7 @@ pub struct BrowserRecoveryRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct BrowserRecoveryRequestRecordResponse {
@@ -60540,10 +60007,7 @@ pub struct BrowserRecoveryRequestRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -60576,7 +60040,7 @@ pub struct BrowserRecoveryRecordResponseVariant {
     >,
 }
 ///Array variant in union
-pub type JsonValueArrayInline1332BC18C634E897 = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInline1332BC18C634E897 = Vec<JsonValue>;
 ///Array variant in union
 pub type BrowserRecoveryRecordResponseErrorArray = Vec<
     Option<BrowserRecoveryRecordResponseErrorItemUnion>,
@@ -60679,7 +60143,7 @@ pub struct AgentRecordResponseVariantInline {
     >,
 }
 ///Array variant in union
-pub type JsonValueArrayInline7915B928BFBF3E92 = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInline7915B928BFBF3E92 = Vec<JsonValue>;
 ///Array variant in union
 pub type AgentRecordResponseLastCompletedTurnErrorArray = Vec<
     Option<AgentRecordResponseLastCompletedTurnErrorItemUnion>,
@@ -60853,7 +60317,7 @@ pub struct AgentRecordResponseVariant {
     >,
 }
 ///Array variant in union
-pub type JsonValueArrayInline452670886E70DBBD = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInline452670886E70DBBD = Vec<JsonValue>;
 ///Array variant in union
 pub type AgentRecordResponseAccountTransferStateArray = Vec<
     Option<AgentRecordResponseAccountTransferStateItemUnion>,
@@ -60891,10 +60355,7 @@ pub struct AgentNativeStatusRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum AgentNativeStatusRecordResponsePhase {
@@ -61585,7 +61046,7 @@ pub struct AgentEntityDto {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub quick_create: Option<Option<Box<JsonValue>>>,
+    pub quick_create: Option<Option<JsonValue>>,
     #[serde(
         rename = "readState",
         skip_serializing_if = "Option::is_none",
@@ -61755,7 +61216,7 @@ pub struct AgentEntityDto {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub voice_state: Option<Option<Box<JsonValue>>>,
+    pub voice_state: Option<Option<JsonValue>>,
     #[serde(
         rename = "workerDefaults",
         skip_serializing_if = "Option::is_none",
@@ -62793,7 +62254,7 @@ pub struct NativeProviderError {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub data: Option<Option<Box<JsonValue>>>,
+    pub data: Option<Option<JsonValue>>,
     #[serde(
         skip_serializing_if = "Option::is_none",
         default,
@@ -62803,10 +62264,7 @@ pub struct NativeProviderError {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -62821,10 +62279,7 @@ pub struct NativeProviderErrorVariantInline2274E29129E91887 {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -62838,10 +62293,7 @@ pub struct NativeProviderErrorVariantInline {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -62860,13 +62312,10 @@ pub struct NativeProviderErrorVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 ///Array variant in union
-pub type JsonValueArrayInline88E8ECCE6C99EF5E = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInline88E8ECCE6C99EF5E = Vec<JsonValue>;
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum AgentEntityDtoEnvironment {
     #[default]
@@ -62957,10 +62406,7 @@ pub struct AgentDraftRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -62987,20 +62433,14 @@ pub struct AgentArchiveRecordResponseVariantVariant {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct AgentArchiveRecordResponseVariantInline {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct AgentArchiveRecordResponseVariant {
@@ -63049,10 +62489,7 @@ pub struct AgentArchiveRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -63075,7 +62512,7 @@ pub enum AgentArchiveRecordResponseUnassignedWorkItemUnion {
     String(String),
 }
 ///Array variant in union
-pub type JsonValueArray = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArray = Vec<JsonValue>;
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum ArrayItemItemUnion {
@@ -63087,7 +62524,7 @@ pub enum ArrayItemItemUnion {
     String(String),
 }
 ///Array variant in union
-pub type JsonValueArrayInline = Vec<Option<Box<JsonValue>>>;
+pub type JsonValueArrayInline = Vec<JsonValue>;
 ///Array variant in union
 pub type ArrayItemArray = Vec<Option<ArrayItemItemUnionInlineA8934D614A0CFF57>>;
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -63115,10 +62552,7 @@ pub struct AgentActivityRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct AgentActivity {
@@ -63169,10 +62603,7 @@ pub struct ActiveToolRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AccountsResponse {
@@ -63300,10 +62731,7 @@ pub struct CodexLoginReceipt {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum CodexLoginReceiptStatus {
@@ -63515,10 +62943,7 @@ pub struct AccountTransferSummaryRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum AccountTransferSummaryRecordResponseStatus {
@@ -63826,10 +63251,7 @@ pub struct AccountTransferLeftOnSourceRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum AccountTransferLeftOnSourceRecordResponseProvider {
@@ -63937,10 +63359,7 @@ pub struct AccountTransferInterruptedRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AccountTransferBlockedRecordResponse {
@@ -63974,10 +63393,7 @@ pub struct AccountTransferBlockedRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone)]
 pub enum AccountTransferApiAgentsAccountTransferPostRequest {
@@ -64292,7 +63708,7 @@ pub struct RateLimitsDataDto {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub rate_limit_reset_credits: Option<Option<Box<JsonValue>>>,
+    pub rate_limit_reset_credits: Option<Option<JsonValue>>,
     #[serde(
         rename = "rateLimits",
         skip_serializing_if = "Option::is_none",
@@ -64323,10 +63739,7 @@ pub struct RateLimitsDataDto {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct RateLimitsDataDtoRateLimitsByLimitId {
@@ -64380,10 +63793,7 @@ pub struct RateLimitBucketDto {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct RateLimitWindowDto {
@@ -64411,10 +63821,7 @@ pub struct RateLimitWindowDto {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AccountLoginResponse {
@@ -64601,10 +64008,7 @@ pub struct AccountHistoryRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PortableHistoryRecordResponse {
@@ -64639,10 +64043,7 @@ pub struct PortableHistoryRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PortableHistorySourceRecordResponse {
@@ -64671,10 +64072,7 @@ pub struct PortableHistorySourceRecordResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PortableHistoryRecordResponseCounts {
@@ -64688,10 +64086,7 @@ pub struct JsonObjectResponse {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AccountCostResponse {
@@ -64751,7 +64146,7 @@ pub struct AccountCostData {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
-    pub coverage: Option<Option<Box<JsonValue>>>,
+    pub coverage: Option<Option<JsonValue>>,
     #[serde(
         skip_serializing_if = "Option::is_none",
         default,
@@ -64977,10 +64372,7 @@ pub struct Account {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ClaudeOptions {
@@ -65022,10 +64414,7 @@ pub struct ClaudeOptions {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ClaudeCustomModel {
@@ -65034,10 +64423,7 @@ pub struct ClaudeCustomModel {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum AccountStatus {
@@ -65223,23 +64609,9 @@ pub struct DiscoveredServer {
     /// Additional properties matching the spec's
     /// `additionalProperties` value schema.
     #[serde(flatten)]
-    pub additional_properties: std::collections::BTreeMap<
-        String,
-        Option<Box<JsonValue>>,
-    >,
+    pub additional_properties: std::collections::BTreeMap<String, JsonValue>,
 }
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(untagged)]
-pub enum JsonValue {
-    JsonValueVariant(JsonValueVariant),
-    JsonValueArrayInline20E8219AD2996C1E(JsonValueArrayInline20E8219AD2996C1E),
-    Boolean(bool),
-    Integer(i64),
-    Number(f64),
-    String(String),
-}
-///Array variant in union
-pub type JsonValueArrayInline20E8219AD2996C1E = Vec<Option<Box<JsonValue>>>;
+pub type JsonValue = serde_json::Value;
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum DiscoveredServerStatus {
     #[default]

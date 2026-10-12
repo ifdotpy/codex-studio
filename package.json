@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "api:generate": "python3 workspaces/runtime/apps/server/src/codex_python.py --exec -m studio_api.generate_types",
+    "api:generate": "python3 workspaces/runtime/apps/server/src/codex_python.py --exec -m studio_api.generate_types --write-openapi",
     "api:check": "python3 workspaces/runtime/apps/server/src/codex_python.py --exec -m studio_api.generate_types --check",
     "typecheck:runtime": "python3 workspaces/runtime/apps/server/src/codex_python.py --mypy",
     "test:client": "pnpm run typecheck:client-helper && pnpm --filter codex-agents-web test",

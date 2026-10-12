@@ -13,18 +13,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let address = listener.local_addr()?;
     let mut token = [0_u8; 32];
     getrandom::fill(&mut token).map_err(|error| std::io::Error::other(error.to_string()))?;
-    let token = token.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let token = token
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     let mut workspace = [0_u8; 16];
-    getrandom::fill(&mut workspace)
-        .map_err(|error| std::io::Error::other(error.to_string()))?;
-    let workspace_id = workspace.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    getrandom::fill(&mut workspace).map_err(|error| std::io::Error::other(error.to_string()))?;
+    let workspace_id = workspace
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     let state_dir = env::var("CODEX_AGENTS_STATE_DIR").unwrap_or_default();
     let native_path = env::var("CODEX_BIN").ok();
-    let app = router(HttpState::new(token, workspace_id, native_path, state_dir, address.port()));
+    let public_origin = env::var("CODEX_CANVAS_PUBLIC_ORIGIN").ok();
+    let app = router(HttpState::new(
+        token,
+        workspace_id,
+        native_path,
+        state_dir,
+        address.port(),
+        public_origin,
+    ));
     println!("Codex Canvas: http://{}:{}", address.ip(), address.port());
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
     Ok(())
 }
 
@@ -52,7 +68,9 @@ async fn shutdown_signal() {
             },
             Err(error) => {
                 eprintln!("failed to listen for SIGTERM: {error}");
-                if let Err(error) = tokio::signal::ctrl_c().await { eprintln!("failed to listen for Ctrl-C: {error}"); }
+                if let Err(error) = tokio::signal::ctrl_c().await {
+                    eprintln!("failed to listen for Ctrl-C: {error}");
+                }
             }
         }
     }

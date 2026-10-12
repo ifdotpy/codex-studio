@@ -191,6 +191,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "studio-runtime-http-codegen"
+version = "0.1.0"
+dependencies = [
+ "openapi-to-rust",
+ "serde_json",
+]
+
+[[package]]
 name = "studio-runtime-providers"
 version = "0.1.0"
 dependencies = [

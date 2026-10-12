@@ -16,7 +16,9 @@
 
 The binary owns process configuration and signal handling. Route behavior lives
 in `studio-runtime-http`; Rust store, process, and provider crates are wired by
-the application as those implementations land.
+the application as those implementations land. The current read-only routes are
+`GET /api/session`, `GET /api/sync/identity`, and `GET /api/desktop`; every other
+documented operation returns 501 with the common error envelope.
 
 The server uses Axum 0.8.9 (MIT) and getrandom 0.3.4 (MIT OR Apache-2.0) for
 loopback HTTP and its per-process session token. Tokio 1.53.2 (MIT) supplies the

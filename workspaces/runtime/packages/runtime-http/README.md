@@ -16,8 +16,13 @@
 - **Focused check:** `cargo nextest run -p studio-runtime-http`.
 
 `openapi.json` is the API schema authority and outlives the Python application.
-Python export parity is checked by `pnpm run api:check`. Rust DTO drift is
-checked by the crate's generator test using `openapi-to-rust` 0.22.0.
+Run `pnpm run api:generate` after schema changes to regenerate the authority,
+TypeScript outputs, and Rust DTOs together. `pnpm run api:check` checks all four
+artifacts without writing. The Rust code generator is a small workspace binary
+linked against the exactly pinned `openapi-to-rust` 0.22.0 library and locked
+by `Cargo.lock`; Cargo provisions it as part of either command without a
+separate global binary install. The crate's generator test independently checks
+the checked-in DTO output.
 
 Direct dependencies introduced by this package: Axum 0.8.9 (MIT), Tokio
 1.53.2 (MIT), SHA-2
@@ -26,7 +31,5 @@ constant-time token comparison), and openapi-to-rust 0.22.0 (MIT; test-only
 DTO drift generator). Serde and
 serde_json are existing workspace dependencies.
 
-Regenerate DTOs with `openapi-to-rust generate
-workspaces/runtime/packages/runtime-http/openapi.json --output-dir
-workspaces/runtime/packages/runtime-http/src/generated --module-name generated
---types-only`. `cargo nextest run -p studio-runtime-http` checks freshness.
+Generated files should be refreshed through `pnpm run api:generate`; do not edit
+them by hand.

@@ -20,11 +20,13 @@ fn checked_in_dtos_match_the_openapi_generator() {
     };
     let generator = CodeGenerator::new(config)
         .with_source_provenance("workspaces/runtime/packages/runtime-http/openapi.json");
-    let output = generator.generate_all(&mut analysis).expect("DTO generation must succeed");
+    let output = generator
+        .generate_all(&mut analysis)
+        .expect("DTO generation must succeed");
     let expected = output
         .files
         .iter()
-        .find(|file| file.path == PathBuf::from("types.rs"))
+        .find(|file| file.path.file_name().is_some_and(|name| name == "types.rs"))
         .expect("types-only generation must emit types.rs");
     assert_eq!(expected.content, include_str!("../src/generated/types.rs"));
 }
