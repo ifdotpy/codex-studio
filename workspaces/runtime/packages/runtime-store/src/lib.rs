@@ -27,6 +27,7 @@ pub use repositories::monitors::{MonitorsRepository, StoredMonitor};
 pub use repositories::profiles::{ProfileRecord, ProfileRepository, ProfileRole, ReasoningEffort};
 pub use repositories::questions_reads::{QuestionsReadsRecord, QuestionsReadsRepository};
 pub use repositories::rules::{RulesRepository, StoredAgent, StoredRule};
+pub use repositories::scheduler::{ClaimedEvents, SchedulerRepository};
 pub use repositories::sync_documents::{EntityRow, SyncDocument, SyncDocumentsRepository};
 pub use repositories::transcript::{
     TranscriptItem, TranscriptRepository, TranscriptStoreError, TranscriptStoreResult,
