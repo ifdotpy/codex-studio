@@ -68,20 +68,7 @@ pub enum ReasoningEffort {
 pub struct ProfileRepository;
 
 impl ProfileRepository {
-    pub fn available(connection: &Connection) -> StoreResult<bool> {
-        connection
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_profiles')",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(StoreError::from)
-    }
-
     pub fn list(connection: &Connection) -> StoreResult<Vec<ProfileRecord>> {
-        if !Self::available(connection)? {
-            return Ok(Vec::new());
-        }
         let mut statement =
             connection.prepare("SELECT id, record FROM runtime_profiles ORDER BY rowid")?;
         let rows = statement.query_map([], |row| {

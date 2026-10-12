@@ -25,10 +25,6 @@ pub enum QueueWriteError {
     Conflict(&'static str),
     #[error("invalid stored object {object}/{id}")]
     InvalidStoredObject { object: &'static str, id: String },
-    #[error("Not implemented: requires store-bootstrap/operation-receipts")]
-    ReceiptsUnavailable,
-    #[error("Not implemented: requires store-bootstrap/event-metadata")]
-    MetadataUnavailable,
     #[error("Not implemented: requires cross-server/remote-events")]
     RemoteEventsUnavailable,
     #[error(transparent)]
@@ -81,9 +77,6 @@ pub fn action(
     }
     let receipt_id = request_id.map(|id| format!("queue:{agent_id}:{id}"));
     if let Some(receipt_id) = receipt_id.as_deref() {
-        if !QueueWriteRepository::table_exists(transaction, "runtime_operation_receipts")? {
-            return Err(QueueWriteError::ReceiptsUnavailable);
-        }
         let receipt = EventWriteRepository::receipt(transaction, receipt_id)
             .map_err(|_| invalid_stored("runtime_operation_receipts", receipt_id))?;
         if let Some(receipt) = receipt {
@@ -213,10 +206,7 @@ pub fn action(
     }
     if let Some(receipt_id) = receipt_id {
         EventWriteRepository::put_receipt(transaction, &receipt_id, signature, &result.to_string())
-            .map_err(|error| match error {
-                StoreError::Sqlite(_) => QueueWriteError::ReceiptsUnavailable,
-                other => QueueWriteError::Store(other),
-            })?;
+            .map_err(QueueWriteError::Store)?;
     }
     Ok(result)
 }
@@ -299,9 +289,6 @@ fn reorder(
 }
 
 fn read_metadata(transaction: &Transaction<'_>, id: &str) -> Result<Value, QueueWriteError> {
-    if !QueueWriteRepository::table_exists(transaction, "runtime_event_meta")? {
-        return Err(QueueWriteError::MetadataUnavailable);
-    }
     let record = QueueWriteRepository::metadata(transaction, id)
         .map_err(|_| invalid_stored("runtime_event_meta", id))?;
     match record {

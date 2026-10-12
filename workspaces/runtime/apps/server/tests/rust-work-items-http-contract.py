@@ -332,7 +332,9 @@ class WorkItemsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             database.execute("DROP TABLE runtime_work")
             database.execute("DROP TABLE runtime_plans")
             database.execute("DROP TABLE runtime_annotations")
+            database.execute("DROP TABLE runtime_operation_receipts")
             database.execute("DROP TABLE runtime_event_meta")
+            database.execute("DROP TABLE runtime_profiles")
         self.backend.start()
 
         with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
@@ -341,7 +343,8 @@ class WorkItemsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             )}
         self.assertTrue({
             "runtime_assets", "runtime_work", "runtime_plans",
-            "runtime_annotations", "runtime_event_meta",
+            "runtime_annotations", "runtime_operation_receipts", "runtime_event_meta",
+            "runtime_profiles",
         }.issubset(tables))
 
         work = self.backend.request(

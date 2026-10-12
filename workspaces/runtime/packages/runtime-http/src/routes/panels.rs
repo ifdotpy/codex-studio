@@ -191,9 +191,6 @@ async fn update_profiles(
     let store = state.store.ok_or_else(ApiError::internal)?;
     let result = tokio::task::spawn_blocking(move || {
         let connection = store.read().map_err(|_| ApiError::internal())?;
-        if !ProfileRepository::available(&connection).map_err(|_| ApiError::internal())? {
-            return Err(schema_dependency_error());
-        }
         let id = if requested_id.is_empty() {
             ProfileRepository::new_id(&connection).map_err(|_| ApiError::internal())?
         } else {
@@ -271,11 +268,4 @@ fn profile_read_error(error: StoreError) -> ApiError {
         }
         _ => ApiError::internal(),
     }
-}
-
-fn schema_dependency_error() -> ApiError {
-    ApiError::new(
-        StatusCode::NOT_IMPLEMENTED,
-        "Not implemented: requires store-bootstrap/workspace-profiles-schema",
-    )
 }

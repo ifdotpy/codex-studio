@@ -137,14 +137,6 @@ pub(super) fn api_error(error: QueueWriteError) -> ApiError {
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("invalid stored object {object}/{id}"),
         ),
-        QueueWriteError::ReceiptsUnavailable => ApiError::new(
-            StatusCode::NOT_IMPLEMENTED,
-            "Not implemented: requires store-bootstrap/operation-receipts",
-        ),
-        QueueWriteError::MetadataUnavailable => ApiError::new(
-            StatusCode::NOT_IMPLEMENTED,
-            "Not implemented: requires store-bootstrap/event-metadata",
-        ),
         QueueWriteError::RemoteEventsUnavailable => ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
             "Not implemented: requires cross-server/remote-events",

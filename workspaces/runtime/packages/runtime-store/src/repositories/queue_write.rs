@@ -51,14 +51,6 @@ pub struct PendingEvent {
 pub struct QueueWriteRepository;
 
 impl QueueWriteRepository {
-    pub fn table_exists(transaction: &Transaction<'_>, table: &str) -> StoreResult<bool> {
-        Ok(transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1 COLLATE NOCASE)",
-            [table],
-            |row| row.get(0),
-        )?)
-    }
-
     pub fn pending_events(
         transaction: &Transaction<'_>,
         agent: &str,
