@@ -133,3 +133,25 @@ jobs:
             grep -n -E -A 80 '^(ERROR|FAIL): ' "$log" | head -n 800 || true
             tail -n 100 "$log"
           fi
+
+  fast-browser-smoke:
+    name: "Fast tier: browser smoke"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/ms-playwright
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/fast-tier-setup
+      - name: Select the isolated Python environment for browser fixtures
+        run: echo "CODEX_AGENTS_PYTHON=$(python3 workspaces/runtime/apps/server/src/codex_python.py)" >> "$GITHUB_ENV"
+      - uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94ea4f9 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+      - name: Install the cached Chromium browser
+        run: pnpm --filter codex-agents-web exec playwright install chromium
+      - name: Run browser smoke subset
+        run: just test-browser-smoke

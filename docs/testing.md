@@ -20,11 +20,13 @@ of the same tests to this document.
 
 ## Fast and heavy tiers
 
-The fast tier is deterministic and each suite is expected to finish in at most
-10 seconds when run alone. It is the default developer loop, the required
+The fast tier is deterministic. Each server suite is expected to finish in at
+most 10 seconds when run alone; browser smoke targets under 120 seconds total.
+It is the default developer loop, the required
 pre-PR and pre-merge check, and runs in hosted CI on every pull request and push
-to `main`, with the server tier split across four parallel jobs. A direct push
-to `main` is preceded by `just test-server-opt-in` (about 20 seconds). Use
+to `main`, with the server tier split across four parallel jobs and browser
+smoke in its own job. A direct push to `main` is preceded by `just test-fast`,
+which includes browser smoke. Use
 `just test-fast` for the whole repository. For one
 server suite between edits, use
 `just test server <exact-suite-path>`; exact paths automatically include suites
@@ -37,14 +39,15 @@ Heavy runs are manual, announced runs and are excluded from hosted CI for now.
 The runner owns the server suite categories; the commands below select them
 without maintaining a second suite inventory.
 
-| Tier or purpose     | What it runs                                                                                   | Just command                               |
-| ------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| Fast                | Default server run, server bridge, Rust nextest, web type checks and unit tests, tooling tests | `just test-fast`                           |
-| Heavy server        | All suites in the heavy server list                                                            | `just test-server-heavy`                   |
-| Heavy browser       | Full web browser project, capped at 900 seconds                                                | `just test-browser`                        |
-| All heavy           | Heavy server suites, then the full browser project, sequentially                               | `just test-heavy`                          |
-| Other server opt-in | One runner category: `automated`, `native`, `browser`, `live`, or `vm`                         | `just test-server-opt-in <category>`       |
-| Load-class          | One exact load-class suite, with conditions printed before it starts                           | `just test-server-load <exact-suite-path>` |
+| Tier or purpose     | What it runs                                                                                                                              | Just command                               |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| Fast                | Default server run, server bridge, Rust nextest, web type checks and unit tests, tooling tests, browser smoke subset                      | `just test-fast`                           |
+| Fast browser smoke  | Modal/popover focus and layering, mobile composer geometry, receipt pagination, schema-cache checkpoint retention, account settings smoke | `just test-browser-smoke`                  |
+| Heavy server        | All suites in the heavy server list                                                                                                       | `just test-server-heavy`                   |
+| Heavy browser       | Full web browser project, capped at 900 seconds                                                                                           | `just test-browser`                        |
+| All heavy           | Heavy server suites, then the full browser project, sequentially                                                                          | `just test-heavy`                          |
+| Other server opt-in | One runner category: `automated`, `native`, `browser`, `live`, or `vm`                                                                    | `just test-server-opt-in <category>`       |
+| Load-class          | One exact load-class suite, with conditions printed before it starts                                                                      | `just test-server-load <exact-suite-path>` |
 
 The heavy server suites and the reason for each classification are owned by
 `HEAVY_SUITES` in the [server runner](../workspaces/runtime/apps/server/tests/server/run.py):

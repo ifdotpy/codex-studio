@@ -7,6 +7,7 @@
     "test:unit": "vitest run --config vitest.unit.config.ts",
     "test:api-contract-types": "tsc --noEmit -p tsconfig.api-contract.json",
     "test:browser": "pnpm run build && node scripts/run-browser-tests.mjs --config playwright.config.ts --project=client",
+    "test:browser:smoke": "pnpm run build && node scripts/run-browser-tests.mjs --config playwright.config.ts --project=client --grep \"execution settings ui|Mobile composer 320px setup renders the settled action row|Message receipt pagination browser|a real built renderer uses a new projection cache and preserves drafts|accounts settings show per-server state and provider choices\"",
     "test:browser:list": "node scripts/run-browser-tests.mjs --config playwright.config.ts --project=client --list",
     "test:performance": "pnpm run build && PLAYWRIGHT_INCLUDE_SPECIAL=1 playwright test --config playwright.config.ts --project=performance",
     "test:mutation": "stryker run stryker.config.mjs",
