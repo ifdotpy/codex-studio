@@ -919,12 +919,6 @@ export default function MultiServerApp() {
         <App />
       </ServerSettingsContext.Provider>
     );
-  const unread = servers.reduce(
-    (count, server) =>
-      count +
-      (navigation[server.id]?.chats.filter((chat) => chat.unread).length || 0),
-    0,
-  );
   return (
     <div
       className={`multi-server-shell ${sidebarHidden ? "server-sidebar-hidden" : ""}`}
@@ -982,7 +976,6 @@ export default function MultiServerApp() {
               search={() => setSearchOpen(true)}
               notify={setFailure}
               notice={failure}
-              unreadCount={unread}
               hideOldChatsThreshold={preferences.hideOldChatsThreshold}
             />
           ) : (

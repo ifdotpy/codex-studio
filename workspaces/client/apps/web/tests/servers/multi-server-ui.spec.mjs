@@ -568,7 +568,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
     third.complete();
     await expect(
       page.getByLabel("2 unread chats", { exact: true }),
-    ).toBeVisible();
+    ).toHaveCount(0);
     await expect
       .poll(() => page.evaluate(() => window.__studioNotifications.length))
       .toBe(2);

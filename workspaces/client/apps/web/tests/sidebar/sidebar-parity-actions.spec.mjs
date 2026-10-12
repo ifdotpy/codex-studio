@@ -110,7 +110,7 @@ test("saved folders, nested folders, order, pins, teams, compact and collapse re
         chat(sidebar, `${owner} Unread`).locator('[role="img"]'),
       ).toHaveAttribute("aria-label", /Unread result/);
     }
-    await expect(sidebar.getByLabel("2 unread chats")).toBeVisible();
+    await expect(sidebar.getByLabel("2 unread chats")).toHaveCount(0);
     const sourceOrder = await sidebar
       .locator("[data-sidebar-item]")
       .evaluateAll((rows) =>

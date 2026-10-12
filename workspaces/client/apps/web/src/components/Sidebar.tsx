@@ -110,7 +110,6 @@ export type SidebarProps = {
   services?: SidebarServices;
   settings?: () => void;
   notice?: string;
-  unreadCount?: number;
   data: Snapshot;
   opened: string | null;
   selectionIdentity?: string;
@@ -1246,11 +1245,6 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
             <strong>LAYR</strong> <span>Studio</span>
           </span>
         </a>
-        {p.unreadCount ? (
-          <span aria-label={`${p.unreadCount} unread chats`}>
-            {p.unreadCount}
-          </span>
-        ) : null}
         {p.settings && (
           <ActionIcon
             variant="subtle"

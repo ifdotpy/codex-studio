@@ -323,12 +323,13 @@ test.describe("sidebar visible parity", () => {
                   name: "Studio settings",
                   exact: true,
                 }),
-              ).toHaveCount(combined ? 1 : 0);
+              ).toHaveCount(1);
+              // The header shows no unread count; rows mark unread chats.
               await expect(
                 sidebar.locator(
                   '.sidebar-header [aria-label$=" unread chats"]',
                 ),
-              ).toHaveCount(combined ? 1 : 0);
+              ).toHaveCount(0);
             }
             const screenshot = await capture(
               page,
