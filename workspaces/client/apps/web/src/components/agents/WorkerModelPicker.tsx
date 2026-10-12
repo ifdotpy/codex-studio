@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ContextType,
 } from "react";
 import { ApiError, get, errorText, type GetResult } from "../../api";
 import { claudeModelLabel } from "../../claude-model-label";
@@ -142,6 +143,29 @@ export const ModelCatalogReader = createContext<{
     signal?: AbortSignal;
   }) => Promise<GetResult<"/api/models">>;
 } | null>(null);
+
+/** One read of an account's subagent models, parsed like useWorkerModels. */
+export async function readWorkerModels(
+  reader: ContextType<typeof ModelCatalogReader>,
+  accountKey: string,
+  workers = false,
+): Promise<WorkerModelInfo[]> {
+  const read =
+    reader?.read ||
+    ((options: {
+      query?: { account_key?: string; workers?: string; retry?: "1" };
+      signal?: AbortSignal;
+    }) => get("/api/models", options));
+  const data = await read({
+    query: { account_key: accountKey, workers: workers ? "1" : undefined },
+  });
+  return Array.isArray(data.data)
+    ? data.data.flatMap((row) => {
+        const parsed = modelInfo(row);
+        return parsed ? [parsed] : [];
+      })
+    : [];
+}
 
 export function useWorkerModels(
   accountKey: string,

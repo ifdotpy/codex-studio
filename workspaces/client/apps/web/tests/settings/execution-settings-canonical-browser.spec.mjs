@@ -321,19 +321,32 @@ test("execution settings canonical browser", async ({ page }) => {
       await page.evaluate(() => window.refreshRelease());
     });
     await check("account-default-transfer-confirmation", async () => {
-      await reset({ defaults: true });
+      // Moving existing subagents is an explicit action of its own; the receipt
+      // rules of a transfer are unchanged.
+      await reset({
+        defaults: true,
+        agent: { workerDefaults: { accountKey: "second" } },
+      });
       const account = setupControl(
         page.getByLabel("Subagent account", { exact: true }),
       );
+      const move = page.getByRole("button", {
+        name: /^Move 3 existing subagents to /,
+      });
       await page.evaluate(() => {
         window.transferHold = true;
         window.refreshHold = true;
         window.transferRelease = null;
         window.refreshRelease = null;
       });
-      await account.selectOption("second");
+      await move.click();
       await page.waitForFunction(() => !!window.transferRelease);
-      assert.equal(await account.inputValue(), "");
+      assert.deepEqual(
+        await page.evaluate(() =>
+          window.transfers.map((row) => [row.account_key, row.scope]),
+        ),
+        [["second", "subagents"]],
+      );
       assert.equal(await account.isDisabled(), true);
       await page.evaluate(() => {
         window.transferReply = {
@@ -350,29 +363,20 @@ test("execution settings canonical browser", async ({ page }) => {
         window.transferRelease();
       });
       await page.waitForFunction(() => !!window.refreshRelease);
-      assert.equal(await account.inputValue(), "");
+      assert.equal(await account.inputValue(), "second");
       assert.equal(await account.isDisabled(), false);
       await expect(page.getByText("2 waiting", { exact: true })).toBeVisible();
+      // A running transfer offers no second move.
+      await expect(move).toHaveCount(0);
       assert.equal(
         await page.getByText(/Account transfer complete/).count(),
         0,
       );
       await page.evaluate(() => window.refreshRelease());
-      await page.evaluate(() =>
-        window.setAgent({
-          ...window.agent,
-          workerDefaults: { accountKey: "second" },
-        }),
-      );
-      await expect(
-        page.getByLabel("Subagent account", { exact: true }),
-      ).toHaveAttribute("data-value", "second");
-      // Replay confirms the old operation, not a later default account.
+      // Replay confirms the old operation with the saved request id.
       await reset({
         defaults: true,
-        agent: {
-          workerDefaults: { accountKey: "claude", model: "claude-opus-4-6" },
-        },
+        agent: { workerDefaults: { accountKey: "second" } },
       });
       await page.evaluate(() => {
         localStorage.setItem(
@@ -381,7 +385,7 @@ test("execution settings canonical browser", async ({ page }) => {
         );
         window.transferHold = true;
       });
-      await account.selectOption("second");
+      await move.click();
       await page.waitForFunction(() => !!window.transferRelease);
       await page.evaluate(() => {
         const requestId = window.transfers[0].request_id;
@@ -404,16 +408,16 @@ test("execution settings canonical browser", async ({ page }) => {
       await expect(
         page.getByText("Account transfer accepted.", { exact: true }),
       ).toBeVisible();
-      await expect(
-        page.getByLabel("Subagent account", { exact: true }),
-      ).toHaveAttribute("data-value", "claude");
       assert.equal(
         await page.evaluate(() => window.transfers[0].request_id),
         "previous-request",
       );
-      await reset({ defaults: true });
+      await reset({
+        defaults: true,
+        agent: { workerDefaults: { accountKey: "second" } },
+      });
       await page.evaluate(() => (window.transferHold = true));
-      await account.selectOption("second");
+      await move.click();
       await page.waitForFunction(() => !!window.transferRelease);
       await page.evaluate(() => {
         window.transferReply = {
@@ -428,7 +432,7 @@ test("execution settings canonical browser", async ({ page }) => {
       await expect(page.getByRole("alert")).toContainText(
         "The server did not confirm this account transfer.",
       );
-      assert.equal(await account.inputValue(), "");
+      assert.equal(await account.inputValue(), "second");
       assert.equal(await page.evaluate(() => window.refreshCount), 0);
       await expect(
         page.getByRole("button", { name: "Retry", exact: true }),
@@ -589,7 +593,7 @@ test("execution settings canonical browser", async ({ page }) => {
       await page.waitForTimeout(50);
       assert.equal(await page.evaluate(() => window.refreshCount), 0);
     });
-    await check("subagent-account-instant-transfer", async () => {
+    await check("subagent-account-for-new-subagents", async () => {
       await reset({
         defaults: true,
         agent: {
@@ -610,33 +614,51 @@ test("execution settings canonical browser", async ({ page }) => {
         await account.locator('[data-account-key="offline"]').count(),
         0,
       );
-      assert.equal(
-        await dialog.getByRole("button", { name: /Save/ }).count(),
-        0,
-      );
-      // The catalog of the target account is slow. The choice still applies at once.
+      await expect(
+        dialog.getByText(
+          "For new subagents. Existing subagents keep their account and model.",
+          { exact: true },
+        ),
+      ).toBeVisible();
+      // A new account saves the defaults only. Its catalog has no Luna, so its
+      // recommended model replaces it in the same save. Nothing moves.
       await page.evaluate(() => {
-        window.catalogHold = true;
         window.reply = {
           ...window.agent,
           workerDefaults: {
             accountKey: "claude",
             model: "claude-opus-4-6",
-            effort: null,
+            effort: "high",
             fastMode: false,
           },
         };
       });
       await account.selectOption("claude");
+      await page.waitForFunction(() => window.calls.length === 1);
+      assert.deepEqual(
+        await page.evaluate(() => window.calls[0].worker_defaults),
+        {
+          account_key: "claude",
+          model: "claude-opus-4-6",
+          effort: "high",
+          fast_mode: false,
+          daybreak_enabled: false,
+        },
+      );
+      assert.equal(await page.evaluate(() => window.transfers.length), 0);
+      await page.evaluate(() =>
+        window.setAgent({ ...window.agent, ...window.reply }),
+      );
       await expect(
         page.getByLabel("Subagent account", { exact: true }),
       ).toHaveAttribute("data-value", "claude");
-      await dialog
-        .getByRole("status")
-        .filter({
-          hasText: "Moved 2 subagents to Claude.",
-        })
-        .waitFor();
+      assert.equal(await modelValue(model), "claude-opus-4-6");
+      // Subagents on other accounts move only on request.
+      const move = dialog.getByRole("button", {
+        name: "Move 2 existing subagents to Claude",
+        exact: true,
+      });
+      await move.click();
       await dialog
         .getByRole("status")
         .filter({ hasText: "Account transfer accepted." })
@@ -647,20 +669,9 @@ test("execution settings canonical browser", async ({ page }) => {
         ),
         [["claude", "subagents"]],
       );
-      assert.equal(
-        await page.evaluate(() => window.calls.length),
-        0,
-        "no settings save before the catalog",
-      );
       await page.evaluate(() =>
         window.setAgent({
           ...window.agent,
-          workerDefaults: {
-            accountKey: "claude",
-            model: "gpt-5.6-luna",
-            effort: "high",
-            fastMode: false,
-          },
           accountTransfer: {
             id: window.transfers[0].request_id,
             scope: "subagents",
@@ -695,58 +706,13 @@ test("execution settings canonical browser", async ({ page }) => {
         await leftLine.evaluate((node) => getComputedStyle(node).display),
         "block",
       );
-      assert.equal(
-        await modelValue(model),
-        "gpt-5.6-luna",
-        "current value shows while the catalog loads",
-      );
-      assert.equal(
-        await model.isDisabled(),
-        false,
-        "the catalog never blocks the control",
-      );
-      await page.waitForFunction(() => !!window.catalogRelease);
-      await page.evaluate(() => window.catalogRelease());
-      // The stored model is not in the target catalog: the account default replaces it, in one line.
-      await dialog
-        .getByRole("status")
-        .filter({
-          hasText:
-            "Saved · Luna is not available on Claude. Using Claude Opus 4.6, the account default.",
-        })
-        .waitFor();
-      assert.deepEqual(
-        await page.evaluate(() => window.calls[0].worker_defaults),
-        {
-          account_key: "claude",
-          model: "claude-opus-4-6",
-          effort: null,
-          fast_mode: false,
-          daybreak_enabled: false,
-        },
-      );
-      // One background refresh after the transfer, one after the model save.
-      await page.waitForFunction(() => window.refreshCount === 2);
-      await page.evaluate(() =>
-        window.setAgent({
-          ...window.agent,
-          workerDefaults: {
-            accountKey: "claude",
-            model: "claude-opus-4-6",
-            effort: null,
-            fastMode: false,
-          },
-        }),
-      );
-      assert.equal(await modelValue(model), "claude-opus-4-6");
-      // A lost transfer response reverts the account; Retry reuses the request id.
+      // A lost transfer response offers Retry with the same request id.
       await page.evaluate(() => (window.transferFail = true));
-      await account.selectOption("second");
+      await move.click();
       await page
         .getByRole("alert")
         .filter({ hasText: "Connection lost" })
         .waitFor();
-      assert.equal(await account.inputValue(), "claude", "revert on failure");
       await page.evaluate(() => (window.transferFail = false));
       await dialog.getByRole("button", { name: "Retry", exact: true }).click();
       await dialog
@@ -759,14 +725,13 @@ test("execution settings canonical browser", async ({ page }) => {
       assert.equal(ids.length, 3);
       assert.equal(ids[1], ids[2], "retry keeps the request id");
       assert.notEqual(ids[0], ids[1]);
-      assert.equal(await account.inputValue(), "second");
       // Automatic saves the defaults without a transfer.
       await page.evaluate(() => {
         window.reply = {
           ...window.agent,
           workerDefaults: {
             accountKey: null,
-            model: "gpt-5.6-luna",
+            model: "claude-opus-4-6",
             effort: "high",
             fastMode: false,
           },

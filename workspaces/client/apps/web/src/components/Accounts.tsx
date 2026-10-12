@@ -510,7 +510,14 @@ export function AccountTransferStatus({
             <Button
               size="compact-xs"
               variant="subtle"
-              disabled={pending}
+              // A subagent whose history is moving now finishes first; the server
+              // refuses a cancel until then.
+              disabled={pending || Number(transfer.movingNow || 0) > 0}
+              title={
+                Number(transfer.movingNow || 0) > 0
+                  ? "Cancel after the subagent that is moving now finishes."
+                  : undefined
+              }
               onClick={() => onAction("cancel")}
             >
               Cancel remaining
