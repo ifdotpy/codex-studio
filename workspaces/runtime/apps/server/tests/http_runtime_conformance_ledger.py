@@ -76,17 +76,20 @@ def probe_operations() -> list[dict[str, Any]]:
                 )
                 declared_implementation = (method, template) in IMPLEMENTED
                 expected_status = 200 if declared_implementation else 501
+                schema_header = result.headers.get("x-studio-api-schema")
+                schema_header_matches = schema_header == backend.schema_hash
                 rows.append({
                     "method": method,
                     "path": template,
                     "status": result.status,
                     "classification": (
-                        "implemented" if declared_implementation and result.status == 200
-                        else "not_implemented" if not declared_implementation and result.status == 501
+                        "implemented" if declared_implementation and result.status == 200 and schema_header_matches
+                        else "not_implemented" if not declared_implementation and result.status == 501 and schema_header_matches
                         else "unexpected"
                     ),
                     "expectedStatus": expected_status,
-                    "schemaHeader": result.headers.get("x-studio-api-schema"),
+                    "schemaHeader": schema_header,
+                    "schemaHeaderMatches": schema_header_matches,
                 })
             return rows
         finally:
@@ -143,6 +146,7 @@ def main() -> int:
         "implemented": sum(row["classification"] == "implemented" for row in operations_result),
         "notImplemented": sum(row["classification"] == "not_implemented" for row in operations_result),
         "unexpected": sum(row["classification"] == "unexpected" for row in operations_result),
+        "schemaHeaderMismatches": sum(not row["schemaHeaderMatches"] for row in operations_result),
         "suites": len(suites),
         "suitePassed": sum(row["status"] == "passed" for row in suites),
         "suiteFailed": sum(row["status"] != "passed" for row in suites),
@@ -161,7 +165,8 @@ def main() -> int:
     options.summary.write_text(
         "# Rust HTTP conformance ledger\n\n"
         f"Operations: {totals['operations']} total; {totals['implemented']} implemented; "
-        f"{totals['notImplemented']} return 501; {totals['unexpected']} unexpected.\n\n"
+        f"{totals['notImplemented']} return 501; {totals['unexpected']} unexpected; "
+        f"{totals['schemaHeaderMismatches']} schema-header mismatches.\n\n"
         f"Harness suites: {totals['suitePassed']} passed; {totals['suiteFailed']} failed "
         f"of {totals['suites']}. Tests: {totals['testsPassed']} passed; "
         f"{totals['testsFailed']} failed; {totals['testsSkipped']} skipped.\n",

@@ -41,6 +41,11 @@ STREAM_OR_FILE_ROUTES = frozenset(
 HIDDEN_COMPATIBILITY_ROUTES = frozenset({("POST", "/api/voice/{action:path}")})
 
 
+def effective_route_path(path: str) -> str:
+    """Match FastAPI's path_format, which omits converter suffixes."""
+    return path.replace("{action:path}", "{action}")
+
+
 class VerifierRemote:
     """Local-only origin policy for disposable TestClient requests."""
 
@@ -93,7 +98,10 @@ class ApplicationRouteContract(unittest.TestCase):
             if not path.startswith("/api/"):
                 continue
             declared.update((method, path) for method in route.methods or ())
-        expected = authoritative_api_operations() | HIDDEN_COMPATIBILITY_ROUTES
+        expected = authoritative_api_operations() | {
+            (method, effective_route_path(path))
+            for method, path in HIDDEN_COMPATIBILITY_ROUTES
+        }
         self.assertEqual(expected, declared)
 
     def test_api_routes_are_explicit_component_routes_with_response_models(self) -> None:
@@ -108,10 +116,9 @@ class ApplicationRouteContract(unittest.TestCase):
                 self.assertNotIn("{path:path}", route.path)
                 methods = route.methods or set()
                 self.assertTrue(methods.issubset({"GET", "POST", "HEAD", "OPTIONS"}))
-                original_keys = {(method, route.path) for method in methods}
                 effective_keys = {(method, path) for method in methods}
-                if original_keys & HIDDEN_COMPATIBILITY_ROUTES:
-                    self.assertEqual(original_keys, {("POST", "/api/voice/{action:path}")})
+                if route.path == "/api/voice/{action:path}":
+                    self.assertEqual(methods, {"POST"})
                     self.assertFalse(route.include_in_schema)
                 if not any(key in STREAM_OR_FILE_ROUTES for key in effective_keys):
                     self.assertIsNotNone(route.response_model)

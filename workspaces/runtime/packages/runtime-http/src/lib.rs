@@ -142,7 +142,7 @@ async fn boundary(
                 .map(|value| value.trim().to_ascii_lowercase())
                 .filter(|value| !value.is_empty())
                 .collect::<BTreeSet<_>>();
-            if requested_method != "POST"
+            if !requested_method.eq_ignore_ascii_case("POST")
                 || requested_headers
                     .iter()
                     .any(|header| !allowed.contains(&header.as_str()))
@@ -432,18 +432,20 @@ fn valid_public_origin(origin: &str) -> bool {
         return false;
     }
     let host = authority.split(':').next().unwrap_or_default();
-    let valid_port = authority.strip_prefix(host).is_none_or(|suffix| {
-        suffix
+    let valid_port = match authority.strip_prefix(host) {
+        Some("") => true,
+        Some(suffix) => suffix
             .strip_prefix(':')
             .and_then(|port| port.parse::<u16>().ok())
-            .is_some_and(|port| port > 0)
-    });
+            .is_some_and(|port| port > 0),
+        None => false,
+    };
     valid_port && host.ends_with(".ts.net") && host.len() > ".ts.net".len()
 }
 
 fn is_tailnet_ip(address: IpAddr) -> bool {
     match address {
-        IpAddr::V4(address) => u32::from(address) & 0xffff_c000 == 0x6440_0000,
+        IpAddr::V4(address) => u32::from(address) & 0xffc0_0000 == 0x6440_0000,
         IpAddr::V6(address) => {
             u128::from(address) & (!0_u128 << 80) == 0xfd7a_115c_a1e0_0000_0000_0000_0000_0000
         }
@@ -686,8 +688,14 @@ mod tests {
     fn forwarded_origins_require_the_configured_tailnet_proxy() {
         let mut headers = HeaderMap::new();
         headers.insert(header::HOST, HeaderValue::from_static("127.0.0.1:4312"));
-        headers.insert(header::ORIGIN, HeaderValue::from_static("https://studio.ts.net"));
-        headers.insert("x-forwarded-host", HeaderValue::from_static("studio.ts.net"));
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://studio.ts.net"),
+        );
+        headers.insert(
+            "x-forwarded-host",
+            HeaderValue::from_static("studio.ts.net"),
+        );
         headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
         headers.insert("x-forwarded-for", HeaderValue::from_static("100.64.0.9"));
         let public_origin = Some("https://studio.ts.net".to_owned());

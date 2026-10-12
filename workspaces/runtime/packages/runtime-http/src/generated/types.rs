@@ -11200,18 +11200,6 @@ impl<'de> Deserialize<'de> for WorkspaceEntityDtoNativeNoticesItemUnion {
             ))
     }
 }
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProviderVersionWarningDto {
-    #[serde(rename = "accountKey")]
-    pub account_key: String,
-    pub at: f64,
-    pub baseline: String,
-    pub id: String,
-    pub message: String,
-    pub provider: String,
-    pub version: String,
-}
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum SyncWorkspaceEntityPayloadCollection {
     #[default]
@@ -26665,6 +26653,46 @@ pub struct SyncPullResetResponse {
     pub reset: bool,
     #[serde(rename = "workspaceId")]
     pub workspace_id: String,
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderVersionWarningDto {
+    #[serde(rename = "accountKey")]
+    pub account_key: String,
+    pub at: f64,
+    pub baseline: String,
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<ProviderVersionWarningDtoLevel>,
+    pub message: String,
+    pub provider: String,
+    pub version: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub enum ProviderVersionWarningDtoLevel {
+    #[default]
+    #[serde(rename = "warning")]
+    Warning,
+    #[serde(rename = "info")]
+    Info,
+}
+impl ProviderVersionWarningDtoLevel {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Warning => "warning",
+            Self::Info => "info",
+        }
+    }
+}
+impl ::std::fmt::Display for ProviderVersionWarningDtoLevel {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl AsRef<str> for ProviderVersionWarningDtoLevel {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
 }
 #[derive(Debug, Clone)]
 pub enum ProjectWriteApiProjectsPostResponse {
@@ -43301,9 +43329,37 @@ pub struct ProviderVersionWarning {
     pub at: f64,
     pub baseline: String,
     pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<ProviderVersionWarningLevel>,
     pub message: String,
     pub provider: String,
     pub version: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub enum ProviderVersionWarningLevel {
+    #[default]
+    #[serde(rename = "warning")]
+    Warning,
+    #[serde(rename = "info")]
+    Info,
+}
+impl ProviderVersionWarningLevel {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Warning => "warning",
+            Self::Info => "info",
+        }
+    }
+}
+impl ::std::fmt::Display for ProviderVersionWarningLevel {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl AsRef<str> for ProviderVersionWarningLevel {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ProviderVersion {
@@ -43322,6 +43378,13 @@ pub struct ProviderVersion {
     #[serde(rename = "runningVersion")]
     pub running_version: Option<String>,
     pub status: ProviderVersionState,
+    #[serde(
+        rename = "updateNotice",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "tri_state_serde::deserialize"
+    )]
+    pub update_notice: Option<Option<ProviderUpdateNotice>>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
 pub enum ProviderVersionState {
@@ -43354,6 +43417,35 @@ impl ::std::fmt::Display for ProviderVersionState {
     }
 }
 impl AsRef<str> for ProviderVersionState {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ProviderUpdateNotice {
+    #[serde(rename = "availableVersion")]
+    pub available_version: String,
+    pub source: ProviderUpdateNoticeSource,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, Default)]
+pub enum ProviderUpdateNoticeSource {
+    #[default]
+    #[serde(rename = "installed")]
+    Installed,
+}
+impl ProviderUpdateNoticeSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Installed => "installed",
+        }
+    }
+}
+impl ::std::fmt::Display for ProviderUpdateNoticeSource {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+impl AsRef<str> for ProviderUpdateNoticeSource {
     fn as_ref(&self) -> &str {
         self.as_str()
     }
@@ -44861,6 +44953,12 @@ pub struct ConversationRequest {
         default,
         deserialize_with = "tri_state_serde::deserialize"
     )]
+    pub excluded_account_keys: Option<Option<Vec<String>>>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "tri_state_serde::deserialize"
+    )]
     pub expected_account_key: Option<Option<String>>,
     #[serde(
         skip_serializing_if = "Option::is_none",
@@ -44928,6 +45026,7 @@ impl ConversationRequest {
             cwd: None,
             daybreak_enabled: None,
             effort: None,
+            excluded_account_keys: None,
             expected_account_key: None,
             expected_mode_revision: None,
             fast_mode: None,
@@ -45045,6 +45144,32 @@ impl ConversationRequestBuilder {
     #[must_use]
     pub fn effort_absent(mut self) -> Self {
         self.value.effort = None;
+        self
+    }
+    #[doc = concat!(
+        "Set the optional nullable `", "excluded_account_keys",
+        "` request field to a value."
+    )]
+    #[must_use]
+    pub fn excluded_account_keys(mut self, excluded_account_keys: Vec<String>) -> Self {
+        self.value.excluded_account_keys = Some(Some(excluded_account_keys));
+        self
+    }
+    #[doc = concat!(
+        "Set the optional nullable `", "excluded_account_keys",
+        "` request field to JSON null."
+    )]
+    #[must_use]
+    pub fn excluded_account_keys_null(mut self) -> Self {
+        self.value.excluded_account_keys = Some(None);
+        self
+    }
+    #[doc = concat!(
+        "Omit the optional nullable `", "excluded_account_keys", "` request field."
+    )]
+    #[must_use]
+    pub fn excluded_account_keys_absent(mut self) -> Self {
+        self.value.excluded_account_keys = None;
         self
     }
     #[doc = concat!(
@@ -50148,6 +50273,13 @@ pub struct BranchResponse {
     )]
     pub error: Option<Option<BranchResponseError>>,
     #[serde(
+        rename = "excludedAccountKeys",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "tri_state_serde::deserialize"
+    )]
+    pub excluded_account_keys: Option<Option<Vec<String>>>,
+    #[serde(
         rename = "executionMode",
         skip_serializing_if = "Option::is_none",
         default,
@@ -54167,6 +54299,13 @@ pub struct AgentResponse {
     )]
     pub error: Option<Option<AgentResponseError>>,
     #[serde(
+        rename = "excludedAccountKeys",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "tri_state_serde::deserialize"
+    )]
+    pub excluded_account_keys: Option<Option<Vec<String>>>,
+    #[serde(
         rename = "executionMode",
         skip_serializing_if = "Option::is_none",
         default,
@@ -55451,6 +55590,8 @@ pub struct AgentRecordResponse {
     pub error: Option<Option<AgentRecordResponseError>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub events: Option<i64>,
+    #[serde(rename = "excludedAccountKeys", skip_serializing_if = "Option::is_none")]
+    pub excluded_account_keys: Option<Vec<String>>,
     #[serde(rename = "executionArchives", skip_serializing_if = "Option::is_none")]
     pub execution_archives: Option<Vec<JsonObjectResponse>>,
     #[serde(rename = "executionMode", skip_serializing_if = "Option::is_none")]
@@ -60617,6 +60758,13 @@ pub struct AgentEntityDto {
         deserialize_with = "tri_state_serde::deserialize"
     )]
     pub error: Option<Option<AgentEntityDtoError>>,
+    #[serde(
+        rename = "excludedAccountKeys",
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "tri_state_serde::deserialize"
+    )]
+    pub excluded_account_keys: Option<Option<Vec<String>>>,
     #[serde(
         rename = "executionMode",
         skip_serializing_if = "Option::is_none",
