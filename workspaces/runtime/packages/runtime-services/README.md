@@ -25,6 +25,9 @@ declared in the module, with an in-memory fake for tests. A route module in
 service inside `tokio::task::spawn_blocking`, and converts the result or error
 to the response DTO.
 
+Event writes persist durable pending or cancelled rows and signal the shared HTTP wake handle after commit.
+Event consumption (scheduler) and active event-rule delivery (`rule-driver/event-rules`) are separate services and cutover gates.
+
 Dependency direction:
 
 ```text
