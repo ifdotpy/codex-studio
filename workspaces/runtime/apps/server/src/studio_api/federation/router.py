@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from email.message import Message
 from typing import TYPE_CHECKING
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from fastapi import APIRouter, Request
 from starlette.concurrency import run_in_threadpool
@@ -150,6 +150,22 @@ def create_router(context: ApiContext) -> APIRouter:
                 # its signature against these exact bytes.
                 result = runtime.federation().route(action, headers, peer, raw)
                 return context.send(request, result)
+            except ValidationError as error:
+                problems = error.errors(
+                    include_url=False,
+                    include_context=False,
+                    include_input=False,
+                )
+                first_location = problems[0].get("loc", ()) if problems else ()
+                location = [
+                    "body",
+                    *(str(part) for part in first_location if isinstance(part, (str, int))),
+                ]
+                return context.send(
+                    request,
+                    {"error": "Invalid request", "location": location},
+                    status=400,
+                )
             except PermissionError as error:
                 return context.send(request, {"error": str(error)}, status=403)
             except (ValueError, RuntimeError, OSError, sqlite3.Error) as error:
