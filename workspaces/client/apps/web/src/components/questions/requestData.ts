@@ -97,6 +97,8 @@ export type BrowserOpenDetails = {
   clientId?: string;
   scope?: string;
   linuxUser?: string;
+  /** "vm": a VM chat; "host": a native chat of the chat's server. */
+  source?: string;
 };
 
 /** The sign-in link of a VM agent (docs/vm-browser-bridge.md), or undefined. */
@@ -113,6 +115,7 @@ export function browserOpenDetails(
   const clientId = stringValue(params.clientId);
   const scope = stringValue(params.scope);
   const linuxUser = stringValue(params.linuxUser);
+  const source = stringValue(params.source);
   return {
     host,
     url,
@@ -120,5 +123,6 @@ export function browserOpenDetails(
     ...(clientId ? { clientId } : {}),
     ...(scope ? { scope } : {}),
     ...(linuxUser ? { linuxUser } : {}),
+    ...(source ? { source } : {}),
   };
 }

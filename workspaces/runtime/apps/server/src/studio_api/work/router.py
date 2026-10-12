@@ -26,6 +26,8 @@ from .models import (
     AnnotationReceipt,
     AnswerBody,
     AnswerResult,
+    BrowserForward,
+    BrowserForwardResult,
     ChatRead,
     ChatCreateBody,
     ChatCreated,
@@ -114,6 +116,7 @@ class WorkRuntime(Protocol):
     def delete_question(self, request_id: str) -> object: ...
     def defer_question(self, request_id: str, deferred: bool | None) -> object: ...
     def answer(self, request_id: str, body: Body, *, local_window: bool = False) -> object: ...
+    def open_browser_forward(self, data: Body) -> object: ...
 
 
 class CanvasPort(Protocol):
@@ -387,6 +390,13 @@ def create_router(context: ApiContext) -> APIRouter:
     def answer(request: Request, body: AnswerBody) -> Response:
         return context.send(request, _runtime(context).answer(
             body.id, body_data(body), local_window=local_window(request)))
+
+    @router.post("/api/browser/forward", response_model=BrowserForwardResult,
+                 responses={400: {"model": ErrorResponse}})
+    def browser_forward(request: Request, body: BrowserForward) -> Response:
+        if not local_window(request):
+            raise ValueError("Only a window on this Mac can hold a sign-in port here.")
+        return context.send(request, _runtime(context).open_browser_forward(body_data(body)))
 
     @router.post("/api/chats", response_model=ChatCreated,
                  responses={400: {"model": ErrorResponse}})

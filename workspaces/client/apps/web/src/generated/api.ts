@@ -433,6 +433,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/browser/forward": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Browser Forward */
+    post: operations["browser_forward_api_browser_forward_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/capabilities": {
     parameters: {
       query?: never;
@@ -4610,6 +4627,8 @@ export interface components {
       } | null;
       /** Decision */
       decision?: ("answer" | "accept" | "decline" | "cancel") | null;
+      /** Forward */
+      forward?: boolean | null;
       /** Id */
       id: string;
     } & {
@@ -4631,6 +4650,7 @@ export interface components {
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
+      forward?: components["schemas"]["BrowserForward"] | null;
       /** Openurl */
       openUrl?: string | null;
       /** Replayed */
@@ -5017,6 +5037,43 @@ export interface components {
       worktreePreparation?: ("waiting" | "preparing") | null;
       /** Yolomode */
       yoloMode?: boolean | null;
+    };
+    /**
+     * BrowserForward
+     * @description The redirect port of a sign-in that a paired server approved for a window on this Mac.
+     */
+    BrowserForward: {
+      /** Bridgeid */
+      bridgeId: string;
+      /** Expiresat */
+      expiresAt: number;
+      /**
+       * Host
+       * @enum {string}
+       */
+      host: "127.0.0.1" | "localhost" | "::1";
+      /** Path */
+      path: string;
+      /** Port */
+      port: number;
+      /** Server */
+      server: string;
+      /** Token */
+      token: string;
+    };
+    /** BrowserForwardResult */
+    BrowserForwardResult: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Replayed */
+      replayed?: boolean | null;
+      /**
+       * Status
+       * @constant
+       */
+      status: "forwarding";
     };
     /** BrowserStatus */
     BrowserStatus: {
@@ -16071,6 +16128,84 @@ export interface operations {
       };
       /** @description Not Found */
       404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Request body timed out */
+      408: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description The server workspace changed. Reload before sending. */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Invalid request size */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description JSON required */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  browser_forward_api_browser_forward_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["BrowserForward"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["BrowserForwardResult"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Local origin and session token required */
+      403: {
         headers: {
           [name: string]: unknown;
         };

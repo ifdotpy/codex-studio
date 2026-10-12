@@ -1,3 +1,14 @@
+/** The redirect port of a sign-in that another server approved for this window. */
+export type SignInForward = {
+  server: string;
+  bridgeId: string;
+  host: "127.0.0.1" | "localhost" | "::1";
+  port: number;
+  path: string;
+  expiresAt: number;
+  token: string;
+};
+
 export interface DesktopBridge {
   serverViewOrigin?: string;
   serverCredentialAction?(
@@ -37,8 +48,13 @@ export interface DesktopBridge {
     target: { agent?: string; path?: string; asset?: string };
   }): Promise<boolean>;
   openExternal(url: string): Promise<void>;
-  /** Open an approved sign-in link and bring the browser to the front. */
-  openSignIn?(url: string): Promise<void>;
+  /** Open an approved sign-in link and bring the browser to the front. With `forward`, this
+   * Mac first holds the redirect port for the command on the server of the frame. */
+  openSignIn?(
+    value: string | { url: string; forward: SignInForward },
+  ): Promise<void>;
+  /** The desktop can hold the redirect port of a sign-in on another server. */
+  signInForward?: boolean;
   /** Show the paper key of a new vault in Terminal (layr-desk keys). */
   showVaultKeys(prefix: string): Promise<void>;
   getBackendUpdate?(): Promise<{

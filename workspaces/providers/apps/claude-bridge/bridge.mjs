@@ -23,6 +23,7 @@ import { z } from "zod";
 import { createHash, randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import fs from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createCommandTransport, commandMethods } from "./commands.mjs";
@@ -226,6 +227,28 @@ const persist = sessionStore.persist;
 async function session(id) {
   return sessionStore.get(id);
 }
+// Studio's launcher for browser links of this session (docs/vm-browser-bridge.md, "Native
+// chats"). The server writes the file next to the bridge state; the bridge process itself keeps
+// its environment.
+function browserEnvironment(s) {
+  try {
+    const value = JSON.parse(
+      readFileSync(path.join(root, "studio-browser.json"), "utf8"),
+    );
+    if (
+      typeof value?.BROWSER !== "string" ||
+      typeof value?.STUDIO_BROWSER_SOCKET !== "string"
+    )
+      return {};
+    return {
+      BROWSER: value.BROWSER,
+      STUDIO_BROWSER_SOCKET: value.STUDIO_BROWSER_SOCKET,
+      STUDIO_BROWSER_SESSION: s.id,
+    };
+  } catch {
+    return {};
+  }
+}
 const settings = (s) => ({
   cwd: s.cwd,
   pathToClaudeCodeExecutable: process.env.STUDIO_CLAUDE_BIN || "claude",
@@ -236,6 +259,7 @@ const settings = (s) => ({
   includePartialMessages: true,
   env: {
     ...process.env,
+    ...browserEnvironment(s),
     ...(s.moveProof
       ? {
           ENABLE_CLAUDEAI_MCP_SERVERS: s.moveProof.externalCatalog?.some(

@@ -23,7 +23,9 @@ def main(arguments: list[str]) -> int:
         print("studio-browser: give exactly one URL", file=sys.stderr)
         return 2
     path = os.environ.get("STUDIO_BROWSER_SOCKET") or SOCKET
-    request = {"v": 1, "url": arguments[0], "session": os.environ.get("LAYR_SESSION")}
+    # A VM chat names itself with LAYR_SESSION; a native chat on the Mac with its session.
+    session = os.environ.get("LAYR_SESSION") or os.environ.get("STUDIO_BROWSER_SESSION")
+    request = {"v": 1, "url": arguments[0], "session": session}
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
             connection.settimeout(15)
@@ -37,7 +39,7 @@ def main(arguments: list[str]) -> int:
                 data += block
         reply = json.loads(data)
     except (OSError, ValueError) as error:
-        print(f"studio-browser: Studio is not available in this VM ({type(error).__name__})", file=sys.stderr)
+        print(f"studio-browser: Studio is not available here ({type(error).__name__})", file=sys.stderr)
         return 1
     if not isinstance(reply, dict) or reply.get("ok") is not True:
         message = reply.get("message") if isinstance(reply, dict) else None

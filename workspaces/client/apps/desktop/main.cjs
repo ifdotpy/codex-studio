@@ -256,6 +256,58 @@ function nativeDownload(event, item, contents) {
       );
   });
 }
+function signInForward(value) {
+  if (!value || typeof value !== "object")
+    throw new Error("Invalid sign-in forward.");
+  const forward = {
+    server: string(value.server, 200),
+    bridgeId: string(value.bridgeId, 32),
+    host: string(value.host, 16),
+    port: value.port,
+    path: string(value.path, 2048),
+    expiresAt: value.expiresAt,
+    token: string(value.token, 200),
+  };
+  if (
+    !/^[0-9a-f]{32}$/.test(forward.bridgeId) ||
+    !["127.0.0.1", "localhost", "::1"].includes(forward.host) ||
+    !Number.isInteger(forward.port) ||
+    forward.port < 1024 ||
+    forward.port > 65535 ||
+    !forward.path.startsWith("/") ||
+    !Number.isFinite(forward.expiresAt)
+  )
+    throw new Error("Invalid sign-in forward.");
+  return forward;
+}
+// This Mac's Studio server binds the port strictly and relays the one redirect
+// (codex_browser_bridge.open_remote_forward). The request is a local window request.
+async function holdSignInPort(forward) {
+  const session = await fetch(`${backend.origin}/api/session`, {
+    headers: { Origin: backend.origin },
+    signal: AbortSignal.timeout(10000),
+    redirect: "error",
+  });
+  const token = (await session.json().catch(() => ({}))).token;
+  if (!session.ok || typeof token !== "string")
+    throw new Error("The Studio server of this Mac is unavailable.");
+  const response = await fetch(`${backend.origin}/api/browser/forward`, {
+    method: "POST",
+    headers: {
+      Origin: backend.origin,
+      "Content-Type": "application/json",
+      "X-Canvas-Token": token,
+    },
+    body: JSON.stringify(forward),
+    signal: AbortSignal.timeout(20000),
+    redirect: "error",
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok)
+    throw new Error(
+      result.error || "This Mac could not hold the sign-in port.",
+    );
+}
 async function nativeAction(event, request) {
   const owner = trusted(event);
   if (!request || typeof request !== "object")
@@ -285,6 +337,7 @@ async function nativeAction(event, request) {
         "saveFile",
         "fileAction",
         "openExternal",
+        "openSignIn",
         "getBackendUpdate",
         "showVaultKeys",
       ].includes(request.method)
@@ -538,6 +591,7 @@ async function nativeAction(event, request) {
         "saveFile",
         "fileAction",
         "openExternal",
+        "openSignIn",
         "getBackendUpdate",
       ]);
       if (!allowed.has(method))
@@ -775,11 +829,22 @@ async function nativeAction(event, request) {
     case "openExternal":
       await shell.openExternal(externalURL(request.value), { activate: false });
       return;
-    case "openSignIn":
-      // Only the local window reaches this case: a server frame gets "Unknown server native
-      // action". The person approved this sign-in link, so the browser comes to the front.
-      await shell.openExternal(externalURL(request.value), { activate: true });
+    case "openSignIn": {
+      // The person approved this sign-in link, so the browser comes to the front. A link of a
+      // command on another server comes with a forward: this Mac's Studio server holds the
+      // redirect port first and relays the redirect to that server.
+      const value = request.value;
+      const url = externalURL(typeof value === "string" ? value : value?.url);
+      if (value && typeof value === "object" && value.forward !== undefined) {
+        const forward = signInForward(value.forward);
+        if (!owner || owner === "local" || forward.server !== owner)
+          throw new Error("This sign-in belongs to another server view.");
+        await holdSignInPort(forward);
+        trusted(event);
+      }
+      await shell.openExternal(url, { activate: true });
       return;
+    }
     case "showVaultKeys": {
       const file = await vaultKeysScript(request.value, {
         folder: app.getPath("temp"),
