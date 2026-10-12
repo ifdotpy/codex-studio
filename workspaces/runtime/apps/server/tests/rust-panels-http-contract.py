@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""HTTP contracts for profiles and the currently partial progress panel routes."""
+"""HTTP contracts for profiles and progress panel operations."""
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import unittest
@@ -14,6 +15,7 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from codex_progress import provision_progress
 
 
 def profile_rows(state):
@@ -54,6 +56,23 @@ class PanelsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 )
                 if response.status != 200:
                     raise AssertionError(f"Python profile seed failed: HTTP {response.status}")
+                lead = cls.backend.request(
+                    "POST", "/api/leads",
+                    body={"cwd": str(cls.backend.cwd), "workspaceMode": "worktree"},
+                    headers=cls.write_headers(),
+                )
+                if lead.status != 200:
+                    raise AssertionError(f"Python agent seed failed: HTTP {lead.status}")
+                cls.lead_id = lead.json()["id"]
+                layout_agent = cls.backend.request(
+                    "POST", "/api/leads",
+                    body={"cwd": str(cls.backend.cwd), "workspaceMode": "worktree"},
+                    headers=cls.write_headers(),
+                )
+                if layout_agent.status != 200:
+                    raise AssertionError(f"Python layout agent seed failed: HTTP {layout_agent.status}")
+                cls.layout_agent = layout_agent.json()["id"]
+                cls._seed_python_layout()
                 cls.backend.stop()
             cls.backend.start()
             cls.backend.ready_samples.append(cls.backend.ready_seconds or 0)
@@ -73,6 +92,23 @@ class PanelsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             )
             if response.status != 200:
                 raise AssertionError(f"Python profile seed failed: HTTP {response.status}")
+            lead = cls.backend.request(
+                "POST", "/api/leads",
+                body={"cwd": str(cls.backend.cwd), "workspaceMode": "worktree"},
+                headers=cls.write_headers(),
+            )
+            if lead.status != 200:
+                raise AssertionError(f"Python agent seed failed: HTTP {lead.status}")
+            cls.lead_id = lead.json()["id"]
+            layout_agent = cls.backend.request(
+                "POST", "/api/leads",
+                body={"cwd": str(cls.backend.cwd), "workspaceMode": "worktree"},
+                headers=cls.write_headers(),
+            )
+            if layout_agent.status != 200:
+                raise AssertionError(f"Python layout agent seed failed: HTTP {layout_agent.status}")
+            cls.layout_agent = layout_agent.json()["id"]
+            cls._seed_python_layout()
 
     @classmethod
     def headers(cls):
@@ -82,6 +118,47 @@ class PanelsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "X-Canvas-Token": backend.session["token"],
             "X-Studio-API-Schema": backend.schema_hash,
         }
+
+    @classmethod
+    def write_headers(cls):
+        return {
+            **cls.headers(),
+            "X-Canvas-Workspace": cls.backend.identity["workspaceId"],
+        }
+
+    @classmethod
+    def _seed_python_layout(cls):
+        path = provision_progress(cls.backend.state, cls.layout_agent)
+        path.write_text("# Python layout seed\n", encoding="utf-8")
+        panel = cls.backend.request(
+            "GET", f"/api/panel?agent={cls.layout_agent}", headers=cls.headers(),
+        )
+        if panel.status != 200:
+            raise AssertionError(f"Python panel seed failed: HTTP {panel.status}")
+        measurement = {
+            "agent": cls.layout_agent,
+            "revision": panel.json()["revision"],
+            "client": "phone",
+            "sequence": 1,
+            "renderer": "progress-markdown-v2",
+            "width": 320,
+            "height": 150,
+            "contentWidth": 100,
+            "contentHeight": 40,
+            "overflowX": 0,
+            "overflowY": 0,
+            "totalLines": 1,
+            "visibleLines": 1,
+            "lastVisibleLine": "# Python layout seed",
+            "lastVisibleHeading": "# Python layout seed",
+            "fits": True,
+            "reason": None,
+        }
+        saved = cls.backend.request(
+            "POST", "/api/panel/layout", body=measurement, headers=cls.headers(),
+        )
+        if saved.status != 200:
+            raise AssertionError(f"Python layout seed failed: HTTP {saved.status}")
 
     def test_profiles_read_python_written_records_and_save_delete(self) -> None:
         backend = self.backend
@@ -148,48 +225,82 @@ class PanelsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         self.assertEqual(deleted_generated.status, 200, deleted_generated.body[:1000])
 
-    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_partial_panel_refusal_does_not_write_state(self) -> None:
-        before = profile_rows(self.backend.state)
-        panel = self.backend.request("GET", "/api/panel", headers=self.headers())
-        self.assertEqual(panel.status, 501, panel.body[:1000])
-        self.assertEqual(
-            panel.json()["error"],
-            "Not implemented: requires resource-policy/read-progress-panel",
+    def test_progress_panel_reads_python_written_file_and_missing_read_is_read_only(self) -> None:
+        backend = self.backend
+        path = backend.state / "progress" / self.lead_id / "PROGRESS.md"
+        missing = backend.request(
+            "GET", f"/api/panel?agent={self.lead_id}", headers=self.headers(),
         )
-        valid_layout = {
-            "agent": "agent-panel-contract",
-            "revision": "revision-1",
-            "client": "phone",
+        self.assertEqual(missing.status, 200, missing.body[:1000])
+        self.assertFalse(missing.json()["exists"])
+        self.assertFalse(path.exists(), "Reading a missing panel must not provision it")
+
+        provision_progress(backend.state, self.lead_id)
+        path.write_text("# Python written\n\n- Preserve this content\n", encoding="utf-8")
+        response = backend.request(
+            "GET", f"/api/panel?agent={self.lead_id}", headers=self.headers(),
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        panel = response.json()
+        self.assertEqual(panel["markdown"], "# Python written\n\n- Preserve this content\n")
+        self.assertEqual(panel["path"], str(path.absolute()))
+        self.assertTrue(panel["exists"])
+        self.assertIsNotNone(panel["revision"])
+
+    def test_layout_write_replays_and_stale_revision_refuses_without_write(self) -> None:
+        backend = self.backend
+        path = backend.state / "progress" / self.layout_agent / "PROGRESS.md"
+        panel = backend.request(
+            "GET", f"/api/panel?agent={self.layout_agent}", headers=self.headers(),
+        )
+        self.assertEqual(panel.status, 200, panel.body[:1000])
+        body = {
+            "agent": self.layout_agent,
+            "revision": panel.json()["revision"],
+            "client": "desktop",
             "sequence": 1,
-            "renderer": "progress-markdown-v1",
+            "renderer": "progress-markdown-v2",
             "width": 320,
             "height": 150,
             "contentWidth": 100,
             "contentHeight": 40,
+            "overflowX": 0,
+            "overflowY": 0,
+            "totalLines": 1,
+            "visibleLines": 1,
+            "lastVisibleLine": "# Python layout seed",
+            "lastVisibleHeading": "# Python layout seed",
             "fits": True,
             "reason": None,
         }
-        refused = self.backend.request(
-            "POST", "/api/panel/layout", body=valid_layout, headers=self.headers(),
-        )
-        self.assertEqual(refused.status, 501, refused.body[:1000])
+        saved = backend.request("POST", "/api/panel/layout", body=body, headers=self.headers())
+        self.assertEqual(saved.status, 200, saved.body[:1000])
         self.assertEqual(
-            refused.json()["error"],
-            "Not implemented: requires resource-policy/write-progress-layout",
+            [(row["client"], row["sequence"]) for row in saved.json()["reports"]],
+            [("phone", 1), ("desktop", 1)],
         )
-        self.assertFalse((self.backend.state / "progress" / "agent-panel-contract").exists())
-        self.assertEqual(profile_rows(self.backend.state), before)
+        feedback_path = path.with_name("PROGRESS.layout.json")
+        python_written = json.loads(feedback_path.read_text(encoding="utf-8"))
+        python_written["reports"][1]["width"] = 320.0
+        feedback_path.chmod(0o600)
+        feedback_path.write_text(json.dumps(python_written, indent=2) + "\n", encoding="utf-8")
+        replay = backend.request("POST", "/api/panel/layout", body=body, headers=self.headers())
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertEqual(replay.json()["reports"][1]["width"], 320)
+        before = feedback_path.read_bytes()
+        path.write_text("# New revision\n", encoding="utf-8")
+        stale = backend.request("POST", "/api/panel/layout", body=body, headers=self.headers())
+        self.assertEqual(stale.status, 409, stale.body[:1000])
+        self.assertEqual(feedback_path.read_bytes(), before)
 
-        invalid = self.backend.request(
-            "POST",
-            "/api/panel/layout",
-            body={key: value for key, value in valid_layout.items() if key != "revision"},
+        invalid = backend.request(
+            "POST", "/api/panel/layout",
+            body={key: value for key, value in body.items() if key != "revision"},
             headers=self.headers(),
         )
         self.assertEqual(invalid.status, 400, invalid.body[:1000])
         self.assertEqual(invalid.json()["location"], ["body", "revision"])
-        self.assertEqual(profile_rows(self.backend.state), before)
+        self.assertEqual(feedback_path.read_bytes(), before)
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_invalid_python_profile_is_refused_without_writes(self) -> None:

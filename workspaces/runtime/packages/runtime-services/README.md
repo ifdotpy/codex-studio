@@ -33,6 +33,23 @@ operations ← store, providers, process ← services ← http ← runtime-serve
 
 Profile text uses Rust `trim()`; it intentionally does not emulate Python `str.strip()` for U+001C–U+001F.
 
+## Progress panel files
+
+The progress panel operations mirror the Python file checks: progress and agent
+directories must be ordinary directories
+(`workspaces/runtime/apps/server/src/codex_progress.py:22-57`); the progress
+file must be a regular file and is bounded and checked for a stable read
+(`workspaces/runtime/apps/server/src/codex_progress.py:115-149`); layout files
+are checked as regular files before and after opening
+(`workspaces/runtime/apps/server/src/codex_progress_layout.py:36-59`). Layout
+writes flush the temporary file and recheck the progress revision before
+replacement (`workspaces/runtime/apps/server/src/codex_progress_layout.py:203-231`).
+This Rust implementation uses ordinary path operations and does not use
+anchored `openat` access. On Windows, progress
+read and layout write report the named 501 dependency
+`resource-policy/windows-file-identity` until compatible file identity support
+is implemented.
+
 The plan that assigns services to slices is
 [`docs/plans/rust-runtime-work-breakdown.md`](../../../../docs/plans/rust-runtime-work-breakdown.md).
 

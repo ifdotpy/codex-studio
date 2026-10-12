@@ -1456,6 +1456,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "studio-runtime-process",
  "studio-runtime-providers",
  "studio-runtime-store",

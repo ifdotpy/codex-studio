@@ -9,6 +9,7 @@
 
 pub mod account_policy;
 pub mod panels;
+pub mod progress_panel;
 pub mod rules;
 pub mod sync_policy;
 pub mod work_policy;
