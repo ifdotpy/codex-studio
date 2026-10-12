@@ -1411,6 +1411,7 @@ dependencies = [
  "serde_path_to_error",
  "sha2",
  "studio-runtime-services",
+ "studio-runtime-store",
  "subtle",
  "tokio",
  "tower",
@@ -1441,6 +1442,7 @@ dependencies = [
  "axum",
  "getrandom",
  "studio-runtime-http",
+ "studio-runtime-store",
  "tokio",
 ]
 

@@ -22,6 +22,13 @@ pub(crate) fn verify_core(canvas_path: &Path, analytics_path: &Path) -> StoreRes
         for table in requirements.tables {
             require_columns(&canvas, "canvas.sqlite3", table.name, table.columns)?;
         }
+        for conditional in requirements.conditional_tables {
+            if table_exists(&canvas, conditional.table_exists)? {
+                for table in conditional.tables {
+                    require_columns(&canvas, "canvas.sqlite3", table.name, table.columns)?;
+                }
+            }
+        }
         for trigger in requirements.triggers {
             require_trigger(&canvas, "canvas.sqlite3", trigger.name, trigger.table)?;
         }
@@ -109,8 +116,15 @@ pub(crate) struct ConditionalTriggerRequirement {
     pub triggers: &'static [TriggerRequirement],
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct ConditionalTableRequirement {
+    pub table_exists: &'static str,
+    pub tables: &'static [TableRequirement],
+}
+
 pub(crate) struct SchemaRequirements {
     pub tables: &'static [TableRequirement],
+    pub conditional_tables: &'static [ConditionalTableRequirement],
     pub triggers: &'static [TriggerRequirement],
     pub conditional_triggers: &'static [ConditionalTriggerRequirement],
     pub connection_functions: &'static [&'static str],
@@ -220,7 +234,8 @@ fn event_payload(key: &str, raw: &str, deleted: bool) -> Result<String, serde_js
     Ok(payload)
 }
 
-fn python_float_json(value: f64) -> String {
+/// Serialize a finite float using the spelling emitted by Python's `json.dumps`.
+pub fn python_float_json(value: f64) -> String {
     if value == 0.0 {
         return if value.is_sign_negative() {
             "-0.0".to_owned()

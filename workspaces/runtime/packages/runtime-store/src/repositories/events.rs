@@ -11,6 +11,7 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
             "id", "agent", "kind", "text", "status", "created", "epoch", "turn_id", "error",
         ],
     }],
+    conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],

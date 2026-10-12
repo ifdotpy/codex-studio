@@ -2,6 +2,7 @@
 """A draft can cross sync before the client performs an initial pull."""
 
 import json
+import os
 import unittest
 
 from test_isolation import isolate_supervisor_environment
@@ -9,12 +10,14 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from sync_http_contract_support import prepare_sync_store_for_rust_contract
 
 
 class FirstDraftHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.backend = start_contract_backend(cls)
+        prepare_sync_store_for_rust_contract(cls.backend)
         cls.session = cls.backend.session
         cls.workspace_id = cls.backend.identity["workspaceId"]
 
@@ -32,6 +35,13 @@ class FirstDraftHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "X-Canvas-Workspace": self.workspace_id,
         }
         pushed = backend.request("POST", "/api/sync/drafts", body={"rows": [row]}, headers=headers)
+        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.assertEqual(pushed.status, 501, pushed.body[:1000])
+            self.assertEqual(
+                pushed.json()["error"],
+                "Not implemented: requires resource-policy/publish-drafts",
+            )
+            return
         self.assertEqual(pushed.status, 200, pushed.body[:1000])
         self.assertEqual(pushed.json(), [])
 

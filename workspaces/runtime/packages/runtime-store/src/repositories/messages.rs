@@ -17,6 +17,7 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
             "deliveries",
         ],
     }],
+    conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],

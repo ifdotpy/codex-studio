@@ -59,7 +59,10 @@ struct OperationValidator {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct Registry(Arc<BTreeMap<String, OperationValidator>>);
+pub(crate) struct Registry {
+    operations: Arc<BTreeMap<String, OperationValidator>>,
+    preference_field: Option<Validator>,
+}
 
 #[derive(Debug)]
 pub(crate) struct CompileError {
@@ -99,6 +102,14 @@ impl Registry {
                     message: "OpenAPI components/schemas is missing".to_owned(),
                 })?,
         );
+        let preference_field = jsonschema::options()
+            .with_registry(&schema_registry)
+            .with_pattern_options(jsonschema::PatternOptions::regex())
+            .build(&json!({"$ref": format!("{OPENAPI_URI}#/components/schemas/PreferenceField")}))
+            .map_err(|error| CompileError {
+                operation_id: "push_preferences_api_sync_preferences_post".to_owned(),
+                message: error.to_string(),
+            })?;
         let mut compiled = BTreeMap::new();
         for (method, path) in registered {
             let operation = document.pointer(&format!(
@@ -126,7 +137,10 @@ impl Registry {
             })?;
             compiled.insert(format!("{method} {path}"), validator);
         }
-        Ok(Self(Arc::new(compiled)))
+        Ok(Self {
+            operations: Arc::new(compiled),
+            preference_field: Some(preference_field),
+        })
     }
 
     pub(crate) fn validate(
@@ -134,7 +148,7 @@ impl Registry {
         operation_id: &str,
         raw: RawRequest,
     ) -> Result<ValidatedRequest, LocatedError> {
-        let Some(operation) = self.0.get(operation_id) else {
+        let Some(operation) = self.operations.get(operation_id) else {
             return Ok(ValidatedRequest::default());
         };
         let query_names = operation
@@ -256,7 +270,7 @@ impl Registry {
 
     pub(crate) fn template_for(&self, method: &str, path: &str) -> Option<String> {
         crate::schema::matching_template(
-            self.0.keys().filter_map(|key| key.split_once(' ')),
+            self.operations.keys().filter_map(|key| key.split_once(' ')),
             Some(method),
             path,
         )
@@ -265,10 +279,16 @@ impl Registry {
 
     pub(crate) fn has_body_schema(&self, method: &str, path: &str) -> Option<bool> {
         self.template_for(method, path).and_then(|template| {
-            self.0
+            self.operations
                 .get(&format!("{method} {template}"))
                 .map(|operation| operation.body.is_some())
         })
+    }
+
+    pub(crate) fn validate_preference_field(&self, value: &Value) -> bool {
+        self.preference_field
+            .as_ref()
+            .is_some_and(|validator| validator.is_valid(value))
     }
 }
 
@@ -940,7 +960,10 @@ mod tests {
             "name":"X-Optional","in":"header","required":false,"schema":{"type":"string"}
         }]});
         let compiled = compile_for_test(&document, "/x", &operation).expect("header compiles");
-        let registry = Registry(Arc::new(BTreeMap::from([("GET /x".to_owned(), compiled)])));
+        let registry = Registry {
+            operations: Arc::new(BTreeMap::from([("GET /x".to_owned(), compiled)])),
+            preference_field: None,
+        };
         for alongside_valid in [false, true] {
             let mut actual_headers = HeaderMap::new();
             if alongside_valid {
@@ -1154,13 +1177,16 @@ mod tests {
             &definitions,
         )
         .expect("scalar header schema compiles");
-        let registry = Registry(Arc::new(BTreeMap::from([(
-            "GET /api/sync/stream".to_owned(),
-            OperationValidator {
-                headers: Some(header),
-                ..OperationValidator::default()
-            },
-        )])));
+        let registry = Registry {
+            operations: Arc::new(BTreeMap::from([(
+                "GET /api/sync/stream".to_owned(),
+                OperationValidator {
+                    headers: Some(header),
+                    ..OperationValidator::default()
+                },
+            )])),
+            preference_field: None,
+        };
         let valid = registry
             .validate_route(
                 "GET",
@@ -1347,7 +1373,10 @@ mod tests {
             "name":"history","in":"query","schema":{"type":"array","items":{"type":"string"}}
         }]});
         let compiled = compile_for_test(&document, "/x", &operation).expect("array query compiles");
-        let arrays = Registry(Arc::new(BTreeMap::from([("GET /x".to_owned(), compiled)])));
+        let arrays = Registry {
+            operations: Arc::new(BTreeMap::from([("GET /x".to_owned(), compiled)])),
+            preference_field: None,
+        };
         let validated = arrays
             .validate(
                 "GET /x",

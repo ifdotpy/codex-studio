@@ -69,6 +69,11 @@ clone the port and inputs, call it inside `tokio::task::spawn_blocking`, and
 map join/domain failures to `ApiError`; never retain a store transaction across
 an await.
 
+The server opens one `RuntimeStore` for `CODEX_AGENTS_STATE_DIR` at startup and
+passes its shared handle through `HttpState`. Route handlers clone that handle
+before entering `spawn_blocking`; they do not open another database connection
+or hold a transaction across an await.
+
 Export a `routes() -> RouteGroup` from the group module. Register each route
 with one method-specific constructor such as `get(path, status, handler)` or
 `post(path, status, handler)`. That call creates the Axum method route and its
@@ -221,3 +226,77 @@ the runtime dependency graph.
 
 Generated files should be refreshed through `pnpm run api:generate`; do not edit
 them by hand.
+
+## Sync compatibility details
+
+Draft payloads keep the existing document record shape and use the Rust JSON
+serializer for stored payloads. `updated` must be finite; overflowing numbers
+are rejected before entering a transaction. Query cursors that do not fit an
+`i64` fail closed instead of saturating to a fabricated checkpoint. The new
+compatibility policy no longer requires Python to replay or read Rust writes;
+pure policy tests cover replay decisions and cursor bounds. HTTP harness tests
+exercise the live Rust and Python routes without comparing serializer bytes
+across runtimes. Generation reduction is the reader's integer unchanged.
+
+## Known limitations
+
+A replay of a preference request with a far-future timestamp can be clamped
+again and overwrite a later edit; resolving this needs a client-visible version
+rule.
+
+`RuntimeStore::open` bootstraps the sync tables from the canonical
+`runtime-store/src/sync_schema.sql` inside one `BEGIN IMMEDIATE` transaction.
+The route and service layers have no separate sync-readiness gate. Entity-scope
+pull still requires `sync-policy/entity-window-maintenance`; transcript pulls
+require `transcript-service/pull`. Draft writes require
+`resource-policy/publish-drafts`: Python publishes the drafts resource when
+`draft_sequence()` changes after the write (`studio_api/sync/router.py:479-486`),
+and Rust currently has no equivalent publisher.
+
+`GET /api/sync/protocol` returns the named
+`sync-policy/runtime-capabilities` dependency until the service can derive a
+truthful capability set. `POST /api/sync/preferences` has no remaining
+declared dependency. Until persisted JSON schemas are exported, draft reads
+require stored payloads to be JSON objects whose device/session identity
+matches the draft key. Preference writes validate the complete stored
+`uiPreferences/<scope>` envelope and each field with the compiled OpenAPI
+`PreferenceField` schema before merging it.
+
+The lazily created objects and source paths are:
+
+- `codex_sync_entities.py:377-400`: `sync_entities`, `sync_entity_meta`,
+  `sync_documents`, `sync_versions`; indexes `sync_entities_seq`,
+  `sync_entities_collection_seq`, `sync_entities_non_transcript_seq`,
+  `sync_entities_collection_deleted`, `sync_entities_tombstone_order`, and
+  `sync_scope_seq`.
+- `codex_sync_entities.py:402-430`: tombstone count triggers
+  `sync_entity_tombstone_count_insert`, `_update`, and `_delete`, plus the
+  `entity_tombstone_count` metadata row initialized from existing tombstones.
+- `codex_sync_entities.py:431-434`: conditional index
+  `runtime_event_created_id` when `runtime_events` exists.
+- `codex_sync.py:35-49`: `sync_identity`, `sync_generation` and its initial
+  `(1, 0)` row, `sync_documents`/`sync_scope_seq` (also declared by `ensure_tables`),
+  and a random identity only when no identity row exists.
+- `codex_sync.py:174-218`: lazy `sync_versions` creation, removal of all
+  `sync_watch_*` triggers, and conditional `runtime_transcript_revisions` plus
+  `sync_transcript_revision_{runtime_agents,runtime_items}_{insert,update,delete}`
+  triggers when the corresponding runtime tables exist.
+
+`SyncStore.__init__` runs `ensure_tables` and creates the identity/generation
+tables, identity row when absent, and generation row (`codex_sync.py:35-49`,
+`codex_sync_entities.py:377-434`). `_ensure_versions` creates/retains
+`sync_versions`, removes legacy `sync_watch_*` triggers, and conditionally
+creates transcript revision state and triggers (`codex_sync.py:174-218`). Rust
+now creates this table family at store open. The HTTP contract drops the sync
+tables on a disposable state, restarts Rust, and verifies bootstrap recreated
+them while preserving the existing identity and removing a legacy watcher.
+
+Request bodies and query parameters are validated through the shared
+OpenAPI-driven extractors and use the common error envelope. The sync service
+applies domain rules that are not expressed in OpenAPI, such as draft identity,
+preference key families, and merge revisions. Persisted JSON format schemas
+are not exported yet; reads reject malformed draft payload JSON and preference
+envelopes whose identity does not match their key.
+
+The sync protocol, pull, draft-conflict, and preference responses are validated
+through the generated response DTOs before serialization.
