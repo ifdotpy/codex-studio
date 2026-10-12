@@ -89,6 +89,44 @@ pub struct EntityRow {
 pub struct SyncDocumentsRepository;
 
 impl SyncDocumentsRepository {
+    /// Publish the renderer-owned sync envelope for an entity inside its source write transaction.
+    pub(crate) fn put_entity(
+        transaction: &Transaction<'_>,
+        collection: &str,
+        id: &str,
+        value: Value,
+        deleted: bool,
+    ) -> StoreResult<bool> {
+        let value = if deleted { json!({}) } else { value };
+        let payload = serde_json::to_string(&json!({
+            "collection": collection,
+            "id": id,
+            "value": value,
+        }))?;
+        let hash = hash_payload(&payload);
+        let old = transaction
+            .query_row(
+                "SELECT hash,deleted FROM sync_entities WHERE collection=?1 AND id=?2",
+                params![collection, id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0)),
+            )
+            .optional()?;
+        if old
+            .as_ref()
+            .is_some_and(|(old_hash, old_deleted)| old_hash == &hash && *old_deleted == deleted)
+        {
+            return Ok(false);
+        }
+        let sequence = next_sequence(transaction)?;
+        transaction.execute(
+            "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) \
+             VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(collection,id) DO UPDATE SET \
+             seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=excluded.deleted",
+            params![collection, id, sequence, hash, payload, i64::from(deleted)],
+        )?;
+        Ok(true)
+    }
+
     pub fn entity_sequence(connection: &Connection) -> StoreResult<i64> {
         connection
             .query_row(
