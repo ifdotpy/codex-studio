@@ -7,6 +7,7 @@ mod rules;
 mod session;
 mod sync;
 mod sync_documents;
+mod workspace_views;
 
 use manifest::RouteGroup;
 
@@ -16,6 +17,7 @@ pub(crate) fn groups() -> Vec<RouteGroup> {
         rules::routes(),
         sync::routes(),
         sync_documents::routes(),
+        workspace_views::routes(),
         desktop::routes(),
     ]
 }

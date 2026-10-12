@@ -17,6 +17,10 @@ const KNOWN_DEPENDENCIES: &[&str] = &[
     "sync-policy/entity-window-maintenance",
     "sync-policy/runtime-capabilities",
     "transcript-service/pull",
+    "workspace-state/git-changes",
+    "workspace-state/snapshot",
+    "work-policy/views",
+    "coordination-policy/inbox",
 ];
 
 impl Dependency {

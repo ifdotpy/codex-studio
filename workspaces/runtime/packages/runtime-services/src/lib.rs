@@ -9,3 +9,4 @@
 
 pub mod rules;
 pub mod sync_policy;
+pub mod workspace_views;
