@@ -155,8 +155,10 @@ class TransferContract(f.AccountContracts):
 
     def until(self, fn):
         def advance_and_check():
+            if fn():
+                return True
             self.wake_one_lazy_for_test()
-            return True if fn() else None
+            return None
         try:
             wait_for_condition(advance_and_check, 'account transfer fixture progress')
         except AssertionError as error:
