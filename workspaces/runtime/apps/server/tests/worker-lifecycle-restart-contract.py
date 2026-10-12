@@ -424,6 +424,50 @@ class WorkerLifecycleRestartContract(unittest.TestCase):
         self.assertEqual(archives, [True])
         self.assertTrue(agent.get('deletedAt'))
 
+    def test_a_blocked_review_archive_waits_between_attempts(self):
+        import codex_agent_management as management
+        repo = self.make_repo()
+        worker_id, _worktree = self.make_worktree_worker(repo)
+        event_id = 'review-delivered-while-work-is-assigned'
+        with self.runtime.lock, self.runtime.db() as db:
+            lead = self.runtime.agent(self.lead['id'], db)
+            self.runtime.enqueue(db, lead, 'work_review', 'Review passed', event_id)
+            db.execute("UPDATE runtime_events SET status='delivered' WHERE id=?", (event_id,))
+            child = self.runtime.agent(worker_id, db)
+            child['reviewArchiveScheduled'] = event_id
+            self.runtime.put(db, 'agents', child)
+        calls = []
+
+        def blocked(_rt, _actor, args):
+            calls.append(args['agent_id'])
+            return {'status': 'blocked', 'blockers': [{'kind': 'assigned_work', 'count': 1, 'ids': ['task']}]}
+
+        busy = threading.Event()
+
+        def other_agents_change():
+            while not busy.is_set():
+                self.runtime.changed.set()
+                time.sleep(.001)
+
+        with patch.object(management, 'manage_agent', blocked):
+            worker = threading.Thread(target=management._archive_reviewer, args=(
+                self.runtime, self.lead['id'], self.lead['id'], worker_id, event_id))
+            noise = threading.Thread(target=other_agents_change)
+            noise.start()
+            worker.start()
+            time.sleep(1.5)
+            attempts = len(calls)
+            busy.set()
+            noise.join()
+            with self.runtime.lock, self.runtime.db() as db:
+                child = self.runtime.agent(worker_id, db)
+                child['reviewArchiveScheduled'] = 'replaced'
+                self.runtime.put(db, 'agents', child)
+            worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertLessEqual(attempts, 2)
+        self.assertEqual(self.runtime.agent(worker_id)['reviewArchiveAttempts'], attempts)
+
     def test_archive_cleanup_recovers_after_ref_removal_and_metadata_boundaries(self):
         import codex_agent_management as management
         repo = self.make_repo()

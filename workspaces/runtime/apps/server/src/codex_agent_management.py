@@ -826,8 +826,9 @@ def _archive_reviewer(rt: "Runtime", lead_id: str, parent_id: str, child_id: str
             rt.put(db, 'agents', child)
         if not retryable:
             return
-        rt.changed.wait(delay)
-        rt.changed.clear()
+        # Wait for the delay itself. The change signal is set by every
+        # agent update, including the put above, and belongs to the scheduler.
+        rt._close_event.wait(delay)
         delay = min(60, delay * 2)
 
 
