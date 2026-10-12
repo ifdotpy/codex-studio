@@ -63,9 +63,13 @@ struct SupervisorProcess {
 }
 
 impl SupervisorProcess {
-    fn start(state: &DisposableState) -> Self {
+    fn start(state: &DisposableState, python: &str) -> Self {
+        assert!(
+            Path::new(SUPERVISOR).is_file(),
+            "Rust supervisor integration test requires the checked-out supervisor script at {SUPERVISOR}"
+        );
         let log = File::create(state.0.join("supervisor-stderr.log")).unwrap();
-        let child = Command::new("python3")
+        let child = Command::new(python)
             .arg(SUPERVISOR)
             .arg("--state")
             .arg(&state.0)
@@ -76,7 +80,11 @@ impl SupervisorProcess {
             .stdout(Stdio::null())
             .stderr(Stdio::from(log))
             .spawn()
-            .expect("start disposable Python supervisor");
+            .unwrap_or_else(|error| {
+                panic!(
+                    "Rust supervisor integration test requires Python 3; could not start {python:?}: {error}"
+                )
+            });
         let process = Self {
             child,
             owned_children: Vec::new(),
@@ -97,6 +105,26 @@ impl SupervisorProcess {
     fn own_child(&mut self, pid: u32) {
         self.owned_children.push(pid);
     }
+}
+
+fn python_executable() -> String {
+    let output = Command::new("python3")
+        .args(["-c", "import sys; print(sys.executable)"])
+        .output()
+        .unwrap_or_else(|error| {
+            panic!(
+                "Rust supervisor integration test requires `python3` in PATH (CI jobs that run this test must provide Python 3): {error}"
+            )
+        });
+    assert!(
+        output.status.success(),
+        "Rust supervisor integration test requires a working Python 3 interpreter (`python3 -c ...` failed): {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    String::from_utf8(output.stdout)
+        .expect("python3 executable path must be UTF-8")
+        .trim()
+        .to_owned()
 }
 
 impl Drop for SupervisorProcess {
@@ -200,15 +228,10 @@ fn disposable_python_supervisor_v1_actions_events_replay_and_reattach() {
     let state = DisposableState::new();
     let workspace = state.0.join("workspace");
     fs::create_dir_all(&workspace).unwrap();
-    let mut supervisor = SupervisorProcess::start(&state);
+    let python = python_executable();
+    let mut supervisor = SupervisorProcess::start(&state, &python);
     let supervisor_pid = supervisor.id();
 
-    let python = Command::new("python3")
-        .arg("-c")
-        .arg("import sys; print(sys.executable)")
-        .output()
-        .unwrap();
-    let python = String::from_utf8(python.stdout).unwrap().trim().to_owned();
     let wait_script = "import json,sys; print(json.dumps({'ready':True}),flush=True); m=json.loads(sys.stdin.readline()); print(json.dumps({'id':m['id'],'result':{'echo':m['params']['text']}}),flush=True); print('stderr:'+m['params']['text'],file=sys.stderr,flush=True)";
     let command = vec![python.clone(), "-u".into(), "-c".into(), wait_script.into()];
     let handle = SupervisorHandle("rust-v1-main".into());

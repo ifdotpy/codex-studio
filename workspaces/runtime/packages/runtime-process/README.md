@@ -98,10 +98,19 @@ codec and extension-field tests run without a process.
 This is suitable for the Rust fast tier when its single run is at most 10 s:
 it starts only the required local supervisor and harmless test children, uses
 blocking request/response reads plus immediate `next` protocol calls, and has a
-bounded hang guard without sleeps. CI must provide Python. The complete suite
-selection should remain `cargo nextest run -p studio-runtime-process`; do not
-split this scenario into an independent slow inventory unless its measured run
-exceeds the repository's fast-tier limit.
+bounded hang guard without sleeps. It finds Python by running `python3` from
+`PATH` and reading `sys.executable`; it finds the supervisor script relative
+to Cargo's compile-time `CARGO_MANIFEST_DIR` in the checked-out repository. A
+missing interpreter or script fails the test with an explicit prerequisite
+message; it never skips. The hosted `Fast tier: remaining checks` job installs
+Python 3.14 through `.github/actions/fast-tier-setup/action.yml` and runs
+workspace nextest through `just test-fast-rest`, which includes this test. The
+separate hosted `Rust checks` job runs fmt, clippy, and doctests but does not
+run nextest and does not currently install Python. If nextest is added to that
+job, it must first provide Python 3. The complete suite selection should
+remain `cargo nextest run -p studio-runtime-process`; do not split this
+scenario into an independent slow inventory unless its measured run exceeds
+the repository's fast-tier limit.
 
 ## OS ports
 
