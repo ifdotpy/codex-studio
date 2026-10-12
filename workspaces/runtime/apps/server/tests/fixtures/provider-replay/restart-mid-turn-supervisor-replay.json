@@ -63,6 +63,8 @@
   "expectedMissingReplies": [{ "method": "turn/start", "id": 3 }],
   "assert": {
     "eventKinds": ["user"],
+    "expectedOutput": "Recovered output.",
+    "providerRequestMethods": ["initialize", "thread/start", "turn/start"],
     "answerItems": [
       {
         "owner": "lead",

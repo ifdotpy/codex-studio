@@ -1,0 +1,117 @@
+{
+  "source": "Supervisor response projections were captured from the running disposable Python supervisor; processScenario records open, health snapshot, stdout stream, and exit. The bad-protocol request is a recorded error exchange. Provider reattach after backend restart is exercised by providerFixture.",
+  "transport": {
+    "linux": "unix-domain-socket",
+    "windows": "named-pipe",
+    "framing": "newline-delimited-json"
+  },
+  "providerFixture": "restart-mid-turn-supervisor-replay.json",
+  "supervisorFrames": [
+    {
+      "direction": "client",
+      "frame": {
+        "protocol": 1,
+        "stateDir": "$state",
+        "backendId": "provider-fixture-backend"
+      }
+    },
+    {
+      "direction": "server",
+      "frame": { "ok": true }
+    },
+    {
+      "direction": "client",
+      "frame": { "requestId": "fixture-health-1", "action": "health" }
+    },
+    {
+      "direction": "server",
+      "frame": {
+        "requestId": "fixture-health-1",
+        "result": {
+          "protocol": 1,
+          "stateDir": "$state",
+          "durability": "sqlite-full-sync-per-request"
+        }
+      }
+    }
+  ],
+  "supervisorFailureFrames": [
+    {
+      "direction": "client",
+      "frame": {
+        "protocol": 999,
+        "stateDir": "$state",
+        "backendId": "bad-protocol"
+      }
+    },
+    {
+      "direction": "server",
+      "frame": { "error": "Supervisor protocol or state directory mismatch" }
+    }
+  ],
+  "processScenario": [
+    {
+      "request": {
+        "action": "open",
+        "handle": "fixture-child",
+        "command": [
+          "$python",
+          "-c",
+          "import json,sys; print(json.dumps({'result':'fixture-output'}), flush=True); sys.stderr.write('fixture-stderr\\n'); sys.stderr.flush()"
+        ],
+        "env": { "PATH": "$path" },
+        "cwd": "$cwd"
+      },
+      "expected": {
+        "result": { "resumed": false, "initResult": null, "generation": 1 }
+      }
+    },
+    {
+      "request": { "action": "health" },
+      "expected": {
+        "result": {
+          "protocol": 1,
+          "durability": "sqlite-full-sync-per-request"
+        }
+      }
+    },
+    {
+      "request": { "action": "next", "handle": "fixture-child" },
+      "events": [
+        {
+          "eventKind": "stdout",
+          "expected": {
+            "result": {
+              "event": {
+                "kind": "stdout",
+                "payload": "{\"result\":\"fixture-output\"}"
+              }
+            }
+          }
+        },
+        {
+          "eventKind": "stderr",
+          "expected": {
+            "result": {
+              "event": {
+                "kind": "stderr",
+                "payload": "{\"data\":\"fixture-stderr\\n\"}"
+              }
+            }
+          }
+        },
+        {
+          "eventKind": "exit",
+          "expected": {
+            "result": {
+              "event": {
+                "kind": "exit",
+                "payload": "{\"returnCode\":0}"
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

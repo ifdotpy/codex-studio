@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 import tempfile
-from typing import Any, Callable
+from typing import Any, Callable, TextIO
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -30,6 +30,7 @@ from server_test_waits import (
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[5]
 SERVER_SCRIPT = REPOSITORY_ROOT / "workspaces/runtime/apps/server/src/codex-canvas"
+SUPERVISOR_SCRIPT = REPOSITORY_ROOT / "workspaces/runtime/apps/server/src/codex_process_supervisor.py"
 PROVIDER_REPLAY = Path(__file__).with_name("provider-replay-server.py")
 PROVIDER_FIXTURES = Path(__file__).parent / "fixtures/provider-replay"
 # One generous guard for a genuinely hung backend/provider interaction.
@@ -101,6 +102,8 @@ class BackendProcess:
         self.class_setup_seconds: float | None = None
         self.class_setup_phases: dict[str, float] = {}
         self._process: subprocess.Popen[str] | None = None
+        self._supervisor_process: subprocess.Popen[str] | None = None
+        self._supervisor_log: TextIO | None = None
         self._backend_python: Path | None = None
         self._output: queue.Queue[str] = queue.Queue()
         self._reader: threading.Thread | None = None
@@ -124,6 +127,7 @@ class BackendProcess:
         self.work_body: dict[str, Any] = {}
         self.work_result: dict[str, Any] = {}
         self.provider_message: dict[str, str] = {}
+        self.supervisor_protocol = False
 
     def _directory(self, leaf: str) -> Path:
         value = self.root / leaf
@@ -154,6 +158,11 @@ class BackendProcess:
 
     def _environment(self) -> dict[str, str]:
         environment = os.environ.copy()
+        # These settings select the Python test default. Never leak them to a
+        # caller-supplied backend command.
+        environment.pop("CODEX_AGENTS_PYTHON", None)
+        environment.pop("STUDIO_HTTP_BACKEND_COMMAND", None)
+        environment.pop("STUDIO_HTTP_BACKEND_PYTHON", None)
         for key in tuple(environment):
             if key in PROVIDER_SELECTION_ENVIRONMENT | PROVIDER_CREDENTIAL_ENVIRONMENT:
                 environment.pop(key, None)
@@ -178,6 +187,9 @@ class BackendProcess:
             "ALL_PROXY": "http://127.0.0.1:9",
             "NO_PROXY": "127.0.0.1,localhost",
         }
+        if self.supervisor_protocol:
+            values["CODEX_AGENTS_SUPERVISOR_MODE"] = "1"
+            values["CODEX_AGENTS_BACKEND_ID"] = "provider-fixture-backend"
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             values["CODEX_AGENTS_PYTHON"] = os.environ.get(
                 "STUDIO_HTTP_BACKEND_PYTHON", sys.executable
@@ -191,6 +203,13 @@ class BackendProcess:
             path_entries.append(str(self._backend_python.parent))
         path_entries.extend(os.defpath.split(os.pathsep))
         values["PATH"] = os.pathsep.join(path_entries)
+        # The replay executable is the only Codex candidate visible to the
+        # child. Installed Codex and Claude commands must stay unreachable.
+        selected_codex = shutil.which("codex", path=values["PATH"])
+        if executable is None or selected_codex != str(executable):
+            raise RuntimeError("The backend child PATH does not resolve only to the replay Codex")
+        if shutil.which("claude", path=values["PATH"]) is not None:
+            raise RuntimeError("The backend child PATH exposes a Claude executable")
         # The backend starts Node helpers (the Ed25519 service). Name the caller's
         # Node explicitly instead of exposing the caller's PATH.
         node = os.environ.get("CODEX_NODE") or shutil.which("node")
@@ -221,6 +240,22 @@ class BackendProcess:
             raise RuntimeError("HTTP backend harness requires an explicit replay provider")
         command = self._command()
         environment = self._environment()
+        if self.supervisor_protocol and self._supervisor_process is None:
+            self._supervisor_log = (self.root / "supervisor.log").open("w", encoding="utf-8")
+            self._supervisor_process = subprocess.Popen(
+                [sys.executable, "-B", str(SUPERVISOR_SCRIPT), "--state", str(self.state)],
+                cwd=self.cwd,
+                env=environment,
+                stdout=self._supervisor_log,
+                stderr=subprocess.STDOUT,
+                start_new_session=(os.name != "nt"),
+            )
+            wait_for_condition(
+                lambda: (self.state / "supervisor.sock").exists(),
+                "disposable supervisor socket did not appear",
+                retry_exceptions=(),
+                timeout_exception=TimeoutError,
+            )
         if self._codex_log is not None:
             environment["CODEX_FAKE_RECEIVED"] = str(self._codex_log)
         started = time.monotonic()
@@ -441,7 +476,7 @@ class BackendProcess:
         executable = self.root / "bin" / "codex"
         executable.parent.mkdir(parents=True, exist_ok=True)
         executable.write_text(
-            "#!/usr/bin/env python3\n"
+            f"#!{sys.executable}\n"
             "import json, os, struct, sys, time\n"
             f"fixture = {str(fixture)!r}\n"
             f"replies = {str(replies)!r}\n"
@@ -473,7 +508,7 @@ class BackendProcess:
         executable.chmod(0o755)
         companion = executable.with_name("codex-code-mode-host")
         companion.write_text(
-            "#!/usr/bin/env python3\n"
+            f"#!{sys.executable}\n"
             "import json, struct, sys\n"
             "if sys.argv[1:] == ['--help']:\n"
             "    print('Usage: codex-code-mode-host --listen stdio')\n"
@@ -584,6 +619,18 @@ class BackendProcess:
     def close(self) -> None:
         self.stop()
         cleanup_started = time.monotonic()
+        if self._supervisor_process is not None:
+            supervisor = self._supervisor_process
+            self._supervisor_process = None
+            supervisor.terminate()
+            try:
+                supervisor.wait(timeout=STOP_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                supervisor.kill()
+                supervisor.wait(timeout=2)
+        if self._supervisor_log is not None:
+            self._supervisor_log.close()
+            self._supervisor_log = None
         resolved = self.root.resolve()
         if self.scratch_root not in resolved.parents:
             raise RuntimeError("Refusing to remove state outside the runner scratch root")
@@ -597,6 +644,7 @@ def start_contract_backend(
     *,
     hold_provider_method: str | None = None,
     hold_provider_occurrence: int = 1,
+    supervisor_protocol: bool = False,
 ) -> BackendProcess:
     """Start one isolated backend owned by a unittest class cleanup."""
     scratch_value = os.environ.get("TMPDIR")
@@ -604,6 +652,7 @@ def start_contract_backend(
         raise RuntimeError("The server runner must provide a memory-backed TMPDIR")
     construction_started = time.monotonic()
     backend = BackendProcess(Path(scratch_value))
+    backend.supervisor_protocol = supervisor_protocol
     if hold_provider_method is not None:
         backend.hold_provider(hold_provider_method, hold_provider_occurrence)
     backend.class_setup_phases["harnessConstructionSeconds"] = round(
