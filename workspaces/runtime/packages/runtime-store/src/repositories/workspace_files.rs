@@ -6,21 +6,18 @@ use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult};
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
-    tables: &[
-        TableRequirement {
-            name: "runtime_assets",
-            columns: &["id", "record"],
-        },
-        TableRequirement {
-            name: "runtime_agents",
-            columns: &["id", "record"],
-        },
-    ],
+    tables: &[TableRequirement {
+        name: "runtime_agents",
+        columns: &["id", "record"],
+    }],
     conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: &[],
+    bootstrap_tables: &[TableRequirement {
+        name: "runtime_assets",
+        columns: &["id", "record"],
+    }],
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };
