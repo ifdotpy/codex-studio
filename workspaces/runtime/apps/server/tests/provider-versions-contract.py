@@ -26,7 +26,7 @@ from codex_provider_versions import (
     parse_version,
     version_warning,
 )
-from codex_provider_update_notice import compare_versions
+from codex_provider_update_notice import compare_versions, update_warnings
 
 
 class Accounts:
@@ -92,6 +92,28 @@ class ProviderVersionContract(unittest.TestCase):
             notice.model_dump(by_alias=True),
             {"availableVersion": "0.155.0", "source": "upstream"},
         )
+
+    def test_upstream_notice_requires_a_readable_current_version_for_both_providers(self):
+        for provider in ("claude", "codex"):
+            for installed in (None, "unknown"):
+                diagnostic = _diagnostic("work", provider, {
+                    "installedVersion": installed,
+                    "upstreamVersion": "2.2.0",
+                })
+                self.assertEqual(diagnostic["updateNotices"], [])
+
+    def test_upstream_notice_names_the_current_version_for_both_providers(self):
+        labels = {"claude": "Claude Code", "codex": "Codex CLI"}
+        for provider, version in (("claude", "2.1.295"), ("codex", "0.162.0")):
+            diagnostic = _diagnostic("work", provider, {
+                "installedVersion": version,
+                "upstreamVersion": "9.9.9",
+                "at": 1,
+            })
+            warning = update_warnings([diagnostic], labels)[0]
+            self.assertIn("version currently in use", warning["message"])
+            self.assertIn(f"Current: {version}", warning["message"])
+            self.assertIn("Available: 9.9.9", warning["message"])
 
     def test_unavailable_codex_candidate_produces_no_notice(self):
         from codex_provider_versions import _codex_version

@@ -181,7 +181,7 @@ class UpstreamReleaseChecker:
         return latest
 
 
-def _updates_enabled(runtime: object) -> bool | None:
+def updates_enabled(runtime: object) -> bool | None:
     read_db = getattr(runtime, "read_db", None)
     if not callable(read_db):
         return None
@@ -202,7 +202,7 @@ _CHECKER: UpstreamReleaseChecker | None = None
 
 def tick(runtime: object) -> dict[str, str]:
     """Check on the provider monitor's background worker, never a request thread."""
-    enabled = _updates_enabled(runtime)
+    enabled = updates_enabled(runtime)
     if enabled is not True:
         return {}
     global _CHECKER

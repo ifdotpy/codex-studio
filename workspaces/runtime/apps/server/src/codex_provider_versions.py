@@ -359,8 +359,8 @@ def status(runtime):
     current = monitor(runtime)
     current.tick(runtime)
     result = current.status()
-    from codex_provider_upstream_releases import _updates_enabled
-    if _updates_enabled(runtime) is False:
+    from codex_provider_upstream_releases import updates_enabled
+    if updates_enabled(runtime) is False:
         for provider in result["providers"]:
             provider["updateNotices"] = [
                 notice for notice in provider.get("updateNotices", [])

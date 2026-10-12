@@ -29,7 +29,7 @@ test("renders independent installed and upstream notices", () => {
             version: "0.155.0",
             baseline: "0.153.4",
             message:
-              "A newer Codex CLI release is available upstream. Installed: 0.153.4 · Available: 0.155.0.",
+              "A newer Codex CLI release is available upstream than the version currently in use. Current: 0.153.4 · Available: 0.155.0.",
             at: 1,
             level: "info",
           },
@@ -38,7 +38,9 @@ test("renders independent installed and upstream notices", () => {
     ),
   );
   expect(markup).toContain("An installed version is not in use yet.");
-  expect(markup).toContain("A newer Codex CLI release is available upstream.");
+  expect(markup).toContain(
+    "A newer Codex CLI release is available upstream than the version currently in use.",
+  );
 });
 
 test("renders nothing when there is no provider update notice", () => {

@@ -20,7 +20,7 @@ from codex_provider_upstream_releases import (
     PACKAGES,
     PREFERENCE_KEY,
     UpstreamReleaseChecker,
-    _updates_enabled,
+    updates_enabled,
 )
 from codex_sync_entities import ensure_tables
 from studio_api.sync.preferences import PreferenceField, PreferencePushRequest, merge_preferences
@@ -207,12 +207,12 @@ class ProviderUpstreamReleaseContract(unittest.TestCase):
                     yield db
 
             runtime = Runtime()
-            self.assertTrue(_updates_enabled(runtime))
+            self.assertTrue(updates_enabled(runtime))
             body = PreferencePushRequest(scope="user", fields={
                 PREFERENCE_KEY: PreferenceField(value=False, timestamp=1, writer="test"),
             })
             merge_preferences(db, body)
-            self.assertFalse(_updates_enabled(runtime))
+            self.assertFalse(updates_enabled(runtime))
 
 
 if __name__ == "__main__":

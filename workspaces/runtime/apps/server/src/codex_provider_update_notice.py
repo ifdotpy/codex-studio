@@ -65,8 +65,8 @@ def update_warnings(
             source = notice["source"]
             if source == "upstream":
                 message = (
-                    f"A newer {label} release is available upstream than the installed version. "
-                    f"Installed: {current} · Available: {available}."
+                    f"A newer {label} release is available upstream than the version currently in use. "
+                    f"Current: {current} · Available: {available}."
                 )
             elif row["provider"] == "codex":
                 message = (
