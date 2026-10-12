@@ -70,6 +70,15 @@ class FreshAccount(f.PreAdmission):
         (self.root / '.fresh-account.json').write_text(json.dumps({**NORMAL, 'email': 'foreign@example.test'}))
         self.call('account/read', {'passive': True})
         wait_for_condition(lambda: len(self.refreshes()) >= 3, 'third Claude account refresh')
+        # The refresh is counted before its result is applied, so wait for the
+        # refusal itself rather than reading once right after the count changes.
+        def refused():
+            try:
+                self.call('account/read', {'passive': True})
+            except ValueError as error:
+                return 'Fresh Claude account proof' in str(error)
+            return False
+        wait_for_condition(refused, 'refusal of the foreign Claude account')
         with self.assertRaisesRegex(ValueError, 'Fresh Claude account proof'):
             self.call('account/read', {'passive': True})
         self.assertEqual(len((self.root / '.all-queries').read_text().splitlines()), 1)
