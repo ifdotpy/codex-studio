@@ -23,9 +23,12 @@ pub struct HttpState {
     pub(crate) public_origin: Option<String>,
     pub(crate) validators: Registry,
     pub(crate) store: Option<Arc<RuntimeStore>>,
+    pub(crate) account_policy:
+        Option<Arc<studio_runtime_services::account_policy::AccountPolicyState>>,
 }
 
 impl HttpState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         token: String,
         workspace_id: String,
@@ -34,6 +37,7 @@ impl HttpState {
         port: u16,
         public_origin: Option<String>,
         store: Option<Arc<RuntimeStore>>,
+        account_policy: Option<Arc<studio_runtime_services::account_policy::AccountPolicyState>>,
     ) -> Self {
         Self {
             token,
@@ -44,6 +48,7 @@ impl HttpState {
             public_origin,
             validators: Registry::default(),
             store,
+            account_policy,
         }
     }
 }
@@ -274,6 +279,7 @@ mod tests {
             None,
             "state".to_owned(),
             4620,
+            None,
             None,
             None,
         )

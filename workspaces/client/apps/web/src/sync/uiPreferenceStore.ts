@@ -24,10 +24,45 @@ const userStorage = () => globalThis.localStorage;
 let applying = false;
 const listeners = new Set<() => void>();
 function cache(storage: Storage, scope: PreferenceScope): PreferenceFields {
+  const key = `${preferenceCacheKey}:${scope}`;
   try {
-    return prunePreferenceFields(
-      JSON.parse(storage.getItem(`${preferenceCacheKey}:${scope}`) || "{}"),
+    const fields = prunePreferenceFields(
+      JSON.parse(storage.getItem(key) || "{}"),
     );
+    if (scope !== "user") return fields;
+    const validFields = Object.fromEntries(
+      Object.entries(fields).filter(([name, field]) => {
+        let parts: unknown;
+        try {
+          parts = JSON.parse(name);
+        } catch {
+          return true;
+        }
+        if (!Array.isArray(parts) || parts[0] !== studioPreferencesStorageKey)
+          return true;
+        const fieldName = parts[1];
+        if (
+          parts.length !== 2 ||
+          typeof fieldName !== "string" ||
+          !Object.hasOwn(defaultStudioPreferences, fieldName)
+        )
+          return false;
+        try {
+          parseStudioPreferences(
+            JSON.stringify({
+              ...defaultStudioPreferences,
+              [fieldName]: field.value,
+            }),
+          );
+          return true;
+        } catch {
+          return false;
+        }
+      }),
+    );
+    if (Object.keys(validFields).length !== Object.keys(fields).length)
+      storage.setItem(key, JSON.stringify(validFields));
+    return validFields;
   } catch {
     return {};
   }

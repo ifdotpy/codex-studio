@@ -408,14 +408,18 @@ class Relay(unittest.TestCase):
 class Binds(unittest.TestCase):
     """A forward holds the port on every address the browser can use, or binds nothing."""
 
-    def holder(self, family: socket.AddressFamily, address: str, port: int = 0, v6only: int | None = None) -> int:
+    def holder(self, family: socket.AddressFamily, address: str, port: int = 0,
+               v6only: int | None = None) -> tuple[socket.socket, int]:
         holder = socket.socket(family)
-        self.addCleanup(holder.close)
-        if v6only is not None:
-            holder.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, v6only)
-        holder.bind((address, port))
-        holder.listen()
-        return int(holder.getsockname()[1])
+        try:
+            if v6only is not None:
+                holder.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, v6only)
+            holder.bind((address, port))
+            holder.listen()
+            return holder, int(holder.getsockname()[1])
+        except BaseException:
+            holder.close()
+            raise
 
     def attempt(self, host: str, port: int) -> Forward:
         forward = Forward("b", {"host": host, "port": port, "path": "/"}, lambda target, headers: None,
@@ -429,13 +433,16 @@ class Binds(unittest.TestCase):
                  ("localhost", socket.AF_INET, "127.0.0.1", None), ("localhost", socket.AF_INET6, "::1", 1)]
         for host, family, address, v6only in cases:
             with self.subTest(host=host, held=address):
-                port = self.holder(family, address, v6only=v6only)
-                with self.assertRaisesRegex(PortBusy, f"Port {port} is in use on this Mac"):
-                    self.attempt(host, port)
-                if address == "::1":
-                    # The bind of 127.0.0.1 that came first does not stay.
-                    with socket.socket() as probe:
-                        probe.bind(("127.0.0.1", port))
+                holder, port = self.holder(family, address, v6only=v6only)
+                try:
+                    with self.assertRaisesRegex(PortBusy, f"Port {port} is in use on this Mac"):
+                        self.attempt(host, port)
+                    if address == "::1":
+                        # The bind of 127.0.0.1 that came first does not stay.
+                        with socket.socket() as probe:
+                            probe.bind(("127.0.0.1", port))
+                finally:
+                    holder.close()
 
     def test_localhost_binds_both_loopback_addresses(self) -> None:
         port = free_port()
