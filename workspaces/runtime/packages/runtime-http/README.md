@@ -20,9 +20,9 @@ application. It is emitted with sorted keys and two-space indentation by the
 Python exporter's deterministic JSON writer; Oxfmt intentionally does not own
 this file. Run `pnpm run api:generate` to refresh this document, TypeScript
 types/hash, and compile the build-generated Rust DTOs. `pnpm run api:check`
-checks model/document drift, TypeScript declaration drift, and Rust DTO
-generation. The TypeScript comparison ignores JSDoc-only differences to keep
-`api.ts` byte-identical to main while checking every generated type.
+checks model/document drift, byte-for-byte TypeScript output drift, and Rust
+DTO generation. TypeScript types are rendered from the full document so the
+generated client retains its titles and descriptions.
 
 The server removes only OpenAPI documentation metadata, sorts the documented
 schema unions and map keys, then hashes compact JSON with SHA-256. This is the

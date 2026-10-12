@@ -18,7 +18,6 @@ from studio_api.schema import (
     API_SCHEMA_MISMATCH_HEADER,
     API_SCHEMA_MISMATCH_FIELD,
     api_schema_hash,
-    canonical_openapi_json,
     entity_schema_names,
     normalize_json_value_schema,
     openapi_document,
@@ -145,12 +144,6 @@ def export_openapi_source(document: dict[str, JsonValue]) -> bytes:
     return (json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
-def same_types_ignoring_jsdoc(current: str, generated: str) -> bool:
-    """Avoid churn when only generated documentation comments differ."""
-    jsdoc = re.compile(r"/\*\*.*?\*/", flags=re.DOTALL)
-    return jsdoc.sub("", current) == jsdoc.sub("", generated)
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="fail if generated API types are stale")
@@ -177,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
         document = json.loads(OPENAPI_AUTHORITY.read_text(encoding="utf-8"))
         schema_hash = api_schema_hash(document)
         expected_files = {
-            OUTPUT: render(json.loads(canonical_openapi_json(document))),
+            OUTPUT: render(document),
             SCHEMA_OUTPUT: render_schema_identity(schema_hash),
         }
     except (FileNotFoundError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:
@@ -185,16 +178,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     for path, expected in expected_files.items():
         current = path.read_text(encoding="utf-8") if path.exists() else ""
-        matches = current == expected or (
-            path == OUTPUT and same_types_ignoring_jsdoc(current, expected)
-        )
         if options.check:
-            if not matches:
+            if current != expected:
                 print(f"{path.relative_to(ROOT)} is stale; run `pnpm --workspace-root run api:generate`", file=sys.stderr)
                 return 1
         else:
-            if path == OUTPUT and current and same_types_ignoring_jsdoc(current, expected):
-                continue
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(expected, encoding="utf-8")
     subprocess.run(
