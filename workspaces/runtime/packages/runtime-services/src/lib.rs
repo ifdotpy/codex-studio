@@ -20,5 +20,6 @@ pub mod scheduler;
 pub mod sync_policy;
 pub mod transcript;
 pub mod work_policy;
+pub mod work_write;
 pub mod workspace_files;
 pub mod workspace_views;

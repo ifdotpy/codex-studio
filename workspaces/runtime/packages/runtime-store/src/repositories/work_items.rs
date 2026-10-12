@@ -1,6 +1,7 @@
 //! Read the persisted work-item, plan and queue state without creating tables.
 
 use rusqlite::{Connection, OptionalExtension, params, types::ValueRef};
+use serde_json::Value;
 
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult};
@@ -55,6 +56,62 @@ pub struct StoredQueueEvent {
 pub struct WorkItemsRepository;
 
 impl WorkItemsRepository {
+    pub fn work_record(connection: &Connection, id: &str) -> StoreResult<Option<String>> {
+        Ok(connection
+            .query_row("SELECT record FROM runtime_work WHERE id=?1", [id], |row| {
+                row.get(0)
+            })
+            .optional()?)
+    }
+
+    pub fn put_work(connection: &Connection, id: &str, record: &Value) -> StoreResult<()> {
+        connection.execute(
+            "INSERT INTO runtime_work(id,record) VALUES (?1,?2)",
+            params![id, serde_json::to_string(record)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_work(connection: &Connection, id: &str, record: &Value) -> StoreResult<()> {
+        connection.execute(
+            "UPDATE runtime_work SET record=?1 WHERE id=?2",
+            params![serde_json::to_string(record)?, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn close_review_event(
+        connection: &Connection,
+        agent_id: &str,
+        result_id: &str,
+    ) -> StoreResult<()> {
+        connection.execute(
+            "UPDATE runtime_events SET status='stored_only',error=?1 \
+             WHERE id=?2 AND kind='work_review' AND status='pending' AND agent=?3",
+            params![
+                "The exact result already has a decision",
+                format!("work-result:{result_id}"),
+                agent_id
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn retire_pending_work_ready(
+        connection: &Connection,
+        owner_id: &str,
+        task_id: &str,
+        reason: &'static str,
+    ) -> StoreResult<()> {
+        connection.execute(
+            "UPDATE runtime_events SET status='stored_only',error=?3 \
+             WHERE agent=?1 AND kind='work_ready' AND status='pending' \
+             AND CASE WHEN json_valid(text) THEN json_extract(text,'$.task') END=?2",
+            params![owner_id, task_id, reason],
+        )?;
+        Ok(())
+    }
+
     pub fn work(connection: &Connection) -> StoreResult<Vec<StoredRecord>> {
         if !table_exists(connection, "runtime_work")? {
             return Ok(Vec::new());

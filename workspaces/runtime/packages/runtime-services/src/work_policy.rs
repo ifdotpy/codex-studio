@@ -27,44 +27,53 @@ pub fn work_list(root: &str, records: &[Value]) -> Value {
         .iter()
         .map(|item| {
             (
-                item["id"].as_str().expect("schema-validated work id"),
+                item["id"]
+                    .as_str()
+                    .expect("schema-validated work id")
+                    .to_owned(),
                 item["status"]
                     .as_str()
-                    .expect("schema-validated work status"),
+                    .expect("schema-validated work status")
+                    .to_owned(),
             )
         })
         .collect::<BTreeMap<_, _>>();
     let items = records
         .iter()
         .filter(|item| item["rootId"] == root)
-        .map(|item| {
-            let mut view = item.clone();
-            let object = view.as_object_mut().expect("schema-validated work item");
-            let blocked = item["dependencies"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .filter(|id| statuses.get(*id).copied() != Some("accepted"))
-                .map(|id| Value::String(id.to_owned()))
-                .collect::<Vec<_>>();
-            let is_blocked = !blocked.is_empty();
-            let status = item["status"]
-                .as_str()
-                .expect("schema-validated work status");
-            object.insert("blockedBy".into(), json!(blocked));
-            object.insert(
-                "displayStatus".into(),
-                json!(if is_blocked && matches!(status, "ready" | "running") {
-                    "blocked"
-                } else {
-                    status
-                }),
-            );
-            view
-        })
+        .map(|item| work_item_view(item, &statuses))
         .collect::<Vec<_>>();
     json!({"items": items, "tasks": items})
+}
+
+pub fn work_item_view(item: &Value, statuses: &BTreeMap<String, String>) -> Value {
+    let mut view = item.clone();
+    let object = view.as_object_mut().expect("schema-validated work item");
+    let blocked = item["dependencies"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|id| statuses.get(*id).map(String::as_str) != Some("accepted"))
+        .map(|id| Value::String(id.to_owned()))
+        .collect::<Vec<_>>();
+    let status = item["status"]
+        .as_str()
+        .expect("schema-validated work status");
+    object.insert("blockedBy".into(), json!(blocked));
+    object.insert(
+        "displayStatus".into(),
+        json!(
+            if !object["blockedBy"].as_array().is_some_and(Vec::is_empty)
+                && matches!(status, "ready" | "running")
+            {
+                "blocked"
+            } else {
+                status
+            }
+        ),
+    );
+    view
 }
 
 pub fn plan_view(agent_id: &str, root_id: &str, stored: Option<Value>) -> Value {

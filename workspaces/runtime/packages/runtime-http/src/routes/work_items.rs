@@ -16,18 +16,12 @@ use crate::error::ApiError;
 use crate::router::HttpState;
 use crate::validation::Registry;
 
-const WORK_DEPENDENCY: [Dependency; 1] = [Dependency::new("event-driver/work-items")];
 const ORGANIZATION_DEPENDENCY: [Dependency; 1] =
     [Dependency::new("workspace-state/organization-effects")];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get("/api/work", OperationStatus::Implemented, work),
-        post(
-            "/api/work",
-            OperationStatus::partial(&WORK_DEPENDENCY),
-            work_action,
-        ),
         get("/api/queue", OperationStatus::Implemented, queue),
         post(
             "/api/queue",
@@ -50,13 +44,16 @@ pub(crate) async fn work(
     query: QueryParams,
 ) -> Result<Json<Value>, ApiError> {
     let agent_id = query_string(&query, "agent")?;
+    work_for_agent(state, agent_id).await.map(Json)
+}
+
+pub(crate) async fn work_for_agent(state: HttpState, agent_id: String) -> Result<Value, ApiError> {
     read_agent(state, agent_id, |connection, agent, validators| {
         let records = WorkItemsRepository::work(connection).map_err(|_| ApiError::internal())?;
         let records = stored_values("runtime_work", "WorkItem", records, validators, false)?;
         Ok(work_policy::work_list(&agent.root_id.0, &records))
     })
     .await
-    .map(Json)
 }
 
 pub(crate) async fn queue(
@@ -189,9 +186,6 @@ fn stored_error(error: WorkPolicyError) -> ApiError {
     ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
 }
 
-pub(crate) async fn work_action(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    Err(dependency_error("POST", "/api/work", &WORK_DEPENDENCY))
-}
 pub(crate) async fn save_plan(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
@@ -318,7 +312,16 @@ pub(crate) fn python_operation_signature(body: &Value) -> Result<String, ApiErro
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-fn write_error(error: EventWriteError) -> ApiError {
+pub(crate) fn work_request_signature(agent: &str, body: &Value) -> Result<String, ApiError> {
+    use sha2::{Digest, Sha256};
+
+    let value = json!({"agent": agent, "actor": null, "body": body});
+    let canonical = event_write::python_json(&value);
+    let digest = Sha256::digest(canonical.as_bytes());
+    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+pub(crate) fn write_error(error: EventWriteError) -> ApiError {
     match error {
         EventWriteError::RuleDriverUnavailable => ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
@@ -327,6 +330,10 @@ fn write_error(error: EventWriteError) -> ApiError {
         EventWriteError::RemoteEventsUnavailable => ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
             "Not implemented: requires cross-server/remote-events",
+        ),
+        EventWriteError::WorkerAssignmentUnavailable => ApiError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            "Not implemented: requires worker-driver/work-assignment",
         ),
         EventWriteError::InvalidRequest(message) | EventWriteError::Conflict(message) => {
             ApiError::new(StatusCode::BAD_REQUEST, message)
