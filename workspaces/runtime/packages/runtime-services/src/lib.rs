@@ -10,3 +10,4 @@
 pub mod account_policy;
 pub mod rules;
 pub mod sync_policy;
+pub mod work_policy;
