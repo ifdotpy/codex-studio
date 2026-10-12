@@ -603,12 +603,15 @@ test("project pointer and keyboard order persist, and a click collapses the proj
         name: "New chat folder",
         exact: true,
       });
+      const folderModal = form.locator(
+        "xpath=ancestor::*[contains(@class, 'mantine-Modal-root')]",
+      );
       await form.getByLabel("Folder name").fill(name);
       await form
         .getByRole("button", { name: "Create folder", exact: true })
         .click();
       await form.waitFor({ state: "hidden" });
-      await page
+      await folderModal
         .locator(".mantine-Modal-overlay")
         .waitFor({ state: "detached" });
       const projects = await fetch(url + "/api/projects").then((response) =>
