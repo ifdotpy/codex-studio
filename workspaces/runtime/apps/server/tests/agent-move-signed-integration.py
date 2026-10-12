@@ -39,6 +39,8 @@ class HistoryServer(f.fixture.f.FakeServer):
         self.move_catalog = 'fixture-tools'
         # Claude Code can announce more tools after the move check, in the same turn.
         self.proof_revision = ''
+        # Claude Code puts the exact schema of every connected tool into the proof.
+        self.proof_schemas = ''
         self.native_binary = {'version': 'fixture-native'}
 
     def call(self, method, params, timeout=60):
@@ -46,7 +48,7 @@ class HistoryServer(f.fixture.f.FakeServer):
             if not self.move_snapshot:
                 raise ValueError('The session has no verified saved prompt snapshot')
             return {'snapshotHash': 'fixture-prompt' + self.proof_revision, 'optionsHash': 'fixture-options',
-                    'catalog': self.move_catalog,
+                    'catalog': self.move_catalog, 'schemas': self.proof_schemas,
                     'session': copy.deepcopy(self.sessions[params['threadId']])}
         if method == 'claude/movePreflight':
             if params['proof']['catalog'] != self.move_catalog:
@@ -844,6 +846,31 @@ class Moves(f.SignedIntegration):
                          {name: operation.get(name) for name in ('phase', 'uncertainPhase', 'error')})
         with self.a.runtime.read_db() as db:
             self.assertEqual(service._get(db, key)['preflight']['claudeProof']['snapshotHash'], 'fixture-prompt+mcp')
+        self.drive(lambda: bool(self.b.runtime.agent(self.lead['id']).get('turnId')))
+        self.assertEqual(len([1 for m, _ in self.b.runtime.server.calls if m == 'claude/moveImport']), 1)
+
+    def test_a_claude_move_with_large_tool_schemas_fits_the_request_limit(self):
+        self.claude_source()
+        self.a.runtime.server.proof_schemas = ' '.join(
+            f'tool-{i} reads file {i % 97} and writes {i * 7919 % 10007}' for i in range(8000))
+        reply = self.tool(self.a, self.lead, 'orchestration_move',
+                          {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': 'large-schemas'},
+                          'large-schemas')
+        self.assertEqual(reply['status'], 'accepted', reply)
+        service = self.a.runtime.multi_server().moves()
+        self.run_moves(service)
+        self.assertEqual(self.a.runtime.agent(self.lead['id']).get('movedTo', {}).get('server'), self.b.server_id)
+        with self.a.runtime.read_db() as db:
+            bodies = {row[0]: (len(row[1].encode()), json.loads(row[1])['payload'])
+                      for row in db.execute("SELECT json_extract(body,'$.action'),body FROM runtime_server_outbox "
+                                            "WHERE json_extract(body,'$.action') IN ('move_validate','move_begin')")}
+        self.assertEqual(set(bodies), {'move_validate', 'move_begin'})
+        for size, payload in bodies.values():
+            self.assertLess(size, 256 * 1024)
+            self.assertEqual(set(payload), {'packed'})
+        with self.b.runtime.read_db() as db:
+            target = json.loads(db.execute("SELECT record FROM runtime_agent_moves WHERE json_extract(record,'$.side')='target'").fetchone()[0])
+        self.assertEqual(target['descriptor']['preflight']['claudeProof']['schemas'], self.a.runtime.server.proof_schemas)
         self.drive(lambda: bool(self.b.runtime.agent(self.lead['id']).get('turnId')))
         self.assertEqual(len([1 for m, _ in self.b.runtime.server.calls if m == 'claude/moveImport']), 1)
 
