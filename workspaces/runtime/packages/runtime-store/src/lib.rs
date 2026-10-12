@@ -1,4 +1,5 @@
 mod bootstrap;
+mod feature_schema;
 mod path;
 mod records;
 mod repositories;
@@ -120,6 +121,7 @@ impl RuntimeStore {
         };
         store.transaction(|transaction| {
             bootstrap::prepare_sync_schema(transaction)?;
+            feature_schema::prepare(transaction)?;
             schema::verify_bootstrap(transaction)
         })?;
         Ok(store)

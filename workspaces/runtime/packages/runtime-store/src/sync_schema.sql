@@ -31,12 +31,8 @@ CREATE INDEX IF NOT EXISTS sync_entities_tombstone_order
         WHERE deleted=1 AND collection NOT LIKE 'transcript:%';
 CREATE TABLE IF NOT EXISTS sync_entity_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sync_versions (
-    seq INTEGER PRIMARY KEY,
-    scope TEXT NOT NULL UNIQUE,
-    hash TEXT NOT NULL,
-    deleted INTEGER NOT NULL,
-    updated REAL NOT NULL
-);
+        seq INTEGER PRIMARY KEY, scope TEXT NOT NULL UNIQUE,
+        hash TEXT NOT NULL, deleted INTEGER NOT NULL, updated REAL NOT NULL);
 CREATE TRIGGER IF NOT EXISTS sync_entity_tombstone_count_insert
       AFTER INSERT ON sync_entities
       WHEN NEW.deleted=1 AND NEW.collection NOT LIKE 'transcript:%' BEGIN
@@ -110,9 +106,7 @@ CREATE TRIGGER IF NOT EXISTS sync_entity_event_DELETE
 
 -- section: runtime_agents
 CREATE TABLE IF NOT EXISTS runtime_transcript_revisions(
-    agent TEXT PRIMARY KEY,
-    revision INTEGER NOT NULL DEFAULT 0
-);
+                        agent TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0);
 CREATE TRIGGER IF NOT EXISTS sync_transcript_revision_runtime_agents_insert AFTER INSERT ON runtime_agents BEGIN INSERT INTO runtime_transcript_revisions(agent,revision)
                                     VALUES (NEW.id,1) ON CONFLICT(agent) DO UPDATE SET revision=revision+1; END;
 CREATE TRIGGER IF NOT EXISTS sync_transcript_revision_runtime_agents_update AFTER UPDATE ON runtime_agents BEGIN INSERT INTO runtime_transcript_revisions(agent,revision)
