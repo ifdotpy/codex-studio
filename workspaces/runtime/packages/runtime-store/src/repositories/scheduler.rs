@@ -1,6 +1,6 @@
 //! Durable pending-event selection and claim primitives for the scheduler.
 
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -51,6 +51,26 @@ pub struct ClaimedEvents {
 pub struct SchedulerRepository;
 
 impl SchedulerRepository {
+    /// Return queued local agents with pending events in the current epoch.
+    pub fn pending_agents(connection: &Connection) -> StoreResult<Vec<(String, i64)>> {
+        let mut statement = connection.prepare(
+            "SELECT a.id,json_extract(a.record,'$.epoch') FROM runtime_agents a \
+             WHERE json_extract(a.record,'$.status')='queued' \
+             AND json_extract(a.record,'$.autoWake')=1 \
+             AND COALESCE(json_extract(a.record,'$.inFlight'),0)=0 \
+             AND COALESCE(json_extract(a.record,'$.nativeFailureHold'),0)=0 \
+             AND COALESCE(json_extract(a.record,'$.remoteWorker'),0)=0 \
+             AND COALESCE(json_extract(a.record,'$.remoteAnchor'),0)=0 \
+             AND EXISTS(SELECT 1 FROM runtime_events e WHERE e.agent=a.id \
+                        AND e.epoch=json_extract(a.record,'$.epoch') AND e.status='pending') \
+             ORDER BY a.rowid",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// Claim the oldest pending events and persist the matching unsubmitted attempt atomically.
     pub fn claim(
         transaction: &Transaction<'_>,
@@ -446,6 +466,365 @@ impl SchedulerRepository {
         Ok(recovered)
     }
 
+    /// Keep submitted turns unresolved after restart; only their durable evidence can settle them.
+    pub fn recover_submitted(transaction: &Transaction<'_>) -> StoreResult<usize> {
+        let mut statement = transaction.prepare(
+            "SELECT id,record FROM runtime_agents \
+             WHERE json_extract(record,'$.startAttempt.submitted')=1 \
+             AND json_extract(record,'$.status') IN ('starting','running','waiting') \
+             ORDER BY rowid",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+
+        let mut recovered = 0;
+        for (agent_id, record) in rows {
+            let mut agent: AgentRecord =
+                serde_json::from_str(&record).map_err(|_| StoreError::InvalidSyncObject {
+                    scope: "runtime_agents".to_owned(),
+                    id: agent_id.clone(),
+                })?;
+            if agent.id.0 != agent_id {
+                return Err(StoreError::InvalidSyncObject {
+                    scope: "runtime_agents".to_owned(),
+                    id: agent_id,
+                });
+            }
+            let (event_ids, attempt_epoch, attempt_id, saved_turn_id) = {
+                let attempt = agent
+                    .extra
+                    .get("startAttempt")
+                    .and_then(Value::as_object)
+                    .ok_or_else(|| invalid_agent(&agent_id))?;
+                let Some(events) = attempt.get("events").and_then(Value::as_array) else {
+                    return Err(invalid_agent(&agent_id));
+                };
+                let mut event_ids = Vec::with_capacity(events.len());
+                for event in events {
+                    let Some(id) = event.as_str() else {
+                        return Err(invalid_agent(&agent_id));
+                    };
+                    event_ids.push(id.to_owned());
+                }
+                let attempt_epoch = attempt
+                    .get("epoch")
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| invalid_agent(&agent_id))?;
+                let attempt_id = attempt
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| invalid_agent(&agent_id))?
+                    .to_owned();
+                let turn_id = attempt
+                    .get("turnId")
+                    .and_then(Value::as_str)
+                    .filter(|turn_id| !turn_id.is_empty())
+                    .map(str::to_owned);
+                (event_ids, attempt_epoch, attempt_id, turn_id)
+            };
+            if attempt_epoch != agent.epoch {
+                continue;
+            }
+            let turn_id = saved_turn_id.or_else(|| {
+                agent
+                    .extra
+                    .get("turnId")
+                    .and_then(Value::as_str)
+                    .filter(|turn_id| !turn_id.is_empty())
+                    .map(str::to_owned)
+            });
+            if let Some(attempt) = agent
+                .extra
+                .get_mut("startAttempt")
+                .and_then(Value::as_object_mut)
+            {
+                attempt.insert(
+                    "executionOutcome".to_owned(),
+                    Value::String("unknown".to_owned()),
+                );
+            }
+            if let Some(ref turn_id) = turn_id {
+                if let Some(attempt) = agent
+                    .extra
+                    .get_mut("startAttempt")
+                    .and_then(Value::as_object_mut)
+                {
+                    attempt.insert("turnId".to_owned(), Value::String(turn_id.clone()));
+                }
+                agent
+                    .extra
+                    .insert("turnId".to_owned(), Value::String(turn_id.clone()));
+                agent
+                    .extra
+                    .insert("autoWake".to_owned(), Value::Bool(false));
+                agent
+                    .extra
+                    .insert("inFlight".to_owned(), Value::Bool(false));
+                agent.status = AgentStatus::Interrupted;
+                agent.extra.insert(
+                    "error".to_owned(),
+                    Value::String(
+                        "Server restarted during a turn; review history before continuing."
+                            .to_owned(),
+                    ),
+                );
+                for event_id in &event_ids {
+                    transaction.execute(
+                        "UPDATE runtime_events SET status='delivered',turn_id=?1,error=NULL \
+                         WHERE id=?2 AND agent=?3 AND epoch=?4 \
+                         AND status IN ('reserved','dispatching','uncertain')",
+                        params![turn_id, event_id, agent_id, attempt_epoch],
+                    )?;
+                }
+            } else {
+                agent.status = AgentStatus::Waiting;
+                agent.extra.insert("inFlight".to_owned(), Value::Bool(true));
+                agent.extra.insert(
+                    "error".to_owned(),
+                    Value::String(
+                        "Submitted input has no confirmed turn identity; it was not resent."
+                            .to_owned(),
+                    ),
+                );
+                agent.extra.insert(
+                    "startOutcomeHold".to_owned(),
+                    serde_json::json!({"stage":"held","attemptId":attempt_id,
+                        "epoch":attempt_epoch,"reason":"submitted input has no confirmed turn identity"}),
+                );
+                for event_id in &event_ids {
+                    transaction.execute(
+                        "UPDATE runtime_events SET status='uncertain' \
+                         WHERE id=?1 AND agent=?2 AND epoch=?3 \
+                         AND status IN ('reserved','dispatching')",
+                        params![event_id, agent_id, attempt_epoch],
+                    )?;
+                }
+            }
+            let (sync_status, in_flight, sync_turn) = match agent.status {
+                AgentStatus::Interrupted => ("interrupted", false, turn_id.as_deref()),
+                AgentStatus::Waiting => ("waiting", true, None),
+                _ => {
+                    return Err(StoreError::SchemaMismatch(
+                        "invalid restart recovery status".into(),
+                    ));
+                }
+            };
+            AgentRepository::put(transaction, &agent)?;
+            EventWriteRepository::set_agent_sync_lifecycle(
+                transaction,
+                &agent_id,
+                sync_status,
+                in_flight,
+                sync_turn,
+            )?;
+            recovered += 1;
+        }
+        Ok(recovered)
+    }
+
+    /// Bind a provider turn to the exact submitted scheduler attempt.
+    pub fn settle_started(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        epoch: i64,
+        attempt_id: &str,
+        turn_id: &str,
+    ) -> StoreResult<bool> {
+        let Some(mut agent) = AgentRepository::get(transaction, &AgentId::from(agent_id))? else {
+            return Ok(false);
+        };
+        let Some(event_ids) = attempt_events(&agent, epoch, attempt_id)? else {
+            return Ok(false);
+        };
+        if agent.epoch != epoch
+            || agent.extra.get("turnEpoch").and_then(Value::as_i64) != Some(epoch)
+            || agent.extra.get("autoWake").and_then(Value::as_bool) != Some(true)
+            || !matches!(
+                agent.status,
+                AgentStatus::Starting | AgentStatus::Waiting | AgentStatus::Running
+            )
+        {
+            return Ok(false);
+        }
+        if agent
+            .extra
+            .get("startAttempt")
+            .and_then(Value::as_object)
+            .and_then(|attempt| attempt.get("turnId"))
+            .and_then(Value::as_str)
+            .is_some_and(|existing| existing != turn_id)
+            || agent
+                .extra
+                .get("turnId")
+                .and_then(Value::as_str)
+                .is_some_and(|existing| existing != turn_id)
+        {
+            return Ok(false);
+        }
+        if !can_deliver_attempt_events(transaction, agent_id, epoch, &event_ids, turn_id)? {
+            return Ok(false);
+        }
+        deliver_attempt_events(transaction, agent_id, epoch, &event_ids, turn_id)?;
+
+        let attempt = agent
+            .extra
+            .get_mut("startAttempt")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| invalid_agent(agent_id))?;
+        attempt.insert("turnId".to_owned(), Value::String(turn_id.to_owned()));
+        attempt.insert(
+            "observedTurnId".to_owned(),
+            Value::String(turn_id.to_owned()),
+        );
+        agent
+            .extra
+            .insert("turnId".to_owned(), Value::String(turn_id.to_owned()));
+        agent.extra.insert("inFlight".to_owned(), Value::Bool(true));
+        agent.status = AgentStatus::Running;
+        AgentRepository::put(transaction, &agent)?;
+        EventWriteRepository::set_agent_sync_lifecycle(
+            transaction,
+            agent_id,
+            "running",
+            true,
+            Some(turn_id),
+        )?;
+        Ok(true)
+    }
+
+    /// Apply one terminal provider outcome, ignoring stale attempt or epoch callbacks.
+    pub fn settle_terminal(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        epoch: i64,
+        attempt_id: &str,
+        turn_id: &str,
+        status: AgentStatus,
+        error: Option<Value>,
+    ) -> StoreResult<bool> {
+        let outcome = match status {
+            AgentStatus::Completed => "completed",
+            AgentStatus::Failed => "failed",
+            AgentStatus::Interrupted => "interrupted",
+            _ => {
+                return Err(StoreError::SchemaMismatch(
+                    "invalid terminal scheduler outcome".to_owned(),
+                ));
+            }
+        };
+        let Some(mut agent) = AgentRepository::get(transaction, &AgentId::from(agent_id))? else {
+            return Ok(false);
+        };
+        let Some(event_ids) = attempt_events(&agent, epoch, attempt_id)? else {
+            return Ok(false);
+        };
+        if agent.epoch != epoch
+            || agent.extra.get("turnEpoch").and_then(Value::as_i64) != Some(epoch)
+            || agent.extra.get("autoWake").and_then(Value::as_bool) != Some(true)
+            || !matches!(
+                agent.status,
+                AgentStatus::Starting | AgentStatus::Waiting | AgentStatus::Running
+            )
+        {
+            return Ok(false);
+        }
+        if agent
+            .extra
+            .get("startAttempt")
+            .and_then(Value::as_object)
+            .and_then(|attempt| attempt.get("turnId"))
+            .and_then(Value::as_str)
+            .is_some_and(|existing| existing != turn_id)
+            || agent
+                .extra
+                .get("turnId")
+                .and_then(Value::as_str)
+                .is_some_and(|existing| existing != turn_id)
+        {
+            return Ok(false);
+        }
+        if !can_deliver_attempt_events(transaction, agent_id, epoch, &event_ids, turn_id)? {
+            return Ok(false);
+        }
+        deliver_attempt_events(transaction, agent_id, epoch, &event_ids, turn_id)?;
+
+        let attempt = agent
+            .extra
+            .get_mut("startAttempt")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| invalid_agent(agent_id))?;
+        attempt.insert("turnId".to_owned(), Value::String(turn_id.to_owned()));
+        attempt.insert(
+            "executionOutcome".to_owned(),
+            Value::String(outcome.to_owned()),
+        );
+        agent.extra.insert(
+            "lastCompletedTurn".to_owned(),
+            Value::String(turn_id.to_owned()),
+        );
+        agent.extra.insert(
+            "lastCompletedTurnStatus".to_owned(),
+            Value::String(outcome.to_owned()),
+        );
+        agent.extra.insert(
+            "lastCompletedTurnError".to_owned(),
+            error.clone().unwrap_or(Value::Null),
+        );
+        agent.extra.insert("turnId".to_owned(), Value::Null);
+        agent.extra.insert("activity".to_owned(), Value::Null);
+        agent
+            .extra
+            .insert("activeTools".to_owned(), serde_json::json!([]));
+        agent
+            .extra
+            .insert("inFlight".to_owned(), Value::Bool(false));
+        if let Some(error) = error {
+            agent.extra.insert("error".to_owned(), error);
+        } else {
+            agent.extra.insert("error".to_owned(), Value::Null);
+        }
+        if status == AgentStatus::Failed {
+            agent
+                .extra
+                .insert("nativeFailureHold".to_owned(), Value::Bool(true));
+        }
+        agent.status = status.clone();
+        if status == AgentStatus::Completed
+            && !agent.extra.get("nativeFailureHold").is_some_and(truthy)
+            && transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status='pending')",
+                params![agent_id, epoch],
+                |row| row.get::<_, bool>(0),
+            )?
+        {
+            agent.status = AgentStatus::Queued;
+        }
+        AgentRepository::put(transaction, &agent)?;
+        let sync_status = match agent.status {
+            AgentStatus::Queued => "queued",
+            AgentStatus::Completed => "completed",
+            AgentStatus::Failed => "failed",
+            AgentStatus::Interrupted => "interrupted",
+            _ => {
+                return Err(StoreError::SchemaMismatch(
+                    "invalid scheduler status".into(),
+                ));
+            }
+        };
+        EventWriteRepository::set_agent_sync_lifecycle(
+            transaction,
+            agent_id,
+            sync_status,
+            false,
+            None,
+        )?;
+        Ok(true)
+    }
+
     pub fn has_unsubmitted_claim(
         transaction: &Transaction<'_>,
         agent: &str,
@@ -461,6 +840,88 @@ impl SchedulerRepository {
             .optional()?
             .is_some())
     }
+}
+
+fn attempt_events(
+    agent: &AgentRecord,
+    epoch: i64,
+    attempt_id: &str,
+) -> StoreResult<Option<Vec<String>>> {
+    let Some(attempt) = agent.extra.get("startAttempt").and_then(Value::as_object) else {
+        return Ok(None);
+    };
+    if attempt.get("id").and_then(Value::as_str) != Some(attempt_id)
+        || attempt.get("epoch").and_then(Value::as_i64) != Some(epoch)
+        || attempt.get("submitted").and_then(Value::as_bool) != Some(true)
+    {
+        return Ok(None);
+    }
+    let Some(events) = attempt.get("events").and_then(Value::as_array) else {
+        return Err(invalid_agent(&agent.id.0));
+    };
+    let mut event_ids = Vec::with_capacity(events.len());
+    for event in events {
+        let Some(id) = event.as_str() else {
+            return Err(invalid_agent(&agent.id.0));
+        };
+        event_ids.push(id.to_owned());
+    }
+    event_ids.sort_unstable();
+    if event_ids.is_empty() || event_ids.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(invalid_agent(&agent.id.0));
+    }
+    Ok(Some(event_ids))
+}
+
+fn can_deliver_attempt_events(
+    transaction: &Transaction<'_>,
+    agent_id: &str,
+    epoch: i64,
+    event_ids: &[String],
+    turn_id: &str,
+) -> StoreResult<bool> {
+    for event_id in event_ids {
+        let row = transaction
+            .query_row(
+                "SELECT status,turn_id FROM runtime_events WHERE id=?1 AND agent=?2 AND epoch=?3",
+                params![event_id, agent_id, epoch],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .optional()?;
+        let Some((status, existing_turn)) = row else {
+            return Ok(false);
+        };
+        if !matches!(status.as_str(), "reserved" | "dispatching" | "uncertain")
+            && !(status == "delivered" && existing_turn.as_deref() == Some(turn_id))
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn deliver_attempt_events(
+    transaction: &Transaction<'_>,
+    agent_id: &str,
+    epoch: i64,
+    event_ids: &[String],
+    turn_id: &str,
+) -> StoreResult<()> {
+    for event_id in event_ids {
+        let changed = transaction.execute(
+            "UPDATE runtime_events SET status='delivered',turn_id=?1,error=NULL \
+             WHERE id=?2 AND agent=?3 AND epoch=?4 \
+             AND (status IN ('reserved','dispatching','uncertain') \
+                  OR (status='delivered' AND turn_id=?1))",
+            params![turn_id, event_id, agent_id, epoch],
+        )?;
+        if changed != 1 {
+            return Err(StoreError::SchemaMismatch(
+                "scheduler event changed during settlement transaction".to_owned(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn requires_event_policy(kind: &str) -> bool {

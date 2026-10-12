@@ -1,7 +1,7 @@
 //! Durable pending-event handoff between the scheduler and the future turn driver.
 
 use serde_json::Value;
-use studio_runtime_store::{RuntimeStore, SchedulerRepository, StoreError};
+use studio_runtime_store::{AgentStatus, RuntimeStore, SchedulerRepository, StoreError};
 use thiserror::Error;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -30,6 +30,13 @@ pub enum TurnStart {
     Unknown,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum TurnOutcome {
+    Completed,
+    Failed { error: Option<Value> },
+    Interrupted { error: Option<Value> },
+}
+
 /// Edge-owned wake signal adapter. `consume` must clear exactly one pending wake.
 pub trait WakeSignal {
     fn consume(&mut self) -> bool;
@@ -50,7 +57,54 @@ pub enum SchedulerError {
 
 /// Run once during scheduler startup to release only persisted claims proven unsubmitted.
 pub fn recover_on_startup(store: &RuntimeStore) -> Result<usize, SchedulerError> {
-    Ok(store.transaction(SchedulerRepository::recover_unsubmitted)?)
+    Ok(store.transaction(|transaction| {
+        let unsubmitted = SchedulerRepository::recover_unsubmitted(transaction)?;
+        let submitted = SchedulerRepository::recover_submitted(transaction)?;
+        Ok(unsubmitted + submitted)
+    })?)
+}
+
+/// Persist a provider start callback in its own transaction. Late callbacks
+/// are harmless because the repository checks both attempt and epoch identity.
+pub fn settle_started(
+    store: &RuntimeStore,
+    intent: &TurnIntent,
+    turn_id: &str,
+) -> Result<bool, SchedulerError> {
+    Ok(store.transaction(|transaction| {
+        SchedulerRepository::settle_started(
+            transaction,
+            &intent.agent_id,
+            intent.epoch,
+            &intent.attempt_id,
+            turn_id,
+        )
+    })?)
+}
+
+/// Persist one terminal provider outcome in its own transaction.
+pub fn settle_terminal(
+    store: &RuntimeStore,
+    intent: &TurnIntent,
+    turn_id: &str,
+    outcome: TurnOutcome,
+) -> Result<bool, SchedulerError> {
+    let (status, error) = match outcome {
+        TurnOutcome::Completed => (AgentStatus::Completed, None),
+        TurnOutcome::Failed { error } => (AgentStatus::Failed, error),
+        TurnOutcome::Interrupted { error } => (AgentStatus::Interrupted, error),
+    };
+    Ok(store.transaction(|transaction| {
+        SchedulerRepository::settle_terminal(
+            transaction,
+            &intent.agent_id,
+            intent.epoch,
+            &intent.attempt_id,
+            turn_id,
+            status,
+            error,
+        )
+    })?)
 }
 
 /// Consume one wake, claim a batch, then hand it off. Startup recovery is separate so a

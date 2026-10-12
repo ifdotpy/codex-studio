@@ -6,10 +6,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 use studio_runtime_services::event_write::{AnnotationWrite, annotate};
 use studio_runtime_services::scheduler::consume_wake;
-use studio_runtime_services::scheduler::{TurnDriver, TurnIntent, TurnStart, WakeSignal};
+use studio_runtime_services::scheduler::{
+    TurnDriver, TurnIntent, TurnOutcome, TurnStart, WakeSignal, settle_started, settle_terminal,
+};
 use studio_runtime_store::{
-    AgentId, AgentRepository, EventWriteRepository, QueueEvent, QueueEventId, QueueEventRepository,
-    RuntimeStore,
+    AgentId, AgentRepository, AgentStatus, EventWriteRepository, QueueEvent, QueueEventId,
+    QueueEventRepository, RuntimeStore,
 };
 
 const CREATE_PYTHON_EVENTS: &str = r#"
@@ -203,6 +205,44 @@ fn pending_selection_matches_python_and_claims_rust_event_write_events() {
         )
         .expect("uncertain event status reads");
     assert_eq!(uncertain, "uncertain");
+    drop(reader);
+
+    let intent = TurnIntent {
+        agent_id: agent.to_owned(),
+        epoch,
+        attempt_id: "unknown-attempt".to_owned(),
+        events: Vec::new(),
+    };
+    let mut stale_intent = intent.clone();
+    stale_intent.attempt_id = "stale-attempt".to_owned();
+    assert!(
+        !settle_started(&store, &stale_intent, "late-turn").expect("stale callback is ignored")
+    );
+    assert!(settle_started(&store, &intent, "late-turn").expect("late acceptance settles"));
+    let reader = store.read().expect("late acceptance state reads");
+    let delivered: i64 = reader
+        .query_row(
+            "SELECT COUNT(*) FROM runtime_events WHERE id='rust-uncertain' AND status='delivered' AND turn_id='late-turn'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("late accepted event reads");
+    assert_eq!(delivered, 1);
+    drop(reader);
+    assert!(
+        settle_terminal(&store, &intent, "late-turn", TurnOutcome::Completed,)
+            .expect("terminal callback settles")
+    );
+    let reader = store.read().expect("terminal scheduler state reads");
+    let agent_record = AgentRepository::get(&reader, &AgentId::from(agent))
+        .expect("terminal agent reads")
+        .expect("terminal agent exists");
+    assert_eq!(
+        agent_record.status,
+        studio_runtime_store::AgentStatus::Completed
+    );
+    assert_eq!(agent_record.extra["inFlight"], false);
+    assert_eq!(agent_record.extra["lastCompletedTurn"], "late-turn");
 }
 
 #[test]
@@ -255,8 +295,13 @@ fn submitted_marker_survives_settlement_write_failure() {
     assert_eq!(
         studio_runtime_services::scheduler::recover_on_startup(&store)
             .expect("submitted attempt is not recovered"),
-        0
+        1
     );
+    let reader = store.read().expect("restart recovery state reads");
+    let agent_record = AgentRepository::get(&reader, &AgentId::from(agent))
+        .expect("recovered agent reads")
+        .expect("recovered agent exists");
+    assert_eq!(agent_record.status, AgentStatus::Waiting);
 }
 
 #[test]
