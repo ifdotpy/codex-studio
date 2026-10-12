@@ -97,6 +97,8 @@ class RulesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def test_get_rules_reads_python_written_state_and_filters_deleted_agents(self) -> None:
         response = self.backend.request("GET", "/api/rules", headers=self._headers())
         self.assertEqual(response.status, 200, response.body[:1000])
+        etag = response.headers.get("etag", "")
+        self.assertRegex(etag, r'^"[0-9a-f]{64}"$')
         payload = response.json()
         self.assertEqual(len(payload["rules"]), 1)
         rule = payload["rules"][0]
@@ -105,6 +107,15 @@ class RulesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(rule["stallWakeGeneration"], -1)
         self.assertEqual(rule["lastExitCode"], -9)
         self.assertEqual(rule["lastStallExitCode"], -11)
+
+        conditional = self.backend.request(
+            "GET",
+            "/api/rules",
+            headers={**self._headers(), "If-None-Match": f"W/{etag}"},
+        )
+        self.assertEqual(conditional.status, 304, conditional.body[:1000])
+        self.assertEqual(conditional.body, b"")
+        self.assertEqual(conditional.headers.get("etag"), etag)
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_invalid_stored_rule_is_refused_without_writes(self) -> None:

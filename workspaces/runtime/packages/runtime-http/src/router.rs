@@ -4,6 +4,7 @@ use axum::http::{Request, StatusCode};
 use axum::middleware as axum_middleware;
 use axum::response::Response;
 use axum::routing::any;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use studio_runtime_store::RuntimeStore;
 use tokio::sync::Notify;
@@ -27,6 +28,7 @@ pub struct HttpState {
     pub(crate) account_policy:
         Option<Arc<studio_runtime_services::account_policy::AccountPolicyState>>,
     pub(crate) event_wake: Arc<Notify>,
+    pub(crate) etag_operations: BTreeSet<(String, String)>,
 }
 
 impl HttpState {
@@ -52,6 +54,7 @@ impl HttpState {
             store,
             account_policy,
             event_wake: Arc::new(Notify::new()),
+            etag_operations: BTreeSet::new(),
         }
     }
 
@@ -70,6 +73,13 @@ pub fn router(mut state: HttpState) -> Result<Router, Box<dyn std::error::Error>
     })?;
     state.validators =
         Registry::compile(&registered.iter().map(|item| item.key()).collect::<Vec<_>>())?;
+    state.etag_operations = registered
+        .iter()
+        .filter_map(|operation| {
+            let key = operation.key();
+            crate::schema::operation_has_etag(&key.0, &key.1).then_some(key)
+        })
+        .collect();
 
     Ok(with_boundary(router, state))
 }
@@ -128,6 +138,13 @@ pub(crate) fn validation_probe_router(
     })?;
     state.validators =
         Registry::compile(&registered.iter().map(|item| item.key()).collect::<Vec<_>>())?;
+    state.etag_operations = registered
+        .iter()
+        .filter_map(|operation| {
+            let key = operation.key();
+            crate::schema::operation_has_etag(&key.0, &key.1).then_some(key)
+        })
+        .collect();
     Ok(with_boundary(router, state))
 }
 
@@ -213,7 +230,10 @@ fn with_boundary(router: Router<HttpState>, state: HttpState) -> Router {
             state.clone(),
             middleware::boundary,
         ))
-        .layer(axum_middleware::from_fn(middleware::response_safety))
+        .layer(axum_middleware::from_fn_with_state(
+            state.clone(),
+            middleware::response_safety,
+        ))
         .with_state(state)
 }
 
@@ -426,7 +446,10 @@ mod tests {
                 .expect("registered schema validators compile");
         let app = Router::new()
             .route("/api/federation", post(value_handler))
-            .layer(axum::middleware::from_fn(middleware::response_safety))
+            .layer(axum::middleware::from_fn_with_state(
+                app_state.clone(),
+                middleware::response_safety,
+            ))
             .layer(axum::middleware::from_fn_with_state(
                 app_state.clone(),
                 middleware::boundary,
