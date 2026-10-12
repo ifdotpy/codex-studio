@@ -165,7 +165,15 @@ class NativeReleaseContract(unittest.TestCase):
         self.assertFalse(any(method == "thread/unsubscribe" for method, _ in self.rt.server.calls))
         self.age(lead, IDLE_SECONDS + 60)
         tick(self.rt, now=time.time() + 31)
-        fixture.eventually(lambda: self.rt.agent(lead["id"]).get("nativeRelease", {}).get("phase") == "released")
+
+        def unloaded_release():
+            agent = self.rt.agent(lead["id"])
+            release = agent.get("nativeRelease", {})
+            return agent if (release.get("phase") == "released"
+                             and release.get("nativeStatus") == "unsubscribed"
+                             and lead["id"] not in self.rt.loaded) else None
+
+        fixture.eventually(unloaded_release)
         self.assertNotIn(lead["id"], self.rt.loaded)
         self.assertEqual(self.rt.agent(lead["id"])["nativeRelease"]["nativeStatus"], "unsubscribed")
         self.rt.send(lead["id"], "Continue", "release-resume")

@@ -432,7 +432,7 @@ class Bridge(unittest.TestCase):
         self.proc.stdin.write(json.dumps(message)+'\n'); self.proc.stdin.flush()
 
     def read(self):
-        row = self.rows.get(timeout=10)
+        row = self.rows.get(timeout=HANG_GUARD_SECONDS)
         if 'id' in row and 'method' in row:
             result = ({'decision':self.approval} if row['method'].endswith('requestApproval') else
                       {'answers':{'0':{'answers':self.question_answers}}} if row['method'].endswith('requestUserInput') else
@@ -515,9 +515,15 @@ class Bridge(unittest.TestCase):
         self.turn('hello', 'first')
         self.assertEqual(self.completed()['status'], 'completed')
         self.assertEqual(self.call('claude/diagnostics', {})['liveQueries'], 1)
+
+        def idle_query_evicted():
+            state = self.call('claude/diagnostics', {})
+            return state if (state['liveQueries'] == 0
+                             and state['sessionCache']['cachedSessions'] == 0) else None
+
         wait_for_condition(
-            lambda: self.call('claude/diagnostics', {})['liveQueries'] == 0,
-            'idle Claude query cleanup',
+            idle_query_evicted,
+            'idle Claude query and session-cache cleanup',
         )
         self.assertEqual(self.call('claude/diagnostics', {})['sessionCache']['cachedSessions'], 0)
         self.turn('hello', 'second')
