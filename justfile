@@ -61,10 +61,10 @@ test-server-opt-in category="automated":
 test-server-load suite="":
     @node {{quote(facade)}} test-server-load {{quote(suite)}}
 
-[doc("Measure Rust HTTP operation and discovered harness-suite conformance; writes a ledger under docs/verification.")]
+[doc("Measure Rust HTTP operations and discovered harness-suite conformance; writes full results beneath XDG_CACHE_HOME.")]
 rust-http-conformance-ledger:
     @cargo build -p studio-runtime-server
-    @STUDIO_HTTP_BACKEND_COMMAND={{quote(rust-http-server)}} python3 workspaces/runtime/apps/server/tests/http_runtime_conformance_ledger.py --output docs/verification/rust-runtime-http-conformance-ledger.json --summary docs/verification/rust-runtime-http-conformance-summary.md
+    @STUDIO_HTTP_BACKEND_COMMAND={{quote(rust-http-server)}} python3 workspaces/runtime/apps/server/tests/http_runtime_conformance_ledger.py
 
 [doc("Run the full web browser project with its 900-second global cap.")]
 test-browser:

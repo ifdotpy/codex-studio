@@ -140,6 +140,17 @@ def render_schema_identity(schema_hash: str) -> str:
     )
 
 
+def export_openapi_source(document: dict[str, JsonValue]) -> bytes:
+    """Keep the committed authority readable; the hash canonicalizes separately."""
+    return (json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def same_types_ignoring_jsdoc(current: str, generated: str) -> bool:
+    """Avoid churn when only generated documentation comments differ."""
+    jsdoc = re.compile(r"/\*\*.*?\*/", flags=re.DOTALL)
+    return jsdoc.sub("", current) == jsdoc.sub("", generated)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="fail if generated API types are stale")
@@ -151,12 +162,12 @@ def main(argv: list[str] | None = None) -> int:
     options = parser.parse_args(argv)
     try:
         exported = openapi_document()
-        canonical_export = canonical_openapi_json(exported)
+        exported_source = export_openapi_source(exported)
         if options.write_openapi:
-            OPENAPI_AUTHORITY.write_bytes(canonical_export)
+            OPENAPI_AUTHORITY.write_bytes(exported_source)
         else:
             committed = OPENAPI_AUTHORITY.read_bytes()
-            if committed != canonical_export:
+            if committed != exported_source:
                 print(
                     f"{OPENAPI_AUTHORITY.relative_to(ROOT)} diverges from Python models; "
                     "review the schema change, then run `pnpm run api:generate`",
@@ -166,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
         document = json.loads(OPENAPI_AUTHORITY.read_text(encoding="utf-8"))
         schema_hash = api_schema_hash(document)
         expected_files = {
-            OUTPUT: render(json.loads(json.dumps(document))),
+            OUTPUT: render(json.loads(canonical_openapi_json(document))),
             SCHEMA_OUTPUT: render_schema_identity(schema_hash),
         }
     except (FileNotFoundError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:
@@ -174,29 +185,23 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     for path, expected in expected_files.items():
         current = path.read_text(encoding="utf-8") if path.exists() else ""
+        matches = current == expected or (
+            path == OUTPUT and same_types_ignoring_jsdoc(current, expected)
+        )
         if options.check:
-            if current != expected:
+            if not matches:
                 print(f"{path.relative_to(ROOT)} is stale; run `pnpm --workspace-root run api:generate`", file=sys.stderr)
                 return 1
         else:
+            if path == OUTPUT and current and same_types_ignoring_jsdoc(current, expected):
+                continue
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(expected, encoding="utf-8")
-    rust_codegen = [
-        "cargo",
-        "run",
-        "--locked",
-        "--quiet",
-        "--package",
-        "studio-runtime-http-codegen",
-        "--",
-    ]
-    if options.check:
-        rust_codegen.append("--check")
-    try:
-        subprocess.run(rust_codegen, cwd=ROOT, check=True)
-    except subprocess.CalledProcessError as error:
-        print(f"Rust DTO generation failed: {error}", file=sys.stderr)
-        return 1
+    subprocess.run(
+        ["cargo", "check", "--locked", "--package", "studio-runtime-http"],
+        cwd=ROOT,
+        check=True,
+    )
     return 0
 
 

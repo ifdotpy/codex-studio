@@ -46,6 +46,13 @@ def effective_route_path(path: str) -> str:
     return path.replace("{action:path}", "{action}")
 
 
+def route_inventory_difference(
+    declared: set[tuple[str, str]], expected: set[tuple[str, str]]
+) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
+    """Return missing schema routes and undeclared concrete API routes."""
+    return expected - declared, declared - expected
+
+
 class VerifierRemote:
     """Local-only origin policy for disposable TestClient requests."""
 
@@ -102,7 +109,18 @@ class ApplicationRouteContract(unittest.TestCase):
             (method, effective_route_path(path))
             for method, path in HIDDEN_COMPATIBILITY_ROUTES
         }
-        self.assertEqual(expected, declared)
+        missing, extra = route_inventory_difference(declared, expected)
+        self.assertEqual((missing, extra), (set(), set()))
+
+    def test_route_without_schema_entry_is_rejected_by_inventory(self) -> None:
+        expected = authoritative_api_operations() | {
+            (method, effective_route_path(path))
+            for method, path in HIDDEN_COMPATIBILITY_ROUTES
+        }
+        declared = expected | {("GET", "/api/added-without-schema")}
+        missing, extra = route_inventory_difference(declared, expected)
+        self.assertEqual(missing, set())
+        self.assertEqual(extra, {("GET", "/api/added-without-schema")})
 
     def test_api_routes_are_explicit_component_routes_with_response_models(self) -> None:
         for path, route in application_api_routes(self.app):

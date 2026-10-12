@@ -1,5 +1,5 @@
-# Rust HTTP conformance ledger
+# Rust HTTP conformance summary
 
-Operations: 159 total; 3 implemented; 156 return 501; 0 unexpected; 0 schema-header mismatches.
+Measured with `just rust-http-conformance-ledger`; the full per-operation and per-test ledger is written under `$XDG_CACHE_HOME/codex-studio/` (or `~/.cache/codex-studio/` when unset), not tracked in the repository.
 
-Harness suites: 0 passed; 7 failed of 7. Tests: 3 passed; 18 failed; 0 skipped.
+At schema hash `522675281ab6c09ba15e99c10299c1ba43cc503539de57ff92c8e8ccf377492f`: 159 documented operations; 3 implemented; 156 return 501. The seven discovered consumer suites contain 3 passing tests and 18 failing tests. The command output reports the operation-level blockers and verifies their 501 error envelopes.
