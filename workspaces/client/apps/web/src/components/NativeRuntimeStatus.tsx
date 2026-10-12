@@ -2,6 +2,7 @@ import { localDateTime } from "../local-time";
 import { useEffect, useState } from "react";
 import { get, type GetResult, errorText } from "../api";
 import type { Account } from "./Accounts";
+import ProviderUpdateNotices from "./ProviderUpdateNotices";
 import { watchResourceReads } from "./watchResourceReads";
 import "./native-runtime-status.css";
 
@@ -217,11 +218,9 @@ export default function NativeRuntimeStatus({
                     : provider.provider === "codex"
                       ? "Codex CLI"
                       : provider.provider;
-                const updateMessage = providers.warnings.find(
-                  (warning) =>
-                    warning.accountKey === provider.accountKey &&
-                    warning.level === "info",
-                )?.message;
+                const updateNotices = providers.warnings.filter(
+                  (warning) => warning.accountKey === provider.accountKey,
+                );
                 return (
                   <li key={provider.id}>
                     <div className="native-runtime-account-heading">
@@ -243,11 +242,7 @@ export default function NativeRuntimeStatus({
                         {providerStatus[provider.status]}
                       </span>
                     </div>
-                    {updateMessage && (
-                      <p role="status" className="native-runtime-warning">
-                        {updateMessage}
-                      </p>
-                    )}
+                    <ProviderUpdateNotices notices={updateNotices} />
                     <small>
                       Running version: {provider.runningVersion || "Unknown"}
                     </small>

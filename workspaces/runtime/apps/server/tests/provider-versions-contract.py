@@ -86,13 +86,20 @@ class ProviderVersionContract(unittest.TestCase):
                     self.assertEqual(notice.availableVersion, available)
                     self.assertEqual(notice.source, "installed")
 
+    def test_upstream_comparison_uses_source_discriminator(self):
+        notice = compare_versions("0.153.4", "0.155.0", source="upstream")
+        self.assertEqual(
+            notice.model_dump(by_alias=True),
+            {"availableVersion": "0.155.0", "source": "upstream"},
+        )
+
     def test_unavailable_codex_candidate_produces_no_notice(self):
         from codex_provider_versions import _codex_version
 
         with patch("codex_native_runtime._version", return_value="1.0.0"):
             versions = _codex_version("codex", Server(), {}, Runtime())
         self.assertIsNone(versions["availableVersion"])
-        self.assertIsNone(_diagnostic("work", "codex", versions)["updateNotice"])
+        self.assertEqual(_diagnostic("work", "codex", versions)["updateNotices"], [])
 
     def test_selected_codex_candidate_produces_notice(self):
         from codex_provider_versions import _codex_version
@@ -106,8 +113,8 @@ class ProviderVersionContract(unittest.TestCase):
         with patch("codex_native_runtime._version", return_value="0.153.4"):
             versions = _codex_version("codex", Server(), {}, runtime)
         self.assertEqual(
-            _diagnostic("work", "codex", versions)["updateNotice"],
-            {"availableVersion": "0.154.0", "source": "installed"},
+            _diagnostic("work", "codex", versions)["updateNotices"],
+            [{"availableVersion": "0.154.0", "source": "installed"}],
         )
 
     def test_monitor_production_reader_path_reports_codex_version_and_notice(self):
@@ -131,8 +138,8 @@ class ProviderVersionContract(unittest.TestCase):
         providers = {row["provider"]: row for row in monitor.status()["providers"]}
         self.assertEqual(providers["codex"]["runningVersion"], "0.153.4")
         self.assertEqual(
-            providers["codex"]["updateNotice"],
-            {"availableVersion": "0.154.0", "source": "installed"},
+            providers["codex"]["updateNotices"],
+            [{"availableVersion": "0.154.0", "source": "installed"}],
         )
         self.assertEqual(
             providers["claude"]["installedVersion"], "Claude Code 2.1.278"
@@ -169,7 +176,7 @@ class ProviderVersionContract(unittest.TestCase):
         runtime.native_runtime_updates = Updates()
         with patch("codex_native_runtime._version", return_value="0.153.4"):
             versions = _codex_version("codex", Server(), {}, runtime)
-        self.assertIsNone(_diagnostic("work", "codex", versions)["updateNotice"])
+        self.assertEqual(_diagnostic("work", "codex", versions)["updateNotices"], [])
 
     def test_update_notice_is_projected_as_an_informational_runtime_notice(self):
         monitor = ProviderVersionMonitor()
@@ -181,7 +188,7 @@ class ProviderVersionContract(unittest.TestCase):
             "runningVersion": "0.153.4",
             "installedVersion": "0.153.4",
             "configuredVersion": None,
-            "updateNotice": {"availableVersion": "0.154.0", "source": "installed"},
+            "updateNotices": [{"availableVersion": "0.154.0", "source": "installed"}],
             "baseline": "0.153.4",
             "message": None,
             "at": 1.0,
@@ -190,6 +197,24 @@ class ProviderVersionContract(unittest.TestCase):
         self.assertEqual(notice["level"], "info")
         self.assertIn("selected for runtime updates", notice["message"])
         self.assertIn("still using 0.153.4", notice["message"])
+
+    def test_installed_and_upstream_notices_are_independent(self):
+        diagnostic = _diagnostic("work", "codex", {
+            "runningVersion": "0.153.4",
+            "installedVersion": "0.153.4",
+            "availableVersion": "0.154.0",
+            "upstreamVersion": "0.155.0",
+        })
+        self.assertEqual(diagnostic["updateNotices"], [
+            {"availableVersion": "0.154.0", "source": "installed"},
+            {"availableVersion": "0.155.0", "source": "upstream"},
+        ])
+        monitor = ProviderVersionMonitor()
+        monitor.providers = [diagnostic]
+        notices = monitor.status()["warnings"]
+        self.assertEqual(len(notices), 2)
+        self.assertIn("selected for runtime updates", notices[0]["message"])
+        self.assertIn("available upstream", notices[1]["message"])
 
     def test_baseline_means_lowest_version_recorded_in_repo_evidence(self):
         self.assertIsNone(version_warning("codex", "codex-cli 0.153.4"))
@@ -219,8 +244,8 @@ class ProviderVersionContract(unittest.TestCase):
         diagnostic = _diagnostic("work", "claude", versions)
         self.assertEqual(diagnostic["status"], "outdated")
         self.assertEqual(
-            diagnostic["updateNotice"],
-            {"availableVersion": "Claude Code 2.2.0", "source": "installed"},
+            diagnostic["updateNotices"],
+            [{"availableVersion": "Claude Code 2.2.0", "source": "installed"}],
         )
         self.assertIn("exact version already running may be different", diagnostic["message"])
 
