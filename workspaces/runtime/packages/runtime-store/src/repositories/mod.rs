@@ -3,6 +3,7 @@ pub(crate) mod agents;
 pub(crate) mod event_write;
 pub(crate) mod events;
 pub(crate) mod messages;
+pub(crate) mod monitors;
 pub(crate) mod profiles;
 pub(crate) mod rules;
 pub(crate) mod sync_documents;
@@ -21,6 +22,7 @@ pub(crate) const REQUIREMENTS: &[&SchemaRequirements] = &[
     &events::REQUIREMENTS,
     &event_write::REQUIREMENTS,
     &messages::REQUIREMENTS,
+    &monitors::REQUIREMENTS,
     &profiles::REQUIREMENTS,
     &rules::REQUIREMENTS,
     &sync_documents::REQUIREMENTS,

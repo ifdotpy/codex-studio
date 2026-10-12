@@ -23,6 +23,7 @@ pub use records::{
     TaskRepository, WorkStatus,
 };
 pub use repositories::event_write::{EventWriteReceipt, EventWriteRepository};
+pub use repositories::monitors::{MonitorsRepository, StoredMonitor};
 pub use repositories::profiles::{ProfileRecord, ProfileRepository, ProfileRole, ReasoningEffort};
 pub use repositories::rules::{RulesRepository, StoredAgent, StoredRule};
 pub use repositories::sync_documents::{EntityRow, SyncDocument, SyncDocumentsRepository};
@@ -143,12 +144,12 @@ impl RuntimeStore {
         &self,
         operation: impl FnOnce(&Transaction<'_>) -> StoreResult<T>,
     ) -> StoreResult<T> {
-        self.transaction_with_error(operation)
+        self.transaction_with(operation)
     }
 
     /// Run one durable transaction with a domain error type that preserves
     /// operation refusals while still reporting store and commit failures.
-    pub fn transaction_with_error<T, E>(
+    pub fn transaction_with<T, E>(
         &self,
         operation: impl FnOnce(&Transaction<'_>) -> Result<T, E>,
     ) -> Result<T, E>
@@ -174,6 +175,16 @@ impl RuntimeStore {
                 Err(error)
             }
         }
+    }
+
+    pub fn transaction_with_error<T, E>(
+        &self,
+        operation: impl FnOnce(&Transaction<'_>) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<StoreError>,
+    {
+        self.transaction_with(operation)
     }
 
     /// Open an independent read-only, query-only connection to the main DB.

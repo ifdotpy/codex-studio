@@ -178,28 +178,43 @@ impl SyncDocumentsRepository {
         scope: &str,
         payload: &str,
     ) -> StoreResult<bool> {
+        Self::put_entity(transaction, "uiPreferences", scope, payload, false)
+    }
+
+    pub fn put_entity(
+        transaction: &Transaction<'_>,
+        collection: &str,
+        id: &str,
+        payload: &str,
+        deleted: bool,
+    ) -> StoreResult<bool> {
         let hash = hash_payload(payload);
         let current = transaction
             .query_row(
-                "SELECT hash,deleted FROM sync_entities \
-                 WHERE collection='uiPreferences' AND id=?1",
-                [scope],
+                "SELECT hash,deleted FROM sync_entities WHERE collection=?1 AND id=?2",
+                params![collection, id],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0)),
             )
             .optional()?;
         if current
             .as_ref()
-            .is_some_and(|(old_hash, deleted)| old_hash == &hash && !deleted)
+            .is_some_and(|(old_hash, old_deleted)| old_hash == &hash && *old_deleted == deleted)
         {
             return Ok(false);
         }
-        let sequence = next_sequence(transaction)?;
         transaction.execute(
             "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) \
-             VALUES ('uiPreferences',?1,?2,?3,?4,0) \
+             VALUES (?1,?2,?3,?4,?5,?6) \
              ON CONFLICT(collection,id) DO UPDATE SET seq=excluded.seq,hash=excluded.hash, \
-             payload=excluded.payload,deleted=0",
-            params![scope, sequence, hash, payload],
+             payload=excluded.payload,deleted=excluded.deleted",
+            params![
+                collection,
+                id,
+                next_sequence(transaction)?,
+                hash,
+                payload,
+                i64::from(deleted)
+            ],
         )?;
         Ok(true)
     }

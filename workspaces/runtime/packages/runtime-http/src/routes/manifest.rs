@@ -16,6 +16,7 @@ const KNOWN_DEPENDENCIES: &[&str] = &[
     "event-driver/plan-updates",
     "event-driver/queue-mutations",
     "event-driver/work-items",
+    "monitor-driver/active-checks",
     "provider-session/account-rate-limits",
     "provider-session/model-list",
     "resource-policy/publish-drafts",

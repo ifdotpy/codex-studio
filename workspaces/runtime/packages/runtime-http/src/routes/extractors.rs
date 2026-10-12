@@ -81,10 +81,8 @@ where
 }
 
 /// Schema-validated scalar header parameters.
-#[cfg(test)]
 pub(crate) struct ApiHeaders(pub serde_json::Map<String, Value>);
 
-#[cfg(test)]
 impl<S> FromRequestParts<S> for ApiHeaders
 where
     S: Send + Sync,
