@@ -182,6 +182,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "studio-runtime-process"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "studio-runtime-providers"
 version = "0.1.0"
 dependencies = [
