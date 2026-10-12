@@ -206,8 +206,12 @@ class ReaderContract(unittest.TestCase):
                 os.kill(pid, 0)
             except ProcessLookupError:
                 break
-            status = Path(f'/proc/{pid}/stat')
-            if status.exists() and status.read_text().split(') ', 1)[1].startswith('Z'):
+            try:
+                state = Path(f'/proc/{pid}/stat').read_text().split(') ', 1)[1]
+            except (FileNotFoundError, ProcessLookupError):
+                # Reaped between the signal probe and the read: it is gone.
+                break
+            if state.startswith('Z'):
                 break
             time.sleep(.05)
         else:
