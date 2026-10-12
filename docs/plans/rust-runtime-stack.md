@@ -1,224 +1,445 @@
 # Rust runtime stack proposal
 
-## Change Contract
+## Decision frame
 
-This proposal selects the replaceable runtime boundary and crate ownership for
-M-08.1. It does not change runtime code, dependencies, database contents, or
-HTTP behavior. The Rust server becomes the sole production runtime only after
-the HTTP contract and disposable existing-state gates in
-[`rust-workspaces.md`](rust-workspaces.md) pass. The owner approves or edits
-each recommendation in the decision table independently.
+This is the M-08.1 proposal for [issue #37](https://github.com/ifdotpy/codex-studio/issues/37).
+It selects a Rust runtime shape without changing code, dependencies, state, or
+wire behavior. The PyO3 bridge stays frozen; the HTTP boundary (163 routes and
+its canonical schema hash, with contract suites behind a backend harness) is
+the executable specification; then the Python runtime moves as one unit and
+opens the existing SQLite state in place. Cutover waits for the gates in
+[`rust-workspaces.md`](rust-workspaces.md).
 
-## What the current runtime does
+Owner priorities: modular implementation; simple, compact, readable code with
+little duplication; strict types with one schema authority; then performance
+and least custom code. Each subsection ends with an independently approvable
+recommendation. Crate facts below were checked against crates.io and upstream
+documentation on **2026-10-12**; current release means the latest non-yanked
+published version found that day. MSRV is registry metadata unless marked
+undeclared. Dependency counts are normal direct dependencies (optional ones
+included), not a resolved graph. No security audit or cross-target build was
+run. A missing fact is called out instead of inferred.
 
-Evidence is from the current source tree; the migration plan owns the approved
-compatibility envelope.
+## Runtime requirements from the repository
 
-| Area                    | Observed behavior and source                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| HTTP                    | One runtime process owns loopback HTTP and an owned Unix socket; Uvicorn is configured with `workers=1` and the client-facing loopback binds on `127.0.0.1`. Middleware applies trust, schema-hash, request identity, and response/error rules. See [`studio_api/server.py`](../../workspaces/runtime/apps/server/src/studio_api/server.py), [`context.py`](../../workspaces/runtime/apps/server/src/studio_api/context.py), [`middleware.py`](../../workspaces/runtime/apps/server/src/studio_api/middleware.py).                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| Streaming               | `GET /api/sync/stream` emits Server-Sent Events and shutdown closes the stream cleanly; file reads use a streaming response. No WebSocket route was found. Durable monitor/watch resources are read over ordinary requests; no long-poll endpoint was found. See [`sync/router.py`](../../workspaces/runtime/apps/server/src/studio_api/sync/router.py), [`io/router.py`](../../workspaces/runtime/apps/server/src/studio_api/io/router.py), [`work/router.py`](../../workspaces/runtime/apps/server/src/studio_api/work/router.py), [`server.py`](../../workspaces/runtime/apps/server/src/studio_api/server.py).                                                                                                                                                                                                                                                                                                                                          |
-| Uploads and access      | JSON and raw audio/asset bodies use ordinary HTTP request bodies with content-type/size gates; no multipart route was found. API token, Unix-socket trust policy, pairing/invitation and federation are application-level controls. The listener is loopback HTTP; optional public HTTPS is terminated by the external Tailscale Serve proxy. `/api/sync/notify` is an authenticated resource-invalidation endpoint, not a general relay. See [`middleware.py`](../../workspaces/runtime/apps/server/src/studio_api/middleware.py), [`io/router.py`](../../workspaces/runtime/apps/server/src/studio_api/io/router.py), [`multi_server/router.py`](../../workspaces/runtime/apps/server/src/studio_api/multi_server/router.py), [`federation/router.py`](../../workspaces/runtime/apps/server/src/studio_api/federation/router.py), [`sync/resources/relay/router.py`](../../workspaces/runtime/apps/server/src/studio_api/sync/resources/relay/router.py). |
-| Concurrency             | One process owns Uvicorn listeners configured with `workers=1`, plus thread pools, daemon threads, scheduler/maintenance threads, subprocess supervisors, terminal sessions, and an OS-backed progress-file watcher. The request contract depends on exact cancellation, shutdown, event ordering, and uncertain-outcome handling. See [`server.py`](../../workspaces/runtime/apps/server/src/studio_api/server.py), [`codex_runtime.py`](../../workspaces/runtime/apps/server/src/codex_runtime.py), [`codex_process_supervisor.py`](../../workspaces/runtime/apps/server/src/codex_process_supervisor.py), [`codex_terminals.py`](../../workspaces/runtime/apps/server/src/codex_terminals.py), [`codex_progress_watch.py`](../../workspaces/runtime/apps/server/src/codex_progress_watch.py).                                                                                                                                                            |
-| SQLite                  | Python `sqlite3` opens the existing state database in WAL mode; write paths use explicit transactions including `BEGIN IMMEDIATE`. Commits are fully durable (`synchronous=FULL`, accepted decision). There are concurrent readers, one serialized writer path, startup migrations/`CREATE TABLE IF NOT EXISTS`, JSON records, and separately owned analytics/history databases. WAL must remain same-host and is not supported over network filesystems. See [`codex_runtime.py`](../../workspaces/runtime/apps/server/src/codex_runtime.py), [`codex_analytics.py`](../../workspaces/runtime/apps/server/src/codex_analytics.py), [durability decision](../decisions/2026-10-11-runtime-commit-durability.md), [SQLite WAL](https://www.sqlite.org/wal.html).                                                                                                                                                                                             |
-| Schema/types            | Pydantic models build OpenAPI offline; [`schema.py`](../../workspaces/runtime/apps/server/src/studio_api/schema.py) canonicalizes schema-shape data, strips documentation-only fields and hashes canonical JSON. `generate_types.py` runs pinned `openapi-typescript` and formats the generated client types. The current inventory records 163 HTTP routes; the route and hash baseline must be regenerated from the exact M-08.2 starting revision. See [`studio_api/`](../../workspaces/runtime/apps/server/src/studio_api/), [`generate_types.py`](../../workspaces/runtime/apps/server/src/studio_api/generate_types.py), [`web/src/generated`](../../workspaces/client/apps/web/src/generated/), [schema gap inventory](../verification/api-schema-gap-inventory-2026-10-11.md).                                                                                                                                                                      |
-| Platforms and packaging | Full desktop packaging is macOS Apple silicon and bundles the Python backend source/runtime resources; Linux and WSL have CLI/server/service installation paths; Windows-specific install, server-start, and supervisor scripts exist. The VM guest is Linux. This is a source-supported compatibility matrix, not proof that every OS is continuously built or tested. The CLI currently links launcher scripts from `install-cli.py`; Electron packaging assembles the backend in [`package.mjs`](../../workspaces/client/apps/desktop/package.mjs). See [product guide](../product-guide.md), [Linux/WSL setup](../linux-server-setup.md), [`install-cli.py`](../../workspaces/runtime/apps/server/src/install-cli.py), [`start-windows-server.ps1`](../../workspaces/runtime/apps/server/src/start-windows-server.ps1), [`desktop README`](../../workspaces/client/apps/desktop/README.md).                                                             |
+- **HTTP:** one Uvicorn worker serves loopback HTTP and an owned Unix socket;
+  middleware enforces trust, API hash, request identity, and error rules. One
+  SSE stream (`GET /api/sync/stream`), streaming file reads, and raw JSON/audio
+  bodies are used. No WebSocket, long-poll, or multipart endpoint was found.
+  Pairing/invitations and tokens are application controls. Public HTTPS is
+  supplied by external Tailscale Serve; notify is resource invalidation, not a
+  general relay. Sources: [`server.py`](../../workspaces/runtime/apps/server/src/studio_api/server.py),
+  [`middleware.py`](../../workspaces/runtime/apps/server/src/studio_api/middleware.py),
+  [`sync/router.py`](../../workspaces/runtime/apps/server/src/studio_api/sync/router.py),
+  [`io/router.py`](../../workspaces/runtime/apps/server/src/studio_api/io/router.py),
+  [`federation/router.py`](../../workspaces/runtime/apps/server/src/studio_api/federation/router.py).
+- **Concurrency and OS work:** one process owns listeners, worker pools,
+  scheduler/maintenance threads, child-process supervisors, terminal sessions,
+  and an OS file watcher. Preserve cancellation, event order, shutdown and
+  uncertain-outcome behavior. Sources: [`codex_runtime.py`](../../workspaces/runtime/apps/server/src/codex_runtime.py),
+  [`codex_process_supervisor.py`](../../workspaces/runtime/apps/server/src/codex_process_supervisor.py),
+  [`codex_terminals.py`](../../workspaces/runtime/apps/server/src/codex_terminals.py),
+  [`codex_progress_watch.py`](../../workspaces/runtime/apps/server/src/codex_progress_watch.py).
+- **SQLite:** main, analytics/history and auxiliary databases use Python
+  `sqlite3`; WAL, FULL durability on durable write paths, explicit
+  `BEGIN IMMEDIATE`, concurrent readers and a serialized writer path are in
+  use. Startup creates missing tables and applies migrations. The database
+  directory identity and existing rows stay intact. Sources: [`codex_runtime.py`](../../workspaces/runtime/apps/server/src/codex_runtime.py),
+  [`codex_sync.py`](../../workspaces/runtime/apps/server/src/codex_sync.py),
+  [`codex_process_supervisor.py`](../../workspaces/runtime/apps/server/src/codex_process_supervisor.py),
+  [durability decision](../decisions/2026-10-11-runtime-commit-durability.md).
+- **Types and packaging:** Pydantic models produce FastAPI OpenAPI; schema
+  canonicalization and SHA-256 identity live in [`schema.py`](../../workspaces/runtime/apps/server/src/studio_api/schema.py)
+  (the current canonicalizer is version 3); `generate_types.py` runs pinned
+  `openapi-typescript` for the web client. The 163-route inventory and hash
+  baseline must be captured at M-08.2. Sources: [`generate_types.py`](../../workspaces/runtime/apps/server/src/studio_api/generate_types.py),
+  [schema-gap inventory](../verification/api-schema-gap-inventory-2026-10-11.md).
+- **Platform paths:** the product guide names a signed macOS Apple-silicon
+  Electron desktop package; Linux and WSL use CLI/server/service setup; Windows
+  server/install/supervisor scripts exist. These are preservation paths, not
+  evidence that all targets are currently released or CI-tested. Desktop
+  packaging stages Python source and `requirements.txt`, not a Python
+  interpreter ([`package.mjs`](../../workspaces/client/apps/desktop/package.mjs));
+  launch resolution uses configured, managed, then equipped system Python
+  ([`codex_python.py`](../../workspaces/runtime/apps/server/src/codex_python.py),
+  [`backend.cjs`](../../workspaces/client/apps/desktop/backend.cjs)). CLI setup
+  creates a venv from a selected base interpreter. Windows install receives a
+  Python path ([`install-windows-server.ps1`](../../workspaces/runtime/apps/server/src/install-windows-server.ps1)).
+  Product/platform references: [product guide](../product-guide.md),
+  [Linux/WSL setup](../linux-server-setup.md), [desktop README](../../workspaces/client/apps/desktop/README.md).
 
-## Candidate facts (checked 2026-10-12)
+## Decisions and candidate facts
 
-Crate versions and publication dates below were read from the crates.io API on
-the check date. “Updated” means the latest published release date, an
-observable maintenance signal rather than a promise of future maintenance.
-Dependency counts are normal dependencies declared by that release (optional
-ones included); examples are not a full resolved transitive closure. No
-independent security advisory audit or target-by-target build was performed.
-“Platform” describes upstream intent/docs; Studio platform compatibility still
-requires its own CI and packaged-app gates. `MSRV: —` means the release did not
-declare one in the registry metadata.
+### Async runtime
 
-| Decision           | Candidate A                                                                                                                                                                                                                                                                                                                                                                                                                                              | Candidate B                                                                                                                                                                                                                                                                                                                                                                                                 | Relevant trade-off                                                                                                                                                                                                                                                                                                                                               |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Async runtime      | [Tokio 1.53.2](https://crates.io/crates/tokio): 2026-10-03; MIT; MSRV 1.71; actively released; 16 normal deps (notably `pin-project-lite`, optional `mio`, `bytes`, `socket2`); supported on platforms of Mio including Linux/macOS/Windows. Provides multithread runtime, timers, async process, signals and I/O.                                                                                                                                       | [async-std 1.13.2](https://crates.io/crates/async-std): 2025-08-15; Apache-2.0 OR MIT; MSRV 1.63; last release 2025-08-15; 21 normal deps (`async-channel`, `async-io`, `async-lock`, `async-process`); cross-platform library. Its release cadence is materially quieter; ecosystem integration is smaller.                                                                                                | Tokio fits Axum, subprocess supervision and existing async HTTP flow; avoids custom runtime glue. async-std is a genuine alternative but would require framework/adapter choices and shows less recent release activity.                                                                                                                                         |
-| HTTP server        | [Axum 0.8.9](https://crates.io/crates/axum): 2026-04-14; MIT; MSRV 1.80; active; 33 normal deps / 17 non-optional including `axum-core`, `bytes`, `http`, `matchit`, Tower/Hyper ecosystem; Tokio-only. Supports streaming bodies, SSE through response streams, WebSockets and extractors. Tower middleware and middleware ordering must be wired explicitly.                                                                                           | [Actix Web 4.15.0](https://crates.io/crates/actix-web): 2026-08-21; MIT OR Apache-2.0; MSRV 1.88; active; 36 normal / 31 non-optional including `actix-http`, `actix-server`, `actix-rt`, `cookie`, `serde`; Actix runtime on Tokio. Mature HTTP/1 and HTTP/2 server with streaming and WebSocket support; its middleware/extractor model is Actix-specific.                                                | Both meet the pinned Rust 1.99 toolchain. Axum has modular handler/Tower composition and direct Tokio alignment; Actix is more batteries-included but adds framework-specific concepts not needed by current routes.                                                                                                                                             |
-| OpenAPI producer   | [utoipa 6.0.0](https://crates.io/crates/utoipa): 2026-09-22; MIT OR Apache-2.0; MSRV 1.88; latest release active; 5 normal deps (3 non-optional: `indexmap`, `serde`, `serde_json`); compile-time schema generation, no async runtime requirement; supports OpenAPI 3.1, Axum and Actix integration.                                                                                                                                                     | [aide 0.16.0-alpha.4](https://crates.io/crates/aide): 2026-04-14; MIT OR Apache-2.0; MSRV not declared; latest is pre-release (latest stable 0.15.1, 2025-08-19); 15 normal deps (7 non-optional incl. `schemars`, `tracing`, `thiserror`); no runtime of its own, its Axum integration uses Tokio.                                                                                                         | Both derive schema from Rust types; neither guarantees hash parity with Pydantic/FastAPI. Utoipa's Axum integration is the leaner stable path; exact parity is a gate, not an assumption.                                                                                                                                                                        |
-| SQLite access      | [rusqlite 0.40.2](https://crates.io/crates/rusqlite): 2026-08-08; MIT; registry MSRV undeclared (upstream says latest stable at release); active; 20 normal deps / 5 non-optional (`libsqlite3-sys`, `smallvec`, iterator crates); synchronous API, no async runtime; SQLite's supported native targets, with system-library availability to verify per build target. Bundled SQLite is optional and changes linked SQLite version.                      | [SQLx 0.9.0](https://crates.io/crates/sqlx): 2026-05-21; MIT OR Apache-2.0; MSRV 1.94; active; 5 top-level normal deps (notably `sqlx-core`; feature-selected graph is much larger); async API requires a selected Tokio or async-std runtime feature; SQLite still serializes writes.                                                                                                                      | `rusqlite` matches existing sync transaction boundaries and needs no async DB abstraction. SQLx adds compile-time query infrastructure and an async facade, but not concurrent SQLite writes. Choose the same SQLite library version/configuration as the prior runtime and disable `bundled` unless a measured packaging/system-library constraint requires it. |
-| JSON serialization | [serde_json 1.0.154](https://crates.io/crates/serde_json): 2026-10-11; MIT OR Apache-2.0; MSRV 1.71; latest release active; 7 normal deps / 5 non-optional (`serde`, `serde_core`, `itoa`, `memchr`, `zmij`); synchronous and platform-neutral across Rust targets; already in workspace dependencies with arbitrary precision enabled.                                                                                                                  | [sonic-rs 0.5.10](https://crates.io/crates/sonic-rs): 2026-09-11; Apache-2.0; MSRV undeclared; latest release active; 13 normal deps (`ahash`, `bumpalo`, `bytes`, `faststr`, `serde`, SIMD support); synchronous SIMD implementation. It adds a second JSON implementation and its current host/target matrix has not been verified for this project.                                                      | `serde_json` shares the Serde model used by Utoipa and existing Rust crates; no measured bottleneck justifies another implementation. Keep arbitrary-precision/number-format behavior in compatibility fixtures.                                                                                                                                                 |
-| Process and PTY    | [portable-pty 0.9.0](https://crates.io/crates/portable-pty): 2025-02-11; MIT; MSRV undeclared; latest registry release 2025-02-11; 15 normal deps / 13 non-optional (`nix`, `libc`, `filedescriptor`, `anyhow`, `log`); synchronous PTY API with no selected async runtime; explicitly targets Unix and Windows terminal APIs. Supplies PTY creation, resize and child handles; upstream release activity is slower than the rest of the proposed stack. | [pty-process 0.5.3](https://crates.io/crates/pty-process): 2025-07-12; MIT; MSRV undeclared; last release 2025-07-12; 2 normal deps (`rustix` plus optional Tokio); async process/PTY API uses Tokio when enabled; its documentation/platform support is Unix-oriented and Windows parity is not established here.                                                                                          | Use Tokio’s `process`/`signal` for ordinary children and `portable-pty` only for user terminal PTYs. The latter better fits Windows behavior. Keep the PTY seam behind a local trait and test launch/exit/output semantics per platform; retire the crate by replacing that adapter and removing the dependency.                                                 |
-| File watching      | [notify 9.0.0-rc.5](https://crates.io/crates/notify): 2026-08-30; CC0-1.0; MSRV 1.88; latest is release candidate (latest stable 8.2.0, 2025-08-03, MSRV 1.77); 22 normal deps / 14 non-optional with OS-specific `inotify`, `kqueue`, `mio`; synchronous callback API, no async runtime; native backend coverage for Linux/macOS/Windows, with platform-specific event/coalescing behavior.                                                             | [watchexec 8.4.4](https://crates.io/crates/watchexec): 2026-10-06; Apache-2.0; MSRV 1.61; active; 14 normal deps including `notify`, Tokio/futures, `miette`; async event orchestration on Tokio and file filtering, but broader process/watch orchestration than the runtime needs.                                                                                                                        | Choose stable `notify` 8.2.0 for the Rust progress-file watcher behind the current watcher interface; retain Electron/macOS `studio-fs-events` for VM folder sync plus its scan fallback. Rejected Watchexec because it adds a general watch/process orchestration layer where the runtime needs file events only.                                               |
-| Logging            | [tracing 0.1.44](https://crates.io/crates/tracing): 2025-12-18; MIT; MSRV 1.65; 4 normal deps (`tracing-core`, `pin-project-lite`); structured events/spans work with Tokio. [tracing-subscriber 0.3.23](https://crates.io/crates/tracing-subscriber): 2026-03-13; MIT; MSRV 1.65; 18 normal deps (feature-selected; includes `tracing-core`, `regex-automata`, `serde_json`, `parking_lot`); initialize at the binary boundary.                         | [log 0.4.34](https://crates.io/crates/log): 2026-08-22; MIT OR Apache-2.0; MSRV 1.71; 4 normal deps, runtime-neutral facade. [env_logger 0.11.11](https://crates.io/crates/env_logger): 2026-06-25; MIT OR Apache-2.0; MSRV 1.71; 5 normal deps (`env_filter`, `anstream`, `anstyle`, `jiff`); synchronous, cross-platform logger. It records messages and levels but has no structured async span context. | Choose tracing for request, task and child-process correlation across await points. Initialize one subscriber in the server binary; libraries emit spans/events only.                                                                                                                                                                                            |
-| Error handling     | [thiserror 2.0.21](https://crates.io/crates/thiserror): 2026-09-23; MIT OR Apache-2.0; MSRV 1.77; 1 normal dependency (`thiserror-impl`); active derive for typed library errors.                                                                                                                                                                                                                                                                        | [anyhow 1.0.104](https://crates.io/crates/anyhow): 2026-07-18; MIT OR Apache-2.0; MSRV 1.68; no normal dependencies; active ergonomic context chains for application boundaries.                                                                                                                                                                                                                            | Use `thiserror` for domain, storage and adapter public errors; use `anyhow` only in binary startup/CLI orchestration where errors terminate or are logged. Do not expose `anyhow::Error` as an HTTP/domain contract.                                                                                                                                             |
-| Test runner        | [cargo-nextest 0.9.146](https://github.com/nextest-rs/nextest/releases/tag/cargo-nextest-0.9.146): 2026-09-21; MIT OR Apache-2.0; runner MSRV 1.41 stated upstream; active; prebuilt Linux, macOS and Windows artifacts; depends on Cargo metadata and executes tests as separate processes. Already pinned in this repository.                                                                                                                          | Built-in [`cargo test`](https://doc.rust-lang.org/cargo/commands/cargo-test.html): released with the pinned Rust toolchain 1.99.0; Rust project license MIT OR Apache-2.0; no separate dependency graph; supports Rust targets supported by the toolchain. Its exact toolchain release date was not independently verified here.                                                                            | Keep nextest for focused and CI tests; it is already the accepted runner and supports process isolation/parallelism. Keep `cargo test --doc` for doctests as the current facade does. Removing nextest later means switching Just/CI invocation to Cargo, not changing test source.                                                                              |
+| Candidate                                       | Version | Released   | License           | MSRV | Status           |
+| ----------------------------------------------- | ------: | ---------- | ----------------- | ---: | ---------------- |
+| [Tokio](https://crates.io/crates/tokio)         |  1.53.2 | 2026-10-03 | MIT               | 1.71 | Active           |
+| [async-std](https://crates.io/crates/async-std) |  1.13.2 | 2025-08-15 | Apache-2.0 OR MIT | 1.63 | Quieter releases |
 
-Source links on each crate row lead to registry release history and metadata;
-upstream docs/repositories for the relevant behavior are [Tokio](https://tokio.rs/),
-[Axum](https://github.com/tokio-rs/axum), [Actix Web](https://github.com/actix/actix-web),
-[Utoipa](https://docs.rs/utoipa/latest/utoipa/), [Aide](https://docs.rs/aide/latest/aide/),
-[Rusqlite](https://github.com/rusqlite/rusqlite), [SQLx](https://github.com/launchbadge/sqlx),
-[Serde JSON](https://github.com/serde-rs/json), [Sonic-RS](https://github.com/cloudwego/sonic-rs),
-[portable-pty](https://github.com/wezterm/wezterm/tree/main/pty),
-[pty-process](https://git.tozt.net/pty-process), [notify](https://github.com/notify-rs/notify),
-[tracing](https://github.com/tokio-rs/tracing), [log](https://github.com/rust-lang/log),
-[thiserror](https://github.com/dtolnay/thiserror), [anyhow](https://github.com/dtolnay/anyhow),
-[watchexec](https://github.com/watchexec/watchexec), and [nextest](https://nexte.st/).
-Release facts were checked 2026-10-12.
+Tokio has 16 normal deps (`pin-project-lite`, `bytes`, `socket2`, optional
+`mio`); async-std has 21 (`async-channel`, `async-io`, `async-lock`,
+`async-process`). Both target common desktop/server platforms; Tokio supplies
+multi-thread executor, timers, async process/signals/I/O. async-std has less
+integration with the selected HTTP option.
 
-## Recommended decisions
+Tokio aligns with Axum and common async process support, at the cost of async
+boundaries and blocking-pool rules around SQLite. A synchronous core with only
+an async HTTP edge can more closely match today's thread-based code and make
+domain functions easier to read; Axum still needs a Tokio executor. **Recommend
+Tokio as the HTTP edge only initially; keep domain/store/process interfaces
+synchronous and use explicit blocking workers until measurements or SSE/load
+needs justify more async.** Owner choice: Tokio multi-thread runtime with
+rusqlite on blocking threads, or synchronous thread model plus a small async
+edge? Each can be simpler if applied consistently; avoid async-through-every-layer.
 
-| Approve or change this line | Recommendation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Async runtime               | Tokio, multithread runtime, one runtime process. Rejected async-std because current release activity and Axum/process ecosystem integration are weaker.                                                                                                                                                                                                                                                                                                                                                                               |
-| HTTP                        | Axum + Tower + Hyper on Tokio. Keep one listener worker initially; bound blocking SQLite/filesystem work and do not spawn a second server process. Rejected Actix because its additional framework-specific APIs are not needed for the existing route/middleware requirements.                                                                                                                                                                                                                                                       |
-| OpenAPI and types           | Utoipa derives the one Rust API schema from the same request/response structs used at handlers; export OpenAPI deterministically, run the existing canonicalization/hash policy over it, and keep pinned `openapi-typescript` as the TypeScript generator. The 163-route old schema and hash are the compatibility gate, not a hand-maintained JSON snapshot. Rejected Aide because it is currently alpha and adds another schema framework; reassess if Utoipa cannot represent an existing contract without hand-maintained schema. |
-| SQLite                      | rusqlite with system SQLite initially, WAL and `synchronous=FULL`, explicit transactions, one serialized writer path and separate read connections only where source behavior requires them. Avoid `bundled` during Python/Rust coexistence so both use the host SQLite; inventory SQLite version/compile options before this choice is implemented. Rejected SQLx because async wrappers do not remove SQLite's writer serialization and add query-macro/runtime complexity.                                                         |
-| JSON                        | serde + serde_json with existing arbitrary-precision setting; do not add a fast JSON implementation absent measured evidence.                                                                                                                                                                                                                                                                                                                                                                                                         |
-| Child processes and PTYs    | Tokio process/signal APIs for supervised children; portable-pty behind a PTY port for terminals. Remove the crate if platform behavior cannot meet existing contracts; do not replace provider protocols or OS supervision as part of M-08.1.                                                                                                                                                                                                                                                                                         |
-| File watching               | Use `notify` behind the migrated progress-file watcher interface; retain the Electron/macOS `studio-fs-events` FSEvents helper plus scan fallback for VM folder sync.                                                                                                                                                                                                                                                                                                                                                                 |
-| Logging and errors          | tracing events/spans; thiserror typed crate errors; anyhow only at app/process boundaries.                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| Testing                     | Existing cargo-nextest pin and `just test <package> <name>` focused loop; `cargo test --doc` remains for doctests. Do not make fast tests depend on a database, provider, network, wall-clock sleeps, or shared test process state.                                                                                                                                                                                                                                                                                                   |
+### HTTP server
 
-These are proposals, not a crate lockfile. Before runtime implementation, resolve
-feature selections and license/security review from the actual Cargo.lock; do
-not infer a complete transitive closure from the direct dependency examples
-above. Each selected crate is removable by replacing its adapter/derive
-integration, removing the manifest entry and lockfile resolution, and rerunning
-the owning package checks. No selected crate owns a persistent data format.
+| Candidate                                       | Version | Released   | License           | MSRV | Status |
+| ----------------------------------------------- | ------: | ---------- | ----------------- | ---: | ------ |
+| [Axum](https://crates.io/crates/axum)           |   0.8.9 | 2026-04-14 | MIT               | 1.80 | Active |
+| [Actix Web](https://crates.io/crates/actix-web) |  4.15.0 | 2026-08-21 | MIT OR Apache-2.0 | 1.88 | Active |
 
-## Crate layout and ownership
+Axum has 33 normal deps (17 non-optional) in Tower/Hyper; Actix Web has 36
+(31 non-optional), including `actix-http`, `actix-server`, `actix-rt`. Both use
+Tokio and support streaming/SSE/WebSocket on Linux/macOS/Windows through their
+dependencies. Axum middleware order is explicit; Actix uses framework-specific
+extractors/middleware.
 
-Replace the Python server app with the Rust `studio-runtime-server` binary in
-`workspaces/runtime/apps/server/` at the cutover; the previous packaged Python
-release remains the rollback artifact. Put reusable crates in the existing
-`workspaces/runtime/packages/` domain. Keep crate count to five libraries plus
-the app; modules inside those crates are preferred to more crates until an
-independent caller/check justifies a split.
+Both support the observed HTTP needs. Axum’s Tower layers and modular route
+composition fit domain packages; Actix is more integrated but introduces
+framework concepts that current routes do not require. **Recommend Axum.**
+
+### OpenAPI and Rust DTO authority
+
+| Candidate                                                          |        Version | Released   | License           |       MSRV | Status                                  |
+| ------------------------------------------------------------------ | -------------: | ---------- | ----------------- | ---------: | --------------------------------------- |
+| [Utoipa](https://crates.io/crates/utoipa)                          |          6.0.0 | 2026-09-22 | MIT OR Apache-2.0 |       1.88 | Active                                  |
+| [Aide](https://crates.io/crates/aide)                              | 0.16.0-alpha.4 | 2026-04-14 | MIT OR Apache-2.0 | Undeclared | Pre-release; stable 0.15.1 (2025-08-19) |
+| [openapi-to-rust](https://crates.io/crates/openapi-to-rust/0.22.0) |         0.22.0 | 2026-10-06 | MIT               |       1.88 | Active                                  |
+| [typify](https://crates.io/crates/typify/0.10.0-alpha.2)           | 0.10.0-alpha.2 | 2026-10-05 | Apache-2.0        | Undeclared | Pre-release                             |
+
+Utoipa has 5 normal deps (3 required: `indexmap`, `serde`, `serde_json`), no
+runtime, OpenAPI 3.1 and Axum/Actix integration. Aide has 15 (7 required,
+including `schemars`, `tracing`, `thiserror`); its Axum path uses Tokio.
+`openapi-to-rust` has 17 required normal deps (`jsonschema`, `serde_json_path`,
+`syn`, `prettyplease`, `thiserror`), supports OpenAPI 3.0/3.1, and needs no
+runtime for generated DTOs. typify has 2 required normal deps (`typify-impl`,
+optional macro) but consumes JSON Schema, so OpenAPI component projection is
+required.
+
+**Feasibility probe (2026-10-12):** isolated crate and venv under
+`/var/tmp/codex-runtime-stack-probe`; no repository manifest or lockfile was
+changed. Python schemas came from the actual `SupervisorIdentity`,
+`ErrorResponse`, `ProjectWriteRequest`, and `ResourceRef` models. Utoipa 6.0.0
+derived corresponding Rust projections; both sides were wrapped as OpenAPI
+components and normalized by the repository's `canonical_openapi_json`
+(version 3), then compared structurally per model. **All four differed:**
+
+- `SupervisorIdentity`: Utoipa omitted the Python type/field titles and
+  `additionalProperties: false`; it added `format: int64` to `generation`.
+- `ErrorResponse`: nullable fields used `type: [T, null]` rather than Python's
+  `anyOf`; Utoipa omitted `default: null`/titles and the closed-object marker.
+  Its `metadata`/`details` mapped to unconstrained JSON rather than the
+  recursive Pydantic `JsonValue` schema.
+- `ProjectWriteRequest`: same nullable/default/title differences; `action`
+  used a referenced Rust enum instead of Python's inline literal alternatives.
+- `ResourceRef`: Python emitted referenced variant components and a
+  discriminator mapping; Utoipa flattened tagged enum variants into a
+  different oneOf shape and did not reproduce the component refs/mapping.
+
+Canonicalization removes docs and sorts union members; it does not normalize
+these structures. The output schemas and bounded per-model path-diff report
+remain under `/var/tmp/codex-runtime-stack-probe` for review; no repository
+test was added. This was a first-pass derive, not an
+exhaustive attempt to tune every Utoipa attribute or write custom schemas, so it
+does **not** prove parity impossible. It does refute assuming parity by default.
+The first attempt to derive the recursive `JsonValue` as an untagged Rust enum
+overflowed the schema generator's stack; the comparison used `serde_json::Value`
+for that field, which emitted an unconstrained `{}` schema. A manual recursive
+schema or alternate generated representation is therefore part of the
+feasibility work, not yet demonstrated.
+
+For schema-first, retain the exact frozen canonical OpenAPI output from Python
+as the only schema source during migration; generate Rust request/response
+DTOs from it (or generate then compile/test-check route DTOs against it). Keep
+`openapi-typescript` and its output unchanged. `openapi-to-rust` is OpenAPI-aware
+but brings a larger codegen surface; `typify` is a smaller JSON-Schema route
+after projecting component schemas. Review generator support for all 51
+open-by-design routes, recursive `JsonValue`, nullable unions and aliases
+before selecting it. **Recommend the frozen OpenAPI artifact plus
+openapi-to-rust for DTO generation** because it consumes OpenAPI directly;
+reject typify for this use unless the projection and alpha release prove less
+maintenance. Reject default Utoipa/Aide output as schema authority until an
+exact-hash prototype passes. After Python deletion, schema-first means the committed
+OpenAPI contract remains authoritative and Rust DTOs plus TypeScript stay
+generated; Utoipa-first means Rust types become authoritative and emit OpenAPI
+and TypeScript. **Recommend schema-first through cutover: hash equality is
+preserved by construction while handler compatibility is checked, instead of
+making a cross-framework renderer reproduce schema quirks immediately. Keep
+the committed OpenAPI artifact as the single authority afterward unless the
+owner separately accepts a measured Rust-type-to-identical-hash transfer.**
+
+### SQLite access
+
+| Candidate                                     | Version | Released   | License           |       MSRV | Status |
+| --------------------------------------------- | ------: | ---------- | ----------------- | ---------: | ------ |
+| [rusqlite](https://crates.io/crates/rusqlite) |  0.40.2 | 2026-08-08 | MIT               | Undeclared | Active |
+| [SQLx](https://crates.io/crates/sqlx)         |   0.9.0 | 2026-05-21 | MIT OR Apache-2.0 |       1.94 | Active |
+
+rusqlite has 20 normal deps (5 required), including `libsqlite3-sys`; it is
+synchronous and has optional bundled SQLite. SQLx has 5 top-level normal deps,
+but a much larger selected feature graph; its async API needs Tokio or
+async-std. Both use SQLite's serialized writer; target library/bundling needs
+an explicit platform choice.
+
+The lead verified this Linux host’s managed Python 3.14.8 `_sqlite3` dynamically
+links `/usr/lib/libsqlite3.so.0`, SQLite 3.53.4. The desktop packager stages
+source/requirements and uses a selected host Python; it does not bundle Python.
+The CLI similarly builds a venv from a selected base interpreter. Windows
+scripts pass/use an interpreter path. **The exact SQLite library/version in a
+macOS or Windows user's selected Python was not verified**; those cannot be
+assumed to match a separately linked Rust system library. `rusqlite` system
+mode may share Linux's dynamic library on this host, but per-install Python
+linkage differs elsewhere and Windows system-library presence is not
+established. `bundled` gives Rust a controlled SQLite version without relying
+on a host development library, but Rust may then use a different version from
+Python; it does not automatically make rollback safer.
+
+SQLite 3 database files are cross-platform and backwards-compatible across
+SQLite 3 releases, but forwards compatibility is incomplete. WAL adds a `-wal`
+file that is part of persistent state and must travel with the database until
+clean close/checkpoint; WAL readers require same-machine shared memory and it
+allows many readers but one writer. WAL support begins at SQLite 3.7.0. The
+SQLite project documents a WAL-reset bug fixed in 3.51.3+; the lead-verified
+3.53.4 is newer. Sources: [file portability/compatibility](https://www.sqlite.org/onefile.html),
+[WAL behavior and reset fix](https://www.sqlite.org/wal.html),
+[format changes](https://www.sqlite.org/formatchng.html). **Recommend rusqlite
+with a pinned `bundled` SQLite build** for reproducible release artifacts,
+subject to M-08.2 capturing every supported Python interpreter's
+`sqlite_version()` and proving the proposed engine reads/writes old-format
+fixtures and permits fallback. If that proof fails, keep the old runtime as
+rollback target and require an owner decision; do not silently switch system/
+bundled mode by platform. Reject SQLx because its async query layer adds a
+runtime abstraction without increasing SQLite's single-writer capacity or
+improving the existing synchronous transaction model.
+
+### JSON serialization
+
+| Candidate                                         | Version | Released   | License           |       MSRV | Status |
+| ------------------------------------------------- | ------: | ---------- | ----------------- | ---------: | ------ |
+| [serde_json](https://crates.io/crates/serde_json) | 1.0.154 | 2026-10-11 | MIT OR Apache-2.0 |       1.71 | Active |
+| [sonic-rs](https://crates.io/crates/sonic-rs)     |  0.5.10 | 2026-09-11 | Apache-2.0        | Undeclared | Active |
+
+serde_json has 7 normal deps (5 required), is synchronous and portable; it is
+already configured with arbitrary precision. sonic-rs has 13 (`ahash`,
+`bumpalo`, `bytes`, `faststr` and SIMD support); its target matrix is not
+verified for Studio.
+
+Serde is shared by HTTP DTOs, Utoipa and current Rust crates; arbitrary JSON
+and numeric-format behavior need fixtures. A second implementation adds
+complexity without a measured bottleneck. **Recommend serde_json.**
+
+### Process and PTY supervision
+
+| Candidate                                             | Version | Released   | License |       MSRV | Status |
+| ----------------------------------------------------- | ------: | ---------- | ------- | ---------: | ------ |
+| [Tokio](https://crates.io/crates/tokio)               |  1.53.2 | 2026-10-03 | MIT     |       1.71 | Active |
+| [portable-pty](https://crates.io/crates/portable-pty) |   0.9.0 | 2025-02-11 | MIT     | Undeclared | Quiet  |
+| [pty-process](https://crates.io/crates/pty-process)   |   0.5.3 | 2025-07-12 | MIT     | Undeclared | Quiet  |
+
+Tokio process/signals are async, cross-platform, and already selected; they do
+not provide PTYs. portable-pty has 15 normal deps (13 required, including
+`nix`, `libc`, `filedescriptor`, `anyhow`, `log`) and synchronous Unix/Windows
+PTY support. pty-process has 2 (`rustix`, optional Tokio), async PTY API and
+Unix-oriented docs; Windows parity is unverified.
+
+Ordinary child supervision should reuse Tokio; PTY needs a narrow adapter and
+platform validation. **Recommend Tokio process/signal plus portable-pty only
+for PTYs**, behind a local `PtyHost` interface; reject pty-process because
+Windows behavior is not established and ordinary process handling would
+duplicate Tokio.
+
+### File watching
+
+| Candidate                                       |    Version | Released   | License    | MSRV | Status                                 |
+| ----------------------------------------------- | ---------: | ---------- | ---------- | ---: | -------------------------------------- |
+| [notify](https://crates.io/crates/notify)       | 9.0.0-rc.5 | 2026-08-30 | CC0-1.0    | 1.88 | Pre-release; stable 8.2.0 (2025-08-03) |
+| [watchexec](https://crates.io/crates/watchexec) |      8.4.4 | 2026-10-06 | Apache-2.0 | 1.61 | Active                                 |
+
+notify 9 has 7 normal deps, OS backends for Linux/macOS/Windows, callback API,
+no runtime; event coalescing/rename behavior is OS-dependent. watchexec is a
+higher-level cross-platform watcher built on notify/Tokio with a larger
+dependency graph and more orchestration than one progress-file watch needs.
+Stable notify 8.2.0 is CC0-1.0 with MSRV 1.77; the 9.0 release candidate is
+also CC0-1.0 and raises MSRV to 1.88.
+
+Current code needs one owned OS-backed progress watcher, not a generic command
+watch service. **Recommend stable notify 8.x until 9.0 is stable**, isolate
+backend events behind `ProgressWatch`, and contract-test rename/overflow/rescan
+behavior on shipped platforms.
+
+### Logging
+
+| Candidate                                                         | Version | Released   | License           | MSRV | Status |
+| ----------------------------------------------------------------- | ------: | ---------- | ----------------- | ---: | ------ |
+| [tracing](https://crates.io/crates/tracing)                       |  0.1.44 | 2025-12-18 | MIT               | 1.65 | Active |
+| [log](https://crates.io/crates/log)                               |  0.4.34 | 2026-08-22 | MIT OR Apache-2.0 | 1.71 | Active |
+| [tracing-subscriber](https://crates.io/crates/tracing-subscriber) |  0.3.23 | 2026-03-13 | MIT OR Apache-2.0 | 1.65 | Active |
+
+tracing has 5 normal deps and provides backend-neutral spans/events; log has 1
+dependency but no structured span context by itself. tracing-subscriber has 18
+normal deps and supplies filters/formats on supported platforms.
+
+**Recommend tracing plus tracing-subscriber** for request/agent spans and
+consistent structured logs; reject `log` alone because it loses correlation
+context already valuable in concurrent jobs.
+
+### Error handling
+
+| Candidate                                       | Version | Released   | License           | MSRV | Status |
+| ----------------------------------------------- | ------: | ---------- | ----------------- | ---: | ------ |
+| [thiserror](https://crates.io/crates/thiserror) |  2.0.21 | 2026-09-23 | MIT OR Apache-2.0 | 1.77 | Active |
+| [anyhow](https://crates.io/crates/anyhow)       | 1.0.104 | 2026-07-18 | MIT OR Apache-2.0 | 1.68 | Active |
+
+Both are synchronous and portable with one normal dependency each. thiserror
+derives typed standard errors; anyhow adds contextual dynamic errors but does
+not define stable public variants.
+
+Public package and HTTP errors need typed variants; app startup/CLI boundaries
+benefit from context. **Recommend thiserror at package boundaries and anyhow
+only in the server app.**
+
+### Test runner
+
+| Candidate                                                                |     Version | Released   | License           |      MSRV | Status                    |
+| ------------------------------------------------------------------------ | ----------: | ---------- | ----------------- | --------: | ------------------------- |
+| [cargo-nextest](https://crates.io/crates/cargo-nextest/0.9.148)          |     0.9.148 | 2026-10-08 | Apache-2.0 OR MIT |      1.91 | Active; repo pins 0.9.146 |
+| [`cargo test`](https://doc.rust-lang.org/cargo/commands/cargo-test.html) | Rust 1.99.0 | 2026-10-01 | MIT OR Apache-2.0 | Toolchain | Stable built-in           |
+
+nextest has 31 required normal deps, notably `guppy`, `clap`,
+`nextest-filtering`; it publishes Linux/macOS/Windows x86_64 binaries and
+documents slower execution on Windows. Cargo's built-in runner adds no
+dependency and follows the pinned toolchain target matrix, with fewer suite
+controls. Nextest release facts checked 2026-10-12 against [crates.io](https://crates.io/crates/cargo-nextest/0.9.148)
+and [platform docs](https://nexte.st/docs/installation/pre-built-binaries/);
+Rust toolchain date is from the [1.99.0 release](https://blog.rust-lang.org/2026/10/01/Rust-1.99.0/).
+
+Avoid a duplicate runner; `just test <package> <name>` should map to focused
+nextest selection and finish without external providers/database when the
+package is pure. **Recommend retaining cargo-nextest; use built-in cargo test
+for minimal local smoke/debug only.**
+
+## Recommended crate layout
+
+Add the runtime under the existing root Cargo workspace and the established
+`workspaces/<domain>/{apps,packages}` structure from
+[`rust-workspaces.md`](rust-workspaces.md). Keep the PyO3 package frozen and
+remove it only at whole-runtime cutover.
+
+| Package                                             | Public interface and ownership                                                                                                                                                                                                                                                                                                                                                                                 |
+| --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `workspaces/runtime/packages/operations` (existing) | Pure IDs, state transitions, reservation/settlement and uncertain-outcome rules. No routes or tables. Add only extracted pure domain functions; no new parallel core crate.                                                                                                                                                                                                                                    |
+| `workspaces/runtime/packages/runtime-store`         | `Store::open(existing_state)`, typed repositories and explicit transaction APIs. Sole owner of SQLite handles/pragmas and all existing tables. Module/table families: sync; analytics/insights; voice; terminals; history/search/checkpoints; IO/file/payload; then agents, work/orchestration, accounts/access, pairing and remaining legacy tables. Inventory every actual table once before implementation. |
+| `workspaces/runtime/packages/runtime-providers`     | Provider traits/adapters, protocol framing/event decoding, account discovery and replay fixtures. No routes or tables.                                                                                                                                                                                                                                                                                         |
+| `workspaces/runtime/packages/runtime-process`       | Child supervisor, command monitor, shutdown/signals, PTY `PtyHost`, progress `ProgressWatch`. No route registration or SQL; terminal persistence via store API.                                                                                                                                                                                                                                                |
+| `workspaces/runtime/packages/runtime-http`          | Axum router/middleware, request/response DTOs, error conversion, frozen OpenAPI serving and contract entry point. Route modules own existing groups: core/system; agents; work/orchestration; accounts; sync; IO/terminals; analytics/history/search; voice; federation; multi-server/pairing. It calls public core/store/provider/process APIs; no SQL.                                                       |
+| `workspaces/runtime/apps/server`                    | Configuration, one state lock, listener/socket lifecycle, tracing, dependency assembly, launcher/CLI and shutdown. Only app chooses implementations and starts the process.                                                                                                                                                                                                                                    |
+
+Allowed dependency direction (arrows point toward dependencies):
 
 ```text
-workspaces/runtime/apps/server/             studio-runtime-server (binary)
-workspaces/runtime/packages/operations/      studio-operations (existing pure crate)
-workspaces/runtime/packages/runtime-store/  studio-runtime-store
-workspaces/runtime/packages/runtime-providers/ studio-runtime-providers
-workspaces/runtime/packages/runtime-process/ studio-runtime-process
-workspaces/runtime/packages/runtime-http/    studio-runtime-http
+runtime-store ───────────→ operations
+runtime-providers ───────→ operations
+runtime-process ─────────→ operations + provider/store ports as needed
+runtime-http ────────────→ operations + store + providers + process
+server app ──────────────→ all runtime packages; owns wiring
 ```
 
-| Crate                                                                                                                           | Public interface and ownership                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Existing `studio-operations` crate at [`workspaces/runtime/packages/operations`](../../workspaces/runtime/packages/operations/) | Retain the pure Rust lifecycle API already used for request reservation/settlement; add only new pure domain modules as the whole runtime moves. Own newtyped IDs, closed states/results, transition rules, request identity and uncertain-outcome contracts. No HTTP, SQLite, provider SDK, filesystem or process dependency. Owns no tables or routes. Do not add a parallel `runtime-domain` crate or move its current decisions back to Python.                                                                                                                                              |
-| `runtime-store`                                                                                                                 | `Store::open(existing_state)` / typed repository interfaces and explicit transaction methods. Sole owner of SQLite connections, pragmas, migrations (frozen off at cutover), and every existing state table. Keep table SQL in focused modules: orchestration/runtime records, work and receipts, accounts/access, sync, history/search, analytics, voice, terminal state, files/payloads. Route modules call repository interfaces and never issue SQL. Table names and JSON columns remain those inventoried in the existing runtime; table families are assigned once to the matching module. |
-| `runtime-providers`                                                                                                             | Traits and implementations for Codex/Claude process protocols, event decoding, account discovery and provider replay fixtures. Owns no HTTP routes or SQLite tables. Must preserve existing framing, IDs, order, retries, cancellation and recovery.                                                                                                                                                                                                                                                                                                                                             |
-| `runtime-process`                                                                                                               | Child supervisor, command monitor, signal/shutdown orchestration, terminal PTY adapter, progress-file watcher, and file/process lifecycle. Owns no route registration or SQL; terminal persistence stays through `runtime-store`. Tokio child supervision; portable-pty isolated behind `PtyHost`; notify isolated behind `ProgressWatch`.                                                                                                                                                                                                                                                       |
-| `runtime-http`                                                                                                                  | Axum router, middleware, request/response DTOs, error mapping and Utoipa OpenAPI document. Modules own existing route groups: core/system; agents; work/orchestration; accounts; sync; IO/terminals; insights/analytics; history/search; voice; federation; multi-server/pairing. Calls domain and typed store/provider/process interfaces; owns no SQL or business state.                                                                                                                                                                                                                       |
-| `server` app                                                                                                                    | Configuration, state-path/lock acquisition, tracing setup, listener/socket lifecycle, dependency assembly, supervisor/CLI launch and shutdown. It alone selects adapters and starts one process.                                                                                                                                                                                                                                                                                                                                                                                                 |
+Packages do not depend on the app, import sibling private source, or form
+cycles. Route tests use in-memory repository/provider fakes; process behavior
+uses fake child/PTY/watch ports. A pure operation test invokes one function
+directly. This is the intended fast hypothesis loop:
+`just test operations <name>`; it needs no database, provider, listener or app
+startup. Package integration suites explicitly select the fakes or fixtures
+they need.
 
-The `runtime-store` module-to-table-family map is normative during extraction:
-`sync_*` → sync; `analytics_*` → insights; `voice_*` → voice; `user_terminal*`
-→ terminals; transcript/search/checkpoint tables → history; file/payload tables
-→ IO; all remaining orchestration, agent, work, account, request, message,
-monitor, watch and pairing records → their corresponding work/agents/accounts/
-access modules. A source inventory must assign every concrete table (including
-tables with legacy names) to exactly one module before implementation; no new
-table name is admitted by this proposal.
+## Frozen contract, platform matrix, packaging and rollback
 
-Allowed dependency direction:
+### Frozen-schema rule
 
-```text
-studio-operations ← runtime-store
-studio-operations ← runtime-providers
-studio-operations ← runtime-process
-studio-operations + runtime-store + runtime-providers + runtime-process ← runtime-http
-all selected adapters + runtime-http ← server app
-```
+At M-08.2 record the canonical OpenAPI document/hash (163-route and
+method/route-set assertions), database `sqlite_schema` rows, SQLite
+version/compile options, and representative existing-format DB fixtures.
+During the move do not change tables, columns, indexes, triggers, stored JSON,
+routes, methods, request/response fields or types, status codes, error
+envelope, headers, SSE frames, or idempotency semantics. Any correction is a
+separate approved migration with its own rollback path.
 
-`studio-operations` remains the pure core; it depends only on the Rust standard
-library and Serde where wire or stored values require it. No package may depend on the server app. No
-cross-package private-source imports or cycles. HTTP tests use in-memory
-repository/provider trait fakes; domain tests call one function directly.
-Thus `just test studio-operations transition` can check a transition in seconds,
-without SQLite, a provider, the listener, or application startup.
+The contract harness runs the same suites over HTTP against Python and Rust,
+checking headers/bodies/SSE and generated TypeScript determinism. Tests compare
+the frozen OpenAPI artifact's canonicalizer-v3 bytes/hash and route set, and
+compare database schema fingerprints/fixture readability; do not update the
+golden hash or regenerate client types to make a mismatch pass. For schema-first
+DTOs, build/test verifies that generated Rust request/response types and handler
+bindings compile against the frozen document. Utoipa parity is a separate
+candidate only after a scratch/CI proof reaches exact canonical bytes.
 
-## Frozen schema, platforms, packaging and rollback
+### Platform and packaging matrix
 
-### Frozen-schema and hash rule
+| Target            | Current path supported by source/docs                                                                                                                                    | Proposed package and required evidence                                                                                                                                    |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| macOS arm64       | Signed Electron desktop, CLI/host services, Linux VM helper and FSEvents helper. Full desktop target confirmed by product guide.                                         | Bundle a versioned native Rust server beside Electron assets; preserve bundle identity/signing/state path. Verify packaged startup, SQLite, process and watcher behavior. |
+| Linux x86_64      | CLI/server, systemd user supervisor, provider children and PTY; Linux VM guest.                                                                                          | Native server/CLI binary and atomic versioned links; verify signals, state lock, process groups, PTY and SQLite.                                                          |
+| WSL2/Linux x86_64 | Linux setup/service plus Windows interop and firewall behavior.                                                                                                          | Same Linux binary; verify WSL detection, environment and Windows interop.                                                                                                 |
+| Windows x86_64    | Windows server/install/supervisor scripts exist; no full Windows desktop target is documented. Exact currently supported CLI entry points/release artifact not verified. | Preserve established paths; test process/job and PTY behavior before claiming parity. M-07 inventory decides release promise.                                             |
 
-Until the one-step runtime switch is accepted, freeze the database schema and
-the HTTP wire schema at the M-08.2 baseline. No table/column/index/trigger,
-stored JSON representation, route, method, request/response field or type,
-status, error envelope, header, stream frame or idempotency behavior changes
-in the migration lane. Corrections to either contract require a separate,
-announced decision and compatible upgrade/rollback plan.
-
-At M-08.2, capture the exact 163-route OpenAPI output, canonical hash, database
-`sqlite_schema` rows, SQLite version/compile options, and representative
-existing-format database fixtures from the approved revision. The Rust
-generator must produce the same canonical schema hash and route/method set;
-the existing mismatch behavior (stale client writes receive HTTP 426) remains.
-The harness runs all contract suites through HTTP against Python and Rust,
-checks complete response headers/bodies and SSE frames, checks the generated
-TypeScript output is deterministic, and fails if the schema/hash or database
-schema fingerprint drifts. Rust opens disposable copies of existing state
-in-place and preserves WAL, FULL durability, transaction boundaries and
-existing serialized rows. Do not “fix” a mismatch by changing the expected
-hash or regenerating client types.
-
-### Platform matrix and package shape
-
-| Target            | Existing project path to preserve                                                                                       | Rust proposal                                                                                                                                                                                                                                   |
-| ----------------- | ----------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| macOS arm64       | Full signed Electron desktop; CLI; host services; Linux VM helper; FSEvents helper                                      | Primary packaged backend target; bundle a versioned Rust binary/resource beside Electron assets. Preserve app bundle ID/signing and state path.                                                                                                 |
-| Linux x86_64      | CLI/server and systemd user supervisor; Linux VM guest; provider children and PTY                                       | Ship native server/CLI binaries and install links; exercise state, signals, process groups and PTY.                                                                                                                                             |
-| WSL2/Linux x86_64 | Linux setup/service plus Windows interop/firewall behavior                                                              | Same Linux binary as Linux; preserve WSL detection/environment and setup scripts.                                                                                                                                                               |
-| Windows x86_64    | Windows server/install/supervisor scripts and platform-specific behavior; no full Windows desktop package is documented | Preserve supported CLI/server behavior with native Windows target; validate process/job and PTY semantics before claiming parity. Exact current supported Windows entry-point list is an M-07 inventory item, not established by this proposal. |
-
-The checked-in product guide proves a macOS arm64 desktop package and Linux/
-WSL setup. Windows-specific source paths exist, but a complete Windows test or
-release artifact was not verified for this proposal. M-08/M-09 must report
-actual builds/tests by target; do not imply every matrix row is already CI
-covered. Build Rust binaries with the root Cargo workspace and locked
-dependencies. Desktop packaging consumes the server binary as a resource;
-CLI installation installs versioned binaries/links atomically. Continue to
-ship the Node Claude bridge and Electron app. Remove Python runtime files only
-after all production launchers and support scripts select the Rust app.
+Desktop package currently includes Python source and requirement lock, not a
+Python interpreter; CLI and Windows setup use a selected base interpreter and
+venv. The new release must package its Rust executable directly, leave the
+Electron app and Claude Node bridge in place, and only remove Python after all
+production launchers choose Rust. Platform source paths do not equal CI or
+release proof.
 
 ### Rollback
 
-1. Install the new Rust server as a separate versioned artifact; do not overwrite
-   the last working Python package or its launcher until readiness checks pass.
-2. At the approved idle boundary, stop the Python backend and verify its process
-   released the state lock/socket. Start exactly one Rust process against the
-   same existing state-directory identity. Never run both against one state.
-3. On failure, stop Rust and verify it released every DB connection and lock;
-   point the launcher/supervisor back to the retained Python artifact and start
-   Python against that same directory. Keep Rust logs and the failure receipt.
-4. This rollback works only while Rust preserves the old schema, stored JSON
-   formats, IDs, transaction/durability semantics, and values readable by the
-   old runtime. No forward migration or incompatible new row/value is allowed
-   in the compatibility window. A forward database migration, a new required
-   stored field/enum, or a committed action whose meaning the Python runtime
-   cannot read makes simple rollback impossible. If any is required, stop and
-   obtain a separate owner-approved migration plan (including recovery of
-   writes after cutover); a pre-cutover backup alone would lose subsequent
-   user work.
+Install Rust as a separate versioned artifact and retain the Python executable,
+environment and launcher until readiness passes. At the idle cutover boundary,
+stop Python and verify its state lock is released; start exactly one Rust
+process on the same state directory. On failure, stop Rust, verify all DB
+handles/locks are closed, restore the Python launcher and open the same state
+directory. Keep failure logs/receipt. With unchanged schema and value semantics,
+SQLite 3's stable file format supports cross-platform use, but older engines
+are not completely forward-compatible. Preserve WAL sidecars until clean close;
+never copy only the main DB while a WAL may contain committed data.
+
+This rollback is impossible after a forward migration, incompatible stored JSON
+or required enum/value, or a committed Rust action the old runtime cannot
+interpret. A pre-cutover backup alone would discard user writes after cutover.
+If any such change is required, stop and get a separate owner-approved
+migration/recovery plan before rollout.
 
 ## Owner decisions still needed
 
-1. **Approve Axum/Tokio, Utoipa, and rusqlite with system SQLite?** Recommendation:
-   approve each independently, with canonical hash and existing-state gates
-   treated as hard exit criteria; switch rusqlite to bundled SQLite only if
-   version/compile-option evidence shows system SQLite cannot preserve behavior.
-2. **Does the approved platform matrix include a released Windows server binary
-   in M-09, or only preserving currently exercised Windows paths?** Recommendation:
-   preserve paths already supported, but make Windows release parity an explicit
-   M-07/M-09 inventory decision before promising it.
-3. **Can M-08.2 prohibit all forward migrations and incompatible stored-value
-   writes until rollback is formally retired?** Recommendation: yes; keep this
-   compatibility window until the Rust runtime has completed the approved
-   rollout and the old runtime is no longer a supported fallback.
-4. **Does the owner accept Axum/Utoipa producing an equivalent canonical schema
-   even when raw OpenAPI metadata differs?** Recommendation: yes only if the
-   existing canonical JSON algorithm and exact hash are unchanged; no manual
-   normalization exceptions per endpoint. If the hash cannot be preserved,
-   stop and propose a schema/hash contract change separately.
+1. **Schema authority after Python removal:** keep a committed OpenAPI document
+   as authority with generated Rust DTOs and unchanged TypeScript pipeline, or
+   require Rust types to regenerate the exact same canonical hash? **Recommend
+   OpenAPI source for the cutover and ongoing authority** until an actual Rust
+   parity prototype proves an identical hash with less maintenance.
+2. **Execution model:** one Tokio multi-thread runtime with rusqlite on blocking
+   workers, or synchronous thread-based internals with an async HTTP edge?
+   **Recommend async edge plus synchronous domain/store ports** for the smallest
+   mental model; promote more operations to async only where required.
+3. **SQLite distribution:** approve pinned bundled SQLite for reproducible
+   artifacts, conditional on capturing supported Python engine versions and
+   proving fallback fixtures; otherwise require per-target system linkage?
+   **Recommend bundled with a hard rollback compatibility gate.**
+4. **Windows release promise:** should M-09 ship a Windows server binary or
+   preserve only currently exercised Windows paths? **Recommend inventorying
+   exact entry points in M-07 before promising release parity.**
+5. **Rollback window:** can M-08.2 prohibit forward migrations and incompatible
+   writes until rollback is formally retired? **Recommend yes**, with no
+   exceptions inside that window.
 
-Breaking changes proposed: none. A future cutover must separately announce any
-client rebuild required by a deliberately changed API hash, any platform no
-longer supported, and any state migration that removes Python rollback.
+Breaking changes proposed: none. A future intentional API hash, platform, or
+database compatibility change needs a separately announced owner decision.
