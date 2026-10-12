@@ -6,6 +6,7 @@ from typing import Annotated, Any, Literal, cast
 from pydantic import AfterValidator, ConfigDict, Field, StrictBool, StrictFloat, StrictInt, StrictStr
 from pydantic_core import PydanticCustomError
 
+from studio_api.history.models import TranscriptRecord
 from studio_api.accounts.models import UsageLimitsResponse
 from studio_api.models import ContractModel, JsonValue, SafeInt
 
@@ -32,6 +33,34 @@ class ClaudeOptionsRecord(ContractModel):
     launchArgs: StrictStr | None = None
     autoCompactWindow: SafeInt | None = None
     customModels: list[ClaudeCustomModelRecord] | None = None
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+
+class PersistedTranscriptAsset(ContractModel):
+    """Full attachment row; unlike the HTTP projection this retains its path."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+    id: StrictStr
+    agent: StrictStr
+    name: StrictStr
+    path: StrictStr
+    mime: StrictStr
+    image: StrictBool
+    size: SafeInt
+    hash: StrictStr
+    created: float
+
+
+class PersistedTranscriptRecord(TranscriptRecord):
+    """Persisted transcript row shape used by the runtime_items table."""
+
+
+class RuntimeEventMetadataRecord(ContractModel):
+    """Optional event metadata row, keyed by runtime_events.id, not JSON id."""
+
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
@@ -104,6 +133,9 @@ class UsageLimitsWorkspaceEnvelope(ContractModel):
 
 STATE_SCHEMA_MODELS = {
     "account-registry.schema.json": AccountRegistryRecord,
+    "persisted-transcript-record.schema.json": PersistedTranscriptRecord,
+    "runtime-transcript-asset.schema.json": PersistedTranscriptAsset,
+    "runtime-event-metadata.schema.json": RuntimeEventMetadataRecord,
     "workspace-usage-limits.schema.json": UsageLimitsWorkspaceEnvelope,
 }
 

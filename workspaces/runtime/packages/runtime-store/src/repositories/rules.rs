@@ -1,12 +1,9 @@
 //! Read persisted rule and owner records for the rules list.
 
-use rusqlite::Connection;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-
 use crate::StoreResult;
-use crate::records::{AgentRecord, JsonRecord, Table};
+use crate::records::{AgentRecord, RuleRecord, Table};
 use crate::schema::{SchemaRequirements, TableRequirement};
+use rusqlite::Connection;
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[
@@ -43,63 +40,22 @@ pub struct StoredAgent {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RulesRepository;
 
-#[derive(Clone, Debug, PartialEq)]
-struct RuleRecord {
-    id: String,
-    value: Value,
-}
-
-impl Serialize for RuleRecord {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        self.value.serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for RuleRecord {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = Value::deserialize(deserializer)?;
-        let id = value
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| serde::de::Error::custom("record id must be a string"))?;
-        Ok(Self {
-            id: id.to_owned(),
-            value,
-        })
-    }
-}
-
-impl JsonRecord for RuleRecord {
-    type Id = String;
-
-    const TABLE: &'static str = "runtime_rules";
-    const SCHEMA: &'static str = "JsonObject";
-
-    fn id(&self) -> &Self::Id {
-        &self.id
-    }
-}
-
 impl RulesRepository {
     pub fn list(connection: &Connection) -> StoreResult<(Vec<StoredRule>, Vec<StoredAgent>)> {
         let rules = Table::<RuleRecord>::new(connection)
             .list()?
+            .unwrap_or_default()
             .into_iter()
             .map(|record| {
                 Ok(StoredRule {
-                    id: record.id,
-                    record: serde_json::to_string(&record.value)?,
+                    id: record.id().clone(),
+                    record: serde_json::to_string(record.value())?,
                 })
             })
             .collect::<StoreResult<Vec<_>>>()?;
         let agents = Table::<AgentRecord>::new(connection)
             .list()?
+            .unwrap_or_default()
             .into_iter()
             .map(|record| {
                 Ok(StoredAgent {
@@ -123,8 +79,8 @@ mod tests {
         db.execute_batch(
             "CREATE TABLE runtime_rules(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-             INSERT INTO runtime_rules VALUES('r2','{\"id\":\"r2\"}');
-             INSERT INTO runtime_rules VALUES('r1','{\"id\":\"r1\"}');
+             INSERT INTO runtime_rules VALUES('r2','{\"id\":\"r2\",\"kind\":\"once\"}');
+             INSERT INTO runtime_rules VALUES('r1','{\"id\":\"r1\",\"kind\":\"event\"}');
              INSERT INTO runtime_agents VALUES('a1','{\"id\":\"a1\",\"rootId\":\"a1\",\"epoch\":0,\"status\":\"idle\"}');",
         )
         .expect("declared tables create");
@@ -150,5 +106,23 @@ mod tests {
                 .iter()
                 .any(|table| table.name == "runtime_agents")
         );
+    }
+
+    #[test]
+    fn rules_reject_records_outside_the_exported_rule_schema() {
+        use crate::StoreError;
+
+        let db = Connection::open_in_memory().expect("in-memory database opens");
+        db.execute_batch(
+            "CREATE TABLE runtime_rules(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+             CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+             INSERT INTO runtime_rules VALUES('bad-rule','{\"id\":\"bad-rule\",\"kind\":123}');",
+        )
+        .expect("invalid stored rule fixture inserts");
+        assert!(matches!(
+            RulesRepository::list(&db).expect_err("invalid rule schema is rejected"),
+            StoreError::InvalidStoredObject { table: "runtime_rules", id }
+                if id == "bad-rule"
+        ));
     }
 }

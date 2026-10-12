@@ -149,7 +149,8 @@ impl Registry {
         reason = "remove after open slice branches migrate to Table<R>"
     )]
     pub(crate) fn validate_stored(&self, schema: &str, value: &Value) -> bool {
-        studio_runtime_schema::validate(schema, value).unwrap_or(false)
+        studio_runtime_schema::validate(schema, value)
+            .expect("stored schema registry configuration is valid")
     }
 
     pub(crate) fn validate(

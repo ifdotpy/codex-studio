@@ -1,9 +1,7 @@
 //! Read and validate persisted account usage snapshots from the workspace row.
 
-use jsonschema::Validator;
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::Value;
-use std::sync::OnceLock;
 
 use crate::StoreResult;
 use crate::schema::{SchemaRequirements, TableRequirement};
@@ -11,9 +9,6 @@ use crate::schema::{SchemaRequirements, TableRequirement};
 pub const MAX_PERSISTED_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_PERSISTED_DOCUMENT_DEPTH: usize = 128;
 pub const AUTH_WAIT_NOTICE_SECONDS: f64 = 1800.0;
-const WORKSPACE_SCHEMA: &str =
-    include_str!("../../../runtime-http/workspace-usage-limits.schema.json");
-
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     conditional_tables: &[],
     tables: &[TableRequirement {
@@ -160,40 +155,13 @@ fn invalid_envelope(pointer: &str, keyword: &str) -> LimitsRead {
 }
 
 fn validate_workspace(value: &Value) -> Result<Option<(String, String)>, ()> {
-    static VALIDATOR: OnceLock<Result<Validator, ()>> = OnceLock::new();
-    let validator = VALIDATOR
-        .get_or_init(|| {
-            let schema: Value = serde_json::from_str(WORKSPACE_SCHEMA).map_err(|_| ())?;
-            jsonschema::validator_for(&schema).map_err(|_| ())
-        })
-        .as_ref()
-        .map_err(|_| ())?;
-    Ok(validator.iter_errors(value).next().map(|error| {
-        (
-            error.instance_path().to_string(),
-            error.kind().keyword().to_owned(),
-        )
-    }))
+    studio_runtime_schema::first_error("workspace-usage-limits/UsageLimitsWorkspaceEnvelope", value)
+        .map_err(|_| ())
 }
 
 fn validate_account_limits(value: &Value) -> Result<Option<(String, String)>, ()> {
-    let account_key = value
-        .get("accountKey")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let mut snapshots = serde_json::Map::new();
-    snapshots.insert(account_key.to_owned(), value.clone());
-    let wrapped = serde_json::json!({"rateLimitsByAccount": snapshots});
-    validate_workspace(&wrapped).map(|result| {
-        result.map(|(pointer, keyword)| {
-            let escaped_key = account_key.replace('~', "~0").replace('/', "~1");
-            let prefix = format!("/rateLimitsByAccount/{escaped_key}");
-            (
-                pointer.strip_prefix(&prefix).unwrap_or(&pointer).to_owned(),
-                keyword,
-            )
-        })
-    })
+    studio_runtime_schema::first_error("workspace-usage-limits/UsageLimitsResponse", value)
+        .map_err(|_| ())
 }
 
 pub fn persisted_document_within_bounds(bytes: &[u8]) -> bool {

@@ -7,8 +7,10 @@ use std::fmt;
 use std::sync::OnceLock;
 use thiserror::Error;
 
-const REGISTRY_SCHEMA: &str = include_str!("../../runtime-http/account-registry.schema.json");
-const LIMITS_SCHEMA: &str = include_str!("../../runtime-http/workspace-usage-limits.schema.json");
+const REGISTRY_SCHEMA: &str =
+    include_str!("../../runtime-schema/src/schemas/account-registry.schema.json");
+const LIMITS_SCHEMA: &str =
+    include_str!("../../runtime-schema/src/schemas/workspace-usage-limits.schema.json");
 pub const AUTHENTICATION_RECOVERY_MESSAGE: &str =
     "Sign in again to this account. Chats will continue when sign-in works.";
 

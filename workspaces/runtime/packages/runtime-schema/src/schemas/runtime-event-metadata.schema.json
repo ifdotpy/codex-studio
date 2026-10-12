@@ -1,0 +1,12 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "description": "Optional event metadata row, keyed by runtime_events.id, not JSON id.",
+  "properties": {},
+  "title": "RuntimeEventMetadataRecord",
+  "type": "object"
+}
