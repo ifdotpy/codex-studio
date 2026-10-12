@@ -321,6 +321,7 @@ def probe_operations(
         backend = BackendProcess(scratch)
         try:
             backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
+            seed_catalog_state(backend)
             backend.start()
             backend.stop()
             identifiers = seed_python_probe_state(backend)
@@ -392,6 +393,36 @@ def probe_operations(
             return rows
         finally:
             backend.close()
+
+
+def seed_catalog_state(backend: Any) -> None:
+    accounts = backend.state / "accounts"
+    accounts.mkdir(parents=True)
+    (accounts / "registry.json").write_text(json.dumps({
+        "version": 1,
+        "defaultAccountKey": "default",
+        "accounts": {
+            "default": {
+                "id": "default", "home": str(backend.codex_home), "label": "Codex",
+                "source": "Codex CLI", "provider": "codex", "accountId": "fixture-account",
+                "status": "ready",
+            },
+        },
+        "logins": {},
+    }), encoding="utf-8")
+    python = os.environ.get("CODEX_AGENTS_PYTHON")
+    if not python:
+        raise RuntimeError("CODEX_AGENTS_PYTHON must name the isolated Python interpreter")
+    environment = backend._environment()
+    environment["PYTHONPATH"] = os.pathsep.join(filter(None, (
+        str(ROOT / "workspaces/runtime/apps/server/src"), environment.get("PYTHONPATH", ""),
+    )))
+    subprocess.run(
+        [python, "-c", "from codex_runtime import Runtime; import sys; Runtime(sys.argv[1]).close()", str(backend.state)],
+        check=True,
+        env=environment,
+        timeout=30,
+    )
 
 
 def case_results(log_text: str) -> list[dict[str, Any]]:

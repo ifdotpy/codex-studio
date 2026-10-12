@@ -960,6 +960,10 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
     let pushFailures = 0;
     let failPush = false;
     let remotePulled = false;
+    let completeRemotePull;
+    const remotePullCompleted = new Promise((resolve) => {
+      completeRemotePull = resolve;
+    });
     let targetId = "";
     let remoteText = "";
     const pageErrors = [];
@@ -978,15 +982,16 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
         return route.continue();
       const response = await route.fetch();
       const body = await response.json();
-      if (
-        body.documents.some(
-          (document) =>
-            document.id === targetId &&
-            JSON.parse(document.payload).text === remoteText,
-        )
-      )
+      const containsRemoteWinner = body.documents.some(
+        (document) =>
+          document.id === targetId &&
+          JSON.parse(document.payload).text === remoteText,
+      );
+      await route.fulfill({ response, body: JSON.stringify(body) });
+      if (containsRemoteWinner) {
         remotePulled = true;
-      return route.fulfill({ response, body: JSON.stringify(body) });
+        completeRemotePull();
+      }
     });
     await page.goto(origin);
     await page
@@ -1073,10 +1078,8 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
       pulledRemoteMaster,
     );
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
-    await until(
-      () => remotePulled,
-      "resume pulls the remote edit while push retries",
-    );
+    await remotePullCompleted;
+    assert.equal(remotePulled, true);
     const status = page.locator("[data-draft-sync-status]");
     await status.waitFor({ timeout: 15_000 });
     assert.equal(
