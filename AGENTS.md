@@ -32,9 +32,15 @@ in hosted CI for now. Each heavy run has a Just command. A test that needs
 repeated runs to be trusted is defective and must be rewritten or moved to the
 heavy tier. New tests must fit the fast tier. See [docs/testing.md](docs/testing.md)
 for the tier commands and suite lists.
-A direct push to `main` must be preceded by `just test-server-opt-in` (about 20
-seconds). The `just test-fast` checks run in hosted CI on every pull request and
-push to `main`; CI splits the server tier across four parallel jobs.
+A direct push to `main` is allowed, but it skips the pull-request checks, so run
+the same fast tier locally first: `just test-fast` (four server shards plus the
+remaining checks: Rust tests, web unit tests, type checks; a few minutes). Push
+only when it passes on the exact commit being pushed. `just test-server-opt-in`
+alone is not enough: it covers neither the convention guards in the server
+shards nor the Rust and web suites, and both gaps have broken `main`. A change to
+the web client also needs `just test-browser`, which hosted CI does not run.
+The `just test-fast` checks run in hosted CI on every pull request and push to
+`main`; CI splits the server tier across four parallel jobs.
 
 ## Load testing
 
