@@ -13,6 +13,7 @@ import { messageRenderKey } from "../../message-delivery/messageDelivery";
 import type { HistoryGroup } from "../../turnHistoryModel";
 import {
   HISTORY_WINDOW_THRESHOLD,
+  historyWindowIndices,
   historyOffsets,
   historyWindowAnchor,
   historyWindowRange,
@@ -63,15 +64,7 @@ export default function HistoryWindow({
     (rows.length > HISTORY_WINDOW_THRESHOLD ||
       rows.reduce((count, row) => count + row.items.length, 0) > 256);
   const indices = useMemo(() => {
-    const requestedRow = requested
-      ? historyWindowAnchor(rows, requested)?.row.id
-      : undefined;
-    const keep = new Set([
-      ...visible,
-      ...pinned,
-      ...(requestedRow ? [requestedRow] : []),
-    ]);
-    return rows.flatMap((row, index) => (keep.has(row.id) ? [index] : []));
+    return historyWindowIndices(rows, visible, pinned, [requested]);
   }, [rows, visible, pinned, requested]);
   const rowsById = useMemo(
     () => new Map(rows.map((row) => [row.id, row])),
