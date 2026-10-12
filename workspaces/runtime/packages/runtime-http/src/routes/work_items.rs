@@ -18,7 +18,6 @@ use crate::error::ApiError;
 use crate::router::HttpState;
 use crate::validation::Registry;
 
-const WORK_DEPENDENCY: [Dependency; 1] = [Dependency::new("event-driver/work-items")];
 const QUEUE_DEPENDENCY: [Dependency; 1] = [Dependency::new("event-driver/queue-mutations")];
 const ORGANIZATION_DEPENDENCY: [Dependency; 1] =
     [Dependency::new("workspace-state/organization-effects")];
@@ -26,11 +25,6 @@ const ORGANIZATION_DEPENDENCY: [Dependency; 1] =
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get("/api/work", OperationStatus::Implemented, work),
-        post(
-            "/api/work",
-            OperationStatus::partial(&WORK_DEPENDENCY),
-            work_action,
-        ),
         get("/api/queue", OperationStatus::Implemented, queue),
         post(
             "/api/queue",
@@ -233,9 +227,6 @@ fn stored_error(error: WorkPolicyError) -> ApiError {
     ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
 }
 
-pub(crate) async fn work_action(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    Err(dependency_error("POST", "/api/work", &WORK_DEPENDENCY))
-}
 pub(crate) async fn queue_action(ApiJson(body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
     validate_queue_action(&body)?;
     Err(dependency_error("POST", "/api/queue", &QUEUE_DEPENDENCY))

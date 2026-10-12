@@ -8,6 +8,7 @@ mod session;
 mod sync;
 mod sync_documents;
 mod work_items;
+mod work_write;
 
 use manifest::RouteGroup;
 
@@ -18,6 +19,7 @@ pub(crate) fn groups() -> Vec<RouteGroup> {
         sync::routes(),
         sync_documents::routes(),
         work_items::routes(),
+        work_write::routes(),
         desktop::routes(),
     ]
 }
