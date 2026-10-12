@@ -54,7 +54,6 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
     supportsDelete: true,
     logins: [],
   });
-  const transferRequests = [];
   let transferCalls = 0,
     defaultAccountCalls = 0,
     disconnectCalls = 0,
@@ -137,13 +136,6 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
   await page.route("**/api/agents/account-transfer", async (route) => {
     transferCalls++;
     const body = route.request().postDataJSON();
-    transferRequests.push(body);
-    if (
-      body.scope === "subagents" &&
-      transferRequests.filter((request) => request.scope === "subagents")
-        .length === 1
-    )
-      return route.abort();
     await route.fulfill({
       json: {
         id: body.request_id,
@@ -296,42 +288,24 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
     0,
     "The account choice applies at once",
   );
+  const workerDefaultsSave = page.waitForResponse((response) => {
+    if (
+      response.request().method() !== "POST" ||
+      new URL(response.url()).pathname !== "/api/conversation"
+    )
+      return false;
+    return (
+      response.request().postDataJSON().worker_defaults?.account_key === "work"
+    );
+  });
   await subagentAccount
     .getByRole("button", { name: "Select account Work", exact: true })
     .click();
-  await page.locator(".execution-error[role=alert]").waitFor();
-  assert.equal(transferCalls, 2, "the account choice transfers without a save");
+  await workerDefaultsSave;
   assert.equal(
-    await subagentAccount
-      .getByRole("button", { name: "Automatic", exact: true })
-      .getAttribute("aria-pressed"),
-    "true",
-    "a failed transfer reverts the account",
-  );
-  const subagentTransferResponse = page.waitForResponse((response) =>
-    response.url().endsWith("/api/agents/account-transfer"),
-  );
-  await executionSettings
-    .getByRole("button", { name: "Retry", exact: true })
-    .click();
-  await subagentTransferResponse;
-  await executionSettings
-    .getByRole("status")
-    .filter({ hasText: /^Account transfer accepted\.$/ })
-    .waitFor();
-  assert.equal(transferCalls, 3);
-  assert.ok(transferRequests[1].request_id);
-  assert.equal(transferRequests[1].request_id, transferRequests[2].request_id);
-  assert.equal(transferRequests[2].account_key, "work");
-  assert.equal(transferRequests[2].scope, "subagents");
-  // Pending transfers keep the stored tile selected; the acceptance status
-  // does not name the target account until the transfer snapshot advances.
-  assert.equal(
-    await subagentAccount
-      .getByRole("button", { name: "Automatic", exact: true })
-      .getAttribute("aria-pressed"),
-    "true",
-    "the accepted transfer stays pending until replication updates the default",
+    transferCalls,
+    1,
+    "Choosing an account changes defaults for new subagents only",
   );
   await page.keyboard.press("Escape");
   await page.setViewportSize({ width: 390, height: 844 });
@@ -349,9 +323,17 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
     )?.includes("Personal"),
     "Mobile settings retain the current subagent account name",
   );
-  await page
-    .getByRole("button", { name: "Studio settings", exact: true })
-    .click();
+  const studioSettingsButton = page.getByRole("button", {
+    name: "Studio settings",
+    exact: true,
+  });
+  if (!(await studioSettingsButton.isVisible())) {
+    await page
+      .getByRole("button", { name: "Toggle conversations", exact: true })
+      .click();
+    await expect(studioSettingsButton).toBeVisible();
+  }
+  await studioSettingsButton.click();
   const studioSettings = page.getByRole("dialog", {
     name: "Studio settings",
     exact: true,
@@ -472,9 +454,17 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
   await studioSettings.waitFor({ state: "hidden" });
   await page.reload();
   await page.locator("#message").waitFor();
-  await page
-    .getByRole("button", { name: "Studio settings", exact: true })
-    .click();
+  const reopenedSettingsButton = page.getByRole("button", {
+    name: "Studio settings",
+    exact: true,
+  });
+  if (!(await reopenedSettingsButton.isVisible())) {
+    await page
+      .getByRole("button", { name: "Toggle conversations", exact: true })
+      .click();
+    await expect(reopenedSettingsButton).toBeVisible();
+  }
+  await reopenedSettingsButton.click();
   const reopenedSettings = page.getByRole("dialog", {
     name: "Studio settings",
     exact: true,
