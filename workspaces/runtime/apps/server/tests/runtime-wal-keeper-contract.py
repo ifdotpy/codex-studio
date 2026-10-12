@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+from server_test_waits import HANG_GUARD_SECONDS
 
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
@@ -78,7 +79,7 @@ class RuntimeWalKeeperContract(unittest.TestCase):
 
         closer = threading.Thread(target=close_runtime)
         closer.start()
-        closer.join(5)
+        closer.join(HANG_GUARD_SECONDS)
         self.assertFalse(closer.is_alive())
         self.assertEqual(failures, [])
         self.assertFalse(keeper.idle)
@@ -177,15 +178,15 @@ class RuntimeWalKeeperContract(unittest.TestCase):
                     constructor = threading.Thread(target=construct_runtime)
                     constructor.start()
                     try:
-                        self.assertTrue(step_started.wait(5), repr(constructor_errors))
-                        self.assertTrue(cleanup_started.wait(5))
+                        self.assertTrue(step_started.wait(HANG_GUARD_SECONDS), repr(constructor_errors))
+                        self.assertTrue(cleanup_started.wait(HANG_GUARD_SECONDS))
                         self.assertTrue(constructor.is_alive())
                         runtime = cleaned_runtimes[0]
                         self.assertFalse(runtime.lease.closed)
                         self.assertTrue(keepers[0].idle)
                     finally:
                         release_step.set()
-                        constructor.join(5)
+                        constructor.join(HANG_GUARD_SECONDS)
 
         self.assertEqual(len(keepers), 1)
         self.assertEqual(len(cleaned_runtimes), 1)

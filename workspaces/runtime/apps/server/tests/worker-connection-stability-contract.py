@@ -214,7 +214,7 @@ class WorkerConnectionStability(unittest.TestCase):
                      patch.object(self.runtime.recovery_pool, 'submit', side_effect=AssertionError('shared pool blocked')):
                     recovery.tick(self.runtime, [self.runtime.agent(self.key), other])
                     self.assertTrue(self.server.read_entered.wait(HANG_GUARD_SECONDS))
-                    self.assertTrue(other_completed.wait(30), 'other account recovery did not complete')
+                    self.assertTrue(other_completed.wait(HANG_GUARD_SECONDS), 'other account recovery did not complete')
                     calls = list(self.server.calls)
                     recovery.tick(self.runtime, [self.runtime.agent(self.key), self.runtime.agent(other['id'])])
                     self.assertEqual(self.server.calls, calls)
@@ -277,7 +277,7 @@ class WorkerConnectionStability(unittest.TestCase):
              patch.object(self.runtime, 'dispatch', side_effect=AssertionError('scheduler must not run')):
             manager = recovery.start(self.runtime, interval=.02)
             self.addCleanup(manager.close)
-            self.assertTrue(completed.wait(30), 'independent recovery did not complete')
+            self.assertTrue(completed.wait(HANG_GUARD_SECONDS), 'independent recovery did not complete')
             self.assertIs(recovery.start(self.runtime, interval=.02), manager)
             manager.close()
             self.assertFalse(manager.thread.is_alive())

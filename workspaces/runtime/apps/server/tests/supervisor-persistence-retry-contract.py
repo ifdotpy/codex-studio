@@ -326,7 +326,7 @@ class SupervisorPersistenceRetry(unittest.TestCase):
                     self.assertEqual(json.loads(row[0])['text'], 'ab')
                 analytics_idle = runtime.__dict__.get('_analytics_capture_idle')
                 self.assertIsNotNone(analytics_idle)
-                self.assertTrue(analytics_idle.wait(30),
+                self.assertTrue(analytics_idle.wait(HANG_GUARD_SECONDS),
                                 'The committed stream analytics queue must drain before its count is read')
                 with runtime.analytics_db() as db:
                     count = db.execute('SELECT coalesce(sum(count),0) FROM analytics_notifications '
@@ -414,13 +414,13 @@ class SupervisorPersistenceRetry(unittest.TestCase):
             try:
                 self.assertTrue(analytics_started.wait(HANG_GUARD_SECONDS))
                 self.assertEqual(durable(), 2, 'The stream cursor commits before analytics begins')
-                self.assertTrue(fixture.server.proc.acknowledged.wait(30),
+                self.assertTrue(fixture.server.proc.acknowledged.wait(HANG_GUARD_SECONDS),
                                 'The durable cursor must be acknowledged while analytics is blocked')
                 self.assertFalse(release_analytics.is_set())
                 self.assertEqual(fixture.server.proc.acks, [2],
                                  'A durable stream cursor is acknowledged without waiting for analytics')
                 sender.start()
-                self.assertTrue(sent.wait(30), 'User send must complete while stream analytics remains blocked')
+                self.assertTrue(sent.wait(HANG_GUARD_SECONDS), 'User send must complete while stream analytics remains blocked')
                 self.assertEqual(send_errors, [])
                 self.assertEqual(receipts, [{'id': 'during-analytics', 'status': 'queued'}])
                 self.assertFalse(release_analytics.is_set())
@@ -500,7 +500,7 @@ class SupervisorPersistenceRetry(unittest.TestCase):
                     self.assertEqual(json.loads(row[0])['events'], 1)
                 analytics_idle = runtime.__dict__.get('_analytics_capture_idle')
                 self.assertIsNotNone(analytics_idle)
-                self.assertTrue(analytics_idle.wait(30),
+                self.assertTrue(analytics_idle.wait(HANG_GUARD_SECONDS),
                                 'The committed lifecycle analytics queue must drain before its count is read')
                 with runtime.analytics_db() as db:
                     count = db.execute('SELECT coalesce(sum(count),0) FROM analytics_notifications '

@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -232,7 +233,7 @@ time.sleep(60)
             server.write({"method": "platform-test", "params": {}})
             self.assertEqual(process.stdout.readline().replace(b"\r\n", b"\n"),
                              b'{"method": "platform-test", "params": {}}\n')
-            self.assertEqual(process.wait(timeout=10), 0)
+            self.assertEqual(process.wait(timeout=HANG_GUARD_SECONDS), 0)
         finally:
             if process.poll() is None:
                 process.kill()

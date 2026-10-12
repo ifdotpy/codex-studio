@@ -214,7 +214,7 @@ class SupervisedClock(unittest.TestCase):
         self.assertIsNone(self.durable_reply())
         self.assertNotIn(2, self.proc.ack_pending)
         self.proc.emit({'id':pending[0], 'result':{'ready':True}})
-        self.assertEqual(self.server.wait(pending, .5), {'ready':True})
+        self.assertEqual(self.server.wait(pending, HANG_GUARD_SECONDS), {'ready':True})
         self.proc.reply_release.set()
         self.assertTrue(self.replied())
         self.wait_for(lambda:2 in self.proc.ack_pending)

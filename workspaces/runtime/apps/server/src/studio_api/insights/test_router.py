@@ -1,6 +1,7 @@
 """Route tests for analytics and cost estimates."""
 
 from __future__ import annotations
+from server_test_waits import HANG_GUARD_SECONDS
 
 import asyncio
 from collections.abc import Generator
@@ -22,6 +23,7 @@ from fastapi.testclient import TestClient
 import httpx
 import uvicorn
 
+from server_test_waits import wait_for_condition
 from studio_api.context import ApiContext
 from codex_session_costs import SessionCostReader
 from studio_api.insights.router import _stream_export, create_router
@@ -519,9 +521,10 @@ class InsightsRouterTests(unittest.TestCase):
         thread = threading.Thread(target=server.run, daemon=True)
         thread.start()
         try:
-            deadline = time.monotonic() + 5
-            while not server.started and thread.is_alive() and time.monotonic() < deadline:
-                time.sleep(0.01)
+            wait_for_condition(
+                lambda: server.started or not thread.is_alive(),
+                "loopback ASGI server startup",
+            )
             self.assertTrue(server.started, "loopback ASGI server did not start")
             self.assertTrue(server.servers)
             sockets = server.servers[0].sockets
@@ -539,7 +542,7 @@ class InsightsRouterTests(unittest.TestCase):
             self.assertTrue(context.runtime.export_closed)
         finally:
             server.should_exit = True
-            thread.join(timeout=5)
+            thread.join(timeout=HANG_GUARD_SECONDS)
         self.assertFalse(thread.is_alive(), "loopback ASGI server failed to stop")
 
     def test_export_failure_before_first_chunk_returns_error_before_headers(self) -> None:

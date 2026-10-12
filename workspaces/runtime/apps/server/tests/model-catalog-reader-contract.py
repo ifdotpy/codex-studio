@@ -22,6 +22,7 @@ import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from server_test_waits import wait_for_condition
 
 sys.dont_write_bytecode = True
 ROOT = REPOSITORY_ROOT
@@ -200,22 +201,18 @@ class ReaderContract(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             self.read(timeout=2)
         pid = int((self.home / 'descendant-pid').read_text())
-        deadline = time.monotonic() + 2
-        while time.monotonic() < deadline:
+        def descendant_gone():
             try:
                 os.kill(pid, 0)
             except ProcessLookupError:
-                break
+                return True
             try:
                 state = Path(f'/proc/{pid}/stat').read_text().split(') ', 1)[1]
             except (FileNotFoundError, ProcessLookupError):
                 # Reaped between the signal probe and the read: it is gone.
-                break
-            if state.startswith('Z'):
-                break
-            time.sleep(.05)
-        else:
-            self.fail('catalog descendant remained alive after timeout')
+                return True
+            return True if state.startswith('Z') else None
+        wait_for_condition(descendant_gone, 'catalog descendant exit after timeout')
 
     @unittest.skipUnless(os.name == 'nt', 'Windows pipe contract')
     def test_windows_pipe_timeout_stops_all_reader_and_writer_threads(self):
@@ -230,14 +227,11 @@ class ReaderContract(unittest.TestCase):
                 self.assertTrue(observed.is_file(), f'{mode} fixture did not reach its catalog request')
                 self.assertEqual(observed.read_text(), mode)
                 self.assert_reaped()
-                deadline = time.monotonic() + 2
-                while time.monotonic() < deadline:
+                def catalog_threads_stopped():
                     active = [thread.name for thread in threading.enumerate()
                               if thread.name.startswith('native-catalog-')]
-                    if not active:
-                        break
-                    time.sleep(.02)
-                self.assertEqual(active, [])
+                    return True if not active else None
+                wait_for_condition(catalog_threads_stopped, 'native catalog reader thread cleanup')
 
     def test_protocol_failures_never_return_partial_catalog(self):
         for mode in ('cycle', 'identity', 'error', 'large', 'request'):

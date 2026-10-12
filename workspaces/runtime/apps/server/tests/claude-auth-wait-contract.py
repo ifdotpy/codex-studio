@@ -184,7 +184,7 @@ class AuthWait(f.ClaudeProvider):
         self.addCleanup(release.set)
         def probe(_profile=None, force=False):
             entered.set()
-            self.assertTrue(release.wait(5))
+            self.assertTrue(release.wait(HANG_GUARD_SECONDS))
             return f.AUTH.copy()
         with patch('codex_claude.auth_metadata', side_effect=probe):
             auth_wait.tick(self.runtime)
@@ -282,7 +282,7 @@ class AuthWait(f.ClaudeProvider):
         self.addCleanup(release.set)
         def probe(_profile=None, force=False):
             entered.set()
-            self.assertTrue(release.wait(5))
+            self.assertTrue(release.wait(HANG_GUARD_SECONDS))
             return f.AUTH.copy()
         with patch('codex_claude.auth_metadata', side_effect=probe):
             auth_wait.tick(self.runtime)

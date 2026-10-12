@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from server_test_waits import HANG_GUARD_SECONDS
+from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -154,18 +154,21 @@ class TransferContract(f.AccountContracts):
             self.store.tick(self.runtime.records(db, 'agents'))
 
     def until(self, fn):
-        deadline = time.monotonic()+3
-        while not fn():
+        def advance_and_check():
+            if fn():
+                return True
             self.wake_one_lazy_for_test()
-            if time.monotonic()>deadline:
-                try:
-                    state = self.receipt(getattr(self, 'current_transfer_id', ''))
-                    detail = state['members'].get(self.lead_agent['id'])
-                except Exception:
-                    detail = None
-                self.fail('Transfer fixture deadline: ' + repr(detail) + '; errors=' +
-                          repr(getattr(self, 'lazy_test_errors', [])))
-            time.sleep(.005)
+            return None
+        try:
+            wait_for_condition(advance_and_check, 'account transfer fixture progress')
+        except AssertionError as error:
+            try:
+                state = self.receipt(getattr(self, 'current_transfer_id', ''))
+                detail = state['members'].get(self.lead_agent['id'])
+            except Exception:
+                detail = None
+            self.fail('Transfer fixture did not progress: ' + repr(detail) + '; errors=' +
+                      repr(getattr(self, 'lazy_test_errors', [])) + f'; {error}')
 
     def wake_one_lazy_for_test(self):
         """Waiting for a fork receipt models the member's first native start."""

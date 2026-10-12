@@ -5,8 +5,11 @@ isolate_supervisor_environment()
 
 import importlib.util
 from pathlib import Path
+import sys
 import time
 import unittest
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import wait_for_condition
 
 spec = importlib.util.spec_from_file_location(
     'claude_bridge_fixture', Path(__file__).with_name('claude-bridge-contract.py'))
@@ -60,10 +63,7 @@ class PreAdmission(fixture.Bridge):
         return path.read_text().splitlines() if path.exists() else []
 
     def wait_file(self, path, timeout=3):
-        deadline = time.monotonic() + timeout
-        while not path.exists() and time.monotonic() < deadline:
-            time.sleep(.01)
-        self.assertTrue(path.exists(), path.name)
+        wait_for_condition(path.exists, f'{path.name} fixture creation')
 
     def assert_rejected(self, completed, status='failed'):
         self.assertEqual(completed['status'], status)

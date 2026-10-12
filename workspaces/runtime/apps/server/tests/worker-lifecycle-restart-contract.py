@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+from server_test_waits import HANG_GUARD_SECONDS
 
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
@@ -20,6 +21,7 @@ import tempfile
 import threading
 import time
 import unittest
+from server_test_waits import wait_for_condition
 from unittest.mock import patch
 
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
@@ -111,11 +113,11 @@ class WorkerLifecycleRestartContract(unittest.TestCase):
                 failures.append(error)
         thread = threading.Thread(target=old_spawn)
         thread.start()
-        self.assertTrue(entered.wait(5), 'spawn did not reach the pending catalog request')
+        self.assertTrue(entered.wait(HANG_GUARD_SECONDS), 'spawn did not reach the pending catalog request')
         self.restart()
         result = self.spawn()
         release.set()
-        thread.join(5)
+        thread.join(HANG_GUARD_SECONDS)
         self.assertFalse(thread.is_alive())
         self.assertEqual(len(failures), 1)
         self.assertEqual([agent['accountKey'] for agent in result['agents']],
@@ -352,16 +354,13 @@ class WorkerLifecycleRestartContract(unittest.TestCase):
             work = self.runtime.work_by_id(db, task['id'], self.lead['id'])
             self.assertEqual(work['archiveIntent']['status'], 'pending')
         self.restart_runtime()
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            # ControlledRuntime omits dispatch; advance its archive scheduler explicitly.
+        def archived_work():
             self.runtime.accepted_archive_tick()
             with self.runtime.db() as db:
                 work = self.runtime.work_by_id(db, task['id'], self.lead['id'])
                 agent = self.runtime.agent(worker_id, db)
-            if work.get('archiveIntent', {}).get('status') == 'complete':
-                break
-            time.sleep(.05)
+            return (work, agent) if work.get('archiveIntent', {}).get('status') == 'complete' else None
+        work, agent = wait_for_condition(archived_work, 'accepted task archive completion')
         self.assertEqual(work['archiveIntent']['status'], 'complete')
         self.assertEqual(work['archive']['status'], 'archived')
         self.assertTrue(agent.get('deletedAt'))
@@ -378,12 +377,10 @@ class WorkerLifecycleRestartContract(unittest.TestCase):
             child['reviewArchiveScheduled'] = event_id
             self.runtime.put(db, 'agents', child)
         self.restart_runtime()
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
+        def deleted_agent():
             agent = self.runtime.agent(worker_id)
-            if agent.get('deletedAt'):
-                break
-            time.sleep(.05)
+            return agent if agent.get('deletedAt') else None
+        agent = wait_for_condition(deleted_agent, 'review archive deletion marker')
         self.assertTrue(agent.get('deletedAt'))
         self.assertEqual(agent['agentArchive']['reason'], 'Reviewer result delivered to parent')
 

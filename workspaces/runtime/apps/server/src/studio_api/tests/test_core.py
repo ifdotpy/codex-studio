@@ -32,6 +32,7 @@ from starlette.responses import Response
 
 from codex_backend_identity import backend_build
 from codex_layout import SERVER_SOURCE_ROOT, WEB_ROOT
+from server_test_waits import wait_for_condition
 from studio_api.context import (
     API_SCHEMA_CACHE_DIRECTORY,
     API_SCHEMA_CACHE_FILE,
@@ -567,7 +568,7 @@ print(api_schema_hash(openapi_document()))
                 nonlocal calls
                 calls += 1
                 if calls > 1:
-                    await asyncio.sleep(0.04)
+                    await asyncio.Event().wait()
                 return next(chunks)
 
             async def send(message: dict[str, object]) -> None:
@@ -1060,9 +1061,10 @@ print(api_schema_hash(openapi_document()))
                 poisoned = "f" * 64
                 cache_path.write_text(json.dumps({"key": key, "hash": poisoned}), encoding="utf-8")
                 self.assertEqual(context.start_api_schema_hash().result(timeout=2), poisoned)
-                deadline = time.monotonic() + 3
-                while context.api_schema_hash == poisoned and time.monotonic() < deadline:
-                    time.sleep(0.01)
+                wait_for_condition(
+                    lambda: context.api_schema_hash != poisoned,
+                    "background schema hash verification",
+                )
                 expected = api_schema_hash()
                 self.assertEqual(context.api_schema_hash, expected)
                 entry = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -1090,8 +1092,19 @@ print(api_schema_hash(openapi_document()))
         boundary = RequestBoundary(app, context)
 
         async def exercise() -> None:
+            post_started = asyncio.Event()
+            stream_started = asyncio.Event()
+
+            async def observed_boundary(scope: object, receive: object, send: object) -> None:
+                path = scope.get("path") if isinstance(scope, dict) else None
+                if path == "/api/messages":
+                    post_started.set()
+                elif isinstance(path, str) and path.startswith("/api/sync/stream"):
+                    stream_started.set()
+                await boundary(scope, receive, send)  # type: ignore[arg-type]
+
             async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=boundary),
+                transport=httpx.ASGITransport(app=observed_boundary),
                 base_url="http://test",
             ) as client:
                 self.assertTrue(await asyncio.to_thread(started.wait, 2))
@@ -1116,7 +1129,7 @@ print(api_schema_hash(openapi_document()))
                     client.get(f"/api/sync/stream?{API_SCHEMA_HASH_PARAM}=foreign-schema")
                 )
                 gated_started = time.perf_counter()
-                await asyncio.sleep(0.01)
+                await asyncio.gather(post_started.wait(), stream_started.wait())
                 self.assertFalse(post_request.done())
                 self.assertFalse(stream_request.done())
                 release.set()

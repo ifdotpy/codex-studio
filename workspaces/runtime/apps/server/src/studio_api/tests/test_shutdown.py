@@ -30,7 +30,7 @@ def run_fixture(mode: str) -> None:
 
     def close_runtime() -> None:
         if mode == "cleanup":
-            time.sleep(30)
+            threading.Event().wait()
         elif mode == "thread":
             threading.Thread(target=threading.Event().wait, daemon=False).start()
         print("runtime-closed", flush=True)
@@ -43,7 +43,7 @@ def run_fixture(mode: str) -> None:
         if mode == "startup":
             print(json.dumps({"ready": listeners[0].server_port}), flush=True)
             os.kill(os.getpid(), signal.SIGTERM)
-            time.sleep(30)
+            threading.Event().wait()
         return SimpleNamespace(close=close_runtime, lock=threading.RLock())
 
     setattr(runtime_module, "Runtime", make_runtime)
@@ -66,14 +66,14 @@ def run_fixture(mode: str) -> None:
             number = signal.SIGINT if mode == "sigint" else signal.SIGTERM
             os.kill(os.getpid(), number)
             if mode == "loop":
-                time.sleep(30)
+                threading.Event().wait()
             elif mode == "repeat":
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0)
                 os.kill(os.getpid(), number)
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0)
             elif mode == "grace":
                 try:
-                    await asyncio.sleep(30)
+                    await asyncio.Event().wait()
                 finally:
                     print("response-cancelled", flush=True)
         await original_send(cycle, message)

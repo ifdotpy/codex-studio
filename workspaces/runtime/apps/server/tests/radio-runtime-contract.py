@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from test_isolation import isolate_supervisor_environment
+from server_test_waits import HANG_GUARD_SECONDS
 isolate_supervisor_environment()
 
 import importlib.util
@@ -130,10 +131,10 @@ class RadioRuntime(unittest.TestCase):
         for text in ('Compare both approaches.','First agent commentary.','First agent final answer.'):
             self.assertIn(text,prompt)
         self.finish(second,'Second agent answer.')
-        self.assertTrue(start_acks.wait(30), 'both native start acknowledgements must be persisted')
+        self.assertTrue(start_acks.wait(HANG_GUARD_SECONDS), 'both native start acknowledgements must be persisted')
         idle_written = self.observe_radio_status_write('idle')
         self.runtime.dispatch()
-        self.assertTrue(idle_written.wait(30), 'the completed second reply must settle the radio')
+        self.assertTrue(idle_written.wait(HANG_GUARD_SECONDS), 'the completed second reply must settle the radio')
         self.assertEqual(len([1 for method,_ in self.runtime.server.calls if method=='turn/start']),2)
         page=self.runtime.chat_read(self.room['id'])
         self.assertEqual([m['text'] for m in page['messages']], ['Compare both approaches.',
@@ -187,7 +188,7 @@ class RadioRuntime(unittest.TestCase):
         key=first['id']+':question:question'
         self.assertEqual(self.runtime.answer(key,{'answers':{'0':{'answers':['One']}}})['status'],'answered')
         self.runtime.dispatch()
-        self.assertTrue(start_acks.wait(30), 'the answered shared question must receive its second start ACK')
+        self.assertTrue(start_acks.wait(HANG_GUARD_SECONDS), 'the answered shared question must receive its second start ACK')
         starts=[params for method,params in self.runtime.server.calls if method=='turn/start']
         self.assertIn('One',starts[-1]['input'][0]['text'])
         self.assertNotIn('Private unrelated task',starts[-1]['input'][0]['text'])

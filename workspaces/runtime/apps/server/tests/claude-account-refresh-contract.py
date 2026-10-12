@@ -6,8 +6,11 @@ isolate_supervisor_environment()
 import importlib.util
 import json
 from pathlib import Path
+import sys
 import time
 import unittest
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import wait_for_condition
 
 spec = importlib.util.spec_from_file_location('fresh_account_fixture', Path(__file__).with_name('claude-pre-admission-receipt-contract.py'))
 f = importlib.util.module_from_spec(spec)
@@ -58,10 +61,7 @@ class FreshAccount(f.PreAdmission):
         self.turn('steer', 'held-input')
         self.wait_file(self.root / '.admitted-inputs')
         self.wait_file(self.root / '.account-refreshes')
-        deadline = time.monotonic() + 2
-        while len(self.refreshes()) < 2 and time.monotonic() < deadline:
-            time.sleep(.01)
-        self.assertGreaterEqual(len(self.refreshes()), 2)
+        wait_for_condition(lambda: len(self.refreshes()) >= 2, 'second Claude account refresh')
         self.assertEqual(len((self.root / '.all-queries').read_text().splitlines()), 1)
         self.assertEqual(len((self.root / 'state' / '.all-queries').read_text().splitlines()), 1)
         self.assertEqual(self.call('account/read', {'passive': True})['account']['email'], NORMAL['email'])
@@ -69,10 +69,7 @@ class FreshAccount(f.PreAdmission):
         self.assertEqual(len(self.admissions()), 1)
         (self.root / '.fresh-account.json').write_text(json.dumps({**NORMAL, 'email': 'foreign@example.test'}))
         self.call('account/read', {'passive': True})
-        deadline = time.monotonic() + 2
-        while len(self.refreshes()) < 3 and time.monotonic() < deadline:
-            time.sleep(.01)
-        self.assertGreaterEqual(len(self.refreshes()), 3)
+        wait_for_condition(lambda: len(self.refreshes()) >= 3, 'third Claude account refresh')
         with self.assertRaisesRegex(ValueError, 'Fresh Claude account proof'):
             self.call('account/read', {'passive': True})
         self.assertEqual(len((self.root / '.all-queries').read_text().splitlines()), 1)

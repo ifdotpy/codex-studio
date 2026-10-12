@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+from server_test_waits import HANG_GUARD_SECONDS
 
 import os
 import pathlib
@@ -176,7 +177,7 @@ class WorkspaceCopyTests(unittest.TestCase):
         done = threading.Event()
         result = []
         images.start_base_build(self.folder, lambda value: (result.append(value), done.set()))
-        self.assertTrue(done.wait(30), 'base build did not finish')
+        self.assertTrue(done.wait(HANG_GUARD_SECONDS), 'base build did not finish')
         self.assertEqual(result[-1]['state'], 'ready', result[-1])
 
     def test_copy_includes_metadata_cache_and_excludes_only_studio_folders(self):
@@ -280,14 +281,14 @@ class WorkspaceCopyTests(unittest.TestCase):
         done = threading.Event()
         result = []
         images.start_base_build(self.folder, lambda value: (result.append(value), done.set()))
-        self.assertTrue(done.wait(30), 'failed base build did not finish')
+        self.assertTrue(done.wait(HANG_GUARD_SECONDS), 'failed base build did not finish')
         self.assertEqual(result[-1]['state'], 'failed', result[-1])
 
         retried = threading.Event()
         retry_result = []
         images.start_base_build(self.folder, lambda value: (retry_result.append(value), retried.set()),
                                 retry_failed=True)
-        self.assertTrue(retried.wait(30), 'requested base retry did not finish')
+        self.assertTrue(retried.wait(HANG_GUARD_SECONDS), 'requested base retry did not finish')
         self.assertEqual(retry_result[-1]['state'], 'ready', retry_result[-1])
 
     def test_base_build_is_refused_and_failed_state_is_saved_when_space_is_low(self):
@@ -333,7 +334,7 @@ class WorkspaceCopyTests(unittest.TestCase):
 
         images.start_base_build(self.folder, lambda value: (result.append(value), done.set()))
 
-        self.assertTrue(done.wait(30), 'low-space base build did not finish')
+        self.assertTrue(done.wait(HANG_GUARD_SECONDS), 'low-space base build did not finish')
         self.assertEqual(result[-1]['state'], 'failed', result[-1])
         self.assertIn('19 free, 20 required (bytes)', result[-1]['error'])
         self.assertFalse(list((self.store / 'bases').glob('*/versions/*')))
@@ -435,7 +436,7 @@ class WorkspaceCopyTests(unittest.TestCase):
         done = threading.Event()
         results = []
         images.start_base_build(self.folder, lambda value: (results.append(value), done.set()))
-        self.assertTrue(done.wait(30), 'stale base build did not restart')
+        self.assertTrue(done.wait(HANG_GUARD_SECONDS), 'stale base build did not restart')
         self.assertEqual(results[-1]['state'], 'ready', results[-1])
 
     def test_interrupted_create_uses_reserved_base_after_refresh(self):

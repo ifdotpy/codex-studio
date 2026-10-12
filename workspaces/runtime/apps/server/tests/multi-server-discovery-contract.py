@@ -334,19 +334,40 @@ print(json.dumps(value))
         self.save_identity()
         active, peak, total = 0, 0, 0
         lock = threading.Lock()
+        concurrent_probes = threading.Event()
+        release_probes = threading.Event()
         def probe(origin, *, timeout):
             nonlocal active, peak, total
             with lock:
                 active += 1
                 total += 1
                 peak = max(peak, active)
-            time.sleep(0.02)
+                if active > 1:
+                    concurrent_probes.set()
+            if not release_probes.wait(HANG_GUARD_SECONDS):
+                raise TimeoutError("The test did not release concurrent discovery probes")
             with lock:
                 active -= 1
             return {"protocol": 1, "serverId": str(uuid.uuid5(uuid.NAMESPACE_URL, origin)), "label": "Fixture",
                     "origin": origin, "publicKey": self.b.runtime.paired_access()._keys()["publicKey"], "tailscaleUser": fixture.OWNER, "autoPair": False}
+        result, errors = [], []
+        def discover():
+            try:
+                result.append(self.discover())
+            except Exception as error:
+                errors.append(error)
         with patch.object(self.a.runtime.paired_access().discovery(), "probe", side_effect=probe):
-            self.discover()
+            worker = threading.Thread(target=discover)
+            worker.start()
+            try:
+                probes_overlapped = concurrent_probes.wait(HANG_GUARD_SECONDS)
+            finally:
+                release_probes.set()
+            worker.join(HANG_GUARD_SECONDS)
+        self.assertTrue(probes_overlapped, "discovery probes did not overlap")
+        self.assertFalse(worker.is_alive(), "discovery worker did not finish")
+        if errors:
+            raise errors[0]
         self.assertEqual(total, 64)
         self.assertGreater(peak, 1)
         self.assertLessEqual(peak, 4)

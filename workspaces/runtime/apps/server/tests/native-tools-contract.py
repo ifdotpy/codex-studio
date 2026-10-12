@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+from server_test_waits import HANG_GUARD_SECONDS
 
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
@@ -550,7 +551,7 @@ class Contract(unittest.TestCase):
             with self.rt.lock, self.rt.db() as db:
                 agent = self.rt.agent("chat-1", db)
                 self.assertFalse(tools.gate(self.rt, db, agent, NEW))
-            self.assertTrue(entered.wait(5))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             with self.rt.lock, self.rt.db() as db:
                 self.rt.put(db, "agents", {**agent, "id": "busy-chat", "inFlight": True, "status": "running"})
             release.set()

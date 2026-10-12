@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+from server_test_waits import HANG_GUARD_SECONDS
 
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
@@ -636,7 +637,7 @@ class MonitorWakeIntegration(unittest.TestCase):
                 runtime.retry_monitor_results()
                 self.assertEqual(runtime.agent(child['id'])['status'], 'queued')
                 runtime.dispatch()
-                self.assertTrue(next_turn_started.wait(30),
+                self.assertTrue(next_turn_started.wait(HANG_GUARD_SECONDS),
                                 'recovered monitor receipt did not start the next turn')
                 self.assertEqual(runtime.agent(child['id'])['status'], 'running')
                 self.assertNotEqual(runtime.agent(child['id'])['turnId'], actor['turnId'])

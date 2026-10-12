@@ -281,13 +281,13 @@ class PrepareSteerContract(unittest.TestCase):
             with patch("codex_worktree_creation.create_worker_worktree", side_effect=checkout):
                 for worker in workers:
                     self.runtime.send(worker["id"], "Start")
-                self.assertTrue(entered_first.wait(5),
+                self.assertTrue(entered_first.wait(HANG_GUARD_SECONDS),
                                 str([(self.runtime.agent(w["id"])["status"],
                                       self.runtime.agent(w["id"]).get("error"),
                                       self.runtime.agent(w["id"]).get("worktree"),
                                       self.runtime.agent(w["id"]).get("worktreeReady"),
                                       self.runtime.agent(w["id"]).get("cwd")) for w in workers]))
-                self.assertTrue(entered_other.wait(5), "another repository starts during checkout")
+                self.assertTrue(entered_other.wait(HANG_GUARD_SECONDS), "another repository starts during checkout")
                 eventually(lambda: any(self.runtime.agent(w["id"]).get("worktreePreparation") == "waiting"
                                        for w in workers[:2]))
                 with calls_lock:

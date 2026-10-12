@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from server_test_waits import HANG_GUARD_SECONDS
+from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -283,17 +283,19 @@ class LiveUpdatesContract(unittest.TestCase):
         self.manifest()
         with self.runtime.lock:
             self.manager.start()
-            deadline = time.monotonic() + 2
-            while self.manager.status()["status"] != "applying" and time.monotonic() < deadline:
-                time.sleep(0.005)
+            wait_for_condition(
+                lambda: self.manager.status()["status"] == "applying",
+                "update application start",
+            )
             began = time.monotonic()
             self.assertEqual(self.manager.status()["status"], "applying")
             self.assertLess(time.monotonic() - began, 0.1)
             self.assertFalse(self.runtime.closed)
             self.assertEqual(self.runtime.mutations, 0)
-        deadline = time.monotonic() + 2
-        while self.manager.status()["status"] != "applied" and time.monotonic() < deadline:
-            time.sleep(0.005)
+        wait_for_condition(
+            lambda: self.manager.status()["status"] == "applied",
+            "update application completion",
+        )
         self.assertEqual(self.manager.status()["status"], "applied")
         self.manager.close()
         self.manager._thread.join(timeout=HANG_GUARD_SECONDS)

@@ -255,7 +255,7 @@ class LazyTransferContract(unittest.TestCase):
         self.t.complete_fork(0)
         self.t.complete_fork(1)
         for worker in workers:
-            worker.join(3)
+            worker.join(HANG_GUARD_SECONDS)
         self.assertFalse(any(worker.is_alive() for worker in workers))
         self.assertEqual(errors, [])
         self.assertEqual(len([p for p in self.t.pending if p[0] == 'thread/fork']), 2)

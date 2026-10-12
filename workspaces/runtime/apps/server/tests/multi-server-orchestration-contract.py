@@ -836,7 +836,7 @@ class CrossServer(unittest.TestCase):
             writer.rollback()
             writer.close()
             for thread in threads:
-                thread.join(5)
+                thread.join(HANG_GUARD_SECONDS)
             service._running = False
         self.assertTrue(responsive, 'A SQLite writer must not block the scheduler claim')
         self.assertFalse(errors)

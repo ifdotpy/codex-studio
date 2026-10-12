@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+from server_test_waits import HANG_GUARD_SECONDS
 
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
@@ -153,12 +154,12 @@ class Profiles(unittest.TestCase):
         with patch.object(c, 'auth_metadata', return_value=denied):
             worker.start()
             try:
-                self.assertTrue(entered.wait(5))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 current = store.get(key)
                 self.assertEqual(current['status'], 'ready')
             finally:
                 release.set()
-                worker.join(5)
+                worker.join(HANG_GUARD_SECONDS)
         self.assertFalse(worker.is_alive())
         self.assertEqual(errors, [])
         self.assertEqual(results[0]['status'], 'ready')

@@ -73,7 +73,7 @@ class ServerLifecycleTests(unittest.TestCase):
                     if shutdown is not None:
                         shutdown.set()
                     server.shutdown()
-                    thread.join(timeout=5)
+                    thread.join(timeout=HANG_GUARD_SECONDS)
                     self.assertFalse(thread.is_alive(), "Uvicorn cancels the blocked response at the drain bound")
                     response_error = None
                     try:

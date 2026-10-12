@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+from server_test_waits import HANG_GUARD_SECONDS
 
 import copy
 import hashlib
@@ -362,8 +363,8 @@ class OperatorCloseContract(PidFileContract):
 
         first.proc.ack = delayed_ack
         pending = first.submit('model/list', {})
-        self.assertEqual(first.wait(pending, timeout=30)['data'][0]['model'], 'fake')
-        self.assertTrue(ack_entered.wait(30), 'native model/list response was not read for ACK')
+        self.assertEqual(first.wait(pending, timeout=HANG_GUARD_SECONDS)['data'][0]['model'], 'fake')
+        self.assertTrue(ack_entered.wait(HANG_GUARD_SECONDS), 'native model/list response was not read for ACK')
 
         closed = self.close('test:operator-replace')
         self.assertEqual(closed['handle'], 'test:operator-replace')
@@ -402,9 +403,9 @@ class OperatorCloseContract(PidFileContract):
                            executable=str(other), supervisor_handle=handle,
                            process_factory=open_replacement)
         self.case.servers.append(second)
-        self.assertTrue(replacement_opened.wait(30),
+        self.assertTrue(replacement_opened.wait(HANG_GUARD_SECONDS),
                         'replacement supervisor open did not capture its cursor')
-        self.assertTrue(replacement_reader_parked.wait(30),
+        self.assertTrue(replacement_reader_parked.wait(HANG_GUARD_SECONDS),
                         'replacement reader did not reach the controlled replay gate')
         self.assertFalse(second.supervisor_resumed)
         self.assertEqual(second.proc.generation, first.proc.generation + 1)
@@ -413,7 +414,7 @@ class OperatorCloseContract(PidFileContract):
         # The replacement ProcessProxy has captured its cursor, but its reader
         # has not polled yet. Commit the old proxy's real ACK before that poll.
         release_ack.set()
-        self.assertTrue(ack_finished.wait(30), 'real supervisor ACK action did not finish')
+        self.assertTrue(ack_finished.wait(HANG_GUARD_SECONDS), 'real supervisor ACK action did not finish')
         if ack_errors:
             raise ack_errors[0]
         release_replacement_reader.set()

@@ -1080,7 +1080,7 @@ class ContextWait(f.NativeActionRepair):
             attempt=current['startAttempt']['id']
             self.assertEqual(current['status'],'queued')
             self.clear_monitor();self.due()
-            self.assertTrue(acknowledgement_recorded.wait(30),
+            self.assertTrue(acknowledgement_recorded.wait(HANG_GUARD_SECONDS),
                             'review receipt ACK was not persisted')
             eventually(lambda:self.runtime.agent(self.a['id']).get('turnId')=='review-turn')
             replay=self.runtime.native_action(self.a['id'],'review','wait-review')

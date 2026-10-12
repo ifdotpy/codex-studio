@@ -18,6 +18,7 @@ from unittest import mock
 from unittest.mock import patch, Mock
 
 from codex_layout import REPOSITORY_ROOT, VM_GUEST_ROOT
+from server_test_waits import HANG_GUARD_SECONDS
 import codex_linux_vm as vm
 
 
@@ -116,13 +117,25 @@ class ClientTests(unittest.TestCase):
         self.assertTrue(error.exception.uncertain)
 
     def test_response_deadline_is_bounded(self):
-        guest = Guest(self.directory, lambda channel, request: time.sleep(0.3))
-        started = time.monotonic()
-        with self.assertRaises(vm.LinuxVMError) as error:
-            self.client.request('health', timeout=0.05)
-        self.assertLess(time.monotonic() - started, 0.2)
-        self.assertTrue(error.exception.uncertain)
-        guest.finish()
+        entered = threading.Event()
+        release = threading.Event()
+
+        def delayed_response(_channel, _request):
+            entered.set()
+            if not release.wait(HANG_GUARD_SECONDS):
+                raise TimeoutError("The test did not release the delayed guest response")
+
+        guest = Guest(self.directory, delayed_response)
+        try:
+            started = time.monotonic()
+            with self.assertRaises(vm.LinuxVMError) as error:
+                self.client.request('health', timeout=0.05)
+            self.assertLess(time.monotonic() - started, 0.2)
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
+            self.assertTrue(error.exception.uncertain)
+        finally:
+            release.set()
+            guest.finish()
 
     def test_missing_socket_is_certain(self):
         with self.assertRaises(vm.LinuxVMError) as error:

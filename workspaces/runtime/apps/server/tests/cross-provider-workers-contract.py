@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from test_isolation import isolate_supervisor_environment
+from server_test_waits import HANG_GUARD_SECONDS
 isolate_supervisor_environment()
 
 import copy
@@ -303,8 +304,8 @@ class CrossProviderWorkers(unittest.TestCase):
         lead_started = self.turn_started_event(claude, lead["threadId"])
         child_started = self.turn_started_event(codex, child["threadId"])
         self.rt.dispatch()
-        self.assertTrue(lead_started.wait(30), "Claude lead did not start its queued turn")
-        self.assertTrue(child_started.wait(30), "Codex child did not start its queued turn")
+        self.assertTrue(lead_started.wait(HANG_GUARD_SECONDS), "Claude lead did not start its queued turn")
+        self.assertTrue(child_started.wait(HANG_GUARD_SECONDS), "Codex child did not start its queued turn")
         self.assertEqual(self.rt.agent(lead["id"])["status"], "running")
         self.assertEqual(self.rt.agent(child["id"])["status"], "running")
         for server, text in ((codex, "Check the second case"), (claude, "The first case is confirmed")):

@@ -231,9 +231,9 @@ class RuntimeReadLock(unittest.TestCase):
                 runtime.lock.release()
         finally:
             release.set()
-            reader.join(5)
+            reader.join(HANG_GUARD_SECONDS)
             if writer.ident is not None:
-                writer.join(5)
+                writer.join(HANG_GUARD_SECONDS)
         self.assertFalse(reader.is_alive())
         self.assertFalse(writer.is_alive())
         self.assertEqual(errors, [])

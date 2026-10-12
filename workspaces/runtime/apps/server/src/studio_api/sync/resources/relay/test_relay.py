@@ -8,6 +8,8 @@ from pathlib import Path
 import socket
 import subprocess
 import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
 import tempfile
 import threading
 import time
@@ -131,7 +133,7 @@ class RelayRouteTests(unittest.TestCase):
 
     def wait_for_entity_publication(self) -> None:
         self.assertTrue(
-            self.entity_publication.wait(timeout=5),
+            self.entity_publication.wait(timeout=HANG_GUARD_SECONDS),
             "entity publisher did not complete its observable hub update",
         )
 
@@ -322,9 +324,7 @@ class ExternalCliSseTests(unittest.TestCase):
             proxy_thread = threading.Thread(target=proxy.serve_forever, daemon=True)
             proxy_thread.start()
             try:
-                deadline = time.monotonic() + 5
-                while not server.server.started and time.monotonic() < deadline:
-                    time.sleep(0.01)
+                wait_for_condition(lambda: server.server.started, "relay API server startup")
                 self.assertTrue(server.server.started, "isolated API server did not start")
                 origin = f"http://127.0.0.1:{server.server_port}"
                 stream = self._start_stream(origin, [
@@ -502,9 +502,7 @@ class ExternalCliSseTests(unittest.TestCase):
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:
-                deadline = time.monotonic() + 5
-                while not server.server.started and time.monotonic() < deadline:
-                    time.sleep(0.01)
+                wait_for_condition(lambda: server.server.started, "relay API server startup")
                 self.assertTrue(server.server.started)
                 env = {
                     **os.environ,
@@ -557,9 +555,7 @@ class ExternalCliSseTests(unittest.TestCase):
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:
-                deadline = time.monotonic() + 5
-                while not server.server.started and time.monotonic() < deadline:
-                    time.sleep(0.01)
+                wait_for_condition(lambda: server.server.started, "relay API server startup")
                 self.assertTrue(server.server.started)
                 before_revision = server._context.resource_hub()._revision
                 env = {

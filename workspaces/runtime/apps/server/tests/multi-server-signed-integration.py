@@ -34,6 +34,7 @@ from urllib.parse import urlsplit
 
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 import codex_multi_server
+from server_test_waits import wait_for_condition
 from fastapi.testclient import TestClient
 from codex_canvas import Canvas
 from codex_federation import _crypto, _sign
@@ -200,15 +201,14 @@ print(json.dumps(value))
             for key in queued:
                 service.deliver(key)
 
-    def drive(self, predicate, timeout=12):
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+    def drive(self, predicate):
+        def advance_and_check():
             self.drain()
             if predicate():
-                return
+                return True
             self.b.runtime.dispatch()
-            time.sleep(0.01)
-        self.fail("The signed runtime flow did not reach its expected state")
+            return None
+        wait_for_condition(advance_and_check, 'signed runtime flow progress')
 
     def git(self, directory, *arguments):
         return subprocess.check_output(["git", "-C", str(directory), *arguments], text=True, timeout=15).strip()

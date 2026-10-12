@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from test_isolation import isolate_supervisor_environment
+from server_test_waits import HANG_GUARD_SECONDS
 isolate_supervisor_environment()
 
 import importlib.util
@@ -62,12 +63,12 @@ class ReservationRecovery(unittest.TestCase):
         entered, release = threading.Event(), threading.Event()
         def capture(*args):
             entered.set()
-            self.assertTrue(release.wait(5))
+            self.assertTrue(release.wait(HANG_GUARD_SECONDS))
             return {'id': 'fixture-checkpoint'}
         with patch.object(self.runtime, 'capture_checkpoint', side_effect=capture):
             capture_future = self.runtime.pool.submit(self.runtime.checkpoint_capture, owner['id'])
             try:
-                self.assertTrue(entered.wait(5))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 result = self.runtime.send(peer['id'], 'Exact follow-up', 'capture-wait-input')
                 blocker = result['waitingFor'][0]
                 self.assertEqual(blocker['agentId'], owner['id'])
@@ -93,11 +94,11 @@ class ReservationRecovery(unittest.TestCase):
         entered, release = threading.Event(), threading.Event()
         def capture(*args):
             entered.set()
-            self.assertTrue(release.wait(5))
+            self.assertTrue(release.wait(HANG_GUARD_SECONDS))
         with patch.object(self.runtime, 'capture_checkpoint', side_effect=capture):
             future = self.runtime.pool.submit(self.runtime.checkpoint_after_turn, a['id'], 'old-turn', operation_id)
             try:
-                self.assertTrue(entered.wait(5))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 self.agent_update(a, workspaceOperation='restore_recovery', workspaceReservationId='replacement')
             finally:
                 release.set()

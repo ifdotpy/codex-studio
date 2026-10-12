@@ -121,7 +121,7 @@ class TurnRecoveryContract(unittest.TestCase):
         self.runtime.start_receipt_finished.clear()
         a = self.runtime.create({'name': 'Lead', 'cwd': self.temp.name, 'prompt': 'Work'})
         self.key = a['id']
-        self.assertTrue(self.runtime.start_receipt_finished.wait(30))
+        self.assertTrue(self.runtime.start_receipt_finished.wait(HANG_GUARD_SECONDS))
         self.a = self.runtime.agent(self.key)
         self.assertTrue(self.a.get('turnId'))
         self.assertTrue((self.a.get('startAttempt') or {}).get('turnId'))
@@ -212,7 +212,7 @@ class TurnRecoveryContract(unittest.TestCase):
             agents = self.runtime.scheduler_agents(db)
         self.runtime.turn_recovery_finished.clear()
         self.queue_turn_recovery(agents, force_id=self.key)
-        self.assertTrue(self.runtime.turn_recovery_finished.wait(30))
+        self.assertTrue(self.runtime.turn_recovery_finished.wait(HANG_GUARD_SECONDS))
         self.assertEqual(self.runtime.agent(self.key)['status'], 'completed')
 
     def test_unknown_start_absent_from_history_preserves_original_reservation(self):
@@ -618,7 +618,7 @@ class TurnRecoveryContract(unittest.TestCase):
         self.runtime.start_receipt_finished.clear()
         self.runtime.send(self.key, 'Next task', message_id='next-task')
         self.runtime.reconcile_turn(self.key)
-        self.assertTrue(self.runtime.start_receipt_finished.wait(30))
+        self.assertTrue(self.runtime.start_receipt_finished.wait(HANG_GUARD_SECONDS))
         self.assertNotIn(self.runtime.agent(self.key).get('turnId'), (None, self.turn))
         self.runtime.reconcile_turn(self.key)  # Native evidence only names the old turn.
         starts = [p for n, p in self.server.calls if n == 'turn/start']
@@ -656,7 +656,7 @@ class TurnRecoveryContract(unittest.TestCase):
         self.runtime.turn_recovery_finished.clear()
         self.runtime.periodic_turn_recovery_enabled = True
         self.runtime.changed.set()
-        self.assertTrue(self.runtime.turn_recovery_finished.wait(30))
+        self.assertTrue(self.runtime.turn_recovery_finished.wait(HANG_GUARD_SECONDS))
         self.assertFalse(self.runtime.agent(self.key)['inFlight'])
         self.assertEqual(self.runtime.agent(self.key)['status'], 'completed')
         self.assertEqual(len([1 for method, _ in self.server.calls if method == 'turn/start']), 1)
@@ -681,13 +681,13 @@ class TurnRecoveryContract(unittest.TestCase):
         self.runtime.turn_recovery_finished.clear()
         self.runtime.periodic_turn_recovery_enabled = True
         self.runtime.changed.set()
-        self.assertTrue(self.runtime.turn_recovery_finished.wait(30))
+        self.assertTrue(self.runtime.turn_recovery_finished.wait(HANG_GUARD_SECONDS))
         self.assertEqual(self.runtime.agent(self.key).get('turnRecovery', {}).get('outcome'), 'idle')
         while len([1 for method, _ in self.server.calls if method == 'turn/start']) < starts + 1:
             self.server.calls_changed.clear()
             if len([1 for method, _ in self.server.calls if method == 'turn/start']) >= starts + 1:
                 break
-            self.assertTrue(self.server.calls_changed.wait(30), 'recovered input was not started')
+            self.assertTrue(self.server.calls_changed.wait(HANG_GUARD_SECONDS), 'recovered input was not started')
         a = self.runtime.agent(self.key)
         self.assertNotIn('steerRejectedTurnId', a)
         for _ in range(3):
@@ -719,7 +719,7 @@ class TurnRecoveryContract(unittest.TestCase):
         self.runtime.lock.release()
         self.assertEqual(len([n for n, _ in self.server.calls if n == 'thread/read']), 1)
         self.server.read_gate.set()
-        self.assertTrue(self.runtime.turn_recovery_finished.wait(30))
+        self.assertTrue(self.runtime.turn_recovery_finished.wait(HANG_GUARD_SECONDS))
         self.queue_turn_recovery([self.a])
         self.assertEqual(len([n for n, _ in self.server.calls if n == 'thread/read']), 1)
 
