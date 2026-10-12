@@ -671,7 +671,7 @@ def request_schema_audit() -> dict[str, object]:
         for field_name, field in model.model_fields.items():
             if _has_integer_literal(field.annotation):
                 try:
-                    TypeAdapter(field.annotation).validate_python(True)
+                    TypeAdapter(Annotated[field.annotation, *field.metadata]).validate_python(True)
                 except (TypeError, ValueError):
                     pass
                 else:
@@ -682,9 +682,13 @@ def request_schema_audit() -> dict[str, object]:
                         "operations": ", ".join(sorted(operations)),
                     })
             if field.alias and field.alias != field_name:
-                findings.append({"kind": "alias", "model": model_name,
-                                 "field": field_name, "alias": field.alias,
-                                 "operations": ", ".join(sorted(operations))})
+                # A normal Pydantic wire alias is schema-expressible. Flag it
+                # only if the generated contract failed to publish that name.
+                properties = component.get("properties", {}) if isinstance(component, dict) else {}
+                if not isinstance(properties, dict) or field.alias not in properties:
+                    findings.append({"kind": "alias", "model": model_name,
+                                     "field": field_name, "alias": field.alias,
+                                     "operations": ", ".join(sorted(operations))})
             if any(getattr(metadata, "strict", None) is False for metadata in field.metadata):
                 exported_field = None
                 if isinstance(component, dict):

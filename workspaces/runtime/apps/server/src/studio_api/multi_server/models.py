@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 from typing import Annotated, Literal, TypeAlias
-from pydantic import ConfigDict, Field, StrictInt
+from pydantic import BeforeValidator, ConfigDict, Field, StrictInt
 
-from studio_api.models import ContractModel, JsonValue, ResponseModel, SafeInt
+from studio_api.models import ContractModel, JsonValue, ResponseModel, SafeInt, require_strict_integer
 
 ACCESS_PROTOCOL_VERSION = 1
 
@@ -22,7 +22,7 @@ class ServerIdentityResponse(ServerIdentity, ResponseModel):
 
 
 class AccessInvitation(ContractModel):
-    protocol: SafeInt = Field(ge=ACCESS_PROTOCOL_VERSION, le=ACCESS_PROTOCOL_VERSION)
+    protocol: Annotated[Literal[1], BeforeValidator(require_strict_integer)]
     inviteId: str = Field(min_length=1, max_length=128)
     token: str = Field(min_length=1, max_length=128)
     serverId: str = Field(min_length=1, max_length=128)
@@ -163,7 +163,7 @@ class UnrevokeServer(ContractModel):
 
 
 class AutoPairRequest(ContractModel):
-    protocol: SafeInt = Field(ge=ACCESS_PROTOCOL_VERSION, le=ACCESS_PROTOCOL_VERSION)
+    protocol: Annotated[Literal[1], BeforeValidator(require_strict_integer)]
     serverId: str = Field(min_length=1, max_length=128)
     label: str = Field(min_length=1, max_length=80)
     origin: str = Field(max_length=512)
@@ -175,7 +175,7 @@ ManagementRequest: TypeAlias = Annotated[CreateInvite | RevokeClient | AcceptInv
 
 
 class DevicePairRequest(ContractModel):
-    protocol: SafeInt = Field(ge=ACCESS_PROTOCOL_VERSION, le=ACCESS_PROTOCOL_VERSION)
+    protocol: Annotated[Literal[1], BeforeValidator(require_strict_integer)]
     inviteId: str = Field(min_length=1, max_length=128)
     token: str = Field(min_length=1, max_length=128)
     clientId: str = Field(min_length=1, max_length=128)

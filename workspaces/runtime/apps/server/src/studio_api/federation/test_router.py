@@ -233,7 +233,7 @@ class FederationRouterTests(unittest.TestCase):
             headers={"content-type": "text/plain"},
         )
         self.assertEqual(response.status_code, 415)
-        self.assertEqual(response.json(), {"error": "JSON required"})
+        self.assertEqual(response.json(), {"error": "JSON required", "location": ["body"]})
         self.assertEqual(self.runtime.service.calls, [])
 
     def test_management_content_type_rejected_before_service(self) -> None:
@@ -243,7 +243,7 @@ class FederationRouterTests(unittest.TestCase):
             headers={"content-type": "text/plain"},
         )
         self.assertEqual(response.status_code, 415)
-        self.assertEqual(response.json(), {"error": "JSON required"})
+        self.assertEqual(response.json(), {"error": "JSON required", "location": ["body"]})
         self.assertEqual(self.runtime.service.actions, [])
 
     def test_invalid_management_enum_is_rejected_before_service(self) -> None:

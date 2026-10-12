@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import Field, StrictInt
+from pydantic import BeforeValidator, Field, StrictInt
 
-from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel, SafeInt
+from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel, SafeInt, require_strict_integer
 
 PROTOCOL_VERSION = 1
 MAX_BATCH = 50
@@ -128,7 +128,7 @@ class FederationSnapshot(ResponseModel):
 
 
 class FederationInvitation(ContractModel):
-    protocol: SafeInt = Field(ge=PROTOCOL_VERSION, le=PROTOCOL_VERSION)
+    protocol: Annotated[Literal[1], BeforeValidator(require_strict_integer)]
     inviteId: str
     token: str
     stateId: str
@@ -220,7 +220,7 @@ ManagementRequest: TypeAlias = Annotated[
 
 
 class PairRequest(ContractModel):
-    protocol: SafeInt = Field(ge=PROTOCOL_VERSION, le=PROTOCOL_VERSION)
+    protocol: Annotated[Literal[1], BeforeValidator(require_strict_integer)]
     inviteId: str
     token: str
     stateId: str
@@ -233,11 +233,11 @@ class PairRequest(ContractModel):
 
 
 class StatusRequest(ContractModel):
-    protocol: SafeInt = Field(ge=PROTOCOL_VERSION, le=PROTOCOL_VERSION)
+    protocol: Annotated[Literal[1], BeforeValidator(require_strict_integer)]
 
 
 class SignedEnvelope(ContractModel):
-    protocol: SafeInt = Field(ge=PROTOCOL_VERSION, le=PROTOCOL_VERSION)
+    protocol: Annotated[Literal[1], BeforeValidator(require_strict_integer)]
     senderServer: str
     id: str = Field(max_length=128)
     kind: MessageKind
@@ -252,7 +252,7 @@ class SignedEnvelope(ContractModel):
 
 
 class MessageRequest(ContractModel):
-    protocol: SafeInt = Field(ge=PROTOCOL_VERSION, le=PROTOCOL_VERSION)
+    protocol: Annotated[Literal[1], BeforeValidator(require_strict_integer)]
     envelope: SignedEnvelope
 
 
@@ -262,7 +262,7 @@ class FederationAck(ContractModel):
 
 
 class PullRequest(ContractModel):
-    protocol: SafeInt = Field(ge=PROTOCOL_VERSION, le=PROTOCOL_VERSION)
+    protocol: Annotated[Literal[1], BeforeValidator(require_strict_integer)]
     acks: list[FederationAck] = Field(default_factory=list, max_length=MAX_BATCH)
 
 

@@ -777,15 +777,21 @@ class AccountsRouterTests(unittest.TestCase):
         self.assertEqual(invalid.status_code, 400)
 
     def test_discover_keeps_optional_empty_body_in_openapi_and_runtime(self) -> None:
+        from types import SimpleNamespace
+
         operation = self.app.openapi()["paths"]["/api/accounts/discover"]["post"]
         self.assertIn("requestBody", operation)
         self.assertFalse(operation["requestBody"].get("required", False))
-        self.assertEqual(operation["requestBody"]["content"]["application/json"]["schema"]["$ref"].split("/")[-1], "AccountDiscoverRequest")
+        request_schema = operation["requestBody"]["content"]["application/json"]["schema"]
+        self.assertEqual(request_schema["$ref"].split("/")[-1], "AccountDiscoverRequest")
         self.assertEqual(self.client.post("/api/accounts/discover").status_code, 200)
         self.assertEqual(self.client.post("/api/accounts/discover", json={}).status_code, 200)
-        null_body = self.client.post("/api/accounts/discover", json=None)
-        self.assertEqual(null_body.status_code, 400)
-        self.assertEqual(null_body.json()["location"], ["body"])
+        null_body = self.client.post(
+            "/api/accounts/discover",
+            content=b"null",
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(null_body.status_code, 200)
 
         from studio_api.middleware import RequestBoundary
 
@@ -805,9 +811,11 @@ class AccountsRouterTests(unittest.TestCase):
                 200,
             )
             null_response = client.post(
-                "/api/accounts/discover", json=None, headers=headers,
+                "/api/accounts/discover",
+                content=b"null",
+                headers={**headers, "Content-Type": "application/json"},
             )
-            self.assertEqual(null_response.status_code, 400)
+            self.assertEqual(null_response.status_code, 400, null_response.text)
             self.assertEqual(null_response.json()["location"], ["body"])
             missing_required = client.post("/api/accounts/register", headers=headers)
             self.assertEqual(missing_required.status_code, 415)

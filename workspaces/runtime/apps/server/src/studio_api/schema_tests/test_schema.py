@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import unittest
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import cast
@@ -15,6 +16,7 @@ from studio_api.schema import (
     normalize_json_value_schema,
     remove_orphan_fastapi_validation_schemas,
     JSON_VALUE_SCHEMA,
+    normalize_optional_parameter_schemas,
     validate_error_responses,
     validate_contract_schemas,
     openapi_document,
@@ -23,6 +25,11 @@ from studio_api.request_schema_audit import (
     _contradictory_union_findings,
     _json_schema_extra_findings,
     request_schema_audit,
+)
+from studio_api.schema_tests.constraint_diff import (
+    constraint_changes,
+    constraint_loosening_findings,
+    constraint_snapshot,
 )
 
 
@@ -84,6 +91,103 @@ def sample_document(response_schema: dict[str, JsonValue]) -> dict[str, JsonValu
 
 
 class SchemaContractTests(unittest.TestCase):
+    def test_generated_document_does_not_loosen_main_constraint_baseline(self) -> None:
+        baseline_path = Path(__file__).with_name("openapi_constraint_baseline.json")
+        manifest = json.loads(baseline_path.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["sourceCommit"], "2602cb4e")
+        self.assertEqual(manifest["sourcePath"], "workspaces/runtime/packages/runtime-http/openapi.json")
+        baseline_document = manifest["document"]
+        self.assertIsInstance(baseline_document, dict)
+        baseline = constraint_snapshot(baseline_document)
+        candidate = constraint_snapshot(openapi_document())
+        loosenings, _tightenings = constraint_changes(baseline, candidate)
+        self.assertEqual(
+            {(item["pointer"], item["constraint"]) for item in loosenings},
+            {
+                ("/components/schemas/DraftDocumentInput/properties/deleted", "property"),
+                ("/components/schemas/DraftPushRequest/properties/rows/items/properties/newDocumentState/properties/deleted", "property"),
+                ("/components/schemas/DraftPushRow/properties/newDocumentState/properties/deleted", "property"),
+                ("/components/schemas/ErrorResponse/properties/location", "property"),
+                ("/components/schemas/ErrorResponse/properties/location", "@nullable"),
+                ("/components/schemas/ErrorResponse/properties/location", "@nullableBranch"),
+                ("/paths/~1api~1sync~1drafts/post/requestBody/content/application~1json/schema/properties/rows/items/properties/newDocumentState/properties/deleted", "property"),
+            },
+        )
+
+    def test_constraint_diff_detects_five_removed_constraints(self) -> None:
+        baseline_doc: dict[str, JsonValue] = {
+            "paths": {
+                "/example": {
+                    "post": {
+                        "parameters": [
+                            {"name": "q", "in": "query", "schema": {"type": "string", "pattern": "^[0-9]+$"}},
+                            {"name": "X-Mode", "in": "header", "schema": {"type": "string", "enum": ["a", "b"]}},
+                        ],
+                        "requestBody": {"content": {"application/json": {"schema": {
+                            "type": "object", "properties": {"count": {"type": "integer", "maximum": 8}},
+                        }}}},
+                        "responses": {"200": {"description": "ok"}},
+                    }
+                }
+            },
+            "components": {"schemas": {"Nested": {
+                "type": "object", "required": ["id", "kind"], "additionalProperties": False,
+                "properties": {"id": {"type": "string"}, "kind": {"type": "string"}},
+            }}},
+        }
+        candidate_doc = json.loads(json.dumps(baseline_doc))
+        paths = candidate_doc["paths"]["/example"]["post"]
+        paths["requestBody"]["content"]["application/json"]["schema"]["properties"]["count"].pop("maximum")
+        paths["parameters"][0]["schema"].pop("pattern")
+        paths["parameters"][1]["schema"]["enum"].remove("b")
+        candidate_doc["components"]["schemas"]["Nested"]["required"].remove("kind")
+        candidate_doc["components"]["schemas"]["Nested"].pop("additionalProperties")
+        baseline = constraint_snapshot(baseline_doc)
+        candidate = constraint_snapshot(candidate_doc)
+        loosenings, tightenings = constraint_changes(baseline, candidate)
+        changes = loosenings + tightenings
+        self.assertEqual(
+            {(item["constraint"], item["pointer"]) for item in changes},
+            {
+                ("maximum", "/paths/~1example/post/requestBody/content/application~1json/schema/properties/count"),
+                ("pattern", "/paths/~1example/post/operationParameters/0/schema"),
+                ("enum", "/paths/~1example/post/operationParameters/1/schema"),
+                ("required", "/components/schemas/Nested"),
+                ("additionalProperties", "/components/schemas/Nested"),
+            },
+        )
+
+    def test_optional_query_and_header_parameters_are_absent_not_nullable(self) -> None:
+        document: dict[str, JsonValue] = {
+            "paths": {
+                "/example": {
+                    "get": {
+                        "parameters": [
+                            {"in": "query", "name": "flag", "required": False,
+                             "schema": {"anyOf": [{"const": "1", "type": "string"}, {"type": "null"}]}},
+                            {"in": "header", "name": "X-Flag", "required": False,
+                             "schema": {"anyOf": [{"type": "integer"}, {"type": "null"}]}},
+                        ],
+                        "responses": {},
+                    }
+                }
+            }
+        }
+        normalize_optional_parameter_schemas(document)
+        paths = document["paths"]
+        assert isinstance(paths, dict)
+        path = paths["/example"]
+        assert isinstance(path, dict)
+        operation = path["get"]
+        assert isinstance(operation, dict)
+        parameters = operation["parameters"]
+        assert isinstance(parameters, list)
+        first_parameter, second_parameter = parameters
+        assert isinstance(first_parameter, dict)
+        assert isinstance(second_parameter, dict)
+        self.assertEqual(first_parameter["schema"], {"const": "1", "type": "string"})
+        self.assertEqual(second_parameter["schema"], {"type": "integer"})
+
     def test_generated_document_bounds_every_integer_schema(self) -> None:
         document = openapi_document()
 

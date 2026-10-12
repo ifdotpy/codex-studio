@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import ConfigDict, Field, StrictBool, StrictInt, field_validator
+from pydantic import BeforeValidator, ConfigDict, Field, StrictBool, StrictInt, field_validator
 
-from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel, SafeInt
+from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel, SafeInt, require_strict_integer
 from studio_api.sync.models import RoomEntityDto, RoomRadio, RoomRadioActive, SidebarOrderDto
 from studio_api.multi_server.models import ServerOperationResponse
 
@@ -650,7 +650,7 @@ class PeerTeamRadioSendRequest(ContractModel):
     expected_revision: SafeInt
     text: str
     target: str = "both"
-    rounds: SafeInt = Field(default=1, ge=1, le=2)
+    rounds: Annotated[Literal[1, 2], BeforeValidator(require_strict_integer)] = 1
 
 
 class PeerTeamRadioPassRequest(ContractModel):
@@ -661,7 +661,7 @@ class PeerTeamRadioPassRequest(ContractModel):
     request_id: str
     expected_revision: SafeInt
     target: str
-    rounds: SafeInt = Field(default=1, ge=1, le=2)
+    rounds: Annotated[Literal[1, 2], BeforeValidator(require_strict_integer)] = 1
 
 
 class PeerTeamRadioStopRequest(ContractModel):

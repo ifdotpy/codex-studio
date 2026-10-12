@@ -388,6 +388,8 @@ print(api_schema_hash(openapi_document()))
                 (value, rejected, client.get("/api/agent-chat", params={"before": value}))
                 for value, rejected in query_values
             ]
+            negative_after = client.get("/api/sync/pull?after=-1")
+            negative_initial_high = client.get("/api/sync/pull?initialHigh=-1")
 
         self.assertEqual(unknown.status_code, 400)
         self.assertEqual(unknown.json(), {"error": "Invalid request", "location": ["query", "cacheBuster"]})
@@ -406,6 +408,15 @@ print(api_schema_hash(openapi_document()))
                     })
                 else:
                     self.assertEqual(response.json(), {"error": "The agent runtime is unavailable"})
+        for response, name in (
+            (negative_after, "after"),
+            (negative_initial_high, "initialHigh"),
+        ):
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.json(), {
+                "error": "Invalid request",
+                "location": ["query", name],
+            })
 
     def test_query_contract_does_not_generate_openapi(self) -> None:
         from studio_api.app import create_app

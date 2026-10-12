@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 
 def create_app(context: ApiContext) -> FastAPI:
     """Create the API without opening state or starting background services."""
-    integer_query_value = re.compile(r"-?[0-9]+\Z")
+    integer_query_value = re.compile(r"[0-9]+\Z")
     number_query_value = re.compile(
         r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\Z"
     )

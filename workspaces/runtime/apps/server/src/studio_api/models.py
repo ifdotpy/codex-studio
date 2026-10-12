@@ -37,9 +37,34 @@ def _validate_finite_json(value: object) -> object:
 # where the domain gives negative numbers meaning.
 MAX_SAFE_INTEGER = 9_007_199_254_740_991
 MIN_SAFE_INTEGER = -MAX_SAFE_INTEGER
-SafeInt: TypeAlias = Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)]
+
+
+def _validate_safe_int(value: int) -> int:
+    if value < 0 or value > MAX_SAFE_INTEGER:
+        raise ValueError(f"Integer must be between 0 and {MAX_SAFE_INTEGER}")
+    return value
+
+
+def _validate_signed_safe_int(value: int) -> int:
+    if value < MIN_SAFE_INTEGER or value > MAX_SAFE_INTEGER:
+        raise ValueError(
+            f"Integer must be between {MIN_SAFE_INTEGER} and {MAX_SAFE_INTEGER}"
+        )
+    return value
+
+
+def require_strict_integer(value: object) -> object:
+    """Reject bool before integer Literals, where Python otherwise equates True with 1."""
+    if type(value) is not int:
+        raise ValueError("Value must be an integer")
+    return value
+
+
+# Keep the shared range check in a validator so a field's narrower Field bounds
+# compose with it instead of being shadowed by nested Annotated metadata.
+SafeInt: TypeAlias = Annotated[StrictInt, AfterValidator(_validate_safe_int)]
 SignedSafeInt: TypeAlias = Annotated[
-    StrictInt, Field(ge=MIN_SAFE_INTEGER, le=MAX_SAFE_INTEGER)
+    StrictInt, AfterValidator(_validate_signed_safe_int)
 ]
 
 

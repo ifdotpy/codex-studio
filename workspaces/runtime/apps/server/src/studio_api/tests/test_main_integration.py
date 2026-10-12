@@ -82,3 +82,48 @@ class MainIntegrationTests(unittest.TestCase):
                                     headers={"Content-Type": "application/json"})
         self.assertEqual(response.status_code, 413)
         self.runtime.projects.assert_not_called()
+
+    def test_discover_optional_body_accepts_absent_and_object_rejects_null(self) -> None:
+        result = {
+            "accounts": [],
+            "archivedAccounts": [],
+            "defaultAccountKey": "default",
+            "logins": [],
+            "supportsDisconnect": False,
+            "supportsDelete": False,
+        }
+        accounts = SimpleNamespace(
+            discovered=True,
+            snapshot=Mock(return_value=result),
+            discover=Mock(return_value=result),
+        )
+        runtime = SimpleNamespace(accounts=accounts)
+        context = ApiContext.for_schema()
+        context.canvas.runtime = runtime
+        context.remote = SimpleNamespace(request_origin=lambda *_args: "http://testserver")
+        headers = {"X-Canvas-Token": context.token}
+        with TestClient(create_app(context)) as client:
+            absent = client.post("/api/accounts/discover", headers=headers)
+            self.assertEqual(absent.status_code, 200, absent.text)
+            self.assertEqual(absent.json(), result)
+
+            empty_object = client.post(
+                "/api/accounts/discover",
+                content=b"{}",
+                headers={**headers, "Content-Type": "application/json"},
+            )
+            self.assertEqual(empty_object.status_code, 200, empty_object.text)
+            self.assertEqual(empty_object.json(), result)
+
+            null_body = client.post(
+                "/api/accounts/discover",
+                content=b"null",
+                headers={**headers, "Content-Type": "application/json"},
+            )
+            self.assertEqual(null_body.status_code, 400, null_body.text)
+            self.assertEqual(
+                null_body.json(),
+                {"error": "JSON object required", "location": ["body"]},
+            )
+
+        self.assertEqual(accounts.discover.call_count, 2)

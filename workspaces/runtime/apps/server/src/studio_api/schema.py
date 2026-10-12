@@ -57,7 +57,7 @@ def openapi_document() -> dict[str, JsonValue]:
     app = create_app(ApiContext.for_schema())
     document = cast(dict[str, JsonValue], json.loads(json.dumps(app.openapi())))
     normalize_json_value_schema(document)
-    normalize_optional_header_parameters(document)
+    normalize_optional_parameter_schemas(document)
     bound_integer_schemas(document)
     _normalize_schema_union_order(document)
     document["x-query-parameter-contract"] = {
@@ -209,16 +209,50 @@ def _reference_has_concrete_schema(document: dict[str, JsonValue], reference: st
 
 
 def normalize_json_value_schema(document: dict[str, JsonValue]) -> None:
-    """Replace Pydantic's empty JsonValue schema with its recursive JSON union."""
+    """Replace generated recursive JSON unions with the opaque shared schema."""
     components = _object(document.get("components"))
     schemas = _object(components.get("schemas")) if components else None
     if schemas is None or "JsonValue" not in schemas:
         raise ValueError("OpenAPI document does not expose the shared JsonValue component")
+
+    def is_json_value_union(value: JsonValue) -> bool:
+        schema = _object(value)
+        members = schema.get("anyOf") if schema else None
+        if not isinstance(members, list):
+            return False
+        primitive_types = {
+            member.get("type")
+            for member in members
+            if isinstance(member, dict)
+            and member.get("type") in {"integer", "number", "boolean", "null", "string"}
+        }
+        has_array = any(
+            isinstance(member, dict) and member.get("type") == "array"
+            for member in members
+        )
+        has_object = any(
+            isinstance(member, dict) and member.get("type") == "object"
+            for member in members
+        )
+        return primitive_types == {"integer", "number", "boolean", "null", "string"} and has_array and has_object
+
+    def replace_embedded_json_values(value: JsonValue) -> None:
+        if isinstance(value, dict):
+            for key, child in list(value.items()):
+                if key != "JsonValue" and is_json_value_union(child):
+                    value[key] = {"$ref": JSON_VALUE_REF}
+                else:
+                    replace_embedded_json_values(child)
+        elif isinstance(value, list):
+            for child in value:
+                replace_embedded_json_values(child)
+
+    replace_embedded_json_values(document)
     schemas["JsonValue"] = JSON_VALUE_SCHEMA
 
 
-def normalize_optional_header_parameters(document: dict[str, JsonValue]) -> None:
-    """Represent optional headers as absent parameters, not nullable values."""
+def normalize_optional_parameter_schemas(document: dict[str, JsonValue]) -> None:
+    """Represent optional query/header parameters as absent, not nullable values."""
     paths = _object(document.get("paths"))
     if paths is None:
         return
@@ -235,7 +269,7 @@ def normalize_optional_header_parameters(document: dict[str, JsonValue]) -> None
                 continue
             for parameter in parameters:
                 parameter_object = _object(parameter)
-                if parameter_object is None or parameter_object.get("in") != "header":
+                if parameter_object is None or parameter_object.get("in") not in {"header", "query"}:
                     continue
                 schema = _object(parameter_object.get("schema"))
                 if schema is None:
@@ -253,15 +287,33 @@ def normalize_optional_header_parameters(document: dict[str, JsonValue]) -> None
 
 
 def bound_integer_schemas(document: dict[str, JsonValue]) -> None:
-    """Give each integer branch a portable safe-integer range.
+    """Give each typed integer branch a portable safe-integer range.
 
     Model aliases carry runtime validation bounds. This document pass also
-    bounds integer literals and generated shared DTOs. JsonValue is represented
-    by the JSON number type, which already includes integral values.
+    bounds integer literals and generated shared DTOs. JsonValue's opaque
+    recursive schema contains a `number` branch, not an integer branch.
     """
     def visit(value: JsonValue) -> None:
         if isinstance(value, dict):
             if value.get("type") == "integer":
+                # Pydantic can preserve Field constraints as internal metadata
+                # when SafeInt is nested in an optional union. Normalize those
+                # enforced constraints to their JSON Schema spellings first.
+                for source, target in (
+                    ("ge", "minimum"),
+                    ("le", "maximum"),
+                    ("gt", "exclusiveMinimum"),
+                    ("lt", "exclusiveMaximum"),
+                ):
+                    constraint = value.pop(source, None)
+                    if isinstance(constraint, (int, float)):
+                        existing = value.get(target)
+                        if not isinstance(existing, (int, float)):
+                            value[target] = constraint
+                        elif target in {"minimum", "exclusiveMinimum"}:
+                            value[target] = max(existing, constraint)
+                        else:
+                            value[target] = min(existing, constraint)
                 if "minimum" not in value:
                     exclusive_minimum = value.get("exclusiveMinimum")
                     value["minimum"] = (
