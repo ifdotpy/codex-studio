@@ -17,6 +17,9 @@ import uuid
 
 from codex_exact_history import export_codex, frozen_codex_parameters, private_write, unpack_codex, export_claude, extend_codex_history, MAX_HISTORY_BYTES
 from codex_multi_server_orchestration import MAX_REQUEST, encoded, identity, request_body
+
+CLAUDE_CACHE_PROOFS = frozenset({'saved_snapshot_and_identical_studio_options',
+                                 'saved_snapshot_and_current_ordered_mcp_catalogs'})
 from codex_native_errors import NativeRpcError
 from codex_mcp_capabilities import prompt_catalog, instruction_proofs, instruction_differences, capabilities_match, proof_levels
 
@@ -582,7 +585,10 @@ class AgentMoves:
         target = self._exchange(operation['server'], 'move_validate', preflight,
                                 identity(operation['id'], 'validate', snapshot, options))
         before = operation['target']
-        if any(target.get(field) != before.get(field) for field in ('accountKey', 'accountIdentity', 'cacheProof', 'warning')):
+        # The proof method names the evidence; tools of connected MCP servers add their
+        # catalogs to it. Each such method proves the same exact prompt prefix.
+        if (any(target.get(field) != before.get(field) for field in ('accountKey', 'accountIdentity', 'warning'))
+                or target.get('cacheProof') not in CLAUDE_CACHE_PROOFS):
             raise ValueError('The target answered differently for the current tool list. Ask for the move again')
         operation.update(preflight=preflight, target=target)
         with self.runtime.db() as db:
