@@ -3,10 +3,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import sys
-import json
 from pathlib import Path
 from urllib.parse import urlencode
 import unittest
@@ -72,18 +72,9 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                         "status": "completed",
                         "created": 500.0,
                     })
-                    source = db.execute(
-                        "SELECT record FROM runtime_tasks WHERE id=?",
-                        ("workspace-views-other-task",),
-                    ).fetchone()[0]
-                    malformed = json.loads(source)
-                    malformed["unexpectedStoredProperty"] = True
-                    db.execute(
-                        "UPDATE runtime_tasks SET record=? WHERE id=?",
-                        (json.dumps(malformed), "workspace-views-other-task"),
-                    )
                 cls.lead_id = lead["id"]
                 cls.worker_id = worker["id"]
+                cls.other_id = other["id"]
             finally:
                 runtime.close()
         cls.backend.start()
@@ -102,6 +93,8 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(task["agent"], self.lead_id)
         self.assertEqual(task["name"], "fixture tool")
         self.assertEqual(task["tail"], "private tail")
+        self.assertNotIn("durationMs", task)
+        self.assertNotIn("outputTruncated", task)
 
     def test_workspace_task_feed_pages_team_records_and_excludes_other_chat(self) -> None:
         query = urlencode({"agent": self.lead_id, "limit": 100})
@@ -140,6 +133,39 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(len(changes.json()["tasks"]), 100)
         self.assertTrue(changes.json()["hasMoreChanges"])
 
+    def test_short_changes_page_advances_and_empty_poll_preserves_cursor(self) -> None:
+        first = self.backend.request(
+            "GET",
+            "/api/workspace/tasks?" + urlencode({
+                "agent": self.lead_id,
+                "cursor": json.dumps({"updated": 105, "id": "workspace-task-103"}),
+                "limit": 100,
+            }),
+        )
+        self.assertEqual(first.status, 200, first.body[:1000])
+        first_page = first.json()
+        self.assertEqual([task["id"] for task in first_page["tasks"]], ["workspace-task-104"])
+        self.assertEqual(first_page["cursor"], {"updated": 106.0, "id": "workspace-task-104"})
+
+        second = self.backend.request(
+            "GET",
+            "/api/workspace/tasks?" + urlencode({
+                "agent": self.lead_id,
+                "cursor": json.dumps(first_page["cursor"]),
+            }),
+        )
+        self.assertEqual(second.status, 200, second.body[:1000])
+        self.assertEqual(second.json()["tasks"], [])
+        self.assertEqual(second.json()["cursor"], first_page["cursor"])
+
+    def test_empty_query_strings_mean_absent(self) -> None:
+        response = self.backend.request("GET", "/api/workspace/tasks?agent=&cursor=&before=")
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertIn(
+            "workspace-views-other-task",
+            {task["id"] for task in response.json()["tasks"]},
+        )
+
     def test_bad_cursor_is_located_and_does_not_write(self) -> None:
         before = self._task_count()
         response = self.backend.request(
@@ -153,15 +179,69 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(after, before)
 
     def test_unknown_persisted_property_is_refused_by_rust(self) -> None:
-        response = self.backend.request(
-            "GET", "/api/task?" + urlencode({"id": "workspace-views-other-task"}),
-        )
-        if self.rust_backend:
-            self.assertEqual(response.status, 500, response.body[:1000])
-            self.assertIn("Invalid stored object runtime_tasks", response.json()["error"])
-            self.assertNotIn("unexpectedStoredProperty", response.body.decode())
-        else:
-            self.assertEqual(response.status, 200, response.body[:1000])
+        row_id = "workspace-views-other-task"
+        original = self._record("runtime_tasks", row_id)
+        self._write_record("runtime_tasks", row_id, {**original, "unexpectedStoredProperty": True})
+        try:
+            response = self.backend.request("GET", "/api/task?" + urlencode({"id": row_id}))
+            if self.rust_backend:
+                self.assertEqual(response.status, 500, response.body[:1000])
+                self.assertIn(f"Invalid stored object runtime_tasks row {row_id}", response.json()["error"])
+                self.assertNotIn("unexpectedStoredProperty", response.body.decode())
+            else:
+                self.assertEqual(response.status, 200, response.body[:1000])
+        finally:
+            self._write_record("runtime_tasks", row_id, original)
+
+    def test_agent_used_for_deletion_check_is_validated(self) -> None:
+        original = self._record("runtime_agents", self.other_id)
+        self._write_record("runtime_agents", self.other_id, {})
+        try:
+            response = self.backend.request(
+                "GET", "/api/task?" + urlencode({"id": "workspace-views-other-task"}),
+            )
+            if self.rust_backend:
+                self.assertEqual(response.status, 500, response.body[:1000])
+                self.assertIn(
+                    f"Invalid stored object runtime_agents row {self.other_id}",
+                    response.json()["error"],
+                )
+            else:
+                self.assertEqual(response.status, 200, response.body[:1000])
+        finally:
+            self._write_record("runtime_agents", self.other_id, original)
+
+    def test_task_feed_refuses_missing_agent_and_mismatched_row_id(self) -> None:
+        row_id = "workspace-task-000"
+        original = self._record("runtime_tasks", row_id)
+        without_agent = {key: value for key, value in original.items() if key != "agent"}
+        self._write_record("runtime_tasks", row_id, without_agent)
+        try:
+            response = self.backend.request(
+                "GET", "/api/workspace/tasks?" + urlencode({"agent": self.lead_id}),
+            )
+            if self.rust_backend:
+                self.assertEqual(response.status, 500, response.body[:1000])
+                self.assertIn(f"Invalid stored object runtime_tasks row {row_id}", response.json()["error"])
+            else:
+                self.assertEqual(response.status, 200, response.body[:1000])
+        finally:
+            self._write_record("runtime_tasks", row_id, original)
+
+        self._write_record("runtime_tasks", row_id, {**original, "id": "different-task-id"})
+        try:
+            for path in (
+                "/api/task?" + urlencode({"id": row_id}),
+                "/api/workspace/tasks?" + urlencode({"agent": self.lead_id}),
+            ):
+                response = self.backend.request("GET", path)
+                if self.rust_backend:
+                    self.assertEqual(response.status, 500, response.body[:1000])
+                    self.assertIn(f"Invalid stored object runtime_tasks row {row_id}", response.json()["error"])
+                else:
+                    self.assertEqual(response.status, 200, response.body[:1000])
+        finally:
+            self._write_record("runtime_tasks", row_id, original)
 
     def test_workspace_and_changes_report_their_unavailable_services(self) -> None:
         workspace = self.backend.request("GET", "/api/workspace")
@@ -184,6 +264,20 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         uri = f"file:{self.backend.state / 'canvas.sqlite3'}?mode=ro"
         with sqlite3.connect(uri, uri=True) as connection:
             return connection.execute("SELECT count(*) FROM runtime_tasks").fetchone()[0]
+
+    def _record(self, table: str, row_id: str) -> dict:
+        uri = f"file:{self.backend.state / 'canvas.sqlite3'}?mode=ro"
+        with sqlite3.connect(uri, uri=True) as connection:
+            record = connection.execute(
+                f"SELECT record FROM {table} WHERE id=?", (row_id,),
+            ).fetchone()[0]
+        return json.loads(record)
+
+    def _write_record(self, table: str, row_id: str, record: dict) -> None:
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as connection:
+            connection.execute(
+                f"UPDATE {table} SET record=? WHERE id=?", (json.dumps(record), row_id),
+            )
 
 
 if __name__ == "__main__":

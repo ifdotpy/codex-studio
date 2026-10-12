@@ -15,7 +15,6 @@ pub(crate) const REQUIREMENTS: &[&SchemaRequirements] = &[
     &messages::REQUIREMENTS,
     &rules::REQUIREMENTS,
     &sync_documents::REQUIREMENTS,
-    &workspace_views::REQUIREMENTS,
 ];
 
 #[cfg(test)]

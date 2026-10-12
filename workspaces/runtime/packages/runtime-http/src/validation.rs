@@ -59,6 +59,7 @@ struct OperationValidator {
 #[derive(Clone, Default)]
 pub(crate) struct Registry {
     operations: Arc<BTreeMap<String, OperationValidator>>,
+    stored_schemas: Arc<BTreeMap<&'static str, Validator>>,
     preference_field: Option<Validator>,
 }
 
@@ -108,6 +109,20 @@ impl Registry {
                 operation_id: "push_preferences_api_sync_preferences_post".to_owned(),
                 message: error.to_string(),
             })?;
+        let stored_schemas = ["AgentRecordResponse", "TaskDetailResponse"]
+            .into_iter()
+            .map(|name| {
+                let validator = jsonschema::options()
+                    .with_registry(&schema_registry)
+                    .with_pattern_options(jsonschema::PatternOptions::regex())
+                    .build(&json!({"$ref": format!("{OPENAPI_URI}#/components/schemas/{name}")}))
+                    .map_err(|error| CompileError {
+                        operation_id: name.to_owned(),
+                        message: error.to_string(),
+                    })?;
+                Ok((name, validator))
+            })
+            .collect::<Result<BTreeMap<_, _>, CompileError>>()?;
         let mut compiled = BTreeMap::new();
         for (method, path) in registered {
             let operation = document.pointer(&format!(
@@ -137,6 +152,7 @@ impl Registry {
         }
         Ok(Self {
             operations: Arc::new(compiled),
+            stored_schemas: Arc::new(stored_schemas),
             preference_field: Some(preference_field),
         })
     }
@@ -286,6 +302,12 @@ impl Registry {
     pub(crate) fn validate_preference_field(&self, value: &Value) -> bool {
         self.preference_field
             .as_ref()
+            .is_some_and(|validator| validator.is_valid(value))
+    }
+
+    pub(crate) fn validate_stored(&self, schema: &str, value: &Value) -> bool {
+        self.stored_schemas
+            .get(schema)
             .is_some_and(|validator| validator.is_valid(value))
     }
 }
@@ -957,6 +979,7 @@ mod tests {
         let registry = Registry {
             operations: Arc::new(BTreeMap::from([("GET /x".to_owned(), compiled)])),
             preference_field: None,
+            ..Registry::default()
         };
         for alongside_valid in [false, true] {
             let mut actual_headers = HeaderMap::new();
@@ -1180,6 +1203,7 @@ mod tests {
                 },
             )])),
             preference_field: None,
+            ..Registry::default()
         };
         let valid = registry
             .validate_route(
@@ -1371,6 +1395,7 @@ mod tests {
         let arrays = Registry {
             operations: Arc::new(BTreeMap::from([("GET /x".to_owned(), compiled)])),
             preference_field: None,
+            ..Registry::default()
         };
         let validated = arrays
             .validate(

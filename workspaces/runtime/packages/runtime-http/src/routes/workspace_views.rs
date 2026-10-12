@@ -1,14 +1,13 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use studio_runtime_services::workspace_views::{CursorKind, parse_task_cursor, task_feed_response};
 use studio_runtime_store::WorkspaceViewsRepository;
 
 use crate::error::ApiError;
 use crate::router::HttpState;
+use crate::validation::Registry;
 
 use super::extractors::QueryParams;
 use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get};
@@ -49,9 +48,7 @@ async fn changes() -> Result<Json<Value>, ApiError> {
     ))
 }
 
-async fn workspace(query: QueryParams) -> Result<Json<Value>, ApiError> {
-    // The shared boundary has already validated the complete query schema.
-    let _ = query;
+async fn workspace() -> Result<Json<Value>, ApiError> {
     Err(dependency_error(
         "GET",
         "/api/workspace",
@@ -68,27 +65,39 @@ async fn task_detail(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
-    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let (store, validators) = (
+        state.store.clone().ok_or_else(ApiError::internal)?,
+        state.validators.clone(),
+    );
     let task = tokio::task::spawn_blocking(move || {
         let connection = store.read().map_err(|_| ApiError::internal())?;
         let task = WorkspaceViewsRepository::task(&connection, &id)
-            .map_err(|_| invalid_stored("runtime_tasks"))?
+            .map_err(|_| invalid_stored("runtime_tasks", &id))?
             .ok_or_else(invalid_request)?;
-        let agent_id = task
-            .get("agent")
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid_stored("runtime_tasks"))?;
+        let task = checked_stored(
+            &validators,
+            "TaskDetailResponse",
+            "runtime_tasks",
+            &id,
+            task,
+        )?;
+        let agent_id = task["agent"]
+            .as_str()
+            .ok_or_else(|| invalid_stored("runtime_tasks", &id))?;
         let agent = WorkspaceViewsRepository::agent(&connection, agent_id)
-            .map_err(|_| invalid_stored("runtime_agents"))?
-            .ok_or_else(|| invalid_stored("runtime_agents"))?;
-        if agent
-            .get("deletedAt")
-            .is_some_and(|value| !value.is_null() && !is_false(value))
-        {
+            .map_err(|_| invalid_stored("runtime_agents", agent_id))?
+            .ok_or_else(|| invalid_stored("runtime_agents", agent_id))?;
+        let agent = checked_stored(
+            &validators,
+            "AgentRecordResponse",
+            "runtime_agents",
+            agent_id,
+            agent,
+        )?;
+        if deleted(&agent) {
             return Err(invalid_request());
         }
-        generated_json::<crate::generated::TaskDetailResponse>(task)
-            .map_err(|_| invalid_stored("runtime_tasks"))
+        Ok(task)
     })
     .await
     .map_err(|_| ApiError::internal())??;
@@ -99,50 +108,69 @@ async fn workspace_tasks(
     query: QueryParams,
     State(state): State<HttpState>,
 ) -> Result<Json<Value>, ApiError> {
-    let agent = query
-        .typed_value("agent")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
+    let agent = query.nonempty_str("agent").map(str::to_owned);
     let limit = query
         .typed_value("limit")
         .and_then(Value::as_u64)
         .unwrap_or(100)
         .clamp(1, 100) as usize;
-    let cursor = parse_task_cursor(
-        query.typed_value("cursor").and_then(Value::as_str),
-        CursorKind::Current,
-    )
-    .map_err(|_| invalid_cursor("cursor"))?;
-    let before = parse_task_cursor(
-        query.typed_value("before").and_then(Value::as_str),
-        CursorKind::Before,
-    )
-    .map_err(|_| invalid_cursor("before"))?;
-    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let cursor = parse_task_cursor(query.nonempty_str("cursor"), CursorKind::Current)
+        .map_err(|_| invalid_cursor("cursor"))?;
+    let before = parse_task_cursor(query.nonempty_str("before"), CursorKind::Before)
+        .map_err(|_| invalid_cursor("before"))?;
+    let (store, validators) = (
+        state.store.clone().ok_or_else(ApiError::internal)?,
+        state.validators.clone(),
+    );
     let result = tokio::task::spawn_blocking(move || {
         let connection = store.read().map_err(|_| ApiError::internal())?;
-        let root = if let Some(agent_id) = agent.as_deref() {
-            let record = WorkspaceViewsRepository::agent(&connection, agent_id)
-                .map_err(|_| invalid_stored("runtime_agents"))?
-                .ok_or_else(invalid_request)?;
-            if record
-                .get("deletedAt")
-                .is_some_and(|value| !value.is_null() && !is_false(value))
-            {
-                return Err(invalid_request());
-            }
-            Some(
-                record
-                    .get("rootId")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| invalid_stored("runtime_agents"))?
-                    .to_owned(),
-            )
-        } else {
-            None
-        };
-        let ids = WorkspaceViewsRepository::live_agent_ids(&connection, root.as_deref())
-            .map_err(|_| invalid_stored("runtime_agents"))?;
+        if let Some(id) = WorkspaceViewsRepository::first_invalid_task_identity(&connection)
+            .map_err(|_| invalid_stored("runtime_tasks", "unknown"))?
+        {
+            return Err(invalid_stored("runtime_tasks", &id));
+        }
+
+        let agents = WorkspaceViewsRepository::agent_ids(&connection)
+            .map_err(|_| invalid_stored("runtime_agents", "unknown"))?
+            .into_iter()
+            .map(|id| {
+                let record = WorkspaceViewsRepository::agent(&connection, &id)
+                    .map_err(|_| invalid_stored("runtime_agents", &id))?
+                    .ok_or_else(|| invalid_stored("runtime_agents", &id))?;
+                let record = checked_stored(
+                    &validators,
+                    "AgentRecordResponse",
+                    "runtime_agents",
+                    &id,
+                    record,
+                )?;
+                Ok((id, record))
+            })
+            .collect::<Result<Vec<_>, ApiError>>()?;
+        let root = agent
+            .as_deref()
+            .map(|agent_id| {
+                let record = agents
+                    .iter()
+                    .find(|(id, _)| id == agent_id)
+                    .map(|(_, record)| record)
+                    .ok_or_else(invalid_request)?;
+                if deleted(record) {
+                    return Err(invalid_request());
+                }
+                Ok(record["rootId"]
+                    .as_str()
+                    .ok_or_else(|| invalid_stored("runtime_agents", agent_id))?
+                    .to_owned())
+            })
+            .transpose()?;
+        let ids = agents
+            .into_iter()
+            .filter(|(_, record)| {
+                !deleted(record) && root.as_ref().is_none_or(|root| record["rootId"] == *root)
+            })
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>();
         let page = WorkspaceViewsRepository::task_page(
             &connection,
             &ids,
@@ -153,88 +181,74 @@ async fn workspace_tasks(
             before.as_ref().map(|value| (value.time, value.id.as_str())),
             limit,
         )
-        .map_err(|_| invalid_stored("runtime_tasks"))?;
-        let rows_returned = page.len();
-        let selected = page
-            .iter()
-            .take(limit)
-            .map(|row| row.record.clone())
-            .collect::<Vec<_>>();
-        let summaries = selected
+        .map_err(|_| invalid_stored("runtime_tasks", "unknown"))?;
+        let has_more = page.len() > limit;
+        let tasks = page
             .into_iter()
-            .map(|record| {
-                let mut detail = generated_json::<crate::generated::TaskDetailResponse>(record)
-                    .map_err(|_| invalid_stored("runtime_tasks"))?;
-                if let Value::Object(object) = &mut detail {
-                    object.remove("tail");
-                    object.remove("arguments");
-                    object.remove("error");
+            .take(limit)
+            .map(|row| {
+                let record = WorkspaceViewsRepository::task(&connection, &row.id)
+                    .map_err(|_| invalid_stored("runtime_tasks", &row.id))?
+                    .ok_or_else(|| invalid_stored("runtime_tasks", &row.id))?;
+                let record = checked_stored(
+                    &validators,
+                    "TaskDetailResponse",
+                    "runtime_tasks",
+                    &row.id,
+                    record,
+                )?;
+                let mut summary = record;
+                if let Some(record) = summary.as_object_mut() {
+                    record.remove("tail");
+                    record.remove("arguments");
+                    record.remove("error");
                 }
-                generated_json::<crate::generated::WorkspaceTaskRecord>(detail)
-                    .map_err(|_| invalid_stored("runtime_tasks"))
+                Ok(summary)
             })
-            .collect::<Result<Vec<_>, _>>()?;
-        let sort_value = page.get(limit.saturating_sub(1)).map(|row| row.sort_value);
+            .collect::<Result<Vec<_>, ApiError>>()?;
         Ok(task_feed_response(
-            summaries,
-            rows_returned,
-            cursor.as_ref().filter(|_| before.is_none()),
+            tasks,
+            has_more,
+            cursor.as_ref(),
             before.as_ref(),
-            limit,
-            sort_value,
         ))
     })
     .await
     .map_err(|_| ApiError::internal())??;
-    generated_json::<crate::generated::WorkspaceTaskFeed>(result).map(Json)
+    Ok(Json(result))
 }
 
-fn generated_json<T>(value: Value) -> Result<Value, ApiError>
-where
-    T: DeserializeOwned + Serialize,
-{
-    let dto = serde_json::from_value::<T>(value.clone()).map_err(|_| ApiError::internal())?;
-    let normalized = serde_json::to_value(dto).map_err(|_| ApiError::internal())?;
-    if has_unknown_keys(&value, &normalized) {
-        return Err(ApiError::internal());
-    }
-    Ok(normalized)
-}
-
-fn has_unknown_keys(value: &Value, normalized: &Value) -> bool {
-    match (value, normalized) {
-        (Value::Object(value), Value::Object(normalized)) => value.iter().any(|(key, child)| {
-            normalized
-                .get(key)
-                .is_none_or(|normalized_child| has_unknown_keys(child, normalized_child))
-        }),
-        (Value::Array(value), Value::Array(normalized)) => value
-            .iter()
-            .zip(normalized)
-            .any(|(child, normalized_child)| has_unknown_keys(child, normalized_child)),
-        _ => false,
+fn checked_stored(
+    validators: &Registry,
+    schema: &str,
+    table: &str,
+    id: &str,
+    value: Value,
+) -> Result<Value, ApiError> {
+    if !validators.validate_stored(schema, &value)
+        || value.get("id").and_then(Value::as_str) != Some(id)
+    {
+        Err(invalid_stored(table, id))
+    } else {
+        Ok(value)
     }
 }
 
-fn is_false(value: &Value) -> bool {
-    match value {
-        Value::Bool(value) => !value,
-        Value::Number(number) => number.as_f64() == Some(0.0),
-        Value::String(value) => value.is_empty(),
-        Value::Array(values) => values.is_empty(),
-        Value::Object(values) => values.is_empty(),
-        Value::Null => false,
-    }
+fn deleted(agent: &Value) -> bool {
+    agent
+        .get("deletedAt")
+        .and_then(Value::as_f64)
+        .is_some_and(|value| value != 0.0)
 }
 
 fn invalid_request() -> ApiError {
     ApiError::new(StatusCode::BAD_REQUEST, "Invalid request")
 }
 
-fn invalid_stored(object: &str) -> ApiError {
+fn invalid_stored(object: &str, id: &str) -> ApiError {
     ApiError::new(
         StatusCode::INTERNAL_SERVER_ERROR,
-        format!("Invalid stored object {object}"),
+        format!("Invalid stored object {object} row {id}"),
     )
 }
 

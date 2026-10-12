@@ -112,6 +112,12 @@ impl QueryParams {
         self.typed.get(name)
     }
 
+    pub(crate) fn nonempty_str(&self, name: &str) -> Option<&str> {
+        self.typed_value(name)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+    }
+
     #[cfg(test)]
     pub(crate) fn into_typed(self) -> serde_json::Map<String, Value> {
         self.typed

@@ -2,33 +2,11 @@ use rusqlite::{Connection, OptionalExtension, params_from_iter, types::Value as 
 use serde_json::Value;
 
 use crate::StoreResult;
-use crate::schema::{SchemaRequirements, TableRequirement};
-
-pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
-    tables: &[
-        TableRequirement {
-            name: "runtime_tasks",
-            columns: &["id", "record"],
-        },
-        TableRequirement {
-            name: "runtime_agents",
-            columns: &["id", "record"],
-        },
-    ],
-    conditional_tables: &[],
-    triggers: &[],
-    conditional_triggers: &[],
-    connection_functions: &[],
-    bootstrap_tables: &[],
-    bootstrap_triggers: &[],
-    bootstrap_connection_functions: &[],
-};
+use crate::records::get_json_record;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkspaceTaskRow {
     pub id: String,
-    pub sort_value: f64,
-    pub record: Value,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -36,69 +14,31 @@ pub struct WorkspaceViewsRepository;
 
 impl WorkspaceViewsRepository {
     pub fn task(connection: &Connection, id: &str) -> StoreResult<Option<Value>> {
-        let record = connection
-            .query_row(
-                "SELECT record FROM runtime_tasks WHERE id=?1",
-                [id],
-                |row| {
-                    let source: String = row.get(0)?;
-                    serde_json::from_str(&source).map_err(|error| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            0,
-                            rusqlite::types::Type::Text,
-                            Box::new(error),
-                        )
-                    })
-                },
-            )
-            .optional()?;
-        Ok(record)
+        get_json_record(connection, "runtime_tasks", id)
     }
 
     pub fn agent(connection: &Connection, id: &str) -> StoreResult<Option<Value>> {
-        let record = connection
-            .query_row(
-                "SELECT record FROM runtime_agents WHERE id=?1",
-                [id],
-                |row| {
-                    let source: String = row.get(0)?;
-                    serde_json::from_str(&source).map_err(|error| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            0,
-                            rusqlite::types::Type::Text,
-                            Box::new(error),
-                        )
-                    })
-                },
-            )
-            .optional()?;
-        Ok(record)
+        get_json_record(connection, "runtime_agents", id)
     }
 
-    pub fn live_agent_ids(
-        connection: &Connection,
-        root_id: Option<&str>,
-    ) -> StoreResult<Vec<String>> {
-        let sql = match root_id {
-            Some(_) => {
-                "SELECT id FROM runtime_agents WHERE json_extract(record,'$.rootId')=?1 \
-                 AND json_extract(record,'$.deletedAt') IS NULL"
-            }
-            None => {
-                "SELECT id FROM runtime_agents WHERE json_extract(record,'$.deletedAt') IS NULL"
-            }
-        };
-        let mut statement = connection.prepare(sql)?;
-        let ids = if let Some(root_id) = root_id {
-            statement
-                .query_map([root_id], |row| row.get(0))?
-                .collect::<Result<Vec<String>, _>>()?
-        } else {
-            statement
-                .query_map([], |row| row.get(0))?
-                .collect::<Result<Vec<String>, _>>()?
-        };
-        Ok(ids)
+    pub fn agent_ids(connection: &Connection) -> StoreResult<Vec<String>> {
+        Ok(connection
+            .prepare("SELECT id FROM runtime_agents")?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    pub fn first_invalid_task_identity(connection: &Connection) -> StoreResult<Option<String>> {
+        Ok(connection
+            .query_row(
+                "SELECT id FROM runtime_tasks WHERE CASE WHEN json_valid(record)=0 THEN 1 \
+                 ELSE json_type(record,'$.id') IS NOT 'text' \
+                 OR json_extract(record,'$.id') IS NOT id \
+                 OR json_type(record,'$.agent') IS NOT 'text' END LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?)
     }
 
     pub fn task_page(
@@ -117,8 +57,8 @@ impl WorkspaceViewsRepository {
             "CASE WHEN COALESCE(json_extract(record,'$.finished'),0) > \
              COALESCE({created},0) THEN json_extract(record,'$.finished') ELSE {created} END"
         );
-        let (sort_value, condition, order, cursor_args) = match (cursor, before) {
-            (Some((time, id)), None) => (
+        let (sort_value, condition, order, cursor_args) = if let Some((time, id)) = cursor {
+            (
                 updated.clone(),
                 format!("({updated} > ? OR ({updated} = ? AND id > ?))"),
                 "ASC",
@@ -127,8 +67,9 @@ impl WorkspaceViewsRepository {
                     SqlValue::Real(time),
                     SqlValue::Text(id.to_owned()),
                 ],
-            ),
-            (None, Some((created_at, id))) => (
+            )
+        } else if let Some((created_at, id)) = before {
+            (
                 created.to_owned(),
                 format!("({created} < ? OR ({created} = ? AND id < ?))"),
                 "DESC",
@@ -137,13 +78,13 @@ impl WorkspaceViewsRepository {
                     SqlValue::Real(created_at),
                     SqlValue::Text(id.to_owned()),
                 ],
-            ),
-            (None, None) => (created.to_owned(), "1=1".to_owned(), "DESC", Vec::new()),
-            (Some(_), Some(_)) => return Ok(Vec::new()),
+            )
+        } else {
+            (created.to_owned(), "1=1".to_owned(), "DESC", Vec::new())
         };
         let agents_predicate = format!("json_extract(record,'$.agent') IN ({marks})");
         let sql = format!(
-            "SELECT id, {sort_value}, record \
+            "SELECT id \
              FROM runtime_tasks WHERE {agents_predicate} AND {condition} \
              ORDER BY {sort_value} {order}, id {order} LIMIT ?"
         );
@@ -158,25 +99,10 @@ impl WorkspaceViewsRepository {
         ));
         // Bind each predicate's values in the same order as its placeholders.
         let mut statement = connection.prepare(&sql)?;
-        let rows = statement
-            .query_map(params_from_iter(args.iter()), |row| {
-                let id = row.get(0)?;
-                let sort_value = row.get(1)?;
-                let record: String = row.get(2)?;
-                let record = serde_json::from_str(&record).map_err(|error| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        2,
-                        rusqlite::types::Type::Text,
-                        Box::new(error),
-                    )
-                })?;
-                Ok(WorkspaceTaskRow {
-                    id,
-                    sort_value,
-                    record,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
+        statement
+            .query_map(params_from_iter(args.iter()), |row| row.get::<_, String>(0))?
+            .map(|row| row.map(|id| WorkspaceTaskRow { id }))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 }
