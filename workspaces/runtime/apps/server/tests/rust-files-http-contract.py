@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import json
+import mimetypes
 import os
 import shutil
 import sqlite3
@@ -92,6 +93,11 @@ class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         outside = cls.outside
         outside.write_text("symlink and absolute paths stay supported", encoding="utf-8")
         (cls.workspace / "link.md").symlink_to(outside)
+        cls.preview_extensions = ("avif", "bmp", "webm", "ogg", "wav")
+        for extension in cls.preview_extensions:
+            (cls.workspace / f"preview.{extension}").write_bytes(b"preview")
+        if hasattr(os, "mkfifo"):
+            os.mkfifo(cls.workspace / "pipe")
         with (cls.workspace / "large.pdf").open("wb") as file:
             file.truncate(20 * 1024 * 1024 + 1)
         seed_python_workspace(cls.backend, cls.workspace)
@@ -194,6 +200,35 @@ class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         self.assertEqual(response.status, 400, response.body[:1000])
         self.assertIn("preview limit", response.json()["error"])
+
+    def test_preview_media_mime_matches_python_mimetypes(self) -> None:
+        for extension in self.preview_extensions:
+            name = f"preview.{extension}"
+            expected = mimetypes.guess_type(name)[0] or "application/octet-stream"
+            info = self.backend.request(
+                "GET",
+                "/api/file-info?"
+                + urlencode({"agent": "files-contract-live", "path": name}),
+                headers=self._headers(),
+            )
+            self.assertEqual(info.status, 200, info.body[:1000])
+            self.assertEqual(info.json()["mime"], expected, extension)
+            content = self.backend.request(
+                "GET",
+                "/api/file?" + urlencode({"agent": "files-contract-live", "path": name}),
+                headers=self._headers(),
+            )
+            self.assertEqual(content.status, 200, content.body[:1000])
+            self.assertEqual(content.json()["mime"], expected, extension)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "FIFO files require a Unix platform")
+    def test_fifo_files_are_rejected_before_opening(self) -> None:
+        response = self.backend.request(
+            "GET",
+            "/api/file?" + urlencode({"agent": "files-contract-live", "path": "pipe"}),
+            headers=self._headers(),
+        )
+        self.assertEqual(response.status, 400, response.body[:1000])
 
 
 if __name__ == "__main__":

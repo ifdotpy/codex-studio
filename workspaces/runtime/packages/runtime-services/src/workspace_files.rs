@@ -1,6 +1,6 @@
 //! Filesystem policy for file previews in local workspaces.
 
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -9,6 +9,7 @@ use thiserror::Error;
 
 pub const MAX_PREVIEW_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_PATH_CHARS: usize = 4096;
+const PYTHON_MIME_OVERRIDES: &[(&str, &str)] = &[("wav", "audio/x-wav")];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceContext {
@@ -90,6 +91,10 @@ pub fn file_info(path: &str, root: Option<&str>) -> Result<FileInfo, WorkspaceFi
 
 pub fn file_content(path: &str, root: Option<&str>) -> Result<FileContent, WorkspaceFilesError> {
     let file_path = resolve_file(path, root)?;
+    let path_metadata = fs::metadata(&file_path).map_err(|_| WorkspaceFilesError::MissingFile)?;
+    if !path_metadata.is_file() {
+        return Err(WorkspaceFilesError::MissingFile);
+    }
     let file = File::open(&file_path).map_err(|_| WorkspaceFilesError::MissingFile)?;
     let metadata = file
         .metadata()
@@ -150,32 +155,21 @@ fn expand_home(path: &str) -> String {
 }
 
 fn mime_type(path: &Path) -> String {
-    let mime = match path
+    let extension = path
         .extension()
         .and_then(|extension| extension.to_str())
-        .map(str::to_ascii_lowercase)
-        .as_deref()
+        .map(str::to_ascii_lowercase);
+    // Python's mimetypes uses this legacy spelling; the HTTP contract pins it.
+    if let Some((_, mime)) = PYTHON_MIME_OVERRIDES
+        .iter()
+        .find(|(override_extension, _)| Some(*override_extension) == extension.as_deref())
     {
-        Some("pdf") => "application/pdf",
-        Some("txt" | "log") => "text/plain",
-        Some("md" | "markdown") => "text/markdown",
-        Some("html" | "htm") => "text/html",
-        Some("css") => "text/css",
-        Some("csv") => "text/csv",
-        Some("json" | "map") => "application/json",
-        Some("js" | "mjs") => "text/javascript",
-        Some("xml") => "application/xml",
-        Some("png") => "image/png",
-        Some("jpg" | "jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("webp") => "image/webp",
-        Some("svg") => "image/svg+xml",
-        Some("mp3") => "audio/mpeg",
-        Some("wav") => "audio/wav",
-        Some("mp4") => "video/mp4",
-        _ => "application/octet-stream",
+        return (*mime).to_owned();
     };
-    mime.to_owned()
+    mime_guess::from_path(path)
+        .first_or_octet_stream()
+        .essence_str()
+        .to_owned()
 }
 
 #[cfg(test)]
