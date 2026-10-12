@@ -28,7 +28,7 @@ from studio_api.sync.models import AgentEntityDto, AgentMode, AgentProvider, Age
 # Additions to either declaration must be assigned to exactly one group here.
 AGENT_FIELD_GROUPS = {
     "shared": frozenset("""
-        accountKey accountTransfer activity agentMode agentModeRevision agentModeSupported
+        accountKey excludedAccountKeys accountTransfer activity agentMode agentModeRevision agentModeSupported
         archived autoWake compactions concurrency connectionCheck contextUsage convertedFromLead
         created cwd daybreakEnabled deletedAt effort environment error fastMode id imageWorkspace
         imageWorkspaceBaseRef imageWorkspaceBaseRepo imageWorkspaceCreatedAt imageWorkspaceError

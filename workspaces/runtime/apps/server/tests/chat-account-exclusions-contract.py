@@ -4,6 +4,8 @@ import sys
 from contextlib import contextmanager
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
 
 import json
 import sqlite3
@@ -31,6 +33,9 @@ class FakeAccounts:
 
     def get(self, key):
         return next(row for row in self.rows if row["id"] == key)
+
+    def home(self, key):
+        return self.get(key)["id"]
 
     def allow_native_auth_attempt(self, _key, _row):
         return False
