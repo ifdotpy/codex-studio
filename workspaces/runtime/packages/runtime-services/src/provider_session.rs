@@ -1,12 +1,14 @@
 //! Process-owned adapter for one JSONL provider session.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+pub use studio_runtime_process::ProviderProcess;
+use studio_runtime_process::ProviderProcessReader;
 use studio_runtime_providers::{
     Action, Frame, Inbound, LineDecoder, Method, RequestId, RequestOutcome, RequestTicket,
     ResponseBody, SessionError, SessionState,
@@ -44,14 +46,6 @@ impl Default for ProviderSessionConfig {
     }
 }
 
-/// Split byte streams and process lifecycle supplied by the process owner.
-/// A production implementation must delegate ownership to `runtime-process`'s
-/// supervisor; the session never launches or retries a process itself.
-pub trait ProviderProcess: Send {
-    fn split(&mut self) -> io::Result<(Box<dyn Read + Send>, Box<dyn Write + Send>)>;
-    fn stop(&mut self) -> io::Result<()>;
-}
-
 /// Correlated provider event delivered to the session caller.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ProviderSessionEvent {
@@ -81,10 +75,12 @@ pub enum ProviderSessionError {
     Session(#[from] SessionError),
     #[error("provider session is closed")]
     Closed,
+    #[error("provider cursor has not been delivered to the consumer")]
+    CursorNotDelivered,
 }
 
 enum ReadEvent {
-    Frame(Frame),
+    Frame { frame: Frame, cursor: Option<u64> },
     End,
 }
 
@@ -97,10 +93,13 @@ pub struct ProviderSession {
     reader_events: Option<Receiver<ReadEvent>>,
     reader: Option<JoinHandle<()>>,
     deadlines: BTreeMap<RequestId, u64>,
-    queued: VecDeque<ProviderSessionEvent>,
+    queued: VecDeque<(ProviderSessionEvent, Option<u64>)>,
     started: Instant,
     transport_failed: bool,
     reader_ended: bool,
+    handled_cursor: u64,
+    last_delivered_cursor: u64,
+    generation: u64,
 }
 
 impl ProviderSession {
@@ -108,6 +107,13 @@ impl ProviderSession {
         mut process: Box<dyn ProviderProcess>,
         config: ProviderSessionConfig,
     ) -> Result<Self, ProviderSessionError> {
+        let handled_cursor = process.acknowledged_cursor();
+        let process_generation = process.generation();
+        let generation = if process_generation == 0 {
+            config.generation
+        } else {
+            process_generation
+        };
         let (reader, writer) = match process.split() {
             Ok(streams) => streams,
             Err(error) => {
@@ -119,7 +125,7 @@ impl ProviderSession {
         let reader = spawn_reader(reader, sender);
         let started = Instant::now();
         let (state, initial_actions) = match SessionState::new(
-            config.generation,
+            generation,
             config.claude,
             0,
             config.request_timeout_ms,
@@ -149,40 +155,70 @@ impl ProviderSession {
             started,
             transport_failed: false,
             reader_ended: false,
+            handled_cursor,
+            last_delivered_cursor: handled_cursor,
+            generation,
         };
-        session.apply_actions(initial_actions);
+        session.apply_actions(initial_actions, None);
+        let mut deferred = VecDeque::new();
         loop {
-            match session.receive_event()? {
-                ProviderSessionEvent::Reply {
-                    ticket,
-                    body: ResponseBody::Result(_),
-                    ..
-                } if ticket.method == Method::Initialize => {
+            let received = match session.receive_event() {
+                Ok(received) => received,
+                Err(error) => {
+                    let _ignored = session.close();
+                    return Err(error);
+                }
+            };
+            match received {
+                (
+                    ProviderSessionEvent::Reply {
+                        ticket,
+                        body: ResponseBody::Result(_),
+                        ..
+                    },
+                    cursor,
+                ) if ticket.method == Method::Initialize => {
+                    if let Err(error) = session.acknowledge_cursor(cursor) {
+                        let _ignored = session.close();
+                        return Err(error);
+                    }
                     if session.transport_failed {
-                        let _ignored = session.stop_process();
+                        let _ignored = session.close();
                         return Err(ProviderSessionError::InitializeUnknown);
                     }
+                    session.queued.extend(deferred);
                     return Ok(session);
                 }
-                ProviderSessionEvent::Reply {
-                    ticket,
-                    body: ResponseBody::Error(_),
-                    ..
-                } if ticket.method == Method::Initialize => {
-                    let _ignored = session.stop_process();
+                (
+                    ProviderSessionEvent::Reply {
+                        ticket,
+                        body: ResponseBody::Error(_),
+                        ..
+                    },
+                    cursor,
+                ) if ticket.method == Method::Initialize => {
+                    if let Err(error) = session.acknowledge_cursor(cursor) {
+                        let _ignored = session.close();
+                        return Err(error);
+                    }
+                    let _ignored = session.close();
                     return Err(ProviderSessionError::InitializeRejected);
                 }
-                ProviderSessionEvent::UnknownOutcome { ticket }
+                (ProviderSessionEvent::UnknownOutcome { ticket }, cursor)
                     if ticket.method == Method::Initialize =>
                 {
-                    let _ignored = session.stop_process();
+                    if let Err(error) = session.acknowledge_cursor(cursor) {
+                        let _ignored = session.close();
+                        return Err(error);
+                    }
+                    let _ignored = session.close();
                     return Err(ProviderSessionError::InitializeUnknown);
                 }
                 _ if session.transport_failed || session.reader_ended => {
-                    let _ignored = session.stop_process();
+                    let _ignored = session.close();
                     return Err(ProviderSessionError::InitializeUnknown);
                 }
-                _ => {}
+                event => deferred.push_back(event),
             }
         }
     }
@@ -203,16 +239,21 @@ impl ProviderSession {
                 .submit(method, params, now, timeout_ms, thread_id, lightweight)?;
         self.deadlines
             .insert(ticket.id.clone(), now.saturating_add(timeout_ms));
-        self.apply_actions(actions);
+        self.apply_actions(actions, None);
         Ok(ticket)
     }
 
     /// Wait for one reply, provider callback, unknown outcome, or connection
     /// close. Frames and inbound callbacks retain their wire order.
-    pub fn receive_event(&mut self) -> Result<ProviderSessionEvent, ProviderSessionError> {
+    pub fn receive_event(
+        &mut self,
+    ) -> Result<(ProviderSessionEvent, Option<u64>), ProviderSessionError> {
         loop {
-            if let Some(event) = self.queued.pop_front() {
-                return Ok(event);
+            if let Some((event, cursor)) = self.queued.pop_front() {
+                if let Some(cursor) = cursor {
+                    self.last_delivered_cursor = self.last_delivered_cursor.max(cursor);
+                }
+                return Ok((event, cursor));
             }
             if self.reader_ended {
                 return Err(ProviderSessionError::Closed);
@@ -235,6 +276,7 @@ impl ProviderSession {
                                 .into_iter()
                                 .filter(|action| !matches!(action, Action::GenerationClosed { .. }))
                                 .collect(),
+                            None,
                         );
                         if result.is_err() {
                             continue;
@@ -251,21 +293,29 @@ impl ProviderSession {
                     .ok()
             };
             match received {
-                Some(ReadEvent::Frame(frame)) => {
+                Some(ReadEvent::Frame { frame, cursor }) => {
+                    if cursor.is_some_and(|cursor| cursor <= self.handled_cursor) {
+                        self.acknowledge_cursor(cursor)?;
+                        continue;
+                    }
+                    let queued_before = self.queued.len();
                     let actions = self.state.receive(frame)?;
-                    self.apply_actions(actions);
+                    self.apply_actions(actions, cursor);
+                    if self.queued.len() == queued_before {
+                        self.acknowledge_cursor(cursor)?;
+                    }
                 }
                 Some(ReadEvent::End) | None => {
                     self.reader_ended = true;
                     self.deadlines.clear();
                     let actions = self.state.transport_lost();
-                    self.apply_actions(actions);
+                    self.apply_actions(actions, None);
                 }
             }
         }
     }
 
-    fn apply_actions(&mut self, actions: Vec<Action>) {
+    fn apply_actions(&mut self, actions: Vec<Action>, cursor: Option<u64>) {
         for action in actions {
             match action {
                 Action::Write(bytes) => {
@@ -284,20 +334,25 @@ impl ProviderSession {
                 }
                 Action::Resolve { ticket, outcome } => {
                     self.deadlines.remove(&ticket.id);
-                    self.queued.push_back(match outcome {
-                        RequestOutcome::Reply { body, late } => {
-                            ProviderSessionEvent::Reply { ticket, body, late }
-                        }
-                        RequestOutcome::Unknown => ProviderSessionEvent::UnknownOutcome { ticket },
-                    });
+                    self.queued.push_back((
+                        match outcome {
+                            RequestOutcome::Reply { body, late } => {
+                                ProviderSessionEvent::Reply { ticket, body, late }
+                            }
+                            RequestOutcome::Unknown => {
+                                ProviderSessionEvent::UnknownOutcome { ticket }
+                            }
+                        },
+                        cursor,
+                    ));
                 }
                 Action::Dispatch(frame) => {
                     self.queued
-                        .push_back(ProviderSessionEvent::Inbound(to_inbound(frame)));
+                        .push_back((ProviderSessionEvent::Inbound(to_inbound(frame)), cursor));
                 }
                 Action::GenerationClosed { generation } => self
                     .queued
-                    .push_back(ProviderSessionEvent::Closed { generation }),
+                    .push_back((ProviderSessionEvent::Closed { generation }, cursor)),
                 Action::ThreadReleased { .. } => {}
             }
         }
@@ -310,16 +365,21 @@ impl ProviderSession {
         for action in actions {
             match action {
                 Action::Resolve { ticket, outcome } => {
-                    self.queued.push_back(match outcome {
-                        RequestOutcome::Reply { body, late } => {
-                            ProviderSessionEvent::Reply { ticket, body, late }
-                        }
-                        RequestOutcome::Unknown => ProviderSessionEvent::UnknownOutcome { ticket },
-                    });
+                    self.queued.push_back((
+                        match outcome {
+                            RequestOutcome::Reply { body, late } => {
+                                ProviderSessionEvent::Reply { ticket, body, late }
+                            }
+                            RequestOutcome::Unknown => {
+                                ProviderSessionEvent::UnknownOutcome { ticket }
+                            }
+                        },
+                        None,
+                    ));
                 }
                 Action::GenerationClosed { generation } => self
                     .queued
-                    .push_back(ProviderSessionEvent::Closed { generation }),
+                    .push_back((ProviderSessionEvent::Closed { generation }, None)),
                 _ => {}
             }
         }
@@ -343,9 +403,48 @@ impl ProviderSession {
             .map(|process| process.stop())
             .unwrap_or(Ok(()))
     }
+
+    /// Mark a consumer event durable and then acknowledge its supervisor cursor.
+    pub fn acknowledge_handled(&mut self, cursor: u64) -> Result<(), ProviderSessionError> {
+        if cursor > self.last_delivered_cursor {
+            return Err(ProviderSessionError::CursorNotDelivered);
+        }
+        self.acknowledge_cursor(Some(cursor))
+    }
+
+    fn acknowledge_cursor(&mut self, cursor: Option<u64>) -> Result<(), ProviderSessionError> {
+        let Some(cursor) = cursor else {
+            return Ok(());
+        };
+        if cursor <= self.handled_cursor {
+            return Ok(());
+        }
+        let process = self.process.as_mut().ok_or(ProviderSessionError::Closed)?;
+        process
+            .acknowledge(cursor)
+            .map_err(ProviderSessionError::Process)?;
+        self.handled_cursor = process.acknowledged_cursor();
+        Ok(())
+    }
+
+    /// Last supervisor journal cursor whose decoded frame was dispatched.
+    /// Callers persist this with retained request bindings before reattach.
+    #[must_use]
+    pub const fn handled_cursor(&self) -> u64 {
+        self.handled_cursor
+    }
+
+    /// Supervisor generation selected when the process was opened or reattached.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
 }
 
-fn spawn_reader(mut reader: Box<dyn Read + Send>, sender: SyncSender<ReadEvent>) -> JoinHandle<()> {
+fn spawn_reader(
+    mut reader: Box<dyn ProviderProcessReader>,
+    sender: SyncSender<ReadEvent>,
+) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut decoder = LineDecoder::new();
         let mut bytes = [0_u8; 8192];
@@ -357,8 +456,13 @@ fn spawn_reader(mut reader: Box<dyn Read + Send>, sender: SyncSender<ReadEvent>)
                 }
                 Ok(count) => match decoder.push(&bytes[..count]) {
                     Ok(frames) => {
-                        for frame in frames {
-                            if sender.send(ReadEvent::Frame(frame)).is_err() {
+                        let mut cursors = VecDeque::from(reader.take_cursors());
+                        let cursor_start = frames.len().saturating_sub(cursors.len());
+                        for (index, frame) in frames.into_iter().enumerate() {
+                            let cursor = (index >= cursor_start)
+                                .then(|| cursors.pop_front())
+                                .flatten();
+                            if sender.send(ReadEvent::Frame { frame, cursor }).is_err() {
                                 return;
                             }
                         }

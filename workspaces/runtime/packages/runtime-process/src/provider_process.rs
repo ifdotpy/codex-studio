@@ -1,6 +1,6 @@
 //! Supervisor-backed byte streams for the provider session.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,8 +14,8 @@ use thiserror::Error;
 
 use crate::{
     AckRequest, BackendIdentity, CursorRequest, EventCursor, EventKind, Generation, HandleRequest,
-    OpenRequest, OperationId, OperationStatusRequest, SupervisorClient, SupervisorError,
-    SupervisorEvent, SupervisorHandle, WriteRequest, WriteResult,
+    OpenRequest, OperationId, ProviderProcess, ProviderProcessReader, SupervisorClient,
+    SupervisorError, SupervisorEvent, SupervisorHandle, WriteRequest, WriteResult,
 };
 
 const OUTPUT_QUEUE_CAPACITY: usize = 64;
@@ -27,26 +27,159 @@ type SupervisorStream = std::os::unix::net::UnixStream;
 #[cfg(windows)]
 type SupervisorStream = std::fs::File;
 
-/// Child launch data and its stable supervisor-owned handle.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProviderHandle {
-    /// Stable handle, normally `account:<account-key>` for a native account.
-    pub handle: String,
-    /// Exact executable and arguments used to open or reattach the child.
-    pub command: Vec<String>,
-    /// Exact child environment.
-    pub environment: BTreeMap<String, String>,
-    /// Child working directory.
-    pub cwd: PathBuf,
+/// Stable identity for a supervisor-owned child.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct ProviderHandle(String);
+
+impl ProviderHandle {
+    #[must_use]
+    pub fn for_account(account_key: &str) -> Self {
+        Self(format!("account:{account_key}"))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
-/// Byte stream and lifecycle contract mirrored by `runtime-services` until
-/// the provider-session slice and this adapter are integrated.
-pub trait ProviderProcess: Send {
-    /// Split the child into its JSONL stdout and stdin byte streams.
-    fn split(&mut self) -> io::Result<(Box<dyn Read + Send>, Box<dyn Write + Send>)>;
-    /// Detach this backend connection while leaving child ownership with the supervisor.
-    fn stop(&mut self) -> io::Result<()>;
+/// Child launch values resolved by the owning server from account/runtime state.
+/// This intentionally has no `Debug` implementation because it contains secrets.
+#[derive(Clone)]
+pub struct ProviderLaunchSpec {
+    pub command: Vec<String>,
+    pub environment: BTreeMap<String, String>,
+    pub cwd: PathBuf,
+    /// Recovered native-to-session request IDs installed before replay starts.
+    pub retained_response_ids: BTreeMap<u64, u64>,
+    /// Cursor already handled by runtime state, used to make an uncertain ACK idempotent.
+    pub handled_cursor: u64,
+}
+
+const BACKEND_ONLY_ENVIRONMENT: &[&str] = &[
+    "CODEX_AGENTS_BACKEND_ID",
+    "CODEX_RUNTIME_LOCK_METRICS",
+    "CODEX_AGENTS_PROVIDER_CAPTURE",
+    "CODEX_AGENTS_PROVIDER_CAPTURE_FILE",
+    "CODEX_NODE",
+];
+const RETAINED_LAUNCHER_ENVIRONMENT: &[&str] = &[
+    "PATH",
+    "LANG",
+    "LC_CTYPE",
+    "LC_ALL",
+    "__PYVENV_LAUNCHER__",
+    "COMMAND_MODE",
+    "MallocNanoZone",
+    "XPC_SERVICE_NAME",
+    "__CFBundleIdentifier",
+];
+
+fn normalize_environment(
+    requested: &BTreeMap<String, String>,
+    identity: &BackendIdentity,
+    handle: &ProviderHandle,
+) -> Result<BTreeMap<String, String>, ProviderFactoryError> {
+    let mut clean = requested.clone();
+    for key in BACKEND_ONLY_ENVIRONMENT {
+        clean.remove(*key);
+    }
+    let Ok(mut client) = SupervisorClient::connect(&identity.state_dir, identity.clone()) else {
+        return Ok(clean);
+    };
+    let Ok(status) = client.status(HandleRequest {
+        handle: SupervisorHandle(handle.as_str().to_owned()),
+        extra: Default::default(),
+    }) else {
+        return Ok(clean);
+    };
+    if status.return_code.is_some() {
+        return Ok(clean);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let original = process_environment(status.pid).map_err(|_| ProviderFactoryError::Launch)?;
+        let without_launcher = |values: &BTreeMap<String, String>| {
+            values
+                .iter()
+                .filter(|(key, _)| {
+                    !BACKEND_ONLY_ENVIRONMENT.contains(&key.as_str())
+                        && !RETAINED_LAUNCHER_ENVIRONMENT.contains(&key.as_str())
+                })
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect::<BTreeMap<_, _>>()
+        };
+        if without_launcher(&original) != without_launcher(&clean) {
+            return Err(ProviderFactoryError::Launch);
+        }
+        Ok(original)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = status;
+        Err(ProviderFactoryError::Launch)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn process_environment(pid: u32) -> io::Result<BTreeMap<String, String>> {
+    let raw = std::fs::read(format!("/proc/{pid}/environ"))?;
+    if raw.len() > 4 * 1024 * 1024 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "native process environment exceeds its limit",
+        ));
+    }
+    parse_process_environment(&raw)
+}
+
+#[cfg(target_os = "linux")]
+fn parse_process_environment(raw: &[u8]) -> io::Result<BTreeMap<String, String>> {
+    let mut environment = BTreeMap::new();
+    for entry in raw
+        .split(|byte| *byte == 0)
+        .take_while(|entry| !entry.is_empty())
+    {
+        let Some(separator) = entry.iter().position(|byte| *byte == b'=') else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid process environment",
+            ));
+        };
+        let key = std::str::from_utf8(&entry[..separator])
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let value = std::str::from_utf8(&entry[separator + 1..])
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        environment.insert(key.to_owned(), value.to_owned());
+    }
+    Ok(environment)
+}
+
+impl ProviderLaunchSpec {
+    #[must_use]
+    pub fn new(command: Vec<String>, environment: BTreeMap<String, String>, cwd: PathBuf) -> Self {
+        Self {
+            command,
+            environment,
+            cwd,
+            retained_response_ids: BTreeMap::new(),
+            handled_cursor: 0,
+        }
+    }
+}
+
+/// Resolves the account-scoped child command and environment for a stable handle.
+pub trait ProviderLaunchResolver: Send + Sync + 'static {
+    fn resolve(&self, handle: &ProviderHandle) -> Result<ProviderLaunchSpec, String>;
+}
+
+impl<F> ProviderLaunchResolver for F
+where
+    F: Fn(&ProviderHandle) -> Result<ProviderLaunchSpec, String> + Send + Sync + 'static,
+{
+    fn resolve(&self, handle: &ProviderHandle) -> Result<ProviderLaunchSpec, String> {
+        self(handle)
+    }
 }
 
 /// Factory contract consumed by the Rust turn driver.
@@ -67,36 +200,25 @@ pub enum ProviderFactoryError {
     /// The adapter could not start its output reader.
     #[error("provider output reader: {0}")]
     Reader(#[from] io::Error),
+    /// The server could not resolve the provider command/configuration.
+    #[error("provider launch configuration could not be resolved or verified")]
+    Launch,
 }
 
 /// Factory for provider app-servers owned by the runtime process supervisor.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct SupervisorProviderProcessFactory {
     identity: BackendIdentity,
+    resolver: Arc<dyn ProviderLaunchResolver>,
 }
 
 impl SupervisorProviderProcessFactory {
     /// Bind new child sessions to this backend identity and state directory.
     #[must_use]
-    pub fn new(identity: BackendIdentity) -> Self {
-        Self { identity }
-    }
-}
-
-impl ProviderHandle {
-    /// Build the native app-server handle used by every agent on one account.
-    #[must_use]
-    pub fn native_account(
-        account_key: impl Into<String>,
-        command: Vec<String>,
-        environment: BTreeMap<String, String>,
-        cwd: PathBuf,
-    ) -> Self {
+    pub fn new(identity: BackendIdentity, resolver: impl ProviderLaunchResolver) -> Self {
         Self {
-            handle: format!("account:{}", account_key.into()),
-            command,
-            environment,
-            cwd,
+            identity,
+            resolver: Arc::new(resolver),
         }
     }
 }
@@ -104,36 +226,53 @@ impl ProviderHandle {
 impl ProviderProcessFactory for SupervisorProviderProcessFactory {
     fn start_or_reattach(
         &self,
-        launch: &ProviderHandle,
+        handle: &ProviderHandle,
     ) -> Result<Box<dyn ProviderProcess>, ProviderFactoryError> {
-        let handle = SupervisorHandle(launch.handle.clone());
+        let launch = self
+            .resolver
+            .resolve(handle)
+            .map_err(|_| ProviderFactoryError::Launch)?;
+        let supervisor_handle = SupervisorHandle(handle.as_str().to_owned());
         let open = OpenRequest {
-            handle: handle.clone(),
+            handle: supervisor_handle.clone(),
             command: launch.command.clone(),
-            env: launch.environment.clone(),
+            env: normalize_environment(&launch.environment, &self.identity, handle)?,
             cwd: launch.cwd.to_string_lossy().into_owned(),
             extra: Default::default(),
         };
         let mut client =
             SupervisorClient::connect(&self.identity.state_dir, self.identity.clone())?;
         let opened = client.open(open.clone())?;
+        let mut acknowledged = opened.acknowledged;
+        if launch.handled_cursor > acknowledged {
+            if launch.handled_cursor > opened.sequence {
+                return Err(ProviderFactoryError::Launch);
+            }
+            acknowledged = client
+                .ack(AckRequest {
+                    handle: supervisor_handle.clone(),
+                    sequence: EventCursor(launch.handled_cursor),
+                    extra: Default::default(),
+                })?
+                .acknowledged;
+        }
         let connection = SupervisorConnection {
-            client,
+            client: Some(client),
             identity: self.identity.clone(),
-            handle,
+            handle: supervisor_handle,
             generation: opened.generation,
             pid: opened.pid,
-            acknowledged: opened.acknowledged,
+            acknowledged,
         };
         let (output_sender, output_receiver) = mpsc::sync_channel(OUTPUT_QUEUE_CAPACITY);
         let shared = Arc::new(SharedProcess {
             connection: Mutex::new(connection),
             acknowledgements: Mutex::new(Acknowledgements {
-                cursor: opened.acknowledged,
+                cursor: acknowledged,
                 consumed: BTreeSet::new(),
             }),
             output_sender: Mutex::new(Some(output_sender)),
-            response_ids: Mutex::new(std::collections::BTreeMap::new()),
+            response_ids: Mutex::new(launch.retained_response_ids),
             stopped: AtomicBool::new(false),
             failure: Mutex::new(None),
         });
@@ -156,7 +295,6 @@ impl ProviderProcessFactory for SupervisorProviderProcessFactory {
             shared,
             output_receiver: Some(output_receiver),
             reader_worker: Some(reader_worker),
-            stopped: false,
             resumed_init_result: if opened.resumed {
                 opened.init_result
             } else {
@@ -167,7 +305,7 @@ impl ProviderProcessFactory for SupervisorProviderProcessFactory {
 }
 
 struct SupervisorConnection {
-    client: SupervisorClient<SupervisorStream>,
+    client: Option<SupervisorClient<SupervisorStream>>,
     identity: BackendIdentity,
     handle: SupervisorHandle,
     generation: Generation,
@@ -182,7 +320,12 @@ impl SupervisorConnection {
             cursor: EventCursor(cursor.0.max(self.acknowledged)),
             extra: Default::default(),
         };
-        match self.client.next(request.clone()) {
+        match self
+            .client
+            .as_mut()
+            .ok_or(SupervisorError::ConnectionLost)?
+            .next(request.clone())
+        {
             Ok(result) => Ok(result),
             Err(error) if is_connection_error(&error) => {
                 self.reconnect()?;
@@ -190,7 +333,10 @@ impl SupervisorConnection {
                     cursor: EventCursor(cursor.0.max(self.acknowledged)),
                     ..request
                 };
-                self.client.next(request)
+                self.client
+                    .as_mut()
+                    .ok_or(SupervisorError::ConnectionLost)?
+                    .next(request)
             }
             Err(error) => Err(error),
         }
@@ -205,7 +351,12 @@ impl SupervisorConnection {
             sequence: EventCursor(sequence),
             extra: Default::default(),
         };
-        match self.client.ack(request.clone()) {
+        match self
+            .client
+            .as_mut()
+            .ok_or(SupervisorError::ConnectionLost)?
+            .ack(request.clone())
+        {
             Ok(result) => {
                 self.acknowledged = result.acknowledged;
                 Ok(())
@@ -215,7 +366,11 @@ impl SupervisorConnection {
                 if self.acknowledged >= sequence {
                     return Ok(());
                 }
-                let result = self.client.ack(request)?;
+                let result = self
+                    .client
+                    .as_mut()
+                    .ok_or(SupervisorError::ConnectionLost)?
+                    .ack(request)?;
                 self.acknowledged = result.acknowledged;
                 Ok(())
             }
@@ -231,38 +386,32 @@ impl SupervisorConnection {
         let request = WriteRequest {
             handle: self.handle.clone(),
             operation_id: operation_id.clone(),
-            native_id: message.get("id").and_then(Value::as_u64),
+            native_id: provider_native_id(&message),
             message,
             extra: Default::default(),
         };
-        match self.client.write(request.clone()) {
+        match self.client.as_mut().ok_or(SupervisorError::ConnectionLost)?.write(request) {
             Ok(result) => accepted_write(result),
-            Err(error) if is_connection_error(&error) => {
-                self.reconnect()?;
-                let status = self.client.operation_status(OperationStatusRequest {
-                    handle: self.handle.clone(),
-                    operation_id: operation_id.clone(),
-                    extra: Default::default(),
-                })?;
-                if status.accepted {
-                    return Ok(status.native_id);
-                }
-                // Reuse the same supervisor idempotency key after an explicit
-                // not-accepted receipt; never create a new write identity.
-                let result = self.client.write(request)?;
-                accepted_write(result)
-            }
+            Err(error) if is_connection_error(&error) => Err(SupervisorError::Remote {
+                action: crate::SupervisorAction::Write,
+                message: "provider write outcome is unknown; operationStatus supports monitor writes only".into(),
+            }),
             Err(error) => Err(error),
         }
     }
 
     fn detach(&mut self) -> Result<(), SupervisorError> {
-        self.client
+        let result = self
+            .client
+            .as_mut()
+            .ok_or(SupervisorError::ConnectionLost)?
             .detach(HandleRequest {
                 handle: self.handle.clone(),
                 extra: Default::default(),
             })
-            .map(|_| ())
+            .map(|_| ());
+        self.client.take();
+        result
     }
 
     fn reconnect(&mut self) -> Result<(), SupervisorError> {
@@ -279,7 +428,7 @@ impl SupervisorConnection {
             });
         }
         self.acknowledged = status.acknowledged;
-        self.client = client;
+        self.client = Some(client);
         Ok(())
     }
 }
@@ -399,31 +548,10 @@ fn deliver_event(shared: &SharedProcess, mut event: SupervisorEvent) -> io::Resu
         .lock()
         .map_err(|_| io::Error::other("provider supervisor connection lock poisoned"))?
         .generation;
-    if event.generation != generation || event.kind != EventKind::Stdout {
+    if discard_event(&event, generation) {
         return mark_consumed(shared, event.sequence.0);
     }
-    if event.payload.get("method").is_none()
-        && let Some(remote_id) = event.payload.get("id").and_then(Value::as_u64)
-    {
-        let local_id = shared
-            .response_ids
-            .lock()
-            .map_err(|_| io::Error::other("provider response ID lock poisoned"))?
-            .remove(&remote_id);
-        let Some(payload) = event.payload.as_object_mut() else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "provider response is not an object",
-            ));
-        };
-        payload.insert(
-            "id".into(),
-            local_id.map_or_else(
-                || Value::String(format!("supervisor-orphan-{remote_id}")),
-                Value::from,
-            ),
-        );
-    }
+    remap_provider_reply(&mut event.payload, &shared.response_ids)?;
     let mut bytes = serde_json::to_vec(&event.payload)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     bytes.push(b'\n');
@@ -434,6 +562,54 @@ fn deliver_event(shared: &SharedProcess, mut event: SupervisorEvent) -> io::Resu
             bytes,
         },
     )
+}
+
+fn discard_event(event: &SupervisorEvent, generation: Generation) -> bool {
+    if event.kind != EventKind::Stdout {
+        return true;
+    }
+    if event.generation == generation {
+        return false;
+    }
+    !(event.generation < generation && event.payload.get("id").is_none())
+}
+
+fn remap_provider_reply(
+    payload: &mut Value,
+    response_ids: &Mutex<BTreeMap<u64, u64>>,
+) -> io::Result<()> {
+    if payload.get("method").is_some() {
+        return Ok(());
+    }
+    let Some(remote_id) = payload.get("id").and_then(Value::as_u64) else {
+        return Ok(());
+    };
+    let local_id = response_ids
+        .lock()
+        .map_err(|_| io::Error::other("provider response ID lock poisoned"))?
+        .remove(&remote_id);
+    let Some(payload) = payload.as_object_mut() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "provider response is not an object",
+        ));
+    };
+    payload.insert(
+        "id".into(),
+        local_id.map_or_else(
+            || Value::String(format!("supervisor-orphan-{remote_id}")),
+            Value::from,
+        ),
+    );
+    Ok(())
+}
+
+fn provider_native_id(message: &Value) -> Option<u64> {
+    message
+        .get("method")
+        .and_then(Value::as_str)
+        .and_then(|_| message.get("id"))
+        .and_then(Value::as_u64)
 }
 
 fn send_output(shared: &SharedProcess, mut item: OutputItem) -> io::Result<()> {
@@ -524,12 +700,11 @@ pub struct SupervisorProviderProcess {
     shared: Arc<SharedProcess>,
     output_receiver: Option<Receiver<OutputItem>>,
     reader_worker: Option<JoinHandle<()>>,
-    stopped: bool,
     resumed_init_result: Option<Value>,
 }
 
 impl ProviderProcess for SupervisorProviderProcess {
-    fn split(&mut self) -> io::Result<(Box<dyn Read + Send>, Box<dyn Write + Send>)> {
+    fn split(&mut self) -> io::Result<(Box<dyn ProviderProcessReader>, Box<dyn Write + Send>)> {
         let receiver = self.output_receiver.take().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::AlreadyExists,
@@ -541,6 +716,7 @@ impl ProviderProcess for SupervisorProviderProcess {
             receiver,
             current: None,
             offset: 0,
+            completed_cursors: VecDeque::new(),
         };
         let writer = ProviderInputWriter {
             shared: Arc::clone(&self.shared),
@@ -555,11 +731,9 @@ impl ProviderProcess for SupervisorProviderProcess {
     }
 
     fn stop(&mut self) -> io::Result<()> {
-        if self.stopped {
+        if self.shared.stopped.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
-        self.stopped = true;
-        self.shared.stopped.store(true, Ordering::Release);
         self.output_receiver.take();
         if let Some(worker) = self.reader_worker.take() {
             worker
@@ -581,6 +755,26 @@ impl ProviderProcess for SupervisorProviderProcess {
             .map_err(|error| io::Error::other(error.to_string()))?;
         Ok(())
     }
+
+    fn acknowledged_cursor(&self) -> u64 {
+        self.shared
+            .acknowledgements
+            .lock()
+            .map(|acknowledgements| acknowledgements.cursor)
+            .unwrap_or_default()
+    }
+
+    fn generation(&self) -> u64 {
+        self.shared
+            .connection
+            .lock()
+            .map(|connection| connection.generation.0)
+            .unwrap_or_default()
+    }
+
+    fn acknowledge(&mut self, cursor: u64) -> io::Result<()> {
+        mark_consumed(&self.shared, cursor)
+    }
 }
 
 impl Drop for SupervisorProviderProcess {
@@ -594,6 +788,7 @@ struct ProviderOutputReader {
     receiver: Receiver<OutputItem>,
     current: Option<OutputItem>,
     offset: usize,
+    completed_cursors: VecDeque<u64>,
 }
 
 impl Read for ProviderOutputReader {
@@ -601,50 +796,51 @@ impl Read for ProviderOutputReader {
         if output.is_empty() {
             return Ok(0);
         }
-        loop {
-            if self.current.is_none() {
-                match self.receiver.recv() {
-                    Ok(item) => {
-                        self.current = Some(item);
-                        self.offset = 0;
-                    }
-                    Err(_) => {
-                        let message = self
-                            .shared
-                            .failure
-                            .lock()
-                            .map_err(|_| io::Error::other("provider reader failure lock poisoned"))?
-                            .clone();
-                        return match message {
-                            Some(message) => Err(io::Error::other(message)),
-                            None => Ok(0),
-                        };
-                    }
+        if self.current.is_none() {
+            match self.receiver.recv() {
+                Ok(item) => {
+                    self.current = Some(item);
+                    self.offset = 0;
+                }
+                Err(_) => {
+                    let message = self
+                        .shared
+                        .failure
+                        .lock()
+                        .map_err(|_| io::Error::other("provider reader failure lock poisoned"))?
+                        .clone();
+                    return match message {
+                        Some(message) => Err(io::Error::other(message)),
+                        None => Ok(0),
+                    };
                 }
             }
-            let item = self.current.as_ref().ok_or_else(|| {
-                io::Error::other("provider output channel returned no current item")
-            })?;
-            if self.offset == item.bytes.len() {
-                let sequence = item.sequence;
-                self.current = None;
-                if let Some(sequence) = sequence {
-                    let _acknowledgement = mark_consumed(&self.shared, sequence);
-                }
-                continue;
-            }
-            let count = (item.bytes.len() - self.offset).min(output.len());
-            output[..count].copy_from_slice(&item.bytes[self.offset..self.offset + count]);
-            self.offset += count;
-            if self.offset == item.bytes.len() {
-                let sequence = item.sequence;
-                self.current = None;
-                if let Some(sequence) = sequence {
-                    let _acknowledgement = mark_consumed(&self.shared, sequence);
-                }
-            }
-            return Ok(count);
         }
+        let item = self
+            .current
+            .as_ref()
+            .ok_or_else(|| io::Error::other("provider output channel returned no current item"))?;
+        let count = (item.bytes.len() - self.offset).min(output.len());
+        output[..count].copy_from_slice(&item.bytes[self.offset..self.offset + count]);
+        self.offset += count;
+        if self.offset == item.bytes.len() {
+            let sequence = item.sequence;
+            self.current = None;
+            if let Some(sequence) = sequence {
+                self.completed_cursors.push_back(sequence);
+            }
+        }
+        Ok(count)
+    }
+}
+
+impl ProviderProcessReader for ProviderOutputReader {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        Read::read(self, output)
+    }
+
+    fn take_cursors(&mut self) -> Vec<u64> {
+        self.completed_cursors.drain(..).collect()
     }
 }
 
@@ -730,22 +926,34 @@ impl Write for ProviderInputWriter {
 
 impl ProviderInputWriter {
     fn write_message(&mut self, message: Value) -> io::Result<()> {
-        let operation_id = match self.pending_operation_id.clone() {
-            Some(operation_id) => operation_id,
-            None => {
-                self.operation_sequence = self
-                    .operation_sequence
-                    .checked_add(1)
-                    .ok_or_else(|| io::Error::other("provider write identity space exhausted"))?;
-                let operation_id = OperationId(format!(
-                    "{}:{}",
-                    self.operation_prefix, self.operation_sequence
-                ));
-                self.pending_operation_id = Some(operation_id.clone());
-                operation_id
+        let initialized = message.get("method").and_then(Value::as_str) == Some("initialized");
+        let operation_id = if initialized {
+            let connection =
+                self.shared.connection.lock().map_err(|_| {
+                    io::Error::other("provider supervisor connection lock poisoned")
+                })?;
+            OperationId(format!(
+                "initialized:{}:{}",
+                connection.handle.0, connection.generation.0
+            ))
+        } else {
+            match self.pending_operation_id.clone() {
+                Some(operation_id) => operation_id,
+                None => {
+                    self.operation_sequence =
+                        self.operation_sequence.checked_add(1).ok_or_else(|| {
+                            io::Error::other("provider write identity space exhausted")
+                        })?;
+                    let operation_id = OperationId(format!(
+                        "{}:{}",
+                        self.operation_prefix, self.operation_sequence
+                    ));
+                    self.pending_operation_id = Some(operation_id.clone());
+                    operation_id
+                }
             }
         };
-        let local_id = message.get("id").and_then(Value::as_u64);
+        let local_id = provider_native_id(&message);
         // The supervisor can emit a response as soon as it accepts the write.
         // Publish its returned remote ID before the event worker can translate it.
         let mut response_ids = self
@@ -769,7 +977,9 @@ impl ProviderInputWriter {
             })?;
             response_ids.insert(remote_id, local_id);
         }
-        self.pending_operation_id = None;
+        if !initialized {
+            self.pending_operation_id = None;
+        }
         Ok(())
     }
 }
@@ -780,4 +990,47 @@ fn operation_prefix() -> String {
         .unwrap_or_default()
         .as_nanos();
     format!("provider:{}:{timestamp}", std::process::id())
+}
+
+#[cfg(test)]
+mod provider_event_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn callback_reply_with_mapped_id_does_not_consume_request_mapping() {
+        let response_ids = Mutex::new(BTreeMap::from([(42, 7)]));
+        let mut callback = json!({"id":42,"method":"provider/callback","params":{}});
+        assert_eq!(provider_native_id(&callback), Some(42));
+        remap_provider_reply(&mut callback, &response_ids).unwrap();
+        assert_eq!(callback["id"], 42);
+        assert_eq!(response_ids.lock().unwrap().get(&42), Some(&7));
+
+        let callback_reply = json!({"id":42,"result":{}});
+        assert_eq!(provider_native_id(&callback_reply), None);
+        let mut reply = json!({"id":42,"result":{}});
+        remap_provider_reply(&mut reply, &response_ids).unwrap();
+        assert_eq!(reply["id"], 7);
+        assert!(response_ids.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn prior_generation_notification_without_id_is_retained() {
+        let event = |generation, payload| SupervisorEvent {
+            sequence: EventCursor(1),
+            kind: EventKind::Stdout,
+            payload,
+            generation: Generation(generation),
+            extra: BTreeMap::new(),
+        };
+        assert!(!discard_event(
+            &event(1, json!({"method":"provider/notice"})),
+            Generation(2)
+        ));
+        assert!(discard_event(
+            &event(1, json!({"id":9,"result":{}})),
+            Generation(2)
+        ));
+    }
 }

@@ -1,10 +1,29 @@
 use std::collections::BTreeMap;
 use std::fmt;
-use std::io;
+use std::io::{self, Write};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+/// Reader for a supervisor-backed provider byte stream.
+///
+/// Cursors become available only after the bytes for a complete JSONL frame
+/// have been read. The session associates each cursor with its decoded frame;
+/// its consumer acknowledges the cursor after durable settlement.
+pub trait ProviderProcessReader: Send {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize>;
+    fn take_cursors(&mut self) -> Vec<u64>;
+}
+
+/// Supervisor-owned process stream consumed by runtime-services.
+pub trait ProviderProcess: Send {
+    fn split(&mut self) -> io::Result<(Box<dyn ProviderProcessReader>, Box<dyn Write + Send>)>;
+    fn acknowledged_cursor(&self) -> u64;
+    fn generation(&self) -> u64;
+    fn acknowledge(&mut self, cursor: u64) -> io::Result<()>;
+    fn stop(&mut self) -> io::Result<()>;
+}
 
 /// Backend identity sent in the supervisor handshake.
 #[derive(Clone, Debug, PartialEq, Eq)]
