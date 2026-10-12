@@ -5588,6 +5588,11 @@ export interface components {
      */
     AppearancePreferences: {
       /**
+       * Checkproviderupdates
+       * @default true
+       */
+      checkProviderUpdates?: boolean;
+      /**
        * Contentlayout
        * @default original
        * @enum {string}
@@ -12478,16 +12483,16 @@ export interface components {
     };
     /**
      * ProviderUpdateNotice
-     * @description A newer installed version is available but is not in use yet.
+     * @description A newer installed or upstream provider version is available.
      */
     ProviderUpdateNotice: {
       /** Availableversion */
       availableVersion: string;
       /**
        * Source
-       * @constant
+       * @enum {string}
        */
-      source: "installed";
+      source: "installed" | "upstream";
     };
     /** ProviderVersion */
     ProviderVersion: {
@@ -12512,7 +12517,8 @@ export interface components {
       /** Runningversion */
       runningVersion: null | string;
       status: components["schemas"]["ProviderVersionState"];
-      updateNotice?: components["schemas"]["ProviderUpdateNotice"] | null;
+      /** Updatenotices */
+      updateNotices?: components["schemas"]["ProviderUpdateNotice"][];
     };
     /** ProviderVersions */
     ProviderVersions: {
@@ -18106,6 +18112,11 @@ export interface components {
       account_key?: string | null;
       /** Daybreak Enabled */
       daybreak_enabled?: boolean | null;
+      /**
+       * Delegation Depth
+       * @default 1
+       */
+      delegation_depth?: number;
       /** Effort */
       effort: string | null;
       /** Fast Mode */
@@ -18124,6 +18135,11 @@ export interface components {
        * @default false
        */
       daybreakEnabled?: boolean;
+      /**
+       * Delegationdepth
+       * @default 1
+       */
+      delegationDepth?: number;
       /** Effort */
       effort: null | string;
       /** Fastmode */
@@ -18143,6 +18159,8 @@ export interface components {
       cyberAccessProgram?: null | string;
       /** Daybreakenabled */
       daybreakEnabled?: boolean;
+      /** Delegationdepth */
+      delegationDepth?: number;
       /** Effort */
       effort: null | string;
       /** Fastmode */

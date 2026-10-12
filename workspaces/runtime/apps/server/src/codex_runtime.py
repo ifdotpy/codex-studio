@@ -1860,6 +1860,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self._fast_delivery_enabled = True
             self.scheduler = threading.Thread(target=self.schedule, daemon=True)
             self.scheduler.start()
+            self.start_review_archives()
             startup_memory_mark("runtime-init-complete")
             if server_factory is AppServer:
                 self.analytics_history_start()
@@ -4459,8 +4460,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     @staticmethod
     def worker_defaults(root):
+        from codex_nested_delegation import DEFAULT_DELEGATION_DEPTH
         return {"model": "gpt-6-luna", "effort": "high", "fastMode": False, "daybreakEnabled": False,
-                **root.get("workerDefaults", {})}
+                "delegationDepth": DEFAULT_DELEGATION_DEPTH, **root.get("workerDefaults", {})}
 
     @staticmethod
     def review_defaults(root):
@@ -4504,10 +4506,17 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             raise ValueError("Fast mode is not supported by the selected model")
         return effort, effort if effort is not None else info.get("defaultReasoningEffort")
 
-    def validate_worker_defaults(self, value, root_model, catalog):
+    def validate_worker_defaults(self, value, root_model, catalog, existing=None):
+        from codex_nested_delegation import DEFAULT_DELEGATION_DEPTH
         if (not isinstance(value, dict) or not {"model", "effort", "fast_mode"} <= set(value)
-                or set(value) - {"model", "effort", "fast_mode", "daybreak_enabled", "account_key"}):
+                or set(value) - {"model", "effort", "fast_mode", "daybreak_enabled", "account_key",
+                                 "delegation_depth"}):
             raise ValueError("worker_defaults needs model, effort and fast_mode")
+        existing_defaults = existing if isinstance(existing, dict) else {}
+        depth = value.get(
+            "delegation_depth",
+            existing_defaults.get("delegationDepth", DEFAULT_DELEGATION_DEPTH),
+        )
         if value["model"] is not None and (not isinstance(value["model"], str) or not value["model"].strip()):
             raise ValueError("Default model must be a model name or null")
         from codex_worker_accounts import selected_account
@@ -4516,6 +4525,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         enabled = value.get("daybreak_enabled", False)
         program = resolve_program(catalog, value["model"] or root_model, enabled)
         return {"model": value["model"], "effort": value["effort"], "fastMode": value["fast_mode"],
+                "delegationDepth": depth,
                 "daybreakEnabled": enabled, "cyberAccessProgram": program,
                 **({"accountKey": account} if account is not None else {})}
 
@@ -5217,7 +5227,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                          daybreakEnabled=daybreak, cyberAccessProgram=program)
                 a["executionSettingsAccountKey"] = a.get("accountKey", "default")
             if "worker_defaults" in data:
-                a["workerDefaults"] = self.validate_worker_defaults(data["worker_defaults"], a["model"], worker_catalog)
+                a["workerDefaults"] = self.validate_worker_defaults(
+                    data["worker_defaults"], a["model"], worker_catalog, a.get("workerDefaults")
+                )
             if "review_defaults" in data:  # type: ignore[call-arg]  # typed-update
                 a["reviewDefaults"] = self.validate_review_defaults(data["review_defaults"], review_catalog)
             if "cwd" in data:
@@ -5407,10 +5419,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if actor is None:
             return TOOLS
         if actor.get('frozenNativeParams'):
-            return copy.deepcopy(actor['frozenNativeParams']['dynamicTools'])
+            definitions = copy.deepcopy(actor['frozenNativeParams']['dynamicTools'])
+            from codex_nested_delegation import can_delegate
+            if not can_delegate(self, actor):
+                definitions = [tool for tool in definitions if tool.get("name") != "orchestration_spawn"]
+            return definitions
         if actor.get("nativeReview"):
             return []
         lead = bool(actor.get("isLead"))
+        from codex_nested_delegation import can_delegate
+        delegation_available = can_delegate(self, actor)
         federation_enabled = self.federation().enabled()
         definitions = []
         definitions_source = TOOLS
@@ -5428,7 +5446,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "orchestration_speak", "orchestration_review"
             }:
                 continue
-            if not lead and definition["name"] in {"orchestration_speak", "orchestration_spawn", "orchestration_servers"}:
+            if not lead and definition["name"] in {"orchestration_speak", "orchestration_servers"}:
+                continue
+            if definition["name"] == "orchestration_spawn" and not delegation_available:
                 continue
             if not lead and definition["name"] == "orchestration_agent_manage":
                 definition = {**definition, "description": "Park yourself or a descendant on a named event, list parked workers, or cancel a wait. Only the lead emits events.",
@@ -5903,7 +5923,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             frozen = a['frozenNativeParams']
             params.update(baseInstructions=frozen['baseInstructions'],
                           developerInstructions=frozen['developerInstructions'],
-                          model=frozen['model'], dynamicTools=copy.deepcopy(frozen['dynamicTools']))
+                          model=frozen['model'], dynamicTools=self.tool_definitions(a))
             if a.get('provider') != 'claude':
                 if frozen.get('effort') is not None:
                     params['config']['model_reasoning_effort'] = frozen['effort']
@@ -8447,6 +8467,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def spawn_agents(self, actor, args, key):
         """Commit the entire batch, initial events, and receipt together."""
+        if actor.get("role") == "reviewer":
+            raise ValueError("Reviewers cannot create agents")
+        from codex_nested_delegation import require_delegation
+        require_delegation(self, actor)
+        if (not actor.get("isLead") and any(
+                isinstance(spec, dict) and "task_id" in spec
+                for spec in (args.get("agents") if isinstance(args.get("agents"), list) else []))):
+            raise ValueError("Only the lead can delegate an existing task; ask the lead to assign it")
         if actor.get("executionMode") == "vm" and (
                 args.get("server") or any(spec.get("server") for spec in args.get("agents", []) if isinstance(spec, dict))):
             raise ValueError("VM chat workers must run on the chat server")
@@ -8461,11 +8489,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         specs = args.get("agents")
         if not isinstance(specs, list) or not 1 <= len(specs) <= 64:
             raise ValueError("Supply 1 to 64 agents")
-        if actor["role"] == "reviewer":
-            raise ValueError("Reviewers cannot create agents")
-        if not actor.get("isLead"):
-            # Workers do their assigned work themselves. Only the lead delegates.
-            raise ValueError("Only the lead can create agents. Do the assigned work yourself, or ask the lead")
         for spec in specs:
             if (not isinstance(spec, dict) or not isinstance(spec.get("name"), str)
                     or not 1 <= len(spec["name"].strip()) <= 100
@@ -8475,6 +8498,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 raise ValueError("Every worker needs a name, task and valid role")
             if "task_id" in spec and (not isinstance(spec["task_id"], str) or not spec["task_id"]):
                 raise ValueError("task_id must be a task id")
+            if not actor.get("isLead") and "task_id" in spec:
+                raise ValueError("Only the lead can delegate an existing task; ask the lead to assign it")
             if "base_ref" in spec and (
                     not isinstance(spec["base_ref"], str) or not spec["base_ref"].strip()
                     or len(spec["base_ref"]) > 1024):
@@ -8562,8 +8587,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if len(assigned) != len(set(assigned)):
             raise ValueError("Assign each task to one worker in a batch")
         with self.lock, self.db() as db:
-            from codex_agent_modes import assert_delegation
-            assert_delegation(self.agent(actor["rootId"], db))
+            require_delegation(self, actor, db)
         from codex_worker_accounts import resolve
         catalogs = {}
         selections = [resolve(self, actor, spec, catalogs=catalogs) for spec in specs]
@@ -8577,8 +8601,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     or current.get("accountKey", "default") != actor.get("accountKey", "default")
                     or (request and not self.connection_current(request["accountKey"], request.get("connectionId")))):
                 raise ValueError("The parent or its account connection changed before worker creation")
-            from codex_agent_modes import assert_delegation
-            assert_delegation(self.agent(current["rootId"], db))
+            require_delegation(self, current, db)
             roster = self.team_agents(db, current["rootId"])
             existing = {a["id"] for a in roster}
             planned = [{**spec, "id": str(uuid.uuid5(uuid.NAMESPACE_URL, key + ":" + str(index)))} for index, spec in enumerate(specs)]

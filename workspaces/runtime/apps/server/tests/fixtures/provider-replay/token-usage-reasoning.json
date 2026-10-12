@@ -1,5 +1,6 @@
 {
   "source": "hand-authored protocol frame based on workspaces/runtime/apps/server/tests/analytics-contract.py",
+  "nestedDelegation": true,
   "events": [
     {
       "method": "thread/tokenUsage/updated",

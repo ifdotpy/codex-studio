@@ -67,6 +67,25 @@ class PortableTransfers(unittest.TestCase):
     def member(self, op):
         return self.t.receipt(op['id'])['members'][self.aid]
 
+    def set_depth_two(self):
+        defaults = self.rt.worker_defaults(self.agent())
+        defaults['delegationDepth'] = 2
+        self.t.set_agent(self.aid, workerDefaults=defaults)
+
+    def assert_worker_can_delegate(self):
+        provider = self.agent()['provider']
+        model = 'sonnet' if provider == 'claude' else 'gpt-6-astra'
+        worker = self.rt.create({'name': 'Policy worker', 'prompt': 'Delegate', 'role': 'implementer',
+                                 'model': model, 'fast_mode': False}, parent=self.aid, defer=True)
+        with self.rt.lock, self.rt.db() as db:
+            worker['autoWake'] = True
+            self.rt.put(db, 'agents', worker)
+        result = self.rt.spawn_agents(worker, {'agents': [{
+            'name': 'Policy grandchild', 'prompt': 'Check the retained policy', 'role': 'implementer',
+            'model': model, 'fast_mode': False,
+        }]}, 'transfer-depth-retained')['agents'][0]
+        self.assertEqual(self.rt.agent(result['id'])['parentId'], worker['id'])
+
     def submit(self):
         op = self.t.start_transfer()
         self.t.tick()
@@ -85,6 +104,7 @@ class PortableTransfers(unittest.TestCase):
         self.assertEqual(self.member(op)['nativeParams'], self.t.pending[0][1])
 
     def test_codex_to_claude_preserves_chat_items_source_and_workers(self):
+        self.set_depth_two()
         child = self.rt.create({'name': 'Worker', 'prompt': 'Task'}, parent=self.aid, defer=True)
         child_before = self.rt.agent(child['id'])
         self.t.set_agent(self.aid, effort='ultra', fastMode=True,
@@ -104,6 +124,7 @@ class PortableTransfers(unittest.TestCase):
         self.assertEqual(agent['nativeEffort'], 'medium')
         self.assertFalse(agent['fastMode'])
         self.assertEqual(agent['provider'], 'claude')
+        self.assertEqual(agent['workerDefaults']['delegationDepth'], 2)
         self.assertIsNone(agent['workerDefaults']['model'])
         self.assertEqual(agent['workerDefaults']['accountKey'], self.t.other_key)
         self.assertNotIn('pendingSettings', agent)
@@ -116,10 +137,13 @@ class PortableTransfers(unittest.TestCase):
             self.assertEqual(list(db.execute('SELECT * FROM runtime_items WHERE agent=?', (self.aid,))), before)
         self.assertEqual(self.member(op)['sourcePendingSettings'], source['pendingSettings'])
         self.export.assert_called_once()
+        self.assert_worker_can_delegate()
 
     def test_automatic_portable_history_uses_original_transfer_without_model_turn(self):
+        self.set_depth_two()
         self.t.drive_lazy_for_tests = False
         op = self.t.start_transfer()
+        self.assertEqual(self.member(op)['phase'], 'lazy')
         self.t.tick()
         self.t.until(lambda: len(self.t.pending) == 1)
         self.assertEqual(self.t.pending[0][0], 'thread/start')
@@ -129,7 +153,9 @@ class PortableTransfers(unittest.TestCase):
         self.assertEqual(self.t.receipt(op['id'])['status'], 'completed')
         self.assertFalse(any(method in {'turn/start', 'turn/steer'} for method, _ in self.t.native_calls))
         self.assertEqual(self.agent()['portableHistory'], self.descriptor)
+        self.assertEqual(self.agent()['workerDefaults']['delegationDepth'], 2)
         self.export.assert_called_once()
+        self.assert_worker_can_delegate()
 
     def test_claude_to_codex_needs_no_codex_rollout_path(self):
         self.providers.update(default='claude', **{self.t.other_key: 'codex'})
@@ -155,12 +181,14 @@ class PortableTransfers(unittest.TestCase):
     def test_same_provider_profile_preserves_independent_worker_settings(self):
         self.providers['default'] = 'claude'
         self.t.set_agent(self.aid, provider='claude', model='sonnet', effort='high',
-                         workerDefaults={'model': 'old-profile-model', 'effort': 'ultra', 'fastMode': True},
+                         workerDefaults={'model': 'old-profile-model', 'effort': 'ultra', 'fastMode': True,
+                                         'delegationDepth': 2},
                          claudeOptions={'permissionMode': 'plan'})
         op = self.submit()
         self.finish(op)
-        self.assertEqual(self.agent()['workerDefaults'], {'model': 'old-profile-model', 'effort': 'ultra', 'fastMode': True, 'daybreakEnabled': False, 'accountKey': self.t.other_key})
+        self.assertEqual(self.agent()['workerDefaults'], {'model': 'old-profile-model', 'effort': 'ultra', 'fastMode': True, 'daybreakEnabled': False, 'delegationDepth': 2, 'accountKey': self.t.other_key})
         self.assertEqual(self.agent()['claudeOptions'], {'permissionMode': 'plan'})
+        self.assert_worker_can_delegate()
 
     def test_same_provider_profile_preserves_inherited_worker_model(self):
         self.providers['default'] = 'claude'
@@ -168,7 +196,7 @@ class PortableTransfers(unittest.TestCase):
                          workerDefaults={'model': None, 'effort': 'high', 'fastMode': False})
         op = self.submit()
         self.finish(op)
-        self.assertEqual(self.agent()['workerDefaults'], {'model': None, 'effort': 'high', 'fastMode': False, 'daybreakEnabled': False, 'accountKey': self.t.other_key})
+        self.assertEqual(self.agent()['workerDefaults'], {'model': None, 'effort': 'high', 'fastMode': False, 'daybreakEnabled': False, 'delegationDepth': 1, 'accountKey': self.t.other_key})
 
     def test_provider_roundtrip_clears_old_permission_bypass(self):
         self.providers.update(default='claude', **{self.t.other_key: 'codex'})

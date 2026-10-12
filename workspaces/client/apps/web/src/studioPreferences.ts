@@ -2,6 +2,7 @@ import type { components } from "./generated/api";
 
 export const studioPreferencesStorageKey = "codex-studio-preferences-v1";
 export const DEFAULT_HIDE_OLD_CHATS_THRESHOLD = 3;
+export const DEFAULT_CHECK_PROVIDER_UPDATES = true;
 export const MIN_HIDE_OLD_CHATS_THRESHOLD = 1;
 export const MAX_HIDE_OLD_CHATS_THRESHOLD = 50;
 
@@ -32,6 +33,7 @@ export const defaultStudioPreferences: StudioPreferences = {
   sidebarShortcut: `${navigator.platform.toLowerCase().includes("mac") ? "Meta" : "Control"}+b`,
   showMessageAvatars: false,
   hideOldChatsThreshold: DEFAULT_HIDE_OLD_CHATS_THRESHOLD,
+  checkProviderUpdates: DEFAULT_CHECK_PROVIDER_UPDATES,
 };
 
 const validThemes = new Set(["auto", "light", "dark"]);
@@ -62,6 +64,8 @@ export function parseStudioPreferences(value: string): StudioPreferences {
     Number(candidate.contentWidth) > 100 ||
     (candidate.showMessageAvatars !== undefined &&
       typeof candidate.showMessageAvatars !== "boolean") ||
+    (candidate.checkProviderUpdates !== undefined &&
+      typeof candidate.checkProviderUpdates !== "boolean") ||
     (candidate.hideOldChatsThreshold !== undefined &&
       (!Number.isInteger(candidate.hideOldChatsThreshold) ||
         Number(candidate.hideOldChatsThreshold) <
@@ -87,6 +91,10 @@ export function parseStudioPreferences(value: string): StudioPreferences {
       typeof candidate.hideOldChatsThreshold === "number"
         ? candidate.hideOldChatsThreshold
         : DEFAULT_HIDE_OLD_CHATS_THRESHOLD,
+    checkProviderUpdates:
+      typeof candidate.checkProviderUpdates === "boolean"
+        ? candidate.checkProviderUpdates
+        : DEFAULT_CHECK_PROVIDER_UPDATES,
   };
 }
 

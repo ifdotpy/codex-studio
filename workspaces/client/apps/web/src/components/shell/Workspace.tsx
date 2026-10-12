@@ -332,12 +332,25 @@ export function Workspace(props: Props) {
                           <option value="">Select an agent</option>
                           {props.data.threads
                             .filter((a) => a.source === "managed")
-                            .map((a) => (
-                              <option key={a.id} value={a.id}>
-                                {a.isLead ? "Main agent · " : ""}
-                                {a.name}
-                              </option>
-                            ))}
+                            .map((a) => {
+                              const parent = a.parentId
+                                ? props.data.threads.find(
+                                    (candidate) =>
+                                      candidate.id === a.parentId &&
+                                      candidate.source === "managed",
+                                  )
+                                : undefined;
+                              return (
+                                <option key={a.id} value={a.id}>
+                                  {a.isLead
+                                    ? "Main agent · "
+                                    : parent
+                                      ? `↳ ${parent.name} · `
+                                      : ""}
+                                  {a.name}
+                                </option>
+                              );
+                            })}
                         </NativeSelect>
                         {selected && (
                           <Button

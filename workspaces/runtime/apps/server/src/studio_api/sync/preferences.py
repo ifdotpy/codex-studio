@@ -30,6 +30,7 @@ class AppearancePreferences(ContractModel):
     sidebarShortcut: StrictStr = Field(default="", max_length=32)
     showMessageAvatars: StrictBool = False
     hideOldChatsThreshold: StrictInt = Field(default=3, ge=1, le=50)
+    checkProviderUpdates: StrictBool = True
 
 
 class UiPreferencesDto(ContractModel):

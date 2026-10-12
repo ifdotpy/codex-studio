@@ -337,6 +337,30 @@ test("execution settings ui", async ({ browser: _browser }) => {
       name: "Subagent defaults",
       exact: true,
     });
+    const delegationDepth = dialog.getByRole("combobox", {
+      name: "Delegation depth",
+    });
+    assert.equal(await delegationDepth.inputValue(), "Lead only (1)");
+    assert.equal(
+      await dialog
+        .getByText(
+          "New worker sessions use this depth. Lowering blocks new delegation immediately; existing descendants keep running.",
+        )
+        .isVisible(),
+      true,
+    );
+    const nestedDelegationSaved = settingsResponse(
+      lead.id,
+      (body) => body.worker_defaults?.delegation_depth === 2,
+    );
+    await delegationDepth.click();
+    await page.getByRole("option", { name: "One nested level (2)" }).click();
+    assert.ok((await nestedDelegationSaved).ok());
+    await waitFor(
+      async () =>
+        (await state()).find((a) => a.id === lead.id).workerDefaults
+          .delegationDepth === 2,
+    );
     const defaultModel = dialog.getByLabel("Default subagent model", {
       exact: true,
     });
@@ -408,6 +432,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
       fastMode: true,
       daybreakEnabled: false,
       cyberAccessProgram: "standard",
+      delegationDepth: 2,
     });
     const spawnWorker = async (name, overrides = {}) => {
       proc.stdin.write(

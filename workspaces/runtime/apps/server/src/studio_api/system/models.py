@@ -142,7 +142,7 @@ class ProviderVersion(ContractModel):
     runningVersion: str | None
     installedVersion: str | None
     configuredVersion: str | None
-    updateNotice: ProviderUpdateNotice | None = None
+    updateNotices: list[ProviderUpdateNotice] = Field(default_factory=list)
     baseline: str | None
     error: str | None
     message: str | None
@@ -150,10 +150,10 @@ class ProviderVersion(ContractModel):
 
 
 class ProviderUpdateNotice(ContractModel):
-    """A newer installed version is available but is not in use yet."""
+    """A newer installed or upstream provider version is available."""
 
     availableVersion: str
-    source: Literal["installed"]
+    source: Literal["installed", "upstream"]
 
 
 class ProviderVersionWarning(ContractModel):

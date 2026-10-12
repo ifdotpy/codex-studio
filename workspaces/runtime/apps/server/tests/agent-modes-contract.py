@@ -408,7 +408,7 @@ class AgentModes(unittest.TestCase):
                    lambda: self.rt.chat_message(self.worker['id'], other['id'], 'task', 'peer'),
                    lambda: self.rt.native_action(self.worker['id'], 'review')]
         for action in actions:
-            with self.assertRaisesRegex(ValueError, 'Single agent'):
+            with self.assertRaisesRegex(ValueError, 'Single agent|no subagent concurrency'):
                 action()
         with self.rt.db() as db:
             self.assertEqual({name: db.execute('SELECT count(*) FROM runtime_' + name).fetchone()[0] for name in before}, before)
@@ -489,7 +489,7 @@ class AgentModes(unittest.TestCase):
         self.mode()
         with self.assertRaisesRegex(ValueError, 'Single agent'):
             self.rt.create({'name': 'New', 'prompt': 'Task'}, self.lead['id'])
-        with self.assertRaisesRegex(ValueError, 'Single agent'):
+        with self.assertRaisesRegex(ValueError, 'no subagent concurrency'):
             self.rt.spawn_agents(self.lead, {'agents': [{'name': 'New', 'prompt': 'Task'}]}, 'new')
 
     def test_empty_reuse_validates_explicit_model_and_catalog_wait_has_no_lock(self):

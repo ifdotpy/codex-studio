@@ -198,6 +198,7 @@ import { UnifiedAgentSettings } from "./components/agents/UnifiedAgentSettings";
 import { FederationSettings } from "./components/FederationSettings";
 import { LinuxVMSettings } from "./components/LinuxVMSettings";
 import BrowserAccessNotice from "./components/BrowserAccessNotice";
+import ProviderUpdateSettings from "./components/ProviderUpdateSettings";
 import SupervisorRecoveryNotice from "./components/SupervisorRecoveryNotice";
 import Accounts, { useAccounts } from "./components/Accounts";
 import ClaudeSignIn from "./components/ClaudeSignIn";
@@ -3048,6 +3049,15 @@ export default function App() {
                     ))}
                   </div>
                 </SettingsRow>
+                <ProviderUpdateSettings
+                  checked={studioPreferences.checkProviderUpdates}
+                  onChange={(checked) =>
+                    updateStudioPreferences({
+                      ...studioPreferences,
+                      checkProviderUpdates: checked,
+                    })
+                  }
+                />
                 <SettingsRow label="Text size">
                   <div
                     className="studio-appearance-segments"

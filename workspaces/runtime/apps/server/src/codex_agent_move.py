@@ -674,10 +674,11 @@ class AgentMoves:
             parameters = frozen_codex_parameters(path)
             bridge_session = None
         parent = self.runtime.agent(agent['parentId']) if agent.get('parentId') else agent
+        root = self.runtime.agent(agent['rootId'])
         link = {'id': identity(operation['id'], 'link'), 'home': self.service.server_id,
                 'parent': parent['id'], 'parentEpoch': parent['epoch'], 'root': agent['rootId'],
-                'workers': [agent['id']], 'concurrency': self.runtime.agent(parent['rootId'])['concurrency'],
-                'yoloMode': agent.get('yoloMode', False), 'defaults': self.runtime.worker_defaults(parent)}
+                'workers': [agent['id']], 'concurrency': root['concurrency'],
+                'yoloMode': agent.get('yoloMode', False), 'defaults': self.runtime.worker_defaults(root)}
         if operation.get('canonical'):
             link = {**copy.deepcopy(operation['canonical']['link']), 'id': identity(operation['id'], 'link'), 'workers': [agent['id']]}
             link.pop('server', None)

@@ -107,7 +107,14 @@ def _diagnostic(account_key, provider, versions):
     running = versions.get("runningVersion")
     installed = versions.get("installedVersion")
     configured = versions.get("configuredVersion")
-    update_notice = compare_versions(installed, versions.get("availableVersion"))
+    update_notices = []
+    installed_notice = compare_versions(installed, versions.get("availableVersion"))
+    if installed_notice:
+        update_notices.append(installed_notice)
+    upstream_version = versions.get("upstreamVersion")
+    upstream_notice = compare_versions(installed, upstream_version, source="upstream")
+    if upstream_notice:
+        update_notices.append(upstream_notice)
     warning = version_warning(provider, running) if running else None
     if warning is None and installed:
         warning = version_warning(provider, installed, source="launchedExecutable")
@@ -130,7 +137,7 @@ def _diagnostic(account_key, provider, versions):
         "runningVersion": running,
         "installedVersion": installed,
         "configuredVersion": configured,
-        "updateNotice": update_notice.model_dump(by_alias=True) if update_notice else None,
+        "updateNotices": [notice.model_dump(by_alias=True) for notice in update_notices],
         "baseline": baseline,
         "error": versions.get("error"),
         "message": warning["message"] if warning else versions.get("runningNote") or
@@ -249,6 +256,8 @@ class ProviderVersionMonitor:
         return matches
 
     def _check(self, runtime, connected, signature, generation):
+        from codex_provider_upstream_releases import tick as upstream_release_tick
+        upstream_versions = upstream_release_tick(runtime)
         providers = []
         for account_key, server, connection_id in connected:
             if not self._is_current(runtime, signature, generation):
@@ -263,6 +272,7 @@ class ProviderVersionMonitor:
                 versions = reader(provider, server, account, runtime)
                 if not isinstance(versions, dict):
                     raise ValueError("Provider version reader returned no status object")
+                versions["upstreamVersion"] = upstream_versions.get(provider)
                 diagnostic = _diagnostic(account_key, provider, versions)
                 if not self._is_current(runtime, signature, generation):
                     return
@@ -348,4 +358,16 @@ def tick(runtime):
 def status(runtime):
     current = monitor(runtime)
     current.tick(runtime)
-    return current.status()
+    result = current.status()
+    from codex_provider_upstream_releases import updates_enabled
+    if updates_enabled(runtime) is False:
+        for provider in result["providers"]:
+            provider["updateNotices"] = [
+                notice for notice in provider.get("updateNotices", [])
+                if notice["source"] != "upstream"
+            ]
+        result["warnings"] = [
+            warning for warning in result["warnings"]
+            if not warning["id"].endswith(":upstream")
+        ]
+    return result
