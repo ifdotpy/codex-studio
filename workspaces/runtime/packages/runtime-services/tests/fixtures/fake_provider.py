@@ -31,6 +31,11 @@ for line in sys.stdin:
         send({"method": "turn/started", "params": {
             "threadId": params["threadId"], "turn": {"id": turn_id}}})
         if mode == "turn-complete":
+            send({"id": "fake-callback", "method": "thread/loaded/list", "params": {}})
+            callback = json.loads(sys.stdin.readline())
+            if (callback.get("id") != "fake-callback"
+                    or callback.get("error", {}).get("code") != -32601):
+                sys.exit(1)
             send({"method": "turn/completed", "params": {
                 "threadId": params["threadId"],
                 "turn": {"id": turn_id, "status": "completed"}}})

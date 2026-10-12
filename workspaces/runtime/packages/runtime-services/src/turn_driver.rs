@@ -691,9 +691,13 @@ fn handle_provider_event(
             }
         }
         ProviderSessionEvent::Closed { .. } => {}
-        ProviderSessionEvent::Reply { .. }
-        | ProviderSessionEvent::UnknownOutcome { .. }
-        | ProviderSessionEvent::Inbound(Inbound::Request(_)) => {}
+        ProviderSessionEvent::Inbound(Inbound::Request(request)) => {
+            let _ignored = session.reject_request(
+                request.id,
+                "Provider callback is not supported by the Rust turn driver.",
+            );
+        }
+        ProviderSessionEvent::Reply { .. } | ProviderSessionEvent::UnknownOutcome { .. } => {}
     }
 }
 

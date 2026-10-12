@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use studio_runtime_providers::{
     Action, Frame, Inbound, LineDecoder, Method, RequestId, RequestOutcome, RequestTicket,
-    ResponseBody, SessionError, SessionState,
+    ResponseBody, SessionError, SessionState, encode_line,
 };
 use thiserror::Error;
 
@@ -205,6 +205,31 @@ impl ProviderSession {
             .insert(ticket.id.clone(), now.saturating_add(timeout_ms));
         self.apply_actions(actions);
         Ok(ticket)
+    }
+
+    /// Refuse an inbound provider callback that this runtime does not implement.
+    pub fn reject_request(
+        &mut self,
+        id: RequestId,
+        message: &str,
+    ) -> Result<(), ProviderSessionError> {
+        let bytes = encode_line(&Frame::Response {
+            id,
+            body: ResponseBody::Error(json!({
+                "code": -32601,
+                "message": message
+            })),
+            fields: Default::default(),
+        })
+        .map_err(|error| ProviderSessionError::Process(io::Error::other(error)))?;
+        let Some(writer) = self.writer.as_mut() else {
+            return Err(ProviderSessionError::Closed);
+        };
+        if let Err(error) = writer.write_all(&bytes).and_then(|()| writer.flush()) {
+            self.transport_lost();
+            return Err(ProviderSessionError::Process(error));
+        }
+        Ok(())
     }
 
     /// Wait for one reply, provider callback, unknown outcome, or connection
