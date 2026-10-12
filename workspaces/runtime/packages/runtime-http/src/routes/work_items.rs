@@ -262,7 +262,7 @@ pub(crate) async fn save_plan(
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let validators = state.validators.clone();
     let wake = state.event_wake.clone();
-    let result = tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || -> Result<Value, ApiError> {
         let result = store
             .transaction_with_error(|connection| {
                 event_write::save_plan_validated(connection, input, |record| {
@@ -304,7 +304,7 @@ pub(crate) async fn annotation(
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let validators = state.validators.clone();
     let wake = state.event_wake.clone();
-    let result = tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || -> Result<Value, ApiError> {
         let result = store
             .transaction_with_error(|connection| {
                 event_write::annotate_validated(connection, input, |record| {

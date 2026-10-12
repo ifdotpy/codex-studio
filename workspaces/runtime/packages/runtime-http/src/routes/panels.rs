@@ -166,7 +166,7 @@ fn field_validation(section: &str, field: &str) -> ApiError {
 
 async fn profiles(State(state): State<HttpState>) -> Result<Json<Value>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
-    let profiles = tokio::task::spawn_blocking(move || {
+    let profiles = tokio::task::spawn_blocking(move || -> Result<Value, ApiError> {
         let connection = store.read().map_err(|_| ApiError::internal())?;
         let records = ProfileRepository::list(&connection).map_err(profile_read_error)?;
         Ok(json!({"profiles": records}))
