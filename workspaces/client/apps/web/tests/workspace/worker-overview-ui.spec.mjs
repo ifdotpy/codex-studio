@@ -440,6 +440,15 @@ test("Worker Overview Ui", async ({
     await refreshFromEntityPull();
     await page.reload();
     await selectLead();
+    await expect
+      .poll(async () => ({
+        answer: await count("answer"),
+        waiting: await count("waiting"),
+        workerState: await card(0)
+          .locator(".worker-state")
+          .getAttribute("aria-label"),
+      }))
+      .toEqual({ answer: 0, waiting: 17, workerState: "Question deferred" });
     assert.equal(
       await count("answer"),
       0,
@@ -456,6 +465,15 @@ test("Worker Overview Ui", async ({
     await refreshFromEntityPull();
     await page.reload();
     await selectLead();
+    await expect
+      .poll(async () => ({
+        answer: await count("answer"),
+        working: await count("working"),
+        workerState: await card(0)
+          .locator(".worker-state")
+          .getAttribute("aria-label"),
+      }))
+      .toEqual({ answer: 0, working: 7, workerState: "Working" });
     assert.equal(await count("answer"), 0, "answered requests stop counting");
     assert.equal(await count("working"), 7);
     await page.screenshot({ path: join(root, "worker-overview-desktop.png") });
