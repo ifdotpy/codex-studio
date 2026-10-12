@@ -1,4 +1,5 @@
 import { orderPreferenceServers } from "./preferenceServerOrder";
+import { legacyPreferenceSeed } from "./legacyPreferenceSeed";
 import { useEffect, useRef } from "react";
 import { fetchApiRequest } from "../api";
 import { connectUiPreferences } from "../sync/uiPreferenceConnection";
@@ -21,6 +22,7 @@ import {
   readServers,
   SERVER_REGISTRY_EVENT,
   SERVER_REGISTRY_KEY,
+  LOCAL_NAME_KEY,
   type StudioServer,
 } from "./registry";
 
@@ -52,26 +54,14 @@ export function useUiPreferenceSync(
     }
     const keyFor = (kind: string, identity: string) =>
       `server-${kind}:${identity}`;
-    const seed = (server: StudioServer, identity: string) => {
-      const fields = readPreferenceFields("user");
-      for (const [kind, value] of [
-        ["alias", server.alias],
-        ["label", server.label],
-      ] as const) {
-        const name = JSON.stringify([keyFor(kind, identity)]);
-        if (value && !fields[name])
-          fields[name] = { value, timestamp: 0, writer: "legacy" };
-      }
-      const orderKey = JSON.stringify(["server-order"]);
-      if (!fields[orderKey])
-        fields[orderKey] = {
-          value: servers
-            .map((row) => identities.get(row.id))
-            .filter((id): id is string => !!id),
-          timestamp: 0,
-          writer: "legacy",
-        };
-      receivePreferenceFields("user", fields);
+    const seed = () => {
+      const fields = legacyPreferenceSeed(
+        servers,
+        identities,
+        readPreferenceFields("user"),
+        localStorage.getItem(LOCAL_NAME_KEY),
+      );
+      if (Object.keys(fields).length) receivePreferenceFields("user", fields);
     };
     const apply = () => {
       if (applying) return;
@@ -172,10 +162,7 @@ export function useUiPreferenceSync(
         );
       previousOrder = order;
     };
-    for (const server of servers) {
-      const identity = identities.get(server.id);
-      if (identity) seed(server, identity);
-    }
+    seed();
     const manager = createPreferenceSyncConnectionManager<StudioServer>(
       (server, onSchemaMismatch) =>
         connectUiPreferences(
@@ -191,7 +178,7 @@ export function useUiPreferenceSync(
               `studio-server-workspace-id:${server.id}`,
               identity,
             );
-            seed(server, identity);
+            seed();
             apply();
           },
           onSchemaMismatch,

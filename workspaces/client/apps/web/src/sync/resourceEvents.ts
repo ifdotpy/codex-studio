@@ -687,7 +687,18 @@ function replayResourceBaseline(resources: ResourceRef[]) {
   for (const { version, resources: known } of groups.values()) {
     const resourceVersions = known.flatMap((resource) => {
       const resourceVersion = resourceValues.get(resourceKey(resource));
-      return resourceVersion ? [{ revision: resourceVersion.revision }] : [];
+      if (!resourceVersion) return [];
+      return [
+        {
+          revision: resourceVersion.revision,
+          ...(resource.kind === "state" && resourceVersion.entitySequenceReset
+            ? { entitySequenceReset: true }
+            : resource.kind === "state" &&
+                resourceVersion.entitySequence !== undefined
+              ? { entitySequences: [resourceVersion.entitySequence] }
+              : {}),
+        },
+      ];
     });
     broadcast({
       kind: "resource-event",
