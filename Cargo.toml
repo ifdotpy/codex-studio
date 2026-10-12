@@ -4,6 +4,7 @@ members = [
     "workspaces/runtime/apps/diagnostics",
     "workspaces/runtime/packages/operations",
     "workspaces/runtime/packages/operations-python",
+    "workspaces/runtime/packages/runtime-providers",
 ]
 # The vendored layr and layr-desk sources (scripts update-vm-layr.py) build inside the Linux VM
 # guest with their own lints; they are not part of this workspace.
@@ -28,4 +29,5 @@ unwrap_used = "warn"
 [workspace.dependencies]
 serde = { version = "1.0", default-features = false, features = ["std"] }
 serde_json = { version = "1.0", default-features = false, features = ["std", "arbitrary_precision"] }
+thiserror = "=2.0.17"
 pyo3 = { version = "0.29", features = ["abi3-py311", "extension-module"] }

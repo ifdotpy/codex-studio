@@ -1,0 +1,15 @@
+[package]
+name = "studio-runtime-providers"
+version.workspace = true
+edition.workspace = true
+description = "Pure provider protocol codecs and request bookkeeping for Codex Studio"
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
