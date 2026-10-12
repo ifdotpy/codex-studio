@@ -182,11 +182,22 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         page.getByLabel("Subagent account", { exact: true }),
         "account-4",
       );
+      // A new subagent account saves the defaults; nothing moves.
       await page.waitForFunction(() =>
         window.calls.some(
           (call) =>
-            call.scope === "subagents" && call.account_key === "account-4",
+            call.endpoint === "/api/conversation" &&
+            call.worker_defaults?.account_key === "account-4",
         ),
+      );
+      assert.equal(
+        await page.evaluate(
+          () =>
+            window.calls.filter(
+              (call) => call.endpoint === "/api/agents/account-transfer",
+            ).length,
+        ),
+        0,
       );
       await expect(
         page.getByRole("option", {
@@ -207,8 +218,8 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
           .count(),
         0,
       );
-      // Another provider's tab lists its models. A model there is saved with
-      // that provider's first account for new subagents, without a transfer.
+      // Another provider's tab lists the models of all its ready accounts. A
+      // model there is saved with Automatic, and the server picks the account.
       await page
         .getByLabel("Subagent account provider", { exact: true })
         .locator("label")
@@ -225,7 +236,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
             .some(
               (call) =>
                 call.endpoint === "/api/conversation" &&
-                call.worker_defaults?.account_key === "account-0" &&
+                call.worker_defaults?.account_key === null &&
                 call.worker_defaults?.model === "gpt-6-luna",
             ),
         mark,

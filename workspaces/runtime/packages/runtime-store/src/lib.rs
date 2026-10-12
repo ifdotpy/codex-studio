@@ -18,6 +18,7 @@ pub use records::{
     TaskRepository, WorkStatus,
 };
 pub use repositories::profiles::{ProfileRecord, ProfileRepository, ProfileRole, ReasoningEffort};
+pub use repositories::rules::{RulesRepository, StoredAgent, StoredRule};
 pub use repositories::sync_documents::{EntityRow, SyncDocument, SyncDocumentsRepository};
 
 const DATABASE_BUSY_TIMEOUT_MS: u32 = 15_000;

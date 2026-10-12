@@ -135,5 +135,66 @@ class WorkerAccountsContract(unittest.TestCase):
             DISPLAY_READ.reset(display)
 
 
+class Pricing:
+    def snapshot(self, **_options):
+        model = lambda i, o: {'cost': {'input': i, 'output': o}}
+        return {'providers': {
+            'openai': {'models': {'gpt-6-sol': model(5, 40), 'gpt-6-luna': model(1.25, 10),
+                                  'gpt-6-astra': model(0.25, 2), 'gpt-6-odd': model(0.5, 50)}},
+            'anthropic': {'models': {'claude-opus-5-5': model(15, 75), 'claude-sonnet-5-5': model(3, 15)}}}}
+
+
+class ChoiceRuntime(Runtime):
+    """The person chose Sol for subagents on Automatic; prices come from the cache."""
+
+    def __init__(self, default='gpt-6-sol', pricing=True):
+        super().__init__()
+        self.default = default
+        if pricing:
+            self._worker_pricing = Pricing()
+
+    def worker_defaults(self, root):
+        return {'model': self.default, 'accountKey': None}
+
+    def catalog(self, account):
+        self.calls.append(account)
+        return {'data': [{'model': name} for name in ('gpt-6-sol', 'gpt-6-luna', 'gpt-6-astra', 'gpt-6-odd',
+                                                      'gpt-6-new')]}
+
+
+class AgentModelChoice(unittest.TestCase):
+    """An agent may pick a subagent model of the chosen provider that costs no more."""
+
+    parent = {'rootId': 'lead', 'accountKey': 'first'}
+
+    def test_default_and_cheaper_models_are_allowed(self):
+        for model in (None, 'gpt-6-sol', 'gpt-6-luna', 'gpt-6-astra'):
+            with self.subTest(model=model):
+                account, _ = resolve(ChoiceRuntime(), self.parent, {'model': model} if model else {})
+                self.assertEqual(account, 'first')
+
+    def test_a_more_expensive_model_is_refused(self):
+        rt = ChoiceRuntime(default='gpt-6-luna')
+        with self.assertRaisesRegex(ValueError, 'gpt-6-sol costs more than the default subagent model gpt-6-luna'):
+            resolve(rt, self.parent, {'model': 'gpt-6-sol'})
+        # Cheaper input does not excuse dearer output.
+        with self.assertRaisesRegex(ValueError, 'costs more'):
+            resolve(rt, self.parent, {'model': 'gpt-6-odd'})
+
+    def test_another_provider_and_unknown_prices_are_refused(self):
+        with self.assertRaisesRegex(ValueError, 'Choose a Codex model for subagents'):
+            resolve(ChoiceRuntime(), self.parent, {'model': 'claude-sonnet-5-5'})
+        with self.assertRaisesRegex(ValueError, 'cannot compare the price of gpt-6-new'):
+            resolve(ChoiceRuntime(), self.parent, {'model': 'gpt-6-new'})
+        # Before the first price list the provider rule still holds, and the choice stands.
+        with self.assertRaisesRegex(ValueError, 'Choose a Codex model'):
+            resolve(ChoiceRuntime(pricing=False), self.parent, {'model': 'claude-sonnet-5-5'})
+        self.assertEqual(resolve(ChoiceRuntime(pricing=False), self.parent, {'model': 'gpt-6-new'})[0], 'first')
+
+    def test_a_review_keeps_its_own_default(self):
+        rt = ChoiceRuntime(default='gpt-6-luna')
+        self.assertEqual(resolve(rt, self.parent, {'model': 'gpt-6-sol'}, limit_choice=False)[0], 'first')
+
+
 if __name__ == '__main__':
     unittest.main()

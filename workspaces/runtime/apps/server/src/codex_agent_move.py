@@ -121,6 +121,35 @@ def teleport_definition(legacy: dict[str, Any]) -> dict[str, Any]:
     return current
 
 
+def worker_account(rows: list[dict[str, Any]], defaults: Any) -> dict[str, Any] | None:
+    """The identity of a chat's subagent account on this server, for the move target."""
+    key = defaults.get('accountKey') if isinstance(defaults, dict) else None
+    row = next((row for row in rows if row.get('id') == key), None) if key else None
+    return ({'provider': row.get('provider') or 'codex', 'email': row.get('email'), 'accountId': row.get('accountId')}
+            if row else None)
+
+
+def worker_defaults_here(rows: list[dict[str, Any]], defaults: Any, source: Any) -> Any:
+    """A subagent account is a credential of the source server. The target uses its own ready
+    account of the same provider and identity, else Automatic, which picks a ready account
+    of the model's provider for each new subagent."""
+    if not isinstance(defaults, dict) or not defaults.get('accountKey'):
+        return defaults
+    ready = [row for row in rows if row.get('status') == 'ready'
+             and not row.get('disconnected') and not row.get('deleted') and not row.get('duplicateOf')]
+    match = None
+    if isinstance(source, dict) and source.get('email'):
+        same = [row for row in ready if (row.get('provider') or 'codex') == (source.get('provider') or 'codex')
+                and row.get('email') == source['email']]
+        match = next((row for row in same if row.get('accountId') == source.get('accountId')), None) or (same[0] if same else None)
+    result = dict(defaults)
+    if match is not None:
+        result['accountKey'] = match['id']
+    else:
+        result.pop('accountKey', None)
+    return result
+
+
 class AgentMoves:
     def __init__(self, service: Any) -> None:
         self.service = service
@@ -717,6 +746,9 @@ class AgentMoves:
                       'target': operation['target'], 'preflight': operation['preflight'],
                       'cwd': operation['args']['cwd'], 'note': operation['args'].get('note', ''), 'link': link,
                       'files': files}
+        subagents = worker_account(self.runtime.accounts.list(), agent.get('workerDefaults'))
+        if subagents is not None:
+            descriptor['workerAccount'] = subagents
         if len(request_body(identity(operation['id'], 'begin'), 'move_begin', descriptor).encode()) > MAX_REQUEST:
             raise ValueError('The exact native settings exceed 256 KiB after compression. No instructions were truncated')
         return descriptor
@@ -1042,6 +1074,9 @@ class AgentMoves:
                      activeTools=[], activity=None, error=None, autoWake=False, status='paused', threadId=descriptor['nativeThread'],
                      movedFrom={'server': operation['principal'], 'move': operation['move']},
                      frozenNativeParams=copy.deepcopy(descriptor['nativeParameters']))
+        if 'workerDefaults' in agent:
+            agent['workerDefaults'] = worker_defaults_here(self.runtime.accounts.list(), agent['workerDefaults'],
+                                                           descriptor.get('workerAccount'))
         agent.update(moveImportPending=True,
                      executionMove={'id': operation['move'], 'phase': 'ready', 'server': self.service.server_id},
                      lastCompletedTurn=None, lastCompletedTurnStatus=None)

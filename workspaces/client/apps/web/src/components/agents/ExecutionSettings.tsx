@@ -11,6 +11,7 @@ import {
 import { ChevronDown } from "lucide-react";
 import {
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -28,6 +29,8 @@ import {
 import { busy, type Agent, type Json, type JsonValue } from "../../types";
 import {
   isDaybreakAlias,
+  ModelCatalogReader,
+  readWorkerModels,
   supportsDaybreakMode,
   useWorkerModels,
   type WorkerModelInfo,
@@ -257,6 +260,7 @@ function ScopedExecutionSettings({
   agent,
   catalog: parentCatalog,
   accounts = [],
+  team,
   refresh,
   teamDefaults = false,
   nextTurnSupported,
@@ -446,23 +450,27 @@ function ScopedExecutionSettings({
     if (teamDefaults) void changeAccount(key);
     else if (key) onAccountChange?.(key);
   };
-  const leadProvider =
-    accounts.find((account) => account.id === accountOf(agent))?.provider ||
-    agent.provider ||
-    "codex";
-  // Another provider's tab lists that provider's models. Choosing one saves the
-  // provider's first ready account and the model for new subagents only.
-  const browseAccount =
+  // Subagent settings apply to new subagents only. An explicit account lists its own
+  // models on its provider's tab. Automatic, and any other provider's tab, list the
+  // models of all ready accounts of that provider; the server picks the account for
+  // each new subagent from the model.
+  const crossProvider =
     role === "worker" &&
     teamDefaults &&
-    pickerProvider !== (activeAccount?.provider || leadProvider)
-      ? connectedAccounts.find(
-          (account) => (account.provider || "codex") === pickerProvider,
-        )
-      : undefined;
-  const browseCatalog = useWorkerModels(
-    browseAccount?.id || "",
-    !!browseAccount && (opened || !!settingsRow),
+    !!effectiveAccount &&
+    pickerProvider !== (activeAccount?.provider || "codex");
+  const allWorkerModels = useWorkerModels(
+    accountOf(agent),
+    crossProvider && (opened || !!settingsRow),
+    true,
+  );
+  const catalogReader = useContext(ModelCatalogReader);
+  const existingElsewhere = (team || []).filter(
+    (member) =>
+      member.rootId === agent.id &&
+      member.id !== agent.id &&
+      !member.deletedAt &&
+      accountOf(member) !== current.account_key,
   );
 
   useEffect(() => {
@@ -656,19 +664,65 @@ function ScopedExecutionSettings({
       if (mounted.current) setSaving(false);
     }
   };
+  // A new account for new subagents keeps the model when the account offers it, else
+  // the account's recommended model. Existing subagents keep theirs.
   const changeAccount = async (target: string | null) => {
     if (saveLock.current || target === current.account_key) return;
-    if (onDraftChange) {
-      onDraftChange({ worker_defaults: { ...current, account_key: target } });
+    let offered: WorkerModelInfo[];
+    try {
+      offered = await readWorkerModels(
+        catalogReader,
+        target || accountOf(agent),
+        !target,
+      );
+    } catch (failure) {
+      if (mounted.current) setError(errorText(failure));
       return;
     }
-    if (!target) {
-      await submit({
-        id: agent.id,
-        worker_defaults: { ...current, account_key: null },
-      });
+    const usable = offered.filter(
+      (row) =>
+        !row.hidden &&
+        !isDaybreakAlias(row.model) &&
+        supportsDaybreakMode(row, false),
+    );
+    const wanted = current.model;
+    const kept =
+      wanted &&
+      usable.find(
+        (row) => row.model === wanted || row.resolvedModel === wanted,
+      );
+    const model = kept
+      ? wanted
+      : target
+        ? (usable.find((row) => row.isDefault) || usable[0])?.model
+        : null;
+    if (target && !model) {
+      setError("This account offers no model for subagents.");
       return;
     }
+    const row = usable.find(
+      (item) => item.model === (model || agent.model || ""),
+    );
+    const effort = row?.supportedReasoningEfforts?.some(
+      (item) => item.reasoningEffort === current.effort,
+    )
+      ? current.effort
+      : row?.defaultReasoningEffort || null;
+    await submit({
+      id: agent.id,
+      worker_defaults: {
+        ...current,
+        account_key: target,
+        model: model || null,
+        effort,
+        fast_mode: current.fast_mode && !!fastTier(row),
+        daybreak_enabled: false,
+      },
+    });
+  };
+  // Moving existing subagents is a separate, explicit action.
+  const moveExisting = async (target: string) => {
+    if (saveLock.current || onDraftChange) return;
     // A lost response is retried with the same request id.
     const subagentTransferReceiptKey = `subagent-account-transfer:${JSON.stringify([agent.id, target])}`;
     const previous = saved<{ target?: string; request_id?: string } | null>(
@@ -995,32 +1049,31 @@ function ScopedExecutionSettings({
     }
   };
   const mobile = useMediaQuery("(max-width: 760px)");
-  const chooseBrowsedModel = (account: string, model: string) => {
-    const row = infoFor(browseCatalog, model);
+  const chooseAutomaticModel = (model: string) => {
+    const row = infoFor(allWorkerModels, model);
     const effort = row?.supportedReasoningEfforts?.some(
       (item) => item.reasoningEffort === current.effort,
     )
       ? current.effort
       : row?.defaultReasoningEffort || null;
-    // No account transfer: existing subagents keep their account and model.
     void submit({
       id: agent.id,
       worker_defaults: {
         ...current,
-        account_key: account,
+        account_key: null,
         model,
         effort,
-        fast_mode: false,
+        fast_mode: current.fast_mode && !!fastTier(row),
         daybreak_enabled: false,
       },
     });
   };
-  const pickerModel = browseAccount
+  const pickerModel = crossProvider
     ? ""
     : role === "review"
       ? reviewCurrent.model || DEFAULT
       : current.model || DEFAULT;
-  const browseOptions: ModelOption[] = browseCatalog.models
+  const crossOptions: ModelOption[] = allWorkerModels.models
     .filter(
       (row) =>
         !isDaybreakAlias(row.model) &&
@@ -1029,14 +1082,14 @@ function ScopedExecutionSettings({
     )
     .map((row) => ({
       value: row.model,
-      label: displayModel(browseCatalog, row.model),
+      label: displayModel(allWorkerModels, row.model),
       description: row.description || undefined,
       isDefault: !!row.isDefault,
       disabled: !supportsDaybreakMode(row, false),
     }));
   const pickerModels = (
-    browseAccount
-      ? browseOptions
+    crossProvider
+      ? crossOptions
       : (role === "review" ? reviewOptions : modelOptions).filter((row) => {
           if (row.value === DEFAULT) return role !== "orchestrator";
           const model = infoFor(catalog, row.value);
@@ -1058,7 +1111,7 @@ function ScopedExecutionSettings({
           ? role === "review"
             ? "Same as caller"
             : "Same as main agent"
-          : browseAccount
+          : crossProvider
             ? row.label
             : displayModel(catalog, row.value),
     }))
@@ -1117,9 +1170,17 @@ function ScopedExecutionSettings({
         providers={pickerProviders}
         onProvider={setBrowsedProvider}
         accounts={connectedAccounts}
-        accountKey={teamDefaults ? current.account_key || "" : accountOf(agent)}
+        accountKey={
+          teamDefaults
+            ? current.account_key ||
+              // Automatic belongs to the tab of the current model's provider.
+              (role === "worker" && automaticProvider !== pickerProvider
+                ? "\u0000"
+                : "")
+            : accountOf(agent)
+        }
         onAccount={chooseAccount}
-        automaticAccount={role === "worker" && pickerProvider === leadProvider}
+        automaticAccount={role === "worker"}
         accountDisabled={
           saving || accountDisabled || (!teamDefaults && !onAccountChange)
         }
@@ -1138,7 +1199,7 @@ function ScopedExecutionSettings({
           role === "review" ? "Default review model" : prefix + " model"
         }
         onModel={(value) => {
-          if (browseAccount) chooseBrowsedModel(browseAccount.id, value);
+          if (crossProvider) chooseAutomaticModel(value);
           else if (role === "review")
             void changeReview({ model: value === DEFAULT ? null : value });
           else void change({ model: value === DEFAULT ? null : value });
@@ -1166,11 +1227,29 @@ function ScopedExecutionSettings({
       />
       {role === "worker" && !onDraftChange && (
         <p className="notice">
-          {browseAccount
-            ? `A model here is for new subagents on ${setupAccountName(browseAccount)}. Existing subagents keep their account. Choose another account above to use it instead.`
-            : "For new subagents. An account change also moves existing ones."}
+          {crossProvider
+            ? `A model here is for new subagents on any ready ${title(pickerProvider)} account. Choose an account above to use only that one.`
+            : "For new subagents. Existing subagents keep their account and model."}
         </p>
       )}
+      {role === "worker" &&
+        teamDefaults &&
+        !onDraftChange &&
+        !!current.account_key &&
+        !crossProvider &&
+        existingElsewhere.length > 0 &&
+        shownTransfer?.status !== "pending" && (
+          <Button
+            size="compact-xs"
+            variant="subtle"
+            disabled={saving}
+            onClick={() => void moveExisting(current.account_key!)}
+          >
+            Move {existingElsewhere.length} existing subagent
+            {existingElsewhere.length === 1 ? "" : "s"} to{" "}
+            {setupAccountName(activeAccount)}
+          </Button>
+        )}
       {(teamDefaults || agent.isLead) && shownTransfer && (
         <AccountTransferStatus
           transfer={shownTransfer}
@@ -1237,7 +1316,7 @@ function ScopedExecutionSettings({
               variant="subtle"
               size="compact-xs"
               disabled={saving}
-              onClick={() => void changeAccount(retryTarget)}
+              onClick={() => void moveExisting(retryTarget)}
             >
               Retry
             </Button>
