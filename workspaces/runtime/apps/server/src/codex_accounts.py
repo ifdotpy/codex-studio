@@ -389,7 +389,8 @@ class AccountStore:
         with self.lock:
             receipts = self.data.setdefault("nameReceipts", {})
             previous = receipts.get(request)
-            content = {"accountKey": key, "label": label}
+            normalized_label = label.strip()
+            content = {"accountKey": key, "label": normalized_label}
             if previous is not None:
                 if previous != content:
                     raise ValueError("This name request id has different content")
@@ -397,7 +398,7 @@ class AccountStore:
                 row = self._row(key)
                 if row.get("deleted"):
                     raise ValueError("This account was deleted")
-                row["label"] = label.strip()
+                row["label"] = normalized_label
                 receipts[request] = content
                 self._save()
         return self.snapshot()

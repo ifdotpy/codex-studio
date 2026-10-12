@@ -11,6 +11,16 @@ lost response. Runtime configuration belongs to the server source and its
 deployment units; command scripts are owned by the [root manifest](../../../../package.json).
 Focused check from the repository root: `pnpm run test:server:python -- --filter workspaces/runtime/apps/server/tests/runtime-contract.py`.
 
+## Persisted state schemas
+
+The account registry and workspace usage-limit schemas are generated from the
+Python models. Regenerate them with `pnpm run state-schemas:generate` and check
+for drift with `pnpm run state-schemas:check`. To validate a disposable state
+directory without opening it for writes, run
+`python3 workspaces/runtime/apps/server/src/codex_python.py --exec -m studio_api.state_check --state-dir <state-directory>`.
+This checker validates the account registry and the workspace usage-limit
+projection in `canvas.sqlite3`; it does not compare Rust sync tables.
+
 ## Navigation
 
 - [`src/`](src/): implementation and flat Python import root; see the
