@@ -18,8 +18,8 @@ pub enum RenameError {
     RequestIdRequired,
     #[error("Not implemented: requires provider-session/title-generation")]
     TitleGenerationUnavailable,
-    #[error("invalid stored object {object}/{id}")]
-    InvalidStoredObject { object: &'static str, id: String },
+    #[error("invalid stored object {object}")]
+    InvalidStoredObject { object: &'static str },
     #[error(transparent)]
     Store(#[from] StoreError),
 }
@@ -40,7 +40,6 @@ pub fn rename(
         let result: Value = serde_json::from_str(&receipt.result).map_err(|_| {
             RenameError::InvalidStoredObject {
                 object: "runtime_operation_receipts",
-                id: request_id.to_owned(),
             }
         })?;
         return Ok(result);
@@ -52,7 +51,6 @@ pub fn rename(
     if agent.id.0 != id {
         return Err(RenameError::InvalidStoredObject {
             object: "runtime_agents",
-            id: id.to_owned(),
         });
     }
     if truthy(agent.extra.get("deletedAt")) {
