@@ -112,21 +112,26 @@ framework concepts that current routes do not require. **Recommend Axum.**
 
 ### OpenAPI and Rust DTO authority
 
-| Candidate                                                          |        Version | Released   | License           |       MSRV | Status                                  |
-| ------------------------------------------------------------------ | -------------: | ---------- | ----------------- | ---------: | --------------------------------------- |
-| [Utoipa](https://crates.io/crates/utoipa)                          |          6.0.0 | 2026-09-22 | MIT OR Apache-2.0 |       1.88 | Active                                  |
-| [Aide](https://crates.io/crates/aide)                              | 0.16.0-alpha.4 | 2026-04-14 | MIT OR Apache-2.0 | Undeclared | Pre-release; stable 0.15.1 (2025-08-19) |
-| [openapi-to-rust](https://crates.io/crates/openapi-to-rust/0.22.0) |         0.22.0 | 2026-10-06 | MIT               |       1.88 | Active                                  |
-| [typify](https://crates.io/crates/typify/0.10.0-alpha.2)           | 0.10.0-alpha.2 | 2026-10-05 | Apache-2.0        | Undeclared | Pre-release                             |
+| Candidate                                                                                             | Version checked (release)                                     | License            | MSRV       | Maintenance and relevant fit                                                                                     |
+| ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- | ------------------ | ---------- | ---------------------------------------------------------------------------------------------------------------- |
+| [Utoipa](https://crates.io/crates/utoipa)                                                             | 6.0.0 (2026-09-22)                                            | MIT OR Apache-2.0  | 1.88       | Active; derives OpenAPI 3.1 from Rust types.                                                                     |
+| [Aide](https://crates.io/crates/aide)                                                                 | 0.16.0-alpha.4 (2026-04-14); stable 0.15.1 (2025-08-19)       | MIT OR Apache-2.0  | Undeclared | Active pre-release; derives through `schemars`, Axum integration.                                                |
+| [openapi-to-rust](https://crates.io/crates/openapi-to-rust/0.22.0)                                    | 0.22.0 (2026-10-06)                                           | MIT                | 1.88       | Active; consumes OpenAPI 3.0/3.1 and generates Serde request/response types.                                     |
+| [typify](https://crates.io/crates/typify/0.8.0)                                                       | stable 0.8.0 (2026-09-09); newest 0.10.0-alpha.2 (2026-10-05) | Apache-2.0         | Undeclared | Active; JSON Schema to Rust types, not an OpenAPI producer.                                                      |
+| [Committed canonical OpenAPI artifact](../../workspaces/runtime/apps/server/src/studio_api/schema.py) | OAS 3.1, emitted 2026-10-12                                   | Repository license | N/A        | Python emits it today; manual schema edits plus generated Rust/TS and a Python-free v3 hash check after removal. |
 
-Utoipa has 5 normal deps (3 required: `indexmap`, `serde`, `serde_json`), no
-runtime, OpenAPI 3.1 and Axum/Actix integration. Aide has 15 (7 required,
-including `schemars`, `tracing`, `thiserror`); its Axum path uses Tokio.
-`openapi-to-rust` has 17 required normal deps (`jsonschema`, `serde_json_path`,
-`syn`, `prettyplease`, `thiserror`), supports OpenAPI 3.0/3.1, and needs no
-runtime for generated DTOs. typify has 2 required normal deps (`typify-impl`,
-optional macro) but consumes JSON Schema, so OpenAPI component projection is
-required.
+Registry and repository facts checked 2026-10-12. Utoipa has 5 normal
+dependencies (3 required: `indexmap`, `serde`, `serde_json`); Aide has 15
+(7 required, including `schemars`, `tracing`, `thiserror`).
+`openapi-to-rust` has 17 required normal dependencies, including `jsonschema`,
+`serde_json_path`, `syn`, `prettyplease`, and `thiserror`; the generated DTOs
+need only Serde and `serde_json`. Typify's generator crate uses `typify-impl`
+and has an optional macro crate; its `cargo-typify` CLI has a larger build-tool
+graph. It needs a JSON Schema projection from OpenAPI. DTO generation adds no
+runtime; Aide's Axum integration uses Tokio.
+No separate host-platform matrix was published by these generator projects;
+the full-schema probes ran on Linux only, so generation on macOS/Windows remains
+unverified. This does not change the runtime's target matrix.
 
 **Feasibility probe (2026-10-12):** isolated crate and venv under
 `/var/tmp/codex-runtime-stack-probe`; no repository manifest or lockfile was
@@ -160,25 +165,95 @@ for that field, which emitted an unconstrained `{}` schema. A manual recursive
 schema or alternate generated representation is therefore part of the
 feasibility work, not yet demonstrated.
 
-For schema-first, retain the exact frozen canonical OpenAPI output from Python
-as the only schema source during migration; generate Rust request/response
-DTOs from it (or generate then compile/test-check route DTOs against it). Keep
-`openapi-typescript` and its output unchanged. `openapi-to-rust` is OpenAPI-aware
-but brings a larger codegen surface; `typify` is a smaller JSON-Schema route
-after projecting component schemas. Review generator support for all 51
-open-by-design routes, recursive `JsonValue`, nullable unions and aliases
-before selecting it. **Recommend the frozen OpenAPI artifact plus
-openapi-to-rust for DTO generation** because it consumes OpenAPI directly;
-reject typify for this use unless the projection and alpha release prove less
-maintenance. Reject default Utoipa/Aide output as schema authority until an
-exact-hash prototype passes. After Python deletion, schema-first means the committed
-OpenAPI contract remains authoritative and Rust DTOs plus TypeScript stay
-generated; Utoipa-first means Rust types become authoritative and emit OpenAPI
-and TypeScript. **Recommend schema-first through cutover: hash equality is
-preserved by construction while handler compatibility is checked, instead of
-making a cross-framework renderer reproduce schema quirks immediately. Keep
-the committed OpenAPI artifact as the single authority afterward unless the
-owner separately accepts a measured Rust-type-to-identical-hash transfer.**
+Adoption and maintenance evidence: crates.io reports about 31.5 million total
+downloads for Typify versus about 53 thousand for `openapi-to-rust`; these are
+download counts, not unique users. Typify's [repository](https://github.com/oxidecomputer/typify)
+has about 907 stars, 113 open issues and activity through 2026-10-05; the
+crate's owners include `ahl`. Its higher adoption is reinforced by
+[Progenitor](https://github.com/oxidecomputer/progenitor), an OpenAPI client
+generator that uses Typify internally, but Progenitor is a client generator,
+not the server request/response type path needed here. The
+[`openapi-to-rust` repository](https://github.com/gpu-cli/openapi-to-rust)
+was created 2026-02-13, has about 42 stars and 3 open issues, and shows frequent
+releases through 0.22.0 on 2026-10-06; its maintainer history is concentrated
+in `lightsofapollo`. Counts and release activity were checked on 2026-10-12;
+they show maintenance patterns, not a support guarantee.
+
+The [Utoipa repository](https://github.com/juhaku/utoipa) and
+[Aide repository](https://github.com/tamasfe/aide) also show active releases;
+their newest crate releases are listed above. No separate project-supported
+host OS matrix was found for them either. Utoipa's demonstrated limitation
+here is canonical-schema mismatch; Aide's exact-hash behavior and relevant
+open issue set were not established by this probe.
+
+Known relevant issue evidence: Typify still has open reports for
+[OpenAPI 3.1 parsing with `$ref` and `additionalProperties`](https://github.com/oxidecomputer/typify/issues/523),
+[nullable optional fields](https://github.com/oxidecomputer/typify/issues/851),
+[discriminator handling](https://github.com/oxidecomputer/typify/issues/498),
+and [recursive-schema stack/compile failures](https://github.com/oxidecomputer/typify/issues/435)
+([another recursive-schema report](https://github.com/oxidecomputer/typify/issues/1011)).
+[`openapi-to-rust` documentation](https://github.com/gpu-cli/openapi-to-rust#readme)
+documents OpenAPI 3.1, nullable unions, discriminators, recursive references
+and open maps; its
+[open discriminator issue](https://github.com/gpu-cli/openapi-to-rust/issues/11)
+reports an orphan single-variant enum for a filtered discriminator field.
+Issue search checked 2026-10-12; absence of another matching issue is not
+evidence that no other limitation exists.
+
+**Schema-first full-spec probe (2026-10-12):** Python on this branch emitted
+the canonical OpenAPI 3.1 document using canonicalizer v3: 752 component
+schemas, 159 operations, 868,033 canonical bytes, SHA-256
+`b02a39d7131186a0ef5668c1c3d2e2181d1e5f418ae0367574ce04a809583ddc`.
+`openapi-to-rust 0.22.0` accepted it, reported 1,509 schemas and 0 pruned,
+and generated Rust that passed `cargo check`. All 752 component schemas were
+accepted, including types used by the 51 open-by-design route contracts. The
+generated output uses typed DTOs where possible and `serde_json::Value` for unconstrained
+`JsonValue`/opaque values. `ResourceRef` became a tagged enum with its 20
+variants and Serde implementations. Three sites were reported as untyped:
+`JsonValue`, `ValidationError.ctx`, and `ValidationError.input`; the first and
+last map to `serde_json::Value`, while the opaque context also uses a value.
+This is usable wire handling, not strict typing for intentionally open JSON.
+
+The Typify runner-up was also run against the full component projection
+(`$defs` plus rewritten component references), generated in `/var/tmp`, with
+`cargo-typify 0.10.0-alpha.2`. It panicked before output with
+`DuplicateItemName { kind: "property", type_name: "RuleBody",
+name: "stall_timeout_seconds", axis: Rust }`. This reproduces the collision
+on the current schema; it does not establish whether a naming configuration or
+schema projection could work around it.
+
+Two real HTTP response bodies from existing route fixtures were deserialized
+into generated `DirectoriesResponse` and `UiSummaryResponse` and serialized
+again. Both matched structurally; neither matched byte-for-byte because Serde
+emits object keys in generated struct order. Therefore compare parsed JSON in
+contract tests and preserve byte-level checks only where bytes are themselves
+the protocol. There is a route-count discrepancy to resolve before M-08.2:
+the [M-06 census](../verification/api-schema-gap-inventory-2026-10-11.md#m-06-final-route-accounting)
+counts 156 `/api/` entries plus seven documentation/static entries, while the
+canonical document has 159 `/api/` operations. Set comparison found four
+OpenAPI operations absent from that inventory (`POST /api/vault/aws-login`,
+`/api/vault/setup`, `/api/vault/setup/facts`, `/api/vault/unlock`) and one
+inventory route intentionally omitted from OpenAPI (`POST /api/voice/{action:path}`).
+That explains the net difference of three API operations; update and freeze the
+route set and schema hash together at M-08.2.
+
+**Recommendation—schema-first artifact + `openapi-to-rust` DTO generation.**
+It is the only candidate in this probe that accepts and compiles the complete
+current contract. Reject Utoipa as initial authority because all four
+representative Python/Rust model projections differed under canonicalizer v3;
+reject Aide as initial authority for the same unproven schema-parity reason
+and its additional schema/Axum integration layer. Typify has much greater
+adoption, but the current full projection panics and its OAS 3.1/nullable/
+discriminator/recursive reports add relevant maintenance risk. Keep a
+committed canonical OpenAPI document as the single schema authority after
+Python removal. A schema change means editing that document by hand, then
+regenerating Rust DTOs and TypeScript; no model-to-schema generator is proposed.
+Keep a small Python-free canonicalizer-v3/hash checker and generated-file
+freshness checks; use the pinned `openapi-typescript` CLI for TypeScript. This
+adds one small validation tool but avoids a second schema authority. The
+existing request hash comparison remains: on writes, a client hash different
+from the server's artifact hash still gets HTTP 426. Revisit Rust-type authority
+only after a complete exact-hash prototype shows it is simpler to maintain.
 
 ### SQLite access
 
@@ -381,9 +456,11 @@ checking headers/bodies/SSE and generated TypeScript determinism. Tests compare
 the frozen OpenAPI artifact's canonicalizer-v3 bytes/hash and route set, and
 compare database schema fingerprints/fixture readability; do not update the
 golden hash or regenerate client types to make a mismatch pass. For schema-first
-DTOs, build/test verifies that generated Rust request/response types and handler
-bindings compile against the frozen document. Utoipa parity is a separate
-candidate only after a scratch/CI proof reaches exact canonical bytes.
+DTOs, build/test verifies generated Rust request/response types and handler
+bindings against the frozen document. Keep the existing 426 write rejection
+when the renderer's `X-Studio-API-Schema` hash differs from the server hash;
+derive both from the same committed artifact and test that the mismatch fails
+closed.
 
 ### Platform and packaging matrix
 
@@ -424,8 +501,9 @@ migration/recovery plan before rollout.
 1. **Schema authority after Python removal:** keep a committed OpenAPI document
    as authority with generated Rust DTOs and unchanged TypeScript pipeline, or
    require Rust types to regenerate the exact same canonical hash? **Recommend
-   OpenAPI source for the cutover and ongoing authority** until an actual Rust
-   parity prototype proves an identical hash with less maintenance.
+   the committed artifact as ongoing authority.** The cost is manual OpenAPI
+   edits and regeneration of both language outputs; the measured type-first
+   alternative does not currently reproduce the hash.
 2. **Execution model:** one Tokio multi-thread runtime with rusqlite on blocking
    workers, or synchronous thread-based internals with an async HTTP edge?
    **Recommend async edge plus synchronous domain/store ports** for the smallest
@@ -440,6 +518,10 @@ migration/recovery plan before rollout.
 5. **Rollback window:** can M-08.2 prohibit forward migrations and incompatible
    writes until rollback is formally retired? **Recommend yes**, with no
    exceptions inside that window.
+6. **Route/schema baseline:** the current M-06 census and OpenAPI operation set
+   differ as described above. **Recommend reconciling the route list, frozen
+   OpenAPI artifact, and hash together at M-08.2 before using them as the
+   runtime-switch gate.**
 
 Breaking changes proposed: none. A future intentional API hash, platform, or
 database compatibility change needs a separately announced owner decision.
