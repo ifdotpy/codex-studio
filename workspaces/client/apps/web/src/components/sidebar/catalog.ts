@@ -21,14 +21,26 @@ export function reportSidebarModelWork(work: SidebarModelWork, count = 1) {
   if (typeof window !== "undefined")
     window.__studioSidebarModelProbe?.(work, count);
 }
+/** A moved chat shows only at its target: the source keeps a move record without a
+ * mailbox, and the target shows nothing until its import finishes. */
 export function isVisibleSidebarAgent(
-  agent: Pick<Agent, "source" | "isLead" | "deletedAt" | "sharedRoomId">,
+  agent: Pick<
+    Agent,
+    | "source"
+    | "isLead"
+    | "deletedAt"
+    | "sharedRoomId"
+    | "movedTo"
+    | "moveImportPending"
+  >,
 ) {
   return (
     agent.source === "managed" &&
     agent.isLead &&
     !agent.deletedAt &&
-    !agent.sharedRoomId
+    !agent.sharedRoomId &&
+    !agent.movedTo &&
+    !agent.moveImportPending
   );
 }
 

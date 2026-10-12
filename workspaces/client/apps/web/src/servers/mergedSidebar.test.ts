@@ -208,6 +208,63 @@ describe("complete multi-server sidebar projection", () => {
     ).toBe(model.chatKey("local", "same"));
   });
 
+  it("shows a moved chat once, at its target", () => {
+    const target = "/target/project";
+    const home = source("local", [
+      {
+        id: path,
+        path,
+        name: "attar",
+        homeServerId: "home-id",
+        folders: [],
+        locations: [
+          { serverId: "home-id", path, projectId: path },
+          { serverId: "remote-id", path: target, projectId: target },
+        ],
+      },
+    ]);
+    // The source keeps a move record with the target's folder, and an import
+    // that is still in progress has no chat to open yet.
+    home.sidebar.threads = [
+      agent("moved", {
+        cwd: target,
+        movedTo: { server: "remote-id", agentId: "moved", move: "m" },
+      }),
+      agent("importing", { cwd: "/elsewhere", moveImportPending: true }),
+    ];
+    const remote = source("remote", [
+      {
+        id: target,
+        path: target,
+        name: "attar",
+        homeServerId: "remote-id",
+        folders: [],
+        projectAliases: [
+          { serverId: "home-id", projectId: path, name: "attar" },
+        ],
+      },
+    ]);
+    remote.sidebar.threads = [
+      agent("moved", {
+        cwd: target,
+        movedFrom: { server: "home-id", move: "m" },
+      }),
+    ];
+    const model = mergeSidebar([home, remote]);
+    expect(model.data.runtime.projects.map((project) => project.path)).toEqual([
+      model.projectKey("local", path),
+    ]);
+    const catalog = createSidebarCatalogSelector()(
+      model.data.threads,
+      {},
+      model.data.runtime.peerTeams,
+      model.order,
+    );
+    expect(catalog.agents.map((row) => row.id)).toEqual([
+      model.chatKey("remote", "moved"),
+    ]);
+  });
+
   it("separates overlapping chat, worker, room, folder and team IDs", () => {
     const a = source("local");
     const b = source("remote");
