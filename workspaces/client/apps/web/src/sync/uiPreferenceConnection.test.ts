@@ -552,6 +552,88 @@ describe("paired server preference replication", () => {
     }
   });
 
+  it.each(["after pull completion", "while the pull is in flight"])(
+    "does not repeat an unknown-baseline pull for a covered stub sequence (%s)",
+    async (timing) => {
+      const origin = `https://baseline-sequence-${timing.replaceAll(" ", "-")}.invalid`;
+      const server = backend(origin, {});
+      const marker = server.seedBaseline();
+      let releasePull!: () => void;
+      let pullStarted!: () => void;
+      const pullResponse = new Promise<void>((resolve) => {
+        releasePull = resolve;
+      });
+      const started = new Promise<void>((resolve) => {
+        pullStarted = resolve;
+      });
+      let holdFirstPull = timing === "while the pull is in flight";
+      const fetch = async (request: Request) => {
+        if (
+          holdFirstPull &&
+          new URL(request.url).pathname === "/api/sync/pull"
+        ) {
+          holdFirstPull = false;
+          pullStarted();
+          await pullResponse;
+        }
+        return server.fetch(request);
+      };
+      const stop = connectUiPreferences(origin, fetch, localStorage);
+      try {
+        await vi.waitFor(() => expect(streams.has(origin)).toBe(true));
+        const initial = {
+          ...initialFrame(origin, server.sequence),
+          resourceVersions: undefined,
+        };
+        emitStateFrame(origin, initial);
+
+        if (timing === "while the pull is in flight") {
+          await started;
+          emitStateFrame(origin, {
+            protocol: 3,
+            workspaceId: origin,
+            epoch: "epoch-one",
+            revision: 2,
+            reason: "change",
+            resources: [{ kind: "state" }],
+            resourceVersions: [
+              {
+                resource: { kind: "state" },
+                revision: 2,
+                entitySequences: [server.sequence],
+              },
+            ],
+          });
+          releasePull();
+        }
+
+        await waitForAppliedBaselineMarker(marker);
+        if (timing === "after pull completion")
+          emitStateFrame(origin, {
+            protocol: 3,
+            workspaceId: origin,
+            epoch: "epoch-one",
+            revision: 2,
+            reason: "change",
+            resources: [{ kind: "state" }],
+            resourceVersions: [
+              {
+                resource: { kind: "state" },
+                revision: 2,
+                entitySequences: [server.sequence],
+              },
+            ],
+          });
+
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(server.pullReads).toBe(1);
+      } finally {
+        releasePull();
+        stop();
+      }
+    },
+  );
+
   it.each(["non-contiguous batch", "invalid preference row"])(
     "does not pull for a %s whose announced sequence is already covered",
     async (trigger) => {
