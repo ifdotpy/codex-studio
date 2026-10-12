@@ -40,13 +40,16 @@ class HistoryServer(f.fixture.f.FakeServer):
         self.organization = 'org-fixture'
         self.move_snapshot = True
         self.move_catalog = 'fixture-tools'
+        # Claude Code can announce more tools after the move check, in the same turn.
+        self.proof_revision = ''
         self.native_binary = {'version': 'fixture-native'}
 
     def call(self, method, params, timeout=60):
         if method == 'claude/moveProof':
             if not self.move_snapshot:
                 raise ValueError('The session has no verified saved prompt snapshot')
-            return {'snapshotHash': 'fixture-prompt', 'catalog': self.move_catalog,
+            return {'snapshotHash': 'fixture-prompt' + self.proof_revision, 'optionsHash': 'fixture-options',
+                    'catalog': self.move_catalog,
                     'session': copy.deepcopy(self.sessions[params['threadId']])}
         if method == 'claude/movePreflight':
             if params['proof']['catalog'] != self.move_catalog:
@@ -723,7 +726,8 @@ class Moves(f.SignedIntegration):
             'request_id': 'recovery-deadline'}, 'recovery-deadline')
         with self.a.runtime.db() as db:
             operation = service._get(db, accepted['requestId'])
-        for phase in ('waiting', 'exported', 'importing', 'prepared', 'redirected'):
+        # A move held in waiting sent no history; _release_unsent covers it.
+        for phase in ('exported', 'importing', 'prepared', 'redirected'):
             with self.subTest(phase=phase):
                 operation.update(phase='unknown', uncertainPhase=phase, deadline=time.time() - 1)
                 with self.a.runtime.db() as db:
@@ -889,6 +893,69 @@ class Moves(f.SignedIntegration):
         self.assertEqual(self.b.runtime.server.histories[moved['threadId']].read_bytes(), original)
         self.assertEqual(self.b.runtime.server.sessions[moved['threadId']]['nativeId'], self.lead['threadId'])
         self.assertEqual(len([1 for m, _ in self.b.runtime.server.calls if m == 'claude/moveImport']), 1)
+
+    def start_claude_move(self, key):
+        self.claude_source()
+        reply = self.tool(self.a, self.lead, 'orchestration_move',
+                          {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': key}, key)
+        self.assertEqual(reply['status'], 'accepted')
+        return self.a.runtime.multi_server().moves(), reply['requestId']
+
+    def run_moves(self, service):
+        service.tick()
+        f.fixture.f.eventually(lambda: not service.running, timeout=DEADLINE)
+
+    def test_claude_tools_announced_after_the_check_move_after_a_second_check(self):
+        service, key = self.start_claude_move('late-tools')
+        # The MCP servers of the turn connect after the check and announce their tools.
+        self.a.runtime.server.proof_revision = '+mcp'
+        self.run_moves(service)
+        source = self.a.runtime.agent(self.lead['id'])
+        with self.a.runtime.read_db() as db:
+            operation = service._get(db, key)
+        self.assertEqual(source.get('movedTo', {}).get('server'), self.b.server_id,
+                         {name: operation.get(name) for name in ('phase', 'uncertainPhase', 'error')})
+        with self.a.runtime.read_db() as db:
+            self.assertEqual(service._get(db, key)['preflight']['claudeProof']['snapshotHash'], 'fixture-prompt+mcp')
+        self.drive(lambda: bool(self.b.runtime.agent(self.lead['id']).get('turnId')))
+        self.assertEqual(len([1 for m, _ in self.b.runtime.server.calls if m == 'claude/moveImport']), 1)
+
+    def test_a_move_that_stops_before_the_transfer_releases_the_chat(self):
+        service, key = self.start_claude_move('changed-target')
+        self.a.runtime.server.proof_revision = '+mcp'
+        # The target no longer accepts the current tool list: the second check refuses.
+        self.b.runtime.server.move_catalog = 'other-tools'
+        self.run_moves(service)
+        with self.a.runtime.read_db() as db:
+            held = service._get(db, key)
+        self.assertEqual((held['phase'], held['uncertainPhase']), ('unknown', 'waiting'))
+        self.assertEqual(self.a.runtime.agent(self.lead['id'])['executionMove']['phase'], 'unknown')
+        # The target has no import, so the next pass releases the chat, also after the deadline.
+        held['deadline'] = time.time() - 1
+        with self.a.runtime.db() as db:
+            service._save(db, held)
+        self.run_moves(service)
+        source = self.a.runtime.agent(self.lead['id'])
+        self.assertNotIn('executionMove', source)
+        self.assertFalse(source.get('movedTo'))
+        self.assertIn('stopped before any transfer', source['error'])
+        with self.a.runtime.read_db() as db:
+            self.assertEqual(service._get(db, key)['phase'], 'failed')
+        self.assertFalse([1 for m, _ in self.b.runtime.server.calls if m in {'claude/moveImport', 'thread/resume', 'turn/start'}])
+
+    def test_a_waiting_move_stays_held_while_the_target_reports_an_import(self):
+        service, key = self.start_claude_move('held-import')
+        with self.a.runtime.read_db() as db:
+            operation = service._get(db, key)
+        operation.update(phase='unknown', uncertainPhase='waiting', deadline=time.time() - 1)
+        with self.a.runtime.db() as db:
+            service._save(db, operation)
+        with patch.object(service, '_exchange', return_value={'phase': 'receiving'}) as exchange:
+            service._reconcile(operation)
+        exchange.assert_called_once()
+        with self.a.runtime.read_db() as db:
+            self.assertEqual(service._get(db, key)['phase'], 'unknown')
+        self.assertTrue(self.a.runtime.agent(self.lead['id']).get('executionMove'))
 
     def test_claude_version_mismatch_names_versions_and_refuses(self):
         self.claude_source()
