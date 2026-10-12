@@ -787,8 +787,11 @@ async function executeServerCategory(root, category, suite = "") {
 }
 
 export function parseCounts(item, output) {
+  // ANSI CSI sequences contain control characters by design.
+  // oxlint-disable-next-line no-control-regex
+  const normalizedOutput = output.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
   if (item.ecosystem === "cargo") {
-    return output.split("\n").reduce(
+    return normalizedOutput.split("\n").reduce(
       (counts, line) => {
         let event;
         try {
@@ -809,14 +812,14 @@ export function parseCounts(item, output) {
     );
   }
   if (item.ecosystem === "server") {
-    const suite = output.match(
+    const suite = normalizedOutput.match(
       /Server suites: (\d+) passed, (\d+) failed, (\d+) skipped \(opt-in\), (\d+) skipped \(environment\)/,
     );
-    const testOutcomes = output.match(/Test outcomes: (\{[^\n]*\})/);
+    const testOutcomes = normalizedOutput.match(/Test outcomes: (\{[^\n]*\})/);
     const outcomes = testOutcomes ? JSON.parse(testOutcomes[1]) : {};
     const passed = (outcomes.passed ?? 0) + (suite ? +suite[1] : 0);
     const structuredFailedSuites =
-      output.match(/^FAIL .*failing IDs:/gm)?.length ?? 0;
+      normalizedOutput.match(/^FAIL .*failing IDs:/gm)?.length ?? 0;
     const unstructuredFailedSuites = Math.max(
       0,
       (suite ? +suite[2] : 0) - structuredFailedSuites,
@@ -836,7 +839,22 @@ export function parseCounts(item, output) {
       summaryFound: Boolean(suite),
     };
   }
-  const testLines = output
+  const playwright = normalizedOutput.match(
+    /^\s*(?:(\d+) failed[ \t]*\n)?[ \t]*(?:(\d+) skipped[ \t]*\n)?[ \t]*(?:(\d+) passed(?: \([^\n]+\))?)?\s*$/m,
+  );
+  if (playwright?.slice(1).some((count) => count !== undefined)) {
+    const failed = +(playwright[1] ?? 0);
+    const skipped = +(playwright[2] ?? 0);
+    const passed = +(playwright[3] ?? 0);
+    return {
+      passed,
+      failed,
+      skipped,
+      executed: passed + failed,
+      summaryFound: true,
+    };
+  }
+  const testLines = normalizedOutput
     .split("\n")
     .filter((line) => /^\s*Tests\s+/.test(line));
   if (testLines.length) {
@@ -857,7 +875,7 @@ export function parseCounts(item, output) {
     result.summaryFound = true;
     return result;
   }
-  if (/^TAP version \d+\n1\.\.0$/m.test(output))
+  if (/^TAP version \d+\n1\.\.0$/m.test(normalizedOutput))
     return {
       passed: 0,
       failed: 0,
@@ -865,7 +883,7 @@ export function parseCounts(item, output) {
       executed: 0,
       summaryFound: true,
     };
-  const tap = output.match(
+  const tap = normalizedOutput.match(
     /^# tests (\d+)\n(?:# suites \d+\n)?# pass (\d+)\n# fail (\d+)\n# cancelled (\d+)\n# skipped (\d+)/m,
   );
   if (tap)
@@ -876,7 +894,7 @@ export function parseCounts(item, output) {
       executed: +tap[2] + +tap[3],
       summaryFound: true,
     };
-  const nodeSpec = output.match(
+  const nodeSpec = normalizedOutput.match(
     /^ℹ tests (\d+)\nℹ suites \d+\nℹ pass (\d+)\nℹ fail (\d+)\nℹ cancelled \d+\nℹ skipped (\d+)/m,
   );
   if (nodeSpec)
