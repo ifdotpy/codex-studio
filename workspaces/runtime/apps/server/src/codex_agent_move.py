@@ -267,11 +267,16 @@ class AgentMoves:
     def _descriptor_identity(self, db: Any, descriptor: dict[str, Any]) -> None:
         preflight, agent = descriptor['preflight'], descriptor['agent']
         thread = descriptor['nativeThread']
-        receipt = db.execute('SELECT signature,result FROM runtime_server_inbox WHERE id=?',
-                             (identity(descriptor['move'], 'validate'),)).fetchone()
+        # The first check, or the check of the proof that the export carries (_revalidate).
+        keys = [identity(descriptor['move'], 'validate')]
+        proof = preflight.get('claudeProof') or {}
+        if isinstance(proof.get('snapshotHash'), str) and isinstance(proof.get('optionsHash'), str):
+            keys.append(identity(descriptor['move'], 'validate', proof['snapshotHash'], proof['optionsHash']))
         signature = hashlib.sha256(encoded([preflight['sourceServer'], 'move_validate', preflight]).encode()).hexdigest()
-        if (not receipt or receipt['signature'] != signature or not receipt['result']
-                or json.loads(receipt['result']).get('value') != descriptor['target']):
+        receipts = [db.execute('SELECT signature,result FROM runtime_server_inbox WHERE id=?', (key,)).fetchone()
+                    for key in keys]
+        if not any(receipt and receipt['signature'] == signature and receipt['result']
+                   and json.loads(receipt['result']).get('value') == descriptor['target'] for receipt in receipts):
             raise PermissionError('The native identity descriptor differs from its saved preflight receipt')
         if (agent['id'] != preflight['agentId'] or agent['threadId'] != thread
                 or preflight['nativeThread'] != thread or agent.get('provider', 'codex') != preflight['provider']):
@@ -482,9 +487,12 @@ class AgentMoves:
         for operation in uncertain:
             key = operation['id']
             with self.lock:
-                if key in self.running or self.runtime.closed or operation.get('recoveryExpiredAt'):
+                if key in self.running or self.runtime.closed:
                     continue
-                if self._expire(operation):
+                # A move that stopped before any transfer is released whenever the target
+                # confirms it (_release_unsent), also after its deadline.
+                if operation.get('uncertainPhase') != 'waiting' and (
+                        operation.get('recoveryExpiredAt') or self._expire(operation)):
                     continue
                 self.running.add(key)
             self.runtime.delivery_executor().submit(self._reconcile, operation)
@@ -519,14 +527,15 @@ class AgentMoves:
     def _reconcile(self, operation: dict[str, Any]) -> None:
         key = operation['id']
         try:
+            if operation.get('uncertainPhase') == 'waiting':
+                self._release_unsent(operation)
+                return
             if self._expire(operation):
                 return
             # A fresh read identity observes newer state; it cannot resume or start input.
             target = self._exchange(operation['server'], 'move_status', {'move': key},
                                     identity(key, 'status', str(int(time.time() // 20))))
             phase = operation['uncertainPhase']
-            if phase == 'waiting':
-                return
             if phase == 'exported' and target['phase'] == 'receiving':
                 # Begin and chunks are immutable compare-and-set writes. The
                 # target receipt proves the same transfer exists; exact chunks
@@ -561,6 +570,52 @@ class AgentMoves:
                 self.runtime.put(db, 'agents', agent)
             self.runtime.changed.set()
 
+    def _revalidate(self, operation: dict[str, Any], proof: dict[str, Any]) -> None:
+        """Claude Code connects MCP servers while a turn runs, so it can announce their tools
+        after the move check of that turn. The export then carries another proof. The target
+        checks that proof as well, under a receipt of its own; the move goes on only when the
+        target gives the same answer."""
+        snapshot, options = proof.get('snapshotHash'), proof.get('optionsHash')
+        if not (isinstance(snapshot, str) and snapshot and isinstance(options, str) and options):
+            raise ValueError('The current Claude move proof is incomplete')
+        preflight = {**operation['preflight'], 'claudeProof': proof}
+        target = self._exchange(operation['server'], 'move_validate', preflight,
+                                identity(operation['id'], 'validate', snapshot, options))
+        before = operation['target']
+        if any(target.get(field) != before.get(field) for field in ('accountKey', 'accountIdentity', 'cacheProof', 'warning')):
+            raise ValueError('The target answered differently for the current tool list. Ask for the move again')
+        operation.update(preflight=preflight, target=target)
+        with self.runtime.db() as db:
+            self._save(db, operation)
+
+    def _release_unsent(self, operation: dict[str, Any]) -> None:
+        """A move that stopped while the source exported sent the target only its check. When
+        the target confirms that it has no import, the chat stays here and takes input again.
+        No native input was repeated."""
+        key = operation['id']
+        target = self._exchange(operation['server'], 'move_status', {'move': key},
+                                identity(key, 'status', str(int(time.time() // 20))))
+        if target.get('phase') != 'not_started':
+            return
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self._get(db, key)
+            if not current or current['phase'] != 'unknown' or current.get('uncertainPhase') != 'waiting':
+                return
+            current.update(phase='failed', releasedAt=time.time(),
+                           error='The move stopped before any transfer. The chat stays on this server')
+            self._save(db, current)
+            agent = self.runtime.agent(current['agent'], db)
+            if agent.get('executionMove', {}).get('id') == key:
+                agent.pop('executionMove')
+                agent['error'] = ('The move stopped before any transfer. The chat stays on this server; '
+                                  'ask for the move again')
+                pending = db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND status='pending'",
+                                     (agent['id'],)).fetchone()
+                if agent.get('status') == 'queued' and not agent.get('inFlight') and not pending:
+                    agent['status'] = 'waiting'
+                self.runtime.put(db, 'agents', agent)
+            self.runtime.changed.set()
+
     def _export(self, operation: dict[str, Any]) -> dict[str, Any]:
         agent = self.runtime.agent(operation['agent'])
         if agent['epoch'] != operation['epoch'] or not agent.get('autoWake'):
@@ -579,6 +634,10 @@ class AgentMoves:
         self.runtime.loaded.discard(agent['id'])
         folder = self._folder(operation['id'])
         if agent.get('provider') == 'claude':
+            current = native.call('claude/moveProof', {'threadId': agent['threadId']}, timeout=90)
+            checked = operation['preflight']['claudeProof']
+            if any(current.get(field) != checked.get(field) for field in ('snapshotHash', 'optionsHash')):
+                self._revalidate(operation, current)
             exported = native.call('claude/moveExport', {'threadId': agent['threadId']}, timeout=90)
             export_claude(Path(exported['path']), folder / 'native.zip')
             bridge_session = exported['session']
