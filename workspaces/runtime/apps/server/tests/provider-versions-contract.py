@@ -26,6 +26,7 @@ from codex_provider_versions import (
     parse_version,
     version_warning,
 )
+from codex_provider_update_notice import compare_versions
 
 
 class Accounts:
@@ -68,6 +69,128 @@ class SnapshotLock:
 
 
 class ProviderVersionContract(unittest.TestCase):
+    def test_update_notice_requires_a_newer_readable_installed_candidate(self):
+        cases = (
+            ("newer", "2.0.0", "2.1.0", True),
+            ("equal", "2.1.0", "2.1.0", False),
+            ("older", "2.2.0", "2.1.0", False),
+            ("unparsable", "unknown", "2.2.0", False),
+            ("missing installed", None, "2.2.0", False),
+            ("missing", "2.1.0", None, False),
+        )
+        for case, installed, available, expected in cases:
+            with self.subTest(case=case):
+                notice = compare_versions(installed, available)
+                self.assertEqual(notice is not None, expected)
+                if notice:
+                    self.assertEqual(notice.availableVersion, available)
+                    self.assertEqual(notice.source, "installed")
+
+    def test_unavailable_codex_candidate_produces_no_notice(self):
+        from codex_provider_versions import _codex_version
+
+        with patch("codex_native_runtime._version", return_value="1.0.0"):
+            versions = _codex_version("codex", Server(), {}, Runtime())
+        self.assertIsNone(versions["availableVersion"])
+        self.assertIsNone(_diagnostic("work", "codex", versions)["updateNotice"])
+
+    def test_selected_codex_candidate_produces_notice(self):
+        from codex_provider_versions import _codex_version
+
+        class Updates:
+            def selected(self):
+                return {"version": "0.154.0"}
+
+        runtime = Runtime()
+        runtime.native_runtime_updates = Updates()
+        with patch("codex_native_runtime._version", return_value="0.153.4"):
+            versions = _codex_version("codex", Server(), {}, runtime)
+        self.assertEqual(
+            _diagnostic("work", "codex", versions)["updateNotice"],
+            {"availableVersion": "0.154.0", "source": "installed"},
+        )
+
+    def test_monitor_production_reader_path_reports_codex_version_and_notice(self):
+        class Updates:
+            def selected(self):
+                return {"version": "0.154.0"}
+
+        runtime = Runtime()
+        runtime.native_runtime_updates = Updates()
+        monitor = ProviderVersionMonitor()
+        with (
+            patch("codex_native_runtime._version", return_value="0.153.4"),
+            patch(
+                "codex_provider_versions._read_claude_executable",
+                return_value=("Claude Code 2.1.278", None),
+            ),
+        ):
+            monitor.tick(runtime)
+            monitor.worker.join(HANG_GUARD_SECONDS)
+
+        providers = {row["provider"]: row for row in monitor.status()["providers"]}
+        self.assertEqual(providers["codex"]["runningVersion"], "0.153.4")
+        self.assertEqual(
+            providers["codex"]["updateNotice"],
+            {"availableVersion": "0.154.0", "source": "installed"},
+        )
+        self.assertEqual(
+            providers["claude"]["installedVersion"], "Claude Code 2.1.278"
+        )
+        self.assertNotEqual(providers["codex"]["status"], "error")
+        self.assertNotEqual(providers["claude"]["status"], "error")
+
+    def test_monitor_does_not_swallow_programming_errors_from_reader(self):
+        runtime = Runtime()
+
+        def fail(*_args):
+            raise TypeError("reader programming error")
+
+        connected = [
+            (key, server, runtime.connection_ids.get(key))
+            for key, server in runtime.servers.items()
+        ]
+        signature = tuple(
+            (key, id(server), connection_id)
+            for key, server, connection_id in connected
+        )
+        monitor = ProviderVersionMonitor(read_version=fail)
+        with self.assertRaisesRegex(TypeError, "reader programming error"):
+            monitor._check(runtime, connected, signature, monitor.generation)
+
+    def test_unreadable_selected_codex_candidate_produces_no_notice(self):
+        from codex_provider_versions import _codex_version
+
+        class Updates:
+            def selected(self):
+                raise OSError("candidate store unavailable")
+
+        runtime = Runtime()
+        runtime.native_runtime_updates = Updates()
+        with patch("codex_native_runtime._version", return_value="0.153.4"):
+            versions = _codex_version("codex", Server(), {}, runtime)
+        self.assertIsNone(_diagnostic("work", "codex", versions)["updateNotice"])
+
+    def test_update_notice_is_projected_as_an_informational_runtime_notice(self):
+        monitor = ProviderVersionMonitor()
+        monitor.providers = [{
+            "id": "provider-version:work",
+            "accountKey": "work",
+            "provider": "codex",
+            "status": "current",
+            "runningVersion": "0.153.4",
+            "installedVersion": "0.153.4",
+            "configuredVersion": None,
+            "updateNotice": {"availableVersion": "0.154.0", "source": "installed"},
+            "baseline": "0.153.4",
+            "message": None,
+            "at": 1.0,
+        }]
+        notice = monitor.status()["warnings"][0]
+        self.assertEqual(notice["level"], "info")
+        self.assertIn("selected for runtime updates", notice["message"])
+        self.assertIn("still using 0.153.4", notice["message"])
+
     def test_baseline_means_lowest_version_recorded_in_repo_evidence(self):
         self.assertIsNone(version_warning("codex", "codex-cli 0.153.4"))
         self.assertIsNone(version_warning("claude", "Claude Code 2.1.278"))
@@ -85,7 +208,7 @@ class ProviderVersionContract(unittest.TestCase):
         account = {"provider": "claude", "claudeOptions": {"binaryPath": "/profile/claude"}}
         with patch("codex_provider_versions._read_claude_executable",
                    side_effect=[("Claude Code 2.1.277", None), ("Claude Code 2.2.0", None)]) as read:
-            versions = _claude_version(server, account)
+            versions = _claude_version("claude", server, account, Runtime())
         self.assertEqual(read.call_args_list[0].args[0], {
             "claudeOptions": {"binaryPath": "/launched/claude"},
         })
@@ -95,6 +218,10 @@ class ProviderVersionContract(unittest.TestCase):
         self.assertEqual(versions["configuredVersion"], "Claude Code 2.2.0")
         diagnostic = _diagnostic("work", "claude", versions)
         self.assertEqual(diagnostic["status"], "outdated")
+        self.assertEqual(
+            diagnostic["updateNotice"],
+            {"availableVersion": "Claude Code 2.2.0", "source": "installed"},
+        )
         self.assertIn("exact version already running may be different", diagnostic["message"])
 
     def test_unknown_and_failed_running_versions_are_visible(self):
@@ -246,7 +373,7 @@ class ProviderVersionContract(unittest.TestCase):
         started = threading.Event()
         release = threading.Event()
 
-        def read(provider, _server, _account):
+        def read(provider, _server, _account, _runtime):
             started.set()
             release.wait(2)
             return {"runningVersion": "0.153.3", "installedVersion": "0.153.3"} \
@@ -277,7 +404,7 @@ class ProviderVersionContract(unittest.TestCase):
         started = threading.Event()
         release = threading.Event()
 
-        def read(_provider, server, _account):
+        def read(_provider, server, _account, _runtime):
             if server is old:
                 started.set()
                 release.wait(2)

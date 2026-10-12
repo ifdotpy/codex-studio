@@ -924,14 +924,24 @@ class EntityFieldProducers(unittest.TestCase):
         self.runtime.servers["default"] = server
         self.runtime.connection_ids["default"] = "provider-version-test"
         self.runtime.offline_accounts.discard("default")
+        readings = iter((
+            {"runningVersion": "0.1.0", "installedVersion": "0.1.0", "availableVersion": "0.2.0"},
+            {"runningVersion": "0.1.0", "installedVersion": "0.1.0", "availableVersion": None},
+        ))
         monitor = ProviderVersionMonitor(interval=0,
-            read_version=lambda provider, current, account: {"runningVersion": "0.1.0"})
+            read_version=lambda provider, current, account, runtime: next(readings))
         self.runtime.provider_version_monitor = monitor
         monitor.tick(self.runtime)
-        monitor.worker.join(2)
+        monitor.worker.join(HANG_GUARD_SECONDS)
         notices = self.entity("workspace", "current")["nativeNotices"]
-        self.assertEqual(len(notices), 1)
-        self.assertEqual(notices[0]["version"], "0.1.0")
+        update_notice = next(notice for notice in notices if notice.get("level") == "info")
+        self.assertEqual(update_notice["id"], "provider-update:default")
+        self.assertEqual(update_notice["version"], "0.2.0")
+
+        monitor.tick(self.runtime)
+        monitor.worker.join(HANG_GUARD_SECONDS)
+        notices = self.entity("workspace", "current")["nativeNotices"]
+        self.assertFalse(any(notice.get("id") == "provider-update:default" for notice in notices))
 
     def test_peer_team_save_writes_entity(self):
         peer = self.runtime.create({"name": "Peer", "cwd": self.path,

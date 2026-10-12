@@ -1,10 +1,11 @@
 """Nonblocking, account-scoped CLI version diagnostics and advisories."""
 from __future__ import annotations
 
-import re
 import subprocess
 import threading
 import time
+
+from codex_provider_update_notice import compare_versions, parse_version, update_warnings
 
 
 # Lowest real CLI versions recorded by repository verification. These are
@@ -13,19 +14,6 @@ TESTED_BASELINES = {"codex": "0.153.4", "claude": "2.1.278"}
 PROVIDER_LABELS = {"codex": "Codex CLI", "claude": "Claude Code"}
 CHECK_INTERVAL = 300
 _MONITOR_CREATION_LOCK = threading.Lock()
-VERSION_PATTERN = re.compile(r"(?<![0-9])([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([0-9A-Za-z.-]+))?")
-
-
-def parse_version(value):
-    if not isinstance(value, str):
-        return None
-    match = VERSION_PATTERN.search(value)
-    if not match:
-        return None
-    prerelease = match[4]
-    parts = tuple((0, int(part)) if part.isdigit() else (1, part)
-                  for part in (prerelease or "").split("."))
-    return (*map(int, match.group(1, 2, 3)), prerelease is None, parts)
 
 
 def version_warning(provider, version, *, source="running"):
@@ -53,10 +41,24 @@ def version_warning(provider, version, *, source="running"):
     }
 
 
-def _codex_version(server, _account):
+def _codex_version(_provider, server, _account, runtime):
     from codex_native_runtime import _version
     version = _version(server)
-    return {"runningVersion": version, "installedVersion": version}
+    available = None
+    updates = getattr(runtime, "native_runtime_updates", None)
+    if updates is not None:
+        try:
+            # selected() is the approved, persisted candidate that the updater
+            # will try to apply to Codex connections when safe rotation permits.
+            selected = updates.selected()
+            available = selected.get("version") if isinstance(selected, dict) else None
+        except (OSError, TypeError, ValueError):
+            pass
+    return {
+        "runningVersion": version,
+        "installedVersion": version,
+        "availableVersion": available,
+    }
 
 
 def _read_claude_executable(profile):
@@ -77,7 +79,7 @@ def _read_claude_executable(profile):
     return output, None
 
 
-def _claude_version(server, account):
+def _claude_version(_provider, server, account, _runtime):
     # AppServer retains the options used to launch this connection. Account
     # settings can change while that bridge stays alive, so inspect both paths.
     launched_profile = {"claudeOptions": getattr(server, "provider_options", {})}
@@ -90,6 +92,7 @@ def _claude_version(server, account):
         "runningVersion": None,
         "installedVersion": installed,
         "configuredVersion": configured,
+        "availableVersion": configured,
         "error": launched_error or configured_error,
         "runningNote": "The exact version already running in Claude sessions is unknown.",
     }
@@ -104,6 +107,7 @@ def _diagnostic(account_key, provider, versions):
     running = versions.get("runningVersion")
     installed = versions.get("installedVersion")
     configured = versions.get("configuredVersion")
+    update_notice = compare_versions(installed, versions.get("availableVersion"))
     warning = version_warning(provider, running) if running else None
     if warning is None and installed:
         warning = version_warning(provider, installed, source="launchedExecutable")
@@ -126,6 +130,7 @@ def _diagnostic(account_key, provider, versions):
         "runningVersion": running,
         "installedVersion": installed,
         "configuredVersion": configured,
+        "updateNotice": update_notice.model_dump(by_alias=True) if update_notice else None,
         "baseline": baseline,
         "error": versions.get("error"),
         "message": warning["message"] if warning else versions.get("runningNote") or
@@ -254,15 +259,15 @@ class ProviderVersionMonitor:
                 if provider not in TESTED_BASELINES or provider not in VERSION_READERS:
                     providers.append(_unknown_provider(account_key, provider))
                     continue
-                versions = (self.read_version(provider, server, account) if self.read_version
-                            else VERSION_READERS[provider](server, account))
+                reader = self.read_version or VERSION_READERS[provider]
+                versions = reader(provider, server, account, runtime)
                 if not isinstance(versions, dict):
                     raise ValueError("Provider version reader returned no status object")
                 diagnostic = _diagnostic(account_key, provider, versions)
                 if not self._is_current(runtime, signature, generation):
                     return
                 providers.append(diagnostic)
-            except (KeyError, OSError, ValueError, TypeError, subprocess.SubprocessError):
+            except (OSError, ValueError, subprocess.SubprocessError):
                 if self._is_current(runtime, signature, generation):
                     provider = getattr(server, "provider", "codex")
                     if provider in TESTED_BASELINES:
@@ -308,17 +313,19 @@ class ProviderVersionMonitor:
     def status(self):
         with self.lock:
             providers = [dict(item) for item in self.providers]
+            warnings = [
+                {"id": row["id"], "accountKey": row["accountKey"],
+                 "provider": row["provider"], "version": row.get("runningVersion") or
+                 row.get("installedVersion") or row.get("configuredVersion"),
+                 "baseline": row["baseline"], "message": row["message"], "at": row["at"]}
+                for row in providers
+                if row["status"] == "outdated" and row.get("message")
+            ]
+            warnings.extend(update_warnings(providers, PROVIDER_LABELS))
             return {
                 "checkedAt": self.checked_at,
                 "providers": providers,
-                "warnings": [
-                    {"id": row["id"], "accountKey": row["accountKey"],
-                     "provider": row["provider"], "version": row.get("runningVersion") or
-                     row.get("installedVersion") or row.get("configuredVersion"),
-                     "baseline": row["baseline"], "message": row["message"], "at": row["at"]}
-                    for row in providers
-                    if row["status"] == "outdated" and row.get("message")
-                ],
+                "warnings": warnings,
             }
 
 

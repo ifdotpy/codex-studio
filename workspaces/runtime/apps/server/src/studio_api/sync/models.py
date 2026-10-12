@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Annotated, Literal
-from typing_extensions import TypedDict
+from typing_extensions import NotRequired, TypedDict
 from pydantic import ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
 from codex_records import NativeNoticeRecord, NativeSafetyBufferingRecord
@@ -1117,6 +1117,7 @@ class ProviderVersionWarningDto(TypedDict):
     baseline: str
     message: str
     at: float
+    level: NotRequired[Literal["warning", "info"]]
 
 
 NativeNoticeDto = (

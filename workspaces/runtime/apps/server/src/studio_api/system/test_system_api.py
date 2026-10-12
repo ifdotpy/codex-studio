@@ -285,6 +285,9 @@ class SystemApiTests(unittest.TestCase):
                 "id": "provider-version:outdated", "accountKey": "outdated",
                 "provider": "codex", "status": "outdated", "runningVersion": "0.153.3",
                 "installedVersion": "0.153.3", "configuredVersion": None, "baseline": "0.153.4",
+                "updateNotice": {
+                    "availableVersion": "0.154.0", "source": "installed",
+                },
                 "error": None, "message": "Below the tested baseline.", "at": 101.0,
             },
             {
@@ -313,8 +316,13 @@ class SystemApiTests(unittest.TestCase):
         self.assertEqual([row.status.value for row in response.providers], [
             "checking", "current", "outdated", "unknown", "error",
         ])
-        self.assertEqual(len(response.warnings), 1)
+        self.assertEqual(len(response.warnings), 2)
         self.assertEqual(response.warnings[0].version, "0.153.3")
+        self.assertEqual(response.warnings[0].level, "warning")
+        self.assertEqual(response.warnings[1].level, "info")
+        notice = response.providers[2].updateNotice
+        assert notice is not None
+        self.assertEqual(notice.availableVersion, "0.154.0")
 
     def test_diagnostics_without_runtime_remains_not_found(self) -> None:
         response = self.client.get("/api/diagnostics")

@@ -12466,6 +12466,19 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
+    /**
+     * ProviderUpdateNotice
+     * @description A newer installed version is available but is not in use yet.
+     */
+    ProviderUpdateNotice: {
+      /** Availableversion */
+      availableVersion: string;
+      /**
+       * Source
+       * @constant
+       */
+      source: "installed";
+    };
     /** ProviderVersion */
     ProviderVersion: {
       /** Accountkey */
@@ -12489,6 +12502,7 @@ export interface components {
       /** Runningversion */
       runningVersion: null | string;
       status: components["schemas"]["ProviderVersionState"];
+      updateNotice?: components["schemas"]["ProviderUpdateNotice"] | null;
     };
     /** ProviderVersions */
     ProviderVersions: {
@@ -12519,6 +12533,12 @@ export interface components {
       baseline: string;
       /** Id */
       id: string;
+      /**
+       * Level
+       * @default warning
+       * @enum {string}
+       */
+      level?: "warning" | "info";
       /** Message */
       message: string;
       /** Provider */
@@ -12539,6 +12559,11 @@ export interface components {
       baseline: string;
       /** Id */
       id: string;
+      /**
+       * Level
+       * @enum {string}
+       */
+      level?: "warning" | "info";
       /** Message */
       message: string;
       /** Provider */

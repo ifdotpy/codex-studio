@@ -1,11 +1,22 @@
 import { useState } from "react";
 import { ActionIcon, Modal } from "@mantine/core";
-import { CircleAlert } from "lucide-react";
+import { CircleAlert, Info } from "lucide-react";
 import { displayError, errorDetails } from "../errorPresentation";
-import type { Json, Message } from "../types";
+import type { components } from "../generated/api";
+import type { Message } from "../types";
 import ErrorDescription from "./ErrorDescription";
 import { isNonBlockingWarning } from "./NativeNotice";
 import "./conversation-warnings.css";
+
+type NativeNotice =
+  | components["schemas"]["NativeNoticeRecord"]
+  | components["schemas"]["ProviderVersionWarningDto"];
+
+function isInfoNotice(
+  notice: NativeNotice,
+): notice is components["schemas"]["ProviderVersionWarningDto"] {
+  return "level" in notice && notice.level === "info";
+}
 
 function warningTitle(value: unknown, fallback: string) {
   const text = displayError(value);
@@ -30,7 +41,7 @@ export default function ConversationWarnings({
   messages,
 }: {
   scope: string;
-  notices?: Json[];
+  notices?: NativeNotice[];
   accountKey: string;
   messages: Message[];
 }) {
@@ -38,6 +49,10 @@ export default function ConversationWarnings({
   const accountNotices =
     notices?.filter((notice) => notice.accountKey === accountKey) || [];
   const chatWarnings = messages.filter(isNonBlockingWarning);
+  const hasWarning =
+    accountNotices.some((notice) => !isInfoNotice(notice)) ||
+    chatWarnings.length > 0;
+  const title = hasWarning ? "Warnings" : "Notices";
   const count = accountNotices.length + chatWarnings.length;
   const opened = openScope === scope && count > 0;
 
@@ -45,21 +60,25 @@ export default function ConversationWarnings({
     <>
       {count > 0 && (
         <ActionIcon
-          className="conversation-warning-trigger"
+          className={`conversation-warning-trigger${hasWarning ? "" : " conversation-info-trigger"}`}
           variant="subtle"
-          color="orange"
-          aria-label="Warnings"
-          title="Warnings"
+          color={hasWarning ? "orange" : "blue"}
+          aria-label={title}
+          title={title}
           onClick={() => setOpenScope(scope)}
         >
-          <CircleAlert size={18} aria-hidden="true" />
+          {hasWarning ? (
+            <CircleAlert size={18} aria-hidden="true" />
+          ) : (
+            <Info size={18} aria-hidden="true" />
+          )}
         </ActionIcon>
       )}
       <Modal
         key={scope}
         opened={opened}
         onClose={() => setOpenScope(null)}
-        title="Warnings"
+        title={title}
         size="lg"
         centered
         className="conversation-warnings-modal"
@@ -67,11 +86,17 @@ export default function ConversationWarnings({
         <div className="conversation-warning-list">
           {accountNotices.map((notice) => (
             <article key={`account:${notice.id}`}>
-              <h3>{warningTitle(notice.message, "Account notice")}</h3>
+              <h3>
+                {isInfoNotice(notice)
+                  ? notice.id.startsWith("provider-update:")
+                    ? "Provider update available"
+                    : "Information"
+                  : warningTitle(notice.message, "Account notice")}
+              </h3>
               <p>
                 <ErrorDescription value={notice.message} role="status" />
               </p>
-              {notice.details != null && (
+              {"details" in notice && notice.details != null && (
                 <details>
                   <summary>Details</summary>
                   <pre>{errorDetails(notice.details)}</pre>

@@ -142,10 +142,18 @@ class ProviderVersion(ContractModel):
     runningVersion: str | None
     installedVersion: str | None
     configuredVersion: str | None
+    updateNotice: ProviderUpdateNotice | None = None
     baseline: str | None
     error: str | None
     message: str | None
     at: float | None
+
+
+class ProviderUpdateNotice(ContractModel):
+    """A newer installed version is available but is not in use yet."""
+
+    availableVersion: str
+    source: Literal["installed"]
 
 
 class ProviderVersionWarning(ContractModel):
@@ -156,6 +164,7 @@ class ProviderVersionWarning(ContractModel):
     baseline: str
     message: str
     at: float
+    level: Literal["warning", "info"] = "warning"
 
 
 class ProviderVersions(ContractModel):
