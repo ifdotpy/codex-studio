@@ -16,6 +16,7 @@ import {
   studioToolCatalog,
   exactSession,
   exactProof,
+  exactTurnTools,
 } from "./move.mjs";
 import { externalAliases } from "./move-external.mjs";
 
@@ -647,4 +648,66 @@ test("builtin tools stay the same while connectors drop and add their names arou
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+test("later turns of a moved session keep the exact tool order the server sorted", async () => {
+  const { createSdkMcpServer, tool } =
+    await import("@anthropic-ai/claude-agent-sdk");
+  const { z } = await import("zod");
+  // The bridge's Studio server compiles each definition from its JSON schema.
+  const compile = (definitions) =>
+    studioToolCatalog(
+      createSdkMcpServer({
+        name: "studio",
+        version: "1",
+        tools: definitions.map((definition) =>
+          tool(
+            definition.name,
+            definition.description,
+            z.fromJSONSchema(definition.inputSchema).shape,
+            async () => ({ content: [] }),
+          ),
+        ),
+      }),
+      definitions.length,
+    );
+  const source = [
+    {
+      name: "orchestration_move",
+      description: "Move",
+      inputSchema: {
+        type: "object",
+        properties: { server: { type: "string" }, cwd: { type: "string" } },
+        required: ["server", "cwd"],
+        additionalProperties: false,
+      },
+    },
+  ];
+  const session = { dynamicToolsJson: JSON.stringify(source) };
+  // The server stores records with sorted keys and sends that copy on later turns.
+  const sorted = JSON.parse(
+    JSON.stringify(source, (key, value) =>
+      value && typeof value === "object" && !Array.isArray(value)
+        ? Object.fromEntries(
+            Object.keys(value)
+              .sort()
+              .map((k) => [k, value[k]]),
+          )
+        : value,
+    ),
+  );
+  const proof = await compile(source);
+  assert.notDeepEqual(
+    (await compile(sorted))[0].input_schema.required,
+    proof[0].input_schema.required,
+  );
+  assert.deepEqual(await compile(exactTurnTools(session, sorted)), proof);
+  verifyToolProof(
+    { tools: [], inlineTools: false, compiledTools: proof },
+    await compile(exactTurnTools(session, sorted)),
+  );
+  // Changed content stays as the server sent it, so the proof check still refuses it.
+  const changed = [{ ...sorted[0], description: "Changed" }];
+  assert.equal(exactTurnTools(session, changed), changed);
+  assert.equal(exactTurnTools({}, sorted), sorted);
 });
