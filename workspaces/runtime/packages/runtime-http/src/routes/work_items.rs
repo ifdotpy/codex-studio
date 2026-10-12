@@ -19,7 +19,6 @@ use crate::router::HttpState;
 use crate::validation::Registry;
 
 const WORK_DEPENDENCY: [Dependency; 1] = [Dependency::new("event-driver/work-items")];
-const QUEUE_DEPENDENCY: [Dependency; 1] = [Dependency::new("event-driver/queue-mutations")];
 const ORGANIZATION_DEPENDENCY: [Dependency; 1] =
     [Dependency::new("workspace-state/organization-effects")];
 
@@ -34,8 +33,8 @@ pub(crate) fn routes() -> RouteGroup {
         get("/api/queue", OperationStatus::Implemented, queue),
         post(
             "/api/queue",
-            OperationStatus::partial(&QUEUE_DEPENDENCY),
-            queue_action,
+            OperationStatus::Implemented,
+            super::queue_write::queue_action,
         ),
         get("/api/plan", OperationStatus::Implemented, plan),
         post("/api/plan", OperationStatus::Implemented, save_plan),
@@ -236,10 +235,6 @@ fn stored_error(error: WorkPolicyError) -> ApiError {
 pub(crate) async fn work_action(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
     Err(dependency_error("POST", "/api/work", &WORK_DEPENDENCY))
 }
-pub(crate) async fn queue_action(ApiJson(body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    validate_queue_action(&body)?;
-    Err(dependency_error("POST", "/api/queue", &QUEUE_DEPENDENCY))
-}
 pub(crate) async fn save_plan(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
@@ -430,28 +425,4 @@ fn write_error(error: EventWriteError) -> ApiError {
         EventWriteError::InvalidStoredObject { object, id } => invalid_stored(object, &id),
         EventWriteError::Store(_) | EventWriteError::Clock => ApiError::internal(),
     }
-}
-
-fn validate_queue_action(body: &Value) -> Result<(), ApiError> {
-    let action = body
-        .get("action")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let has_id = ["id", "message_id"].iter().any(|field| {
-        body.get(*field)
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.is_empty())
-    });
-    if matches!(action, "cancel" | "edit" | "first" | "send_now") && !has_id {
-        return Err(ApiError::validation(vec![Value::String("body".into())]));
-    }
-    if action == "send_now"
-        && !body
-            .get("request_id")
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.is_empty())
-    {
-        return Err(ApiError::validation(vec![Value::String("body".into())]));
-    }
-    Ok(())
 }

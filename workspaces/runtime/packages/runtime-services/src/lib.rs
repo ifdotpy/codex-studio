@@ -8,6 +8,7 @@
 //! services; services never depend on HTTP types.
 
 pub mod event_write;
+pub mod queue_write;
 pub mod rules;
 pub mod sync_policy;
 pub mod work_policy;

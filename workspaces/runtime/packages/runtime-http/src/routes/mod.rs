@@ -3,6 +3,7 @@ pub(crate) mod extractors;
 pub(crate) mod manifest;
 
 mod desktop;
+mod queue_write;
 mod rules;
 mod session;
 mod sync;
