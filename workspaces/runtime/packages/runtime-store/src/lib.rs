@@ -30,6 +30,7 @@ pub use repositories::transcript::{
     TranscriptItem, TranscriptRepository, TranscriptStoreError, TranscriptStoreResult,
 };
 pub use repositories::work_items::{StoredQueueEvent, StoredRecord, WorkItemsRepository};
+pub use repositories::workspace_files::{StoredWorkspaceAsset, WorkspaceFilesRepository};
 pub use repositories::workspace_views::{WorkspaceTaskRow, WorkspaceViewsRepository};
 
 const DATABASE_BUSY_TIMEOUT_MS: u32 = 15_000;

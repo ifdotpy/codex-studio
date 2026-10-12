@@ -34,6 +34,7 @@ const KNOWN_DEPENDENCIES: &[&str] = &[
     "transcript/workspace-state",
     "work-policy/views",
     "workspace-state/git-changes",
+    "workspace-state/image-execution",
     "workspace-state/organization-effects",
     "workspace-state/snapshot",
 ];

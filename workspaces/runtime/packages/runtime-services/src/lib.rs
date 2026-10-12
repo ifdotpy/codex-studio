@@ -16,4 +16,5 @@ pub mod rules;
 pub mod sync_policy;
 pub mod transcript;
 pub mod work_policy;
+pub mod workspace_files;
 pub mod workspace_views;
