@@ -8,6 +8,7 @@ use axum::http::StatusCode;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use studio_runtime_services::agents_create::{self, RenameError};
+use studio_runtime_services::event_write::python_json;
 use studio_runtime_store::SyncDocumentsRepository;
 
 use crate::error::ApiError;
@@ -95,49 +96,16 @@ async fn rename(
 
 fn rename_signature(id: &str, name: Option<&str>) -> String {
     let name = name
-        .map(python_json_string)
+        .map(|value| python_json(&Value::String(value.to_owned())))
         .unwrap_or_else(|| "null".to_owned());
     let body = format!(
         "{{\"chat\": {}, \"name\": {name}, \"operation\": \"rename\"}}",
-        python_json_string(id)
+        python_json(&Value::String(id.to_owned()))
     );
     Sha256::digest(body.as_bytes())
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
-}
-
-fn python_json_string(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len() + 2);
-    escaped.push('"');
-    for character in value.chars() {
-        match character {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\u{08}' => escaped.push_str("\\b"),
-            '\u{0c}' => escaped.push_str("\\f"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            value if (value as u32) < 0x20 => {
-                escaped.push_str(&format!("\\u{:04x}", value as u32));
-            }
-            value if (value as u32) <= 0x7e => escaped.push(value),
-            value => {
-                let code = value as u32;
-                if code <= 0xffff {
-                    escaped.push_str(&format!("\\u{code:04x}"));
-                } else {
-                    let code = code - 0x1_0000;
-                    let high = 0xd800 + (code >> 10);
-                    let low = 0xdc00 + (code & 0x3ff);
-                    escaped.push_str(&format!("\\u{high:04x}\\u{low:04x}"));
-                }
-            }
-        }
-    }
-    escaped.push('"');
-    escaped
 }
 
 fn rename_error(error: RenameError) -> ApiError {
