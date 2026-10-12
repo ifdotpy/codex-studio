@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HTTP contract for atomic work mutations and action-specific fallbacks."""
+"""Differential HTTP contract for work writes and action-specific 501s."""
 
 from __future__ import annotations
 
@@ -16,307 +16,333 @@ from pathlib import Path
 from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
-
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "src"))
 from http_backend_harness import TimedHTTPContractTest, start_contract_backend
 
-_fixture_spec = importlib.util.spec_from_file_location(
-    "work_write_runtime_fixture", HERE / "runtime-contract.py"
-)
+_fixture_spec = importlib.util.spec_from_file_location("work_write_runtime_fixture", HERE / "runtime-contract.py")
 _fixture = importlib.util.module_from_spec(_fixture_spec)
 assert _fixture_spec.loader is not None
 _fixture_spec.loader.exec_module(_fixture)
 
 
-def seed_agent(backend) -> str:
-    backend.stop()
+def quiet_runtime(state):
     class QuietRuntime(_fixture.Runtime):
         def schedule(self):
             pass
+    return QuietRuntime(state, _fixture.FakeServer)
 
-    runtime = QuietRuntime(backend.state, _fixture.FakeServer)
+
+def seed_agents(backend) -> tuple[str, str]:
+    backend.stop()
+    runtime = quiet_runtime(backend.state)
     try:
-        agent = runtime.create({
-            "name": "Work write HTTP contract",
-            "cwd": str(backend.cwd),
-            "prompt": "Exercise work writes through HTTP.",
-            "autoWake": True,
-        }, defer=True)
-        agent.update(status="idle", autoWake=True)
+        root = runtime.create({"name": "Work write lead", "cwd": str(backend.cwd), "prompt": "Work write contracts", "autoWake": True}, defer=True)
+        root.update(status="idle", autoWake=True)
         with runtime.db() as database:
-            runtime.put(database, "agents", agent)
-        return agent["id"]
+            runtime.put(database, "agents", root)
+        worker = runtime.create({"name": "Work write worker", "cwd": str(backend.cwd), "prompt": "Receive decisions", "autoWake": True}, parent=root["id"], defer=True)
+        root.update(status="paused", autoWake=False, concurrency=32, subagentConcurrencyVersion=2, agentMode="multi")
+        worker.update(status="interrupted", autoWake=False)
+        worker["restartRecovery"] = {"stage": "pending", "autoWake": True, "epoch": worker["epoch"], "accountKey": worker.get("accountKey"), "threadId": worker.get("threadId")}
+        worker["moveImportPending"] = True
+        with runtime.db() as database:
+            runtime.put(database, "agents", root)
+            runtime.put(database, "agents", worker)
+        return root["id"], worker["id"]
     finally:
         runtime.close()
         backend.start()
 
 
-def snapshot(state: Path, tables=None):
+def seed_accepted_work(backend, agent_id: str) -> str:
+    backend.stop()
+    runtime = quiet_runtime(backend.state)
+    try:
+        work = runtime.work_action(agent_id, {"action": "create", "title": "Accepted dependency"})
+        with runtime.db() as database:
+            row = database.execute("SELECT record FROM runtime_work WHERE id=?", (work["id"],)).fetchone()
+            record = json.loads(row[0]); record["status"] = "accepted"
+            database.execute("UPDATE runtime_work SET record=? WHERE id=?", (json.dumps(record), work["id"]))
+        return work["id"]
+    finally:
+        runtime.close()
+        backend.start()
+
+
+def _normal(value, work_ids=None):
+    if isinstance(value, str) and work_ids:
+        for identity, alias in sorted(work_ids.items(), key=lambda item: -len(item[0])):
+            value = value.replace(identity, alias)
+        return value
+    if isinstance(value, list):
+        return [_normal(item, work_ids) for item in value]
+    if isinstance(value, dict):
+        result = {}
+        for key, item in value.items():
+            if key in {"created", "updated"}:
+                continue
+            if key == "id" and isinstance(item, str) and work_ids and item in work_ids:
+                result[key] = work_ids[item]
+            elif isinstance(item, str) and work_ids and item in work_ids:
+                result[key] = work_ids[item]
+            else:
+                result[key] = _normal(item, work_ids)
+        return result
+    return value
+
+
+def snapshot(state: Path):
+    """Parse every table this write path can mutate, including durable events."""
     with closing(sqlite3.connect(state / "canvas.sqlite3")) as database:
-        names = [row[0] for row in database.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'runtime_%' ORDER BY name"
-        )]
-        if tables is not None:
-            names = [name for name in names if name in tables]
-        return {
-            name: sorted(database.execute(f'SELECT * FROM "{name}"').fetchall(), key=repr)
-            for name in names
-            # Event delivery can reserve pending events asynchronously after a
-            # successful action; the test checks durable event identity below.
-            if name != "runtime_events"
-        }
+        works = database.execute("SELECT id,record FROM runtime_work ORDER BY rowid").fetchall()
+        work_ids = {identity: f"work-{index}" for index, (identity, _) in enumerate(works)}
+        normalized_work = [
+            (work_ids[identity], _normal(json.loads(record), work_ids))
+            for identity, record in works
+        ]
+        agents = [(identity, _normal(json.loads(record))) for identity, record in database.execute("SELECT id,record FROM runtime_agents ORDER BY id")]
+        receipts = [(identity, signature, _normal(json.loads(result), work_ids)) for identity, signature, result in database.execute("SELECT id,signature,result FROM runtime_operation_receipts ORDER BY id")]
+        events = []
+        for row in database.execute("SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events ORDER BY id"):
+            identity, agent, kind, body, status, created, epoch, turn_id, error = row
+            try:
+                body = _normal(json.loads(body), work_ids)
+            except (TypeError, ValueError):
+                pass
+            events.append((_normal(identity, work_ids), agent, kind, body, status, epoch, turn_id, error))
+        return {"runtime_work": normalized_work, "runtime_agents": agents, "runtime_operation_receipts": receipts, "runtime_events": events}
 
 
-def without_generated_fields(value):
-    result = dict(value)
-    result.pop("id", None)
-    result.pop("created", None)
-    result.pop("updated", None)
-    result.pop("_syncEntities", None)
-    result.pop("_syncEntitiesAfter", None)
-    return result
+def reference_action(backend, agent_id: str, body: dict):
+    """Run the Python writer on a byte-for-byte database copy of the input state."""
+    backend.stop()
+    try:
+        with tempfile.TemporaryDirectory(prefix="work-write-python-ref-") as directory:
+            state = Path(directory) / "state"
+            state.mkdir()
+            with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as source, closing(sqlite3.connect(state / "canvas.sqlite3")) as target:
+                source.backup(target)
+            runtime = quiet_runtime(state)
+            try:
+                result = runtime.work_action(agent_id, {"agent": agent_id, **body}, body.get("id"))
+            finally:
+                runtime.close()
+            expected = snapshot(state)
+            return result, expected
+    finally:
+        backend.start()
+
+
+def normal_result(value):
+    if isinstance(value, dict):
+        value = {key: item for key, item in value.items() if key not in {"_syncEntities", "_syncEntitiesAfter"}}
+        if "rootId" in value and "title" in value and "owner" in value:
+            value = {**value, "id": "<work-item>"}
+    return _normal(value)
 
 
 class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.backend = start_contract_backend(cls)
-        cls.agent_id = seed_agent(cls.backend)
+        cls.agent_id, cls.worker_id = seed_agents(cls.backend)
 
     @classmethod
     def tearDownClass(cls) -> None:
         cls.backend.stop()
 
     def headers(self):
-        return {
-            "Origin": self.backend.origin or "",
-            "X-Canvas-Token": self.backend.session["token"],
-            "X-Studio-API-Schema": self.backend.schema_hash,
-        }
+        return {"Origin": self.backend.origin or "", "X-Canvas-Token": self.backend.session["token"], "X-Studio-API-Schema": self.backend.schema_hash}
 
-    def test_create_matches_python_record_shape_and_replays_receipt(self):
-        body = {
-            "agent": self.agent_id,
-            "action": "create",
-            "title": "Created over HTTP",
-            "description": "Stored once",
-            "id": "work-create-replay",
-        }
-        python_result = None
-        python_receipt = None
-        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            self.backend.stop()
-            with tempfile.TemporaryDirectory(prefix="work-write-python-ref-") as directory:
-                state = Path(directory) / "state"
-                state.mkdir()
-                with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as source, closing(sqlite3.connect(state / "canvas.sqlite3")) as target:
-                    source.backup(target)
+    def post(self, body):
+        return self.backend.request("POST", "/api/work", body={"agent": self.agent_id, **body}, headers=self.headers())
 
-                class QuietRuntime(_fixture.Runtime):
-                    def schedule(self):
-                        pass
+    def assert_matches_python(self, body):
+        expected_result, expected_state = reference_action(self.backend, self.agent_id, body)
+        response = self.post(body)
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertEqual(normal_result(response.json()), normal_result(expected_result))
+        self.assertEqual(snapshot(self.backend.state), expected_state)
+        return response.json()
 
-                runtime = QuietRuntime(state, _fixture.FakeServer)
-                try:
-                    python_result = runtime.work_action(self.agent_id, body, body["id"])
-                finally:
-                    runtime.close()
-                with closing(sqlite3.connect(state / "canvas.sqlite3")) as database:
-                    python_receipt = database.execute(
-                        "SELECT signature,result FROM runtime_operation_receipts WHERE id=?",
-                        (body["id"],),
-                    ).fetchone()
-            self.backend.start()
-
-        first = self.backend.request(
-            "POST", "/api/work", body=body, headers=self.headers()
-        )
-        self.assertEqual(first.status, 200, first.body[:1000])
-        result = first.json()
-        self.assertEqual(result["title"], body["title"])
-        self.assertEqual(result["description"], body["description"])
-        self.assertEqual(result["status"], "ready")
-        self.assertIsNone(result["owner"])
-        self.assertEqual(result["blockedBy"], [])
-        self.assertEqual(result["displayStatus"], "ready")
-
-        after_first = snapshot(self.backend.state)
-        replay = self.backend.request(
-            "POST", "/api/work", body=body, headers=self.headers()
-        )
-        self.assertEqual(replay.status, 200, replay.body[:1000])
-        self.assertEqual(
-            without_generated_fields(replay.json()),
-            without_generated_fields(result),
-        )
-        self.assertEqual(snapshot(self.backend.state), after_first)
-
-        if python_result is not None:
-            self.assertEqual(
-                without_generated_fields(result),
-                without_generated_fields(python_result),
-            )
-            with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
-                actual_receipt = database.execute(
-                    "SELECT signature,result FROM runtime_operation_receipts WHERE id=?",
-                    (body["id"],),
-                ).fetchone()
-            self.assertEqual(actual_receipt[0], python_receipt[0])
-            self.assertEqual(
-                without_generated_fields(json.loads(actual_receipt[1])),
-                without_generated_fields(json.loads(python_receipt[1])),
-            )
-
-        conflict = self.backend.request(
-            "POST", "/api/work", body={**body, "title": "Changed"}, headers=self.headers()
-        )
-        self.assertEqual(conflict.status, 400, conflict.body[:1000])
-        self.assertEqual(snapshot(self.backend.state), after_first)
-
-    def test_refusal_and_missing_services_do_not_write(self):
+    def test_create_matches_python_fields_receipt_replay_and_dependency_state(self):
+        dependency_id = seed_accepted_work(self.backend, self.agent_id)
+        body = {"action": "create", "title": "Blocked create", "description": "Stored once", "status": "blocked", "dependencies": [dependency_id], "id": "work-create-replay"}
+        result = self.assert_matches_python(body)
+        self.assertEqual(result["dependencies"], [dependency_id])
+        self.assertEqual(result["status"], "blocked")
         before = snapshot(self.backend.state)
-        invalid = self.backend.request(
-            "POST",
-            "/api/work",
-            body={"agent": self.agent_id, "action": "create", "title": "   "},
-            headers=self.headers(),
-        )
-        self.assertEqual(invalid.status, 400, invalid.body[:1000])
+        replay = self.post(body)
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertEqual(normal_result(replay.json()), normal_result(result))
+        self.assertEqual(snapshot(self.backend.state), before)
+        conflict = self.post({**body, "title": "Changed"})
+        self.assertEqual(conflict.status, 400, conflict.body[:1000])
         self.assertEqual(snapshot(self.backend.state), before)
 
-        cases = (
-            ({"action": "create", "title": "Assigned", "owner": "worker"}, "worker-driver/work-assignment"),
-            ({"action": "claim", "task_id": "task"}, "worker-driver/work-assignment"),
-            ({"action": "submit", "task_id": "task", "result": "done", "checks": "ok", "revision": "abc"}, "workspace-state/submission-files"),
-            ({"action": "accept", "task_id": "task", "result": "verified"}, "workspace-state/agent-archive"),
-        )
-        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            for body, _dependency in cases:
-                response = self.backend.request(
-                    "POST", "/api/work", body={"agent": self.agent_id, **body}, headers=self.headers()
-                )
-                self.assertNotEqual(response.status, 200, response.body[:1000])
-                self.assertEqual(snapshot(self.backend.state), before)
-        else:
-            # Python implements these effects; the cross-backend Rust gate owns
-            # the explicit dependency envelope assertions for these actions.
-            pass
-
-    def test_update_cancel_and_reject_commit_state_and_decision_events(self):
-        created = self.backend.request(
-            "POST",
-            "/api/work",
-            body={"agent": self.agent_id, "action": "create", "title": "Before update"},
-            headers=self.headers(),
-        )
+    def test_refusals_stale_versions_deleted_agent_and_failure_roll_back_all_tables(self):
+        created = self.post({"action": "create", "title": "Refusal target"})
         self.assertEqual(created.status, 200, created.body[:1000])
-        updated = self.backend.request(
-            "POST",
-            "/api/work",
-            body={"agent": self.agent_id, "action": "update", "task_id": created.json()["id"], "title": "After update", "description": "Edited"},
-            headers=self.headers(),
-        )
-        self.assertEqual(updated.status, 200, updated.body[:1000])
-        self.assertEqual(updated.json()["title"], "After update")
-        self.assertEqual(updated.json()["description"], "Edited")
-
-        self.backend.stop()
-
-        class QuietRuntime(_fixture.Runtime):
-            def schedule(self):
-                pass
-
-        runtime = QuietRuntime(self.backend.state, _fixture.FakeServer)
-        try:
-            worker = runtime.create(
-                {
-                    "name": "Work decision worker",
-                    "cwd": str(self.backend.cwd),
-                    "prompt": "Receive durable work decisions.",
-                    "autoWake": True,
-                },
-                parent=self.agent_id,
-                defer=True,
+        body = {"action": "update", "task_id": created.json()["id"], "version": 0.0, "title": "Stale"}
+        before = snapshot(self.backend.state)
+        stale = self.post(body)
+        self.assertEqual(stale.status, 400, stale.body[:1000])
+        self.assertEqual(snapshot(self.backend.state), before)
+        cases = ()
+        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            cases = (
+                ({"action": "create", "title": "Assigned", "owner": self.worker_id}, "worker-driver/work-assignment"),
+                ({"action": "update", "task_id": created.json()["id"], "owner": self.worker_id}, "worker-driver/work-assignment"),
+                ({"action": "claim", "task_id": created.json()["id"]}, "worker-driver/work-assignment"),
+                ({"action": "submit", "task_id": created.json()["id"], "result": "done", "checks": "ok", "revision": "abc"}, "workspace-state/submission-files"),
+                ({"action": "accept", "task_id": created.json()["id"], "result": "verified"}, "workspace-state/agent-archive"),
             )
-            worker.update(status="idle", autoWake=True)
-            root = runtime.agent(self.agent_id)
+        for body, dependency in cases:
+            before = snapshot(self.backend.state)
+            response = self.post(body)
+            self.assertEqual(response.status, 501, response.body[:1000])
+            self.assertEqual(response.json().get("error"), f"Not implemented: requires {dependency}")
+            self.assertEqual(snapshot(self.backend.state), before)
+        cancel = {"action": "cancel", "task_id": created.json()["id"], "reason": " "}
+        before = snapshot(self.backend.state)
+        refused = self.post(cancel)
+        self.assertEqual(refused.status, 400, refused.body[:1000])
+        self.assertEqual(snapshot(self.backend.state), before)
+        cancelled = self.assert_matches_python({"action": "cancel", "task_id": created.json()["id"], "reason": "Retire before replay"})
+        self.assertEqual(cancelled["status"], "cancelled")
+        recancel = {"action": "cancel", "task_id": created.json()["id"], "reason": " ", "id": "invalid-recancel-reason"}
+        before = snapshot(self.backend.state)
+        refused = self.post(recancel)
+        self.assertEqual(refused.status, 400, refused.body[:1000])
+        self.assertEqual(snapshot(self.backend.state), before)
+        self.backend.stop()
+        runtime = quiet_runtime(self.backend.state)
+        try:
             with runtime.db() as database:
-                runtime.put(database, "agents", worker)
-                runtime.put(database, "agents", root)
-            cancel_work = runtime.work_action(self.agent_id, {"action": "create", "title": "Cancel task"})
-            reject_work = runtime.work_action(self.agent_id, {"action": "create", "title": "Reject task"})
-            with runtime.db() as database:
-                cancel_row = database.execute(
-                    "SELECT record FROM runtime_work WHERE id=?", (cancel_work["id"],)
-                ).fetchone()
-                cancel_record = json.loads(cancel_row[0])
-                cancel_record["owner"] = worker["id"]
-                database.execute(
-                    "UPDATE runtime_work SET record=? WHERE id=?",
-                    (json.dumps(cancel_record), cancel_work["id"]),
-                )
-                reject_row = database.execute(
-                    "SELECT record FROM runtime_work WHERE id=?", (reject_work["id"],)
-                ).fetchone()
-                reject_record = json.loads(reject_row[0])
-                reject_record.update(owner=worker["id"], status="review")
-                reject_record["results"] = [{
-                    "id": "fixture-result", "agent": worker["id"], "text": "done",
-                    "checks": "checked", "revision": "abc1234", "files": [],
-                    "created": 1.0, "resultFile": str(self.backend.cwd / "result.md"),
-                }]
-                database.execute(
-                    "UPDATE runtime_work SET record=? WHERE id=?",
-                    (json.dumps(reject_record), reject_work["id"]),
-                )
-                runtime.enqueue_recovery_event(
-                    database, root, "work_review",
-                    json.dumps({"task": reject_work["id"], "result": reject_record["results"][-1]}),
-                    "work-result:fixture-result",
-                )
-            task_ids = (cancel_work["id"], reject_work["id"])
+                row = database.execute("SELECT record FROM runtime_work WHERE id=?", (created.json()["id"],)).fetchone()
+                work = json.loads(row[0]); work["owner"] = self.worker_id
+                database.execute("UPDATE runtime_work SET record=? WHERE id=?", (json.dumps(work), created.json()["id"]))
+                database.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)", ("work-ready-before-failure", self.worker_id, "work_ready", json.dumps({"task":created.json()["id"]}), "pending", 1.0, 0, None, None))
+                database.execute("CREATE TRIGGER fail_work_receipt BEFORE INSERT ON runtime_operation_receipts BEGIN SELECT RAISE(ABORT,'injected'); END")
         finally:
             runtime.close()
-        self.backend.start()
+            self.backend.start()
+        failure_body = {"action": "cancel", "task_id": created.json()["id"], "reason": "Roll back", "id": "work-injected-failure"}
+        before = snapshot(self.backend.state)
+        failed = self.post(failure_body)
+        self.assertNotEqual(failed.status, 200, failed.body[:1000])
+        self.assertEqual(snapshot(self.backend.state), before)
+        self.backend.stop()
+        runtime = quiet_runtime(self.backend.state)
+        try:
+            with runtime.db() as database:
+                database.execute("DROP TRIGGER fail_work_receipt")
+        finally:
+            runtime.close()
+            self.backend.start()
+        deleted_body = {"action": "update", "task_id": created.json()["id"], "title": "No", "id": "deleted-selected-agent"}
+        self.assert_matches_python(deleted_body)
+        self.backend.stop()
+        runtime = quiet_runtime(self.backend.state)
+        try:
+            with runtime.db() as database:
+                row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)).fetchone()
+                agent = json.loads(row[0]); agent["deletedAt"] = True
+                database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(agent), self.agent_id))
+        finally:
+            runtime.close()
+            self.backend.start()
+        before = snapshot(self.backend.state)
+        deleted = self.post(deleted_body)
+        self.assertEqual(deleted.status, 400, deleted.body[:1000])
+        self.assertEqual(snapshot(self.backend.state), before)
+        self.backend.stop()
+        runtime = quiet_runtime(self.backend.state)
+        try:
+            with runtime.db() as database:
+                row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)).fetchone()
+                agent = json.loads(row[0]); agent.pop("deletedAt", None); agent.update(concurrency=0, agentMode="single", subagentConcurrencyVersion=2)
+                database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(agent), self.agent_id))
+        finally:
+            runtime.close()
+            self.backend.start()
+        before = snapshot(self.backend.state)
+        single = self.post({"action": "create", "title": "Blocked worker", "owner": self.worker_id, "status": "blocked", "id": "single-agent-delegation"})
+        self.assertEqual(single.status, 400, single.body[:1000])
+        self.assertEqual(snapshot(self.backend.state), before)
+        self.backend.stop()
+        runtime = quiet_runtime(self.backend.state)
+        try:
+            with runtime.db() as database:
+                row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)).fetchone()
+                agent = json.loads(row[0]); agent.update(concurrency=32, agentMode="multi", subagentConcurrencyVersion=2)
+                database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(agent), self.agent_id))
+        finally:
+            runtime.close()
+            self.backend.start()
 
-        cancel_body = {
-            "agent": self.agent_id, "action": "cancel", "task_id": task_ids[0],
-            "reason": "No longer needed", "id": "work-cancel-replay",
-        }
-        cancelled = self.backend.request("POST", "/api/work", body=cancel_body, headers=self.headers())
-        self.assertEqual(cancelled.status, 200, cancelled.body[:1000])
-        self.assertEqual(cancelled.json()["status"], "cancelled")
-        cancel_snapshot = snapshot(self.backend.state, {"runtime_work", "runtime_operation_receipts"})
-        cancel_replay = self.backend.request("POST", "/api/work", body=cancel_body, headers=self.headers())
-        self.assertEqual(cancel_replay.status, 200, cancel_replay.body[:1000])
-        self.assertEqual(without_generated_fields(cancel_replay.json()), without_generated_fields(cancelled.json()))
-        self.assertEqual(
-            snapshot(self.backend.state, {"runtime_work", "runtime_operation_receipts"}),
-            cancel_snapshot,
-        )
-        reject_body = {
-            "agent": self.agent_id, "action": "reject", "task_id": task_ids[1],
-            "result": "Add more checks", "id": "work-reject-replay",
-        }
-        rejected = self.backend.request("POST", "/api/work", body=reject_body, headers=self.headers())
-        self.assertEqual(rejected.status, 200, rejected.body[:1000])
-        self.assertEqual(rejected.json()["status"], "ready")
-        reject_snapshot = snapshot(self.backend.state, {"runtime_work", "runtime_operation_receipts"})
-        reject_replay = self.backend.request("POST", "/api/work", body=reject_body, headers=self.headers())
-        self.assertEqual(reject_replay.status, 200, reject_replay.body[:1000])
-        self.assertEqual(without_generated_fields(reject_replay.json()), without_generated_fields(rejected.json()))
-        self.assertEqual(
-            snapshot(self.backend.state, {"runtime_work", "runtime_operation_receipts"}),
-            reject_snapshot,
-        )
+    def test_update_cancel_reject_match_python_and_preserve_durable_events(self):
+        dependency = self.assert_matches_python({"action": "create", "title": "Ready dependency", "id": "update-dep"})
+        created = self.assert_matches_python({"action": "create", "title": "Before update", "id": "update-target"})
+        update = {"action": "update", "task_id": created["id"], "version": 1, "title": "After update", "description": "Edited", "owner": None, "status": "blocked", "dependencies": [dependency["id"]], "id": "work-update-state"}
+        updated = self.assert_matches_python(update)
+        self.assertEqual((updated["title"], updated["status"], updated["dependencies"]), ("After update", "blocked", [dependency["id"]]))
+        replay_body = {"action": "update", "task_id": created["id"], "id": "work-update-replay", "title": "Replay edit"}
+        self.assert_matches_python(replay_body)
+        before = snapshot(self.backend.state)
+        changed = self.post({**replay_body, "title": "Different edit"})
+        self.assertEqual(changed.status, 400, changed.body[:1000]); self.assertEqual(snapshot(self.backend.state), before)
+        self.backend.stop()
+        runtime = quiet_runtime(self.backend.state)
+        try:
+            task = runtime.work_action(self.agent_id, {"action": "create", "title": "Cancel task"})
+            review = runtime.work_action(self.agent_id, {"action": "create", "title": "Reject task"})
+            with runtime.db() as database:
+                task_row = database.execute("SELECT record FROM runtime_work WHERE id=?", (task["id"],)).fetchone()
+                task_record = json.loads(task_row[0]); task_record["owner"] = self.worker_id
+                database.execute("UPDATE runtime_work SET record=? WHERE id=?", (json.dumps(task_record), task["id"]))
+                database.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)", ("old-work-ready", self.worker_id, "work_ready", json.dumps({"task": task["id"]}), "pending", 1.0, 0, None, None))
+                review_row = database.execute("SELECT record FROM runtime_work WHERE id=?", (review["id"],)).fetchone()
+                review_record = json.loads(review_row[0]); review_record.update(owner=self.worker_id, status="review", results=[{"id":"fixture-result","agent":self.worker_id,"text":"done","checks":"checked","revision":"abc1234","files":[],"created":1.0,"resultFile":str(self.backend.cwd / "result.md")}])
+                database.execute("UPDATE runtime_work SET record=? WHERE id=?", (json.dumps(review_record), review["id"]))
+                database.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)", ("work-result:fixture-result", self.agent_id, "work_review", json.dumps({"task":review["id"],"result":review_record["results"][-1]}), "pending", 1.0, 0, None, None))
+        finally:
+            runtime.close()
+            self.backend.start()
+        cancel_body = {"action":"cancel","task_id":task["id"],"reason":"No longer needed","id":"work-cancel-replay"}
+        cancelled = self.assert_matches_python(cancel_body)
+        self.assertEqual(cancelled["status"], "cancelled")
+        self.assert_matches_python(cancel_body)
+        changed_key = {**cancel_body,"reason":"Different reason"}
+        before = snapshot(self.backend.state)
+        conflict = self.post(changed_key)
+        self.assertEqual(conflict.status, 400, conflict.body[:1000]); self.assertEqual(snapshot(self.backend.state), before)
+        reject_body = {"action":"reject","task_id":review["id"],"result":"Add more checks","id":"work-reject-replay"}
+        rejected = self.assert_matches_python(reject_body)
+        self.assertEqual(rejected["status"], "ready")
+        self.assert_matches_python(reject_body)
+        self.backend.stop()
+        runtime = quiet_runtime(self.backend.state)
+        try:
+            root_review = runtime.work_action(self.agent_id, {"action": "create", "title": "Lead-owned result"})
+            with runtime.db() as database:
+                row = database.execute("SELECT record FROM runtime_work WHERE id=?", (root_review["id"],)).fetchone()
+                record = json.loads(row[0]); record.update(owner=self.agent_id, status="review", results=[{"id":"lead-result","agent":self.agent_id,"text":"done","checks":"checked","revision":"abc1234","files":[],"created":1.0,"resultFile":str(self.backend.cwd / "lead-result.md")}])
+                database.execute("UPDATE runtime_work SET record=? WHERE id=?", (json.dumps(record), root_review["id"]))
+                database.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)", ("work-result:lead-result", self.agent_id, "work_review", json.dumps({"task":root_review["id"],"result":record["results"][-1]}), "pending", 1.0, 0, None, None))
+        finally:
+            runtime.close()
+            self.backend.start()
+        lead_reject = {"action": "reject", "task_id": root_review["id"], "result": "Add lead details", "id": "reject-lead-owned"}
+        self.assert_matches_python(lead_reject)
         with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
-            states = dict(database.execute(
-                "SELECT id,status FROM runtime_events WHERE id IN (?,?)",
-                ("work-decision:" + task_ids[0] + ":cancel", "work-decision:" + task_ids[1] + ":1"),
-            ))
-        self.assertIn(states["work-decision:" + task_ids[0] + ":cancel"], {"pending", "reserved"})
-        self.assertIn(states["work-decision:" + task_ids[1] + ":1"], {"pending", "reserved"})
+            self.assertIsNotNone(database.execute("SELECT 1 FROM runtime_events WHERE id=?", (f"work-decision:{root_review['id']}:1",)).fetchone())
+        with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
+            events = {row[0]: row[1:] for row in database.execute("SELECT id,agent,kind,text,status FROM runtime_events WHERE id IN (?,?,?)", ("old-work-ready", f"work-decision:{task['id']}:cancel", f"work-decision:{review['id']}:1"))}
+        self.assertEqual(events["old-work-ready"][3], "stored_only")
+        self.assertEqual(events[f"work-decision:{task['id']}:cancel"][3], "pending")
+        self.assertEqual(events[f"work-decision:{review['id']}:1"][3], "pending")
 
 
 if __name__ == "__main__":

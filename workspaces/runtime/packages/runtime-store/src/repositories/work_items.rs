@@ -98,6 +98,21 @@ impl WorkItemsRepository {
         Ok(())
     }
 
+    pub fn retire_pending_work_ready(
+        connection: &Connection,
+        owner_id: &str,
+        task_id: &str,
+        reason: &'static str,
+    ) -> StoreResult<()> {
+        connection.execute(
+            "UPDATE runtime_events SET status='stored_only',error=?3 \
+             WHERE agent=?1 AND kind='work_ready' AND status='pending' \
+             AND CASE WHEN json_valid(text) THEN json_extract(text,'$.task') END=?2",
+            params![owner_id, task_id, reason],
+        )?;
+        Ok(())
+    }
+
     pub fn work(connection: &Connection) -> StoreResult<Vec<StoredRecord>> {
         if !table_exists(connection, "runtime_work")? {
             return Ok(Vec::new());

@@ -1,46 +1,24 @@
-//! Atomic work-item writes supported without worker assignment services.
+//! Atomic work-item writes that need no worker or filesystem driver.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, StoreError,
-    Transaction, WorkItemsRepository,
+    AgentId, AgentRecord, AgentRepository, Transaction, WorkItemsRepository,
 };
-use thiserror::Error;
+
+use crate::event_write::{self, EventWriteError as Error};
 
 static GENERATED_WORK_ID: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Debug, Error)]
-pub enum WorkWriteError {
-    #[error("invalid request: {0}")]
-    InvalidRequest(&'static str),
-    #[error("{0}")]
-    Conflict(&'static str),
-    #[error("invalid stored object {object}/{id}")]
-    InvalidStoredObject { object: &'static str, id: String },
-    #[error(transparent)]
-    Store(#[from] StoreError),
-    #[error(transparent)]
-    EventWrite(#[from] crate::event_write::EventWriteError),
-    #[error("system clock is before the Unix epoch")]
-    Clock,
-}
-
 pub struct CreateWork {
-    pub agent_id: String,
     pub actor_id: String,
-    pub request_id: Option<String>,
     pub title: String,
     pub description: String,
-    pub signature: String,
-}
-
-#[derive(Debug, PartialEq)]
-pub struct WorkWriteResult {
-    pub record: Value,
-    pub event_inserted: bool,
+    pub owner: Option<String>,
+    pub status: Option<String>,
+    pub dependencies: Vec<String>,
 }
 
 pub enum WorkMutation {
@@ -49,6 +27,9 @@ pub enum WorkMutation {
         version: Option<i64>,
         title: Option<String>,
         description: Option<String>,
+        owner: Option<Option<String>>,
+        status: Option<String>,
+        dependencies: Option<Vec<String>>,
     },
     Reject {
         task_id: String,
@@ -62,394 +43,468 @@ pub enum WorkMutation {
     },
 }
 
-pub fn create(
-    transaction: &Transaction<'_>,
-    input: CreateWork,
+pub enum WorkWrite {
+    Create(CreateWork),
+    Mutate(WorkMutation),
+}
+
+pub struct WorkWriteResult {
+    pub record: Value,
+    pub event_inserted: bool,
+}
+
+pub fn write(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    request_id: Option<&str>,
+    signature: &str,
+    command: WorkWrite,
     validate: impl Fn(&Value) -> bool,
-) -> Result<WorkWriteResult, WorkWriteError> {
-    let agent = AgentRepository::get(transaction, &AgentId::from(input.agent_id.as_str()))?
-        .ok_or(WorkWriteError::InvalidRequest("Invalid request"))?;
-    if agent.id.0 != input.agent_id {
-        return Err(invalid_stored("runtime_agents", &input.agent_id));
-    }
-    if agent
-        .extra
-        .get("deletedAt")
-        .is_some_and(|value| !value.is_null() && value != false && value != 0 && value != "")
-    {
-        return Err(WorkWriteError::InvalidRequest("This agent was deleted"));
-    }
-    let title = text_field(&input.title, 160, false)?;
-    let description = text_field(&input.description, 64_000, true)?;
-    let receipt_id = input.request_id.as_deref().filter(|id| !id.is_empty());
-    if let Some(request_id) = receipt_id
-        && let Some(receipt) = EventWriteRepository::receipt(transaction, request_id)?
-    {
-        if receipt.signature != input.signature {
-            return Err(WorkWriteError::Conflict(
-                "This request id has different content",
-            ));
-        }
-        let saved: Value = serde_json::from_str(&receipt.result)
-            .map_err(|_| invalid_stored("runtime_operation_receipts", request_id))?;
-        if !validate(&saved) {
-            return Err(invalid_stored(
-                "runtime_work",
-                saved["id"].as_str().unwrap_or(request_id),
-            ));
-        }
+) -> Result<WorkWriteResult, Error> {
+    let agent = event_write::checked_agent(tx, agent_id)?;
+    if let Some(record) = event_write::read_receipt(
+        tx,
+        request_id,
+        signature,
+        "runtime_work",
+        request_id.unwrap_or(agent_id),
+        &validate,
+    )? {
         return Ok(WorkWriteResult {
-            record: saved,
+            record,
             event_inserted: false,
         });
     }
+    match command {
+        WorkWrite::Create(input) => create(tx, &agent, input, request_id, signature, &validate),
+        WorkWrite::Mutate(input) => mutate(tx, &agent, input, request_id, signature, &validate),
+    }
+}
 
-    let created = unix_time()?;
-    let id = generated_work_id(created);
-    let stored = json!({
-        "id": id,
-        "rootId": agent.root_id.0,
-        "title": title,
-        "description": description,
-        "owner": null,
-        "dependencies": [],
-        "status": "ready",
-        "created": created,
-        "updated": created,
-        "version": 1,
-        "results": [],
-        "decisions": [],
-        "createdBy": input.actor_id,
+fn create(
+    tx: &Transaction<'_>,
+    agent: &AgentRecord,
+    input: CreateWork,
+    request_id: Option<&str>,
+    signature: &str,
+    validate: &impl Fn(&Value) -> bool,
+) -> Result<WorkWriteResult, Error> {
+    let title = text(&input.title, false)?;
+    let description = text(&input.description, true)?;
+    let status = input.status.as_deref().unwrap_or("ready");
+    if status == "accepted" {
+        return Err(Error::InvalidRequest(
+            "Cannot edit accepted work. Create a follow-up task with this task ID and the new evidence",
+        ));
+    }
+    if status == "review" {
+        return Err(Error::InvalidRequest(
+            "Work under review cannot be reassigned; reject its result before editing",
+        ));
+    }
+    if !matches!(status, "ready" | "blocked") {
+        return Err(Error::InvalidRequest("Choose ready or blocked"));
+    }
+    let owner = input.owner.as_deref();
+    check_owner(tx, agent, owner)?;
+    let id = work_id(event_write::unix_time()?);
+    let dependencies = unique(input.dependencies);
+    validate_dependencies(tx, &agent.root_id.0, &id, &dependencies, validate)?;
+    let work = json!({
+        "id": id, "rootId": agent.root_id.0, "title": title, "description": description,
+        "owner": owner, "dependencies": dependencies, "status": status,
+        "created": event_write::unix_time()?, "updated": event_write::unix_time()?, "version": 1,
+        "results": [], "decisions": [], "createdBy": input.actor_id,
     });
-    if !validate(&stored) {
-        return Err(invalid_stored("runtime_work", &id));
+    if !validate(&work) {
+        return Err(invalid("runtime_work", &id));
     }
-    let mut result = stored.clone();
-    result["blockedBy"] = json!([]);
-    result["displayStatus"] = json!("ready");
-    if !validate(&result) {
-        return Err(invalid_stored("runtime_work", &id));
-    }
-
-    WorkItemsRepository::put_work(transaction, &id, &stored)?;
-    if let Some(request_id) = receipt_id {
-        EventWriteRepository::put_receipt(
-            transaction,
-            request_id,
-            &input.signature,
-            &serde_json::to_string(&result).map_err(StoreError::from)?,
-        )?;
-    }
+    let view = single_view(tx, &work, validate)?;
+    assignment_needed(agent, owner, true, is_ready(&view))?;
+    WorkItemsRepository::put_work(tx, &id, &work)?;
+    event_write::save_receipt(tx, request_id, signature, &view)?;
     Ok(WorkWriteResult {
-        record: result,
+        record: view,
         event_inserted: false,
     })
 }
 
-pub fn mutate(
-    transaction: &Transaction<'_>,
-    agent_id: &str,
+fn mutate(
+    tx: &Transaction<'_>,
+    agent: &AgentRecord,
+    mutation: WorkMutation,
     request_id: Option<&str>,
     signature: &str,
-    mutation: WorkMutation,
-    validate: impl Fn(&Value) -> bool,
-) -> Result<WorkWriteResult, WorkWriteError> {
-    let agent = checked_agent(transaction, agent_id)?;
-    if let Some(request_id) = request_id.filter(|id| !id.is_empty())
-        && let Some(receipt) = EventWriteRepository::receipt(transaction, request_id)?
-    {
-        if receipt.signature != signature {
-            return Err(WorkWriteError::Conflict(
-                "This request id has different content",
-            ));
-        }
-        let saved: Value = serde_json::from_str(&receipt.result)
-            .map_err(|_| invalid_stored("runtime_operation_receipts", request_id))?;
-        if !validate(&saved) {
-            return Err(invalid_stored(
-                "runtime_work",
-                saved["id"].as_str().unwrap_or(request_id),
-            ));
-        }
-        return Ok(WorkWriteResult {
-            record: saved,
-            event_inserted: false,
-        });
-    }
-
-    let (task_id, expected_version) = match &mutation {
+    validate: &impl Fn(&Value) -> bool,
+) -> Result<WorkWriteResult, Error> {
+    let (task_id, expected) = match &mutation {
         WorkMutation::Update {
-            task_id, version, ..
-        }
-        | WorkMutation::Reject {
             task_id, version, ..
         }
         | WorkMutation::Cancel {
             task_id, version, ..
+        }
+        | WorkMutation::Reject {
+            task_id, version, ..
         } => (task_id.clone(), *version),
     };
-    let encoded = WorkItemsRepository::work_record(transaction, &task_id)?
-        .ok_or(WorkWriteError::InvalidRequest("Unknown work item"))?;
+    let encoded = WorkItemsRepository::work_record(tx, &task_id)?
+        .ok_or(Error::InvalidRequest("Unknown work item"))?;
     let mut work: Value =
-        serde_json::from_str(&encoded).map_err(|_| invalid_stored("runtime_work", &task_id))?;
-    if work.get("id").and_then(Value::as_str) != Some(task_id.as_str())
-        || work.get("rootId").and_then(Value::as_str) != Some(agent.root_id.0.as_str())
-        || !validate(&work)
-    {
-        return Err(invalid_stored("runtime_work", &task_id));
+        serde_json::from_str(&encoded).map_err(|_| invalid("runtime_work", &task_id))?;
+    if work["id"] != task_id || work["rootId"] != agent.root_id.0 || !validate(&work) {
+        return Err(invalid("runtime_work", &task_id));
     }
-    let actual_version = work
-        .get("version")
-        .and_then(Value::as_i64)
-        .ok_or_else(|| invalid_stored("runtime_work", &task_id))?;
-    if expected_version.is_some_and(|version| version != actual_version) {
-        return Err(WorkWriteError::Conflict(
+    let version = work["version"]
+        .as_i64()
+        .ok_or_else(|| invalid("runtime_work", &task_id))?;
+    if expected.is_some_and(|expected| expected != version) {
+        return Err(Error::Conflict(
             "This work item changed. Reload before editing",
         ));
     }
-    let status = work
-        .get("status")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| invalid_stored("runtime_work", &task_id))?;
-    let owner = work.get("owner").and_then(Value::as_str).map(str::to_owned);
+    let status = work["status"]
+        .as_str()
+        .ok_or_else(|| invalid("runtime_work", &task_id))?;
+    let owner = work["owner"].as_str().map(str::to_owned);
+    let previous_ready = is_ready(&single_view(tx, &work, validate)?);
+    let mut wake = false;
 
-    let mut event_inserted = false;
     match mutation {
         WorkMutation::Update {
-            title, description, ..
+            title,
+            description,
+            owner: requested_owner,
+            status: requested_status,
+            dependencies,
+            ..
         } => {
             if status == "accepted" {
-                return Err(WorkWriteError::InvalidRequest(
+                return Err(Error::InvalidRequest(
                     "Cannot edit accepted work. Create a follow-up task with this task ID and the new evidence",
                 ));
             }
             if status == "review" {
-                return Err(WorkWriteError::InvalidRequest(
+                return Err(Error::InvalidRequest(
                     "Work under review cannot be reassigned; reject its result before editing",
                 ));
             }
             if let Some(title) = title {
-                work["title"] = Value::String(text_field(&title, 160, false)?);
+                work["title"] = json!(text(&title, false)?);
             }
             if let Some(description) = description {
-                work["description"] = Value::String(text_field(&description, 64_000, true)?);
+                work["description"] = json!(text(&description, true)?);
+            }
+            if let Some(status) = requested_status {
+                if !matches!(status.as_str(), "ready" | "blocked") {
+                    return Err(Error::InvalidRequest("Choose ready or blocked"));
+                }
+                work["status"] = json!(status);
+            }
+            if let Some(dependencies) = dependencies {
+                let dependencies = unique(dependencies);
+                validate_dependencies(tx, &agent.root_id.0, &task_id, &dependencies, validate)?;
+                work["dependencies"] = json!(dependencies);
+            }
+            let next_owner = requested_owner.map(|owner| owner.unwrap_or_default());
+            if let Some(owner) = next_owner {
+                let owner = (!owner.is_empty()).then_some(owner);
+                check_owner(tx, agent, owner.as_deref())?;
+                work["owner"] = owner.map_or(Value::Null, Value::String);
+            }
+            if let Some(owner) = work["owner"].as_str()
+                && owner != agent.root_id.0
+            {
+                event_write::assert_delegation(&root_agent(tx, agent)?)?;
+            }
+            let view = single_view(tx, &work, validate)?;
+            let current_owner = work["owner"].as_str();
+            let changed = current_owner != owner.as_deref();
+            let ready = is_ready(&view);
+            assignment_needed(agent, current_owner, changed || !previous_ready, ready)?;
+            if let Some(previous_owner) = owner.as_deref()
+                && (changed || previous_ready != ready)
+            {
+                WorkItemsRepository::retire_pending_work_ready(
+                    tx,
+                    previous_owner,
+                    &task_id,
+                    "The work assignment or readiness changed before delivery",
+                )?;
             }
         }
         WorkMutation::Cancel { reason, .. } => {
+            let reason = text(&reason, false)?;
             if status == "cancelled" {
-                let view = work_view(transaction, &agent.root_id.0, &work, &validate)?;
-                save_receipt(transaction, request_id, signature, &view)?;
+                let view = single_view(tx, &work, validate)?;
+                event_write::save_receipt(tx, request_id, signature, &view)?;
                 return Ok(WorkWriteResult {
                     record: view,
                     event_inserted: false,
                 });
             }
             if status == "accepted" {
-                return Err(WorkWriteError::InvalidRequest(
-                    "Cannot cancel accepted work",
-                ));
+                return Err(Error::InvalidRequest("Cannot cancel accepted work"));
             }
-            let reason = text_field(&reason, 32_000, false)?;
-            let mut decisions = work["decisions"]
-                .as_array()
-                .cloned()
-                .ok_or_else(|| invalid_stored("runtime_work", &task_id))?;
-            decisions.push(json!({
-                "decision": "cancel", "reason": reason, "by": agent.id.0,
-                "owner": owner, "created": unix_time()?
-            }));
-            work["decisions"] = Value::Array(decisions);
+            push_decision(
+                &mut work,
+                json!({"decision":"cancel", "reason":reason, "by":agent.id.0, "owner":owner, "created":event_write::unix_time()?}),
+            )?;
             work["status"] = json!("cancelled");
             work["owner"] = Value::Null;
-            if let Some(owner_id) = owner.as_deref()
-                && let Some(recipient) =
-                    AgentRepository::get(transaction, &AgentId::from(owner_id))?
-                && is_live_event_recipient(&recipient)
-            {
-                let reason_json = json!({"task": task_id, "decision": "cancel", "reason": reason});
-                event_inserted |= crate::event_write::enqueue_event(
-                    transaction,
-                    &recipient,
-                    format!("work-decision:{task_id}:cancel"),
-                    "work_decision",
-                    reason_json.to_string(),
-                    unix_time()?,
+            if let Some(owner_id) = owner.as_deref() {
+                WorkItemsRepository::retire_pending_work_ready(
+                    tx,
+                    owner_id,
+                    &task_id,
+                    "The task was cancelled before delivery",
                 )?;
+                if let Some(recipient) = AgentRepository::get(tx, &AgentId::from(owner_id))?
+                    && live_recipient(&recipient)
+                {
+                    wake |= event_write::enqueue_recovery_event(
+                        tx,
+                        &recipient,
+                        format!("work-decision:{task_id}:cancel"),
+                        "work_decision",
+                        json!({"task":task_id,"decision":"cancel","reason":reason}).to_string(),
+                        event_write::unix_time()?,
+                    )?;
+                }
             }
         }
         WorkMutation::Reject { reason, .. } => {
             if status == "accepted" {
-                return Err(WorkWriteError::InvalidRequest(
+                return Err(Error::InvalidRequest(
                     "This work is already accepted. Create a follow-up task with this task ID and the new evidence",
                 ));
             }
-            let results = work["results"]
-                .as_array()
-                .filter(|results| !results.is_empty())
-                .ok_or(WorkWriteError::InvalidRequest(
-                    "Submit a result before review",
-                ))?;
             if status != "review" {
-                return Err(WorkWriteError::InvalidRequest(
-                    "Submit a result before review",
-                ));
+                return Err(Error::InvalidRequest("Submit a result before review"));
             }
-            let reason = text_field(&reason, 32_000, false)?;
-            let latest = results
-                .last()
-                .ok_or_else(|| invalid_stored("runtime_work", &task_id))?;
-            let result_id = latest
-                .get("id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| invalid_stored("runtime_work", &task_id))?
-                .to_owned();
-            let mut decisions = work["decisions"]
+            let reason = text(&reason, false)?;
+            let result_id = work["results"]
                 .as_array()
-                .cloned()
-                .ok_or_else(|| invalid_stored("runtime_work", &task_id))?;
-            decisions.push(json!({
-                "resultId": result_id, "decision": "reject", "reason": reason,
-                "by": "user", "created": unix_time()?
-            }));
-            work["decisions"] = Value::Array(decisions);
-            work["status"] = json!("ready");
-            WorkItemsRepository::close_review_event(transaction, &agent.root_id.0, &result_id)?;
-            if let Some(owner_id) = owner.as_deref()
-                && owner_id != agent.id.0
-            {
-                let recipient = AgentRepository::get(transaction, &AgentId::from(owner_id))?
-                    .ok_or_else(|| invalid_stored("runtime_agents", owner_id))?;
-                let payload = json!({"task": task_id, "decision": "reject", "reason": reason});
-                event_inserted |= crate::event_write::enqueue_event(
-                    transaction,
+                .and_then(|v| v.last())
+                .and_then(|v| v["id"].as_str())
+                .ok_or_else(|| invalid("runtime_work", &task_id))?
+                .to_owned();
+            if let Some(owner_id) = owner.as_deref() {
+                if owner_id != agent.root_id.0 {
+                    event_write::assert_delegation(&root_agent(tx, agent)?)?;
+                }
+                let recipient = AgentRepository::get(tx, &AgentId::from(owner_id))?
+                    .ok_or_else(|| invalid("runtime_agents", owner_id))?;
+                wake |= event_write::enqueue_recovery_event(
+                    tx,
                     &recipient,
-                    format!("work-decision:{task_id}:{actual_version}"),
+                    format!("work-decision:{task_id}:{version}"),
                     "work_decision",
-                    payload.to_string(),
-                    unix_time()?,
+                    json!({"task":task_id,"decision":"reject","reason":reason}).to_string(),
+                    event_write::unix_time()?,
                 )?;
             }
+            WorkItemsRepository::close_review_event(tx, &agent.root_id.0, &result_id)?;
+            push_decision(
+                &mut work,
+                json!({"resultId":result_id,"decision":"reject","reason":reason,"by":"user","created":event_write::unix_time()?}),
+            )?;
+            work["status"] = json!("ready");
         }
     }
 
-    work["version"] = json!(actual_version + 1);
-    work["updated"] = json!(unix_time()?);
+    work["version"] = json!(version + 1);
+    work["updated"] = json!(event_write::unix_time()?);
     if !validate(&work) {
-        return Err(invalid_stored("runtime_work", &task_id));
+        return Err(invalid("runtime_work", &task_id));
     }
-    WorkItemsRepository::update_work(transaction, &task_id, &work)?;
-    let view = work_view(transaction, &agent.root_id.0, &work, &validate)?;
-    save_receipt(transaction, request_id, signature, &view)?;
+    WorkItemsRepository::update_work(tx, &task_id, &work)?;
+    let view = single_view(tx, &work, validate)?;
+    event_write::save_receipt(tx, request_id, signature, &view)?;
     Ok(WorkWriteResult {
         record: view,
-        event_inserted,
+        event_inserted: wake,
     })
 }
 
-fn checked_agent(
-    transaction: &Transaction<'_>,
-    agent_id: &str,
-) -> Result<studio_runtime_store::AgentRecord, WorkWriteError> {
-    let agent = AgentRepository::get(transaction, &AgentId::from(agent_id))?
-        .ok_or(WorkWriteError::InvalidRequest("Invalid request"))?;
-    if agent.id.0 != agent_id {
-        return Err(invalid_stored("runtime_agents", agent_id));
-    }
-    Ok(agent)
+fn push_decision(work: &mut Value, decision: Value) -> Result<(), Error> {
+    let id = work["id"].as_str().unwrap_or("<work>").to_owned();
+    work["decisions"]
+        .as_array_mut()
+        .ok_or_else(|| invalid("runtime_work", &id))?
+        .push(decision);
+    Ok(())
 }
 
-fn work_view(
-    transaction: &Transaction<'_>,
-    root_id: &str,
+fn single_view(
+    tx: &Transaction<'_>,
     work: &Value,
     validate: &impl Fn(&Value) -> bool,
-) -> Result<Value, WorkWriteError> {
-    let records = WorkItemsRepository::work(transaction)?
-        .into_iter()
-        .map(|row| {
-            let value: Value = serde_json::from_str(
-                row.record
-                    .as_deref()
-                    .ok_or_else(|| invalid_stored("runtime_work", &row.id))?,
-            )
-            .map_err(|_| invalid_stored("runtime_work", &row.id))?;
-            if value.get("id").and_then(Value::as_str) != Some(row.id.as_str()) || !validate(&value)
-            {
-                return Err(invalid_stored("runtime_work", &row.id));
-            }
-            Ok(value)
-        })
-        .collect::<Result<Vec<_>, WorkWriteError>>()?;
-    let list = crate::work_policy::work_list(root_id, &records);
-    let id = work
-        .get("id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid_stored("runtime_work", "<work>"))?;
-    list["items"]
+) -> Result<Value, Error> {
+    let mut statuses = BTreeMap::from([(
+        work["id"].as_str().unwrap_or_default().to_owned(),
+        work["status"].as_str().unwrap_or_default().to_owned(),
+    )]);
+    for dependency in work["dependencies"]
         .as_array()
-        .and_then(|items| {
-            items
-                .iter()
-                .find(|item| item.get("id").and_then(Value::as_str) == Some(id))
-        })
-        .cloned()
-        .ok_or_else(|| invalid_stored("runtime_work", id))
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        if let Some(encoded) = WorkItemsRepository::work_record(tx, dependency)? {
+            let value: Value =
+                serde_json::from_str(&encoded).map_err(|_| invalid("runtime_work", dependency))?;
+            if value["rootId"] == work["rootId"] {
+                if !validate(&value) {
+                    return Err(invalid("runtime_work", dependency));
+                }
+                statuses.insert(
+                    dependency.to_owned(),
+                    value["status"].as_str().unwrap_or_default().to_owned(),
+                );
+            }
+        }
+    }
+    Ok(crate::work_policy::work_item_view(work, &statuses))
 }
 
-fn save_receipt(
-    transaction: &Transaction<'_>,
-    request_id: Option<&str>,
-    signature: &str,
-    value: &Value,
-) -> Result<(), WorkWriteError> {
-    if let Some(request_id) = request_id.filter(|id| !id.is_empty()) {
-        EventWriteRepository::put_receipt(
-            transaction,
-            request_id,
-            signature,
-            &serde_json::to_string(value).map_err(StoreError::from)?,
-        )?;
+fn validate_dependencies(
+    tx: &Transaction<'_>,
+    root: &str,
+    task: &str,
+    deps: &[String],
+    validate: &impl Fn(&Value) -> bool,
+) -> Result<(), Error> {
+    if deps.iter().any(|id| id == task) {
+        return Err(Error::InvalidRequest("Task dependencies contain a cycle"));
+    }
+    for id in deps {
+        let encoded = WorkItemsRepository::work_record(tx, id)?
+            .ok_or(Error::InvalidRequest("Dependency is outside this team"))?;
+        let item: Value =
+            serde_json::from_str(&encoded).map_err(|_| invalid("runtime_work", id))?;
+        if item["rootId"] != root || !validate(&item) {
+            return Err(Error::InvalidRequest("Dependency is outside this team"));
+        }
+    }
+    let mut active = vec![task.to_owned()];
+    let mut visited = BTreeMap::new();
+    for id in deps {
+        dependency_visit(tx, root, id, &mut active, &mut visited, validate)?;
     }
     Ok(())
 }
 
-fn is_live_event_recipient(agent: &AgentRecord) -> bool {
-    let deleted = agent
-        .extra
-        .get("deletedAt")
-        .is_some_and(|value| match value {
-            Value::Null | Value::Bool(false) => false,
-            Value::Bool(true) => true,
-            Value::Number(value) => value.as_f64().is_some_and(|number| number != 0.0),
-            Value::String(value) => !value.is_empty(),
-            _ => true,
-        });
-    !deleted && !matches!(agent.status, AgentStatus::Completed | AgentStatus::Failed)
-}
-
-fn text_field(value: &str, maximum: usize, empty: bool) -> Result<String, WorkWriteError> {
-    let trimmed = value.trim();
-    if value.chars().count() > maximum || (!empty && trimmed.is_empty()) {
-        return Err(WorkWriteError::InvalidRequest("Invalid request"));
+fn dependency_visit(
+    tx: &Transaction<'_>,
+    root: &str,
+    task: &str,
+    active: &mut Vec<String>,
+    visited: &mut BTreeMap<String, ()>,
+    validate: &impl Fn(&Value) -> bool,
+) -> Result<(), Error> {
+    if active.iter().any(|id| id == task) {
+        return Err(Error::InvalidRequest("Task dependencies contain a cycle"));
     }
-    Ok(trimmed.to_owned())
+    if visited.contains_key(task) {
+        return Ok(());
+    }
+    let encoded = WorkItemsRepository::work_record(tx, task)?
+        .ok_or(Error::InvalidRequest("Dependency is outside this team"))?;
+    let item: Value = serde_json::from_str(&encoded).map_err(|_| invalid("runtime_work", task))?;
+    if item["rootId"] != root || !validate(&item) {
+        return Err(Error::InvalidRequest("Dependency is outside this team"));
+    }
+    active.push(task.to_owned());
+    for dependency in item["dependencies"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        dependency_visit(tx, root, dependency, active, visited, validate)?;
+    }
+    active.pop();
+    visited.insert(task.to_owned(), ());
+    Ok(())
 }
 
-fn unix_time() -> Result<f64, WorkWriteError> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs_f64())
-        .map_err(|_| WorkWriteError::Clock)
+fn unique(values: Vec<String>) -> Vec<String> {
+    let mut seen = BTreeMap::new();
+    values
+        .into_iter()
+        .filter(|value| seen.insert(value.clone(), ()).is_none())
+        .collect()
 }
 
-fn generated_work_id(created: f64) -> String {
-    let sequence = GENERATED_WORK_ID.fetch_add(1, Ordering::Relaxed);
-    format!("work-{}-{sequence}", (created * 1_000_000_000.0) as u128)
+fn check_owner(
+    tx: &Transaction<'_>,
+    agent: &AgentRecord,
+    owner: Option<&str>,
+) -> Result<(), Error> {
+    if let Some(owner) = owner {
+        let candidate = event_write::checked_agent(tx, owner)?;
+        if candidate.root_id != agent.root_id {
+            return Err(Error::InvalidRequest("Owner belongs to another team"));
+        }
+        if owner != agent.root_id.0 {
+            event_write::assert_delegation(&root_agent(tx, agent)?)?;
+        }
+    }
+    Ok(())
 }
 
-fn invalid_stored(object: &'static str, id: &str) -> WorkWriteError {
-    WorkWriteError::InvalidStoredObject {
+fn assignment_needed(
+    agent: &AgentRecord,
+    owner: Option<&str>,
+    changed: bool,
+    ready: bool,
+) -> Result<(), Error> {
+    if owner.is_some_and(|owner| owner != agent.root_id.0) && ready && changed {
+        return Err(Error::WorkerAssignmentUnavailable);
+    }
+    Ok(())
+}
+
+fn root_agent(tx: &Transaction<'_>, agent: &AgentRecord) -> Result<AgentRecord, Error> {
+    if agent.id == agent.root_id {
+        return Ok(agent.clone());
+    }
+    AgentRepository::get(tx, &agent.root_id)?.ok_or(Error::InvalidRequest("Invalid request"))
+}
+
+fn live_recipient(agent: &AgentRecord) -> bool {
+    !event_write::truthy(agent.extra.get("deletedAt"))
+        && !matches!(
+            agent.status,
+            studio_runtime_store::AgentStatus::Completed
+                | studio_runtime_store::AgentStatus::Failed
+        )
+}
+
+fn is_ready(view: &Value) -> bool {
+    matches!(view["status"].as_str(), Some("ready" | "running"))
+        && view["blockedBy"].as_array().is_some_and(Vec::is_empty)
+}
+
+fn text(value: &str, empty: bool) -> Result<String, Error> {
+    let value = value.trim();
+    if !empty && value.is_empty() {
+        return Err(Error::InvalidRequest("Invalid request"));
+    }
+    Ok(value.to_owned())
+}
+
+fn work_id(created: f64) -> String {
+    format!(
+        "work-{}-{}",
+        (created * 1_000_000_000.0) as u128,
+        GENERATED_WORK_ID.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn invalid(object: &'static str, id: &str) -> Error {
+    Error::InvalidStoredObject {
         object,
         id: id.to_owned(),
     }
