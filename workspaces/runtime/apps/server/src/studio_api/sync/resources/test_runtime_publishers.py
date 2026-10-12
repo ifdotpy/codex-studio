@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from server_test_waits import HANG_GUARD_SECONDS
+
 import asyncio
 import json
 from contextlib import contextmanager
@@ -313,24 +315,24 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                 def writer() -> None:
                     with barrier:
                         writer_locked.set()
-                        self.assertTrue(publisher_waiting.wait(1))
+                        self.assertTrue(publisher_waiting.wait(HANG_GUARD_SECONDS))
                         key = second.model_dump_json(by_alias=True)
                         with runtime._committed_resource_lock:
                             runtime._committed_resource_changes[key] = second
                         writer_queued.set()
-                        self.assertTrue(release_writer.wait(1))
+                        self.assertTrue(release_writer.wait(HANG_GUARD_SECONDS))
 
                 with patch("studio_api.sync.resources.hub.publish_resources", side_effect=lambda _root, *refs: captured.append(refs)):
                     publisher = threading.Thread(target=runtime._publish_committed_resource_changes, name="resource-publisher")
                     writer_thread = threading.Thread(target=writer, name="resource-writer")
                     writer_thread.start()
-                    self.assertTrue(writer_locked.wait(1))
+                    self.assertTrue(writer_locked.wait(HANG_GUARD_SECONDS))
                     publisher.start()
-                    self.assertTrue(writer_queued.wait(1))
+                    self.assertTrue(writer_queued.wait(HANG_GUARD_SECONDS))
                     self.assertEqual(captured, [])
                     release_writer.set()
-                    publisher.join(timeout=1)
-                    writer_thread.join(timeout=1)
+                    publisher.join(timeout=HANG_GUARD_SECONDS)
+                    writer_thread.join(timeout=HANG_GUARD_SECONDS)
                     self.assertFalse(publisher.is_alive())
                     self.assertFalse(writer_thread.is_alive())
                     self.assertEqual(captured, [(first,)])

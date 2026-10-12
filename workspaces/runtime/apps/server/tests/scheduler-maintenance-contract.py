@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -240,10 +241,10 @@ class SchedulerConnection(unittest.TestCase):
             worker.start()
             try:
                 rt.changed.set()
-                self.assertTrue(entered.wait(2))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 rt.closed = True
                 rt.changed.set()
-                worker.join(2)
+                worker.join(HANG_GUARD_SECONDS)
                 self.assertFalse(worker.is_alive())
             finally:
                 rt.closed = True
@@ -281,7 +282,7 @@ class SchedulerConnection(unittest.TestCase):
         worker.start()
         try:
             rt.changed.set()
-            self.assertTrue(delivered.wait(2))
+            self.assertTrue(delivered.wait(HANG_GUARD_SECONDS))
         finally:
             rt.closed = True
             rt.changed.set()

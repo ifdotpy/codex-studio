@@ -17,6 +17,8 @@ from typing import Callable, Protocol, cast
 from uuid import uuid4
 from unittest.mock import patch
 
+from server_test_waits import HANG_GUARD_SECONDS
+
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from fastapi.exceptions import RequestValidationError
@@ -457,7 +459,7 @@ def _available_to_other_thread(lock: _TimedLock) -> bool:
     def probe() -> None:
         acquired = False
         try:
-            acquired = lock.acquire(timeout=0.1)
+            acquired = lock.acquire(blocking=False)
             acquired_by_other.append(acquired)
         finally:
             try:
@@ -468,10 +470,10 @@ def _available_to_other_thread(lock: _TimedLock) -> bool:
 
     probe_thread = threading.Thread(target=probe, daemon=True)
     probe_thread.start()
-    if not finished.wait(timeout=0.5):
-        probe_thread.join(timeout=0.1)
+    if not finished.wait(timeout=HANG_GUARD_SECONDS):
+        probe_thread.join(timeout=HANG_GUARD_SECONDS)
         return False
-    probe_thread.join(timeout=0.1)
+    probe_thread.join(timeout=HANG_GUARD_SECONDS)
     return not probe_thread.is_alive() and acquired_by_other == [True]
 
 

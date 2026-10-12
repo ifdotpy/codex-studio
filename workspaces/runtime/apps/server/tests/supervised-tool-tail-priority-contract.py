@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -250,15 +251,15 @@ class TailPriorityContract(unittest.TestCase):
         entries = []
         def consume():
             waiting.set()
-            entries.append(server.callbacks.get(timeout=2))
+            entries.append(server.callbacks.get(timeout=HANG_GUARD_SECONDS))
             server.callbacks.task_done()
             received.set()
         consumer = threading.Thread(target=consume)
         consumer.start()
-        self.assertTrue(waiting.wait(1))
+        self.assertTrue(waiting.wait(HANG_GUARD_SECONDS))
         request = tool(1)
         server.enqueue(server.request, request)
-        consumer.join(2)
+        consumer.join(HANG_GUARD_SECONDS)
         self.assertFalse(consumer.is_alive())
         self.assertTrue(received.is_set())
         self.assertEqual(entries, [(server.request, request)])

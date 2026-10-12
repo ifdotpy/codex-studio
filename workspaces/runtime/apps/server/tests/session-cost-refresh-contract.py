@@ -32,15 +32,11 @@ if os.environ.get("STUDIO_COST_SOURCE_DIR"):
 from codex_claude_costs import parse_claude_usage
 from codex_session_costs import SessionCostReader
 from codex_canvas import Canvas, make_server
+from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
 
 spec = importlib.util.spec_from_file_location("cost_fixtures", SERVER_TESTS_ROOT / "pricing-session-cost-contract.py")
 fixtures = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixtures)
-
-
-# Waits below end on the observed state. This bound only stops a hang; it is not a
-# time budget, so a slow machine cannot fail a correct server.
-HANG_GUARD_SECONDS = 30
 
 
 class SessionCostRefreshContract(unittest.TestCase):
@@ -239,15 +235,13 @@ class SessionCostRefreshContract(unittest.TestCase):
                 for _ in range(3):
                     self.assertEqual(json.load(urlopen(endpoint, timeout=HANG_GUARD_SECONDS))["pricingState"], "loading")
                 release.set()
-                deadline = time.monotonic() + HANG_GUARD_SECONDS
-                while time.monotonic() < deadline:
+                def ready_value():
                     value = json.load(urlopen(endpoint, timeout=HANG_GUARD_SECONDS))
-                    if value["pricingState"] == "ready":
-                        break
-                    time.sleep(0.005)
-                self.assertEqual(value["pricingState"], "ready")
-                while readers[0].refreshing and time.monotonic() < deadline:
-                    time.sleep(0.005)
+                    return value if value["pricingState"] == "ready" else None
+
+                value = wait_for_condition(ready_value, "session cost refresh")
+                wait_for_condition(lambda: not readers[0].refreshing,
+                                   "session cost refresh worker completion")
                 self.assertFalse(readers[0].refreshing)
                 # Cached HTTP must not inspect files even when a file check is due.
                 release.clear()

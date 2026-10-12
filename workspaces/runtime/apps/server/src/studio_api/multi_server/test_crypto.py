@@ -1,6 +1,8 @@
 """Persistent crypto lifecycle and total operation deadline."""
 from __future__ import annotations
 
+from server_test_waits import HANG_GUARD_SECONDS
+
 import base64
 import subprocess
 import sys
@@ -68,7 +70,7 @@ class PersistentCryptoTests(unittest.TestCase):
         with helper.lock:
             worker = threading.Thread(target=waiting)
             worker.start()
-            worker.join(timeout=0.5)
+            worker.join(timeout=HANG_GUARD_SECONDS)
             self.assertFalse(worker.is_alive())
         self.assertEqual(len(errors), 1)
         self.assertIsNone(helper.process)

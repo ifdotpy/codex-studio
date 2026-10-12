@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import wait_for_condition as eventually
 import argparse
 import importlib.util
 import json
@@ -17,15 +18,6 @@ from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('account_fixture',Path(__file__).with_name('runtime-accounts-contract.py'))
 f=importlib.util.module_from_spec(spec);spec.loader.exec_module(f)
 from codex_runtime import AppServer
-
-
-def eventually(check, timeout=40):
-    end=time.monotonic()+timeout
-    while time.monotonic()<end:
-        value=check()
-        if value:return value
-        time.sleep(.05)
-    raise AssertionError('Native monitor did not reach the expected state')
 
 
 def main():

@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """File watch observations do not hold the runtime lock or SQLite writer."""
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 
 from contextlib import contextmanager
 import importlib.util
@@ -89,7 +95,7 @@ class RulesTickLockContract(unittest.TestCase):
                     owned.append(self.runtime.lock._is_owned())
                     if len(seen) == count:
                         entered.set()
-                if not release.wait(3):
+                if not release.wait(HANG_GUARD_SECONDS):
                     raise RuntimeError('The fixture file stat timed out')
             return original(current, *args, **kwargs)
         with patch.object(Path, 'stat', stat):
@@ -105,7 +111,7 @@ class RulesTickLockContract(unittest.TestCase):
         other = self.lead('Other chat')
         with self.gated_stat(path) as (entered, release, owned):
             tick = self.worker(self.runtime.rules_tick)
-            self.assertTrue(entered.wait(2))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             sent = self.worker(lambda: self.runtime.send(other['id'], 'Continue', 'gated-stat-send'), 'send')
             try:
                 self.finished(sent, .5)
@@ -130,7 +136,7 @@ class RulesTickLockContract(unittest.TestCase):
                 db.close()
         with self.gated_stat(path) as (entered, release, _):
             tick = self.worker(self.runtime.rules_tick)
-            self.assertTrue(entered.wait(2))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             try:
                 self.finished(self.worker(writer, 'writer'), .5)
             finally:
@@ -143,7 +149,7 @@ class RulesTickLockContract(unittest.TestCase):
         path.write_text('changed content')
         with self.gated_stat(path) as (entered, release, _):
             tick = self.worker(self.runtime.rules_tick)
-            self.assertTrue(entered.wait(2))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             self.runtime.stop(owner['id'])
             release.set()
             self.finished(tick)
@@ -159,7 +165,7 @@ class RulesTickLockContract(unittest.TestCase):
                 path.write_text('changed content')
                 with self.gated_stat(path) as (entered, release, _):
                     tick = self.worker(self.runtime.rules_tick)
-                    self.assertTrue(entered.wait(2))
+                    self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                     data = {'agent': owner['id'], 'id': rule['id'], 'action': action}
                     if action == 'save':
                         data.update(name='Edited watch', kind='file', path=path.name,
@@ -184,7 +190,7 @@ class RulesTickLockContract(unittest.TestCase):
                 path.write_text('changed content')
                 with self.gated_stat(path) as (entered, release, _):
                     tick = self.worker(self.runtime.rules_tick)
-                    self.assertTrue(entered.wait(2))
+                    self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                     self.agent_update(owner, **changes)
                     release.set()
                     self.finished(tick)
@@ -198,7 +204,7 @@ class RulesTickLockContract(unittest.TestCase):
         with self.gated_stat(path, count=2) as (entered, release, owned):
             first = self.worker(self.runtime.rules_tick)
             second = self.worker(self.runtime.rules_tick)
-            self.assertTrue(entered.wait(2))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             release.set()
             self.finished(first)
             self.finished(second)
@@ -215,7 +221,7 @@ class RulesTickLockContract(unittest.TestCase):
         self.update_rule(rule, fileActivityAt=time.time() - 31)
         with self.gated_stat(path) as (entered, release, _):
             tick = self.worker(self.runtime.rules_tick)
-            self.assertTrue(entered.wait(2))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             resumed = self.runtime.rules({'agent': owner['id'], 'id': rule['id'], 'action': 'resume'})
             release.set()
             self.finished(tick)

@@ -10,6 +10,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import wait_for_condition as wait_for
 import tempfile
 import threading
 import time
@@ -20,15 +22,6 @@ spec = importlib.util.spec_from_file_location(
     'workspace_fixture', Path(__file__).with_name('worker-defaults-contract.py'))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
-
-
-def wait_for(predicate, timeout=90):
-    end = time.monotonic() + timeout
-    while time.monotonic() < end:
-        if predicate():
-            return
-        time.sleep(.02)
-    raise AssertionError('Timed out waiting for the real image workspace flow')
 
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('diskutil'),

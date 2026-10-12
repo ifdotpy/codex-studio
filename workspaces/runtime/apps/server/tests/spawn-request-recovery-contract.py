@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -191,7 +192,7 @@ class SpawnRequestRecovery(unittest.TestCase):
             worker = threading.Thread(target=self.runtime.dynamic, args=(self.message(),))
             worker.start()
             try:
-                self.assertTrue(entered.wait(3))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 cancelled = self.request('cancel')
                 self.assertEqual(cancelled['outcome'], 'pending')
                 self.assertTrue(cancelled['cancelRequested'])
@@ -235,7 +236,7 @@ class SpawnRequestRecovery(unittest.TestCase):
         try:
             for executor in [self.runtime.pool, self.runtime.tool_pool]:
                 futures.extend(executor.submit(hold) for _ in range(executor._max_workers))
-            self.assertTrue(all_entered.wait(4))
+            self.assertTrue(all_entered.wait(HANG_GUARD_SECONDS))
             self.runtime.request(self.message('spawn-1'))
             self.assertTrue(self.response('spawn-1')['success'])
             self.runtime.request(self.message('status-1', 'orchestration_request', {'action': 'get', 'request_id': 'batch-1'}))
@@ -336,9 +337,9 @@ class SpawnRequestRecovery(unittest.TestCase):
             with self.runtime.lock:
                 worker = threading.Thread(target=delayed_request)
                 worker.start()
-                self.assertTrue(checked.wait(3), 'The request must pass its outside-lock check first')
+                self.assertTrue(checked.wait(HANG_GUARD_SECONDS), 'The request must pass its outside-lock check first')
                 self.runtime.connection_ids['default'] = 'replacement-generation'
-            worker.join(3)
+            worker.join(HANG_GUARD_SECONDS)
             self.assertFalse(worker.is_alive())
         self.assertEqual(self.children(), [])
         self.assertFalse(self.runtime.server.responses)

@@ -20,6 +20,8 @@ from unittest import mock
 
 SERVER_APP_BOOTSTRAP = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SERVER_APP_BOOTSTRAP / "src"))
+
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
 ROOT = REPOSITORY_ROOT
@@ -719,7 +721,7 @@ class ServerSuiteRunner(unittest.TestCase):
                         RUNNER.worker_plan([("one.py", "safe")], {}, override=1)
             with mock.patch.object(RUNNER, "RUNNER_LOCK_PATH", lock_path):
                 a = threading.Thread(target=first); a.start()
-                self.assertTrue(entered.wait(timeout=2))
+                self.assertTrue(entered.wait(timeout=HANG_GUARD_SECONDS))
                 b = threading.Thread(target=second); b.start()
                 time.sleep(0.1)
                 self.assertFalse(acquired.is_set())

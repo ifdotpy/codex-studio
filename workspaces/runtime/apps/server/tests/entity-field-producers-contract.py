@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_TESTS_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -754,7 +755,7 @@ class EntityFieldProducers(unittest.TestCase):
             if threading.current_thread().name == "workspace-sequence-refresh":
                 allocated_in_transaction.append(db.in_transaction)
                 sequence_read.set()
-                if not release_refresh.wait(2):
+                if not release_refresh.wait(HANG_GUARD_SECONDS):
                     raise TimeoutError("test did not release workspace refresh")
             return sequence
 
@@ -765,7 +766,7 @@ class EntityFieldProducers(unittest.TestCase):
         with patch("codex_sync_entities.next_sequence", side_effect=pause_after_sequence_read):
             thread.start()
             try:
-                self.assertTrue(sequence_read.wait(2), "refresh did not reach next_sequence")
+                self.assertTrue(sequence_read.wait(HANG_GUARD_SECONDS), "refresh did not reach next_sequence")
                 writer = sqlite3.connect(self.runtime.db_path, timeout=0, isolation_level=None)
                 try:
                     writer.execute("PRAGMA busy_timeout=0")
@@ -784,7 +785,7 @@ class EntityFieldProducers(unittest.TestCase):
                     writer.close()
             finally:
                 release_refresh.set()
-                thread.join(2)
+                thread.join(HANG_GUARD_SECONDS)
 
         self.assertFalse(thread.is_alive(), "workspace refresh did not complete")
         with sqlite3.connect(self.runtime.db_path) as db:
@@ -883,7 +884,7 @@ class EntityFieldProducers(unittest.TestCase):
                 release.wait(2)
         thread = threading.Thread(target=hold_lock)
         thread.start()
-        self.assertTrue(locked.wait(1))
+        self.assertTrue(locked.wait(HANG_GUARD_SECONDS))
         started = time.monotonic()
         try:
             self.assertFalse(self.runtime.refresh_workspace_volatile())

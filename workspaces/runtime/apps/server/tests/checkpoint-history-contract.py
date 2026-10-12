@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_TESTS_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -145,7 +146,7 @@ class CheckpointHistoryContract(unittest.TestCase):
         def blocked_snapshot(agent):
             self.assertFalse(self.runtime.lock._is_owned())
             entered.set()
-            if not release.wait(3):
+            if not release.wait(HANG_GUARD_SECONDS):
                 raise TimeoutError("test snapshot gate expired")
             return snapshot(agent)
 
@@ -167,7 +168,7 @@ class CheckpointHistoryContract(unittest.TestCase):
         ):
             with concurrent.futures.ThreadPoolExecutor(2) as pool:
                 restore = pool.submit(self.runtime.restore_checkpoint, worker["id"], request)
-                self.assertTrue(entered.wait(2))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 read_started = time.perf_counter()
                 read = pool.submit(self.runtime.agent, worker["id"])
                 self.assertEqual(read.result(1)["id"], worker["id"])

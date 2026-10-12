@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -60,7 +61,7 @@ class RuntimeLockOwnerContract(unittest.TestCase):
         thread = threading.Thread(target=namespace['hold_runtime_lock'])
         thread.start()
         try:
-            self.assertTrue(ready.wait(1), 'The fixture thread must hold the real lock')
+            self.assertTrue(ready.wait(HANG_GUARD_SECONDS), 'The fixture thread must hold the real lock')
             self.assertFalse(lock.acquire(blocking=False))
             observations = []
             runtime.sample_dispatch_lock_holder(observations, 37)
@@ -72,7 +73,7 @@ class RuntimeLockOwnerContract(unittest.TestCase):
             self.assertEqual(int(owner.group(1)), thread.ident)
         finally:
             release.set()
-            thread.join(1)
+            thread.join(HANG_GUARD_SECONDS)
         self.assertFalse(thread.is_alive())
         self.assertEqual(lock.runtime_lock_metrics()[0]['count'], 1)
 

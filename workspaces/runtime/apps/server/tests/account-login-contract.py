@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """New account sign-ins preserve existing profiles and durable request identity."""
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 
 import importlib.util
 import json
@@ -86,14 +92,14 @@ class LoginContract(fixture.AccountsContract):
             calls.append(key)
             if len(calls) == 1:
                 entered.set()
-                if not release.wait(3): raise TimeoutError()
+                if not release.wait(HANG_GUARD_SECONDS): raise TimeoutError()
             return self.response(key)
         runtime = self.runtime(call)
         first = str(uuid.uuid4())
         worker = threading.Thread(target=self.store.start_login, args=(runtime, first))
         worker.start()
         try:
-            self.assertTrue(entered.wait(1))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             self.assertEqual(self.store.start_login(runtime, first)["status"], "starting")
             second = self.store.start_login(runtime, str(uuid.uuid4()))
             self.assertEqual(second["status"], "pending")

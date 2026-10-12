@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -57,7 +58,7 @@ class Native:
 
     def submit(self, method, params, *, operation_id):
         self.submit_entered.set()
-        if not self.submit_release.wait(3):
+        if not self.submit_release.wait(HANG_GUARD_SECONDS):
             raise AssertionError("Submission gate was not released")
         self.submitted.append((method, params, operation_id))
         return (operation_id, method, self.future)
@@ -69,7 +70,7 @@ class Native:
         self.wait_entered.set()
         if self.timeout:
             raise ResponseTimeout("Spawn response timed out; outcome unknown")
-        if not self.wait_release.wait(3):
+        if not self.wait_release.wait(HANG_GUARD_SECONDS):
             raise AssertionError("Receipt gate was not released")
         return submitted[2].result(timeout=1)
 
@@ -113,7 +114,7 @@ class SpawnLockContract(unittest.TestCase):
             self.native.future.set_result({})
         self.native.wait_release.set()
         for thread in self.threads:
-            thread.join(4)
+            thread.join(HANG_GUARD_SECONDS)
             self.assertFalse(thread.is_alive(), "A terminal operation did not finish")
         self.temp.cleanup()
 
@@ -136,36 +137,36 @@ class SpawnLockContract(unittest.TestCase):
 
     def assert_output_available(self):
         done = self.start(lambda: self.manager.output("existing"))
-        self.assertTrue(done.wait(.5), "A new terminal blocked existing terminal output")
+        self.assertTrue(done.wait(HANG_GUARD_SECONDS), "A new terminal blocked existing terminal output")
         self.assertEqual(self.results[-1]["text"], "ready")
 
     def test_receipt_wait_releases_lock_and_duplicate_creation_does_not_submit(self):
         done = self.start(self.create)
-        self.assertTrue(self.native.wait_entered.wait(1))
+        self.assertTrue(self.native.wait_entered.wait(HANG_GUARD_SECONDS))
         self.assert_output_available()
         duplicate = self.start(self.create)
-        self.assertTrue(duplicate.wait(.5), "A duplicate waited for the native receipt")
+        self.assertTrue(duplicate.wait(HANG_GUARD_SECONDS), "A duplicate waited for the native receipt")
         key = self.results[-1]["id"]
         self.assertEqual(len(self.native.submitted), 1)
         self.native.future.set_result({})
         self.native.wait_release.set()
-        self.assertTrue(done.wait(1))
+        self.assertTrue(done.wait(HANG_GUARD_SECONDS))
         self.assertEqual(self.results[-1]["id"], key)
         self.assertFalse(self.errors)
 
     def test_blocked_native_write_releases_lock_and_close_cannot_orphan_late_spawn(self):
         self.native.submit_release.clear()
         created = self.start(self.create)
-        self.assertTrue(self.native.submit_entered.wait(1))
+        self.assertTrue(self.native.submit_entered.wait(HANG_GUARD_SECONDS))
         self.assert_output_available()
         key = next(key for key in self.manager.processes if key != "existing")
         closed = self.start(lambda: self.manager.action("close", {"id": key}))
         self.assert_output_available()
         self.native.submit_release.set()
-        self.assertTrue(closed.wait(1))
+        self.assertTrue(closed.wait(HANG_GUARD_SECONDS))
         self.native.future.set_result({})
         self.native.wait_release.set()
-        self.assertTrue(created.wait(1))
+        self.assertTrue(created.wait(HANG_GUARD_SECONDS))
         self.assertEqual(self.manager.output(key)["status"], "closed")
         self.assertEqual(self.create()["status"], "closed")
         self.assertTrue(self.native.killed)
@@ -208,16 +209,16 @@ class SpawnLockContract(unittest.TestCase):
         entered, release = threading.Event(), threading.Event()
         def construct(*args, **kwargs):
             entered.set()
-            self.assertTrue(release.wait(3))
+            self.assertTrue(release.wait(HANG_GUARD_SECONDS))
             return self.native
         with patch("codex_runtime.AppServer", side_effect=construct):
             created = self.start(self.create)
-            self.assertTrue(entered.wait(1))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             self.assert_output_available()
             stopped = self.start(self.manager.close)
             release.set()
-            self.assertTrue(created.wait(1))
-            self.assertTrue(stopped.wait(1))
+            self.assertTrue(created.wait(HANG_GUARD_SECONDS))
+            self.assertTrue(stopped.wait(HANG_GUARD_SECONDS))
         self.assertTrue(self.native.closed)
         self.assertEqual(self.native.submitted, [])
         self.assertTrue(any("closing" in str(error) for error in self.errors))

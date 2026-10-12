@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -98,7 +99,7 @@ class ReaderContract(unittest.TestCase):
         def notification(message):
             if message["method"] == "blocked":
                 self.entered.set()
-                if not self.release.wait(3):
+                if not self.release.wait(HANG_GUARD_SECONDS):
                     raise AssertionError("Fixture callback was not released")
             self.records.append(message["method"])
             self.assertIsInstance(message["_studioReceivedAt"], float)
@@ -114,7 +115,7 @@ class ReaderContract(unittest.TestCase):
 
     def block(self, proc):
         proc.emit({"method": "blocked"})
-        self.assertTrue(self.entered.wait(1))
+        self.assertTrue(self.entered.wait(HANG_GUARD_SECONDS))
 
     def test_explicit_rpc_error_keeps_code_and_data(self):
         server, proc = self.start()
@@ -143,7 +144,7 @@ class ReaderContract(unittest.TestCase):
         done = threading.Event()
         server.after_events(lambda: (self.records.append("completed"), done.set()))
         self.release.set()
-        self.assertTrue(done.wait(1))
+        self.assertTrue(done.wait(HANG_GUARD_SECONDS))
         self.assertEqual(self.records, ["blocked", "tool/request", "completed"])
 
     def test_tool_call_bypasses_blocked_notification_queue(self):
@@ -153,7 +154,7 @@ class ReaderContract(unittest.TestCase):
         server.request = lambda message: handled.set()
         proc.emit({"method": "item/tool/call", "id": "tool-urgent",
                    "params": {"threadId": "worker", "tool": "orchestration_task"}})
-        self.assertTrue(handled.wait(0.5))
+        self.assertTrue(handled.wait(HANG_GUARD_SECONDS))
         self.assertFalse(self.release.is_set())
         self.assertEqual(self.records, [])
         self.release.set()
@@ -172,7 +173,7 @@ class ReaderContract(unittest.TestCase):
         self.assertEqual(server.wait(pending, 0.5), {"id": "late-receipt"})
         self.assertFalse(done.is_set())
         self.release.set()
-        self.assertTrue(done.wait(1))
+        self.assertTrue(done.wait(HANG_GUARD_SECONDS))
         self.assertEqual(self.records, ["blocked", "output", "late-receipt"])
         self.assertNotIn(pending[0], server.pending)
 
@@ -181,7 +182,7 @@ class ReaderContract(unittest.TestCase):
         pending = server.submit("thread/start", {})
         server.on_result(pending, lambda _: (self.entered.set(), self.release.wait(3)))
         proc.emit({"id": pending[0], "result": {}})
-        self.assertTrue(self.entered.wait(1))
+        self.assertTrue(self.entered.wait(HANG_GUARD_SECONDS))
         second = server.submit("model/list", {})
         proc.emit({"id": second[0], "result": {"models": []}})
         self.assertEqual(server.wait(second, 0.5), {"models": []})
@@ -259,7 +260,7 @@ class ReaderContract(unittest.TestCase):
         runtime.servers["default"] = server
         runtime.server = server
         proc.emit({"method": "account/rateLimits/updated", "params": {"rateLimits": {}}})
-        self.assertTrue(callback_done.wait(3))
+        self.assertTrue(callback_done.wait(HANG_GUARD_SECONDS))
         self.assertEqual(failures, [])
         wal_path = Path(str(runtime.db_path) + "-wal")
         runtime.close()
@@ -325,11 +326,11 @@ class ReaderContract(unittest.TestCase):
         self.assertEqual(server.wait(marker, 2), {'ready': True})
         self.assertIsNone(proc.poll())
         self.assertLess(server.callbacks.qsize(), 64)
-        self.assertTrue(handled.wait(1))
+        self.assertTrue(handled.wait(HANG_GUARD_SECONDS))
         done = threading.Event()
         server.after_events(done.set)
         self.release.set()
-        self.assertTrue(done.wait(2))
+        self.assertTrue(done.wait(HANG_GUARD_SECONDS))
         before = batches[:-2]
         self.assertEqual(''.join(m['params']['delta'] for m in before), ''.join(p['delta'] for p in samples))
         self.assertEqual([p for m in before for p in m.get('_studioNotificationSamples', [m['params']])], samples)
@@ -362,7 +363,7 @@ class ReaderContract(unittest.TestCase):
         done = threading.Event()
         server.after_events(done.set)
         self.release.set()
-        self.assertTrue(done.wait(3))
+        self.assertTrue(done.wait(HANG_GUARD_SECONDS))
         started = [m['params']['item']['id'] for m in seen if m.get('method') == 'item/started']
         self.assertEqual(started, [f'x-{i}' for i in range(10)])
         self.assertLess(len([m for m in seen if m.get('method') == 'item/commandExecution/outputDelta']), 100)
@@ -376,7 +377,7 @@ class ReaderContract(unittest.TestCase):
         server.wait(marker, 1)  # All preceding wire messages are now enqueued.
         done = threading.Event()
         server.after_events(done.set)
-        self.assertTrue(done.wait(2))
+        self.assertTrue(done.wait(HANG_GUARD_SECONDS))
         self.assertEqual([(m['method'], m['params'].get('delta')) for m in seen],
                          [('item/completed', None), ('item/commandExecution/outputDelta', 'next')])
         self.assertIn('streamed fragments', (self.root / 'app-server.log').read_text())
@@ -402,7 +403,7 @@ class ReaderContract(unittest.TestCase):
         done = threading.Event()
         server.after_events(done.set)
         self.release.set()
-        self.assertTrue(done.wait(2))
+        self.assertTrue(done.wait(HANG_GUARD_SECONDS))
         for t in range(10):
             thread = f't{t}'
             events = [m for m in seen if m['params'].get('threadId') == thread]
@@ -437,7 +438,7 @@ class ReaderContract(unittest.TestCase):
         done = threading.Event()
         server.after_events(done.set)
         self.release.set()
-        self.assertTrue(done.wait(2))
+        self.assertTrue(done.wait(HANG_GUARD_SECONDS))
         values = [(method, p.get('threadId'), p.get('turnId'), p.get('value', (p.get('rateLimits') or {}).get('usedPercent')))
                   for method, p in seen]
         self.assertEqual(values, [
@@ -465,7 +466,7 @@ class ReaderContract(unittest.TestCase):
         done = threading.Event()
         server.after_events(done.set)
         self.release.set()
-        self.assertTrue(done.wait(2))
+        self.assertTrue(done.wait(HANG_GUARD_SECONDS))
         self.assertEqual(seen, list(range(30)))
 
     def test_tool_bypass_closes_latest_slot_without_delaying_tool(self):
@@ -480,12 +481,12 @@ class ReaderContract(unittest.TestCase):
         marker = server.submit('marker', {})
         proc.emit({'id': marker[0], 'result': {}})
         server.wait(marker, 1)
-        self.assertTrue(tool_done.wait(1))
+        self.assertTrue(tool_done.wait(HANG_GUARD_SECONDS))
         self.assertEqual(server.callbacks.qsize(), 2)
         done = threading.Event()
         server.after_events(done.set)
         self.release.set()
-        self.assertTrue(done.wait(2))
+        self.assertTrue(done.wait(HANG_GUARD_SECONDS))
         self.assertEqual(values, [1, 2])
 
     def test_queue_saturation_is_explicit_and_preserves_accepted_order(self):
@@ -542,11 +543,11 @@ class ReaderContract(unittest.TestCase):
         marker = server.submit('marker', {})
         proc.emit({'id': marker[0], 'result': {}})
         server.wait(marker, 1)  # All preceding wire messages are now enqueued.
-        self.assertTrue(handled.wait(1))
+        self.assertTrue(handled.wait(HANG_GUARD_SECONDS))
         done = threading.Event()
         server.after_events(done.set)
         self.release.set()
-        self.assertTrue(done.wait(2))
+        self.assertTrue(done.wait(HANG_GUARD_SECONDS))
         self.assertEqual(order, ['request', 'a', 'a', 'a', 'a', 'b'])
         self.assertEqual(''.join(m['params']['delta'] for m in batches[:3]),
                          ''.join(p['delta'] for p in samples))

@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -64,7 +65,7 @@ class LockContract(unittest.TestCase):
         for event in self.releases:
             event.set()
         for thread in self.threads:
-            thread.join(2)
+            thread.join(HANG_GUARD_SECONDS)
             self.assertFalse(thread.is_alive(), "private fixture thread did not finish")
 
     def start(self, name, action):
@@ -86,7 +87,7 @@ class LockContract(unittest.TestCase):
         self.releases.append(release)
         def auth(options=None, force=False):
             entered.set()
-            if not release.wait(2):
+            if not release.wait(HANG_GUARD_SECONDS):
                 raise AssertionError("private auth release missing")
             return metadata()
         return entered, release, auth
@@ -97,7 +98,7 @@ class LockContract(unittest.TestCase):
             self.store.lock.release()
         self.assertTrue(acquired, "Claude auth holds the shared account lock")
         done = self.start("codex", lambda: self.store.get("default"))
-        self.assertTrue(done.wait(.2), "unrelated Codex account waits for Claude auth")
+        self.assertTrue(done.wait(HANG_GUARD_SECONDS), "unrelated Codex account waits for Claude auth")
 
     def test_get_list_and_snapshot_release_registry_during_auth(self):
         for name, action in (("get", lambda: self.store.get("claude-one")),
@@ -106,12 +107,12 @@ class LockContract(unittest.TestCase):
                 entered, release, auth = self.auth_barrier()
                 with patch.object(codex_claude, "auth_metadata", side_effect=auth):
                     done = self.start(name, action)
-                    self.assertTrue(entered.wait(.5))
+                    self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                     try:
                         self.assert_registry_available()
                     finally:
                         release.set()
-                        self.assertTrue(done.wait(.5))
+                        self.assertTrue(done.wait(HANG_GUARD_SECONDS))
                 self.assertEqual(self.errors, [])
                 self.assertEqual(self.store.data["accounts"]["claude-one"]["accountId"], "claude:one")
 
@@ -132,12 +133,12 @@ class LockContract(unittest.TestCase):
                 entered, release, auth = self.auth_barrier()
                 with patch.object(codex_claude, "auth_metadata", side_effect=auth):
                     done = self.start(name, action)
-                    self.assertTrue(entered.wait(.5))
+                    self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                     try:
                         self.assert_registry_available()
                     finally:
                         release.set()
-                        self.assertTrue(done.wait(.5))
+                        self.assertTrue(done.wait(HANG_GUARD_SECONDS))
                 self.assertEqual(self.errors, [])
 
     def test_changed_options_recheck_outside_lock_before_applying_auth(self):
@@ -149,19 +150,19 @@ class LockContract(unittest.TestCase):
             seen.append(copy.deepcopy(options))
             if len(seen) == 1:
                 entered.set()
-                self.assertTrue(release.wait(2))
+                self.assertTrue(release.wait(HANG_GUARD_SECONDS))
                 return metadata("foreign")
             return metadata()
         with patch.object(codex_claude, "auth_metadata", side_effect=auth):
             done = self.start("changed", lambda: self.store.get("claude-one"))
-            self.assertTrue(entered.wait(.5))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             try:
                 self.assert_registry_available()
                 with self.store.lock:
                     self.store.data["accounts"]["claude-one"]["claudeOptions"]["launchArgs"] = "--no-chrome"
             finally:
                 release.set()
-                self.assertTrue(done.wait(.5))
+                self.assertTrue(done.wait(HANG_GUARD_SECONDS))
         self.assertEqual(self.errors, [])
         self.assertEqual(len(seen), 2)
         self.assertNotIn("launchArgs", seen[0])
@@ -173,14 +174,14 @@ class LockContract(unittest.TestCase):
         entered, release, auth = self.auth_barrier()
         with patch.object(codex_claude, "auth_metadata", side_effect=auth):
             done = self.start("snapshot", self.store.snapshot)
-            self.assertTrue(entered.wait(.5))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             try:
                 self.assert_registry_available()
                 with self.store.lock:
                     self.store.data["accounts"]["claude-one"]["deleted"] = True
             finally:
                 release.set()
-                self.assertTrue(done.wait(.5))
+                self.assertTrue(done.wait(HANG_GUARD_SECONDS))
         self.assertEqual(self.errors, [])
         result = self.results["snapshot"]
         self.assertNotIn("claude-one", [row["id"] for row in result["accounts"]])
@@ -197,7 +198,7 @@ class LockContract(unittest.TestCase):
             calls.append(config)
             if config.endswith("/a"):
                 entered.set()
-                self.assertTrue(release.wait(2))
+                self.assertTrue(release.wait(HANG_GUARD_SECONDS))
             return metadata(config)
         def get(name):
             return codex_claude.auth_metadata({"configDir": str(self.root / name)})
@@ -205,20 +206,20 @@ class LockContract(unittest.TestCase):
              patch.object(codex_claude, "_auth_status", side_effect=native):
             cached = get("cached")
             first = self.start("a", lambda: get("a"))
-            self.assertTrue(entered.wait(.5))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             second = self.start("same", lambda: get("a"))
             other = self.start("b", lambda: get("b"))
             cached_done = self.start("cached", lambda: get("cached"))
             try:
-                self.assertTrue(other.wait(.2), "different profile probe waits for global cache lock")
-                self.assertTrue(cached_done.wait(.2), "cached profile waits for global cache lock")
+                self.assertTrue(other.wait(HANG_GUARD_SECONDS), "different profile probe waits for global cache lock")
+                self.assertTrue(cached_done.wait(HANG_GUARD_SECONDS), "cached profile waits for global cache lock")
                 self.assertFalse(second.is_set())
             finally:
                 release.set()
-                self.assertTrue(first.wait(.5))
-                self.assertTrue(second.wait(.5))
-                self.assertTrue(other.wait(.5))
-                self.assertTrue(cached_done.wait(.5))
+                self.assertTrue(first.wait(HANG_GUARD_SECONDS))
+                self.assertTrue(second.wait(HANG_GUARD_SECONDS))
+                self.assertTrue(other.wait(HANG_GUARD_SECONDS))
+                self.assertTrue(cached_done.wait(HANG_GUARD_SECONDS))
         self.assertEqual(self.errors, [])
         self.assertEqual(calls.count(str(self.root / "a")), 1)
         self.assertEqual(self.results["same"], self.results["a"])
@@ -253,7 +254,7 @@ class LockContract(unittest.TestCase):
         def installed(_profile=None):
             if threading.current_thread().name == 'private-auth-login':
                 resolving.set()
-                self.assertTrue(resolution.wait(2))
+                self.assertTrue(resolution.wait(HANG_GUARD_SECONDS))
             return '/private/fake-claude'
         def native(_executable, _env, *, interactive=False):
             modes.append(interactive)
@@ -263,18 +264,18 @@ class LockContract(unittest.TestCase):
                 login = threading.current_thread().name == 'private-auth-login'
                 return metadata('after-login' if login else 'cli-before-login')
             reading.set()
-            self.assertTrue(release.wait(2))
+            self.assertTrue(release.wait(HANG_GUARD_SECONDS))
             return {'status': 'error', 'accountId': None, '_authErrorKind': 'keychain'}
         with patch.object(codex_claude, 'installed', side_effect=installed), \
                 patch.object(codex_claude, '_auth_status', side_effect=native):
             login = self.start('login', lambda: codex_claude.auth_metadata(force=True, interactive=True))
-            self.assertTrue(resolving.wait(.5))
+            self.assertTrue(resolving.wait(HANG_GUARD_SECONDS))
             passive = self.start('passive', codex_claude.auth_metadata)
-            self.assertTrue(reading.wait(.5))
+            self.assertTrue(reading.wait(HANG_GUARD_SECONDS))
             resolution.set()
             release.set()
-            self.assertTrue(login.wait(.5))
-            self.assertTrue(passive.wait(.5))
+            self.assertTrue(login.wait(HANG_GUARD_SECONDS))
+            self.assertTrue(passive.wait(HANG_GUARD_SECONDS))
             self.assertEqual(self.results['passive'], metadata('cli-before-login'))
             self.assertEqual(self.results['login'], metadata('after-login'))
             self.assertEqual(codex_claude.auth_metadata(), metadata('after-login'))
@@ -331,20 +332,20 @@ class LockContract(unittest.TestCase):
             if len(calls) == 1:
                 return metadata()
             entered.set()
-            self.assertTrue(release.wait(2))
+            self.assertTrue(release.wait(HANG_GUARD_SECONDS))
             return {'status': 'signedOut', 'accountId': None, 'email': None, 'plan': None}
         with patch.object(codex_claude, "installed", return_value="/private/fake-claude"), \
              patch.object(codex_claude, "_auth_status", side_effect=native):
             self.assertEqual(codex_claude.auth_metadata()["status"], "ready")
             force_done = self.start("forced", lambda: codex_claude.auth_metadata(force=True))
-            self.assertTrue(entered.wait(.5))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             normal_done = self.start("normal", codex_claude.auth_metadata)
             try:
                 self.assertFalse(normal_done.wait(.05), "old ready cache bypasses a fresh auth check")
             finally:
                 release.set()
-                self.assertTrue(force_done.wait(.5))
-                self.assertTrue(normal_done.wait(.5))
+                self.assertTrue(force_done.wait(HANG_GUARD_SECONDS))
+                self.assertTrue(normal_done.wait(HANG_GUARD_SECONDS))
         self.assertEqual(self.errors, [])
         self.assertEqual(self.results["normal"]["status"], "signedOut")
         self.assertEqual(self.results["forced"], self.results["normal"])
@@ -357,19 +358,19 @@ class LockContract(unittest.TestCase):
             argv = [executable, "auth", "status", "--json"]
             kwargs = {"env": env, "timeout": 8}
             entered.set()
-            self.assertTrue(release.wait(2))
+            self.assertTrue(release.wait(HANG_GUARD_SECONDS))
             raise RuntimeError("private fixture failure")
         with patch.object(codex_claude, "installed", return_value="/private/fake-claude"), \
              patch.object(codex_claude, "_auth_status", side_effect=native):
             owner_done = self.start("owner", codex_claude.auth_metadata)
-            self.assertTrue(entered.wait(.5))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             waiter_done = self.start("waiter", codex_claude.auth_metadata)
             try:
                 self.assertFalse(waiter_done.wait(.05))
             finally:
                 release.set()
-                self.assertTrue(owner_done.wait(.5))
-                self.assertTrue(waiter_done.wait(.5))
+                self.assertTrue(owner_done.wait(HANG_GUARD_SECONDS))
+                self.assertTrue(waiter_done.wait(HANG_GUARD_SECONDS))
         self.assertEqual(len(self.errors), 1)
         self.assertIsInstance(self.errors[0], RuntimeError)
         self.assertEqual(self.results["waiter"]["status"], "error")
@@ -385,12 +386,12 @@ class LockContract(unittest.TestCase):
         def auth(home):
             self.assertFalse(self.store.lock._is_owned())
             entered.set()
-            self.assertTrue(release.wait(2))
+            self.assertTrue(release.wait(HANG_GUARD_SECONDS))
             return {"status": "ready", "accountId": "codex-one",
                     "_credentialIdentity": "chatgpt:codex-one"}
         with patch.object(codex_accounts, "auth_metadata", side_effect=auth):
             done = self.start("receipt", self.store.login_receipts)
-            self.assertTrue(entered.wait(.5))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             try:
                 acquired = self.store.lock.acquire(timeout=.1)
                 self.assertTrue(acquired)
@@ -400,7 +401,7 @@ class LockContract(unittest.TestCase):
                     self.store.lock.release()
             finally:
                 release.set()
-                self.assertTrue(done.wait(.5))
+                self.assertTrue(done.wait(HANG_GUARD_SECONDS))
         self.assertEqual(self.errors, [])
         self.assertEqual(self.results["receipt"][0]["status"], "cancelled")
         self.assertEqual(self.store.data["logins"][request]["requestId"], request)
@@ -416,21 +417,21 @@ class LockContract(unittest.TestCase):
             identity = "one" if len(calls) == 1 else "foreign"
             if len(calls) == 1:
                 observed.set()
-                self.assertTrue(release.wait(2))
+                self.assertTrue(release.wait(HANG_GUARD_SECONDS))
             return metadata(identity)
         profile = self.store.data["accounts"]["claude-one"]
         with patch.object(codex_claude, "installed", return_value="/private/fake-claude"), \
              patch.object(codex_claude, "_auth_status", side_effect=native):
             old = self.start("before-login", lambda: codex_claude.auth_metadata(profile))
-            self.assertTrue(observed.wait(.5))
+            self.assertTrue(observed.wait(HANG_GUARD_SECONDS))
             # LoginManager._run uses force=True after its native login process exits.
             fresh = self.start("after-login", lambda: codex_claude.auth_metadata(profile, force=True))
             try:
                 self.assertFalse(fresh.wait(.05))
             finally:
                 release.set()
-                self.assertTrue(old.wait(.5))
-                self.assertTrue(fresh.wait(.5))
+                self.assertTrue(old.wait(HANG_GUARD_SECONDS))
+                self.assertTrue(fresh.wait(HANG_GUARD_SECONDS))
             refreshed = self.store.refresh("claude-one")
         self.assertEqual(self.errors, [])
         self.assertEqual(len(calls), 2)

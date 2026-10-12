@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -61,7 +62,7 @@ class InputServer(fixture.FakeServer):
             if self.native_gate:
                 entered, release = self.native_gate
                 entered.set()
-                if not release.wait(3):
+                if not release.wait(HANG_GUARD_SECONDS):
                     raise RuntimeError('The fixture native check timed out')
             return {'data': []}
         if method == 'command/exec/terminate':
@@ -78,7 +79,7 @@ class InputServer(fixture.FakeServer):
         if gate:
             entered, release = gate
             entered.set()
-            if not release.wait(3):
+            if not release.wait(HANG_GUARD_SECONDS):
                 raise RuntimeError('The fixture native writer timed out')
         if self.submission_error:
             raise self.submission_error
@@ -147,7 +148,7 @@ class MonitorInputLockContract(unittest.TestCase):
 
     def join(self):
         for thread in self.threads:
-            thread.join(3)
+            thread.join(HANG_GUARD_SECONDS)
             self.assertFalse(thread.is_alive())
 
     def test_write_and_resize_do_not_block_another_chat_or_stop(self):
@@ -157,12 +158,12 @@ class MonitorInputLockContract(unittest.TestCase):
                 key = self.new_monitor(self.agent, 'monitor-' + str(len(self.server.inputs)))
                 entered, release = self.gate(key)
                 done, errors = self.worker(lambda: self.runtime.monitor_input(key, payload))
-                self.assertTrue(entered.wait(2))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 send_done, send_errors = self.worker(lambda: self.runtime.send(self.other['id'], 'Other input', key + '-send'))
                 stop_done, stop_errors = self.worker(lambda: self.runtime.stop(self.agent['id']))
                 try:
-                    self.assertTrue(send_done.wait(1), 'Another chat must not wait for monitor input I/O')
-                    self.assertTrue(stop_done.wait(1), 'Stop must not wait for monitor input I/O')
+                    self.assertTrue(send_done.wait(HANG_GUARD_SECONDS), 'Another chat must not wait for monitor input I/O')
+                    self.assertTrue(stop_done.wait(HANG_GUARD_SECONDS), 'Stop must not wait for monitor input I/O')
                     reserved = self.record(key)['inputAttempt']
                     self.assertEqual(reserved['params']['processId'], key)
                     self.assertEqual(reserved['status'], 'submitted')
@@ -177,10 +178,10 @@ class MonitorInputLockContract(unittest.TestCase):
         second = self.new_monitor(self.other, 'monitor-two')
         entered, release = self.gate()
         done, errors = self.worker(lambda: self.runtime.monitor_input(self.monitor, {'text': 'First'}))
-        self.assertTrue(entered.wait(2))
+        self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
         next_done, next_errors = self.worker(lambda: self.runtime.monitor_input(second, {'text': 'Second'}))
         try:
-            self.assertTrue(next_done.wait(1), 'A monitor guard must not block another monitor')
+            self.assertTrue(next_done.wait(HANG_GUARD_SECONDS), 'A monitor guard must not block another monitor')
         finally:
             release.set()
             self.join()
@@ -344,7 +345,7 @@ class MonitorInputLockContract(unittest.TestCase):
     def test_same_monitor_serializes_text_and_eof(self):
         entered, release = self.gate()
         done, errors = self.worker(lambda: self.runtime.monitor_input(self.monitor, {'text': 'First'}))
-        self.assertTrue(entered.wait(2))
+        self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
         next_done, next_errors = self.worker(lambda: self.runtime.monitor_input(self.monitor, {'closeStdin': True}))
         try:
             self.assertFalse(next_done.wait(.1))
@@ -370,7 +371,7 @@ class MonitorInputLockContract(unittest.TestCase):
         entered, release = threading.Event(), threading.Event()
         self.server.native_gate = entered, release
         refresh_done, refresh_errors = self.worker(lambda: refresh_account(self.runtime, 'default'))
-        self.assertTrue(entered.wait(2))
+        self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
         connect_entered = threading.Event()
         original = self.runtime.connect
         def connect(account):
@@ -380,7 +381,7 @@ class MonitorInputLockContract(unittest.TestCase):
         with patch.object(self.runtime, 'connect', side_effect=connect):
             input_done, input_errors = self.worker(lambda: self.runtime.monitor_input(self.monitor, {'text': 'Claude input'}))
             try:
-                self.assertTrue(connect_entered.wait(2))
+                self.assertTrue(connect_entered.wait(HANG_GUARD_SECONDS))
             finally:
                 release.set()
                 self.join()

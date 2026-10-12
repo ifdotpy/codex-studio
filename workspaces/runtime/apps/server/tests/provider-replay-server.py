@@ -9,6 +9,9 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "server"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from server_test_waits import HANG_GUARD_SECONDS
 from provider_replay_dispatch import dispatch_rpc_lines
 from rpc_replay_contract import EMPTY_RESULT_METHODS
 
@@ -142,7 +145,7 @@ def handle(line):
             for frame in selected_events:
                 if frame.get("method") == "item/tool/call" and frame.get("id") is not None:
                     response = tool_responses[str(frame["id"])]
-                    if not response.wait(3):
+                    if not response.wait(HANG_GUARD_SECONDS):
                         raise AssertionError(f"App-server did not answer fixture tool call {frame['id']}")
         for frame in deferred_completion:
             event_frame(frame, thread_id, turn_id)

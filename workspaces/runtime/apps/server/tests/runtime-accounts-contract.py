@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -260,7 +261,7 @@ class AccountContracts(unittest.TestCase):
                 if threading.current_thread() is worker and not calls:
                     calls.append(True)
                     entered.set()
-                    self.assertTrue(proceed.wait(2))
+                    self.assertTrue(proceed.wait(HANG_GUARD_SECONDS))
                 return result
 
             message = {
@@ -289,11 +290,11 @@ class AccountContracts(unittest.TestCase):
             )
             with patch.object(self.runtime, "connection_current", side_effect=delayed):
                 worker.start()
-                self.assertTrue(entered.wait(2))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 server.died()
                 self.runtime.connect(self.other_key)
                 proceed.set()
-                worker.join(2)
+                worker.join(HANG_GUARD_SECONDS)
                 self.assertFalse(worker.is_alive())
             self.assertEqual(self.runtime.agent(a["id"])["tail"], "")
             self.assertEqual(self.runtime.agent(a["id"])["name"], "Lead")

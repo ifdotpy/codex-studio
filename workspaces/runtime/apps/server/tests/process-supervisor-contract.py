@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import DESKTOP_ROOT, REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
 import json
@@ -35,6 +36,7 @@ from codex_runtime import AppServer, ResponseTimeout, Runtime
 from codex_process_supervisor import finish_fallback, process_start_time, status
 import codex_process_supervisor as process_supervisor
 import recover_backend
+from server_test_waits import wait_for_condition
 
 rotation_spec = importlib.util.spec_from_file_location('runtime_rotation_fixture', SERVER_TESTS_ROOT / 'native-runtime-updates-contract.py')
 rotation_fixture = importlib.util.module_from_spec(rotation_spec)
@@ -138,14 +140,10 @@ while True: time.sleep(1)
 '''
 
 
-def wait_for(fn, timeout=5):
-    end=time.monotonic()+timeout
-    while time.monotonic()<end:
-        try: result=fn()
-        except (OSError,RuntimeError): result=None
-        if result: return result
-        time.sleep(.02)
-    raise AssertionError('timed out waiting for private process fixture')
+def wait_for(fn):
+    return wait_for_condition(
+        fn, "private process fixture", retry_exceptions=(OSError, RuntimeError),
+    )
 
 
 class ProcessProxyTailDeliveryContract(unittest.TestCase):
@@ -158,7 +156,7 @@ class ProcessProxyTailDeliveryContract(unittest.TestCase):
             writer = threading.Thread(target=process_supervisor._send, args=(sender, event))
             writer.start()
             self.assertEqual(process_supervisor._recv(receiver, stream), event)
-            writer.join(timeout=2)
+            writer.join(timeout=HANG_GUARD_SECONDS)
             self.assertFalse(writer.is_alive())
         finally:
             stream.close()
@@ -428,7 +426,7 @@ class StdoutPersistenceContract(unittest.TestCase):
         return handle, events, operation
 
     def assert_paused_without_exit(self):
-        self.assertTrue(self.failed.wait(2))
+        self.assertTrue(self.failed.wait(HANG_GUARD_SECONDS))
         wait_for(self.child.paused.is_set)
         self.assertTrue(self.child.reader.is_alive())
         self.assertIsNone(self.process.poll())
@@ -470,7 +468,7 @@ class StdoutPersistenceContract(unittest.TestCase):
         self.assertEqual(self.child.persistence_errors, {})
         self.process.stdin.close()
         self.process.wait(timeout=2)
-        self.child.reader.join(timeout=2)
+        self.child.reader.join(timeout=HANG_GUARD_SECONDS)
         self.assertFalse(self.child.reader.is_alive())
         exit_events = [event for event in self.saved()[1] if event['kind'] == 'exit']
         self.assertEqual(len(exit_events), 1)
@@ -489,7 +487,7 @@ class StdoutPersistenceContract(unittest.TestCase):
         self.journal.ensure_space = wait_for_space
         self.process.stdin.write(json.dumps({'method': 'old-generation'}) + '\n')
         self.process.stdin.flush()
-        self.assertTrue(entered.wait(2))
+        self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
         with self.original_db() as db:
             db.execute('UPDATE handles SET generation=2 WHERE id=?', (self.handle,))
         release.set()
@@ -497,7 +495,7 @@ class StdoutPersistenceContract(unittest.TestCase):
         self.process.stdin.flush()
         self.process.stdin.close()
         self.process.wait(timeout=3)
-        self.child.reader.join(timeout=3)
+        self.child.reader.join(timeout=HANG_GUARD_SECONDS)
         self.assertFalse(self.child.reader.is_alive())
         with self.original_db() as db:
             row = db.execute('SELECT generation,sequence FROM handles WHERE id=?',
@@ -550,7 +548,7 @@ class StdoutPersistenceContract(unittest.TestCase):
         error.sqlite_errorcode = sqlite3.SQLITE_IOERR
         self.inject(error, after_commit=True)
         self.send_frames()
-        self.assertTrue(self.failed.wait(2))
+        self.assertTrue(self.failed.wait(HANG_GUARD_SECONDS))
         wait_for(self.child.paused.is_set)
         handle, events, operation = self.saved()
         self.assertEqual(handle['sequence'], 1)
@@ -564,7 +562,7 @@ class StdoutPersistenceContract(unittest.TestCase):
         frame = {'method': 'item/completed', 'params': {'itemId': 'delayed-tail'}}
         self.process.stdin.write(json.dumps(frame) + '\n')
         self.process.stdin.close()
-        self.assertTrue(self.failed.wait(2))
+        self.assertTrue(self.failed.wait(HANG_GUARD_SECONDS))
         self.process.wait(timeout=2)
         self.assertTrue(self.child.reader.is_alive())
 
@@ -592,11 +590,11 @@ class StdoutPersistenceContract(unittest.TestCase):
         delivered = []
         reader = threading.Thread(target=lambda: delivered.append(proxy.next_event()), daemon=True)
         reader.start()
-        self.assertTrue(queried.wait(2))
+        self.assertTrue(queried.wait(HANG_GUARD_SECONDS))
         self.assertIsNotNone(self.process.poll())
         self.assertEqual(delivered, [])
         self.release.set()
-        reader.join(timeout=2)
+        reader.join(timeout=HANG_GUARD_SECONDS)
         self.assertFalse(reader.is_alive())
         self.assertEqual(len(delivered), 1)
         sequence, raw = delivered[0]
@@ -617,7 +615,7 @@ class StdoutPersistenceContract(unittest.TestCase):
         self.inject(error)
         self.process.stdin.write(':close-stdout\n')
         self.process.stdin.flush()
-        self.assertTrue(waiting.wait(2))
+        self.assertTrue(waiting.wait(HANG_GUARD_SECONDS))
         self.assertIsNone(self.process.poll())
         self.assertTrue(self.child.reader.is_alive())
         self.assertEqual(self.saved()[1], [])
@@ -775,7 +773,7 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.servers.append(server)
         try:
             submitted = server.submit('command/exec', {'processId': 'reply-lane'})
-            self.assertTrue(entered.wait(2))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             self.assertEqual(server.wait(submitted, 1)['exitCode'], 0)
         finally:
             release.set()
@@ -979,10 +977,15 @@ class ProcessSupervisorContract(unittest.TestCase):
 
     def test_backend_detach_reattaches_to_same_fake_turn_and_replays_output(self):
         first=self.server(delay=True)
-        native_pid=wait_for(lambda: int(self.pid_file.read_text()) if self.pid_file.exists() else None)
+        def complete_pid_file():
+            try:
+                return int(self.pid_file.read_text())
+            except (OSError, ValueError):
+                return None
+        native_pid = wait_for(complete_pid_file)
         submitted=first.submit('turn/start',{'clientUserMessageId':'turn-once','threadId':'thread'})
         with self.assertRaises(ResponseTimeout): first.wait(submitted,timeout=.1)
-        self.assertTrue(self.callback_started.wait(3))
+        self.assertTrue(self.callback_started.wait(HANG_GUARD_SECONDS))
         first.close()  # backend transport closes; the supervisor retains the child and event journal
         self.deactivate[0]()  # the killed backend cannot finish its in-memory callback
         second=self.server()
@@ -1045,7 +1048,7 @@ class ProcessSupervisorContract(unittest.TestCase):
         def restore(runtime, *args):
             observed.append(runtime)
             entered.set()
-            if not release_restore.wait(4):
+            if not release_restore.wait(HANG_GUARD_SECONDS):
                 raise RuntimeError('The fixture restore gate timed out')
             return original_restore(runtime, *args)
         def gated_schedule(runtime):
@@ -1066,7 +1069,7 @@ class ProcessSupervisorContract(unittest.TestCase):
             worker = threading.Thread(target=construct)
             worker.start()
             try:
-                self.assertTrue(entered.wait(3))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 self.assertFalse(constructed.wait(.1), 'Runtime must restore before exposing the API')
                 for lock in (observed[0].lock, observed[0].start_lock):
                     self.assertTrue(lock.acquire(timeout=1), 'Startup restore must wait outside both locks')
@@ -1081,7 +1084,7 @@ class ProcessSupervisorContract(unittest.TestCase):
         second = result[0]
         self.addCleanup(second.close)
         self.addCleanup(release_scheduler.set)
-        self.assertTrue(scheduler_entered.wait(3), 'The fixture scheduler must reach its gate')
+        self.assertTrue(scheduler_entered.wait(HANG_GUARD_SECONDS), 'The fixture scheduler must reach its gate')
         with patch('codex_native_runtime.executable_for', return_value={'path':str(self.binary)}):
             replacement = second.connect()
         self.assertTrue(replacement.supervisor_resumed)
@@ -1274,7 +1277,7 @@ class ProcessSupervisorContract(unittest.TestCase):
         worker = threading.Thread(target=construct, daemon=True)
         worker.start()
         try:
-            self.assertTrue(constructed.wait(3), 'The constructor must not wait for the runtime restore lock')
+            self.assertTrue(constructed.wait(HANG_GUARD_SECONDS), 'The constructor must not wait for the runtime restore lock')
             self.assertEqual(errors, [])
             second = result[0]
             self.servers.append(second)
@@ -1312,7 +1315,7 @@ class ProcessSupervisorContract(unittest.TestCase):
         failure = OSError('The fixture restore failed')
         observed = []
         def restore(_resumed):
-            if not gate.wait(3):
+            if not gate.wait(HANG_GUARD_SECONDS):
                 raise RuntimeError('The fixture restore gate timed out')
             raise failure
         second = AppServer(self.root, observed.append, lambda _: None, lambda: None,
@@ -1457,7 +1460,7 @@ class ProcessSupervisorContract(unittest.TestCase):
         server.supervisor_event_applied = lambda sequence: runtime.supervisor_event_applied(server.proc.handle, sequence)
         gate, started = threading.Event(), threading.Event()
         server.enqueue(lambda _: (started.set(), gate.wait(3)), {})
-        self.assertTrue(started.wait(3))
+        self.assertTrue(started.wait(HANG_GUARD_SECONDS))
         submitted = server.submit('burst', {'itemId': 'burst-item'})
         server.wait(submitted, timeout=3)
         wait_for(lambda: server.callbacks.qsize() >= 7)
@@ -1549,7 +1552,7 @@ class ProcessSupervisorContract(unittest.TestCase):
             server.proc.handle, sequence)
         gate, started = threading.Event(), threading.Event()
         server.enqueue(lambda _: (started.set(), gate.wait(30)), {})
-        self.assertTrue(started.wait(3))
+        self.assertTrue(started.wait(HANG_GUARD_SECONDS))
         submitted = server.submit('outputBurst', {'itemId': 'command-item', 'count': count})
         server.wait(submitted, timeout=15)
         wait_for(lambda: server.callbacks.qsize() >= count + 1)
@@ -1604,7 +1607,7 @@ class ProcessSupervisorContract(unittest.TestCase):
         delivered.clear()
         gate, started = threading.Event(), threading.Event()
         server.enqueue(lambda _: (started.set(), gate.wait(30)), {})
-        self.assertTrue(started.wait(3))
+        self.assertTrue(started.wait(HANG_GUARD_SECONDS))
         submitted = server.submit('monitorBurst', {'count': count})
         server.wait(submitted, timeout=15)
         wait_for(lambda: server.callbacks.qsize() >= count)
@@ -1629,7 +1632,7 @@ class ProcessSupervisorContract(unittest.TestCase):
         server._supervisor_stream_batch_limit = 1
         gate, started = threading.Event(), threading.Event()
         server.enqueue(lambda _: (started.set(), gate.wait(3)), {})
-        self.assertTrue(started.wait(3))
+        self.assertTrue(started.wait(HANG_GUARD_SECONDS))
         submitted = server.submit('burst', {'itemId': 'partial'})
         server.wait(submitted, timeout=3)
         wait_for(lambda: server.callbacks.qsize() >= 7)
@@ -1650,7 +1653,7 @@ class ProcessSupervisorContract(unittest.TestCase):
         server.supervisor_commit = fail_commit
         gate, started = threading.Event(), threading.Event()
         server.enqueue(lambda _: (started.set(), gate.wait(3)), {})
-        self.assertTrue(started.wait(3))
+        self.assertTrue(started.wait(HANG_GUARD_SECONDS))
         native_pid = int(self.pid_file.read_text())
         submitted = server.submit('burst', {'itemId': 'failed-batch'})
         server.wait(submitted, timeout=3)
@@ -1674,7 +1677,7 @@ class ProcessSupervisorContract(unittest.TestCase):
         with patch.object(server, 'release_slot', return_value=False):
             gate, started = threading.Event(), threading.Event()
             server.enqueue(lambda _: (started.set(), gate.wait(3)), {})
-            self.assertTrue(started.wait(3))
+            self.assertTrue(started.wait(HANG_GUARD_SECONDS))
             submitted = server.submit('burst', {'itemId': 'old-burst'})
             server.wait(submitted, timeout=3)
             wait_for(lambda: server.callbacks.qsize() >= 7)
@@ -2255,7 +2258,7 @@ class ProcessSupervisorContract(unittest.TestCase):
         legacy_owner.kill()
         legacy_owner.wait(timeout=5)
         self.supervisor=waiter
-        recovered=wait_for(lambda: status(self.root),timeout=8)
+        recovered=wait_for(lambda: status(self.root))
         self.assertTrue(recovered['recovery']['degraded'])
         self.assertTrue(recovered['recovery']['fallbackReady'])
         wait_for(lambda: process_start_time(child_pid) is None)

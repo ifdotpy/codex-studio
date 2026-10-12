@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -269,7 +270,7 @@ class CriticalWorkspaceContract(fixture.WorkspaceContract):
         def delayed_fork(method, params, timeout=60):
             if method == "thread/fork":
                 entered.set()
-                if not release.wait(3):
+                if not release.wait(HANG_GUARD_SECONDS):
                     raise RuntimeError("test gate expired")
             return original_call(method, params, timeout)
 
@@ -284,7 +285,7 @@ class CriticalWorkspaceContract(fixture.WorkspaceContract):
             self.runtime, "create", side_effect=fail_local_once
         ), ThreadPoolExecutor(1) as pool:
             pending = pool.submit(self.runtime.branch_conversation, lead["id"], request)
-            self.assertTrue(entered.wait(2))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             accounts.delete("default", str(uuid.uuid4()))
             release.set()
             with self.assertRaisesRegex(RuntimeError, "local branch completion"):

@@ -5,6 +5,8 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -357,7 +359,7 @@ class FederationContract(unittest.TestCase):
         request = urllib.request.Request(self.http[1].origin + "/api/federation/v1/status",
                                          data=body, method="POST", headers=headers)
         with self.assertRaises(urllib.error.HTTPError) as error:
-            urllib.request.urlopen(request, timeout=3)
+            urllib.request.urlopen(request, timeout=HANG_GUARD_SECONDS)
         self.assertEqual(error.exception.code, 403)
 
     def test_version_mismatch_and_schema_upgrade_are_opt_in_safe(self):

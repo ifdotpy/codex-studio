@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -304,7 +305,7 @@ class PrepareSteerContract(unittest.TestCase):
                 try:
                     origin = f"http://127.0.0.1:{server.server_port}"
                     def get_json(path):
-                        with urllib.request.urlopen(origin + path, timeout=3) as response:
+                        with urllib.request.urlopen(origin + path, timeout=HANG_GUARD_SECONDS) as response:
                             return json.load(response)
                     state = read_test_state(get_json)
                     self.assertIn("waiting", [agent.get("worktreePreparation")
@@ -340,7 +341,7 @@ class PrepareSteerContract(unittest.TestCase):
                 for worker in workers:
                     with self.assertRaises(PreparationPending):
                         self.runtime.prepare(worker)
-                self.assertTrue(entered.wait(3))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 key = str(subprocess.run(
                     ["git", "-C", str(repo), "rev-parse", "--path-format=absolute", "--git-common-dir"],
                     check=True, capture_output=True, text=True).stdout.strip())

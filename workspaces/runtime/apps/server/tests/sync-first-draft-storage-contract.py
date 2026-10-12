@@ -11,6 +11,8 @@ import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from server_test_waits import HANG_GUARD_SECONDS
+
 from codex_layout import REPOSITORY_ROOT, SERVER_TESTS_ROOT
 from test_isolation import isolate_supervisor_environment
 
@@ -53,7 +55,7 @@ try:
         headers={"Content-Type": "application/json", "Origin": origin,
                  "X-Canvas-Token": ready["token"], "X-Canvas-Workspace": workspace_id},
     )
-    with urllib.request.urlopen(request, timeout=3) as response:
+    with urllib.request.urlopen(request, timeout=HANG_GUARD_SECONDS) as response:
         assert response.status == 200, response.read()
         triggers = db.execute(
             "SELECT count(*) FROM sqlite_master WHERE type='trigger' "

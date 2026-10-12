@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -346,7 +347,7 @@ class ToolResponseBoundaryContract(unittest.TestCase):
         future = self.submit_request()
         with self.assertRaises(sqlite3.OperationalError):
             future.result(timeout=3)
-        self.assertTrue(self.sink.changed.wait(3))
+        self.assertTrue(self.sink.changed.wait(HANG_GUARD_SECONDS))
         self.assertEqual(self.operations, 1)
         self.assertEqual(self.sink.attempts, 1)
         result = self.sink.messages[0]['result']
@@ -370,7 +371,7 @@ class ToolResponseBoundaryContract(unittest.TestCase):
             future = self.submit_request()
             with self.assertRaises(sqlite3.OperationalError):
                 future.result(timeout=3)
-        self.assertTrue(self.sink.changed.wait(3))
+        self.assertTrue(self.sink.changed.wait(HANG_GUARD_SECONDS))
         self.assertEqual(self.operations, 1)
         self.assertEqual(self.sink.attempts, 1)
         self.assertEqual(self.sink.messages, [{'id': self.message['id'], 'result': saved}])
@@ -390,7 +391,7 @@ class ToolResponseBoundaryContract(unittest.TestCase):
             future = self.submit_request()
             with self.assertRaises(sqlite3.OperationalError):
                 future.result(timeout=3)
-            self.assertTrue(self.sink.changed.wait(3))
+            self.assertTrue(self.sink.changed.wait(HANG_GUARD_SECONDS))
         self.assertEqual(self.operations, 1)
         self.assertEqual(self.sink.attempts, 1)
         self.assertFalse(self.runtime.agent(self.actor['id'])['autoWake'])

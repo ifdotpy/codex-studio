@@ -5,6 +5,8 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -86,7 +88,7 @@ class LiveUpdateRetirementRaceContract(unittest.TestCase):
 
         def publisher():
             try:
-                if not read_snapshot.wait(2):
+                if not read_snapshot.wait(HANG_GUARD_SECONDS):
                     raise RuntimeError("The manifest read did not enter")
                 with self.lease_path.open("a+b") as lease:
                     try:
@@ -114,7 +116,7 @@ class LiveUpdateRetirementRaceContract(unittest.TestCase):
             if path == self.manifest_path and first_read:
                 first_read = False
                 read_snapshot.set()
-                if not attempted.wait(2):
+                if not attempted.wait(HANG_GUARD_SECONDS):
                     raise RuntimeError("The exclusive publisher did not attempt its lease")
             return raw
 
@@ -125,7 +127,7 @@ class LiveUpdateRetirementRaceContract(unittest.TestCase):
                 self.manager.tick()
         finally:
             read_snapshot.set()
-            worker.join(timeout=2)
+            worker.join(timeout=HANG_GUARD_SECONDS)
         self.assertFalse(worker.is_alive(), "The exclusive publisher still holds its lease")
         self.assertEqual(errors, [])
         self.assertTrue(retired.is_set())

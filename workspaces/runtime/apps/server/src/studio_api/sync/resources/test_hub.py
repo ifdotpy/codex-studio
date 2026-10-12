@@ -8,6 +8,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from server_test_waits import HANG_GUARD_SECONDS
+
 from studio_api.sync.resources.hub import (
     MAX_ENTITY_SEQUENCE_IDS,
     MAX_PENDING_RESOURCES,
@@ -67,9 +69,11 @@ class CrossThreadWatchdog:
         completed = threading.Event()
         thread = threading.Thread(target=lambda: (callback(), completed.set()), daemon=True)
         thread.start()
-        if not completed.wait(1):
+        if not completed.wait(HANG_GUARD_SECONDS):
             raise AssertionError("hub lock was held while entering watchdog lifecycle")
-        thread.join(timeout=1)
+        thread.join(timeout=HANG_GUARD_SECONDS)
+        if thread.is_alive():
+            raise AssertionError("watchdog callback thread did not finish")
 
     def subscribe(self, agent_id: str, on_change: Callable[[], None]) -> Callable[[], None]:
         self.callback = on_change

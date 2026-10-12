@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 
 import base64
 from concurrent.futures import ThreadPoolExecutor
@@ -490,13 +491,13 @@ class WorkspaceContract(unittest.TestCase):
         def delayed(db, table, ids, field):
             if table == "checkpoints":
                 entered.set()
-                if not release.wait(3):
+                if not release.wait(HANG_GUARD_SECONDS):
                     raise AssertionError("Checkpoint reader was not released")
             return records(db, table, ids, field)
         with patch.object(self.runtime, "_workspace_records", side_effect=delayed), ThreadPoolExecutor(max_workers=2) as pool:
             snapshot = pool.submit(self.runtime.workspace_snapshot, lead["id"])
             try:
-                self.assertTrue(entered.wait(1))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 limits = pool.submit(self.runtime.limits)
                 self.assertIsNone(limits.result(timeout=1)["error"])
             finally:

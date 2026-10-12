@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """Queue ordering, revision conflicts, and durable mutation receipts."""
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 
 import base64
 import importlib.util
@@ -216,9 +222,9 @@ class QueueOrderContract(unittest.TestCase):
                                              side_effect=lambda *args: submitted.append(args)):
             worker = threading.Thread(target=edit)
             worker.start()
-            self.assertTrue(entered.wait(1))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             self.runtime.dispatch()
-        worker.join(3)
+        worker.join(HANG_GUARD_SECONDS)
         self.assertFalse(worker.is_alive())
         self.assertEqual(len(errors), 1)
         self.assertIn("queue changed", errors[0])

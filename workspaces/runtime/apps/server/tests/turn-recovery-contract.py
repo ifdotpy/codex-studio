@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -538,7 +539,7 @@ class TurnRecoveryContract(unittest.TestCase):
 
         recovery = threading.Thread(target=reconcile)
         recovery.start()
-        self.assertTrue(self.server.read_entered.wait(3), 'recovery did not enter thread/read')
+        self.assertTrue(self.server.read_entered.wait(HANG_GUARD_SECONDS), 'recovery did not enter thread/read')
 
         # Reproduce the independent scheduler metadata write inside the read
         # window. Runtime maintenance normally calls this tick every five seconds.
@@ -553,9 +554,9 @@ class TurnRecoveryContract(unittest.TestCase):
             names.next_scan = 0
             self.server.name_set_entered.clear()
         names.tick()
-        self.assertTrue(self.server.name_set_entered.wait(3), 'session-name tick did not submit thread/name/set')
+        self.assertTrue(self.server.name_set_entered.wait(HANG_GUARD_SECONDS), 'session-name tick did not submit thread/name/set')
         self.server.read_gate.set()
-        self.assertTrue(finished.wait(3), 'recovery did not finish after releasing thread/read')
+        self.assertTrue(finished.wait(HANG_GUARD_SECONDS), 'recovery did not finish after releasing thread/read')
         recovery.join()
         self.assertEqual(result[0]['status'], 'unconfirmed')
         self.assertTrue(self.runtime.agent(self.key)['inFlight'])
@@ -713,7 +714,7 @@ class TurnRecoveryContract(unittest.TestCase):
         with self.runtime.lock:
             self.queue_turn_recovery([self.a], force_id=self.key)
             self.queue_turn_recovery([self.a], force_id=self.key)
-        self.assertTrue(self.server.read_entered.wait(2))
+        self.assertTrue(self.server.read_entered.wait(HANG_GUARD_SECONDS))
         self.assertTrue(self.runtime.lock.acquire(timeout=.2))
         self.runtime.lock.release()
         self.assertEqual(len([n for n, _ in self.server.calls if n == 'thread/read']), 1)

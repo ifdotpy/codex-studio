@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -88,18 +89,18 @@ class WorkWakeContract(unittest.TestCase):
         def gated_clear(current):
             if current is event:
                 entered.set()
-                self.assertTrue(release.wait(2))
+                self.assertTrue(release.wait(HANG_GUARD_SECONDS))
             original(current)
 
         with patch.object(threading.Event, 'clear', gated_clear):
             consumer = threading.Thread(target=lambda: result.append(event.consume_dispatch()))
             consumer.start()
-            self.assertTrue(entered.wait(2))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             setter = threading.Thread(target=event.set)
             setter.start()
             release.set()
-            consumer.join(2)
-            setter.join(2)
+            consumer.join(HANG_GUARD_SECONDS)
+            setter.join(HANG_GUARD_SECONDS)
             self.assertFalse(consumer.is_alive())
             self.assertFalse(setter.is_alive())
         self.assertEqual(result, [False])

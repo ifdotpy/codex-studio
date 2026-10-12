@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -63,7 +64,7 @@ class RuntimeCloseWakeContract(unittest.TestCase):
 
                     closer = threading.Thread(target=close_runtime, daemon=True)
                     closer.start()
-                    self.assertTrue(close_done.wait(1),
+                    self.assertTrue(close_done.wait(HANG_GUARD_SECONDS),
                                     'Runtime.close() did not wake waiting migration workers')
                     closer.join()
                     self.assertFalse(runtime.search_migration_thread.is_alive())

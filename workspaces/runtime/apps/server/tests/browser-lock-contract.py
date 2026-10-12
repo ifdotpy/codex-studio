@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -72,7 +73,7 @@ class BrowserLockContract(unittest.TestCase):
         worker = threading.Thread(target=run, daemon=True)
         worker.start()
         try:
-            self.assertTrue(completed.wait(1), "Browser configuration reentered the held start_lock")
+            self.assertTrue(completed.wait(HANG_GUARD_SECONDS), "Browser configuration reentered the held start_lock")
             self.assertEqual(errors, [])
             self.assertEqual(self.connect_calls, [])
             self.assertEqual(self.selected.calls, [

@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import wait_for_condition
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -71,18 +72,12 @@ while True: time.sleep(1)
 '''
 
 
-def wait_for(function, timeout=10):
-    deadline = time.monotonic() + timeout
-    last = None
-    while time.monotonic() < deadline:
-        try:
-            last = function()
-            if last:
-                return last
-        except (OSError, RuntimeError, ConnectionError):
-            pass
-        time.sleep(0.05)
-    raise AssertionError(f"timed out waiting for fixture; last value: {last!r}")
+def wait_for(function):
+    return wait_for_condition(
+        function,
+        "Windows supervisor fixture",
+        retry_exceptions=(AssertionError, OSError, RuntimeError, ConnectionError),
+    )
 
 
 @skip_posix
@@ -388,7 +383,7 @@ class WindowsSupervisorContract(unittest.TestCase):
         connection, reader = wait_for(reconnect_after_truncation)
         connection.sendall(b'{"requestId":2,"action":')
         connection.close()
-        connection, reader = wait_for(reconnect_after_truncation, timeout=8)
+        connection, reader = wait_for(reconnect_after_truncation)
         reader.close()
         connection.close()
 

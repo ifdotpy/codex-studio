@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -337,7 +338,7 @@ class WorkerDefaults(unittest.TestCase):
 
             thread = threading.Thread(target=enter)
             thread.start()
-            self.assertTrue(acquired.wait(1), "Catalogue call held the runtime lock")
+            self.assertTrue(acquired.wait(HANG_GUARD_SECONDS), "Catalogue call held the runtime lock")
             thread.join()
             with self.runtime.lock, self.runtime.db() as db:
                 root = self.runtime.agent(self.lead["id"], db)

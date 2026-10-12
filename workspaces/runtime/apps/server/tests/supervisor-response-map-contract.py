@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -34,7 +35,7 @@ class ReceiptGate(dict):
     def __getitem__(self, key):
         if key == 'durableMs':
             self.entered.set()
-            if not self.release.wait(2):
+            if not self.release.wait(HANG_GUARD_SECONDS):
                 raise TimeoutError('The fixture did not release the write receipt')
         return super().__getitem__(key)
 
@@ -153,7 +154,7 @@ class ResponseMap(unittest.TestCase):
         self.release_receipt.set()
         self.proxy.detached = True
         for thread in self.threads:
-            thread.join(2)
+            thread.join(HANG_GUARD_SECONDS)
             self.assertFalse(thread.is_alive(), 'The fixture thread did not finish')
 
     def submit(self, params=None):
@@ -169,19 +170,19 @@ class ResponseMap(unittest.TestCase):
     def test_immediate_native_response_waits_for_local_id_publication(self):
         self.gate_receipt = True
         writer = self.thread(self.gated_submit)
-        self.assertTrue(self.receipt_entered.wait(1))
+        self.assertTrue(self.receipt_entered.wait(HANG_GUARD_SECONDS))
         self.assertEqual(self.writes[0]['id'], 41)
         self.thread(self.server.read)
         try:
-            self.assertTrue(self.response_fetched.wait(1))
+            self.assertTrue(self.response_fetched.wait(HANG_GUARD_SECONDS))
             self.assertFalse(self.response_recorded.wait(.1),
                              'The accepted response escaped before its local ID was published')
         finally:
             self.release_receipt.set()
-        writer.join(1)
+        writer.join(HANG_GUARD_SECONDS)
         self.assertFalse(writer.is_alive())
         self.assertIsNone(self.failure)
-        self.assertEqual(self.server.wait(self.ticket, timeout=1), {'nativeId':41})
+        self.assertEqual(self.server.wait(self.ticket, timeout=HANG_GUARD_SECONDS), {'nativeId':41})
         self.assertEqual([frame['id'] for frame in self.frames], [self.ticket[0]])
         self.assertEqual(len(self.writes), 1)
         self.assertEqual(self.errors, [])

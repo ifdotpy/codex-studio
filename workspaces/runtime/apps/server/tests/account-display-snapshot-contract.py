@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -98,7 +99,7 @@ class AccountDisplaySnapshotContract(unittest.TestCase):
         def blocked_auth(options):
             probes.append(options["configDir"])
             entered.set()
-            if not release.wait(2):
+            if not release.wait(HANG_GUARD_SECONDS):
                 raise AssertionError("private native auth barrier was not released")
             return {"status": "error", "error": "Cannot read Claude Code sign-in status"}
 
@@ -114,11 +115,11 @@ class AccountDisplaySnapshotContract(unittest.TestCase):
             thread = threading.Thread(target=read, name="private-account-display")
             thread.start()
             try:
-                self.assertTrue(done.wait(.3), "GET /api/accounts waits for native auth")
+                self.assertTrue(done.wait(HANG_GUARD_SECONDS), "GET /api/accounts waits for native auth")
                 self.assertFalse(entered.is_set())
             finally:
                 release.set()
-                thread.join(3)
+                thread.join(HANG_GUARD_SECONDS)
             self.assertFalse(thread.is_alive())
         self.assertEqual(errors, [])
         self.assertEqual(probes, [])
@@ -180,10 +181,10 @@ class AccountDisplaySnapshotContract(unittest.TestCase):
                 with self.runtime.lock:
                     self.runtime.connection.execute("BEGIN IMMEDIATE")
                     thread.start()
-                    self.assertTrue(done.wait(.3), "GET /api/accounts waits for Runtime.lock")
+                    self.assertTrue(done.wait(HANG_GUARD_SECONDS), "GET /api/accounts waits for Runtime.lock")
             finally:
                 self.runtime.connection.rollback()
-                thread.join(1)
+                thread.join(HANG_GUARD_SECONDS)
             self.assertFalse(thread.is_alive())
         self.assertEqual(errors, [])
         self.assertEqual(result[0].status_code, 200)

@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_TESTS_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -648,12 +649,12 @@ class ClaudePreInputRecovery(unittest.TestCase):
 
         def gated(agent):
             entered.set()
-            self.assertTrue(release.wait(3))
+            self.assertTrue(release.wait(HANG_GUARD_SECONDS))
             return prepare(agent)
 
         with patch.object(self.runtime, 'prepare', side_effect=gated):
             self.runtime.dispatch()
-            self.assertTrue(entered.wait(3))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             self.agent_update(self.agent, yoloMode=not self.agent.get('yoloMode'))
             release.set()
             f.eventually(lambda: self.runtime.agent(self.agent['id']).get('nativeFailureHold'))
@@ -681,12 +682,12 @@ class ClaudePreInputRecovery(unittest.TestCase):
 
         def gated(agent):
             entered.set()
-            self.assertTrue(release.wait(3))
+            self.assertTrue(release.wait(HANG_GUARD_SECONDS))
             return prepare(agent)
 
         with patch.object(self.runtime, 'prepare', side_effect=gated):
             self.runtime.dispatch()
-            self.assertTrue(entered.wait(3))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             self.runtime.stop(self.agent['id'], False)
             release.set()
             f.eventually(lambda: self.runtime.agent(self.agent['id'])['status'] == 'paused'
@@ -708,12 +709,12 @@ class ClaudePreInputRecovery(unittest.TestCase):
 
         def gated(agent):
             entered.set()
-            self.assertTrue(release.wait(3))
+            self.assertTrue(release.wait(HANG_GUARD_SECONDS))
             return prepare(agent)
 
         with patch.object(self.runtime, 'prepare', side_effect=gated):
             self.runtime.dispatch()
-            self.assertTrue(entered.wait(3))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             attempt = copy.deepcopy(self.runtime.agent(self.agent['id'])['startAttempt'])
             self.runtime.stop(self.agent['id'], False)
             release.set()

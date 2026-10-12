@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """Terminal monitor receipts continue current work and preserve historical stops."""
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 
 import importlib.util
 import json
@@ -279,7 +285,7 @@ class MonitorContinuation(unittest.TestCase):
     def test_success_exit_codes_treat_grep_no_match_as_success(self):
         m = self.runtime.monitor(self.agent['id'], {'command': 'grep -q x y', 'timeout_ms': 1000,
                                                     'wake_on': 'failure', 'success_exit_codes': [1, 0]}, approved=True)
-        self.assertTrue(self.server.command_wait_entered.wait(3))
+        self.assertTrue(self.server.command_wait_entered.wait(HANG_GUARD_SECONDS))
         self.assertEqual(m['successExitCodes'], [0, 1])
         before = len(self.starts())
         self.server.finish(m['id'], 1)
@@ -292,7 +298,7 @@ class MonitorContinuation(unittest.TestCase):
     def test_exit_code_outside_success_list_fails_and_wakes(self):
         m = self.runtime.monitor(self.agent['id'], {'command': 'diff a b', 'timeout_ms': 1000,
                                                     'wake_on': 'failure', 'success_exit_codes': [0, 1]}, approved=True)
-        self.assertTrue(self.server.command_wait_entered.wait(3))
+        self.assertTrue(self.server.command_wait_entered.wait(HANG_GUARD_SECONDS))
         before = len(self.starts())
         self.server.finish(m['id'], 2)
         self.assert_delivered(m['id'], before)

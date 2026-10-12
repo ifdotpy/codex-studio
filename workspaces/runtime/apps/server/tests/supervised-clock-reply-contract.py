@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -104,7 +105,7 @@ class SavedProcess:
                 raise OSError('Fixture clock ACK failed')
             if self.pause_ack:
                 self.ack_started.set()
-                if not self.ack_release.wait(3):
+                if not self.ack_release.wait(HANG_GUARD_SECONDS):
                     raise AssertionError('Fixture ACK was not released')
         return ProcessProxy.ack(self, sequence)
 
@@ -113,7 +114,7 @@ class SavedProcess:
             message = values['message']
             if 'result' in message:
                 self.reply_started.set()
-                if not self.reply_release.wait(3):
+                if not self.reply_release.wait(HANG_GUARD_SECONDS):
                     raise AssertionError('Fixture reply was not released')
                 if self.fail_reply:
                     raise OSError('Fixture durable reply failed')
@@ -158,7 +159,7 @@ class SupervisedClock(unittest.TestCase):
         def notification(message):
             if message['method'] == 'blocked':
                 self.entered.set()
-                if not self.release.wait(3):
+                if not self.release.wait(HANG_GUARD_SECONDS):
                     raise AssertionError('Fixture callback was not released')
             self.applied.append(message['method'])
         def request(message):
@@ -168,7 +169,7 @@ class SupervisedClock(unittest.TestCase):
             self.server = AppServer(self.root, notification, request, lambda:None,
                                     supervisor_handle=self.proc.handle)
         self.proc.emit({'method':'blocked'})
-        self.assertTrue(self.entered.wait(1))
+        self.assertTrue(self.entered.wait(HANG_GUARD_SECONDS))
 
     def tearDown(self):
         self.release.set()
@@ -187,10 +188,7 @@ class SupervisedClock(unittest.TestCase):
                 lambda:any(frame.get('id') == self.CLOCK_ID for frame in self.proc.writes), .5)
 
     def wait_for(self, condition):
-        end = time.monotonic() + 1
-        while not condition() and time.monotonic() < end:
-            self.proc.exited.wait(.005)
-        self.assertTrue(condition())
+        return wait_for_condition(condition, "supervised clock reply")
 
     def durable_reply(self):
         with self.proc.journal.db() as db:
@@ -212,7 +210,7 @@ class SupervisedClock(unittest.TestCase):
         pending = self.server.submit('config/read', {})
         self.proc.reply_release.clear()
         self.clock()
-        self.assertTrue(self.proc.reply_started.wait(.5))
+        self.assertTrue(self.proc.reply_started.wait(HANG_GUARD_SECONDS))
         self.assertIsNone(self.durable_reply())
         self.assertNotIn(2, self.proc.ack_pending)
         self.proc.emit({'id':pending[0], 'result':{'ready':True}})
@@ -225,7 +223,7 @@ class SupervisedClock(unittest.TestCase):
     def test_failed_clock_reply_preserves_the_exact_event_for_replay(self):
         self.proc.fail_reply = True
         self.clock()
-        self.assertTrue(self.proc.exited.wait(.5))
+        self.assertTrue(self.proc.exited.wait(HANG_GUARD_SECONDS))
         self.assertIn('clock reply failed', self.server.transport_error)
         self.assertIsNone(self.durable_reply())
         self.assertNotIn(2, self.proc.ack_pending)
@@ -239,7 +237,7 @@ class SupervisedClock(unittest.TestCase):
     def test_failed_ack_retains_only_the_captured_clock_receipt(self):
         self.proc.fail_ack = True
         self.clock()
-        self.assertTrue(self.proc.exited.wait(.5))
+        self.assertTrue(self.proc.exited.wait(HANG_GUARD_SECONDS))
         self.assertIsNotNone(self.durable_reply())
         self.assertEqual(self.server._clock_reply_sequences, {(int,self.CLOCK_ID):[2]})
         self.assertNotIn(2, self.proc.ack_pending)
@@ -252,7 +250,7 @@ class SupervisedClock(unittest.TestCase):
         self.proc.pause_ack = True
         self.proc.ack_release.clear()
         self.clock()
-        self.assertTrue(self.proc.ack_started.wait(.5))
+        self.assertTrue(self.proc.ack_started.wait(HANG_GUARD_SECONDS))
         self.clock()
         self.proc.emit({'id':str(self.CLOCK_ID), 'method':'currentTime/read'})
         self.wait_for(lambda:self.server._clock_reply_sequences.get((int,self.CLOCK_ID)) == [2,3]
@@ -273,11 +271,11 @@ class SupervisedClock(unittest.TestCase):
             self.server.clock_replies.maxsize = 1
         self.proc.reply_release.clear()
         self.clock()
-        self.assertTrue(self.proc.reply_started.wait(.5))
+        self.assertTrue(self.proc.reply_started.wait(HANG_GUARD_SECONDS))
         self.clock()
         self.wait_for(lambda:self.server._clock_reply_sequences.get((int,self.CLOCK_ID)) == [2,3])
         self.clock()
-        self.assertTrue(self.proc.exited.wait(.5))
+        self.assertTrue(self.proc.exited.wait(HANG_GUARD_SECONDS))
         self.assertIn('clock receipt ledger saturated', self.server.transport_error)
         self.assertEqual(sum(len(saved) for saved in self.server._clock_reply_sequences.values()), 2)
         self.assertNotIn(4, self.proc.ack_pending)

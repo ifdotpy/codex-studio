@@ -28,7 +28,7 @@ sys.path.insert(0, str(SERVER_TESTS_ROOT / "server"))
 from rpc_replay_contract import EMPTY_RESULT_METHODS
 from codex_runtime import AppServer, Runtime
 from codex_claude_controls import bridge_build
-from test_waits import wait_for_condition as eventually
+from server_test_waits import wait_for_condition as eventually
 
 OUTBOUND_NOTIFICATION_METHODS = frozenset({"initialized"})
 

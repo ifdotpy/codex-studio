@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -458,15 +459,15 @@ class Contract(unittest.TestCase):
             second = threading.Thread(target=newer, name='newer-save')
             first.start()
             try:
-                self.assertTrue(entered.wait(2))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 second.start()
-                self.assertTrue(second_attempt.wait(2))
+                self.assertTrue(second_attempt.wait(HANG_GUARD_SECONDS))
                 second_done.wait(1)
             finally:
                 release.set()
-                first.join(3)
+                first.join(HANG_GUARD_SECONDS)
                 if second.ident is not None:
-                    second.join(3)
+                    second.join(HANG_GUARD_SECONDS)
         self.assertFalse(first.is_alive())
         self.assertFalse(second.is_alive())
         self.assertEqual(errors, [])
@@ -787,12 +788,12 @@ class Contract(unittest.TestCase):
         worker = threading.Thread(target=check, daemon=True)
         worker.start()
         try:
-            self.assertTrue(occupied.wait(2))
-            self.assertTrue(completed.wait(1), "Publication blocked on an occupied connection lock")
+            self.assertTrue(occupied.wait(HANG_GUARD_SECONDS))
+            self.assertTrue(completed.wait(HANG_GUARD_SECONDS), "Publication blocked on an occupied connection lock")
         finally:
             if self.rt.start_lock.locked():
                 self.rt.start_lock.release()
-            worker.join(3)
+            worker.join(HANG_GUARD_SECONDS)
         self.assertFalse(worker.is_alive())
         self.assertEqual(errors, [])
         self.assertIs(self.rt.servers["default"], self.old)
@@ -827,13 +828,13 @@ class Contract(unittest.TestCase):
 
         def blocked_approve(path, root):
             entered.set()
-            if not release.wait(3):
+            if not release.wait(HANG_GUARD_SECONDS):
                 raise TimeoutError("Fixture validation was not released")
             return approve(path, root)
 
         self.manager.approve = blocked_approve
         self.manager.maybe_check()
-        self.assertTrue(entered.wait(2))
+        self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
         closer = threading.Thread(target=lambda: (self.manager.close(), closed.set()))
         closer.start()
         try:

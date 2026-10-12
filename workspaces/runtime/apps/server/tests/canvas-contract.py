@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -611,7 +612,7 @@ class ShutdownDiagnosticContract(unittest.TestCase):
         worker = threading.Thread(target=blocked_worker, name="private-thread-name", daemon=False)
         worker.start()
         try:
-            self.assertTrue(ready.wait(2))
+            self.assertTrue(ready.wait(HANG_GUARD_SECONDS))
             output = io.StringIO()
             with patch.object(codex_canvas.sys, "stderr", output):
                 codex_canvas.record_shutdown_threads()
@@ -626,7 +627,7 @@ class ShutdownDiagnosticContract(unittest.TestCase):
             self.assertNotIn("private-thread-name", output.getvalue())
         finally:
             release.set()
-            worker.join(2)
+            worker.join(HANG_GUARD_SECONDS)
         self.assertFalse(worker.is_alive())
 
     def test_ordinary_close_has_no_thread_record_or_frame_read(self):

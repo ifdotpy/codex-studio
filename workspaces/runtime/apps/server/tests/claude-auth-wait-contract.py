@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_TESTS_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -163,7 +164,7 @@ class AuthWait(f.ClaudeProvider):
             began = time.monotonic()
             auth_wait.tick(self.runtime)
             self.assertLess(time.monotonic() - began, .5)
-            self.assertTrue(entered.wait(2))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             with self.runtime.lock, self.runtime.db() as db:
                 db.execute('CREATE TABLE fixture_unrelated_writer (id INTEGER)')
                 db.execute('INSERT INTO fixture_unrelated_writer VALUES (1)')
@@ -187,7 +188,7 @@ class AuthWait(f.ClaudeProvider):
             return f.AUTH.copy()
         with patch('codex_claude.auth_metadata', side_effect=probe):
             auth_wait.tick(self.runtime)
-            self.assertTrue(entered.wait(2))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             self.runtime.stop(self.agent['id'], descendants=False)
             before = self.runtime.agent(self.agent['id'])
             release.set()
@@ -285,7 +286,7 @@ class AuthWait(f.ClaudeProvider):
             return f.AUTH.copy()
         with patch('codex_claude.auth_metadata', side_effect=probe):
             auth_wait.tick(self.runtime)
-            self.assertTrue(entered.wait(2))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             with self.runtime.accounts.lock:
                 self.runtime.accounts._row('claude-local')['claudeOptions'] = {'configDir': '/other-profile'}
             release.set()

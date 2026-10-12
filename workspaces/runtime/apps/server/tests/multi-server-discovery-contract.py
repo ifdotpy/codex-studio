@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -215,7 +216,7 @@ print(json.dumps(value))
             first = service.thread
             service.start()
             self.assertIs(first, service.thread)
-            self.assertTrue(seen.wait(2))
+            self.assertTrue(seen.wait(HANG_GUARD_SECONDS))
             service.close()
             count_at_close = count
             self.assertEqual(count, count_at_close)

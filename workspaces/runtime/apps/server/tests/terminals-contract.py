@@ -34,6 +34,14 @@ spec.loader.exec_module(f)
 from codex_terminals import TerminalManager, HISTORY_LIMIT
 from codex_canvas import Canvas, make_server
 from studio_api.testing import read_session_token
+from server_test_waits import wait_for_condition
+
+
+def read_text_if_present(path):
+    try:
+        return path.read_text()
+    except FileNotFoundError:
+        return None
 
 
 class TerminalsContract(unittest.TestCase):
@@ -75,8 +83,10 @@ class TerminalsContract(unittest.TestCase):
         task = self.create()
         marker = self.fixture.project / "terminal-proof"
         self.send(task, "pwd > terminal-proof; stty size >> terminal-proof\n")
-        f.eventually(
-            lambda: marker.exists() and len(marker.read_text().splitlines()) == 2
+        wait_for_condition(
+            lambda: (contents if (contents := read_text_if_present(marker))
+                     and len(contents.splitlines()) == 2 else None),
+            "terminal cwd and size proof",
         )
         self.assertEqual(
             marker.read_text().splitlines(),
@@ -337,7 +347,11 @@ class TerminalsContract(unittest.TestCase):
         script = "import os,json; from pathlib import Path; Path('environment-proof').write_text(json.dumps([os.environ.get('CODEX_HOME'),os.environ.get('TERM'),os.environ.get('COLORTERM')])); print('Терминал🙂')"
         self.send(task, shlex.quote(sys.executable) + " -c " + shlex.quote(script) + "\n")
         # The file exists, empty, before the script has written its content.
-        f.eventually(lambda: marker.exists() and marker.read_text().endswith("]"))
+        wait_for_condition(
+            lambda: (contents if (contents := read_text_if_present(marker))
+                     and contents.endswith("]") else None),
+            "terminal environment proof",
+        )
         self.assertEqual(json.loads(marker.read_text()), [os.environ.get("CODEX_HOME"), "xterm-256color", "truecolor"])
         f.eventually(lambda: "Терминал🙂" in self.manager.output(task["id"])["text"])
         self.assertIsNone(self.runtime.server)

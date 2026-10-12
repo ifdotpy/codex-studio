@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -262,12 +263,11 @@ class PricingSessionCostContract(unittest.TestCase):
             thread.start()
             try:
                 endpoint = f"http://127.0.0.1:{server.server_port}/api/session-cost?agent=worker-claude"
-                deadline = time.monotonic() + 3
-                while True:
-                    response = json.load(urlopen(endpoint, timeout=1))
-                    if response["pricingState"] == "ready" or time.monotonic() >= deadline:
-                        break
-                    time.sleep(0.01)
+                def ready_value():
+                    response = json.load(urlopen(endpoint, timeout=HANG_GUARD_SECONDS))
+                    return response if response["pricingState"] == "ready" else None
+
+                response = wait_for_condition(ready_value, "worker session cost")
                 self.assertEqual(response["rootId"], "lead")
                 self.assertAlmostEqual(response["totalUSD"], value["totalUSD"])
             finally:
@@ -359,12 +359,11 @@ class PricingSessionCostContract(unittest.TestCase):
             thread.start()
             try:
                 endpoint = f"http://127.0.0.1:{server.server_port}/api/session-cost?agent=new-chat"
-                deadline = time.monotonic() + 3
-                while True:
-                    response = json.load(urlopen(endpoint, timeout=1))
-                    if response["pricingState"] == "ready" or time.monotonic() >= deadline:
-                        break
-                    time.sleep(0.01)
+                def ready_value():
+                    response = json.load(urlopen(endpoint, timeout=HANG_GUARD_SECONDS))
+                    return response if response["pricingState"] == "ready" else None
+
+                response = wait_for_condition(ready_value, "new chat session cost")
                 self.assertEqual(response["rootId"], "new-chat")
                 self.assertEqual(response["pricingState"], "ready")
                 self.assertEqual(response["pricedSamples"], 0)
@@ -581,7 +580,7 @@ class PricingSessionCostContract(unittest.TestCase):
         def slow_compute(agent_id, root):
             calls.append((agent_id, root))
             entered.set()
-            self.assertTrue(release.wait(3))
+            self.assertTrue(release.wait(HANG_GUARD_SECONDS))
             return original(agent_id, root)
         results = []
         with patch.object(reader, "_compute", side_effect=slow_compute):
@@ -589,7 +588,7 @@ class PricingSessionCostContract(unittest.TestCase):
                        for _ in range(8)]
             for worker in workers:
                 worker.start()
-            self.assertTrue(entered.wait(3))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             deadline = time.monotonic() + 3
             while len(reader.inflight) != 1 and time.monotonic() < deadline:
                 time.sleep(0.005)
@@ -628,7 +627,7 @@ class PricingSessionCostContract(unittest.TestCase):
                 history_jobs["peak"] = max(history_jobs["peak"], history_jobs["active"])
             try:
                 entered.set()
-                if not release.wait(4):
+                if not release.wait(HANG_GUARD_SECONDS):
                     raise RuntimeError("The fixture did not release the history read")
                 return original(reader, agent_id, root)
             finally:
@@ -643,14 +642,14 @@ class PricingSessionCostContract(unittest.TestCase):
             thread.start()
             def read(root):
                 endpoint = f"http://127.0.0.1:{server.server_port}/api/session-cost?agent={root}"
-                return json.load(urlopen(endpoint, timeout=1))
+                return json.load(urlopen(endpoint, timeout=HANG_GUARD_SECONDS))
             try:
                 # These HTTP requests must finish while the history read stays blocked.
                 for _ in range(8):
                     value = read("lead")
                     self.assertEqual(value["pricingState"], "loading")
                     self.assertIsNone(value["totalUSD"])
-                self.assertTrue(entered.wait(1))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 self.assertEqual(read("other")["pricingState"], "loading")
                 self.assertEqual(calls, ["lead"], "Only one heavy history job runs across chats")
                 release.set()
@@ -740,7 +739,7 @@ class PricingSessionCostContract(unittest.TestCase):
         self.assertEqual(calls, [])
         now[0] += 31 * 60
         pricing.refresh_missing()
-        self.assertTrue(done.wait(3))
+        self.assertTrue(done.wait(HANG_GUARD_SECONDS))
         for _ in range(100):
             if not pricing.refreshing:
                 break

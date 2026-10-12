@@ -14,6 +14,8 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT / "src"))
+
+from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
@@ -180,7 +182,7 @@ class VolatileResourceProducerContracts(unittest.IsolatedAsyncioTestCase):
                 if not refresh:
                     raise AssertionError("expected a shared background refresh")
                 compute_started.set()
-                if not release_compute.wait(2):
+                if not release_compute.wait(HANG_GUARD_SECONDS):
                     raise TimeoutError("test did not release shared session-cost refresh")
                 self.assertEqual(team_root, "lead")
                 return previous_cache[1]
@@ -246,11 +248,11 @@ class VolatileResourceProducerContracts(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(refresh)
                 if team_root == "root-a":
                     first_started.set()
-                    if not release_first.wait(2):
+                    if not release_first.wait(HANG_GUARD_SECONDS):
                         raise TimeoutError("test did not release first root refresh")
                 elif team_root == "root-b":
                     second_started.set()
-                    if not release_second.wait(2):
+                    if not release_second.wait(HANG_GUARD_SECONDS):
                         raise TimeoutError("test did not release queued root refresh")
                 else:
                     raise AssertionError(f"unexpected root {team_root}")

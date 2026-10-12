@@ -274,23 +274,19 @@ class WorkerNotificationLifetime(unittest.TestCase):
             observer = HistoryFileNotifications()
             instances.append(observer)
             return observer
-        def eventually(predicate):
-            deadline = time.monotonic() + 3
-            while time.monotonic() < deadline:
-                if predicate():
-                    return
-                time.sleep(.01)
-            self.fail('The native history worker did not reach the expected state')
+        from server_test_waits import wait_for_condition
         with patch('codex_history_notifications.HistoryFileNotifications', side_effect=create):
             self.assertTrue(runtime.analytics_history_start())
-            eventually(lambda: instances and instances[0].contains(actor['id'])
-                       and runtime._analytics_history_polls.get(actor['id'], {}).get('due', 0) > time.monotonic())
+            wait_for_condition(lambda: instances and instances[0].contains(actor['id'])
+                               and runtime._analytics_history_polls.get(actor['id'], {}).get('due', 0) > time.monotonic(),
+                               'native history worker registration')
             record = {'type': 'token_usage_record', 'payload': {
                 'thread_id': case.thread, 'turn_id': 'worker-turn', 'response_id': 'worker-notification',
                 'usage': {'total_tokens': 35}, 'thread_token_usage': {'total_tokens': 135}}}
             with case.path.open('a') as stream:
                 stream.write(json.dumps(record) + '\n')
-            eventually(lambda: case.usage()[0]['spent'] == 135)
+            wait_for_condition(lambda: case.usage()[0]['spent'] == 135,
+                               'native history worker usage persistence')
         worker = runtime.analytics_history_thread
         runtime.close()
         self.assertFalse(worker.is_alive())

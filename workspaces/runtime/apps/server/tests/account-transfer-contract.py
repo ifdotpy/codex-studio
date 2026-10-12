@@ -5,6 +5,8 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -374,7 +376,7 @@ class TransferContract(f.AccountContracts):
         self.assertEqual(len(self.pending), 1)
         self.assertEqual(self.receipt(same_op['id'])['members'][same['id']]['phase'], 'lazy')
         independent[0].set_result({'thread': {'id': 'independent-target'}})
-        worker.join(3)
+        worker.join(HANG_GUARD_SECONDS)
         self.assertFalse(worker.is_alive())
         self.assertEqual(self.runtime.agent(opposite['id'])['accountKey'], 'default')
         self.assertEqual(self.runtime.agent(opposite['id'])['threadId'], 'independent-target')

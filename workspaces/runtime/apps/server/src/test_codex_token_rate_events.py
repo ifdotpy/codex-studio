@@ -11,6 +11,8 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT / "src"))
+
+from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
@@ -84,7 +86,7 @@ class TokenRateEventContracts(unittest.IsolatedAsyncioTestCase):
                     ordinal = publish_count[0]
                 if ordinal == 1:
                     first_publish_entered.set()
-                    if not release_first_publish.wait(2):
+                    if not release_first_publish.wait(HANG_GUARD_SECONDS):
                         raise TimeoutError("test did not release first token-rate publication")
                 published_outputs.append(snapshot.rates["agent-a"].outputTokens)
                 original_publisher(state_dir, snapshot)

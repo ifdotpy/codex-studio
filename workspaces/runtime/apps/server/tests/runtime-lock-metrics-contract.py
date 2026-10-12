@@ -5,6 +5,8 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment, minimal_runtime_environment
@@ -48,15 +50,15 @@ class RuntimeLockMetricsContract(unittest.TestCase):
         def wait_for_notification():
             with condition:
                 ready.set()
-                self.assertTrue(condition.wait(timeout=1))
+                self.assertTrue(condition.wait(timeout=HANG_GUARD_SECONDS))
                 notified.set()
 
         thread = threading.Thread(target=wait_for_notification)
         thread.start()
-        self.assertTrue(ready.wait(timeout=1))
+        self.assertTrue(ready.wait(timeout=HANG_GUARD_SECONDS))
         with condition:
             condition.notify()
-        thread.join(timeout=1)
+        thread.join(timeout=HANG_GUARD_SECONDS)
         self.assertTrue(notified.is_set())
         self.assertFalse(thread.is_alive())
         rows = lock.runtime_lock_metrics()

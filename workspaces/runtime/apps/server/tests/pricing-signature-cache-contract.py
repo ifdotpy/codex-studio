@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -132,7 +133,7 @@ class PricingSignatureContract(unittest.TestCase):
             if value is first:
                 observed.append(value)
                 entered.set()
-                if not release.wait(3):
+                if not release.wait(HANG_GUARD_SECONDS):
                     raise AssertionError('The private encode gate was not released')
             return original(value, *args, **kwargs)
 
@@ -146,15 +147,15 @@ class PricingSignatureContract(unittest.TestCase):
         with patch('codex_pricing.json.dumps', side_effect=encode):
             reader = threading.Thread(target=capture)
             reader.start()
-            self.assertTrue(entered.wait(3))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             writer = threading.Thread(target=self.pricing._refresh)
             writer.start()
             try:
                 self.assertIs(self.pricing.artifact['catalog'], first)
             finally:
                 release.set()
-                reader.join(3)
-                writer.join(3)
+                reader.join(HANG_GUARD_SECONDS)
+                writer.join(HANG_GUARD_SECONDS)
         self.assertFalse(reader.is_alive())
         self.assertFalse(writer.is_alive())
         self.assertEqual(errors, [])

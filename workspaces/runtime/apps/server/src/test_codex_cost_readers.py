@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Refresh completion state exposed by cost readers and their callbacks."""
 
+from server_test_waits import HANG_GUARD_SECONDS
+
 import tempfile
 import threading
 import unittest
@@ -16,7 +18,7 @@ class _Pricing:
 
     def wait_ready(self) -> dict[str, object]:
         self.started.set()
-        if not self.release.wait(2):
+        if not self.release.wait(HANG_GUARD_SECONDS):
             raise TimeoutError("test did not release Claude cost refresh")
         return {}
 
@@ -41,11 +43,11 @@ class CostReaderCompletionTests(unittest.TestCase):
             )
             initial = reader.snapshot()
             self.assertTrue(initial["refreshing"])
-            self.assertTrue(pricing.started.wait(1))
+            self.assertTrue(pricing.started.wait(HANG_GUARD_SECONDS))
             self.assertTrue(reader.snapshot()["refreshing"])
 
             pricing.release.set()
-            self.assertTrue(completed.wait(1))
+            self.assertTrue(completed.wait(HANG_GUARD_SECONDS))
 
             self.assertEqual(len(observations), 1)
             settled = observations[0]

@@ -13,6 +13,7 @@ import unittest
 
 from codex_layout import SERVER_TESTS_ROOT
 sys.path.insert(0, str(SERVER_TESTS_ROOT))
+from server_test_waits import HANG_GUARD_SECONDS
 from provider_replay_dispatch import dispatch_rpc_lines
 
 REPLAY_SERVER = SERVER_TESTS_ROOT / "provider-replay-server.py"
@@ -37,7 +38,7 @@ class ReplayProtocol(unittest.TestCase):
             ordinary_seen.append(request_id)
             if request_id == 1:
                 first_started.set()
-                if not release_first.wait(2):
+                if not release_first.wait(HANG_GUARD_SECONDS):
                     raise AssertionError("test did not release first ordinary RPC")
             elif request_id == 2:
                 second_started.set()
@@ -46,7 +47,7 @@ class ReplayProtocol(unittest.TestCase):
             request_id = json.loads(line)["id"]
             turn_seen.append(request_id)
             (first_started if request_id == 3 else second_started).set()
-            if not release_turns.wait(2):
+            if not release_turns.wait(HANG_GUARD_SECONDS):
                 raise AssertionError("test did not release concurrent turns")
 
         def run(lines, handler, concurrent_methods):
@@ -58,10 +59,10 @@ class ReplayProtocol(unittest.TestCase):
         ordinary = [json.dumps({"id": value, "method": "thread/read"}) for value in (1, 2)]
         worker = threading.Thread(target=run, args=(ordinary, ordinary_handler, set()))
         worker.start()
-        self.assertTrue(first_started.wait(1), "first ordinary RPC did not start")
+        self.assertTrue(first_started.wait(HANG_GUARD_SECONDS), "first ordinary RPC did not start")
         self.assertFalse(second_started.wait(1), "second ordinary RPC overtook the first")
         release_first.set()
-        worker.join(2)
+        worker.join(HANG_GUARD_SECONDS)
         self.assertFalse(worker.is_alive(), "ordinary RPC dispatcher did not finish")
         self.assertEqual(ordinary_seen, [1, 2])
         if not errors.empty():
@@ -72,10 +73,10 @@ class ReplayProtocol(unittest.TestCase):
         turns = [json.dumps({"id": value, "method": "turn/start"}) for value in (3, 4)]
         worker = threading.Thread(target=run, args=(turns, turn_handler, {"turn/start"}))
         worker.start()
-        self.assertTrue(first_started.wait(1), "first turn did not start")
-        self.assertTrue(second_started.wait(1), "second turn did not overlap the first")
+        self.assertTrue(first_started.wait(HANG_GUARD_SECONDS), "first turn did not start")
+        self.assertTrue(second_started.wait(HANG_GUARD_SECONDS), "second turn did not overlap the first")
         release_turns.set()
-        worker.join(2)
+        worker.join(HANG_GUARD_SECONDS)
         self.assertFalse(worker.is_alive(), "turn dispatcher did not finish")
         self.assertCountEqual(turn_seen, [3, 4])
         if not errors.empty():
@@ -90,7 +91,7 @@ class ReplayProtocol(unittest.TestCase):
         def lines():
             yield json.dumps({"id": 1, "method": "unknown/method"})
             requesting_next_line.set()
-            if not release_eof.wait(2):
+            if not release_eof.wait(HANG_GUARD_SECONDS):
                 raise AssertionError("test did not release the simulated stdin EOF")
 
         def handler(_line):
@@ -106,11 +107,11 @@ class ReplayProtocol(unittest.TestCase):
 
         worker = threading.Thread(target=dispatch)
         worker.start()
-        self.assertTrue(requesting_next_line.wait(1), "dispatcher did not continue reading stdin")
+        self.assertTrue(requesting_next_line.wait(HANG_GUARD_SECONDS), "dispatcher did not continue reading stdin")
         self.assertFalse(finished.is_set(), "handler error ended the process before stdin EOF")
         self.assertTrue(errors.empty(), "handler error escaped before stdin EOF")
         release_eof.set()
-        worker.join(2)
+        worker.join(HANG_GUARD_SECONDS)
         self.assertFalse(worker.is_alive(), "dispatcher did not finish after stdin EOF")
         self.assertIsInstance(errors.get_nowait(), RuntimeError)
 
@@ -186,7 +187,7 @@ class ReplayProtocol(unittest.TestCase):
                 process.stdin.write('{"id":19,"method":"future/while-open"}\n')
                 process.stdin.flush()
                 try:
-                    response_line = output.get(timeout=2)
+                    response_line = output.get(timeout=HANG_GUARD_SECONDS)
                 except queue.Empty:
                     self.fail("replay withheld unknown-method response")
                 response = json.loads(response_line)

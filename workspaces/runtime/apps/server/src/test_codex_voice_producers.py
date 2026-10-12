@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Voice mutations publish only after their transaction and caller locks exit."""
 
+from server_test_waits import HANG_GUARD_SECONDS
+
 import asyncio
 from contextlib import contextmanager
 import sqlite3
@@ -80,7 +82,7 @@ class VoiceResourcePublicationTests(unittest.IsolatedAsyncioTestCase):
             def controlled_submit(_server, method, _params, _callback) -> None:
                 if method == "thread/realtime/start":
                     start_entered.set()
-                    if not release_start.wait(2):
+                    if not release_start.wait(HANG_GUARD_SECONDS):
                         raise TimeoutError("test did not release reserved start")
                 calls.append(method)
 
@@ -97,15 +99,15 @@ class VoiceResourcePublicationTests(unittest.IsolatedAsyncioTestCase):
             end_thread = threading.Thread(target=lambda: voice.end("lead", "session-race"))
             start_thread.start()
             try:
-                self.assertTrue(start_entered.wait(1), "start did not reach RPC dispatch")
+                self.assertTrue(start_entered.wait(HANG_GUARD_SECONDS), "start did not reach RPC dispatch")
                 end_thread.start()
-                self.assertTrue(cancel_published.wait(1), "cancellation was not committed")
+                self.assertTrue(cancel_published.wait(HANG_GUARD_SECONDS), "cancellation was not committed")
                 self.assertEqual(calls, [], "stop must not overtake the paused start RPC")
                 self.assertTrue(context["cancel"])
                 self.assertEqual(voice.session("lead", "session-race")["state"], "stopping")
                 release_start.set()
-                start_thread.join(2)
-                end_thread.join(2)
+                start_thread.join(HANG_GUARD_SECONDS)
+                end_thread.join(HANG_GUARD_SECONDS)
                 self.assertFalse(start_thread.is_alive())
                 self.assertFalse(end_thread.is_alive())
                 self.assertEqual(errors, [])

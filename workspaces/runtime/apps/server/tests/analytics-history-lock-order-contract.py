@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -75,7 +76,7 @@ class HistoryLockOrder(unittest.TestCase):
         def capture(*args, **kwargs):
             captures.append(kwargs.get('source'))
             entered.set()
-            if not release.wait(2):
+            if not release.wait(HANG_GUARD_SECONDS):
                 raise TimeoutError('Fixture budget capture was not released')
             return original(*args, **kwargs)
         def step():
@@ -90,7 +91,7 @@ class HistoryLockOrder(unittest.TestCase):
             with patch.object(history, 'budget_capture', side_effect=capture), patch.object(
                     codex_analytics, 'budget_capture', side_effect=capture) as analytics_capture:
                 worker.start()
-                self.assertTrue(entered.wait(1))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 analytics = sqlite3.connect(self.runtime.analytics_db_path, timeout=.05)
                 try:
                     analytics.execute('BEGIN IMMEDIATE')
@@ -99,7 +100,7 @@ class HistoryLockOrder(unittest.TestCase):
                     analytics.close()
                 main.rollback()
                 release.set()
-                worker.join(2)
+                worker.join(HANG_GUARD_SECONDS)
                 self.assertFalse(worker.is_alive())
                 self.assertEqual(errors, [])
                 self.assertEqual(analytics_capture.call_count, 0)

@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -287,7 +288,7 @@ class AcceptedArchiveScheduler(unittest.TestCase):
             worker.start()
             with rt.lock:
                 pass
-            worker.join(.5)
+            worker.join(HANG_GUARD_SECONDS)
             self.assertFalse(worker.is_alive())
             self.assertLess(time.monotonic() - before, .5)
             self.assertFalse(rt.__dict__.get('_accepted_archive_index_ready'))
@@ -363,7 +364,7 @@ class AcceptedArchiveScheduler(unittest.TestCase):
         rt = self.runtime
         live, code, worker = self.start_legacy()
         try:
-            self.assertTrue(rt.changed.entered.wait(1))
+            self.assertTrue(rt.changed.entered.wait(HANG_GUARD_SECONDS))
             self.assertTrue(frame_contains(worker, self.legacy.__code__))
             live.__code__ = code
             due = rt.work()['archiveIntent']['nextAttemptAt']
@@ -377,7 +378,7 @@ class AcceptedArchiveScheduler(unittest.TestCase):
             self.assertEqual(len(rt.calls), 1)
             self.assertEqual(rt._accepted_archive_running, {('task', 'task:result')})
             rt.changed.set()
-            worker.join(1)
+            worker.join(HANG_GUARD_SECONDS)
             self.assertFalse(worker.is_alive())
             rt.tick()
             rt.idle()
@@ -411,13 +412,13 @@ class AcceptedArchiveScheduler(unittest.TestCase):
                 rt.put(db, 'agents', owner)
                 rt.effects += 1
             committed.set()
-            self.assertTrue(rt.release.wait(2))
+            self.assertTrue(rt.release.wait(HANG_GUARD_SECONDS))
             return {'status': 'archived', 'worktree': {'state': 'removed', 'bytes': 42}}
 
         rt.callback = archive
         live, code, worker = self.start_legacy()
         try:
-            self.assertTrue(committed.wait(1))
+            self.assertTrue(committed.wait(HANG_GUARD_SECONDS))
             self.assertTrue(frame_contains(worker, self.legacy.__code__))
             live.__code__ = code
             rt.tick()
@@ -426,7 +427,7 @@ class AcceptedArchiveScheduler(unittest.TestCase):
             self.assertEqual(len(rt.calls), 1)
             self.assertEqual(rt._accepted_archive_running, {('task', 'task:result')})
             rt.release.set()
-            worker.join(1)
+            worker.join(HANG_GUARD_SECONDS)
             self.assertFalse(worker.is_alive())
             rt.tick()
             rt.idle()

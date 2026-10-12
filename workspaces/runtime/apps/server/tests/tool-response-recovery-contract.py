@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -244,21 +245,21 @@ class SavedResponseRecovery(unittest.TestCase):
         original = self.reply
         def waiting_reply(*args, **kwargs):
             entered.set()
-            if not release.wait(2):
+            if not release.wait(HANG_GUARD_SECONDS):
                 raise AssertionError('The fixture reply did not finish')
             return original(*args, **kwargs)
         worker = threading.Thread(target=lambda: recover(self, 'lead'), daemon=True)
         with patch.object(self, 'reply', side_effect=waiting_reply):
             try:
                 worker.start()
-                self.assertTrue(entered.wait(1))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 self.assertTrue(self.lock.acquire(timeout=.15), 'A native wait holds Runtime.lock')
                 self.lock.release()
                 self.assertFalse(self.start_lock.acquire(blocking=False),
                                  'The exact native handle can change during the write')
             finally:
                 release.set()
-                worker.join(2)
+                worker.join(HANG_GUARD_SECONDS)
         self.assertFalse(worker.is_alive())
         self.assertTrue(self.waiter.is_set())
 
@@ -271,7 +272,7 @@ class SavedResponseRecovery(unittest.TestCase):
         worker = threading.Thread(target=writer, daemon=True)
         try:
             worker.start()
-            self.assertTrue(entered.wait(1))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             started = time.monotonic()
             self.no_response()
             self.assertLess(time.monotonic() - started, .15)

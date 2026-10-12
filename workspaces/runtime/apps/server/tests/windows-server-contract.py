@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -57,7 +58,7 @@ class ControlRequestPosixContract(unittest.TestCase):
                 if Path(destination).name.startswith("windows-server-control-request-"):
                     if not reached_publish.is_set():
                         reached_publish.set()
-                        if not allow_publish.wait(3):
+                        if not allow_publish.wait(HANG_GUARD_SECONDS):
                             raise TimeoutError("publication barrier timed out")
                     published.append(Path(destination).name)
                 original_replace(source, destination)
@@ -72,13 +73,13 @@ class ControlRequestPosixContract(unittest.TestCase):
                 first = threading.Thread(target=submit, args=("stop-backend",))
                 second = threading.Thread(target=submit, args=("restart-backend",))
                 first.start()
-                self.assertTrue(reached_publish.wait(2), "first request did not reach publication")
+                self.assertTrue(reached_publish.wait(HANG_GUARD_SECONDS), "first request did not reach publication")
                 second.start()
                 second.join(.1)
                 self.assertTrue(second.is_alive(), "second request passed the sequence lock")
                 allow_publish.set()
-                first.join(2)
-                second.join(2)
+                first.join(HANG_GUARD_SECONDS)
+                second.join(HANG_GUARD_SECONDS)
             self.assertFalse(first.is_alive())
             self.assertFalse(second.is_alive())
             self.assertEqual(errors, [])

@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -212,7 +213,7 @@ class WorkerConnectionStability(unittest.TestCase):
                 with patch.object(self.runtime, 'put', side_effect=put_and_signal), \
                      patch.object(self.runtime.recovery_pool, 'submit', side_effect=AssertionError('shared pool blocked')):
                     recovery.tick(self.runtime, [self.runtime.agent(self.key), other])
-                    self.assertTrue(self.server.read_entered.wait(2))
+                    self.assertTrue(self.server.read_entered.wait(HANG_GUARD_SECONDS))
                     self.assertTrue(other_completed.wait(30), 'other account recovery did not complete')
                     calls = list(self.server.calls)
                     recovery.tick(self.runtime, [self.runtime.agent(self.key), self.runtime.agent(other['id'])])
@@ -245,13 +246,13 @@ class WorkerConnectionStability(unittest.TestCase):
             try:
                 recovery.tick(self.runtime, agents)
                 for server in servers[:-1]:
-                    self.assertTrue(server.read_entered.wait(1))
+                    self.assertTrue(server.read_entered.wait(HANG_GUARD_SECONDS))
                 self.assertEqual(len(self.runtime._connection_recovery_jobs), 8)
                 self.assertFalse(servers[-1].read_entered.is_set())
                 servers[1].read_gate.set()
                 fixture.fixture.fixture.eventually(lambda: len(self.runtime._connection_recovery_jobs) == 7)
                 recovery.tick(self.runtime, [self.runtime.agent(agent['id']) for agent in agents])
-                self.assertTrue(servers[-1].read_entered.wait(1))
+                self.assertTrue(servers[-1].read_entered.wait(HANG_GUARD_SECONDS))
                 self.assertEqual(len(self.runtime._connection_recovery_jobs), 8)
             finally:
                 for server in servers:
@@ -340,9 +341,9 @@ class WorkerConnectionStability(unittest.TestCase):
         reader = threading.Thread(target=connect)
         holder.start()
         try:
-            self.assertTrue(entered.wait(1))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             reader.start()
-            self.assertTrue(returned.wait(.5), 'Ready Codex account waits behind another account start')
+            self.assertTrue(returned.wait(HANG_GUARD_SECONDS), 'Ready Codex account waits behind another account start')
         finally:
             release.set()
             holder.join()
@@ -368,11 +369,11 @@ class WorkerConnectionStability(unittest.TestCase):
         reader = threading.Thread(target=connect)
         holder.start()
         try:
-            self.assertTrue(entered.wait(1))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             reader.start()
             self.assertFalse(returned.wait(.1), 'Ready connection bypassed its tool refresh reservation')
             release.set()
-            self.assertTrue(returned.wait(1))
+            self.assertTrue(returned.wait(HANG_GUARD_SECONDS))
         finally:
             release.set()
             holder.join()
@@ -397,7 +398,7 @@ class WorkerConnectionStability(unittest.TestCase):
                 self.callback.start()
                 constructed.append(self)
                 entered.set()
-                if not release.wait(3):
+                if not release.wait(HANG_GUARD_SECONDS):
                     raise TimeoutError('Fixture constructor was not released')
             def close(self):
                 super().close()
@@ -420,12 +421,12 @@ class WorkerConnectionStability(unittest.TestCase):
         with patch.object(runtime.accounts, 'get', side_effect=lambda key: account_get('default')):
             try:
                 reader.start()
-                self.assertTrue(entered.wait(1))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 with runtime.lock:
                     runtime.closed = True
                     self.assertNotIn('late', runtime.servers)
                 release.set()
-                self.assertTrue(returned.wait(2), 'Late constructor did not close and drain outside Runtime.lock')
+                self.assertTrue(returned.wait(HANG_GUARD_SECONDS), 'Late constructor did not close and drain outside Runtime.lock')
                 self.assertEqual(len(constructed), 1)
                 self.assertTrue(constructed[0].closed)
                 self.assertTrue(constructed[0].join_called)

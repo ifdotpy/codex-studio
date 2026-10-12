@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 
 import importlib.util
 import json
@@ -74,7 +75,7 @@ class WorkspaceRaces(unittest.TestCase):
                 },
             )
             t.runtime.dispatch()
-            self.assertTrue(output_delivered.wait(1))
+            self.assertTrue(output_delivered.wait(HANG_GUARD_SECONDS))
             fixture.eventually(lambda: t.runtime.delivery_receipt(
                 json.loads(response["contentItems"][0]["text"])["id"])["status"] == "delivered")
         self.assertTrue(response["success"], response)
@@ -109,7 +110,7 @@ class WorkspaceRaces(unittest.TestCase):
 
                 def prepare(agent):
                     entered.set()
-                    if not release.wait(3):
+                    if not release.wait(HANG_GUARD_SECONDS):
                         raise RuntimeError("Test preparation gate timed out")
                     return original_prepare(agent)
 
@@ -117,13 +118,13 @@ class WorkspaceRaces(unittest.TestCase):
                     thread = threading.Thread(target=t.runtime.run_rule, args=(rule,))
                     thread.start()
                     try:
-                        self.assertTrue(entered.wait(2))
+                        self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                         t.runtime.rules(
                             {"action": action, "agent": lead["id"], "id": rule["id"]}
                         )
                     finally:
                         release.set()
-                        thread.join(3)
+                        thread.join(HANG_GUARD_SECONDS)
                 self.assertFalse(thread.is_alive())
                 self.assertFalse(
                     any(
@@ -158,7 +159,7 @@ class WorkspaceRaces(unittest.TestCase):
         def call(method, params, timeout=60):
             if method == "thread/fork":
                 entered.set()
-                if not release.wait(3):
+                if not release.wait(HANG_GUARD_SECONDS):
                     raise RuntimeError("Test fork gate timed out")
             return original_call(method, params, timeout)
 
@@ -180,7 +181,7 @@ class WorkspaceRaces(unittest.TestCase):
             thread = threading.Thread(target=restore)
             thread.start()
             try:
-                self.assertTrue(entered.wait(2))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 for agent in (worker, peer):
                     with self.subTest(agent=agent["name"]), self.assertRaisesRegex(
                         ValueError, "[Ww]orkspace"
@@ -196,7 +197,7 @@ class WorkspaceRaces(unittest.TestCase):
                 self.assertFalse(t.runtime.agent(peer["id"])["inFlight"])
             finally:
                 release.set()
-                thread.join(3)
+                thread.join(HANG_GUARD_SECONDS)
         self.assertFalse(thread.is_alive())
         self.assertEqual(failures, [])
         self.assertEqual(outcomes[0]["status"], "restored")

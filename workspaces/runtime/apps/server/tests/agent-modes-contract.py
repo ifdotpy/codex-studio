@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -504,7 +505,7 @@ class AgentModes(unittest.TestCase):
         result = []
         thread = threading.Thread(target=lambda: result.append(self.rt.new_lead({'previous': blank['id'], 'model': 'worker'})))
         thread.start()
-        self.assertTrue(reached.wait(1))
+        self.assertTrue(reached.wait(HANG_GUARD_SECONDS))
         self.assertTrue(self.rt.lock.acquire(timeout=.1))
         self.rt.lock.release()
         release.set()

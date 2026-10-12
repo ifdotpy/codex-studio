@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """Accepted task archive uses a fresh, scoped main commit without changing the checkout."""
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 
 import importlib.util
 import json
@@ -220,7 +226,7 @@ class MainReachability(unittest.TestCase):
         def held(command, **kwargs):
             if 'fetch' in command:
                 entered.set()
-                if not release.wait(2):
+                if not release.wait(HANG_GUARD_SECONDS):
                     raise AssertionError('private fetch barrier was not released')
             return _run_checkout(command, **kwargs)
         def accept():
@@ -230,14 +236,14 @@ class MainReachability(unittest.TestCase):
             thread = threading.Thread(target=accept)
             thread.start()
             try:
-                self.assertTrue(entered.wait(2), 'archive did not fetch origin/main')
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS), 'archive did not fetch origin/main')
                 self.assertTrue(self.runtime.lock.acquire(timeout=.2), 'fetch held Runtime.lock')
                 self.runtime.lock.release()
                 with self.runtime.db() as db:
                     db.execute('BEGIN IMMEDIATE')
                     db.execute('UPDATE runtime_work SET record=record WHERE id=?', (self.task['id'],))
             finally:
-                release.set(); thread.join(3)
+                release.set(); thread.join(HANG_GUARD_SECONDS)
         self.assertFalse(thread.is_alive())
         self.assertEqual(errors, [])
         self.assertEqual(results[0]['archive']['status'], 'archived')

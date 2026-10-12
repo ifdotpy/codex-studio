@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -104,14 +105,14 @@ class Controls(unittest.TestCase):
         def blocked(path, *args, **kwargs):
             if str(path) == self.tmp.name and not entered.is_set():
                 entered.set()
-                if not release.wait(3):
+                if not release.wait(HANG_GUARD_SECONDS):
                     raise TimeoutError('The fixture path gate expired')
             return resolve(path, *args, **kwargs)
 
         with patch.object(Path, 'resolve', blocked), ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(self.call, kind, **body)
             try:
-                self.assertTrue(entered.wait(3), 'The real action must reach its path preflight')
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS), 'The real action must reach its path preflight')
                 yield future, release
             finally:
                 release.set()
@@ -190,13 +191,13 @@ class Controls(unittest.TestCase):
         entered, release = threading.Event(), threading.Event()
         def pause_before_reply():
             entered.set()
-            if not release.wait(3):
+            if not release.wait(HANG_GUARD_SECONDS):
                 raise TimeoutError('rollback receipt gate expired')
         self.server.before_reply = pause_before_reply
         with ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(self.call, 'rollback', turn_id='t2', request_id='entity-rollback')
             try:
-                self.assertTrue(entered.wait(3))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 with self.rt.db() as db:
                     payload = db.execute(
                         "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",

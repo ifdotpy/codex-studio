@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -72,12 +73,12 @@ class PreparationUnload(f.ContextWait):
         try:
             self.runtime.send(self.a['id'], 'Preserve the exact input.', message_id='unload-user')
             self.runtime.dispatch()
-            self.assertTrue(received.wait(3))
+            self.assertTrue(received.wait(HANG_GUARD_SECONDS))
             self.assertFalse(resume_requested.wait(.2))
             self.assertIs(self.runtime.preparations.get(self.a['id']), original_prepare)
             accepted = self.runtime.agent(self.a['id'])['startAttempt']
             release.set()
-            self.assertTrue(drained.wait(3))
+            self.assertTrue(drained.wait(HANG_GUARD_SECONDS))
             self.runtime.dispatch()
             f.eventually(lambda: any(m == 'thread/resume' for m,p in self.server.calls))
             self.assertTrue(drained.is_set())
