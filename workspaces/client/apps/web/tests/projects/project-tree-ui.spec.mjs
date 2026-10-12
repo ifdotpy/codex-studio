@@ -598,6 +598,7 @@ test("project pointer and keyboard order persist, and a click collapses the proj
           .getByRole("menuitem", { name: "New chat folder", exact: true })
           .click();
       }
+      await page.getByRole("menu").waitFor({ state: "hidden" });
       const form = page.getByRole("dialog", {
         name: "New chat folder",
         exact: true,
@@ -607,6 +608,9 @@ test("project pointer and keyboard order persist, and a click collapses the proj
         .getByRole("button", { name: "Create folder", exact: true })
         .click();
       await form.waitFor({ state: "hidden" });
+      await page
+        .locator(".mantine-Modal-overlay")
+        .waitFor({ state: "detached" });
       const projects = await fetch(url + "/api/projects").then((response) =>
         response.json(),
       );

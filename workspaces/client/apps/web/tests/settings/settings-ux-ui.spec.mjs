@@ -232,21 +232,57 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
     exact: true,
   });
   await transfer.waitFor();
+  await expect
+    .poll(() =>
+      transfer.evaluate((dialog) => dialog.contains(document.activeElement)),
+    )
+    .toBe(true);
   assert.equal(
     transferCalls,
     0,
     "Choosing an account must not transfer the team",
   );
+  await page.keyboard.press("Escape");
+  await transfer.waitFor({ state: "hidden" });
+  await page.locator(".mantine-Modal-overlay").waitFor({ state: "detached" });
+  await executionSettings.waitFor({ state: "visible" });
+  await expect
+    .poll(() =>
+      executionSettings.evaluate((dialog) =>
+        dialog.contains(document.activeElement),
+      ),
+    )
+    .toBe(true);
+  await workTile.click();
+  await transfer.waitFor();
   await transfer.getByRole("button", { name: "Cancel", exact: true }).click();
   assert.equal(transferCalls, 0);
+  await transfer.waitFor({ state: "hidden" });
+  await page.locator(".mantine-Modal-overlay").waitFor({ state: "detached" });
+  await executionSettings.waitFor({ state: "visible" });
+  await expect
+    .poll(() =>
+      executionSettings.evaluate((dialog) =>
+        dialog.contains(document.activeElement),
+      ),
+    )
+    .toBe(true);
   await workTile.click();
+  await transfer.waitFor();
   await transfer
     .getByRole("button", { name: "Transfer chat", exact: true })
     .click();
   await transfer.waitFor({ state: "hidden" });
-  assert.equal(transferCalls, 1);
-  await mainSettingsTrigger.click();
+  await page.locator(".mantine-Modal-overlay").waitFor({ state: "detached" });
   await executionSettings.waitFor({ state: "visible" });
+  assert.equal(transferCalls, 1);
+  await expect
+    .poll(() =>
+      executionSettings.evaluate((dialog) =>
+        dialog.contains(document.activeElement),
+      ),
+    )
+    .toBe(true);
   await executionSettings
     .getByRole("group", { name: "Agent role", exact: true })
     .getByRole("button", { name: "Worker", exact: true })

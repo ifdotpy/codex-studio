@@ -34,6 +34,7 @@ async function runMessageReceiptScenario(
   const text = "Accepted input before the latest transcript page";
   const uncertainText = "This old delivery remains unconfirmed";
   const missingText = "An absent receipt does not confirm delivery";
+  const latestPageText = "Latest transcript fixture marker";
   const fixture = spawn(
     python,
     [
@@ -129,8 +130,11 @@ async function runMessageReceiptScenario(
                   # Both aggregate event and transcript windows now omit the original.
                   # The exact durable receipt remains available by its primary key.
                   for number in range(225):
-                      item = {'id': agent + ':later-' + str(number), 'role': 'tool', 'title': 'Tool',
-                              'text': 'Later tool result ' + str(number), 'at': now + number / 100,
+                      item = {'id': agent + ':later-' + str(number),
+                              'role': 'assistant' if number == 224 else 'tool',
+                              'title': 'Assistant' if number == 224 else 'Tool',
+                              'text': 'Latest transcript fixture marker' if number == 224 else 'Later tool result ' + str(number),
+                              'at': now + number / 100,
                               'toolStatus': 'completed'}
                       db.execute('INSERT INTO runtime_items(id,agent,record,created) VALUES (?,?,?,?)',
                                  (item['id'], agent, json.dumps(item), item['at']))
@@ -621,10 +625,14 @@ async function runMessageReceiptScenario(
 
     await page.reload();
     await page.locator("#message").waitFor();
+    await page.getByText(latestPageText, { exact: true }).waitFor();
     await until(
       async () => (await bubble(text).count()) === 0,
       "A delivered local copy reappeared after reload",
     );
+    await page
+      .getByRole("button", { name: "Earlier messages", exact: true })
+      .waitFor({ state: "visible" });
     await page
       .getByRole("button", { name: "Earlier messages", exact: true })
       .click();

@@ -121,7 +121,6 @@ let manualTokenGeneration = 0;
 const pendingSessions = new Set<number>();
 let successfulSession: { generation: number; token: string } | undefined;
 let confirmedSession: { generation: number; token: string } | undefined;
-let pendingSessionRead: Promise<GetResult<"/api/session">> | undefined;
 let workspace = "";
 const schemaMismatchListeners = new Set<() => void>();
 const matchingSchemaListeners = new Set<() => void>();
@@ -811,42 +810,34 @@ export const syncPost = <Path extends PathsFor<"post">>(
 export type QueueView = GetResult<"/api/queue">;
 export type QueueItemDto = QueueView["items"][number];
 
-export function refreshSession(): Promise<GetResult<"/api/session">> {
-  if (pendingSessionRead) return pendingSessionRead;
+export async function refreshSession(): Promise<GetResult<"/api/session">> {
   const generation = ++sessionGeneration;
   pendingSessions.add(generation);
-  const request = (async () => {
-    let session: GetResult<"/api/session">;
-    try {
-      session = await get("/api/session");
-      if (
-        generation > manualTokenGeneration &&
-        (!successfulSession || successfulSession.generation < generation)
-      )
-        successfulSession = { generation, token: session.token };
-    } finally {
-      pendingSessions.delete(generation);
-      // A failed newer read releases the last successful credential. Pending
-      // newer reads and explicit setToken owners keep their precedence.
-      const latest = successfulSession;
-      if (
-        latest &&
-        ![...pendingSessions].some((pending) => pending > latest.generation)
-      ) {
-        token = latest.token;
-        confirmedSession = latest;
-      }
+  let session: GetResult<"/api/session">;
+  try {
+    session = await get("/api/session");
+    if (
+      generation > manualTokenGeneration &&
+      (!successfulSession || successfulSession.generation < generation)
+    )
+      successfulSession = { generation, token: session.token };
+  } finally {
+    pendingSessions.delete(generation);
+    // A failed newer read releases the last successful credential. Pending
+    // newer reads and explicit setToken owners keep their precedence.
+    const latest = successfulSession;
+    if (
+      latest &&
+      ![...pendingSessions].some((pending) => pending > latest.generation)
+    ) {
+      token = latest.token;
+      confirmedSession = latest;
     }
-    // A delayed response cannot replace a newer confirmed server credential.
-    if (confirmedSession && confirmedSession.generation > generation)
-      return { ...session, token: confirmedSession.token };
-    return session;
-  })();
-  const shared = request.finally(() => {
-    if (pendingSessionRead === shared) pendingSessionRead = undefined;
-  });
-  pendingSessionRead = shared;
-  return shared;
+  }
+  // A delayed response cannot replace a newer confirmed server credential.
+  if (confirmedSession && confirmedSession.generation > generation)
+    return { ...session, token: confirmedSession.token };
+  return session;
 }
 
 export function errorText(error: unknown) {

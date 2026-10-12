@@ -490,10 +490,16 @@ async function runSnapshotOrderUi(
     await waitFor(() => oldRequest, "Background snapshot poll is held");
     const oldRevision = revision;
     revision++;
-    const newerSession = page.waitForResponse(
-      (response) =>
-        new URL(response.url()).pathname === "/api/session" && response.ok(),
-    );
+    const newerSession = page
+      .waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname === "/api/session" && response.ok(),
+      )
+      .catch((error) => {
+        throw new Error(
+          `${error.message}; session requests: ${JSON.stringify(requests)}`,
+        );
+      });
     await page.locator("#message").fill(`Snapshot refresh ${revision}`);
     await page.locator("#send").click();
     await workerButton
