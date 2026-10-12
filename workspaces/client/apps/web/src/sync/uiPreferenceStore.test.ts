@@ -5,6 +5,7 @@ import {
   acknowledgePreferenceFields,
   readPreferenceFields,
   receivePreferenceFields,
+  initializePreferenceMigration,
   writePreferenceEdit,
 } from "./uiPreferenceStore";
 function memoryStorage(): Storage {
@@ -48,6 +49,23 @@ describe("UI preference cache", () => {
     expect(Object.keys(readPreferenceFields("user"))).toEqual([
       '["codex-studio-preferences-v1","theme"]',
     ]);
+  });
+  it("drops invalid legacy appearance fields before syncing the remaining choices", () => {
+    localStorage.setItem(
+      "codex-studio-preferences-v1",
+      JSON.stringify({ theme: "dark", sidebarFontSize: 99 }),
+    );
+
+    initializePreferenceMigration("user");
+
+    expect(readPreferenceFields("user")).toEqual({
+      '["codex-studio-preferences-v1","theme"]': expect.objectContaining({
+        value: "dark",
+      }),
+    });
+    expect(localStorage.getItem(`${preferenceCacheKey}:user`)).not.toContain(
+      "sidebarFontSize",
+    );
   });
   it("keeps a remote field when a stale control changes another field", () => {
     const before = { theme: "auto", mainFontSize: 14 };

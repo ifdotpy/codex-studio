@@ -35,3 +35,135 @@ Profile text uses Rust `trim()`; it intentionally does not emulate Python `str.s
 
 The plan that assigns services to slices is
 [`docs/plans/rust-runtime-work-breakdown.md`](../../../../docs/plans/rust-runtime-work-breakdown.md).
+
+## Account registry and limits read contract
+
+This slice loads the persisted account registry and workspace limits once at
+startup. Its state is immutable; request handlers project the validated
+snapshot. `GET /api/accounts` is a persisted read with an authentication
+recovery overlay from `runtime_usage_resumes`. Keeping the registry fresh
+(refresh, discovery, and login receipts) belongs to the later account-refresh
+slice. Until that exists, Rust shows the registry as Python last saved it. An
+absent registry fails startup with a located error; this slice does not
+synthesize account data.
+
+Python's GET calls `Runtime.accounts_snapshot()` and
+`AccountStore.snapshot(refresh=False)` (`codex_usage_resume.py:179-192`,
+`studio_api/accounts/router.py:168-169`). The registry is loaded into Python's
+in-memory `AccountStore` at construction and this GET does not refresh auth
+files. Other Python calls can mutate the in-memory view without saving it:
+`AccountStore.refresh` updates `status`, `error`, `accountId`, `email`, and
+`plan` (and its private `_credentialIdentity`) at `codex_accounts.py:161-202`
+without `_save`; `confirm_native_auth` changes `status`, `plan`, `error`, and
+private `_authErrorKind` at `:238-253` without `_save`. The persisted Rust
+projection can therefore lag those in-memory fields until Python next saves
+the registry. The Rust read service does not open auth files, decode tokens,
+or resolve profile directories.
+
+| `GET /api/accounts` field              | Source                                                                                                                                                                                        | Absent, malformed, or refresh behavior                                                                                                                                                   |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `accounts[]`                           | Account rows from the startup registry, in persisted map order; underscore-prefixed private fields are removed.                                                                               | Missing registry fails startup. Malformed or schema-invalid registry fails startup with file and JSON pointer, without instance values. External changes are not observed until restart. |
+| `accounts[].canAttemptNativeProof`     | Persisted Claude identity/status and keychain-error metadata plus deleted/disconnected/duplicate flags.                                                                                       | Omitted unless the saved row meets the proof eligibility conditions. No provider is started.                                                                                             |
+| `accounts[].authenticationRecovery`    | A matching `runtime_usage_resumes` row with `status=scheduled`, `cause=auth`, and `failedAt` older than the Python `AUTH_WAIT_NOTICE_SECONDS` threshold (`codex_usage_resume.py:32,182-191`). | Omitted when there is no matching old scheduled auth resume. The message is `AUTHENTICATION_RECOVERY_MESSAGE` in the service.                                                            |
+| `archivedAccounts[]`                   | Persisted rows with `deleted: true`, projected without private fields.                                                                                                                        | Empty when no archived rows exist.                                                                                                                                                       |
+| `defaultAccountKey`                    | Registry `defaultAccountKey`.                                                                                                                                                                 | Missing or malformed registry fails startup.                                                                                                                                             |
+| `logins[]`                             | Persisted login receipts; map key supplies `requestId`.                                                                                                                                       | Empty when absent. Invalid receipts fail startup.                                                                                                                                        |
+| `supportsDisconnect`, `supportsDelete` | Static Rust API capabilities.                                                                                                                                                                 | Always `true`.                                                                                                                                                                           |
+
+Each public account row is validated against the Python-exported registry schema and
+the `Account` response model (`studio_api/accounts/models.py:57-77`): `id`,
+`home`, `label`, `source`, and `status` come from required persisted row
+fields; `provider`, `accountId`, `email`, `plan`, `error`, `disconnected`,
+`deleted`, `duplicateOf`, and `claudeOptions` are optional persisted fields;
+`canAttemptNativeProof` is projected from persisted Claude identity and
+eligibility fields; and `authenticationRecovery` is the database overlay above.
+Public extension fields are retained. Any malformed or missing required
+registry field fails startup at its JSON pointer. Archived rows use the same
+persisted public fields, including `deleted`, and omit private underscore
+fields. Login receipt fields are read from the persisted receipt value, with
+`requestId` supplied by its map key; a malformed receipt fails startup.
+
+Limits restoration is startup-only, matching `Runtime.restore_rate_limits`
+(`codex_runtime.py:9120-9138`). The Python route reads its in-memory cache at
+`studio_api/accounts/router.py:220-228`; it does not query SQLite per request.
+SQLite reads only the existing `sync_entities` workspace row. The storage
+format is `AccountRateLimitsDto` and its nested models in
+`studio_api/sync/models.py:1070-1117`; Python API restoration then validates
+`UsageLimitsResponse` (`studio_api/accounts/models.py:362-369`). The reader
+consumes the exported schemas in `runtime-http/account-registry.schema.json`
+and `runtime-http/workspace-usage-limits.schema.json`; the latter validates
+selected entries through its `UsageLimitsResponse` model.
+
+| `GET /api/limits` field                             | Source                                                                                                                                 | Absent, malformed, or refresh behavior                                                                                                                                                                                      |
+| --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `accountKey`                                        | The matching persisted account cache entry; legacy `rateLimits` is the default entry only when `rateLimitsByAccount` has no `default`. | A missing or mismatched cache is uncached.                                                                                                                                                                                  |
+| `data`                                              | Persisted `AccountRateLimitsDto.data`, accepted for serving only when it also passes Python's `UsageLimitsResponse` shape.             | Missing or null data is not restored. An invalid restored snapshot is treated as absent, as in Python's restore validation; it carries a safe diagnostic with workspace row, account key, JSON pointer, and schema keyword. |
+| `at`, `readAt`, `checkedAt`, `processedAt`, `error` | Optional persisted cache metadata.                                                                                                     | Wrong types make that account cache absent and produce a value-free diagnostic.                                                                                                                                             |
+
+A cached request can return a valid persisted response. A request that needs a
+refresh returns 501 with dependency `provider-session/account-rate-limits`;
+missing cache and intentional `data: null` are normal uncached states. An
+unknown account with no valid cache returns JSON 400 `Unknown Codex account`.
+Invalid workspace JSON/schema is reported as a safe `workspace/current`
+diagnostic; persisted documents share the store-owned 64 MiB and 128-level
+bounds, with one iterative depth scanner before recursive parsing. No debug
+formatter retains or prints registry or limits values.
+
+The exported `runtime-http/account-registry.schema.json` is the registry
+authority. The registry is one fail-closed authority:
+invalid JSON or a schema violation stops startup with the path and first
+location, without field contents. A literal unpaired surrogate produced by
+Python's `set_name` writer is the one known product-writable registry shape
+this Rust reader refuses rather than lossily decoding. Schema-tightening's
+read-only pre-cutover state check is the guard; if it finds one, the lead owns
+the one-time state upgrade. No Python truthiness or malformed-file
+compatibility rules are reproduced.
+
+`runtime-http/workspace-usage-limits.schema.json` is a projection schema: it
+validates the workspace usage fields this slice reads, while intentionally
+ignoring unrelated workspace fields. It is not an allow-list for the complete
+workspace format.
+
+The limits restore policy intentionally differs from Python's
+`Runtime.restore_rate_limits` (`codex_runtime.py:9125-9138`): Python's
+single exception boundary aborts the full restore loop on the first invalid
+entry. Rust isolates a refused account entry and continues restoring other
+valid entries. The legacy `rateLimits` snapshot is considered only when the
+raw `rateLimitsByAccount` map has no `default` key (`codex_runtime.py:9128-9129`);
+a present but refused default entry does not revive legacy data.
+
+The producer corpus includes a registry above the old 1 MiB ceiling, written
+through `AccountStore.set_name` with its untrimmed rename receipt
+(`codex_accounts.py:385,394,403`).
+
+### Later account-refresh boundary
+
+Python resolves Codex homes and rejects only a resolved `.claude` path
+component (`codex_state.py:22-26,39-40`). Claude configuration is selected by
+`profile_options` and `subscription_env`, with the `~/.claude` fallback
+(`codex_claude.py:61-80,150-161; codex_claude_login.py:228-229`). This slice
+intentionally defines no HOME/cwd allow-list or auth-file symlink policy; the
+refresh owner must use the product's supplied configuration roots and own the
+final auth-file boundary. Python permits external explicit/profile paths and
+follows filesystem resolution before its `.claude` exclusion.
+
+The Python account mutation points that a later owner must port are `refresh`,
+`confirm_native_auth`, `default`, `disconnect`, `delete`, `reconnect`,
+`set_name`, `register`, `register_claude`, `update_claude`, `discover`,
+`start_login`, `login_receipts`, `cancel_login`, `login_completed`, and
+`set_rate_limits`. This read slice implements none of them.
+
+`GET /api/models` remains unimplemented with dependency
+`provider-session/model-list`. Python connects the account and sends paginated
+`model/list` requests with `limit: 100` (`router.py:176-209`,
+`codex_catalog.py:130-170`); `ModelCatalogCache` is process memory with a
+300-second successful-snapshot TTL and a five-second wait
+(`codex_catalog.py:32-43`). Pending and unavailable replies are HTTP 400
+(`router.py:198-207`). The Rust route stays at 501 until a provider session
+owns connection, pagination, cache, timeout, and pending/unavailable states.
+
+The producer test uses Python `AccountStore` writes and the real
+`Runtime.store_rate_limits` → `codex_sync_entities.patch`/`put`/`project` path
+inside a disposable root and SQLite database. It does not start a provider or
+make a network request. Run it with
+`cargo nextest run -p studio-runtime-services --test account_policy_differential`.

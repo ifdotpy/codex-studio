@@ -192,6 +192,7 @@ mod tests {
             1,
             None,
             None,
+            None,
         );
         let app = router.with_state(state);
         for (method, expected) in [(Method::GET, 200), (Method::POST, 200)] {

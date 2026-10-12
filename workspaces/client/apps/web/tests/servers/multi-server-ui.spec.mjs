@@ -588,7 +588,17 @@ test("one UI routes overlapping chats to two and three signed servers without re
       .getByRole("dialog", { name: "Search all servers" })
       .getByRole("button", { name: "Close", exact: true })
       .click();
-    await remoteFrame.getByRole("button", { name: "Studio settings" }).click();
+    const shellSettingsButton = page.getByRole("button", {
+      name: "Studio settings",
+      exact: true,
+    });
+    if (!(await shellSettingsButton.isVisible())) {
+      await page
+        .getByRole("button", { name: "Toggle conversations", exact: true })
+        .click();
+      await expect(shellSettingsButton).toBeVisible();
+    }
+    await shellSettingsButton.click();
     const shellSettings = page.getByRole("dialog", {
       name: "Studio settings",
       exact: true,
