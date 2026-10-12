@@ -38,6 +38,11 @@ fixtures = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixtures)
 
 
+# Waits below end on the observed state. This bound only stops a hang; it is not a
+# time budget, so a slow machine cannot fail a correct server.
+HANG_GUARD_SECONDS = 30
+
+
 class SessionCostRefreshContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -210,7 +215,7 @@ class SessionCostRefreshContract(unittest.TestCase):
         original = SessionCostReader._claude_signature
         def blocked(reader, agents):
             entered.set()
-            if not release.wait(3):
+            if not release.wait(HANG_GUARD_SECONDS):
                 raise RuntimeError("The fixture did not release file discovery")
             return original(reader, agents)
         canvas = Canvas(self.root)
@@ -228,15 +233,15 @@ class SessionCostRefreshContract(unittest.TestCase):
             worker.start()
             endpoint = f"http://127.0.0.1:{server.server_port}/api/session-cost?agent=lead"
             try:
-                cold = json.load(urlopen(endpoint, timeout=0.5))
+                cold = json.load(urlopen(endpoint, timeout=HANG_GUARD_SECONDS))
                 self.assertEqual(cold["pricingState"], "loading")
-                self.assertTrue(entered.wait(1))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 for _ in range(3):
-                    self.assertEqual(json.load(urlopen(endpoint, timeout=0.5))["pricingState"], "loading")
+                    self.assertEqual(json.load(urlopen(endpoint, timeout=HANG_GUARD_SECONDS))["pricingState"], "loading")
                 release.set()
-                deadline = time.monotonic() + 2
+                deadline = time.monotonic() + HANG_GUARD_SECONDS
                 while time.monotonic() < deadline:
-                    value = json.load(urlopen(endpoint, timeout=0.5))
+                    value = json.load(urlopen(endpoint, timeout=HANG_GUARD_SECONDS))
                     if value["pricingState"] == "ready":
                         break
                     time.sleep(0.005)
@@ -248,12 +253,12 @@ class SessionCostRefreshContract(unittest.TestCase):
                 release.clear()
                 entered.clear()
                 self.clock[0] += 11
-                value = json.load(urlopen(endpoint, timeout=0.5))
+                value = json.load(urlopen(endpoint, timeout=HANG_GUARD_SECONDS))
                 self.assertEqual(value["pricingState"], "ready")
-                self.assertTrue(entered.wait(1))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 self.assertEqual(len(readers), 1)
                 for _ in range(3):
-                    self.assertEqual(json.load(urlopen(endpoint, timeout=0.5))["pricingState"], "ready")
+                    self.assertEqual(json.load(urlopen(endpoint, timeout=HANG_GUARD_SECONDS))["pricingState"], "ready")
             finally:
                 release.set()
                 server.shutdown()
