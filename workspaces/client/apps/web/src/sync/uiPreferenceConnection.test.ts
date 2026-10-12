@@ -552,6 +552,52 @@ describe("paired server preference replication", () => {
     }
   });
 
+  it.each(["non-contiguous batch", "invalid preference row"])(
+    "does not pull for a %s whose announced sequence is already covered",
+    async (trigger) => {
+      const origin = `https://${trigger.replaceAll(" ", "-")}.invalid`;
+      const server = backend(origin, {});
+      const stop = connectUiPreferences(origin, server.fetch, localStorage);
+      try {
+        await waitForBaseline(origin, server);
+        const document = {
+          id: "entity:uiPreferences:user",
+          seq: server.sequence,
+          payload: JSON.stringify({
+            collection: "uiPreferences",
+            id: "user",
+            value: { fields: null },
+          }),
+          _deleted: false,
+        };
+        emitStateFrame(origin, {
+          protocol: 3,
+          workspaceId: origin,
+          epoch: "epoch-one",
+          reason: "change",
+          resources: [{ kind: "state" }],
+          resourceVersions: [
+            {
+              revision: server.sequence,
+              entitySequences: [server.sequence],
+              entityChanges: {
+                after:
+                  trigger === "non-contiguous batch" ? 0 : server.sequence - 1,
+                through: server.sequence,
+                documents:
+                  trigger === "invalid preference row" ? [document] : [],
+              },
+            },
+          ],
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(server.pullReads).toBe(1);
+      } finally {
+        stop();
+      }
+    },
+  );
+
   it("does not repeat a pull for a baseline covered by the in-flight response", async () => {
     vi.useFakeTimers();
     const server = backend("https://in-flight-baseline.invalid", {});

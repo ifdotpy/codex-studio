@@ -50,21 +50,13 @@ export function connectUiPreferences(
   // advances it only after a pull or a complete state change batch is applied.
   const cursor = new EntitySequenceCheckpoint();
   let workspaceId: string | undefined;
-  // Pull on uncovered baselines or invalid/non-contiguous state changes; while
-  // pulling, reconcile queued versions against the returned checkpoint. Resume
-  // through a reopened stream when possible, and pull directly only when no
-  // stream is available or a read retry expires while the stream is healthy.
+  // Pull triggers are uncovered baselines, invalid/non-contiguous state frames,
+  // sequence hints, unknown stream/open failures, and exhausted read retries;
+  // each uses reconcile's coverage rule. Focus/online reopen and use the baseline.
   let pulling = false;
-  let pullAgain = false;
-  let pendingBaseline: { sequence: number; mustPull: boolean } | undefined;
-  const queuePendingBaseline = (sequence: number, mustPull: boolean) => {
-    pendingBaseline = pendingBaseline
-      ? {
-          sequence: Math.max(pendingBaseline.sequence, sequence),
-          mustPull: pendingBaseline.mustPull || mustPull,
-        }
-      : { sequence, mustPull };
-  };
+  let pendingReconciliation:
+    | { sequence?: number; unknown: boolean }
+    | undefined;
   let sending = false;
   let sendAgain = false;
   let stream: SignedEventSource | undefined;
@@ -152,7 +144,7 @@ export function connectUiPreferences(
     if (stopped || retry) return;
     retry = setTimeout(() => {
       retry = undefined;
-      if (stream) void pull().catch(scheduleRetry);
+      if (stream) void reconcile().catch(scheduleRetry);
       else openStream();
     }, 3000);
   };
@@ -203,54 +195,75 @@ export function connectUiPreferences(
       sending = false;
     }
   };
-  const pull = async () => {
+  const performPull = async () => {
     if (stopped) return;
+    let more: boolean;
+    do {
+      const response = (await request(
+        `/api/sync/pull?scope=state:entities:v1&after=${Math.max(0, cursor.value)}&limit=500`,
+      )) as Pull & { reset?: boolean };
+      if (stopped) return;
+      workspaceId = response.workspaceId;
+      onIdentity?.(response.workspaceId);
+      if (response.reset) {
+        cursor.reset();
+        more = true;
+        continue;
+      }
+      for (const document of response.documents) {
+        if (document._deleted) continue;
+        const entity = JSON.parse(document.payload);
+        if (
+          entity.collection === "uiPreferences" &&
+          ["user", "server"].includes(entity.id)
+        ) {
+          confirmed[entity.id as PreferenceScope] = JSON.stringify(
+            entity.value.fields,
+          );
+          receivePreferenceFields(entity.id, entity.value.fields, storage);
+        }
+      }
+      cursor.assign(response.checkpoint.seq);
+      more = cursor.value < (response.maxSeq ?? cursor.value);
+    } while (more && !stopped);
+  };
+  const queueReconciliation = (hint?: number) => {
+    if (hint === undefined || !Number.isSafeInteger(hint)) {
+      pendingReconciliation = { unknown: true };
+      return;
+    }
+    if (pendingReconciliation?.unknown) return;
+    pendingReconciliation = {
+      unknown: false,
+      sequence: Math.max(pendingReconciliation?.sequence ?? hint, hint),
+    };
+  };
+  const reconcile = async (hint?: number) => {
+    if (stopped) return;
+    const needsPull = (sequence?: number) =>
+      sequence === undefined ||
+      !cursor.canUseDurableCheckpoint ||
+      !cursor.covers(sequence);
     if (pulling) {
-      pullAgain = true;
+      if (needsPull(hint)) queueReconciliation(hint);
+      return;
+    }
+    if (!needsPull(hint)) {
+      ready = true;
+      await send();
       return;
     }
     pulling = true;
     try {
+      let nextHint = hint;
       do {
-        pullAgain = false;
-        let more: boolean;
-        do {
-          const response = (await request(
-            `/api/sync/pull?scope=state:entities:v1&after=${Math.max(0, cursor.value)}&limit=500`,
-          )) as Pull & { reset?: boolean };
-          if (stopped) return;
-          workspaceId = response.workspaceId;
-          onIdentity?.(response.workspaceId);
-          if (response.reset) {
-            cursor.reset();
-            more = true;
-            continue;
-          }
-          for (const document of response.documents) {
-            if (document._deleted) continue;
-            const entity = JSON.parse(document.payload);
-            if (
-              entity.collection === "uiPreferences" &&
-              ["user", "server"].includes(entity.id)
-            ) {
-              confirmed[entity.id as PreferenceScope] = JSON.stringify(
-                entity.value.fields,
-              );
-              receivePreferenceFields(entity.id, entity.value.fields, storage);
-            }
-          }
-          cursor.assign(response.checkpoint.seq);
-          more = cursor.value < (response.maxSeq ?? cursor.value);
-        } while (more && !stopped);
-        if (pendingBaseline) {
-          if (
-            pendingBaseline.mustPull ||
-            !cursor.covers(pendingBaseline.sequence)
-          )
-            pullAgain = true;
-          pendingBaseline = undefined;
-        }
-      } while (pullAgain && !stopped);
+        if (needsPull(nextHint)) await performPull();
+        const pending = pendingReconciliation;
+        pendingReconciliation = undefined;
+        if (!pending) break;
+        nextHint = pending.unknown ? undefined : pending.sequence;
+      } while (!stopped);
+      if (stopped) return;
       ready = true;
       await send();
     } finally {
@@ -275,7 +288,7 @@ export function connectUiPreferences(
         if (stream === openedStream) streamOpen = true;
       };
     } catch {
-      void pull().catch(scheduleRetry);
+      void reconcile().catch(scheduleRetry);
       scheduleRetry();
       return;
     }
@@ -304,7 +317,7 @@ export function connectUiPreferences(
         payload = null;
       }
       if (!payload || typeof payload !== "object") {
-        void pull().catch(scheduleRetry);
+        void reconcile().catch(scheduleRetry);
         return;
       }
       const change = payload as PreferenceChangeEvent;
@@ -317,7 +330,7 @@ export function connectUiPreferences(
           !Array.isArray(change.resourceVersions) ||
           change.resources.length !== change.resourceVersions.length
         ) {
-          void pull().catch(scheduleRetry);
+          void reconcile().catch(scheduleRetry);
           return;
         }
         workspaceId = change.workspaceId;
@@ -329,7 +342,7 @@ export function connectUiPreferences(
             (version.resource ?? change.resources[index])?.kind === "state",
         );
         if (!stateVersion) {
-          void pull().catch(scheduleRetry);
+          void reconcile().catch(scheduleRetry);
           return;
         }
         if (stateVersion.entitySequenceReset) cursor.reset();
@@ -338,27 +351,13 @@ export function connectUiPreferences(
           sequences && sequences.length > 0
             ? Math.max(...sequences)
             : stateVersion.revision;
-        if (
-          !workspaceChanged &&
-          !epochChanged &&
-          !stateVersion.entitySequenceReset &&
-          cursor.canUseDurableCheckpoint &&
-          cursor.covers(baselineSequence)
-        ) {
-          ready = true;
-          void send();
-          return;
-        }
-        if (pulling) {
-          queuePendingBaseline(
-            baselineSequence,
-            workspaceChanged ||
-              epochChanged ||
-              stateVersion.entitySequenceReset === true,
-          );
-          return;
-        }
-        void pull().catch(scheduleRetry);
+        const hint =
+          workspaceChanged ||
+          epochChanged ||
+          stateVersion.entitySequenceReset === true
+            ? undefined
+            : baselineSequence;
+        void reconcile(hint).catch(scheduleRetry);
         return;
       }
       if (
@@ -367,7 +366,7 @@ export function connectUiPreferences(
         change.resources.length !== change.resourceVersions.length ||
         change.workspaceId !== workspaceId
       ) {
-        void pull().catch(scheduleRetry);
+        void reconcile().catch(scheduleRetry);
         return;
       }
       let nextCursor = cursor.value;
@@ -378,7 +377,7 @@ export function connectUiPreferences(
       for (const [index, version] of change.resourceVersions.entries()) {
         const resource = version.resource ?? change.resources[index];
         if (!resource) {
-          void pull().catch(scheduleRetry);
+          void reconcile().catch(scheduleRetry);
           return;
         }
         if (resource.kind !== "state") continue;
@@ -387,47 +386,21 @@ export function connectUiPreferences(
           ? Math.max(...version.entitySequences)
           : batch?.through;
         if (
-          !version.entitySequenceReset &&
-          hintedSequence !== undefined &&
-          cursor.canUseDurableCheckpoint &&
-          cursor.covers(hintedSequence) &&
-          (!batch ||
-            batch.after !== nextCursor ||
-            batch.through !== version.revision)
-        )
-          return;
-        if (
           version.entitySequenceReset ||
           !batch ||
           batch.after !== nextCursor ||
           batch.through !== version.revision
         ) {
-          if (
-            pulling &&
-            !version.entitySequenceReset &&
-            version.entitySequences?.length
-          ) {
-            // Sequence-only hints are reconciled against the in-flight pull too.
-            queuePendingBaseline(Math.max(...version.entitySequences), false);
-            return;
-          }
-          if (pulling && batch && Number.isSafeInteger(batch.through)) {
-            // The pull in flight is already reconciling this cursor. Recheck
-            // after it assigns its checkpoint before scheduling another pull.
-            queuePendingBaseline(
-              batch.through,
-              version.entitySequenceReset === true,
-            );
-            return;
-          }
-          void pull().catch(scheduleRetry);
+          void reconcile(
+            version.entitySequenceReset ? undefined : hintedSequence,
+          ).catch(scheduleRetry);
           return;
         }
         for (const document of batch.documents) {
           const scope = preferenceScopeFromEntityId(document.id);
           if (!scope) continue;
           if (document._deleted) {
-            void pull().catch(scheduleRetry);
+            void reconcile(batch.through).catch(scheduleRetry);
             return;
           }
           try {
@@ -439,7 +412,7 @@ export function connectUiPreferences(
               typeof entity.value.fields !== "object" ||
               entity.value.fields === null
             ) {
-              void pull().catch(scheduleRetry);
+              void reconcile(batch.through).catch(scheduleRetry);
               return;
             }
             preferenceRows.push({
@@ -447,7 +420,7 @@ export function connectUiPreferences(
               fields: entity.value.fields as PreferenceFields,
             });
           } catch {
-            void pull().catch(scheduleRetry);
+            void reconcile(batch.through).catch(scheduleRetry);
             return;
           }
         }
