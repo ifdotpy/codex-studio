@@ -658,8 +658,8 @@ class Moves(f.SignedIntegration):
             'request_id': 'recovery-deadline'}, 'recovery-deadline')
         with self.a.runtime.db() as db:
             operation = service._get(db, accepted['requestId'])
-        # A move held in waiting sent no history; _release_unsent covers it.
-        for phase in ('exported', 'importing', 'prepared', 'redirected'):
+        # Before an import on the target, _release_untransferred covers a held move.
+        for phase in ('importing', 'prepared', 'redirected'):
             with self.subTest(phase=phase):
                 operation.update(phase='unknown', uncertainPhase=phase, deadline=time.time() - 1)
                 with self.a.runtime.db() as db:
@@ -674,6 +674,82 @@ class Moves(f.SignedIntegration):
                 self.assertTrue(held.get('recoveryExpiredAt'))
                 self.assertEqual(held['phase'], 'unknown')
                 self.assertIn('deadline', held['error'])
+
+    def test_review_an_expired_export_stays_held_while_the_target_is_active(self):
+        service = self.a.runtime.multi_server().moves()
+        accepted = service.start(self.lead, {'server': self.b.server_id, 'cwd': str(self.b.folder),
+            'request_id': 'expired-export-active'}, 'expired-export-active')
+        with self.a.runtime.db() as db:
+            operation = service._get(db, accepted['requestId'])
+            operation.update(phase='unknown', uncertainPhase='exported', deadline=time.time() - 1)
+            service._save(db, operation)
+        with patch.object(service, '_exchange', return_value={'phase': 'active'}) as exchange, \
+             patch.object(service, '_run') as run:
+            service._reconcile(operation)
+            self.assertEqual([call.args[1] for call in exchange.call_args_list], ['move_status'])
+            run.assert_not_called()
+        with self.a.runtime.read_db() as db:
+            held = service._get(db, operation['id'])
+        self.assertEqual(held['phase'], 'unknown')
+        self.assertTrue(held.get('recoveryExpiredAt'))
+        self.assertEqual(self.a.runtime.agent(self.lead['id'])['executionMove']['phase'], 'unknown')
+
+    def test_an_expired_transfer_releases_the_chat_without_a_target_import(self):
+        from codex_multi_server_orchestration import identity
+        service = self.a.runtime.multi_server().moves()
+        original = service._exchange
+        def lost_chunks(server, action, payload, key):
+            if action == 'move_chunk':
+                raise TimeoutError('Hold the chunk receipt')
+            return original(server, action, payload, key)
+        accepted = service.start(self.lead, {'server': self.b.server_id, 'cwd': str(self.b.folder),
+            'request_id': 'expired-transfer'}, 'expired-transfer')
+        key = accepted['requestId']
+        with patch.object(service, '_exchange', side_effect=lost_chunks):
+            service.tick()
+            f.fixture.f.eventually(lambda: not service.running, timeout=DEADLINE)
+        with self.a.runtime.db() as db:
+            operation = service._get(db, key)
+            self.assertEqual((operation['phase'], operation['uncertainPhase']), ('unknown', 'exported'))
+            operation['deadline'] = time.time() - 1
+            service._save(db, operation)
+        target = self.b.runtime.multi_server().moves()
+        with self.b.runtime.db() as db:
+            receiving = target._get(db, identity(key, 'target'))
+            self.assertEqual(receiving['phase'], 'receiving')
+            receiving['deadline'] = time.time() - 1
+            target._save(db, receiving)
+        service.tick()
+        f.fixture.f.eventually(lambda: not service.running, timeout=DEADLINE)
+        with self.a.runtime.read_db() as db:
+            released = service._get(db, key)
+        self.assertEqual(released['phase'], 'failed')
+        self.assertIn('deadline', released['error'])
+        source = self.a.runtime.agent(self.lead['id'])
+        self.assertNotIn('executionMove', source)
+        self.assertNotIn('movedTo', source)
+        with self.assertRaisesRegex(ValueError, 'deadline'):
+            original(self.b.server_id, 'move_prepare', {'move': key}, identity(key, 'prepare'))
+        self.assertFalse([1 for method, _ in self.b.runtime.server.calls
+                          if method in {'thread/resume', 'turn/start', 'claude/moveImport'}])
+
+    def test_a_large_history_gets_a_transfer_deadline_by_its_size(self):
+        import codex_agent_move as move
+        from codex_multi_server_orchestration import identity
+        started = time.time()
+        with patch.object(move, 'MIN_TRANSFER_RATE', 1):
+            self.finish_move(self.lead, key='large-history')
+        service = self.a.runtime.multi_server().moves()
+        with self.a.runtime.read_db() as db:
+            operation = next(service._get(db, row[0]) for row in db.execute(
+                "SELECT id FROM runtime_agent_moves WHERE json_extract(record,'$.side')='source'"))
+        size = operation['descriptor']['files'][0]['size']
+        self.assertGreater(size, 0)
+        self.assertGreater(operation['deadline'], started + DEADLINE + size - 60)
+        with self.b.runtime.read_db() as db:
+            imported = self.b.runtime.multi_server().moves()._get(db, identity(operation['id'], 'target'))
+        self.assertGreater(imported['deadline'], started + DEADLINE + size - 60)
+        self.assertLessEqual(imported['deadline'], operation['deadline'])
 
     def test_review_expired_target_cannot_accept_late_activation(self):
         service = self.a.runtime.multi_server().moves()
