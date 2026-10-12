@@ -23,6 +23,7 @@ import time
 import traceback
 from typing import Any, Protocol, cast
 import uuid
+import zlib
 
 TIMEOUT = 20
 MAX_BUNDLE = 256 * 1024 * 1024
@@ -32,6 +33,10 @@ EXPORT_AGE = 86400
 INPUT_ATTEMPTS = 8
 SPAWN_ATTEMPTS = 8
 PATH = '/api/servers/orchestration'
+MAX_REQUEST = 256 * 1024
+MAX_UNPACKED = 16 * 1024 * 1024
+# A Claude move check and its descriptor carry the exact tool schemas.
+PACKED_ACTIONS = frozenset({'move_validate', 'move_begin'})
 
 
 class Transport(Protocol):
@@ -47,6 +52,30 @@ def identity(*parts: str) -> str:
 
 def encoded(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+
+
+def request_body(key: str, action: str, payload: dict[str, Any]) -> str:
+    """The envelope a paired server receives. A move payload above the request limit goes
+    compressed; the receiver restores it before it computes the request signature."""
+    body = encoded({'requestId': key, 'action': action, 'payload': payload})
+    if action in PACKED_ACTIONS and len(body.encode()) > MAX_REQUEST:
+        packed = base64.b64encode(zlib.compress(encoded(payload).encode(), 9)).decode()
+        body = encoded({'requestId': key, 'action': action, 'payload': {'packed': packed}})
+    return body
+
+
+def unpacked(action: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if action not in PACKED_ACTIONS or set(payload) != {'packed'}:
+        return payload
+    try:
+        inflater = zlib.decompressobj()
+        text = inflater.decompress(base64.b64decode(payload['packed'], validate=True), MAX_UNPACKED)
+        value = json.loads(text) if inflater.eof and not inflater.unconsumed_tail else None
+    except (TypeError, ValueError, zlib.error):
+        value = None
+    if not isinstance(value, dict):
+        raise ValueError('The packed request is invalid or exceeds 16 MiB')
+    return value
 
 
 def expired_receipt(key: str) -> dict[str, Any]:
@@ -339,16 +368,17 @@ class MultiServerService:
         return json.loads(row[0])  # type: ignore[no-any-return]
 
     def queue(self, db: Any, server: str, action: str, payload: dict[str, Any], key: str) -> str:
-        body = encoded({'requestId': key, 'action': action, 'payload': payload})
-        if len(body.encode('utf-8')) > 256 * 1024:
+        body = request_body(key, action, payload)
+        if len(body.encode('utf-8')) > MAX_REQUEST:
             raise ValueError('The remote request exceeds 256 KiB; use a smaller batch')
-        digest = hashlib.sha256(body.encode()).hexdigest()
+        # The identity of a packed request is its content, not its compressed bytes.
+        digest = hashlib.sha256(encoded({'requestId': key, 'action': action, 'payload': payload}).encode()).hexdigest()
         row = db.execute('SELECT server,body,fingerprint FROM runtime_server_outbox WHERE id=?', (key,)).fetchone()
         if row and (row[0] != server or (row[2] or hashlib.sha256(row[1].encode()).hexdigest()) != digest):
             raise ValueError('This request id has different content')
         retired = db.execute('SELECT signature,server FROM runtime_server_retired WHERE id=? AND direction=?', (key, 'out')).fetchone()
         if retired:
-            if retired['server'] != server or retired['signature'] != hashlib.sha256(body.encode()).hexdigest():
+            if retired['server'] != server or retired['signature'] != digest:
                 raise ValueError('This request id has different content')
             return key
         db.execute('INSERT OR IGNORE INTO runtime_server_outbox(id,server,body,state,created_at,fingerprint) VALUES (?,?,?,?,?,?)',
@@ -767,6 +797,7 @@ class MultiServerService:
         key, action, payload = envelope.get('requestId'), envelope.get('action'), envelope.get('payload')
         if not isinstance(key, str) or not 1 <= len(key) <= 200 or not isinstance(action, str) or not isinstance(payload, dict):
             raise ValueError('Invalid cross-server request')
+        payload = unpacked(action, payload)
         signature = hashlib.sha256(encoded([principal, action, payload]).encode()).hexdigest()
         with self._claim_lock, self.runtime.db() as db:
             retired = db.execute('SELECT signature FROM runtime_server_retired WHERE id=? AND direction=?', (key, 'in')).fetchone()

@@ -16,7 +16,7 @@ from typing import Any, cast
 import uuid
 
 from codex_exact_history import export_codex, frozen_codex_parameters, private_write, unpack_codex, export_claude, extend_codex_history, MAX_HISTORY_BYTES
-from codex_multi_server_orchestration import encoded, identity
+from codex_multi_server_orchestration import MAX_REQUEST, encoded, identity, request_body
 from codex_native_errors import NativeRpcError
 from codex_mcp_capabilities import prompt_catalog, instruction_proofs, instruction_differences, capabilities_match, proof_levels
 
@@ -696,8 +696,8 @@ class AgentMoves:
                       'files': [{'name': name, 'size': (folder / name).stat().st_size,
                                  'sha256': hashlib.sha256((folder / name).read_bytes()).hexdigest()}
                                 for name in ('native.zip',)]}
-        if len(encoded(descriptor).encode()) > 240 * 1024:
-            raise ValueError('The exact native settings exceed 240 KiB. No instructions were truncated')
+        if len(request_body(identity(operation['id'], 'begin'), 'move_begin', descriptor).encode()) > MAX_REQUEST:
+            raise ValueError('The exact native settings exceed 256 KiB after compression. No instructions were truncated')
         return descriptor
 
     def _run(self, key: str) -> None:

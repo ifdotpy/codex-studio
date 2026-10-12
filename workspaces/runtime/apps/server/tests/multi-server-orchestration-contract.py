@@ -25,7 +25,7 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('ms_fixture', Path(__file__).with_name('worker-defaults-contract.py'))
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
-from codex_multi_server_orchestration import MultiServerService, identity
+from codex_multi_server_orchestration import MultiServerService, identity, request_body, unpacked
 
 
 class FakeTransport:
@@ -1165,6 +1165,26 @@ class CrossServer(unittest.TestCase):
             self.remote.put(db, 'agents', a)
         self.drain()
         self.assertGreater(self.home.agent(worker)['remoteStateSequence'], previous)
+
+class PackedRequests(unittest.TestCase):
+    def test_only_a_large_move_request_is_packed_and_it_restores_exactly(self):
+        small = {'move': 'm', 'text': 'x' * 1000}
+        self.assertEqual(json.loads(request_body('k', 'move_begin', small))['payload'], small)
+        large = {'move': 'm', 'text': ' '.join(str(i) for i in range(80000))}
+        self.assertEqual(json.loads(request_body('k', 'input', large))['payload'], large)
+        packed = json.loads(request_body('k', 'move_begin', large))['payload']
+        self.assertEqual(set(packed), {'packed'})
+        self.assertEqual(unpacked('move_begin', packed), large)
+        self.assertEqual(unpacked('input', packed), packed)
+
+    def test_an_invalid_or_oversized_packed_request_is_refused(self):
+        import base64, zlib
+        bomb = base64.b64encode(zlib.compress(b'{"a":"' + b'0' * (17 * 1024 * 1024) + b'"}')).decode()
+        for value in (bomb, 'not base64!', base64.b64encode(b'not zlib').decode(),
+                      base64.b64encode(zlib.compress(b'[1]')).decode(), 7):
+            with self.assertRaisesRegex(ValueError, 'packed request'):
+                unpacked('move_validate', {'packed': value})
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
