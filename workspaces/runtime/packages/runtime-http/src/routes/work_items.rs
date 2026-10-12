@@ -72,8 +72,7 @@ pub(crate) async fn queue(
             WorkItemsRepository::queue(connection, &agent.id.0, agent.epoch).map_err(|_| ApiError::internal())?,
         ).map_err(stored_error)?;
         let assets = WorkItemsRepository::assets(connection, &prepared.asset_ids).map_err(|_| ApiError::internal())?;
-        let assets_present = assets.is_some();
-        let assets = stored_values("runtime_assets", "TranscriptAsset", assets.unwrap_or_default(), validators, true)?;
+        let assets = stored_values("runtime_assets", "TranscriptAsset", assets, validators, true)?;
         let owners = assets.iter().map(|asset| asset["agent"].as_str().expect("schema-validated asset owner")).collect::<BTreeSet<_>>();
         for owner in owners {
             let record = AgentRepository::get(connection, &AgentId::from(owner)).map_err(|_| invalid_stored("runtime_agents", owner))?;
@@ -81,7 +80,7 @@ pub(crate) async fn queue(
                 return Err(invalid_stored("runtime_agents", owner));
             }
         }
-        let items = work_policy::queue_items(prepared, &assets, assets_present).map_err(stored_error)?;
+        let items = work_policy::queue_items(prepared, &assets).map_err(stored_error)?;
         for item in &items {
             if !validators.validate_stored("QueueItem", item) {
                 return Err(invalid_stored("runtime_events", item["id"].as_str().unwrap_or("<event>")));

@@ -271,7 +271,7 @@ class WorkItemsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             )
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_queue_assets_check_live_owner_and_allow_absent_assets_table(self):
+    def test_queue_assets_check_live_owner_and_refuse_dangling_asset(self):
         state_file = self.backend.state / "canvas.sqlite3"
         asset = {
             "id": "deleted-owner-asset", "agent": "deleted-owner", "name": "asset",
@@ -305,40 +305,40 @@ class WorkItemsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (
                 json.dumps({**owner, "deletedAt": None}), "deleted-owner"
             ))
-            database.execute("DROP TABLE runtime_assets")
+            database.execute(
+                "DELETE FROM runtime_assets WHERE id=?", (asset["id"],)
+            )
         self.backend.start()
         response = self.backend.request(
             "GET", f"/api/queue?agent={self.agent_id}", headers=self._headers()
         )
-        self.assertEqual(response.status, 200, response.body[:1000])
-        self.assertEqual(response.json()["items"][0]["assets"], [])
+        self.assertEqual(response.status, 500, response.body[:1000])
+        self.assertIn("runtime_assets/deleted-owner-asset", response.body.decode())
         self.backend.stop()
         with sqlite3.connect(state_file) as database:
-            database.execute("CREATE TABLE runtime_assets(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
             database.execute("DELETE FROM runtime_agents WHERE id='deleted-owner'")
             database.execute("DELETE FROM runtime_event_meta WHERE id='python-queue-1'")
         self.backend.start()
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_startup_and_reads_tolerate_absent_optional_work_tables(self):
+    def test_startup_bootstraps_optional_work_tables(self):
         self.backend.stop()
         with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
-            database.execute("INSERT OR REPLACE INTO runtime_event_meta(id,record) VALUES(?,?)",
-                             ("python-queue-1", json.dumps({"assets": ["asset-absent"]})))
             database.execute("DROP TABLE runtime_assets")
-        self.backend.start()
-        queue_with_absent_assets = self.backend.request(
-            "GET", f"/api/queue?agent={self.agent_id}", headers=self._headers()
-        )
-        self.assertEqual(queue_with_absent_assets.status, 200, queue_with_absent_assets.body[:1000])
-        self.assertEqual(queue_with_absent_assets.json()["items"][0]["assets"], [])
-        self.backend.stop()
-        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
             database.execute("DROP TABLE runtime_work")
             database.execute("DROP TABLE runtime_plans")
             database.execute("DROP TABLE runtime_annotations")
             database.execute("DROP TABLE runtime_event_meta")
         self.backend.start()
+
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            tables = {row[0] for row in database.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )}
+        self.assertTrue({
+            "runtime_assets", "runtime_work", "runtime_plans",
+            "runtime_annotations", "runtime_event_meta",
+        }.issubset(tables))
 
         work = self.backend.request(
             "GET", f"/api/work?agent={self.agent_id}", headers=self._headers()
