@@ -44,6 +44,7 @@ pub struct PendingEvent {
     pub id: String,
     pub kind: String,
     pub created: f64,
+    pub valid: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -67,10 +68,21 @@ impl QueueWriteRepository {
             "SELECT id,kind,created FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status='pending' ORDER BY created,rowid",
         )?;
         let rows = statement.query_map(params![agent, epoch], |row| {
+            let (id, id_valid) = row.get::<_, String>(0).map_or_else(
+                |_| ("<invalid id>".to_owned(), false),
+                |value| (value, true),
+            );
+            let (kind, kind_valid) = row
+                .get::<_, String>(1)
+                .map_or_else(|_| (String::new(), false), |value| (value, true));
+            let (created, created_valid) = row
+                .get::<_, f64>(2)
+                .map_or_else(|_| (f64::NAN, false), |value| (value, value.is_finite()));
             Ok(PendingEvent {
-                id: row.get(0)?,
-                kind: row.get(1)?,
-                created: row.get(2)?,
+                id,
+                kind,
+                created,
+                valid: id_valid && kind_valid && created_valid,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)

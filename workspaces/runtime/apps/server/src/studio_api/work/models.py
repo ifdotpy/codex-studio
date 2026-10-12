@@ -154,7 +154,7 @@ class QueueEditBody(OperationBody):
     message_id: StrictStr | None = None
     expected_revision: StrictStr | None = None
     expectedText: StrictStr | None = None
-    text: StrictStr
+    text: StrictStr = Field(max_length=32000)
 
     @model_validator(mode="after")
     def has_message_identity(self) -> QueueEditBody:

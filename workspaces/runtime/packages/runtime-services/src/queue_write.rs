@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 
+use crate::event_write;
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, EventWriteRepository, QueueWriteRepository, StoreError,
@@ -46,7 +47,8 @@ pub fn action(
     signature: &str,
     snapshot: impl Fn(&Transaction<'_>, &AgentRecord) -> Result<QueueSnapshot, QueueWriteError>,
 ) -> Result<Value, QueueWriteError> {
-    let agent = AgentRepository::get(transaction, &AgentId::from(agent_id))?
+    let agent = AgentRepository::get(transaction, &AgentId::from(agent_id))
+        .map_err(|_| invalid_stored("runtime_agents", agent_id))?
         .ok_or(QueueWriteError::InvalidRequest("Invalid request"))?;
     if agent.id.0 != agent_id {
         return Err(invalid_stored("runtime_agents", agent_id));
@@ -65,7 +67,7 @@ pub fn action(
     let request_id = body
         .get("request_id")
         .and_then(Value::as_str)
-        .map(str::trim)
+        .map(event_write::python_strip)
         .filter(|id| !id.is_empty());
     if body.get("request_id").is_some_and(|value| !value.is_null()) && request_id.is_none() {
         return Err(QueueWriteError::InvalidRequest(
@@ -82,7 +84,8 @@ pub fn action(
         if !QueueWriteRepository::table_exists(transaction, "runtime_operation_receipts")? {
             return Err(QueueWriteError::ReceiptsUnavailable);
         }
-        let receipt = EventWriteRepository::receipt(transaction, receipt_id)?;
+        let receipt = EventWriteRepository::receipt(transaction, receipt_id)
+            .map_err(|_| invalid_stored("runtime_operation_receipts", receipt_id))?;
         if let Some(receipt) = receipt {
             if receipt.signature != signature {
                 return Err(QueueWriteError::Conflict(
@@ -112,8 +115,9 @@ pub fn action(
     } else {
         let target_id = body
             .get("message_id")
-            .or_else(|| body.get("id"))
             .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .or_else(|| body.get("id").and_then(Value::as_str))
             .unwrap_or_default();
         let row = rows
             .iter()
@@ -132,12 +136,7 @@ pub fn action(
             "cancel" => QueueWriteRepository::update_status(transaction, target_id, "cancelled")?,
             "edit" => {
                 let text = body.get("text").and_then(Value::as_str).unwrap_or_default();
-                let text = text.trim();
-                if text.chars().count() > 32_000 {
-                    return Err(QueueWriteError::InvalidRequest(
-                        "Supply a message with no more than 32000 characters",
-                    ));
-                }
+                let text = event_write::python_strip(text);
                 if text.is_empty()
                     && row
                         .get("assets")
@@ -246,6 +245,9 @@ fn reorder(
         ));
     }
     let pending = QueueWriteRepository::pending_events(transaction, &agent.id.0, agent.epoch)?;
+    if let Some(event) = pending.iter().find(|event| !event.valid) {
+        return Err(invalid_stored("runtime_events", &event.id));
+    }
     let mut slots = Vec::new();
     let mut run = Vec::new();
     let mut lower = f64::NEG_INFINITY;
@@ -260,14 +262,14 @@ fn reorder(
         let mut values = Vec::new();
         let mut last = lower;
         for original in &run {
-            last = (*original).max(next_up(last));
+            last = (*original).max(last.next_up());
             values.push(last);
         }
         if values.last().is_some_and(|value| *value >= upper) {
             values.clear();
             last = upper;
             for original in run.iter().rev() {
-                last = (*original).min(next_down(last));
+                last = (*original).min(last.next_down());
                 values.push(last);
             }
             values.reverse();
@@ -296,37 +298,12 @@ fn reorder(
     Ok(())
 }
 
-fn next_up(value: f64) -> f64 {
-    if value.is_nan() || value == f64::INFINITY {
-        value
-    } else if value == 0.0 {
-        f64::from_bits(1)
-    } else if value > 0.0 {
-        f64::from_bits(value.to_bits() + 1)
-    } else {
-        f64::from_bits(value.to_bits() - 1)
-    }
-}
-fn next_down(value: f64) -> f64 {
-    if value.is_nan() || value == f64::NEG_INFINITY {
-        value
-    } else if value == 0.0 {
-        f64::from_bits((1_u64 << 63) | 1)
-    } else if value > 0.0 {
-        f64::from_bits(value.to_bits() - 1)
-    } else {
-        f64::from_bits(value.to_bits() + 1)
-    }
-}
-
 fn read_metadata(transaction: &Transaction<'_>, id: &str) -> Result<Value, QueueWriteError> {
     if !QueueWriteRepository::table_exists(transaction, "runtime_event_meta")? {
         return Err(QueueWriteError::MetadataUnavailable);
     }
-    let record = QueueWriteRepository::metadata(transaction, id).map_err(|error| match error {
-        StoreError::Sqlite(_) => QueueWriteError::MetadataUnavailable,
-        other => QueueWriteError::Store(other),
-    })?;
+    let record = QueueWriteRepository::metadata(transaction, id)
+        .map_err(|_| invalid_stored("runtime_event_meta", id))?;
     match record {
         None => Ok(json!({})),
         Some(record) => {
