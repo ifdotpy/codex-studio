@@ -1,6 +1,7 @@
 """Route tests for analytics and cost estimates."""
 
 from __future__ import annotations
+from server_test_waits import HANG_GUARD_SECONDS
 
 import asyncio
 from collections.abc import Generator
@@ -541,7 +542,7 @@ class InsightsRouterTests(unittest.TestCase):
             self.assertTrue(context.runtime.export_closed)
         finally:
             server.should_exit = True
-            thread.join(timeout=5)
+            thread.join(timeout=HANG_GUARD_SECONDS)
         self.assertFalse(thread.is_alive(), "loopback ASGI server failed to stop")
 
     def test_export_failure_before_first_chunk_returns_error_before_headers(self) -> None:

@@ -4,7 +4,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from server_test_waits import wait_for_condition
+from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -133,7 +133,7 @@ class CanvasChatSeedContract(unittest.TestCase):
                 # read-lock behavior is measured while the write lock is held.
                 runtime.closed = True
                 runtime.changed.set()
-                runtime.scheduler.join(timeout=5)
+                runtime.scheduler.join(timeout=HANG_GUARD_SECONDS)
                 self.assertFalse(runtime.scheduler.is_alive())
                 runtime.closed = False
 

@@ -114,7 +114,7 @@ class RuntimeResourceTriggerReuseContract(unittest.TestCase):
         worker = threading.Thread(target=use_database)
         worker.start()
         self.assertTrue(finished.wait(HANG_GUARD_SECONDS))
-        worker.join(5)
+        worker.join(HANG_GUARD_SECONDS)
         self.assertFalse(worker.is_alive())
         gc.collect()
         self.assertIsNone(connection_ref[0]())

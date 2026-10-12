@@ -117,7 +117,7 @@ class WorkerLifecycleRestartContract(unittest.TestCase):
         self.restart()
         result = self.spawn()
         release.set()
-        thread.join(5)
+        thread.join(HANG_GUARD_SECONDS)
         self.assertFalse(thread.is_alive())
         self.assertEqual(len(failures), 1)
         self.assertEqual([agent['accountKey'] for agent in result['agents']],

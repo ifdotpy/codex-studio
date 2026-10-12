@@ -286,7 +286,7 @@ class SchedulerConnection(unittest.TestCase):
         finally:
             rt.closed = True
             rt.changed.set()
-            worker.join(5)
+            worker.join(HANG_GUARD_SECONDS)
             rt.closed = False
         self.assertFalse(worker.is_alive())
         self.assertEqual(order, ['monitor', 'dispatch'])

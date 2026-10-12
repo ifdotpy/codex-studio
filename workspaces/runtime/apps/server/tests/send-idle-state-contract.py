@@ -25,7 +25,7 @@ class IdleSendContract(unittest.TestCase):
         self.runtime = f.Runtime(Path(self.directory.name), f.FakeServer)
         self.runtime.closed = True
         self.runtime.changed.set()
-        self.runtime.scheduler.join(timeout=5)
+        self.runtime.scheduler.join(timeout=HANG_GUARD_SECONDS)
         self.assertFalse(self.runtime.scheduler.is_alive())
         self.runtime.closed = False
         self.runtime._fast_delivery_enabled = False

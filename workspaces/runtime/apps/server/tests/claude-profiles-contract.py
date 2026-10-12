@@ -159,7 +159,7 @@ class Profiles(unittest.TestCase):
                 self.assertEqual(current['status'], 'ready')
             finally:
                 release.set()
-                worker.join(5)
+                worker.join(HANG_GUARD_SECONDS)
         self.assertFalse(worker.is_alive())
         self.assertEqual(errors, [])
         self.assertEqual(results[0]['status'], 'ready')

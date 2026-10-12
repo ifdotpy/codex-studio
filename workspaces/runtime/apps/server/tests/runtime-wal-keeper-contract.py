@@ -79,7 +79,7 @@ class RuntimeWalKeeperContract(unittest.TestCase):
 
         closer = threading.Thread(target=close_runtime)
         closer.start()
-        closer.join(5)
+        closer.join(HANG_GUARD_SECONDS)
         self.assertFalse(closer.is_alive())
         self.assertEqual(failures, [])
         self.assertFalse(keeper.idle)
@@ -186,7 +186,7 @@ class RuntimeWalKeeperContract(unittest.TestCase):
                         self.assertTrue(keepers[0].idle)
                     finally:
                         release_step.set()
-                        constructor.join(5)
+                        constructor.join(HANG_GUARD_SECONDS)
 
         self.assertEqual(len(keepers), 1)
         self.assertEqual(len(cleaned_runtimes), 1)

@@ -87,7 +87,7 @@ class RuntimeLockMetricsContract(unittest.TestCase):
         for thread in threads:
             thread.start()
         for thread in threads:
-            thread.join(timeout=5)
+            thread.join(timeout=HANG_GUARD_SECONDS)
             self.assertFalse(thread.is_alive())
         rows = lock.runtime_lock_metrics()
         self.assertEqual(sum(row["count"] for row in rows), workers * per_worker)

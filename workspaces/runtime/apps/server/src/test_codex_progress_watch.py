@@ -465,7 +465,7 @@ class ProgressWatchdogTests(unittest.TestCase):
         finally:
             watcher._condition.release()
 
-        subscribe_thread.join(timeout=5)
+        subscribe_thread.join(timeout=HANG_GUARD_SECONDS)
         try:
             self.assertFalse(subscribe_thread.is_alive(), "second native subscription deadlocked")
             self.assertTrue(subscribe_finished.is_set())

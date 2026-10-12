@@ -240,7 +240,7 @@ class HttpRequestTracesContract(unittest.TestCase):
         for thread in threads:
             thread.start()
         for thread in threads:
-            thread.join(timeout=5)
+            thread.join(timeout=HANG_GUARD_SECONDS)
             self.assertFalse(thread.is_alive())
         row = next(row for row in traces.route_metrics()["routes"]
                    if row["route"] == "/concurrent")

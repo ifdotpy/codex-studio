@@ -198,7 +198,7 @@ class SpawnRequestRecovery(unittest.TestCase):
                 self.assertTrue(cancelled['cancelRequested'])
             finally:
                 release.set()
-                worker.join(5)
+                worker.join(HANG_GUARD_SECONDS)
             self.assertFalse(worker.is_alive())
         self.assertEqual(self.children(), [])
         self.assertFalse(self.response('spawn-1')['success'])

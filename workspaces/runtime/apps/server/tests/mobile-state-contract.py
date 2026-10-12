@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, WEB_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -131,7 +132,7 @@ class MobileStateHttpContract(unittest.TestCase):
     def stop_server(self):
         self.server.shutdown()
         self.server.server_close()
-        self.thread.join(timeout=5)
+        self.thread.join(timeout=HANG_GUARD_SECONDS)
         self.assertFalse(self.thread.is_alive())
 
     def tearDown(self):

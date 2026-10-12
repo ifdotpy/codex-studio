@@ -453,8 +453,8 @@ class NativeReleaseContract(unittest.TestCase):
                 self.assertFalse(writer_finished.wait(.1), "runtime writer interleaved with discovery")
             finally:
                 continue_discovery.set()
-                worker.join(5)
-                writer.join(5)
+                worker.join(HANG_GUARD_SECONDS)
+                writer.join(HANG_GUARD_SECONDS)
         self.assertFalse(worker.is_alive(), "tick did not finish after discovery resumed")
         self.assertFalse(writer.is_alive(), "writer did not finish after tick released the lock")
         self.assertTrue(writer_finished.is_set())

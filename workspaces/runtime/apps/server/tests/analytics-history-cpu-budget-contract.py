@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -211,7 +212,7 @@ class HistoryCpuBudget(unittest.TestCase):
         self.runtime.analytics_history_thread = worker
         with patch.object(history, 'prepare_budget_migration', side_effect=prepare):
             worker.start()
-            worker.join(5)
+            worker.join(HANG_GUARD_SECONDS)
         self.assertFalse(worker.is_alive())
         self.assertEqual(result['returns'], [False]*8)
         self.assertGreater(result['cpu'], .015)
