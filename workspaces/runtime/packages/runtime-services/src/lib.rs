@@ -8,6 +8,7 @@
 //! services; services never depend on HTTP types.
 
 pub mod account_policy;
+pub mod questions_reads;
 pub mod rules;
 pub mod sync_policy;
 pub mod work_policy;

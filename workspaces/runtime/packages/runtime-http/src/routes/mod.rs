@@ -4,6 +4,7 @@ pub(crate) mod manifest;
 
 mod catalog;
 mod desktop;
+mod questions_reads;
 mod rules;
 mod session;
 mod sync;
@@ -16,6 +17,7 @@ pub(crate) fn groups() -> Vec<RouteGroup> {
     vec![
         session::routes(),
         rules::routes(),
+        questions_reads::routes(),
         sync::routes(),
         sync_documents::routes(),
         work_items::routes(),
