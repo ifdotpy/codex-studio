@@ -3331,6 +3331,8 @@ export interface components {
       epoch?: number | null;
       /** Error */
       error?: components["schemas"]["NativeProviderError"] | null | string;
+      /** Excludedaccountkeys */
+      excludedAccountKeys?: string[] | null;
       /** Executionmode */
       executionMode?: ("vm" | "native") | null;
       /** Fastmode */
@@ -3783,6 +3785,8 @@ export interface components {
       error?: components["schemas"]["JsonObjectResponse"] | null | string;
       /** Events */
       events?: number;
+      /** Excludedaccountkeys */
+      excludedAccountKeys?: string[];
       /** Executionarchives */
       executionArchives?: components["schemas"]["JsonObjectResponse"][];
       /**
@@ -4293,6 +4297,8 @@ export interface components {
       epoch?: number | null;
       /** Error */
       error?: components["schemas"]["NativeProviderError"] | null | string;
+      /** Excludedaccountkeys */
+      excludedAccountKeys?: string[] | null;
       /** Executionmode */
       executionMode?: ("vm" | "native") | null;
       /** Fastmode */
@@ -5840,6 +5846,8 @@ export interface components {
       epoch?: number | null;
       /** Error */
       error?: components["schemas"]["NativeProviderError"] | null | string;
+      /** Excludedaccountkeys */
+      excludedAccountKeys?: string[] | null;
       /** Executionmode */
       executionMode?: ("vm" | "native") | null;
       /** Fastmode */
@@ -7841,6 +7849,8 @@ export interface components {
       daybreak_enabled?: boolean | null;
       /** Effort */
       effort?: string | null;
+      /** Excluded Account Keys */
+      excluded_account_keys?: string[] | null;
       /** Expected Account Key */
       expected_account_key?: string | null;
       /** Expected Mode Revision */

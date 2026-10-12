@@ -1004,6 +1004,46 @@ class RuntimeContract(unittest.TestCase):
         self.assertEqual(self.runtime.agent(key)['status'], 'idle')
         self.assertIsNone(self.runtime.server)
 
+    def test_chat_account_exclusions_persist_and_reject_transfers_without_interrupting_turn(self):
+        lead = self.lead()
+        before = self.runtime.agent(lead['id'])
+        updated = self.runtime.conversation_settings(
+            lead['id'], {'excluded_account_keys': ['default']})
+        self.assertEqual(updated['excludedAccountKeys'], ['default'])
+        self.assertEqual(updated['status'], before['status'])
+        self.assertEqual(updated.get('inFlight'), before.get('inFlight'))
+        with self.assertRaisesRegex(ValueError, 'disabled for this chat'):
+            self.runtime.send(lead['id'], 'A later turn')
+        self.assertEqual(self.runtime.agent(lead['id'])['status'], before['status'])
+        from codex_account_transfer import AccountTransfers
+        transfers = AccountTransfers(self.runtime)
+        with self.assertRaisesRegex(ValueError, 'disabled for this chat'):
+            transfers.request(lead['id'], 'default', '47c243b6-18d0-49be-a127-72ccfd57a5e8')
+        transfers.close()
+        self.runtime.close()
+        self.runtime = Runtime(self.root, FakeServer)
+        self.assertEqual(self.runtime.agent(lead['id'])['excludedAccountKeys'], ['default'])
+
+    def test_worker_spawn_uses_another_chat_enabled_account(self):
+        lead = self.runtime.new_lead({'cwd': str(self.root)})
+        self.runtime.conversation_settings(lead['id'], {'excluded_account_keys': ['default']})
+        rows = [
+            {'id': 'default', 'status': 'ready', 'provider': 'codex'},
+            {'id': 'second', 'status': 'ready', 'provider': 'codex'},
+        ]
+        with patch.object(self.runtime.accounts, 'list', return_value=rows), \
+                patch.object(self.runtime.accounts, 'default', return_value='default'), \
+                patch.object(self.runtime.accounts, 'get', side_effect=lambda key: next(row for row in rows if row['id'] == key)), \
+                patch.object(self.runtime, 'catalog', return_value={'data': [{'model': 'gpt-6-luna'}]}):
+            worker = self.runtime.create(
+                {'prompt': 'Do the work', 'role': 'implementer', 'cwd': str(self.root)},
+                parent=lead['id'], defer=True)
+            self.assertEqual(worker['accountKey'], 'second')
+            with self.assertRaisesRegex(ValueError, 'disabled for this chat'):
+                self.runtime.create(
+                    {'prompt': 'Do the work', 'role': 'implementer', 'cwd': str(self.root),
+                     'account_key': 'default'}, parent=lead['id'], defer=True)
+
     def test_lead_models_follow_account_catalog_and_role_identity(self):
         for model in ['gpt-5.6-luna', 'gpt-5.6-terra', 'test-model']:
             lead = self.runtime.new_lead({'model': model})

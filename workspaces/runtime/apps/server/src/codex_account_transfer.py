@@ -251,6 +251,8 @@ class AccountTransfers:
                         or op.get('scope', 'team') != scope):
                     raise ValueError('This transfer id has different content')
                 return op  # type: ignore[no-any-return]  # typed-suspect: persisted JSON may not match the declared transfer record
+            from codex_worker_accounts import require_not_excluded
+            require_not_excluded(lead, target)
             old = lead.get('accountTransfer') or {}
             if old and old['status'] not in TERMINAL:
                 if old['targetAccountKey'] == target and old.get('scope', 'team') == scope:

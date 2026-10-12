@@ -4905,6 +4905,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def set_account(self, key, account_key, cwd=None):
         with self.lock, self.db() as db:
             a = self.agent(key, db)
+            if account_key in a.get("excludedAccountKeys", []):
+                raise ValueError(f"Account {account_key} is disabled for this chat")
             directory = a["cwd"]
             if cwd is not None:
                 if not isinstance(cwd, str) or not cwd.strip():
@@ -5077,6 +5079,20 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             pass
 
     def conversation_settings(self, key, data):
+        if "excluded_account_keys" in data:
+            if set(data) - {"id", "excluded_account_keys"}:
+                raise ValueError("Save chat account exclusions separately from other settings")
+            values = data["excluded_account_keys"]
+            if (not isinstance(values, list) or len(values) > 512
+                    or any(not isinstance(value, str) or not value for value in values)):
+                raise ValueError("Choose valid chat account exclusions")
+            with self.lock, self.db() as db:
+                agent = self.agent(key, db)
+                if not agent.get("isLead"):
+                    raise ValueError("Only a lead can change chat account exclusions")
+                agent["excludedAccountKeys"] = list(dict.fromkeys(values))
+                self.put(db, "agents", agent)
+                return agent
         if ("agent_mode" in data or "expected_mode_revision" in data
                 or "subagent_concurrency" in data):
             from codex_agent_modes import change_mode
@@ -5146,12 +5162,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         worker_catalog = None
         if "worker_defaults" in data:
             from codex_worker_accounts import settings_catalog
-            worker_catalog = settings_catalog(self, target.get("accountKey", "default"), data["worker_defaults"])
+            worker_catalog = settings_catalog(self, target.get("accountKey", "default"), data["worker_defaults"], target)
         review_catalog = None
         if "review_defaults" in data:
             from codex_worker_accounts import settings_catalog
             defaults = data.get("worker_defaults") or {"account_key": self.worker_defaults(target).get("accountKey")}
-            review_catalog = settings_catalog(self, target.get("accountKey", "default"), defaults)
+            review_catalog = settings_catalog(self, target.get("accountKey", "default"), defaults, target)
         with self.lock, self.db() as db:
             a = self.agent(key, db)
             if a.get("deletedAt"):
@@ -5295,6 +5311,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 ):
                     raise ValueError("This message id has different content")
                 return {"id": message_id, "status": old["status"], "error": old["error"]}
+            from codex_worker_accounts import require_not_excluded
+            require_not_excluded(self.agent(a["rootId"], db), a.get("accountKey", "default"))
             from codex_agent_modes import assert_worker_input
             assert_worker_input(self, db, a)
             assert_native_thread_open(a)
@@ -6830,6 +6848,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if a.get("lazyAccountTransfer"):
                 from codex_account_transfer import transfer_store
                 a = transfer_store(self).before_start(a)
+            with self.read_db() as db:
+                current = self.agent(a["id"], db)
+                from codex_worker_accounts import require_not_excluded
+                require_not_excluded(
+                    self.agent(current["rootId"], db), current.get("accountKey", "default"))
             revalidated_execution = None
             account_key = a.get("accountKey", "default")
             settings_account = a.get("executionSettingsAccountKey", account_key)

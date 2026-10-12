@@ -313,6 +313,7 @@ class ConversationRequest(ContractModel):
     agent_mode: AgentMode | None = None
     subagent_concurrency: int | None = Field(default=None, ge=0, le=512)
     expected_mode_revision: int | None = Field(default=None, ge=0)
+    excluded_account_keys: list[str] | None = Field(default=None, max_length=512)
 
     @field_validator("model", "effort")
     @classmethod
