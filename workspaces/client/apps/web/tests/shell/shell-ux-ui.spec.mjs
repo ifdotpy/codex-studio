@@ -367,10 +367,31 @@ test("Shell ux ui", async ({
     await page.locator(".chat-row").filter({ hasText: "Release lead" }).click();
     for (const width of [1440, 390, 320]) {
       await page.setViewportSize({ width, height: 960 });
+      const conversationsToggle = page.getByRole("button", {
+        name: "Toggle conversations",
+        exact: true,
+      });
+      await expect(conversationsToggle).toBeVisible();
+      await expect(conversationsToggle).toHaveAttribute(
+        "aria-expanded",
+        width <= 760 ? "false" : "true",
+      );
       for (const scheme of ["light", "dark"]) {
-        await page
-          .getByRole("button", { name: "Studio settings", exact: true })
-          .click();
+        const settingsButton = page.getByRole("button", {
+          name: "Studio settings",
+          exact: true,
+        });
+        if (
+          (await conversationsToggle.getAttribute("aria-expanded")) === "false"
+        ) {
+          await conversationsToggle.click();
+          await expect(conversationsToggle).toHaveAttribute(
+            "aria-expanded",
+            "true",
+          );
+        }
+        await expect(settingsButton).toBeVisible();
+        await settingsButton.click();
         const dialog = page.getByTestId("studio-settings");
         await dialog.waitFor({ state: "visible" });
         assert.deepEqual(
@@ -433,7 +454,15 @@ test("Shell ux ui", async ({
         );
       }
       if (width < 761) {
-        await page.locator("#sidebar-toggle").click();
+        if (
+          (await conversationsToggle.getAttribute("aria-expanded")) === "false"
+        ) {
+          await conversationsToggle.click();
+          await expect(conversationsToggle).toHaveAttribute(
+            "aria-expanded",
+            "true",
+          );
+        }
         await page
           .getByRole("button", { name: "Add project", exact: true })
           .click();
@@ -442,6 +471,15 @@ test("Shell ux ui", async ({
           .waitFor();
         await page.keyboard.press("Escape");
         await page.keyboard.press("Escape");
+        if (
+          (await conversationsToggle.getAttribute("aria-expanded")) === "true"
+        ) {
+          await conversationsToggle.click();
+          await expect(conversationsToggle).toHaveAttribute(
+            "aria-expanded",
+            "false",
+          );
+        }
       }
     }
     const compactContext = await testBrowser.newContext({
@@ -766,9 +804,20 @@ test("Shell ux ui", async ({
           .querySelector(".conversation-header-tools-menu")
           ?.hasAttribute("open"),
     );
-    await compactPage
-      .getByRole("button", { name: "Studio settings", exact: true })
-      .click();
+    const compactSettingsButton = compactPage.getByRole("button", {
+      name: "Studio settings",
+      exact: true,
+    });
+    if (!(await compactSettingsButton.isVisible())) {
+      const compactSidebarToggle = compactPage.locator("#sidebar-toggle");
+      await compactSidebarToggle.click();
+      await expect(compactSidebarToggle).toHaveAttribute(
+        "aria-expanded",
+        "true",
+      );
+      await expect(compactSettingsButton).toBeVisible();
+    }
+    await compactSettingsButton.click();
     const studioSettings = compactPage.getByTestId("studio-settings");
     assert.deepEqual(
       (await studioSettings.getByRole("tab").allTextContents()).map((label) =>

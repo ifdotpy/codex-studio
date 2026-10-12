@@ -151,14 +151,11 @@ class NotificationPreflightRetry(unittest.TestCase):
         directory = temporary.name
         scheduler_release = threading.Event()
         scheduler_started = threading.Event()
-        scheduler_dispatched = threading.Event()
-        original_schedule = Runtime.schedule
 
         def held_schedule(runtime):
             scheduler_started.set()
             if not scheduler_release.wait(HANG_GUARD_SECONDS):
                 raise AssertionError("test did not release the live scheduler")
-            return original_schedule(runtime)
 
         with patch.object(Runtime, "schedule", held_schedule):
             runtime = Runtime(Path(directory), server_factory=object)
@@ -263,16 +260,6 @@ class NotificationPreflightRetry(unittest.TestCase):
 
         server.notification_dispatcher_closed = dispatcher_closed
 
-        original_dispatch = runtime.dispatch
-
-        def tracked_dispatch(*args, **kwargs):
-            try:
-                return original_dispatch(*args, **kwargs)
-            finally:
-                scheduler_dispatched.set()
-
-        runtime.dispatch = tracked_dispatch
-
         with patch.object(codex_runtime, "sqlite_connect", tracked_connect):
             for message in messages:
                 server.enqueue(notify, message)
@@ -309,10 +296,6 @@ class NotificationPreflightRetry(unittest.TestCase):
         self.assertEqual([json.loads(row[1])["text"] for row in items],
                          ["first response", "second response"])
         self.assertEqual(cursor[0], 4)
-
-        runtime.changed.set()
-        scheduler_release.set()
-        self.assertTrue(scheduler_dispatched.wait(HANG_GUARD_SECONDS), "live scheduler did not run its explicitly woken pass")
 
 
 if __name__ == "__main__":

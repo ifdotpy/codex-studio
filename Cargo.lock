@@ -1406,6 +1406,7 @@ dependencies = [
  "futures-util",
  "jsonschema",
  "openapi-to-rust",
+ "rusqlite",
  "serde",
  "serde_json",
  "serde_path_to_error",
@@ -1442,6 +1443,7 @@ dependencies = [
  "axum",
  "getrandom",
  "studio-runtime-http",
+ "studio-runtime-services",
  "studio-runtime-store",
  "tokio",
 ]
@@ -1450,6 +1452,8 @@ dependencies = [
 name = "studio-runtime-services"
 version = "0.1.0"
 dependencies = [
+ "jsonschema",
+ "rusqlite",
  "serde",
  "serde_json",
  "studio-runtime-process",
@@ -1462,6 +1466,7 @@ dependencies = [
 name = "studio-runtime-store"
 version = "0.1.0"
 dependencies = [
+ "jsonschema",
  "rusqlite",
  "serde",
  "serde_json",
