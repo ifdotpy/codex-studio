@@ -80,7 +80,7 @@ class HttpRequestTracesContract(unittest.TestCase):
             self.request,
             "/api/sync/pull?scope=transcript%3Aprivate-agent-id&token=private-query-token",
         )
-        self.assertTrue(self.entered.wait(10), "The real HTTP transcript callback did not enter")
+        self.assertTrue(self.entered.wait(HANG_GUARD_SECONDS), "The real HTTP transcript callback did not enter")
         self.clock += .1
         traces.watchdog(self.root)
         active = self.read_journal()["active"]
@@ -349,7 +349,7 @@ class HttpRequestTracesContract(unittest.TestCase):
                         self.assertEqual(response["status"], 200, response)
                         self.assertTrue(json.loads(response["body"])["token"])
                         if operation == "finish":
-                            self.assertTrue(retired.wait(30), "The failed completion did not retire its active trace")
+                            self.assertTrue(retired.wait(HANG_GUARD_SECONDS), "The failed completion did not retire its active trace")
                             self.assertEqual(discarded_keys, trace_keys)
                 self.assertEqual(traces._ACTIVE, {})
                 self.assertEqual(traces._RECENT, [])

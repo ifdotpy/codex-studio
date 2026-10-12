@@ -59,7 +59,7 @@ class LimitsCacheTests(unittest.TestCase):
         release = threading.Event()
         def slow_read(key: str) -> None:
             entered.set()
-            self.assertTrue(release.wait(5))
+            self.assertTrue(release.wait(HANG_GUARD_SECONDS))
         with ThreadPoolExecutor(max_workers=1) as pool:
             runtime = SimpleNamespace(lock=threading.Lock(), closed=False, pool=pool,
                                       limits=Mock(side_effect=slow_read),

@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+from server_test_waits import HANG_GUARD_SECONDS
 
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
@@ -112,7 +113,7 @@ class RuntimeResourceTriggerReuseContract(unittest.TestCase):
 
         worker = threading.Thread(target=use_database)
         worker.start()
-        self.assertTrue(finished.wait(5))
+        self.assertTrue(finished.wait(HANG_GUARD_SECONDS))
         worker.join(5)
         self.assertFalse(worker.is_alive())
         gc.collect()

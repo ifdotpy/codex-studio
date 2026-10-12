@@ -48,7 +48,7 @@ class BusyInputCapacityContract(unittest.TestCase):
                 with patch.object(runtime.server, 'call', side_effect=call):
                     runtime.send(lead['id'], 'Busy input', 'busy-input', delivery='steer')
                     runtime.dispatch(lead['id'])
-                    self.assertTrue(entered.wait(10))
+                    self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                     runtime.server.complete(lead['threadId'], lead['turnId'])
                     self.assertEqual(len(self.active(runtime)), 4)
                     self.assertEqual(len(self.slots(runtime)), 5)
@@ -59,7 +59,7 @@ class BusyInputCapacityContract(unittest.TestCase):
                     })
                     self.assertFalse(runtime.agent(lead['id'])['inFlight'])
                     release.set()
-                    self.assertTrue(start_finished.wait(10), 'busy input start did not return after release')
+                    self.assertTrue(start_finished.wait(HANG_GUARD_SECONDS), 'busy input start did not return after release')
                 fixture.fixture.eventually(
                     lambda: runtime.delivery_receipt('busy-input')['status'] == 'delivered')
                 self.assertTrue(runtime.agent(lead['id'])['inFlight'])

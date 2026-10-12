@@ -441,11 +441,11 @@ class NativeReleaseContract(unittest.TestCase):
               patch.object(self.rt.recovery_pool, "submit", complete_submit)):
             worker = threading.Thread(target=tick, args=(self.rt, time.time() + 31))
             worker.start()
-            self.assertTrue(discovering.wait(5), "tick did not reach blocker discovery")
+            self.assertTrue(discovering.wait(HANG_GUARD_SECONDS), "tick did not reach blocker discovery")
             writer = threading.Thread(target=insert_blocker)
             writer.start()
             try:
-                self.assertTrue(writer_started.wait(5), "runtime writer did not start")
+                self.assertTrue(writer_started.wait(HANG_GUARD_SECONDS), "runtime writer did not start")
                 acquired = self.rt.lock.acquire(blocking=False)
                 if acquired:
                     self.rt.lock.release()

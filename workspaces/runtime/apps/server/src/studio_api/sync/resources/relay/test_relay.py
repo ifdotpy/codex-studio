@@ -8,6 +8,8 @@ from pathlib import Path
 import socket
 import subprocess
 import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
 import tempfile
 import threading
 import time
@@ -26,7 +28,6 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from starlette.types import ASGIApp
 
-from server_test_waits import wait_for_condition
 from studio_api.context import ApiContext
 from studio_api.middleware import RequestBoundary
 from studio_api.sync.resources.hub import ResourceHub
@@ -132,7 +133,7 @@ class RelayRouteTests(unittest.TestCase):
 
     def wait_for_entity_publication(self) -> None:
         self.assertTrue(
-            self.entity_publication.wait(timeout=5),
+            self.entity_publication.wait(timeout=HANG_GUARD_SECONDS),
             "entity publisher did not complete its observable hub update",
         )
 

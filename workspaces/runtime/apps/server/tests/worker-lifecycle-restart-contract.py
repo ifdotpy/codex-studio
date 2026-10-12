@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+from server_test_waits import HANG_GUARD_SECONDS
 
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
@@ -112,7 +113,7 @@ class WorkerLifecycleRestartContract(unittest.TestCase):
                 failures.append(error)
         thread = threading.Thread(target=old_spawn)
         thread.start()
-        self.assertTrue(entered.wait(5), 'spawn did not reach the pending catalog request')
+        self.assertTrue(entered.wait(HANG_GUARD_SECONDS), 'spawn did not reach the pending catalog request')
         self.restart()
         result = self.spawn()
         release.set()

@@ -120,7 +120,7 @@ class NotificationPreflightRetry(unittest.TestCase):
                 finally:
                     blocker.rollback()
                     blocker.close()
-                self.assertTrue(callback_finished.wait(5))
+                self.assertTrue(callback_finished.wait(HANG_GUARD_SECONDS))
             finally:
                 proceed.set()
                 worker.join(5)

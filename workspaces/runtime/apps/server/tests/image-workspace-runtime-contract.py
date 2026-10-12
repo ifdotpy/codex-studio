@@ -344,7 +344,7 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         with patch.dict(sys.modules, {'codex_workspace_images': engine}):
             self.rt.image_base_completed(worker_id, {'state': 'ready'})
             self.rt.dispatch()
-            self.assertTrue(second_turn_started.wait(30),
+            self.assertTrue(second_turn_started.wait(HANG_GUARD_SECONDS),
                             'ready image base did not start the resumed turn')
             notice_turn = [params for method, params in self.rt.server.calls if method == 'turn/start'
                            and params['threadId'] == self.rt.agent(worker_id)['threadId']][-1]

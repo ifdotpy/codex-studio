@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+from server_test_waits import HANG_GUARD_SECONDS
 
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
@@ -122,8 +123,8 @@ class HistoryContract(unittest.TestCase):
         try:
             with patch('codex_search_text.search_texts', blocked):
                 for worker in workers: worker.start()
-                self.assertTrue(scanning.wait(5))
-                self.assertTrue(acquired.wait(5), 'runtime.lock stayed held during search')
+                self.assertTrue(scanning.wait(HANG_GUARD_SECONDS))
+                self.assertTrue(acquired.wait(HANG_GUARD_SECONDS), 'runtime.lock stayed held during search')
         finally:
             resume.set()
             for worker in workers: worker.join(5)

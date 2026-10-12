@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_linux_vm import Client, LinuxVMError
+from server_test_waits import HANG_GUARD_SECONDS
 import codex_linux_vm_share as share
 
 
@@ -304,7 +305,7 @@ class ImportReadinessTests(unittest.TestCase):
 
         thread = threading.Thread(target=hold)
         thread.start()
-        self.assertTrue(entered.wait(10))
+        self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
         self.addCleanup(thread.join, 10)
         self.addCleanup(release.set)
 

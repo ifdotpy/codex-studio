@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+from server_test_waits import HANG_GUARD_SECONDS
 
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
@@ -84,7 +85,7 @@ class ImageIndexContract(unittest.TestCase):
         done = threading.Event()
         results = []
         images.start_base_build(self.folder, lambda value: (results.append(value), done.set()))
-        self.assertTrue(done.wait(60))
+        self.assertTrue(done.wait(HANG_GUARD_SECONDS))
         self.assertEqual(results[-1]['state'], 'ready', results[-1])
         state = images._read_json(images._base_state_path(images._repo_key(self.folder)), {})
         return state

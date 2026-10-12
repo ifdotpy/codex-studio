@@ -273,7 +273,7 @@ class ProgressWatchdogTests(unittest.TestCase):
         detach = watcher.subscribe("first", changed.set)
         try:
             self.first.write_text("Native event.\n", encoding="utf-8")
-            self.assertTrue(changed.wait(timeout=5))
+            self.assertTrue(changed.wait(timeout=HANG_GUARD_SECONDS))
         finally:
             detach()
 
@@ -375,7 +375,7 @@ class ProgressWatchdogTests(unittest.TestCase):
             temporary = pending.with_suffix(".tmp")
             temporary.write_text("First progress update.\n", encoding="utf-8")
             temporary.replace(pending)
-            self.assertTrue(changed.wait(timeout=5), "native watch missed first file creation")
+            self.assertTrue(changed.wait(timeout=HANG_GUARD_SECONDS), "native watch missed first file creation")
             self.assertEqual(
                 read_progress(self.root, "pending-agent")["markdown"],
                 "First progress update.\n",
@@ -398,7 +398,7 @@ class ProgressWatchdogTests(unittest.TestCase):
             temporary = pending.with_suffix(".tmp")
             temporary.write_text("First progress update.\n", encoding="utf-8")
             temporary.replace(pending)
-            self.assertTrue(changed.wait(timeout=5), "native watch missed first file creation")
+            self.assertTrue(changed.wait(timeout=HANG_GUARD_SECONDS), "native watch missed first file creation")
             from codex_progress import read_progress
 
             self.assertEqual(
@@ -454,7 +454,7 @@ class ProgressWatchdogTests(unittest.TestCase):
         subscribe_thread = threading.Thread(target=subscribe_second)
         try:
             self.first.write_text("Concurrent native update.\n", encoding="utf-8")
-            self.assertTrue(event_dispatched.wait(timeout=5), "native handler waited on watcher lock")
+            self.assertTrue(event_dispatched.wait(timeout=HANG_GUARD_SECONDS), "native handler waited on watcher lock")
             # BaseObserver owns this lock while dispatching. It must be available
             # even though the watcher condition is still held by this thread.
             self.assertTrue(observer._lock.acquire(timeout=1), "native observer lock remained held")
@@ -469,7 +469,7 @@ class ProgressWatchdogTests(unittest.TestCase):
         try:
             self.assertFalse(subscribe_thread.is_alive(), "second native subscription deadlocked")
             self.assertTrue(subscribe_finished.is_set())
-            self.assertTrue(observer_callback.wait(timeout=5))
+            self.assertTrue(observer_callback.wait(timeout=HANG_GUARD_SECONDS))
             self.assertTrue(callback_lock_results)
             self.assertTrue(all(observer_lock and condition_lock
                                 for observer_lock, condition_lock in callback_lock_results))
@@ -495,12 +495,12 @@ class ProgressWatchdogTests(unittest.TestCase):
         observer = watcher._observer
         try:
             self.first.write_text("Trigger callback resubscribe.\n", encoding="utf-8")
-            self.assertTrue(resubscribed.wait(timeout=5))
+            self.assertTrue(resubscribed.wait(timeout=HANG_GUARD_SECONDS))
             self.assertIsNotNone(watcher._dispatcher)
             self.assertTrue(watcher._dispatcher.is_alive())
 
             self.first.write_text("Trigger replacement callback.\n", encoding="utf-8")
-            self.assertTrue(replacement_called.wait(timeout=5))
+            self.assertTrue(replacement_called.wait(timeout=HANG_GUARD_SECONDS))
         finally:
             handles.pop("replacement", lambda: None)()
 
@@ -593,7 +593,7 @@ class ProgressWatchdogTests(unittest.TestCase):
 
         self.first.write_text("Fresh watch after detach.\n", encoding="utf-8")
         observer.emit("first", "modified", self.first)
-        self.assertTrue(readded_callback.wait(timeout=5))
+        self.assertTrue(readded_callback.wait(timeout=HANG_GUARD_SECONDS))
         replacement_detach[0]()
         second_detach()
         self.assertEqual(watcher._watches, {})

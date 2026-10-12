@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+from server_test_waits import HANG_GUARD_SECONDS
 
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
@@ -177,8 +178,8 @@ class RuntimeWalKeeperContract(unittest.TestCase):
                     constructor = threading.Thread(target=construct_runtime)
                     constructor.start()
                     try:
-                        self.assertTrue(step_started.wait(5), repr(constructor_errors))
-                        self.assertTrue(cleanup_started.wait(5))
+                        self.assertTrue(step_started.wait(HANG_GUARD_SECONDS), repr(constructor_errors))
+                        self.assertTrue(cleanup_started.wait(HANG_GUARD_SECONDS))
                         self.assertTrue(constructor.is_alive())
                         runtime = cleaned_runtimes[0]
                         self.assertFalse(runtime.lease.closed)

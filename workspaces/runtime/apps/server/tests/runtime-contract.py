@@ -1436,7 +1436,7 @@ class RuntimeContract(unittest.TestCase):
         with patch.object(executor, 'submit', side_effect=stop_before_start):
             self.runtime.send(lead['id'], 'Pending result', 'stable-event')
             self.runtime.dispatch()
-            self.assertTrue(submission_blocked.wait(5), 'dispatch did not reach its start hook')
+            self.assertTrue(submission_blocked.wait(HANG_GUARD_SECONDS), 'dispatch did not reach its start hook')
             pending = self.runtime.agent(lead['id'])
             self.assertEqual(pending['status'], 'starting')
             self.assertFalse(pending['startAttempt']['submitted'])
@@ -1699,7 +1699,7 @@ class RuntimeContract(unittest.TestCase):
         self.runtime.dispatch = observe_dispatch
         self.runtime.connect().fail_start = True
         a = self.runtime.create({'name': 'Lead', 'cwd': str(self.root), 'prompt': 'Finish'})
-        self.assertTrue(start_error_persisted.wait(30), 'unknown start outcome was not persisted')
+        self.assertTrue(start_error_persisted.wait(HANG_GUARD_SECONDS), 'unknown start outcome was not persisted')
         self.assertEqual(self.runtime.agent(a['id'])['status'], 'waiting')
         self.assertTrue(self.runtime.agent(a['id'])['inFlight'])
         with dispatch_changed:

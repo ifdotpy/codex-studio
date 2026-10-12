@@ -8,7 +8,9 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 import threading
+from server_test_waits import HANG_GUARD_SECONDS
 import unittest
 from unittest.mock import patch
 
@@ -73,13 +75,13 @@ class BroadcastLifecycle(unittest.TestCase):
                 self.assertEqual(self.runtime.chat_message(lead["id"], "broadcast", "Policy update only", "before-finish"), first)
                 self.assertEqual(self.event(child, "before-finish")["status"], "stored_only")
             self.runtime.dispatch()
-            self.assertTrue(archive_started.wait(5), "Parent receipt did not schedule reviewer archival")
+            self.assertTrue(archive_started.wait(HANG_GUARD_SECONDS), "Parent receipt did not schedule reviewer archival")
             before_archive = self.runtime.agent(child["id"])
             self.assertEqual(before_archive["status"], "completed")
             self.assertEqual(before_archive["lastCompletedTurnStatus"], "completed")
             self.assertTrue(before_archive.get("reviewArchiveScheduled"))
             archive_release.set()
-            self.assertTrue(archive_finished.wait(5), "Reviewer archive did not finish")
+            self.assertTrue(archive_finished.wait(HANG_GUARD_SECONDS), "Reviewer archive did not finish")
 
         archived = self.runtime.agent(child["id"])
         self.assertEqual(archived["status"], "paused")

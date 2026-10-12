@@ -5,9 +5,12 @@ isolate_supervisor_environment()
 
 import importlib.util
 from pathlib import Path
+import sys
 import tempfile
 import threading
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 import unittest
+from server_test_waits import HANG_GUARD_SECONDS
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location(
@@ -68,7 +71,7 @@ class IdleSendContract(unittest.TestCase):
 
         with patch.object(self.runtime, 'start', side_effect=start_and_signal):
             self.runtime.send(agent['id'], 'Immediate task', 'fast-idle', delivery='after_tool')
-            self.assertTrue(start_finished.wait(30), 'fast delivery start did not finish')
+            self.assertTrue(start_finished.wait(HANG_GUARD_SECONDS), 'fast delivery start did not finish')
         self.assertEqual(self.runtime.delivery_receipt('fast-idle')['status'], 'delivered')
         calls = [params for method, params in self.runtime.server.calls if method == 'turn/start']
         self.assertEqual(len(calls), 1)
@@ -111,7 +114,7 @@ class IdleSendContract(unittest.TestCase):
 
         with patch.object(self.runtime, 'start', side_effect=start_and_signal):
             self.runtime.send(agent['id'], 'New task', 'fresh-input', delivery='after_tool')
-            self.assertTrue(start_finished.wait(30), 'fresh input start did not finish')
+            self.assertTrue(start_finished.wait(HANG_GUARD_SECONDS), 'fresh input start did not finish')
         self.assertEqual(self.runtime.delivery_receipt('fresh-input')['status'], 'delivered')
         self.assertEqual(len([method for method, _ in self.runtime.server.calls
                               if method == 'turn/start']), 1)

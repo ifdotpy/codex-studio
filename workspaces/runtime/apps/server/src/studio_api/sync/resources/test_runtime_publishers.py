@@ -804,7 +804,7 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                         on_disconnect, executable=str(child), supervisor_handle="account:default",
                         supervisor_root=state_dir,
                     )
-                self.assertTrue(disconnected.wait(10), "supervisor exit did not reach Runtime.disconnected")
+                self.assertTrue(disconnected.wait(HANG_GUARD_SECONDS), "supervisor exit did not reach Runtime.disconnected")
                 runtime._publish_committed_resource_changes()
                 event = await subscription.next_event(timeout=1)
                 self.assertIsNotNone(event)

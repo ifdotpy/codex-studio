@@ -61,7 +61,7 @@ class SpawnRequestRecovery(unittest.TestCase):
         with patch.object(self.runtime.server, 'write', side_effect=write_and_signal):
             response = next((r for r in self.runtime.server.responses if r['id'] == call), None)
             if response is None:
-                self.assertTrue(ready.wait(30), f'no response for tool call {call}')
+                self.assertTrue(ready.wait(HANG_GUARD_SECONDS), f'no response for tool call {call}')
                 response = next(r for r in self.runtime.server.responses if r['id'] == call)
         return response['result']
 
