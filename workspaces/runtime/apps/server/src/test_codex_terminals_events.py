@@ -16,6 +16,7 @@ from typing import Protocol
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
+from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
@@ -119,7 +120,7 @@ class TerminalResourceEvents(unittest.TestCase):
             ).json())
             observed.append(resources)
             published.set()
-            self.assertTrue(release.wait(2))
+            self.assertTrue(release.wait(HANG_GUARD_SECONDS))
 
         with patch.object(self.manager, "_publish", side_effect=publish):
             worker = threading.Thread(target=self.manager.notification, args=({
@@ -129,7 +130,7 @@ class TerminalResourceEvents(unittest.TestCase):
             },))
             try:
                 worker.start()
-                self.assertTrue(published.wait(2), "terminal output did not publish an event")
+                self.assertTrue(published.wait(HANG_GUARD_SECONDS), "terminal output did not publish an event")
                 self.assertEqual(observed[0]["text"], "hello🙂")
                 self.assertEqual(observed[0]["offset"], len("hello🙂"))
                 self.assertEqual(len(observed[1]), 1)
@@ -137,7 +138,7 @@ class TerminalResourceEvents(unittest.TestCase):
                 self.assertEqual(observed[1][0].root.terminalId, self.key)
             finally:
                 release.set()
-                worker.join(2)
+                worker.join(HANG_GUARD_SECONDS)
             self.assertFalse(worker.is_alive())
             self.assertEqual(lock_results, [(True, True)])
 
@@ -203,7 +204,7 @@ class TerminalResourceEvents(unittest.TestCase):
             def decode(self, value, final=False):
                 if value:
                     decode_started.set()
-                    if not continue_decode.wait(2):
+                    if not continue_decode.wait(HANG_GUARD_SECONDS):
                         raise TimeoutError("Output decode was not released")
                 return self.decoder.decode(value, final=final)
 
@@ -235,12 +236,12 @@ class TerminalResourceEvents(unittest.TestCase):
             output_thread = threading.Thread(target=output_delta)
             exit_thread = threading.Thread(target=finish)
             output_thread.start()
-            self.assertTrue(decode_started.wait(2))
+            self.assertTrue(decode_started.wait(HANG_GUARD_SECONDS))
             exit_thread.start()
-            self.assertTrue(exit_thread_started.wait(2))
+            self.assertTrue(exit_thread_started.wait(HANG_GUARD_SECONDS))
             continue_decode.set()
-            output_thread.join(2)
-            exit_thread.join(2)
+            output_thread.join(HANG_GUARD_SECONDS)
+            exit_thread.join(HANG_GUARD_SECONDS)
 
         self.assertTrue(output_thread_done.is_set())
         self.assertFalse(output_thread.is_alive())

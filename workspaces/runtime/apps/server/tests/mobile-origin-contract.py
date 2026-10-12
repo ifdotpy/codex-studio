@@ -5,6 +5,8 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -49,7 +51,7 @@ class MobileOriginContract(unittest.TestCase):
             data=json.dumps(body).encode() if body is not None else None,
             headers={"Content-Type": "application/json", **(headers or {})})
         try:
-            with urllib.request.urlopen(req, timeout=3) as result:
+            with urllib.request.urlopen(req, timeout=HANG_GUARD_SECONDS) as result:
                 return result.status, json.load(result)
         except urllib.error.HTTPError as result:
             with result:

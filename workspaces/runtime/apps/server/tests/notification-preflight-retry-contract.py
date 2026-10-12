@@ -4,6 +4,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -93,7 +94,7 @@ class NotificationPreflightRetry(unittest.TestCase):
                     pass
                 callback_result["initialConnection"] = local.connection
                 notification_started.set()
-                if not proceed.wait(3):
+                if not proceed.wait(HANG_GUARD_SECONDS):
                     raise AssertionError("test did not release the notification callback")
                 runtime.notification(message)
                 callback_result["connectionAfterNotification"] = local.connection
@@ -110,12 +111,12 @@ class NotificationPreflightRetry(unittest.TestCase):
             worker = threading.Thread(target=apply_notification)
             worker.start()
             try:
-                self.assertTrue(notification_started.wait(3))
+                self.assertTrue(notification_started.wait(HANG_GUARD_SECONDS))
                 blocker = sqlite3.connect(runtime.db_path, timeout=1)
                 try:
                     blocker.execute("BEGIN IMMEDIATE")
                     proceed.set()
-                    self.assertTrue(busy_preflight.wait(3), "preflight UPDATE did not hit SQLITE_BUSY")
+                    self.assertTrue(busy_preflight.wait(HANG_GUARD_SECONDS), "preflight UPDATE did not hit SQLITE_BUSY")
                 finally:
                     blocker.rollback()
                     blocker.close()
@@ -155,7 +156,7 @@ class NotificationPreflightRetry(unittest.TestCase):
 
         def held_schedule(runtime):
             scheduler_started.set()
-            if not scheduler_release.wait(3):
+            if not scheduler_release.wait(HANG_GUARD_SECONDS):
                 raise AssertionError("test did not release the live scheduler")
             return original_schedule(runtime)
 
@@ -163,7 +164,7 @@ class NotificationPreflightRetry(unittest.TestCase):
             runtime = Runtime(Path(directory), server_factory=object)
         self.addCleanup(runtime.close)
         self.addCleanup(scheduler_release.set)
-        self.assertTrue(scheduler_started.wait(3))
+        self.assertTrue(scheduler_started.wait(HANG_GUARD_SECONDS))
         agent = runtime.create({"name": "Fixture", "cwd": directory, "prompt": ""},
                                draft=True, defer=True)
         with runtime.lock, runtime.db() as db:
@@ -278,10 +279,10 @@ class NotificationPreflightRetry(unittest.TestCase):
             dispatcher = threading.Thread(target=server.dispatch, daemon=True)
             dispatcher.start()
             try:
-                self.assertTrue(all_acked.wait(3), "dispatcher did not apply the fixed batch")
+                self.assertTrue(all_acked.wait(HANG_GUARD_SECONDS), "dispatcher did not apply the fixed batch")
                 self.assertTrue(injected_busy.is_set(), "cursor persistence did not hit the forced busy error")
                 server.reader_done.set()
-                dispatcher.join(3)
+                dispatcher.join(HANG_GUARD_SECONDS)
                 self.assertFalse(dispatcher.is_alive())
             finally:
                 server.reader_done.set()
@@ -311,7 +312,7 @@ class NotificationPreflightRetry(unittest.TestCase):
 
         runtime.changed.set()
         scheduler_release.set()
-        self.assertTrue(scheduler_dispatched.wait(3), "live scheduler did not run its explicitly woken pass")
+        self.assertTrue(scheduler_dispatched.wait(HANG_GUARD_SECONDS), "live scheduler did not run its explicitly woken pass")
 
 
 if __name__ == "__main__":

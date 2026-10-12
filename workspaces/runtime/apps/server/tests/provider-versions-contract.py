@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -153,7 +154,7 @@ class ProviderVersionContract(unittest.TestCase):
 
         with runtime.lock:
             publisher.start()
-            self.assertTrue(publisher_waiting.wait(1))
+            self.assertTrue(publisher_waiting.wait(HANG_GUARD_SECONDS))
             monitor_lock_was_available = monitor.lock.acquire(blocking=False)
             if monitor_lock_was_available:
                 monitor.lock.release()
@@ -166,7 +167,7 @@ class ProviderVersionContract(unittest.TestCase):
             else:
                 status = None
 
-        publisher.join(2)
+        publisher.join(HANG_GUARD_SECONDS)
         self.assertFalse(publisher.is_alive())
         self.assertTrue(monitor_lock_was_available)
         self.assertEqual(status["providers"], [])
@@ -215,8 +216,8 @@ class ProviderVersionContract(unittest.TestCase):
         with runtime.lock:
             validator.start()
             publisher.start()
-            self.assertTrue(validator_waiting.wait(1))
-            self.assertTrue(publisher_waiting.wait(1))
+            self.assertTrue(validator_waiting.wait(HANG_GUARD_SECONDS))
+            self.assertTrue(publisher_waiting.wait(HANG_GUARD_SECONDS))
             self.assertTrue(runtime.start_lock.acquire(blocking=False))
             try:
                 runtime.servers["default"] = new_server
@@ -224,8 +225,8 @@ class ProviderVersionContract(unittest.TestCase):
             finally:
                 runtime.start_lock.release()
 
-        validator.join(2)
-        publisher.join(2)
+        validator.join(HANG_GUARD_SECONDS)
+        publisher.join(HANG_GUARD_SECONDS)
         self.assertFalse(validator.is_alive())
         self.assertFalse(publisher.is_alive())
         self.assertEqual(validation, [False])
@@ -234,7 +235,7 @@ class ProviderVersionContract(unittest.TestCase):
 
         monitor.tick(runtime)
         self.assertEqual(monitor.status()["warnings"], [])
-        monitor.worker.join(2)
+        monitor.worker.join(HANG_GUARD_SECONDS)
         self.assertFalse(monitor.worker.is_alive())
         status = monitor.status()
         self.assertEqual(status["providers"][0]["status"], "current")
@@ -259,9 +260,9 @@ class ProviderVersionContract(unittest.TestCase):
         before = time.monotonic()
         monitor.tick(runtime)
         self.assertLess(time.monotonic() - before, 0.5)
-        self.assertTrue(started.wait(1))
+        self.assertTrue(started.wait(HANG_GUARD_SECONDS))
         release.set()
-        monitor.worker.join(2)
+        monitor.worker.join(HANG_GUARD_SECONDS)
         self.assertFalse(monitor.worker.is_alive())
         self.assertTrue(runtime.changed.is_set())
         status = monitor.status()
@@ -286,7 +287,7 @@ class ProviderVersionContract(unittest.TestCase):
         monitor = ProviderVersionMonitor(read_version=read)
         monitor.tick(runtime)
         old_worker = monitor.worker
-        self.assertTrue(started.wait(1))
+        self.assertTrue(started.wait(HANG_GUARD_SECONDS))
         with runtime.start_lock, runtime.lock:
             runtime.servers["default"] = Server()
             runtime.connection_ids["default"] = "new-connection"

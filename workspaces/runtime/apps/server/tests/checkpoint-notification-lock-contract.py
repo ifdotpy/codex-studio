@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -94,14 +95,14 @@ class CheckpointNotificationLockContract(unittest.TestCase):
         def blocked(path, *args, **kwargs):
             if str(path) == self.agent["cwd"] and not entered.is_set():
                 entered.set()
-                if not release.wait(3):
+                if not release.wait(HANG_GUARD_SECONDS):
                     raise TimeoutError("The fixture path gate expired")
             return resolve(path, *args, **kwargs)
 
         with patch.object(Path, "resolve", blocked), ThreadPoolExecutor(max_workers=1) as pool:
             notice = pool.submit(self.runtime.notification, self.notice())
             try:
-                self.assertTrue(entered.wait(3), "The real checkpoint path check must reach the gate")
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS), "The real checkpoint path check must reach the gate")
                 yield notice
             finally:
                 release.set()
@@ -261,7 +262,7 @@ class CheckpointNotificationLockContract(unittest.TestCase):
 
         def blocked(path, *args, **kwargs):
             entered.set()
-            if not release.wait(3):
+            if not release.wait(HANG_GUARD_SECONDS):
                 raise TimeoutError("The fixture reservation gate expired")
             return resolve(path, *args, **kwargs)
 
@@ -269,7 +270,7 @@ class CheckpointNotificationLockContract(unittest.TestCase):
             captured = pool.submit(self.runtime._capture_reserved_checkpoint,
                                    self.agent["id"], "After turn", "old-turn", operation_id)
             try:
-                self.assertTrue(entered.wait(3))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 self.runtime.stop(self.agent["id"], False)
             finally:
                 release.set()
@@ -325,14 +326,14 @@ class ManualCheckpointLockContract(unittest.TestCase):
         def blocked(path, *args, **kwargs):
             if str(path) == self.agent["cwd"] and not entered.is_set():
                 entered.set()
-                if not release.wait(3):
+                if not release.wait(HANG_GUARD_SECONDS):
                     raise TimeoutError("The manual path gate expired")
             return resolve(path, *args, **kwargs)
 
         with patch.object(Path, "resolve", blocked), ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(function, *args)
             try:
-                self.assertTrue(entered.wait(3), "The real workspace path check must reach the gate")
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS), "The real workspace path check must reach the gate")
                 yield future
             finally:
                 release.set()

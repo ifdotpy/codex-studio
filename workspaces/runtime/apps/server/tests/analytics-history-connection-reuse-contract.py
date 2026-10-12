@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -124,7 +125,7 @@ class HistoryConnectionReuse(unittest.TestCase):
                 state = self.runtime._analytics_history_connections.step
                 observed.append((state['depth'], state['db'].in_transaction))
                 entered.set()
-                if not release.wait(3):
+                if not release.wait(HANG_GUARD_SECONDS):
                     raise TimeoutError('Private file gate expired')
             return original(target, *args, **options)
 
@@ -138,7 +139,7 @@ class HistoryConnectionReuse(unittest.TestCase):
             worker = threading.Thread(target=import_step)
             worker.start()
             try:
-                self.assertTrue(entered.wait(3))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 for db_path in (self.runtime.db_path, self.runtime.analytics_db_path):
                     db = sqlite3.connect(db_path, timeout=.1)
                     try:
@@ -148,7 +149,7 @@ class HistoryConnectionReuse(unittest.TestCase):
                         db.close()
             finally:
                 release.set()
-                worker.join(3)
+                worker.join(HANG_GUARD_SECONDS)
         self.assertFalse(worker.is_alive())
         self.assertEqual(errors, [])
         self.assertEqual(observed, [(0, False)])
@@ -188,7 +189,7 @@ class HistoryConnectionReuse(unittest.TestCase):
 
             worker = threading.Thread(target=enter_context)
             worker.start()
-            worker.join(3)
+            worker.join(HANG_GUARD_SECONDS)
             self.assertFalse(worker.is_alive())
             self.assertEqual(len(errors), 1)
             self.assertIs(type(errors[0]), RuntimeError)
@@ -229,7 +230,7 @@ class HistoryConnectionReuse(unittest.TestCase):
                 local = getattr(self.runtime, '_analytics_history_connections', None)
                 old_states.append(getattr(local, 'step', None))
                 entered.set()
-                if not release.wait(3):
+                if not release.wait(HANG_GUARD_SECONDS):
                     raise TimeoutError('Private old frame gate expired')
             return original(target, *args, **options)
 
@@ -243,10 +244,10 @@ class HistoryConnectionReuse(unittest.TestCase):
             worker = threading.Thread(target=import_old_step)
             worker.start()
             try:
-                self.assertTrue(entered.wait(3))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             finally:
                 release.set()
-                worker.join(3)
+                worker.join(HANG_GUARD_SECONDS)
         self.assertFalse(worker.is_alive())
         self.assertEqual(errors, [])
         self.assertEqual(outcomes, [False])

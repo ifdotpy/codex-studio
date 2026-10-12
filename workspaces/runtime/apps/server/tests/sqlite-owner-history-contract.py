@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -74,7 +75,7 @@ class OwnerHistoryContract(unittest.TestCase):
         thread = threading.Thread(target=owner, name="contract-notification-owner")
         thread.start()
         try:
-            self.assertTrue(ready.wait(1))
+            self.assertTrue(ready.wait(HANG_GUARD_SECONDS))
             self.assertFalse(failures)
             contender = sqlite3.connect(self.path, timeout=0.02)
             try:
@@ -107,7 +108,7 @@ class OwnerHistoryContract(unittest.TestCase):
             self.assertEqual(self.journal.parent.stat().st_mode & 0o777, 0o700)
         finally:
             release.set()
-            thread.join(2)
+            thread.join(HANG_GUARD_SECONDS)
         self.assertFalse(thread.is_alive())
         self.assertFalse(failures)
         traces.transaction_watchdog(self.root)

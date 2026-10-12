@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -296,7 +297,7 @@ class NativeErrorContract(unittest.TestCase):
         with self.runtime.lock:
             self.send('error', error={'message': 'Rate exceeded', 'codexErrorInfo': 'rateLimitExceeded'}, willRetry=False)
             self.runtime.connection_ids['default'] = 'replacement'
-        self.assertTrue(done.wait(2))
+        self.assertTrue(done.wait(HANG_GUARD_SECONDS))
         self.assertEqual(self.server.calls, calls)
 
     def test_limit_recovery_discards_read_from_replaced_connection(self):
@@ -305,7 +306,7 @@ class NativeErrorContract(unittest.TestCase):
         def call(method, params, **kwargs):
             if method == 'account/rateLimits/read':
                 entered.set()
-                if not release.wait(2):
+                if not release.wait(HANG_GUARD_SECONDS):
                     raise RuntimeError('Test did not release the read')
             return original_call(method, params, **kwargs)
         def tracked(*args, **kwargs):
@@ -316,12 +317,12 @@ class NativeErrorContract(unittest.TestCase):
         self.server.call, self.runtime.limits = call, tracked
         try:
             self.send('error', error={'message': 'Usage exhausted', 'codexErrorInfo': 'usageLimitExceeded'}, willRetry=False)
-            self.assertTrue(entered.wait(2))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             with self.runtime.lock:
                 self.runtime.connection_ids['default'] = 'replacement'
                 self.runtime.set_rate_limits('default', {'data': {'replacement': True}, 'at': 1, 'error': None})
             release.set()
-            self.assertTrue(done.wait(2))
+            self.assertTrue(done.wait(HANG_GUARD_SECONDS))
             self.assertEqual(self.runtime.rate_limits_for()['data'], {'replacement': True})
         finally:
             release.set()

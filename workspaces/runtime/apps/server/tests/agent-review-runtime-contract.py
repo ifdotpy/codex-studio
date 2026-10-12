@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -143,7 +144,7 @@ class ReviewRuntimeContract(unittest.TestCase):
                        {'running', 'completed', 'starting', 'waiting'})
         entry = self.server.reviews[-1]
         if self.server.mode == 'lost':
-            self.assertTrue(entry['registered'].wait(3))
+            self.assertTrue(entry['registered'].wait(HANG_GUARD_SECONDS))
         else:
             f.f.eventually(lambda: self.rt.agent(value['agentId']).get('startAttempt', {}).get('turnId') == entry['turn']['id'])
         return entry
@@ -396,7 +397,7 @@ class ReviewRuntimeContract(unittest.TestCase):
         self.server.finish(entry)
         self.assertEqual(len(self.parent_results()), 1)
         entry['future'].set_result({'turn': entry['turn']})
-        self.assertTrue(entry['handled'].wait(3))
+        self.assertTrue(entry['handled'].wait(HANG_GUARD_SECONDS))
         self.assertEqual(self.rt.agent(value['agentId'])['status'], 'completed')
         self.assertFalse(self.rt.agent(value['agentId'])['inFlight'])
         self.assertEqual(self.rt.agent(value['agentId'])['lastAnswer'], FINDINGS)
@@ -477,7 +478,7 @@ class ReviewRuntimeContract(unittest.TestCase):
         entry = self.dispatch_review(value)
         self.rt.stop(self.parent['id'])
         entry['future'].set_result({'turn': entry['turn']})
-        self.assertTrue(entry['handled'].wait(3))
+        self.assertTrue(entry['handled'].wait(HANG_GUARD_SECONDS))
         child = self.rt.agent(value['agentId'])
         self.assertEqual(child['status'], 'paused')
         self.assertFalse(child['autoWake'])
@@ -500,7 +501,7 @@ class ReviewRuntimeContract(unittest.TestCase):
             'turn': {'id': entry['turn']['id'], 'status': 'interrupted'}}}
         self.server.notify(completion)
         entry['future'].set_result({'turn': entry['turn']})
-        self.assertTrue(entry['handled'].wait(3))
+        self.assertTrue(entry['handled'].wait(HANG_GUARD_SECONDS))
         self.server.notify(completion)
         self.rt.dispatch()
         child = self.rt.agent(value['agentId'])

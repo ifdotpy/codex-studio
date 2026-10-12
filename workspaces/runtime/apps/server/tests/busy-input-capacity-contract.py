@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """A busy input retains capacity if its old turn finishes before submission."""
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 
 import importlib.util
 import json
@@ -117,14 +123,14 @@ class BusyInputCapacityContract(unittest.TestCase):
                 def call(method, params, timeout=60):
                     if method == 'turn/start' and params.get('clientUserMessageId') == 'busy-input':
                         entered.set()
-                        if not release.wait(3):
+                        if not release.wait(HANG_GUARD_SECONDS):
                             raise RuntimeError('The fixture busy input gate timed out')
                     return original(method, params, timeout)
                 with patch.object(runtime.server, 'call', side_effect=call):
                     runtime.send(lead['id'], 'Busy input', 'busy-input', delivery='steer')
                     runtime.dispatch(lead['id'])
                     try:
-                        self.assertTrue(entered.wait(2))
+                        self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                         runtime.server.complete(lead['threadId'], lead['turnId'])
                         self.assertFalse(runtime.agent(lead['id'])['inFlight'])
                         self.assertEqual(len(self.active(runtime)), 4)
@@ -169,7 +175,7 @@ class BusyInputCapacityContract(unittest.TestCase):
             if method == 'turn/start' and params.get('clientUserMessageId') == 'rejected-input':
                 runtime.server.calls.append((method, params))
                 entered.set()
-                if not release.wait(3):
+                if not release.wait(HANG_GUARD_SECONDS):
                     raise RuntimeError('The fixture rejection gate timed out')
                 raise ValueError('The native turn rejected this input')
             return original(method, params, timeout)
@@ -177,7 +183,7 @@ class BusyInputCapacityContract(unittest.TestCase):
             runtime.send(lead['id'], 'Rejected input', 'rejected-input', delivery='steer')
             runtime.dispatch(lead['id'])
             try:
-                self.assertTrue(entered.wait(2))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 runtime.server.complete(lead['threadId'], lead['turnId'])
                 self.assertEqual(len(self.slots(runtime)), 5)
             finally:
@@ -199,7 +205,7 @@ class BusyInputCapacityContract(unittest.TestCase):
             if method == 'turn/start' and params.get('clientUserMessageId') == 'unknown-input':
                 runtime.server.calls.append((method, params))
                 entered.set()
-                if not release.wait(3):
+                if not release.wait(HANG_GUARD_SECONDS):
                     raise RuntimeError('The fixture unknown input gate timed out')
                 raise RuntimeError('Native response timed out; outcome unknown')
             return original(method, params, timeout)
@@ -207,7 +213,7 @@ class BusyInputCapacityContract(unittest.TestCase):
             runtime.send(lead['id'], 'Unknown input', 'unknown-input', delivery='steer')
             runtime.dispatch(lead['id'])
             try:
-                self.assertTrue(entered.wait(2))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 runtime.server.complete(lead['threadId'], lead['turnId'])
                 self.assertEqual(len(self.slots(runtime)), 5)
             finally:

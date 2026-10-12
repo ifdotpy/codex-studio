@@ -1,6 +1,8 @@
 """Focused route and response-contract tests for system endpoints."""
 from __future__ import annotations
 
+from server_test_waits import HANG_GUARD_SECONDS
+
 import os
 import json
 from pathlib import Path
@@ -257,7 +259,7 @@ class SystemApiTests(unittest.TestCase):
         self.assertEqual(mismatched.status_code, 200)
         self.assertEqual(mismatched.json()["nativeRuntime"], invalid_native_status)
         provider_monitor = runtime.provider_version_monitor
-        provider_monitor.worker.join(timeout=2)
+        provider_monitor.worker.join(timeout=HANG_GUARD_SECONDS)
         self.assertFalse(provider_monitor.worker.is_alive())
 
     def test_provider_versions_contract_matches_real_producer(self) -> None:

@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 import copy
@@ -827,7 +828,7 @@ class CrossServer(unittest.TestCase):
             with patch.object(self.remote, 'db', waiting_db), patch.object(self.remote, 'delivery_executor'):
                 threads.append(threading.Thread(target=receive))
                 threads[-1].start()
-                self.assertTrue(entered.wait(2))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 threads.append(threading.Thread(target=tick))
                 threads[-1].start()
                 responsive = tick_done.wait(.25)

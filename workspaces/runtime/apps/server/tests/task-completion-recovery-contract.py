@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """Supported task decisions bypass slow tools and expose committed evidence before reply."""
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 
 import importlib.util
 import json
@@ -88,7 +94,7 @@ class TaskCompletionRecovery(unittest.TestCase):
         with patch.object(self.runtime, 'work_action', side_effect=delayed):
             try:
                 self.runtime.request(self.message('accept-delayed', 'orchestration_task', self.accept(task)))
-                self.assertTrue(committed.wait(3))
+                self.assertTrue(committed.wait(HANG_GUARD_SECONDS))
                 for _ in range(2):
                     receipt = self.runtime.request_action(self.actor['id'], {'action': 'get', 'request_id': 'accept-delayed'})
                     self.assertEqual((receipt['stage'], receipt['outcome']), ('running', 'pending'))

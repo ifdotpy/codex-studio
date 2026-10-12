@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -1267,7 +1268,7 @@ class NativeReleaseContract(unittest.TestCase):
         class RegistryGate:
             def __enter__(self):
                 entered.set()
-                if not release.wait(3):
+                if not release.wait(HANG_GUARD_SECONDS):
                     raise TimeoutError("The registry gate did not release")
                 return original_lock.__enter__()
             def __exit__(self, *args):
@@ -1281,14 +1282,14 @@ class NativeReleaseContract(unittest.TestCase):
             worker = threading.Thread(target=inspect)
             worker.start()
             try:
-                self.assertTrue(entered.wait(2))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 acquired = self.rt.lock.acquire(timeout=.5)
                 runtime_lock_available.append(acquired)
                 if acquired:
                     self.rt.lock.release()
             finally:
                 release.set()
-                worker.join(4)
+                worker.join(HANG_GUARD_SECONDS)
         self.assertEqual(runtime_lock_available, [True])
         self.assertFalse(worker.is_alive())
         self.assertEqual(errors, [])

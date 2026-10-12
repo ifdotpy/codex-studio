@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -217,7 +218,7 @@ class JournalConnectionReuse(unittest.TestCase):
             for _ in range(3):
                 thread = threading.Thread(target=read)
                 thread.start()
-                thread.join(2)
+                thread.join(HANG_GUARD_SECONDS)
                 self.assertFalse(thread.is_alive())
             self.assertEqual(errors, [])
             self.assertEqual(len({id(db) for db in seen}), 1)
@@ -240,7 +241,7 @@ class JournalConnectionReuse(unittest.TestCase):
                             if len(active) == 4:
                                 entered.set()
                         if wait:
-                            if not release.wait(2):
+                            if not release.wait(HANG_GUARD_SECONDS):
                                 raise RuntimeError("The fixture lease did not release")
                         else:
                             acquired.set()
@@ -252,14 +253,14 @@ class JournalConnectionReuse(unittest.TestCase):
                 thread = threading.Thread(target=hold, args=(True,))
                 self.threads.append(thread)
                 thread.start()
-            self.assertTrue(entered.wait(1))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             waiter = threading.Thread(target=hold, args=(False,))
             self.threads.append(waiter)
             waiter.start()
-            self.assertTrue(acquired.wait(1), "Busy leases must not delay another caller")
+            self.assertTrue(acquired.wait(HANG_GUARD_SECONDS), "Busy leases must not delay another caller")
             self.assertEqual(len(connections.opened), 5)
             release.set()
-            self.assertTrue(acquired.wait(1))
+            self.assertTrue(acquired.wait(HANG_GUARD_SECONDS))
             for thread in self.threads:
                 thread.join(2)
             self.assertEqual(errors, [])

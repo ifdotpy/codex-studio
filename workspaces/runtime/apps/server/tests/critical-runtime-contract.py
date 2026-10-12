@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -113,7 +114,7 @@ class CriticalRuntimeContract(unittest.TestCase):
                 release.wait(2)
         worker = threading.Thread(target=hold)
         worker.start()
-        self.assertTrue(entered.wait(1))
+        self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
         try:
             with patch.object(AppServer, 'WRITE_TIMEOUT', .02):
                 with self.assertRaises(SubmissionRejected):

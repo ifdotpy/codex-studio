@@ -25,6 +25,8 @@ import weakref
 
 ROOT = REPOSITORY_ROOT
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
+
+from server_test_waits import HANG_GUARD_SECONDS
 import codex_sqlite
 import codex_sqlite_traces as traces
 
@@ -37,7 +39,7 @@ def mutex_case(root):
     def authorizer(action, *args):
         if action == sqlite3.SQLITE_SELECT:
             ready.set()
-            if not release.wait(3):
+            if not release.wait(HANG_GUARD_SECONDS):
                 raise RuntimeError('The fixture authorizer timed out')
         return sqlite3.SQLITE_OK
     def owner():

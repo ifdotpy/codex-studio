@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from server_test_waits import HANG_GUARD_SECONDS
+
 from pathlib import Path
 import subprocess
 import sys
@@ -458,7 +460,7 @@ class ProgressWatchdogTests(unittest.TestCase):
             self.assertTrue(observer._lock.acquire(timeout=1), "native observer lock remained held")
             observer._lock.release()
             subscribe_thread.start()
-            self.assertTrue(subscribe_started.wait(timeout=1))
+            self.assertTrue(subscribe_started.wait(timeout=HANG_GUARD_SECONDS))
             self.assertFalse(subscribe_finished.is_set())
         finally:
             watcher._condition.release()
@@ -569,10 +571,10 @@ class ProgressWatchdogTests(unittest.TestCase):
 
         with patch("codex_progress_watch.WATCHDOG_JOIN_TIMEOUT_SECONDS", 0.05):
             detach_thread.start()
-            self.assertTrue(entered_unschedule.wait(timeout=2))
+            self.assertTrue(entered_unschedule.wait(timeout=HANG_GUARD_SECONDS))
             resubscribe_thread.start()
             try:
-                self.assertTrue(resubscribe_started.wait(timeout=1))
+                self.assertTrue(resubscribe_started.wait(timeout=HANG_GUARD_SECONDS))
                 # Old code returns a timeout error while the unschedule is
                 # deliberately held. Persistent threads leave resubscribe
                 # waiting only for the condition lock, then succeed on release.
@@ -581,8 +583,8 @@ class ProgressWatchdogTests(unittest.TestCase):
             finally:
                 continue_unschedule.set()
 
-        detach_thread.join(timeout=2)
-        resubscribe_thread.join(timeout=2)
+        detach_thread.join(timeout=HANG_GUARD_SECONDS)
+        resubscribe_thread.join(timeout=HANG_GUARD_SECONDS)
         self.assertFalse(detach_thread.is_alive())
         self.assertFalse(resubscribe_thread.is_alive())
         self.assertEqual(failures, [])

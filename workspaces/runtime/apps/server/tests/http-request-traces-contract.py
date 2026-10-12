@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -99,7 +100,7 @@ class HttpRequestTracesContract(unittest.TestCase):
 
     def blocked_transcript(self, agent):
         self.entered.set()
-        if not self.release.wait(2):
+        if not self.release.wait(HANG_GUARD_SECONDS):
             raise RuntimeError("The private HTTP barrier did not release")
         return {"id": agent, "items": []}
 
@@ -129,7 +130,7 @@ class HttpRequestTracesContract(unittest.TestCase):
         path = "/api/sync/pull?scope=transcript%3Aprivate-agent-id&token=private-query-token"
         request = self.pool.submit(self.request, path)
         try:
-            self.assertTrue(self.entered.wait(.5), "The real HTTP transcript callback did not enter")
+            self.assertTrue(self.entered.wait(HANG_GUARD_SECONDS), "The real HTTP transcript callback did not enter")
             self.clock += .1
             traces.watchdog(self.root)
             self.assertFalse(request.done(), "The response finished before its wait was recorded")
@@ -153,7 +154,7 @@ class HttpRequestTracesContract(unittest.TestCase):
             self.release.set()
         response = request.result(timeout=1)
         self.assertEqual(response["status"], 200, response)
-        self.assertTrue(self.finished.wait(.5))
+        self.assertTrue(self.finished.wait(HANG_GUARD_SECONDS))
         traces.watchdog(self.root)
         completed = self.read_journal()
         self.assertEqual(completed["active"], [])
@@ -171,7 +172,7 @@ class HttpRequestTracesContract(unittest.TestCase):
         before = (self.journal.read_bytes(), self.journal.stat().st_mtime_ns)
         response = self.request("/api/session")
         self.assertEqual(response["status"], 200)
-        self.assertTrue(self.finished.wait(.5))
+        self.assertTrue(self.finished.wait(HANG_GUARD_SECONDS))
         token = json.loads(response["body"])["token"]
         # FastAPI's GET-only route returns method-not-allowed; the ASGI migration
         # replaced the old handler's path-level 404 behavior (94437118).
@@ -362,7 +363,7 @@ class HttpRequestTracesContract(unittest.TestCase):
         # ASGI server migration (94437118). Keep the current-path lifecycle check.
         self.assertFalse(hasattr(self.server, "RequestHandlerClass"))
         self.assertEqual(self.request("/api/session")["status"], 200)
-        self.assertTrue(self.finished.wait(.5))
+        self.assertTrue(self.finished.wait(HANG_GUARD_SECONDS))
         self.assertEqual(traces._SEQUENCE, 1)
         self.assertEqual(traces._ACTIVE, {})
 

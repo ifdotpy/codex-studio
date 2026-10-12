@@ -28,6 +28,7 @@ sys.path.insert(0, str(SERVER_TESTS_ROOT / "server"))
 from rpc_replay_contract import EMPTY_RESULT_METHODS
 from codex_runtime import AppServer, Runtime
 from codex_claude_controls import bridge_build
+from server_test_waits import wait_for_condition as eventually
 
 OUTBOUND_NOTIFICATION_METHODS = frozenset({"initialized"})
 
@@ -36,15 +37,6 @@ def recorded_frames(path):
     """Parse the provider transcript; the writer may still be appending its last line."""
     text = path.read_text()
     return [json.loads(line) for line in text[:text.rfind("\n") + 1].splitlines()]
-
-
-def eventually(check, timeout=8):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if check():
-            return
-        time.sleep(.02)
-    raise AssertionError("Replay did not reach its expected durable state")
 
 
 def app_server_stderr(root):
@@ -149,7 +141,7 @@ class ProviderReplay(unittest.TestCase):
                 release.touch()
                 second = Runtime(state, AppServer)
                 second.connect()
-                eventually(lambda: second.agent(agent["id"])["status"] == "completed", timeout=15)
+                eventually(lambda: second.agent(agent["id"])["status"] == "completed")
                 latest_capture = []
                 def provider_capture_settled():
                     if not transcript_path.exists():
@@ -165,7 +157,7 @@ class ProviderReplay(unittest.TestCase):
                         fixture,
                     )
                 try:
-                    eventually(provider_capture_settled, timeout=15)
+                    eventually(provider_capture_settled)
                 except AssertionError:
                     self.assert_replay_rpc_contract(
                         latest_capture,

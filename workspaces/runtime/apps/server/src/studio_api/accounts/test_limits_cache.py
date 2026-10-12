@@ -1,4 +1,6 @@
 """Account limits survive restart and cached routes do not wait for providers."""
+
+from server_test_waits import HANG_GUARD_SECONDS
 import json
 import sqlite3
 import threading
@@ -71,7 +73,7 @@ class LimitsCacheTests(unittest.TestCase):
                 with TestClient(app) as client:
                     first = client.get("/api/limits?account_key=a")
                     self.assertEqual(first.json(), snapshot)
-                    self.assertTrue(entered.wait(2))
+                    self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                     second = client.get("/api/limits?account_key=a")
                     self.assertEqual(second.json(), snapshot)
                     runtime.limits.assert_called_once_with("a")

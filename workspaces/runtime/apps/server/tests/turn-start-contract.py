@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -100,7 +101,7 @@ class TurnStartContract(unittest.TestCase):
 
     def wait_start(self, index):
         eventually(lambda: len(self.server.deferred) > index)
-        self.assertTrue(self.server.deferred[index]["registered"].wait(3))
+        self.assertTrue(self.server.deferred[index]["registered"].wait(HANG_GUARD_SECONDS))
         return self.server.deferred[index]
 
     def events(self):
@@ -114,12 +115,12 @@ class TurnStartContract(unittest.TestCase):
     def reject(self, index=0, message="invalid request"):
         entry = self.server.deferred[index]
         entry["future"].set_exception(RuntimeError(message))
-        self.assertTrue(entry["handled"].wait(3))
+        self.assertTrue(entry["handled"].wait(HANG_GUARD_SECONDS))
 
     def test_late_busy_rejection_restores_exact_uncertain_input(self):
         key = self.start()
         self.accept()
-        self.assertTrue(self.server.deferred[0]['handled'].wait(3))
+        self.assertTrue(self.server.deferred[0]['handled'].wait(HANG_GUARD_SECONDS))
         self.server.mode = 'silent'
         self.runtime.send(key, 'Keep this input', 'late-busy')
         self.wait_start(1)
@@ -137,7 +138,7 @@ class TurnStartContract(unittest.TestCase):
             'turn':{'id':entry['turn']['id'],'status':'failed',
                     'error':{'message':'quota','codexErrorInfo':'usageLimitExceeded'}}}})
         self.accept()
-        self.assertTrue(entry['handled'].wait(3))
+        self.assertTrue(entry['handled'].wait(HANG_GUARD_SECONDS))
         self.assertEqual(self.runtime.agent(key)['usageResume']['cause'], 'usage_limit')
 
     def notify_input(self, index=0, client_id=None):
@@ -187,7 +188,7 @@ class TurnStartContract(unittest.TestCase):
             "threadId": entry["params"]["threadId"],
             "turn": {**entry["turn"], "status": "failed", "error": error}}})
         self.accept()
-        self.assertTrue(entry["handled"].wait(3))
+        self.assertTrue(entry["handled"].wait(HANG_GUARD_SECONDS))
         self.assertEqual(self.runtime.agent(key)["status"], "failed")
         self.assertEqual(self.runtime.agent(key)["error"], error)
 
@@ -310,7 +311,7 @@ class TurnStartContract(unittest.TestCase):
         self.notify_input()
         self.assertEqual(self.events()[0]["status"], "delivered")
         self.accept()
-        self.assertTrue(entry["handled"].wait(3))
+        self.assertTrue(entry["handled"].wait(HANG_GUARD_SECONDS))
         self.assertIsNone(self.runtime.agent(key)["error"])
 
     def test_stop_before_late_acceptance_interrupts_without_resuming(self):
@@ -330,7 +331,7 @@ class TurnStartContract(unittest.TestCase):
         self.server.wait_gate = threading.Event()
         a = self.runtime.create({"name": "Lead", "cwd": self.temp.name, "prompt": "Input"})
         eventually(lambda: len(self.server.deferred) == 1)
-        self.assertTrue(self.server.deferred[0]["prepared"].wait(3))
+        self.assertTrue(self.server.deferred[0]["prepared"].wait(HANG_GUARD_SECONDS))
         self.runtime.stop(a["id"])
         self.runtime.send(a["id"], "Resume after old request ends")
         self.server.wait_gate.set()
@@ -349,7 +350,7 @@ class TurnStartContract(unittest.TestCase):
         key = self.start("silent")
         self.runtime.disconnected()
         self.accept()
-        self.assertTrue(self.server.deferred[0]["handled"].wait(3))
+        self.assertTrue(self.server.deferred[0]["handled"].wait(HANG_GUARD_SECONDS))
         self.assertEqual(self.events()[0]["status"], "uncertain")
         a = self.runtime.agent(key)
         self.assertEqual(a["status"], "interrupted")

@@ -29,13 +29,25 @@ import codex_native_runtime as native
 import codex_process_supervisor as supervisor
 from codex_native_binary import REQUIRED_COMPANIONS, bundle_digest
 from codex_runtime import AppServer, Runtime
+from server_test_waits import wait_for_condition
 
 spec = importlib.util.spec_from_file_location('retained_supervisor_fixture', SERVER_TESTS_ROOT / 'process-supervisor-contract.py')
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 
 
-class Contract(unittest.TestCase):
+class PidFileContract(unittest.TestCase):
+    def _read_complete_pid(self):
+        try:
+            return int(self.case.pid_file.read_text())
+        except (OSError, ValueError):
+            return None
+
+    def read_pid(self):
+        return wait_for_condition(self._read_complete_pid, "supervised child pid file")
+
+
+class Contract(PidFileContract):
     def setUp(self):
         self.case = fixture.ProcessSupervisorContract(methodName='runTest')
         self.case.setUp()
@@ -60,7 +72,7 @@ class Contract(unittest.TestCase):
                                home=self.home, isolated=True, executable=self.old['path'],
                                supervisor_handle=self.handle, supervisor_root=self.root)
         self.case.servers.append(self.first)
-        self.pid = int(self.case.pid_file.read_text())
+        self.pid = self.read_pid()
         self.first.close()
         self.rt = SimpleNamespace(root=self.root, lock=threading.RLock(), start_lock=threading.RLock(),
             closed=False, factory=AppServer, servers={}, connection_ids={}, offline_accounts=set(),
@@ -112,7 +124,7 @@ class Contract(unittest.TestCase):
             server = self.connect()
         self.assertTrue(server.supervisor_resumed)
         self.assertEqual(server.proc.generation, self.first.proc.generation)
-        self.assertEqual(int(self.case.pid_file.read_text()), self.pid)
+        self.assertEqual(self.read_pid(), self.pid)
         self.assertEqual(server.native_binary['path'], self.old['path'])
         self.assertEqual(self.updates.selected(), self.new)
         self.assertNotIn('open', actions)
@@ -137,7 +149,7 @@ class Contract(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'retained|existing|changed'):
                 self.connect()
         self.assertNotIn('open', actions)
-        self.assertEqual(int(self.case.pid_file.read_text()), self.pid)
+        self.assertEqual(self.read_pid(), self.pid)
         self.assertEqual(self.operations().count('initialize'), 1)
 
     def test_proven_exited_child_uses_newest_for_a_fresh_generation(self):
@@ -147,14 +159,14 @@ class Contract(unittest.TestCase):
         self.assertFalse(server.supervisor_resumed)
         self.assertEqual(server.native_binary, self.new)
         self.assertEqual(server.proc.generation, self.first.proc.generation + 1)
-        self.assertNotEqual(int(self.case.pid_file.read_text()), self.pid)
+        self.assertNotEqual(self.read_pid(), self.pid)
         self.assertEqual(self.operations().count('initialize'), 2)
 
     def test_changed_account_environment_still_rejects_without_open(self):
         self.rt.accounts.home = lambda *a, **kw: self.root / 'different-home'
         with self.assertRaisesRegex(RuntimeError, 'launch settings changed'):
             self.connect()
-        self.assertEqual(int(self.case.pid_file.read_text()), self.pid)
+        self.assertEqual(self.read_pid(), self.pid)
         self.assertEqual(self.operations().count('initialize'), 1)
 
     def test_unverified_process_identity_stays_unknown(self):
@@ -172,7 +184,7 @@ class Contract(unittest.TestCase):
         Path(self.old['path']).with_name(REQUIRED_COMPANIONS[0]).write_bytes(b'changed')
         with self.assertRaisesRegex(RuntimeError, 'bundle|executable'):
             self.connect()
-        self.assertEqual(int(self.case.pid_file.read_text()), self.pid)
+        self.assertEqual(self.read_pid(), self.pid)
 
     def test_other_account_and_unscoped_selection_keep_newest(self):
         self.assertEqual(native.executable_for(self.rt), self.new)
@@ -184,7 +196,7 @@ class Contract(unittest.TestCase):
             server = self.connect()
         self.assertTrue(server.supervisor_resumed)
         self.assertEqual(server.native_binary, self.old)
-        self.assertEqual(int(self.case.pid_file.read_text()), self.pid)
+        self.assertEqual(self.read_pid(), self.pid)
 
     def test_changed_generation_after_status_is_rejected_without_open(self):
         original = supervisor.ProcessProxy.call
@@ -200,7 +212,7 @@ class Contract(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'Cannot verify'):
                 self.connect()
         self.assertNotIn('open', actions)
-        self.assertEqual(int(self.case.pid_file.read_text()), self.pid)
+        self.assertEqual(self.read_pid(), self.pid)
 
     def test_missing_initialize_receipt_never_replays_initialize(self):
         with sqlite3.connect(self.root / 'supervisor.sqlite3') as db:
@@ -232,7 +244,7 @@ class Contract(unittest.TestCase):
         helper.symlink_to(outside)
         with self.assertRaisesRegex(RuntimeError, 'invalid executable'):
             self.connect()
-        self.assertEqual(int(self.case.pid_file.read_text()), self.pid)
+        self.assertEqual(self.read_pid(), self.pid)
 
     def test_existing_operation_receipt_and_cursors_survive_reattach(self):
         first = AppServer(self.root, lambda _: None, lambda _: None, lambda: None,
@@ -278,7 +290,7 @@ class Contract(unittest.TestCase):
 
 
 
-class OperatorCloseContract(unittest.TestCase):
+class OperatorCloseContract(PidFileContract):
     def setUp(self):
         self.thread_exceptions = []
         previous_thread_hook = threading.excepthook
@@ -316,14 +328,14 @@ class OperatorCloseContract(unittest.TestCase):
         self.case.binary.write_text(raw.replace('for line in sys.stdin:',
             'import signal\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\nfor line in sys.stdin:', 1))
         server = self.case.server(handle='test:slow-operator-close')
-        pid = int(self.case.pid_file.read_text())
+        pid = self.read_pid()
         result = self.close('test:slow-operator-close')
         self.assertEqual(result, {'closed': True, 'handle': 'test:slow-operator-close', 'pid': pid})
         self.assertIsNone(supervisor.process_start_time(pid))
 
     def _prepare_verified_operator_close_replacement(self):
         first = self.case.server(handle='test:operator-replace')
-        pid = int(self.case.pid_file.read_text())
+        pid = self.read_pid()
         self.assertEqual(first.call('model/list', {})['data'][0]['model'], 'fake')
 
         ack_entered = threading.Event()
@@ -405,8 +417,10 @@ class OperatorCloseContract(unittest.TestCase):
         if ack_errors:
             raise ack_errors[0]
         release_replacement_reader.set()
-        new_pid = fixture.wait_for(lambda: (
-            candidate if (candidate := int(self.case.pid_file.read_text())) != pid else None), timeout=30)
+        new_pid = wait_for_condition(
+            lambda: (candidate if (candidate := self._read_complete_pid()) != pid else None),
+            "replacement child pid file",
+        )
         self.assertNotEqual(new_pid, pid)
 
         try:
@@ -425,7 +439,7 @@ class OperatorCloseContract(unittest.TestCase):
 
     def test_operator_closed_record_never_replaces_a_still_live_child(self):
         first = self.case.server(handle='test:operator-still-live')
-        pid = int(self.case.pid_file.read_text())
+        pid = self.read_pid()
         with sqlite3.connect(self.case.root / 'supervisor.sqlite3') as db:
             db.execute('UPDATE handles SET closed_at=?,closed_reason=? WHERE id=?',
                        (1, 'Closed by operator after verified test/unknown-client ownership',

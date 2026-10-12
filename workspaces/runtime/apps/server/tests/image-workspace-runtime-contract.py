@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """Image workspace caller state, permissions, recovery, and failure contracts."""
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
+
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 
 import copy
 import concurrent.futures
@@ -484,7 +490,7 @@ class ImageWorkspaceRuntime(unittest.TestCase):
                 patch.object(self.rt.server, 'submit', side_effect=submit):
             worker = self.spawn('Ready preparation race')['id']
             self.rt.dispatch(worker)
-            self.assertTrue(requested.wait(3))
+            self.assertTrue(requested.wait(HANG_GUARD_SECONDS))
             operation = self.rt.preparations[worker]
             # The base engine calls this immediately when its base is ready.
             callbacks[0]({'state': 'ready'}).result(3)
@@ -563,14 +569,14 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         def params(agent):
             result = original_params(agent)
             entered.set()
-            if not release.wait(3):
+            if not release.wait(HANG_GUARD_SECONDS):
                 raise RuntimeError('Preparation parameter gate timed out')
             return result
         with patch.dict(sys.modules, {'codex_workspace_images': engine}), \
                 patch.object(self.rt, 'new_thread_params', side_effect=params), \
                 patch.object(self.rt, '_send_image_workspace_notice'):
             prepared = self.rt.pool.submit(self.rt.prepare, self.rt.agent(worker))
-            self.assertTrue(entered.wait(3))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             callback = self.rt.pool.submit(self.rt.image_base_completed, worker, {'state': 'ready'})
             try:
                 self.assertFalse(callback.done())

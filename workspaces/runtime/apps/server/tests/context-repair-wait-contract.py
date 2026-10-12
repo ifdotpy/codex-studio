@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -410,7 +411,7 @@ class ContextWait(f.NativeActionRepair):
             return original_call(method, params, timeout)
         self.server.call = blocked_history
         self.runtime.dispatch_all()
-        self.assertTrue(history_entered.wait(2), 'restart history check did not start')
+        self.assertTrue(history_entered.wait(HANG_GUARD_SECONDS), 'restart history check did not start')
         with self.runtime.db() as db:
             initial_wait = self.runtime.agent(self.a['id'], db)['contextRepairWait']
         check_id = initial_wait['historyCheckId']

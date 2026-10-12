@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -111,7 +112,7 @@ class ToolRequestListLockContract(unittest.TestCase):
                     owned.append(self.runtime.lock._is_owned())
                     if len(owned) == count:
                         entered.set()
-                if not release.wait(3):
+                if not release.wait(HANG_GUARD_SECONDS):
                     raise RuntimeError('The fixture payload read timed out')
             return original(path)
         with patch.object(Path, 'read_bytes', read):
@@ -124,7 +125,7 @@ class ToolRequestListLockContract(unittest.TestCase):
         first, second, digest, body = self.pending_pair()
         with self.gated_read(digest) as (entered, release, owned):
             listing = self.worker(self.listing)
-            self.assertTrue(entered.wait(2))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             try:
                 self.finished(self.worker(lambda: self.runtime.send(
                     self.other['id'], 'Continue', 'payload-read-send'), 'send'), .5)
@@ -151,7 +152,7 @@ class ToolRequestListLockContract(unittest.TestCase):
                 db.close()
         with self.gated_read(digest) as (entered, release, _):
             listing = self.worker(self.listing)
-            self.assertTrue(entered.wait(2))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             try:
                 self.finished(self.worker(writer, 'writer'), .5)
             finally:
@@ -202,7 +203,7 @@ class ToolRequestListLockContract(unittest.TestCase):
                 before = self.raw(receipt)
                 with self.gated_read(saved['_payloadBlobs']['contentItems']['sha256']) as (entered, release, _):
                     listing = self.worker(self.listing)
-                    self.assertTrue(entered.wait(2))
+                    self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                     if change == 'stop':
                         self.runtime.stop(self.actor['id'])
                     elif change == 'account':
@@ -225,7 +226,7 @@ class ToolRequestListLockContract(unittest.TestCase):
         receipt, saved = self.receipt('turn-transition', 100, body)
         with self.gated_read(saved['_payloadBlobs']['contentItems']['sha256']) as (entered, release, _):
             listing = self.worker(self.listing)
-            self.assertTrue(entered.wait(2))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             self.actor = self.agent_update(self.actor, threadId='next-thread', turnId='next-turn')
             release.set()
             rows = self.finished(listing)[0]
@@ -239,7 +240,7 @@ class ToolRequestListLockContract(unittest.TestCase):
         before = self.raw(receipt)
         with self.gated_read(saved['_payloadBlobs']['contentItems']['sha256']) as (entered, release, _):
             listing = self.worker(self.listing)
-            self.assertTrue(entered.wait(2))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             self.actor = self.agent_update(self.actor, epoch=self.actor['epoch'] + 1)
             release.set()
             self.finished(listing, failure=ValueError)
@@ -249,7 +250,7 @@ class ToolRequestListLockContract(unittest.TestCase):
         _, receipt, digest, _ = self.pending_pair()
         with self.gated_read(digest) as (entered, release, _):
             listing = self.worker(self.listing)
-            self.assertTrue(entered.wait(2))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             replacement = self.result('A different authoritative result', success=False)
             self.runtime.finish_tool_request(receipt['id'], replacement, outcome='not_applied')
             release.set()
@@ -262,7 +263,7 @@ class ToolRequestListLockContract(unittest.TestCase):
         _, receipt, digest, _ = self.pending_pair()
         with self.gated_read(digest) as (entered, release, _):
             listing = self.worker(self.listing)
-            self.assertTrue(entered.wait(2))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             with self.runtime.lock, self.runtime.db() as db:
                 db.execute('UPDATE runtime_tool_results SET result=? WHERE id=?',
                            (json.dumps(self.result('New ambiguous response', success=False)), receipt['id']))
@@ -283,7 +284,7 @@ class ToolRequestListLockContract(unittest.TestCase):
         with self.gated_read(digest, count=2) as (entered, release, owned), patch.object(self.runtime, 'put', put):
             one = self.worker(self.listing)
             two = self.worker(self.listing)
-            self.assertTrue(entered.wait(2))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             release.set()
             for worker in (one, two):
                 rows = self.finished(worker)[0]

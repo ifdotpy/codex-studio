@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -492,7 +493,7 @@ class AutomaticRecoveryContract(fixture.ConnectionRecoveryContract):
         self.server.read_gate = threading.Event()
         try:
             tick(self.runtime, [self.runtime.agent(self.key)])
-            self.assertTrue(self.server.read_entered.wait(2))
+            self.assertTrue(self.server.read_entered.wait(HANG_GUARD_SECONDS))
             calls = list(self.server.calls)
             tick(self.runtime, [self.runtime.agent(self.key)])
             self.assertEqual(self.server.calls, calls)

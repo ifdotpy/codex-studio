@@ -5,6 +5,8 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 import json
@@ -45,7 +47,7 @@ def fake_server():
 
 
 def api(origin, path):
-    with urllib.request.urlopen(origin + path, timeout=4) as response:
+    with urllib.request.urlopen(origin + path, timeout=HANG_GUARD_SECONDS) as response:
         return json.loads(response.read())
 
 

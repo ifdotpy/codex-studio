@@ -4,6 +4,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -68,7 +69,7 @@ class Contract(unittest.TestCase):
                 original = reader._thread_ids
                 def gate(*args):
                     entered.set()
-                    if not release.wait(3):
+                    if not release.wait(HANG_GUARD_SECONDS):
                         raise TimeoutError('The private filesystem gate did not release')
                     return original(*args)
                 blocking = patch.object(reader, '_thread_ids', side_effect=gate)
@@ -83,7 +84,7 @@ class Contract(unittest.TestCase):
                 blocking = patch.object(reader, '_account', side_effect=gate)
             with blocking, self.compute_worker(reader) as (worker, result, errors):
                 try:
-                    self.assertTrue(entered.wait(2), 'The actual reader must reach the wait')
+                    self.assertTrue(entered.wait(HANG_GUARD_SECONDS), 'The actual reader must reach the wait')
                     # The caller has not finished, but a committed analytics
                     # append can checkpoint both WAL files immediately.
                     self.case.append(writers, history_name, layout)
@@ -95,7 +96,7 @@ class Contract(unittest.TestCase):
                     release.set()
                     if not filesystem:
                         guard.release()
-                    worker.join(4)
+                    worker.join(HANG_GUARD_SECONDS)
             self.assertFalse(worker.is_alive())
             self.assertEqual(errors, [])
             self.assertEqual(result[0]['generation'], 2)

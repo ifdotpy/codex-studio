@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 import base64
@@ -27,6 +28,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from studio_api.testing import read_runtime_state
 from codex_runtime import Runtime
+from server_test_waits import wait_for_condition as eventually
 
 # Keep general protocol fixtures independent of host image support. Dedicated
 # image workspace contracts exercise the supported path with explicit mocks.
@@ -43,15 +45,6 @@ Runtime.runtime_maintenance_tick = lambda _runtime: None
 
 def run_runtime_maintenance_tick(runtime):
     return _runtime_maintenance_tick(runtime)
-
-
-def eventually(predicate, timeout=8):
-    end = time.monotonic() + timeout
-    while time.monotonic() < end:
-        if predicate():
-            return
-        time.sleep(.01)
-    raise AssertionError('Condition did not become true')
 
 
 class FakeServer:
@@ -314,7 +307,7 @@ class RuntimeContract(unittest.TestCase):
                 patch.object(Runtime, 'schedule', hold_scheduler):
             runtime = Runtime(Path(directory), FakeServer)
             try:
-                self.assertTrue(started.wait(2))
+                self.assertTrue(started.wait(HANG_GUARD_SECONDS))
                 with runtime.db() as db:
                     indexes = {row[0] for row in db.execute(
                         "SELECT name FROM sqlite_master WHERE type='index'"
@@ -811,7 +804,7 @@ class RuntimeContract(unittest.TestCase):
                 release.wait(3)
         holder = threading.Thread(target=hold_runtime)
         holder.start()
-        self.assertTrue(entered.wait(1))
+        self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
         try:
             started = time.monotonic()
             self.runtime.notification({'method': 'account/rateLimits/updated', 'params': {
@@ -1168,7 +1161,7 @@ class RuntimeContract(unittest.TestCase):
                     acquired.set()
             thread = threading.Thread(target=writer, daemon=True)
             thread.start()
-            self.assertTrue(acquired.wait(1), 'Transcript blocks the UI notification lock')
+            self.assertTrue(acquired.wait(HANG_GUARD_SECONDS), 'Transcript blocks the UI notification lock')
             thread.join(1)
             return {'ok': True}
         self.runtime.transcript = read
@@ -1346,7 +1339,7 @@ class RuntimeContract(unittest.TestCase):
 
         with patch.object(self.runtime, 'dispatch', side_effect=dispatch_after_output):
             self.runtime.changed.set()
-            self.assertTrue(scheduler_tick_finished.wait(3), 'scheduler tick after monitor output')
+            self.assertTrue(scheduler_tick_finished.wait(HANG_GUARD_SECONDS), 'scheduler tick after monitor output')
         self.assertTrue(starts_balanced(), 'submitted delivery starts did not finish after scheduler tick')
         self.assertEqual(sum(method == 'turn/start' for method,p in self.runtime.server.calls), before)
         self.runtime.server.gate.set()

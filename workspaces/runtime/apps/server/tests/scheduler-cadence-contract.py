@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -81,20 +82,20 @@ class SchedulerCadence(unittest.TestCase):
             worker = threading.Thread(target=runtime.schedule)
             worker.start()
             try:
-                self.assertTrue(idle_tick.wait(2))
+                self.assertTrue(idle_tick.wait(HANG_GUARD_SECONDS))
                 self.assertEqual(len(dispatched), 1)
                 self.assertEqual(len(ticks), 2)
                 self.assertEqual(len(dispatched), 1)
                 woke_at = clock[0]
                 release_changed.set()
-                self.assertTrue(dispatched_twice.wait(2))
+                self.assertTrue(dispatched_twice.wait(HANG_GUARD_SECONDS))
                 self.assertEqual(len(dispatched), 2)
                 self.assertEqual(dispatched[1], woke_at)
             finally:
                 runtime.closed = True
                 release_changed.set()
                 runtime.changed.set()
-                worker.join(2)
+                worker.join(HANG_GUARD_SECONDS)
                 self.assertFalse(worker.is_alive())
 
 

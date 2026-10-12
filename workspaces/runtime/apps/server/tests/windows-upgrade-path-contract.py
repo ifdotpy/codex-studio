@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import wait_for_condition as wait_until
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -30,15 +31,6 @@ sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 import codex_windows_server as server
 from codex_live_updates import LiveUpdates
 from codex_source_inventory import source_files
-
-
-def wait_until(check, timeout=30):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if check():
-            return
-        time.sleep(.1)
-    raise AssertionError("The fixture did not become ready")
 
 
 def runner_fixture(state, port, protocol, source):

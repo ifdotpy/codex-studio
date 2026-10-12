@@ -19,6 +19,13 @@ import tempfile
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import (
+    HANG_GUARD_SECONDS,
+    POLL_INTERVAL_SECONDS,
+    current_condition_deadline,
+    wait_for_condition,
+)
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[5]
@@ -26,8 +33,8 @@ SERVER_SCRIPT = REPOSITORY_ROOT / "workspaces/runtime/apps/server/src/codex-canv
 PROVIDER_REPLAY = Path(__file__).with_name("provider-replay-server.py")
 PROVIDER_FIXTURES = Path(__file__).parent / "fixtures/provider-replay"
 # One generous guard for a genuinely hung backend/provider interaction.
-HTTP_WAIT_GUARD_SECONDS = 60.0
-HTTP_WAIT_POLL_SECONDS = 0.05
+HTTP_WAIT_GUARD_SECONDS = HANG_GUARD_SECONDS
+HTTP_WAIT_POLL_SECONDS = POLL_INTERVAL_SECONDS
 STARTUP_TIMEOUT_SECONDS = HTTP_WAIT_GUARD_SECONDS
 STOP_TIMEOUT_SECONDS = 4.0
 PROVIDER_SELECTION_ENVIRONMENT = frozenset({
@@ -87,7 +94,7 @@ class BackendProcess:
         self.xdg_config = self._directory("xdg-config")
         self.cwd = self._directory("workspace")
         subprocess.run(["git", "init", "--quiet", "--initial-branch=main"],
-                       cwd=self.cwd, check=True, timeout=2)
+                       cwd=self.cwd, check=True, timeout=HANG_GUARD_SECONDS)
         self.origin: str | None = None
         self.ready_seconds: float | None = None
         self.process_start_times: list[float] = []
@@ -99,7 +106,6 @@ class BackendProcess:
         self._reader: threading.Thread | None = None
         self._stderr: list[str] = []
         self._stderr_lock = threading.Lock()
-        self._condition_deadline = threading.local()
         self._codex_log: Path | None = None
         self.session: dict[str, str] = {}
         self.identity: dict[str, Any] = {}
@@ -396,7 +402,7 @@ class BackendProcess:
         request_headers = dict(headers or {})
         if payload is not None:
             request_headers.setdefault("Content-Type", "application/json")
-        condition_deadline = getattr(self._condition_deadline, "value", None)
+        condition_deadline = current_condition_deadline()
         if condition_deadline is not None:
             remaining = condition_deadline - time.monotonic()
             if remaining <= 0:
@@ -505,34 +511,12 @@ class BackendProcess:
 
     def wait_until(self, condition: Callable[[], Any], description: str) -> Any:
         """Wait for an observable fixture condition with one shared hang guard."""
-        deadline = time.monotonic() + HTTP_WAIT_GUARD_SECONDS
-        last_transport_error: HTTPTransportError | None = None
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(
-                    f"HTTP condition did not settle within the shared "
-                    f"{HTTP_WAIT_GUARD_SECONDS:g}s guard: {description}; "
-                    f"last transport error={last_transport_error}"
-                )
-            self._condition_deadline.value = deadline
-            try:
-                value = condition()
-            except HTTPTransportError as error:
-                last_transport_error = error
-                value = None
-            finally:
-                del self._condition_deadline.value
-            if value:
-                return value
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(
-                    f"HTTP condition did not settle within the shared "
-                    f"{HTTP_WAIT_GUARD_SECONDS:g}s guard: {description}; "
-                    f"last transport error={last_transport_error}"
-                )
-            time.sleep(min(HTTP_WAIT_POLL_SECONDS, remaining))
+        return wait_for_condition(
+            condition,
+            f"HTTP condition did not settle: {description}",
+            retry_exceptions=(HTTPTransportError,),
+            timeout_exception=TimeoutError,
+        )
 
     def received_provider_frames(self) -> list[dict[str, Any]]:
         if self._codex_log is None or not self._codex_log.exists():

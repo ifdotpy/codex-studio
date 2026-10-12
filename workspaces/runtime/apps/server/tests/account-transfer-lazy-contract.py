@@ -5,6 +5,8 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -213,7 +215,7 @@ class LazyTransferContract(unittest.TestCase):
         self.t.until(lambda: len(self.t.pending) == 1)
         self.assertEqual(self.t.pending[0][0], 'thread/fork')
         self.t.complete_fork()
-        worker.join(3)
+        worker.join(HANG_GUARD_SECONDS)
         self.assertFalse(worker.is_alive())
         self.assertEqual(errors, [])
         self.assertEqual(len([x for x in self.t.pending if x[0] == 'thread/fork']), 1)
@@ -232,7 +234,7 @@ class LazyTransferContract(unittest.TestCase):
         self.t.until(lambda: len(self.t.pending) == 1)
         self.assertEqual(self.t.pending[0][0], 'thread/start')
         self.t.complete_fork()
-        worker.join(3)
+        worker.join(HANG_GUARD_SECONDS)
         self.assertFalse(worker.is_alive())
         self.assertEqual(errors, [])
         self.assertIn(self.aid, self.rt.loaded)
@@ -284,7 +286,7 @@ class LazyTransferContract(unittest.TestCase):
         worker.start()
         self.t.until(lambda: len(self.t.pending) == 1)
         self.t.complete_fork()
-        worker.join(3)
+        worker.join(HANG_GUARD_SECONDS)
         self.assertFalse(worker.is_alive())
         self.assertEqual(len([p for p in self.t.pending if p[0] == 'thread/fork']), 1)
         with self.rt.db() as db:

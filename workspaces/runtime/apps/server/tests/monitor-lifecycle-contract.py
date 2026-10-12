@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -121,13 +122,13 @@ class MonitorLifecycleContract(unittest.TestCase):
     def tearDown(self):
         self.runtime.close()
         for thread in self.monitor_threads:
-            thread.join(3)
+            thread.join(HANG_GUARD_SECONDS)
             self.assertFalse(thread.is_alive(), "The fixture monitor worker did not stop")
         self.temp.cleanup()
 
     def monitor(self, interactive=False, **options):
         result = self.runtime.monitor(self.agent["id"], {"command": "fixture-command", "timeout_ms": 1000, "interactive": interactive, **options}, approved=True)
-        self.assertTrue(self.server.command_wait_entered.wait(3))
+        self.assertTrue(self.server.command_wait_entered.wait(HANG_GUARD_SECONDS))
         return result["id"]
 
     def record(self, key):
@@ -384,7 +385,7 @@ class MonitorLifecycleContract(unittest.TestCase):
             return original_tick()
         self.runtime.rules_tick = tick
         self.runtime.changed.set()
-        self.assertTrue(entered.wait(3))
+        self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
         def close():
             self.runtime.close()
             closed.set()
@@ -397,7 +398,7 @@ class MonitorLifecycleContract(unittest.TestCase):
                     fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 self.assertFalse(closed.wait(.05))
                 release.set()
-                worker.join(3)
+                worker.join(HANG_GUARD_SECONDS)
                 self.assertFalse(worker.is_alive())
                 self.assertTrue(closed.is_set())
                 fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)

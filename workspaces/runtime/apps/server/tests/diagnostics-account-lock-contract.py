@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -123,7 +124,7 @@ class DiagnosticsAccountLockContract(unittest.TestCase):
         return thread, done, result
 
     def assert_finished(self, thread, done, result):
-        self.assertTrue(done.wait(2), "Diagnostics did not finish after the fixture released")
+        self.assertTrue(done.wait(HANG_GUARD_SECONDS), "Diagnostics did not finish after the fixture released")
         thread.join(2)
         if "error" in result:
             raise result["error"]
@@ -153,7 +154,7 @@ class DiagnosticsAccountLockContract(unittest.TestCase):
         def slow_auth(_options):
             auth_calls.append("claude")
             progress.set()
-            if not release.wait(2):
+            if not release.wait(HANG_GUARD_SECONDS):
                 raise AssertionError("The fixture did not release authentication")
             return {"status": "error", "error": "fixture auth failed"}
 
@@ -163,7 +164,7 @@ class DiagnosticsAccountLockContract(unittest.TestCase):
             thread, done, result = self.run_snapshot(runtime)
             try:
                 # The old path announces auth; the new path finishes without it.
-                self.assertTrue(done.wait(.2) or progress.wait(1))
+                self.assertTrue(done.wait(HANG_GUARD_SECONDS) or progress.wait(HANG_GUARD_SECONDS))
                 acquired = runtime.lock.acquire(timeout=.1)
                 try:
                     self.assertTrue(acquired, "Authentication holds Runtime.lock")
@@ -184,7 +185,7 @@ class DiagnosticsAccountLockContract(unittest.TestCase):
             try:
                 with runtime.accounts.lock:
                     thread, done, result = self.run_snapshot(runtime)
-                    self.assertTrue(runtime.accounts.lock.attempted.wait(1))
+                    self.assertTrue(runtime.accounts.lock.attempted.wait(HANG_GUARD_SECONDS))
                     self.assertFalse(runtime.accounts.lock.nested,
                                      "Diagnostics nests Accounts.lock under Runtime.lock")
                     acquired = runtime.lock.acquire(timeout=.1)

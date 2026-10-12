@@ -20,6 +20,7 @@ from unittest.mock import patch
 sys.dont_write_bytecode = True
 ROOT = REPOSITORY_ROOT
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
+from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition as eventually
 spec = importlib.util.spec_from_file_location(
     "monitor_fixture", SERVER_TESTS_ROOT / "monitor-lifecycle-contract.py"
 )
@@ -29,15 +30,6 @@ from codex_agent_management import manage_agent
 from codex_monitor_recovery import (_path as monitor_result_path,
                                    persist_monitor_result, recover_monitor_results)
 from codex_runtime import ResponseTimeout, Runtime
-
-
-def eventually(predicate, timeout=4):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.01)
-    raise AssertionError("The expected runtime state did not occur")
 
 
 class LifecycleScenarios(unittest.TestCase):
@@ -82,7 +74,7 @@ class LifecycleScenarios(unittest.TestCase):
     def restart(self, *, hold_rules_tick=False):
         self.runtime.close()
         for thread in self.monitor_threads:
-            thread.join(3)
+            thread.join(HANG_GUARD_SECONDS)
             self.assertFalse(thread.is_alive())
         self.monitor_threads.clear()
         if hold_rules_tick and not hasattr(self, "real_rules_tick"):
@@ -123,9 +115,9 @@ class LifecycleScenarios(unittest.TestCase):
                 "SELECT COUNT(*) FROM runtime_events WHERE id=?", ("monitor:" + key,)
             ).fetchone()[0]
 
-    def wait_monitor(self, key, timeout=4):
+    def wait_monitor(self, key):
         done = self.monitor_done.setdefault(key, threading.Event())
-        self.assertTrue(done.wait(timeout), "Monitor worker did not complete")
+        self.assertTrue(done.wait(HANG_GUARD_SECONDS), "Monitor worker did not complete")
 
     def abandon_pending_commands(self):
         self.server.timeout_commands = True

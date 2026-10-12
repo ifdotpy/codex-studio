@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -302,7 +303,7 @@ class SupervisorPersistenceRetry(unittest.TestCase):
             self.addCleanup(fixture.close)
             fixture.start([fragment(1, 'a'), fragment(2, 'b')])
             try:
-                self.assertTrue(failed_commit.wait(3), 'A held SQLite writer must trigger the real commit retry')
+                self.assertTrue(failed_commit.wait(HANG_GUARD_SECONDS), 'A held SQLite writer must trigger the real commit retry')
                 self.assertEqual(delivered, [1, 2])
                 self.assertEqual(fixture.server.proc.acks, [])
                 self.assertEqual(durable(), 0)
@@ -411,7 +412,7 @@ class SupervisorPersistenceRetry(unittest.TestCase):
             sender = threading.Thread(target=send, daemon=True)
             fixture.start([fragment(1, 'a'), fragment(2, 'b')])
             try:
-                self.assertTrue(analytics_started.wait(3))
+                self.assertTrue(analytics_started.wait(HANG_GUARD_SECONDS))
                 self.assertEqual(durable(), 2, 'The stream cursor commits before analytics begins')
                 self.assertTrue(fixture.server.proc.acknowledged.wait(30),
                                 'The durable cursor must be acknowledged while analytics is blocked')
@@ -432,9 +433,9 @@ class SupervisorPersistenceRetry(unittest.TestCase):
                 fixture.wait(lambda: fixture.server.proc.cursor == 2 or fixture.server.transport_error)
                 self.assert_connection_open(fixture)
                 self.assertEqual(delivered, [1, 2])
-                self.assertTrue(analytics_finished.wait(3), 'The released analytics capture must finish')
+                self.assertTrue(analytics_finished.wait(HANG_GUARD_SECONDS), 'The released analytics capture must finish')
                 self.assertEqual(capture_calls, ['item/agentMessage/delta'])
-                self.assertTrue(analytics_committed.wait(3),
+                self.assertTrue(analytics_committed.wait(HANG_GUARD_SECONDS),
                                 'The analytics connection must close before committed rows are read')
                 with runtime.analytics_db() as db:
                     count = db.execute('SELECT coalesce(sum(count),0) FROM analytics_notifications '
@@ -444,7 +445,7 @@ class SupervisorPersistenceRetry(unittest.TestCase):
             finally:
                 release_analytics.set()
                 if sender.ident is not None:
-                    sender.join(3)
+                    sender.join(HANG_GUARD_SECONDS)
                     self.assertFalse(sender.is_alive())
                 fixture.close()
                 runtime.close()
@@ -476,7 +477,7 @@ class SupervisorPersistenceRetry(unittest.TestCase):
                                                 'command': 'fixture', 'aggregatedOutput': ''}},
                             '_studioSupervisorSequence': 1}])
             try:
-                self.assertTrue(contention.wait(3), 'The lifecycle must meet the held SQLite writer')
+                self.assertTrue(contention.wait(HANG_GUARD_SECONDS), 'The lifecycle must meet the held SQLite writer')
                 self.assertEqual(fixture.server.proc.acks, [])
                 self.assertEqual(fixture.server.proc.durable(), 0)
                 acquired = runtime.lock.acquire(timeout=.2)
@@ -532,7 +533,7 @@ class SupervisorPersistenceRetry(unittest.TestCase):
             worker = threading.Thread(target=recover)
             worker.start()
             try:
-                self.assertTrue(finished.wait(.5), 'An outer lock owner must fail before a long writer wait')
+                self.assertTrue(finished.wait(HANG_GUARD_SECONDS), 'An outer lock owner must fail before a long writer wait')
                 self.assertEqual(effects, [])
                 self.assertEqual(len(errors), 1)
                 self.assertEqual(errors[0].sqlite_errorcode & 255, sqlite3.SQLITE_BUSY)
@@ -582,7 +583,7 @@ class SupervisorPersistenceRetry(unittest.TestCase):
                 self.assert_connection_open(fixture)
                 self.assertEqual(delivered, [1, 2])
                 self.assertEqual(fixture.server.proc.acks, [2])
-                self.assertTrue(attempts_finished.wait(3), 'The same analytics capture must retry after SQLITE_BUSY')
+                self.assertTrue(attempts_finished.wait(HANG_GUARD_SECONDS), 'The same analytics capture must retry after SQLITE_BUSY')
                 self.assertEqual(len(contexts), 2)
                 self.assertEqual(len(captures), 2)
                 self.assertIs(captures[0], captures[1])
@@ -650,7 +651,7 @@ class SupervisorPersistenceRetry(unittest.TestCase):
                 self.assertEqual(delivered, [1, 2])
                 self.assertEqual(fixture.server.proc.acks, [2])
                 self.assertEqual(fixture.server.proc.durable(), 2)
-                self.assertTrue(attempt_finished.wait(3), 'The permanent analytics commit failure must be recorded')
+                self.assertTrue(attempt_finished.wait(HANG_GUARD_SECONDS), 'The permanent analytics commit failure must be recorded')
                 self.assertEqual(contexts, [1, 1],
                                  'The failed capture and its persisted diagnostic each use one transaction')
                 state = runtime.analytics_capture_status()

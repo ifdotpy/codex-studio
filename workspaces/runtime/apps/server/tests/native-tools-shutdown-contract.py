@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -66,13 +67,13 @@ class Shutdown(unittest.TestCase):
                 with patch.object(codex_native_tools, "wait_updates", wait):
                     closer = threading.Thread(target=close)
                     closer.start()
-                    self.assertTrue(waiting.wait(2))
+                    self.assertTrue(waiting.wait(HANG_GUARD_SECONDS))
                     with open(runtime.lease.name, "a+") as contender:
                         with self.assertRaises(BlockingIOError):
                             fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
                         self.assertEqual((current.closes, retired.closes), (0, 0))
                         release.set()
-                        closer.join(3)
+                        closer.join(HANG_GUARD_SECONDS)
                         self.assertFalse(closer.is_alive())
                         self.assertEqual(failures, [])
                         fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)

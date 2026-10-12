@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import wait_for_condition as eventually
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -24,10 +25,23 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('signed_exec_fixture', Path(__file__).with_name('multi-server-signed-integration.py'))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
-eventually = fixture.fixture.f.eventually
 from codex_process_supervisor import status
 from codex_server_exec import job_path
 from codex_process_supervisor import process_start_time, process_start_matches
+
+
+def read_complete_json(path):
+    try:
+        return json.loads(path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def read_text_if_complete(path):
+    try:
+        return path.read_text().strip()
+    except FileNotFoundError:
+        return None
 
 
 class Commands(unittest.TestCase):
@@ -56,15 +70,8 @@ class Commands(unittest.TestCase):
             process = subprocess.Popen([sys.executable, '-B', str(SERVER_SOURCE_ROOT / "codex_process_supervisor.py"),
                                         '--state', str(endpoint.state)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.supervisors.append(process)
-            deadline = time.monotonic() + 5
-            while True:
-                try:
-                    status(endpoint.state)
-                    break
-                except (OSError, ConnectionError):
-                    if time.monotonic() > deadline:
-                        self.fail('The isolated supervisor did not start')
-                    time.sleep(.02)
+            eventually(lambda: status(endpoint.state), "isolated supervisor startup",
+                       retry_exceptions=(OSError, ConnectionError))
         self.lead = self.a.runtime.new_lead({'cwd': str(self.a.folder)})
         self.lead = self.a.runtime.prepare(self.lead)
         self.sequence = 0
@@ -273,10 +280,9 @@ class Commands(unittest.TestCase):
         key = response['requestId']
         self.assertEqual(response['outcome'], 'unknown')
         output = job_path(manager.folder, key, '.output.json')
-        deadline = time.monotonic() + 5
-        while not output.exists() or json.loads(output.read_text())['record']['status'] != 'completed':
-            self.assertLess(time.monotonic(), deadline)
-            time.sleep(.02)
+        eventually(lambda: (record if (record := read_complete_json(output))
+                            and record.get('record', {}).get('status') == 'completed' else None),
+                   "completed server command record")
         output.unlink()
         self.assertEqual(self.a.runtime.multi_server().deliver(key)['outcome'], 'unknown')
         self.b.restart()
@@ -390,7 +396,8 @@ class Commands(unittest.TestCase):
                     ('time.sleep(60)' if mode != 'normal' else ''))
                 response = self.start([sys.executable, '-c', parent], 'escaped-' + mode,
                                       timeout=1 if mode == 'timeout' else 120)
-                eventually(lambda: marker.exists() and marker.read_text().strip())
+                eventually(lambda: (contents if (contents := read_text_if_complete(marker)) else None),
+                           "detached child pid marker")
                 pid = int(marker.read_text())
                 began = process_start_time(pid)
                 def clean(pid=pid, began=began):
@@ -572,7 +579,9 @@ class Commands(unittest.TestCase):
         manager.close()
         release.touch()
         output = job_path(manager.folder, handle, '.output.json')
-        eventually(lambda: output.exists() and json.loads(output.read_text())['record']['status'] == 'completed')
+        eventually(lambda: (record if (record := read_complete_json(output))
+                            and record.get('record', {}).get('status') == 'completed' else None),
+                   "completed detached server command record")
         self.b.runtime.multi_server()._command_service = None
         restored = self.b.runtime.multi_server().commands()
         restored.prune(time.time())
@@ -589,7 +598,9 @@ class Commands(unittest.TestCase):
             'live-utf8', timeout=120)
         handle = response['value']['handle']
         snapshot = job_path(self.b.state / 'server-command-output', handle, '.output.json')
-        eventually(lambda: snapshot.exists() and json.loads(snapshot.read_text())['stdout']['total'] == 1)
+        eventually(lambda: (record if (record := read_complete_json(snapshot))
+                            and record.get('stdout', {}).get('total') == 1 else None),
+                   "initial server command output snapshot")
         page = self.read(handle)
         self.assertEqual(page['stdout'], '')
         self.assertEqual(page['stdoutNextOffset'], 0)

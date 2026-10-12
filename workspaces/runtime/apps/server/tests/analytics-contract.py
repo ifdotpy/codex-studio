@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -319,7 +320,7 @@ class AnalyticsContract(unittest.TestCase):
                 errors.append(error)
         with patch.object(self.runtime, 'analytics_history_step', side_effect=delayed_step):
             self.runtime.analytics_history_start()
-            self.assertTrue(entered.wait(2))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             closer = threading.Thread(target=close_runtime)
             closer.start()
             try:
@@ -329,7 +330,7 @@ class AnalyticsContract(unittest.TestCase):
                     Runtime(Path(self.temp.name), fixture.FakeServer)
             finally:
                 release.set()
-                closer.join(3)
+                closer.join(HANG_GUARD_SECONDS)
             self.assertFalse(closer.is_alive())
             self.assertFalse(self.runtime.analytics_history_thread.is_alive())
             self.assertTrue(finished.is_set())

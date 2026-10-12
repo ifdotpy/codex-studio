@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -100,7 +101,7 @@ class RuntimeReadLock(unittest.TestCase):
                 release.wait(5)
         holder = threading.Thread(target=hold)
         holder.start()
-        self.assertTrue(entered.wait(2))
+        self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
         try:
             began = time.monotonic()
             state = read_runtime_state(self.runtime, include_work=False)
@@ -220,10 +221,10 @@ class RuntimeReadLock(unittest.TestCase):
         runtime.invalidate_agent_records()
         reader.start()
         try:
-            self.assertTrue(reading.wait(2))
+            self.assertTrue(reading.wait(HANG_GUARD_SECONDS))
             writer.start()
-            self.assertTrue(writer_entered.wait(2))
-            self.assertTrue(writer_done.wait(1), "agent cache build blocked the SQLite writer")
+            self.assertTrue(writer_entered.wait(HANG_GUARD_SECONDS))
+            self.assertTrue(writer_done.wait(HANG_GUARD_SECONDS), "agent cache build blocked the SQLite writer")
             available = runtime.lock.acquire(timeout=1)
             self.assertTrue(available, "agent cache build blocked another Runtime caller")
             if available:

@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -81,7 +82,7 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
     def drain(self):
         idle = getattr(self.runtime, '_analytics_capture_idle', None)
         if idle is not None:
-            self.assertTrue(idle.wait(3), 'Analytics FIFO did not finish')
+            self.assertTrue(idle.wait(HANG_GUARD_SECONDS), 'Analytics FIFO did not finish')
 
     def assert_main_available(self):
         acquired = self.runtime.lock.acquire(timeout=.15)
@@ -124,8 +125,8 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
         with patch.object(self.runtime, 'analytics_agent', observed):
             with self.writer(self.runtime.analytics_db_path):
                 worker, finished, errors = self.run_callback(lambda: self.notice('thread/tokenUsage/updated', **params))
-                self.assertTrue(entered.wait(2))
-                self.assertTrue(finished.wait(.5), 'A native callback waits for the analytics writer')
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
+                self.assertTrue(finished.wait(HANG_GUARD_SECONDS), 'A native callback waits for the analytics writer')
                 self.assertEqual(errors, [])
                 self.assert_main_available()
                 self.assertEqual(self.runtime.agent(self.agent['id'])['tokensUsed'], 17)
@@ -180,8 +181,8 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
                 patch.object(StreamBuffer, 'enqueue', return_value=False):
             with self.writer(self.runtime.analytics_db_path):
                 worker, finished, errors = self.run_callback(lambda: self.runtime.notification(message))
-                self.assertTrue(entered.wait(2))
-                self.assertTrue(finished.wait(.5), 'Coalesced analytics retains the main writer')
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
+                self.assertTrue(finished.wait(HANG_GUARD_SECONDS), 'Coalesced analytics retains the main writer')
                 self.assertEqual(errors, [])
                 self.assert_main_available()
                 state = self.runtime.analytics_capture_status()
@@ -317,7 +318,7 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
                 raise ResponseTimeout('fixture lost response')
         with self.writer(self.runtime.analytics_db_path):
             worker, finished, errors = self.run_callback(callback)
-            self.assertTrue(finished.wait(.5))
+            self.assertTrue(finished.wait(HANG_GUARD_SECONDS))
             self.assertEqual([type(error) for error in errors], [ResponseTimeout])
             self.assert_main_available()
             self.assertEqual(self.count(self.runtime.db_path, 'fixture_receipts'), 1)
@@ -356,7 +357,7 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
                 self.runtime.put(db, 'agents', changed)
         with self.writer(self.runtime.analytics_db_path):
             worker, finished, errors = self.run_callback(callback)
-            self.assertTrue(finished.wait(.5))
+            self.assertTrue(finished.wait(HANG_GUARD_SECONDS))
             self.assertEqual(errors, [])
             self.assert_main_available()
             self.assertEqual(self.count(self.runtime.db_path, 'runtime_items'), 1)
@@ -466,7 +467,7 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
             with self.runtime.notification_db() as db:
                 self.runtime.analytics_safe(db, capture)
                 db.execute("INSERT INTO fixture_receipts VALUES ('before-close')")
-            self.assertTrue(entered.wait(2))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             observed = []
             original = self.runtime._close_wal_keeper
             def close_keeper():
@@ -475,9 +476,9 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
                 original()
             self.runtime._close_wal_keeper = close_keeper
             worker, finished, errors = self.run_callback(self.runtime.close)
-            self.assertTrue(finished.wait(1))
+            self.assertTrue(finished.wait(HANG_GUARD_SECONDS))
             self.assert_main_available()
-        self.assertTrue(finished.wait(3))
+        self.assertTrue(finished.wait(HANG_GUARD_SECONDS))
         worker.join(3)
         self.assertEqual(errors, [])
         self.assertTrue(self.runtime.lease.closed)
@@ -491,7 +492,7 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
         original = self.runtime.run_analytics_capture
         def gated(operation):
             entered.set()
-            self.assertTrue(release.wait(3))
+            self.assertTrue(release.wait(HANG_GUARD_SECONDS))
             original(operation)
         self.addCleanup(release.set)
         with patch.object(self.runtime, 'run_analytics_capture', gated):
@@ -499,14 +500,14 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
                 for number in range(limit):
                     self.runtime.analytics_safe(db, self.sample, number)
                 db.execute("INSERT INTO fixture_receipts VALUES ('healthy-close')")
-            self.assertTrue(entered.wait(2))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             worker, finished, errors = self.run_callback(self.runtime.close)
             until = time.monotonic() + 2
             while not self.runtime.closed and time.monotonic() < until:
                 time.sleep(.01)
             self.assertTrue(self.runtime.closed)
             release.set()
-            self.assertTrue(finished.wait(3))
+            self.assertTrue(finished.wait(HANG_GUARD_SECONDS))
             worker.join(3)
         self.assertEqual(errors, [])
         self.assertEqual(self.captures(), list(range(limit)))
@@ -623,12 +624,12 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
         original = self.runtime.run_analytics_capture
         def gated(operation):
             entered.set()
-            self.assertTrue(release.wait(3))
+            self.assertTrue(release.wait(HANG_GUARD_SECONDS))
             original(operation)
         self.addCleanup(release.set)
         with patch.object(self.runtime, 'run_analytics_capture', gated):
             self.notice('item/started', item={'id': 'ordered-item', 'type': 'agentMessage', 'text': ''})
-            self.assertTrue(entered.wait(2))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             notice = {'method': 'item/agentMessage/delta', 'params': {
                 'threadId': self.agent['threadId'], 'turnId': self.agent['turnId'],
                 'itemId': 'ordered-item', 'delta': 'three'}, '_studioSupervisorSequence': 2}

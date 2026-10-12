@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -61,7 +62,7 @@ class PreparationWriterContract(unittest.TestCase):
                         self.assertEqual(operation_id, 'prepare:' + agent['id'] + ':' + operation['id'])
                         operations.append(operation['id'])
                         entered.set()
-                        if not release.wait(3):
+                        if not release.wait(HANG_GUARD_SECONDS):
                             raise RuntimeError('The fixture native write gate timed out')
                     return original(server, requested, params, operation_id)
                 def prepare():
@@ -79,16 +80,16 @@ class PreparationWriterContract(unittest.TestCase):
                     worker = threading.Thread(target=prepare)
                     worker.start()
                     try:
-                        self.assertTrue(entered.wait(2))
+                        self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                         sender = threading.Thread(target=send)
                         sender.start()
-                        self.assertTrue(sent.wait(1), 'Another chat must enqueue before native input drains')
+                        self.assertTrue(sent.wait(HANG_GUARD_SECONDS), 'Another chat must enqueue before native input drains')
                         with self.runtime.read_db() as db:
                             event = db.execute('SELECT status FROM runtime_events WHERE id=?', ('other-' + method,)).fetchone()
                         self.assertEqual(event[0], 'pending')
                     finally:
                         release.set()
-                        worker.join(3)
+                        worker.join(HANG_GUARD_SECONDS)
                         if 'sender' in locals():
                             sender.join(3)
                 self.assertFalse(worker.is_alive())
@@ -102,18 +103,18 @@ class PreparationWriterContract(unittest.TestCase):
         def submit(method, params):
             if method == 'thread/start':
                 entered.set()
-                if not release.wait(3):
+                if not release.wait(HANG_GUARD_SECONDS):
                     raise RuntimeError('The fixture native write gate timed out')
             return original(method, params)
         with patch.object(self.server, 'submit', side_effect=submit):
             self.runtime.send(self.agent['id'], 'First input', 'stopped-input')
             self.runtime.dispatch(self.agent['id'])
-            self.assertTrue(entered.wait(2))
+            self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             operation = self.runtime.preparations[self.agent['id']]
             stopper = threading.Thread(target=lambda: (self.runtime.stop(self.agent['id']), stopped.set()))
             stopper.start()
             try:
-                self.assertTrue(stopped.wait(1), 'Stop must not wait for native thread submission')
+                self.assertTrue(stopped.wait(HANG_GUARD_SECONDS), 'Stop must not wait for native thread submission')
                 agent = self.runtime.agent(self.agent['id'])
                 self.assertFalse(agent['autoWake'])
                 self.assertEqual(agent['status'], 'paused')

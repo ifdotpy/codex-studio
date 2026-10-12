@@ -5,6 +5,8 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -65,7 +67,7 @@ class LogRotationContract(unittest.TestCase):
             server = AppServer(root, lambda _: None, lambda _: None, lambda: None,
                                executable=str(executable))
             try:
-                server.reader.join(timeout=3)
+                server.reader.join(timeout=HANG_GUARD_SECONDS)
                 self.assertFalse(server.reader.is_alive())
                 if server.stderr_writer:
                     server.stderr_writer.join(timeout=3)

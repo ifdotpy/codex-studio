@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -54,7 +55,7 @@ class Inventory(WorkspaceMixin):
         self.calls.append((self.account, method, params, timeout))
         if self.entered:
             self.entered.set()
-            if not self.release.wait(3):
+            if not self.release.wait(HANG_GUARD_SECONDS):
                 raise TimeoutError("Fixture timeout")
         if self.failure:
             raise self.failure
@@ -81,7 +82,7 @@ class SkillCatalogContract(unittest.TestCase):
 
     def get(self, agent="lead", headers=None):
         request = urllib.request.Request(self.url + agent, headers=headers or {})
-        with urllib.request.urlopen(request, timeout=4) as response:
+        with urllib.request.urlopen(request, timeout=HANG_GUARD_SECONDS) as response:
             return json.load(response)
 
     def test_selected_account_project_and_enabled_native_precedence(self):
@@ -134,14 +135,14 @@ class SkillCatalogContract(unittest.TestCase):
         worker = threading.Thread(target=lambda: result.append(self.get()))
         worker.start()
         try:
-            self.assertTrue(self.runtime.entered.wait(2))
+            self.assertTrue(self.runtime.entered.wait(HANG_GUARD_SECONDS))
             acquired = self.runtime.lock.acquire(timeout=0.2)
             self.assertTrue(acquired, "Typing/state updates must not wait on discovery")
             if acquired:
                 self.runtime.lock.release()
         finally:
             self.runtime.release.set()
-            worker.join(4)
+            worker.join(HANG_GUARD_SECONDS)
         self.assertFalse(worker.is_alive())
         self.assertEqual(result, [{"skills": [], "errors": []}])
 

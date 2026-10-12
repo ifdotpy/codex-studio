@@ -32,6 +32,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
 import uuid
+from server_test_waits import wait_for_condition as wait_until
 
 import codex_browser_bridge as bridge_module
 from codex_browser_bridge import (REMOTE_MESSAGE, SANDBOX, Bridge, Forward, PortBusy, card_id,
@@ -43,14 +44,6 @@ from browser_bridge import BridgeError, BrowserBridge, Listener
 from test_browser_fakes import FakeProvider, FakeTool, free_port, install_shim
 
 UID = os.getuid()
-
-
-def wait_until(predicate: Any, seconds: float = 5) -> None:
-    deadline = time.monotonic() + seconds
-    while not predicate():
-        if time.monotonic() > deadline:
-            raise AssertionError("The condition did not become true")
-        time.sleep(0.02)
 
 
 class Runtime:

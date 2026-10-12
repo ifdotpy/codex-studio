@@ -5,6 +5,8 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -51,14 +53,14 @@ class ToolRequestRuntimeRecovery(unittest.TestCase):
         if request_id is not None:
             query['request_id'] = request_id
         request = urllib.request.Request(self.base + '/api/tool-requests?' + urllib.parse.urlencode(query), headers=headers or {})
-        with urllib.request.urlopen(request, timeout=3) as response:
+        with urllib.request.urlopen(request, timeout=HANG_GUARD_SECONDS) as response:
             return json.load(response)
 
     def cancel(self, request_id, headers):
         request = urllib.request.Request(self.base + '/api/tool-requests/cancel',
             data=json.dumps({'agent': self.actor['id'], 'request_id': request_id}).encode(),
             headers={'Content-Type': 'application/json', **headers})
-        with urllib.request.urlopen(request, timeout=3) as response:
+        with urllib.request.urlopen(request, timeout=HANG_GUARD_SECONDS) as response:
             return json.load(response)
 
     def test_direct_child_registry_changes_are_reflected_in_receipt(self):
@@ -91,7 +93,7 @@ class ToolRequestRuntimeRecovery(unittest.TestCase):
     def test_cancelling_a_directly_reserved_request_prevents_runtime_dispatch(self):
         self.runtime.reserve_tool_request(self.message())
         def get_json(path):
-            with urllib.request.urlopen(self.base + path, timeout=3) as response:
+            with urllib.request.urlopen(self.base + path, timeout=HANG_GUARD_SECONDS) as response:
                 return json.load(response)
 
         token = read_session_token(get_json)

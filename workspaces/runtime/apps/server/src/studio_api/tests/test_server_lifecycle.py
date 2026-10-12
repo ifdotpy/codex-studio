@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from server_test_waits import HANG_GUARD_SECONDS
+
 import asyncio
 import http.client
 import io
@@ -65,7 +67,7 @@ class ServerLifecycleTests(unittest.TestCase):
                     connection.request("GET", request_path)
                     response = connection.getresponse()
                     self.assertEqual(response.status, 200)
-                    self.assertTrue(entered.wait(2))
+                    self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                     self.assertEqual(response.read(len(first_body)), first_body)
 
                     if shutdown is not None:

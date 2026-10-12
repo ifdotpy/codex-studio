@@ -5,6 +5,8 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -294,7 +296,7 @@ class LiveUpdatesContract(unittest.TestCase):
             time.sleep(0.005)
         self.assertEqual(self.manager.status()["status"], "applied")
         self.manager.close()
-        self.manager._thread.join(timeout=2)
+        self.manager._thread.join(timeout=HANG_GUARD_SECONDS)
         self.assertFalse(self.manager._thread.is_alive())
 
     def test_start_is_idempotent_and_closed_runtime_never_applies(self):

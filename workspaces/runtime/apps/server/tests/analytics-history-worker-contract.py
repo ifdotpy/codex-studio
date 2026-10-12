@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS, wait_for_condition
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -24,18 +25,6 @@ f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
 from codex_analytics import AnalyticsMixin
 from codex_runtime import AppServer, Runtime
-
-
-def wait_for(fixture, check, timeout=30):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        fixture.state_changed.clear()
-        if check():
-            return
-        remaining = deadline - time.monotonic()
-        if remaining <= 0 or not fixture.state_changed.wait(remaining):
-            break
-    raise AssertionError('History worker did not reach the required state')
 
 
 class SignalFixture(f.Fixture):
@@ -81,7 +70,7 @@ class WorkerTests(unittest.TestCase):
         self.f.closed = True
         worker = getattr(self.f, 'analytics_history_thread', None)
         if worker:
-            worker.join(2)
+            worker.join(HANG_GUARD_SECONDS)
             self.assertFalse(worker.is_alive())
         self.temp.cleanup()
 
@@ -91,7 +80,7 @@ class WorkerTests(unittest.TestCase):
         with self.f.db() as db:
             db.execute('DROP TABLE analytics_history')
         self.assertTrue(self.f.analytics_history_ensure_running())
-        wait_for(self.f, lambda: len(self.f.captured()) == 1)
+        wait_for_condition(lambda: len(self.f.captured()) == 1, wake_event=self.f.state_changed)
         self.assertEqual(self.f.state()['status'], 'current')
         self.assertFalse(self.f.analytics_history_ensure_running())
 
@@ -122,7 +111,7 @@ class WorkerTests(unittest.TestCase):
         guard = self.f._analytics_history_guard
         paths = self.f._analytics_history_paths
         self.assertTrue(self.f.analytics_history_ensure_running())
-        wait_for(self.f, lambda: len(self.f.captured()) == 1)
+        wait_for_condition(lambda: len(self.f.captured()) == 1, wake_event=self.f.state_changed)
         self.assertIsNot(self.f.analytics_history_thread, old)
         self.assertIs(self.f._analytics_history_guard, guard)
         self.assertIs(self.f._analytics_history_paths, paths)
@@ -138,7 +127,7 @@ class WorkerTests(unittest.TestCase):
                 with ThreadPoolExecutor(max_workers=8) as pool:
                     results = list(pool.map(lambda _: self.f.analytics_history_ensure_running(), range(32)))
                 self.assertEqual(sum(results), 1)
-                self.assertTrue(entered.wait(1))
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
             finally:
                 release.set()
 
@@ -150,15 +139,17 @@ class WorkerTests(unittest.TestCase):
             yield
         self.f.db = broken_db
         self.assertTrue(self.f.analytics_history_ensure_running())
-        wait_for(self.f, lambda: getattr(self.f, 'analytics_history_health', {}).get('consecutiveFailures', 0) >= 2)
+        wait_for_condition(lambda: getattr(self.f, 'analytics_history_health', {}).get('consecutiveFailures', 0) >= 2,
+                           wake_event=self.f.state_changed)
         worker = self.f.analytics_history_thread
         self.assertTrue(worker.is_alive())
         self.assertFalse(self.f.analytics_history_health['errorPersisted'])
         self.assertIn('OperationalError', self.f.analytics_history_health['error'])
         self.assertIn('Fixture storage failure', self.f.analytics_history_health['errorPersistenceError'])
         self.f.db = original_db
-        wait_for(self.f, lambda: len(self.f.captured()) == 1
-                   and self.f.analytics_history_health['status'] == 'running')
+        wait_for_condition(lambda: len(self.f.captured()) == 1
+                           and self.f.analytics_history_health['status'] == 'running',
+                           wake_event=self.f.state_changed)
         self.assertIs(self.f.analytics_history_thread, worker)
         self.assertEqual(self.f.analytics_history_health['status'], 'running')
 
@@ -172,12 +163,13 @@ class WorkerTests(unittest.TestCase):
             return original()
         with patch.object(self.f, 'analytics_history_step', side_effect=step):
             self.assertTrue(self.f.analytics_history_ensure_running())
-            wait_for(self.f, lambda: getattr(self.f, 'analytics_history_health', {}).get('errorPersisted') is True)
+            wait_for_condition(lambda: getattr(self.f, 'analytics_history_health', {}).get('errorPersisted') is True,
+                               wake_event=self.f.state_changed)
             def recovered():
                 with self.f.db() as db:
                     row = db.execute("SELECT record FROM analytics_history WHERE id='importer'").fetchone()
                 return row and json.loads(row[0]).get('status') == 'current'
-            wait_for(self.f, recovered)
+            wait_for_condition(recovered, wake_event=self.f.state_changed)
         with self.f.db() as db:
             diagnostic = json.loads(db.execute("SELECT record FROM analytics_history WHERE id='importer'").fetchone()[0])
         self.assertIsNone(diagnostic['error'])
@@ -200,7 +192,7 @@ class WorkerTests(unittest.TestCase):
         self.assertIn('Fixture thread failure', self.f.analytics_history_health['error'])
         self.assertFalse(hasattr(self.f, 'analytics_history_thread'))
         self.assertTrue(self.f.analytics_history_ensure_running())
-        wait_for(self.f, lambda: len(self.f.captured()) == 1)
+        wait_for_condition(lambda: len(self.f.captured()) == 1, wake_event=self.f.state_changed)
 
     def test_runtime_closes_after_thread_start_failure_without_another_retry(self):
         runtime = Runtime(Path(self.temp.name) / 'runtime-state', server_factory=lambda *args: None)
@@ -235,7 +227,7 @@ class WorkerTests(unittest.TestCase):
                 state = self.f.state()
                 return (a.get('tokensUsed') == 100 and error['status'] == 'failed'
                         and state is not None and state['status'] == 'current')
-        wait_for(self.f, complete)
+        wait_for_condition(complete, wake_event=self.f.state_changed)
         with self.f.db() as db:
             self.assertIsNotNone(db.execute("SELECT 1 FROM sqlite_master WHERE name='analytics_usage_migration'").fetchone())
             budget_state = json.loads(db.execute("SELECT value FROM analytics_meta WHERE key='budgetUsageMigrationV1:agent'").fetchone()[0])

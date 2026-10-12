@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -245,7 +246,7 @@ class CatalogCacheContract(unittest.TestCase):
         self.cache.wait_seconds = .3
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             result = pool.submit(self.read)
-            self.assertTrue(self.server.requested.wait(1))
+            self.assertTrue(self.server.requested.wait(HANG_GUARD_SECONDS))
             self.server.requests[0].set_result(CATALOG)
             self.assertEqual(result.result(1), CATALOG)
         self.assertEqual(self.server.ordered_callbacks, [])
@@ -304,7 +305,7 @@ class CatalogRuntimeContract(unittest.TestCase):
         self.runtime._catalog_cache.wait_seconds = .2
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             pending = pool.submit(self.runtime.catalog)
-            self.assertTrue(self.server.metadata.requested.wait(1))
+            self.assertTrue(self.server.metadata.requested.wait(HANG_GUARD_SECONDS))
             for lock in (self.runtime.lock, self.runtime.start_lock):
                 acquired = lock.acquire(timeout=.03)
                 self.assertTrue(acquired)

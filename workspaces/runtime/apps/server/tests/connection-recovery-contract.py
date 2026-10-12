@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -280,7 +281,7 @@ class ConnectionRecoveryContract(unittest.TestCase):
         self.server.read_gate = threading.Event()
         try:
             connection_recovery_tick(self.runtime, agents)
-            self.assertTrue(self.server.read_entered.wait(2))
+            self.assertTrue(self.server.read_entered.wait(HANG_GUARD_SECONDS))
             self.assertEqual(set(self.runtime._connection_recovery_jobs), {'default'})
             self.assertTrue(self.runtime._connection_recovery_jobs['default'].is_alive())
         finally:

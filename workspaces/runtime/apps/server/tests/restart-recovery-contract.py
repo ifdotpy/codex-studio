@@ -5,6 +5,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_waits import HANG_GUARD_SECONDS
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment
@@ -285,13 +286,13 @@ class RestartContract(fixture.ConnectionRecoveryContract):
                     with self.runtime.lock:
                         worker = threading.Thread(target=restore)
                         worker.start()
-                        self.assertTrue(checked.wait(2))
+                        self.assertTrue(checked.wait(HANG_GUARD_SECONDS))
                         if change == 'connection':
                             self.runtime.connection_ids['default'] = 'replacement-connection'
                         else:
                             self.runtime.closed = True
                     try:
-                        self.assertTrue(finished.wait(2))
+                        self.assertTrue(finished.wait(HANG_GUARD_SECONDS))
                         self.assertEqual(errors, [])
                         self.assertEqual(self.runtime.agent(self.key), expected)
                     finally:
