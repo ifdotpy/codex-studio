@@ -637,7 +637,9 @@ async function runAccountsUi(mode, { page: fixturePage }) {
 
     if (mode === "benchmark") {
       const benchAgent = agents.find((agent) => agent.id === "claude-chat");
-      const studioSettingsButton = page.locator("#studio-settings-toggle");
+      const studioSettingsButton = page.locator(
+        '.sidebar-header [aria-label="Studio settings"]',
+      );
       await studioSettingsButton.waitFor();
       const studioSettings = page.getByRole("dialog", {
         name: "Studio settings",
@@ -656,7 +658,9 @@ async function runAccountsUi(mode, { page: fixturePage }) {
               resolve(performance.now() - started);
             });
             observer.observe(document.body, { childList: true, subtree: true });
-            document.querySelector("#studio-settings-toggle").click();
+            document
+              .querySelector('.sidebar-header [aria-label="Studio settings"]')
+              .click();
             if (panel()) {
               observer.disconnect();
               resolve(performance.now() - started);

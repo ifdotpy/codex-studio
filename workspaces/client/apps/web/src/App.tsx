@@ -2350,6 +2350,7 @@ export default function App() {
             setSidebar(false);
             setSearchOpen(true);
           }}
+          settings={() => setStudioSettingsOpen(true)}
           close={() => {
             if (isServerView)
               delete document.documentElement.dataset.serverProjects;
@@ -2430,14 +2431,6 @@ export default function App() {
                       : ""
             }
           />
-          <ActionIcon
-            id="studio-settings-toggle"
-            aria-label="Studio settings"
-            title="Studio settings"
-            onClick={() => setStudioSettingsOpen(true)}
-          >
-            <Settings size={18} />
-          </ActionIcon>
           <div id="conversation-header-tools" />
           {!room?.radio && (
             <ActionIcon

@@ -28,7 +28,6 @@ export default function CombinedServerSidebar({
   search,
   notify,
   notice,
-  unreadCount,
   hideOldChatsThreshold,
 }: {
   model: MergedSidebar;
@@ -47,7 +46,6 @@ export default function CombinedServerSidebar({
   search: () => void;
   notify: (message: string) => void;
   notice: string;
-  unreadCount: number;
   hideOldChatsThreshold: number;
 }) {
   const [marking, setMarking] = useState(new Set<string>());
@@ -113,7 +111,6 @@ export default function CombinedServerSidebar({
       onSearch={search}
       notify={notify}
       notice={notice}
-      unreadCount={unreadCount}
       hideOldChatsThreshold={hideOldChatsThreshold}
       refresh={refresh}
       open={(id) => {
