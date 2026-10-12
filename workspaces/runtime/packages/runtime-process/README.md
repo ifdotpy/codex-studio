@@ -1,0 +1,128 @@
+# studio-runtime-process
+
+## Change Contract
+
+- **Responsibility:** Synchronous process boundary ports and the typed client
+  for the existing supervisor v1 protocol. This crate does not start the
+  production supervisor, make HTTP requests, or access SQLite.
+- **Public interface:** `SupervisorClient<T>` and typed request/result/event
+  models for each v1 action; `PtyHost` and `ProgressWatch` ports.
+- **Forbidden dependencies:** Tokio, HTTP frameworks, SQLite, Python runtime
+  bindings, and OS-specific code outside transport adapters.
+- **Invariants:** The supervisor remains the sole owner of provider and command
+  children. Handshake identity is `(backendId, stateDir)`; each child receipt
+  and journal event also carries a process `generation`. A sent action whose
+  response is lost is `UnknownOutcome`; callers resolve it by operation receipt
+  or journal replay instead of issuing a fresh operation identity.
+- **Configuration owner:** The server app supplies the supervisor endpoint,
+  backend identity, state directory, and child launch data.
+- **Focused check:** `cargo nextest run -p studio-runtime-process`.
+
+## Supervisor v1 contract
+
+Source of truth: [`Supervisor.handle`](../../../apps/server/src/codex_process_supervisor.py#L663),
+the connection handshake and frame loop in the same module, and its Python
+caller [`ProcessProxy`](../../../apps/server/src/codex_process_supervisor.py#L1468).
+The wire uses newline-delimited JSON over a Unix domain socket (Windows named
+pipe in the Python implementation). The supervisor is a separate long-lived
+process managed by [`codex_supervisor_service.py`](../../../apps/server/src/codex_supervisor_service.py#L232),
+so it retains child ownership across backend restarts. The first client frame is
+`{protocol: 1, stateDir, backendId}`; the server replies `{ok: true}`. A wrong
+protocol or state directory is rejected with an `error` frame before requests
+are accepted. Operator CLI connections use `{protocol: 1, stateDir, operator: true}`.
+
+The action DTOs and methods in `lib.rs` cover the complete `Supervisor.handle`
+inventory:
+
+| Action             | Typed method                                  | Python backend use                                                                                                                                             | Rust test coverage |
+| ------------------ | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ |
+| `health`           | `health()`                                    | `status(root)` performs the preflight health exchange in `codex_process_supervisor.py:1743-1760`; health result includes recovery and durability.              | Integration        |
+| `open`             | `open(OpenRequest)`                           | `ProcessProxy.__init__` attaches/starts its stable handle at `codex_process_supervisor.py:1495`; receipt includes `generation`, PID, resume flag, and cursors. | Integration        |
+| `next`             | `next(CursorRequest)`                         | `ProcessProxy.next_event` reads the next journal entry at `codex_process_supervisor.py:1534`.                                                                  | Integration        |
+| `finishFallback`   | `finish_fallback()`                           | Recovery CLI finishes a verified fallback at `codex_process_supervisor.py:1818-1830`.                                                                          | Integration        |
+| `adminCloseHandle` | `admin_close_handle(AdminCloseHandleRequest)` | Operator-only CLI closes a handle after PID, start time, and launch signature verification at `codex_process_supervisor.py:1795-1815`.                         | Integration        |
+| `retireCommand`    | `retire_command(RetireCommandRequest)`        | Completed `server-command:` handles are retired by `retire_command` at `codex_process_supervisor.py:1763-1793`.                                                | Integration        |
+| `write`            | `write(WriteRequest)`                         | `ProcessProxy.send_write` journals and writes the provider RPC at `codex_process_supervisor.py:1594`.                                                          | Integration        |
+| `operationStatus`  | `operation_status(OperationStatusRequest)`    | Monitor restart recovery checks the durable receipt in `codex_runtime.py:3846`.                                                                                | Integration        |
+| `ack`              | `ack(AckRequest)`                             | `ProcessProxy.ack` advances the contiguous cursor after runtime persistence at `codex_process_supervisor.py:1627`.                                             | Integration        |
+| `replay`           | `replay(CursorRequest)`                       | Exposed journal recovery action; current `ProcessProxy` consumes the same journal incrementally through `next`, and does not call `replay` directly.           | Integration        |
+| `status`           | `status(HandleRequest)`                       | Exposed per-handle status action; the current runtime uses local health/preflight snapshots instead of calling it.                                             | Integration        |
+| `detach`           | `detach(HandleRequest)`                       | `ProcessProxy.detach` sends the detach action during backend shutdown at `codex_process_supervisor.py:1697`; it leaves the child owned by the supervisor.      | Integration        |
+
+The event kinds are `stdout`, `stderr`, and `exit`. Each carries a monotonically
+increasing per-handle sequence and the child generation; `payload` is the JSON
+value recorded by the supervisor (`stdout` provider frame, `stderr` data, or
+exit return code). Unknown event names and unknown fields are retained.
+
+For a handle, `sequence` is the latest journal cursor and `acknowledged` is the
+durable contiguous cursor. `next` returns the first event after its cursor;
+`replay` returns all retained events after its cursor. Both reject a cursor
+below `acknowledged` or ahead of `sequence`. `ack` removes journal entries up to
+the new acknowledged cursor. The journal uses SQLite `synchronous=FULL` for
+each accepted request/event transaction (`sqlite-full-sync-per-request`); the
+health response publishes this durability label. The backend may reconnect
+using the same `backendId` and `stateDir`; `open` with the same handle and launch
+settings resumes a live child and returns its generation. Replacing a child
+advances its generation, so consumers can reject stale events.
+
+Approved plan decision D-01 moves the production backend, supervisor, and CLI
+to Rust together; M-07 freezes supervisor compatibility before cutover. Until
+that stage, the Python supervisor remains the owner and this slice supplies only
+the backend-side client. See
+[`rust-workspaces.md`](../../../../docs/plans/rust-workspaces.md#decisions-and-consequences).
+
+The Python client reads JSON objects without closed-schema validation: unknown
+request fields are ignored by action handlers and unknown response/event fields
+survive its dictionary handling. Rust result/event models therefore retain
+unrecognized fields in flattened extension maps. A remote `error` is a typed
+remote failure. A connection loss or invalid/missing response after sending an
+action is `UnknownOutcome { action, request_id }`; the Python monitor recovery
+path resolves operation writes through `operationStatus` and retained output
+through `replay`/`next` (`codex_runtime.py:3846`,
+`codex_process_supervisor.py:1534-1627`).
+
+The existing Python backend-neutral fixture covers `health`, `open`, and `next`
+(3 of 12 actions). This crate's disposable-socket integration test covers all
+12 actions, including the privileged operator handshake. It is a separate
+Rust fixture and leaves the shared Python fixture untouched.
+
+## Integration checks
+
+`tests/supervisor_v1.rs` launches the Python supervisor from this checkout into
+a unique `/var/tmp` state directory, checks that the socket is below `/var/tmp`,
+then exercises every action, event kind, bad-protocol handshake, cursor/ACK,
+replay, same-identity reattach, and cleanup of the disposable supervisor and
+children. It uses no fixture from the Python backend-neutral suite. Pure frame
+codec and extension-field tests run without a process.
+
+This is suitable for the Rust fast tier when its single run is at most 10 s:
+it starts only the required local supervisor and harmless test children, uses
+blocking request/response reads plus immediate `next` protocol calls, and has a
+bounded hang guard without sleeps. CI must provide Python. The complete suite
+selection should remain `cargo nextest run -p studio-runtime-process`; do not
+split this scenario into an independent slow inventory unless its measured run
+exceeds the repository's fast-tier limit.
+
+## OS ports
+
+`PtyHost` follows terminal session creation, input, output, resize, exit, and
+close operations in [`TerminalManager`](../../../apps/server/src/codex_terminals.py#L146).
+The intended adapter is `portable-pty` 0.9.0 (MIT); before enabling it, verify
+spawn/input/output/resize/exit and descendant cleanup on Linux, macOS, and each
+supported Windows/WSL entry point, including packaged server behavior.
+
+`ProgressWatch` follows the subscribe-before-baseline, coalesced notification,
+and unsubscribe lifecycle in [`ProgressFileWatchdog`](../../../apps/server/src/codex_progress_watch.py#L86).
+The intended adapter is `notify` 8.2.0 (CC0-1.0); verify exact-file detection,
+atomic replacement, teardown, and callback ordering on Linux inotify and macOS
+kqueue. Establish the Windows/WSL watcher requirement before promising support.
+
+The production crate currently has no new third-party dependencies. The
+approved transport is `std::os::unix::net::UnixStream` behind the generic
+`Read + Write` seam. Windows named-pipe transport is an explicit implementation
+gap because the Windows server entry-point/release promise is not yet frozen.
+For that decision, evaluate [`interprocess` 2.4.5](https://crates.io/crates/interprocess)
+(0BSD OR Apache-2.0; latest release as of 2026-10-12; active upstream with
+recent commits and explicit Windows/Linux/macOS support) against
+the existing pipe endpoint identity/security contract before adding it. It is
+not currently in the dependency graph.
