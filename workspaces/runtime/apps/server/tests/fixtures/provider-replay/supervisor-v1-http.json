@@ -1,0 +1,52 @@
+{
+  "source": "hand-authored supervisor v1 newline-delimited JSON frames; providerFrames references the existing provider replay transcript",
+  "transport": {
+    "linux": "unix-domain-socket",
+    "windows": "named-pipe",
+    "framing": "newline-delimited-json"
+  },
+  "providerFixture": "restart-mid-turn-supervisor-replay.json",
+  "supervisorFrames": [
+    {
+      "direction": "client",
+      "frame": {
+        "protocol": 1,
+        "stateDir": "$state",
+        "backendId": "provider-fixture-backend"
+      }
+    },
+    {
+      "direction": "server",
+      "frame": { "ok": true }
+    },
+    {
+      "direction": "client",
+      "frame": { "requestId": "fixture-health-1", "action": "health" }
+    },
+    {
+      "direction": "server",
+      "frame": {
+        "requestId": "fixture-health-1",
+        "result": {
+          "protocol": 1,
+          "stateDir": "$state",
+          "durability": "sqlite-full-sync-per-request"
+        }
+      }
+    }
+  ],
+  "supervisorFailureFrames": [
+    {
+      "direction": "client",
+      "frame": {
+        "protocol": 999,
+        "stateDir": "$state",
+        "backendId": "bad-protocol"
+      }
+    },
+    {
+      "direction": "server",
+      "frame": { "error": "Supervisor protocol or state directory mismatch" }
+    }
+  ]
+}

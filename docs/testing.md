@@ -171,6 +171,42 @@ STUDIO_HTTP_BACKEND_COMMAND='/path/to/codex-backend' \
   just test server workspaces/runtime/apps/server/tests/http-boundary-contract.py
 ```
 
+The command setting applies to every suite using `http_backend_harness.py`.
+The harness clears Python-backend selector variables for an explicit command,
+keeps state and credentials disposable, and restricts the child `PATH` to the
+replay Codex executable and system directories. A representative provider plus
+supervisor fixture can be checked with:
+
+```sh
+just test server workspaces/runtime/apps/server/tests/protocol-fixtures-contract.py
+STUDIO_HTTP_BACKEND_COMMAND='/path/to/codex-backend' \
+  just test server workspaces/runtime/apps/server/tests/protocol-fixtures-contract.py
+```
+
+The fixture checker consumes the existing
+`restart-mid-turn-supervisor-replay.json` provider transcript and the
+`supervisor-v1-http.json` socket frames, then checks the public transcript and
+message receipt. Its altered-expectation case proves the same frame comparator
+fails when recorded behavior changes. The checker currently executes the Unix
+socket transport; the named-pipe fixture is recorded for a Windows checker.
+
+Some suites intentionally test Python implementation details and are not part
+of this portable HTTP corpus: `provider-replay-runner.py` and
+`server/test_provider_replay_protocol.py` import `Runtime`/`AppServer` to test
+the Python replay adapter; `http-cache-contract.py` constructs `Canvas` and
+`Runtime` to inject static assets; `http-request-traces-contract.py` patches
+the Python tracing module and controls a blocked callback. The supervisor
+implementation suites (`process-supervisor-contract.py`,
+`supervisor-persistence-retry-contract.py`,
+`supervisor-reattach-barrier-contract.py`,
+`supervisor-restore-selection-contract.py`,
+`supervisor-snapshot-schema-contract.py`,
+`supervisor-response-map-contract.py`,
+`supervisor-journal-connection-reuse-contract.py`, and
+`supervisor-stream-phase-load-contract.py`) inspect Python supervisor state or
+fault-injection points; those remain implementation tests until their
+observable cases have matching backend-neutral fixtures.
+
 The server runner supplies `TMPDIR` on memory-backed scratch.
 The harness places state, home directories, Codex and Claude configuration,
 XDG directories, and provider replay files beneath that root. New boundary
