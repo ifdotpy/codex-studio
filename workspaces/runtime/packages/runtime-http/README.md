@@ -52,7 +52,7 @@ shared schema header. The conformance command discovers consumer suites and
 writes its detailed ledger beneath `XDG_CACHE_HOME`, outside the checkout.
 
 Direct dependencies introduced by this package: Axum 0.8.9 (MIT), Tokio
-1.53.2 (MIT), SHA-2 0.10.9 (MIT OR Apache-2.0; schema hash), subtle 2.6.1
+1.53.2 (MIT), SHA-2 0.11.0 (MIT OR Apache-2.0; schema hash), subtle 2.6.1
 (MIT OR Apache-2.0; constant-time token comparison), and openapi-to-rust
 0.22.0 (MIT; build-time DTO generation). Serde and serde_json are existing
 workspace dependencies. The build-only generator pulls its transitive parsing,

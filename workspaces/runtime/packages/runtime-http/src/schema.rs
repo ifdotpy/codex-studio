@@ -114,7 +114,12 @@ pub fn canonical_openapi_bytes() -> Vec<u8> {
 
 /// Hash the human-readable authority after applying canonicalizer-v3 rules.
 pub fn api_schema_hash() -> &'static str {
-    SCHEMA_HASH.get_or_init(|| format!("{:x}", Sha256::digest(canonical_openapi_bytes())))
+    SCHEMA_HASH.get_or_init(|| {
+        Sha256::digest(canonical_openapi_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    })
 }
 
 /// Return all method/path pairs from the committed OpenAPI authority.
