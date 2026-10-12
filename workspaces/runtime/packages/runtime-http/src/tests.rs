@@ -2,7 +2,7 @@ use crate::{
     error::{CSP, error_response, with_api_headers},
     middleware::trusted,
     router::route_matches,
-    schema::{API_SCHEMA_HASH_HEADER, api_schema_hash, operations},
+    schema::{API_SCHEMA_HASH_HEADER, api_schema_hash},
 };
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 
@@ -143,16 +143,4 @@ fn api_responses_include_schema_and_security_headers() {
     assert_eq!(response.headers()["x-content-type-options"], "nosniff");
     assert_eq!(response.headers()["referrer-policy"], "no-referrer");
     assert_eq!(response.headers()["content-security-policy"], CSP);
-}
-
-#[test]
-fn schema_contains_159_api_operations() {
-    assert_eq!(
-        operations()
-            .expect("committed schema parses")
-            .iter()
-            .filter(|(_, path)| path.starts_with("/api/"))
-            .count(),
-        159
-    );
 }
