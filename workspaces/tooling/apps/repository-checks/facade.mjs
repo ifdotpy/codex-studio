@@ -610,6 +610,49 @@ function serverCategoryOptions(category, suite = "") {
   };
 }
 
+function serverShardOptions(indexText, countText) {
+  const index = Number(indexText);
+  const count = Number(countText);
+  if (
+    !Number.isSafeInteger(index) ||
+    !Number.isSafeInteger(count) ||
+    count < 1 ||
+    index < 0 ||
+    index >= count
+  )
+    fail("Usage: test-server-shard <zero-based-index> <shard-count>");
+  return {
+    serverArgs: [
+      "--shard-index",
+      String(index),
+      "--shard-count",
+      String(count),
+    ],
+    selector: `default server suites in shard ${index + 1}/${count}`,
+    reason:
+      "Select a stable disjoint shard from the server runner's default suite inventory.",
+    costCategory: `fast server shard ${index + 1}/${count}`,
+    label: `server shard ${index + 1}/${count}`,
+  };
+}
+
+function serverShardPlan(root, index, count) {
+  const item = serverPackage();
+  const options = serverShardOptions(index, count);
+  return plan(
+    root,
+    item,
+    "test",
+    "",
+    commandFor(root, item, "test", "", options),
+    options,
+  );
+}
+
+export function serverShardRunOptions(indexText, countText) {
+  return serverShardOptions(indexText, countText);
+}
+
 function serverCategoryPlan(root, category, suite = "") {
   const item = serverPackage();
   const options = serverCategoryOptions(category, suite);
@@ -692,6 +735,10 @@ function fastTierCommands(root) {
   ];
 }
 
+function fastTierRestCommands(root) {
+  return fastTierCommands(root).slice(1);
+}
+
 function heavyTierCommands(root) {
   const server = serverPackage();
   return [
@@ -710,28 +757,38 @@ function heavyTierCommands(root) {
 
 function recipePlan(root, name) {
   const commands =
-    name === "test-fast" ? fastTierCommands(root) : heavyTierCommands(root);
+    name === "test-fast"
+      ? fastTierCommands(root)
+      : name === "test-fast-rest"
+        ? fastTierRestCommands(root)
+        : heavyTierCommands(root);
   const commandLists = commands.map(
     ({ item, options = {}, commands: override }) =>
       override ?? commandFor(root, item, "test", "", options),
   );
-  const fast = name === "test-fast";
+  const fast = name === "test-fast" || name === "test-fast-rest";
   return {
     package: name,
     case: null,
     target: fast
-      ? "repository fast tier"
+      ? name === "test-fast"
+        ? "repository fast tier"
+        : "fast tier excluding the server suites"
       : "server heavy suites followed by full browser project",
     workingDirectory: root,
     invocationDirectory: root,
     command: reproduction(root, commandLists.flat()),
     selector: fast
-      ? "default server run, server bridge, Rust workspace nextest, web type checks and unit tests, tooling tests"
+      ? name === "test-fast"
+        ? "default server run, server bridge, Rust workspace nextest, web type checks and unit tests, tooling tests"
+        : "server bridge, Rust workspace nextest, web type checks and unit tests, tooling tests"
       : "server --only heavy, then codex-agents-web test:browser",
     requiredSetup:
       "Frozen pnpm dependencies, managed Python runtime and development dependencies, Rust toolchain and cargo-nextest, browser binaries",
     reason: fast
-      ? "Run the deterministic fast-tier checks across the repository in one sequential command."
+      ? name === "test-fast"
+        ? "Run the deterministic fast-tier checks across the repository in one sequential command."
+        : "Run the non-server checks from the fast tier in one sequential command."
       : "Run the complete heavy tier sequentially; load-class server suites are excluded.",
     notStarted: "Electron, provider-dependent opt-in suites, load-class suites",
     costCategory: fast
@@ -778,6 +835,44 @@ export async function executeRecipe(root, name, steps) {
     command: planned.command,
     exitCode: 0,
   };
+}
+
+export function serverRunDiagnostics(output) {
+  const diagnosticLines = output
+    .split("\n")
+    .filter((line) => line.startsWith("Server runner diagnostics: "));
+  const latest = diagnosticLines
+    .at(-1)
+    ?.slice("Server runner diagnostics: ".length);
+  if (latest) {
+    try {
+      const parsed = JSON.parse(latest);
+      const durations = Object.entries(parsed.suiteDurations ?? {})
+        .map(([suite, seconds]) => ({ suite, seconds: Number(seconds) }))
+        .filter(({ seconds }) => Number.isFinite(seconds))
+        .sort((left, right) => right.seconds - left.seconds)
+        .slice(0, 10);
+      return {
+        planLine: `Selected worker plan: ${JSON.stringify(parsed.workerPlan)}`,
+        durations,
+      };
+    } catch {
+      // Fall through to the human-readable records for older runner output.
+    }
+  }
+  const planLine = output
+    .split("\n")
+    .find((line) =>
+      /^(?:Selected (?:automatic )?worker plan|Focused worker plan): /.test(
+        line,
+      ),
+    );
+  const durations = [...output.matchAll(/^Finished (.+): .*?, ([\d.]+)s$/gm)]
+    .map((match) => ({ suite: match[1], seconds: Number(match[2]) }))
+    .filter(({ seconds }) => Number.isFinite(seconds))
+    .sort((left, right) => right.seconds - left.seconds)
+    .slice(0, 10);
+  return { planLine, durations };
 }
 
 async function executeServerCategory(root, category, suite = "") {
@@ -1059,14 +1154,28 @@ export async function execute(
   if (asJson) process.stdout.write(`${JSON.stringify(result)}\n`);
   else
     process.stdout.write(
-      `${options.label ?? item.name}${caseName ? ` / ${caseName}` : ""}: ${result.status}${counts.passed === null ? "" : ` — ${counts.passed} passed, ${counts.failed} failed, ${counts.skipped} skipped`}${counts.executed === 0 && !options.allowZeroTests ? " — zero tests executed" : ""}; ${durationSeconds}s\nCommand: ${run.command}\nFull log: ${logPath}\n${serverFailures.length ? `Failing server suites:\n${serverFailures.join("\n")}\n` : ""}`,
+      `${options.label ?? item.name}${caseName ? ` / ${caseName}` : ""}: ${result.status}${counts.passed === null ? "" : ` — ${counts.passed} passed, ${counts.failed} failed, ${counts.skipped} skipped`}${counts.executed === 0 && !options.allowZeroTests ? " — zero tests executed" : ""}; ${durationSeconds}s\nCommand: ${run.command}\nFull log: ${logPath}\n${item.ecosystem === "server" ? formatServerRunDiagnostics(output) : ""}${serverFailures.length ? `Failing server suites:\n${serverFailures.join("\n")}\n` : ""}`,
     );
   return result;
 }
 
+function formatServerRunDiagnostics(output) {
+  const { planLine, durations } = serverRunDiagnostics(output);
+  return [
+    planLine ?? "Selected worker plan: unavailable in runner output",
+    "Ten slowest server suites:",
+    ...(durations.length
+      ? durations.map(
+          ({ suite, seconds }) => `  ${seconds.toFixed(2)}s ${suite}`,
+        )
+      : ["  unavailable in runner output"]),
+    "",
+  ].join("\n");
+}
+
 function usage() {
   process.stdout.write(
-    "Usage: facade.mjs packages | test <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-plan <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-fast | test-heavy | test-browser | test-server-category <category> | test-server-load <suite-path> | check <package> [--dry-run] [--json] | contracts-check | boundaries-check | check-affected <base> [--dry-run]\n",
+    "Usage: facade.mjs packages | test <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-plan <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-fast | test-fast-rest | test-server-shard <index> <count> | test-heavy | test-browser | test-server-category <category> | test-server-load <suite-path> | check <package> [--dry-run] [--json] | contracts-check | boundaries-check | check-affected <base> [--dry-run]\n",
   );
 }
 
@@ -1517,6 +1626,18 @@ export async function main(argv = process.argv.slice(2)) {
     );
     return result.exitCode;
   }
+  if (action === "test-fast-rest") {
+    const result = await executeRecipe(
+      root,
+      "test-fast-rest",
+      fastTierRestCommands(root),
+    );
+    return result.exitCode;
+  }
+  if (action === "test-server-shard") {
+    const options = serverShardOptions(packageName || "", requestedCase || "");
+    return (await execute(root, serverPackage(), "", json, options)).exitCode;
+  }
   if (action === "test-heavy") {
     const result = await executeRecipe(
       root,
@@ -1546,6 +1667,17 @@ export async function main(argv = process.argv.slice(2)) {
   if (action === "test-plan") {
     if (packageName === "test-fast" || packageName === "test-heavy") {
       reportPlan(recipePlan(root, packageName), json);
+      return 0;
+    }
+    if (packageName === "test-fast-rest") {
+      reportPlan(recipePlan(root, packageName), json);
+      return 0;
+    }
+    if (packageName === "test-server-shard") {
+      reportPlan(
+        serverShardPlan(root, requestedCase || "", rest[0] || ""),
+        json,
+      );
       return 0;
     }
     if (packageName === "test-browser") {

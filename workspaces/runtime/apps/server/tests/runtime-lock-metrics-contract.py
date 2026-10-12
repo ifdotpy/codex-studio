@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
-from test_isolation import isolate_supervisor_environment
+from test_isolation import isolate_supervisor_environment, minimal_runtime_environment
 isolate_supervisor_environment()
 
 import os
@@ -98,7 +98,8 @@ class RuntimeLockMetricsContract(unittest.TestCase):
 
     def test_runtime_uses_metrics_lock_in_temp_state(self):
         with tempfile.TemporaryDirectory(prefix="studio-lock-metrics-") as folder:
-            with patch.dict(os.environ, {"HOME": folder, "CODEX_HOME": folder}, clear=True):
+            environment = minimal_runtime_environment(folder)
+            with patch.dict(os.environ, environment, clear=True):
                 runtime = Runtime(folder, server_factory=lambda *_args: None)
                 try:
                     self.assertIsInstance(runtime.lock, MeasuredRLock)

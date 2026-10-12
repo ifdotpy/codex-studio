@@ -23,8 +23,9 @@ of the same tests to this document.
 The fast tier is deterministic and each suite is expected to finish in at most
 10 seconds when run alone. It is the default developer loop, the required
 pre-PR and pre-merge check, and runs in hosted CI on every pull request and push
-to `main`. A direct push to `main` is preceded by `just test-server-opt-in`
-(about 20 seconds). Use `just test-fast` for the whole repository. For one
+to `main`, with the server tier split across four parallel jobs. A direct push
+to `main` is preceded by `just test-server-opt-in` (about 20 seconds). Use
+`just test-fast` for the whole repository. For one
 server suite between edits, use
 `just test server <exact-suite-path>`; exact paths automatically include suites
 from the automated or heavy list. At the end of a default run, the runner reports

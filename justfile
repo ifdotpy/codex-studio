@@ -39,6 +39,14 @@ check-affected base *args:
 test-fast:
     @node {{quote(facade)}} test-fast
 
+[doc("Run the non-server checks included in the fast tier (for CI sharding).")]
+test-fast-rest:
+    @node {{quote(facade)}} test-fast-rest
+
+[doc("Run one stable shard of the default server suites; index is zero-based.")]
+test-server-shard index count:
+    @node {{quote(facade)}} test-server-shard {{quote(index)}} {{quote(count)}}
+
 [doc("Run all three manually classified heavy server suites.")]
 test-server-heavy:
     @node {{quote(facade)}} test-server-category heavy
