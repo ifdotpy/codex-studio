@@ -131,7 +131,14 @@ impl RuntimeStore {
     }
 
     /// Run one durable transaction while holding the sole serialized writer.
-    pub fn transaction<T, E>(
+    pub fn transaction<T>(
+        &self,
+        operation: impl FnOnce(&Transaction<'_>) -> StoreResult<T>,
+    ) -> StoreResult<T> {
+        self.transaction_with(operation)
+    }
+
+    pub fn transaction_with<T, E>(
         &self,
         operation: impl FnOnce(&Transaction<'_>) -> Result<T, E>,
     ) -> Result<T, E>

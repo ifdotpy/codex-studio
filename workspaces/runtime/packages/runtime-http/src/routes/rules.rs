@@ -75,7 +75,7 @@ async fn update(
     let supplied_id = string(&body, "id").map(str::to_owned);
     let rule_id = supplied_id.unwrap_or_else(new_rule_id);
     let result = store
-        .transaction(|transaction| {
+        .transaction_with(|transaction| {
             let agent = RulesRepository::agent(transaction, &agent_id)
                 .map_err(store_api_error)?
                 .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown agent"))?;
