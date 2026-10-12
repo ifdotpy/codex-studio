@@ -7,6 +7,9 @@ from typing_extensions import NotRequired, TypedDict
 from pydantic import ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
 from codex_records import NativeNoticeRecord, NativeSafetyBufferingRecord
+from codex_nested_delegation import (
+    DEFAULT_DELEGATION_DEPTH, MAX_DELEGATION_DEPTH, MIN_DELEGATION_DEPTH,
+)
 from studio_api.sync.preferences import UiPreferencesDto
 from studio_api.models import (
     ContractModel,
@@ -379,6 +382,12 @@ class WorkerDefaultsDto(ContractModel):
     daybreakEnabled: bool = False
     accountKey: str | None = None
     cyberAccessProgram: str | None = None
+    delegationDepth: int = Field(
+        default=DEFAULT_DELEGATION_DEPTH,
+        strict=True,
+        ge=MIN_DELEGATION_DEPTH,
+        le=MAX_DELEGATION_DEPTH,
+    )
 
 
 class ReviewDefaultsDto(ContractModel):

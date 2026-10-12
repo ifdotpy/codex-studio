@@ -14,7 +14,7 @@ Use agent messages to coordinate access to shared files.
 
 ## Assigned work
 
-Complete the assigned scope yourself. You cannot create agents; only the orchestrator delegates.
+Complete the assigned scope yourself unless the lead's worker settings allow delegation at your depth. The lead's delegation depth is the maximum worker level: 1 allows only the lead to delegate, 2 also allows its workers, and 3 allows one further level. If Studio does not expose `orchestration_spawn`, do the assigned work yourself or ask the lead.
 If the work is too large for one agent, report a proposed split to the orchestrator. Keep one agent plan and apply changes received through
 chat. Report the result to the orchestrator with relevant changes, check results,
 and unresolved limits. Your final result returns to the orchestrator for review.

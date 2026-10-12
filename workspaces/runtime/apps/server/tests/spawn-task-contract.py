@@ -106,11 +106,11 @@ class SpawnTask(unittest.TestCase):
         self.assertIsNone(task['owner'])
 
 
-    def test_only_the_lead_can_create_agents(self):
+    def test_default_delegation_depth_keeps_workers_from_creating_agents(self):
         worker = self.rt.spawn_agents(self.lead, {'agents': [{'name': 'Worker', 'prompt': 'Work'}]}, 'lead-spawn')['agents'][0]
         worker = self.rt.agent(worker['id'])
         agents, events = self.count('agents'), self.count('events')
-        with self.assertRaisesRegex(ValueError, 'Only the lead can create agents'):
+        with self.assertRaisesRegex(ValueError, 'delegation depth'):
             self.rt.spawn_agents(worker, {'agents': [{'name': 'Nested', 'prompt': 'Work'}]}, 'nested-spawn')
         self.assertEqual((self.count('agents'), self.count('events')), (agents, events))
         names = lambda actor: {d['name'] for d in self.rt.tool_definitions(actor)}

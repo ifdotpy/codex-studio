@@ -5,6 +5,7 @@ import {
   Drawer,
   Switch,
   SegmentedControl,
+  Select,
   Tooltip,
 } from "@mantine/core";
 import { ChevronDown } from "lucide-react";
@@ -51,6 +52,7 @@ type SettingsValue = {
   effort: string | null;
   fast_mode: boolean;
   daybreak_enabled: boolean;
+  delegation_depth: number;
 };
 type ReviewSettings = NonNullable<Agent["reviewDefaults"]>;
 type SettingsAgent = Pick<
@@ -150,6 +152,7 @@ const settingsFor = (
           : agent.workerDefaults.effort,
       fast_mode: !!agent.workerDefaults?.fastMode,
       daybreak_enabled: !!agent.workerDefaults?.daybreakEnabled,
+      delegation_depth: agent.workerDefaults?.delegationDepth ?? 1,
     };
   const queued = queuedFor(agent);
   return {
@@ -157,6 +160,7 @@ const settingsFor = (
     effort: queued ? (queued.effort ?? null) : (agent.effort ?? null),
     fast_mode: queued ? !!queued.fastMode : !!agent.fastMode,
     daybreak_enabled: !!(queued?.daybreakEnabled ?? agent.daybreakEnabled),
+    delegation_depth: 1,
   };
 };
 const sameSettings = (left: SettingsValue, right: SettingsValue) =>
@@ -164,7 +168,8 @@ const sameSettings = (left: SettingsValue, right: SettingsValue) =>
   left.model === right.model &&
   left.effort === right.effort &&
   left.fast_mode === right.fast_mode &&
-  !!left.daybreak_enabled === !!right.daybreak_enabled;
+  !!left.daybreak_enabled === !!right.daybreak_enabled &&
+  left.delegation_depth === right.delegation_depth;
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 const isJsonValue = (value: unknown): value is JsonValue => {
@@ -458,6 +463,7 @@ function ScopedExecutionSettings({
     stored.effort,
     stored.fast_mode,
     stored.daybreak_enabled,
+    stored.delegation_depth,
   ]);
   useEffect(() => {
     if (
@@ -849,6 +855,7 @@ function ScopedExecutionSettings({
             effort: next.effort,
             fast_mode: next.fast_mode,
             daybreak_enabled: next.daybreak_enabled,
+            delegation_depth: next.delegation_depth,
           },
         }
       : {
@@ -1010,6 +1017,25 @@ function ScopedExecutionSettings({
     "";
   const controls = (
     <>
+      {teamDefaults && agent.isLead && !onDraftChange && (
+        <SettingsRow label="Delegation depth">
+          <Select
+            aria-label="Delegation depth"
+            value={String(current.delegation_depth)}
+            comboboxProps={{ withinPortal: false }}
+            data={[
+              { value: "1", label: "Lead only (1)" },
+              { value: "2", label: "One nested level (2)" },
+              { value: "3", label: "Two nested levels (3)" },
+            ]}
+            disabled={saving}
+            onChange={(value) => {
+              if (value !== null)
+                void change({ delegation_depth: Number(value) });
+            }}
+          />
+        </SettingsRow>
+      )}
       <AgentSetupPicker
         role={role}
         onRole={onRole}

@@ -18112,6 +18112,11 @@ export interface components {
       account_key?: string | null;
       /** Daybreak Enabled */
       daybreak_enabled?: boolean | null;
+      /**
+       * Delegation Depth
+       * @default 1
+       */
+      delegation_depth?: number;
       /** Effort */
       effort: string | null;
       /** Fast Mode */
@@ -18130,6 +18135,11 @@ export interface components {
        * @default false
        */
       daybreakEnabled?: boolean;
+      /**
+       * Delegationdepth
+       * @default 1
+       */
+      delegationDepth?: number;
       /** Effort */
       effort: null | string;
       /** Fastmode */
@@ -18149,6 +18159,8 @@ export interface components {
       cyberAccessProgram?: null | string;
       /** Daybreakenabled */
       daybreakEnabled?: boolean;
+      /** Delegationdepth */
+      delegationDepth?: number;
       /** Effort */
       effort: null | string;
       /** Fastmode */

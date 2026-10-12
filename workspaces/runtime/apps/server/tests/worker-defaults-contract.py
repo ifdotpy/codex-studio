@@ -84,9 +84,10 @@ class WorkerDefaults(unittest.TestCase):
     def settings(self, **values):
         return self.runtime.conversation_settings(self.lead["id"], values)
 
-    def defaults(self, model=None, effort=None, fast=False):
+    def defaults(self, model=None, effort=None, fast=False, delegation_depth=1):
         return self.settings(
-            worker_defaults={"model": model, "effort": effort, "fast_mode": fast}
+            worker_defaults={"model": model, "effort": effort, "fast_mode": fast,
+                             "delegation_depth": delegation_depth}
         )
 
     def worker(self, parent=None, **values):
@@ -148,7 +149,8 @@ class WorkerDefaults(unittest.TestCase):
         self.assertEqual(self.runtime.agent(child["id"])["model"], "gpt-6-luna")
 
     def test_luna_high_default_preserves_explicit_choices(self):
-        expected = {"model": "gpt-6-luna", "effort": "high", "fastMode": False, "daybreakEnabled": False}
+        expected = {"model": "gpt-6-luna", "effort": "high", "fastMode": False,
+                    "daybreakEnabled": False, "delegationDepth": 1}
         self.assertEqual(self.lead["workerDefaults"], expected)
         self.assertEqual(self.runtime.worker_defaults({}), expected)
         child = self.worker()
@@ -313,7 +315,8 @@ class WorkerDefaults(unittest.TestCase):
         self.assertNotEqual(new["id"], self.lead["id"])
         self.assertEqual(
             new["workerDefaults"],
-            {"model": "gpt-6-luna", "effort": "high", "fastMode": False, "daybreakEnabled": False},
+            {"model": "gpt-6-luna", "effort": "high", "fastMode": False,
+             "daybreakEnabled": False, "delegationDepth": 1},
         )
         self.assertEqual((new["model"], new["effort"], new["fastMode"]),
                          ("gpt-6-astra", "medium", False))
@@ -377,7 +380,7 @@ class WorkerDefaults(unittest.TestCase):
         self.assertEqual(
             self.runtime.agent(lead["id"])["workerDefaults"],
             {"model": "worker", "effort": "high", "fastMode": True,
-             "daybreakEnabled": False, "cyberAccessProgram": "standard"},
+             "daybreakEnabled": False, "cyberAccessProgram": "standard", "delegationDepth": 1},
         )
 
         def call(key, agents):

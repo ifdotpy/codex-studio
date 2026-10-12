@@ -297,6 +297,7 @@ class WorkerDefaultsRecord(TypedDict):
     daybreakEnabled: NotRequired[bool]
     cyberAccessProgram: NotRequired[str | None]
     accountKey: NotRequired[str | None]
+    delegationDepth: NotRequired[int]
 
 
 class AgentArchiveRecord(TypedDict):
