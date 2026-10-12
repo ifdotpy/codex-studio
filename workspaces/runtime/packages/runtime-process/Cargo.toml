@@ -12,6 +12,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+studio-runtime-providers = { path = "../runtime-providers" }
 
 [lints]
 workspace = true

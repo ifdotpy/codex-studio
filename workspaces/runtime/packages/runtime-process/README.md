@@ -6,7 +6,8 @@
   for the existing supervisor v1 protocol. This crate does not start the
   production supervisor, make HTTP requests, or access SQLite.
 - **Public interface:** `SupervisorClient<T>` and typed request/result/event
-  models for each v1 action; `PtyHost` and `ProgressWatch` ports.
+  models for each v1 action; `ProviderProcessFactory` and its supervisor-backed
+  native-account adapter; `PtyHost` and `ProgressWatch` ports.
 - **Forbidden dependencies:** Tokio, HTTP frameworks, SQLite, Python runtime
   bindings, and OS-specific code outside transport adapters.
 - **Invariants:** The supervisor remains the sole owner of provider and command
@@ -80,8 +81,25 @@ advances its generation, so consumers can reject stale events.
 Approved plan decision D-01 moves the production backend, supervisor, and CLI
 to Rust together; M-07 freezes supervisor compatibility before cutover. Until
 that stage, the Python supervisor remains the owner and this slice supplies only
-the backend-side client. See
+the backend-side client and provider process adapter. See
 [`rust-workspaces.md`](../../../../docs/plans/rust-workspaces.md#decisions-and-consequences).
+
+## Native provider process adapter
+
+`SupervisorProviderProcessFactory` implements the provider byte-stream boundary
+over the supervisor client. `ProviderHandle::native_account` builds the shared
+`account:<account-key>` handle used by the Python native app-server path and
+retains the exact command, environment, and working directory passed to
+`open`. Stdout journal events are serialized as JSONL for the provider session;
+their journal entries are acknowledged only after the stream consumer reads the
+complete frame. Input is split into JSONL requests and sent with stable
+operation IDs. Stopping the adapter detaches the backend connection and leaves
+the child under supervisor ownership.
+
+On reattach, the factory reuses the same account handle and checks the child PID
+before retrying uncertain reads, acknowledgements, or writes. Writes resolve
+unknown outcomes with the original operation ID. Linux worker handles are not
+part of this adapter yet.
 
 The Python client reads JSON objects without closed-schema validation: unknown
 request fields are ignored by action handlers and unknown response/event fields
@@ -111,6 +129,11 @@ bad-protocol handshake, cursor/ACK,
 replay, same-identity reattach, and cleanup of the disposable supervisor and
 children. It uses no fixture from the Python backend-neutral suite. Pure frame
 codec and extension-field tests run without a process.
+
+The same disposable supervisor suite also drives the checked-out
+`runtime-services` provider-session implementation through the adapter with a
+harmless fake app-server. It checks request/reply exchange, native-account
+reattach without replaying initialization, child exit, and detach ownership.
 
 This is suitable for the Rust fast tier when its single run is at most 10 s:
 it starts only the required local supervisor and harmless test children, uses

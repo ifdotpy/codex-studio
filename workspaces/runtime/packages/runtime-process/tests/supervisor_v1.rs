@@ -14,9 +14,15 @@ use serde_json::{Value, json};
 use studio_runtime_process::{
     AckRequest, AdminCloseHandleRequest, BackendId, BackendIdentity, CursorRequest, EventCursor,
     EventKind, FinishFallbackRequest, HandleRequest, HealthRequest, OpenRequest, OperationId,
-    OperationStatusRequest, RetireCommandRequest, SupervisorClient, SupervisorError,
-    SupervisorHandle, WriteRequest,
+    OperationStatusRequest, ProviderHandle, ProviderProcess as SupervisorProviderProcess,
+    ProviderProcessFactory, RetireCommandRequest, SupervisorClient, SupervisorError,
+    SupervisorHandle, SupervisorProviderProcessFactory, WriteRequest,
 };
+use studio_runtime_providers::{Method, ResponseBody};
+
+#[allow(dead_code)]
+#[path = "../../runtime-services/src/provider_session.rs"]
+mod provider_session;
 
 const SOCKET: &str = "supervisor.sock";
 #[cfg(target_os = "linux")]
@@ -250,6 +256,212 @@ fn safe_socket_path(state: &DisposableState) -> PathBuf {
     );
     assert_outside_runtime_state(&socket);
     socket
+}
+
+struct ProviderSessionProcess(Box<dyn SupervisorProviderProcess>);
+
+impl provider_session::ProviderProcess for ProviderSessionProcess {
+    fn split(
+        &mut self,
+    ) -> std::io::Result<(
+        Box<dyn std::io::Read + Send>,
+        Box<dyn std::io::Write + Send>,
+    )> {
+        self.0.split()
+    }
+
+    fn stop(&mut self) -> std::io::Result<()> {
+        self.0.stop()
+    }
+}
+
+fn provider_launch(
+    account_key: String,
+    python: &str,
+    workspace: &Path,
+    audit: &Path,
+    exit_after_model_list: bool,
+) -> ProviderHandle {
+    let script = r#"
+import json, os, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request["method"]
+    if "id" not in request:
+        continue
+    with open(os.environ["AUDIT_PATH"], "a", encoding="utf-8") as audit:
+        audit.write(method + "\n")
+    print(json.dumps({"id": request["id"], "result": {"method": method}}), flush=True)
+    if method == "model/list" and os.environ.get("EXIT_AFTER_MODEL_LIST") == "1":
+        break
+"#;
+    let mut environment = BTreeMap::from([
+        ("PYTHONUNBUFFERED".into(), "1".into()),
+        ("AUDIT_PATH".into(), audit.to_string_lossy().into_owned()),
+    ]);
+    if exit_after_model_list {
+        environment.insert("EXIT_AFTER_MODEL_LIST".into(), "1".into());
+    }
+    ProviderHandle::native_account(
+        account_key,
+        vec![python.into(), "-u".into(), "-c".into(), script.into()],
+        environment,
+        workspace.to_path_buf(),
+    )
+}
+
+fn connect_provider_session(
+    factory: &SupervisorProviderProcessFactory,
+    launch: &ProviderHandle,
+) -> provider_session::ProviderSession {
+    let process = factory
+        .start_or_reattach(launch)
+        .expect("supervisor should open provider app-server");
+    let mut config = provider_session::ProviderSessionConfig::new();
+    config.request_timeout_ms = 10_000;
+    provider_session::ProviderSession::connect(Box::new(ProviderSessionProcess(process)), config)
+        .expect("provider app-server should initialize")
+}
+
+fn request_provider_model_list(
+    session: &mut provider_session::ProviderSession,
+    audit: &Path,
+) -> Value {
+    let ticket = session
+        .send_request(Method::ModelList, json!({}), None, false, 10_000)
+        .expect("model list request should be sent");
+    loop {
+        match session.receive_event().expect("provider session event") {
+            provider_session::ProviderSessionEvent::Reply {
+                ticket: received,
+                body: ResponseBody::Result(result),
+                late: false,
+            } if received == ticket => return result,
+            provider_session::ProviderSessionEvent::Inbound(_) => {}
+            other => panic!(
+                "unexpected provider session event: {other:?}; child input log: {}",
+                fs::read_to_string(audit)
+                    .unwrap_or_else(|error| format!("<unavailable: {error}>"))
+                    .trim()
+            ),
+        }
+    }
+}
+
+#[test]
+fn supervisor_native_account_process_runs_and_reattaches_through_provider_session() {
+    let state = DisposableState::new();
+    let workspace = state.0.join("provider-workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    let audit = workspace.join("provider-methods.log");
+    let python = python_executable();
+    let mut supervisor = SupervisorProcess::start(&state, &python);
+    let factory = SupervisorProviderProcessFactory::new(state.identity());
+    let launch = provider_launch(
+        format!(
+            "test-{}-{}",
+            std::process::id(),
+            state.0.file_name().unwrap().to_string_lossy()
+        ),
+        &python,
+        &workspace,
+        &audit,
+        false,
+    );
+    assert!(launch.handle.starts_with("account:test-"));
+
+    let mut first = connect_provider_session(&factory, &launch);
+    assert_eq!(
+        request_provider_model_list(&mut first, &audit),
+        json!({"method": "model/list"})
+    );
+    let mut client = connect_client(&state);
+    let first_status = client
+        .status(HandleRequest {
+            handle: SupervisorHandle(launch.handle.clone()),
+            extra: BTreeMap::new(),
+        })
+        .unwrap();
+    assert_eq!(
+        first_status.sequence, first_status.acknowledged,
+        "provider session must acknowledge output after reading it"
+    );
+    let pid = first_status.pid;
+    supervisor.own_child(pid);
+    first.close().expect("first provider backend should detach");
+    assert!(
+        pid_exists(pid),
+        "detaching must preserve supervisor ownership"
+    );
+
+    let mut second = connect_provider_session(&factory, &launch);
+    assert_eq!(
+        request_provider_model_list(&mut second, &audit),
+        json!({"method": "model/list"})
+    );
+    let second_status = client
+        .status(HandleRequest {
+            handle: SupervisorHandle(launch.handle),
+            extra: BTreeMap::new(),
+        })
+        .unwrap();
+    assert_eq!(second_status.pid, pid, "reattach must keep the same child");
+    assert_eq!(
+        second_status.sequence, second_status.acknowledged,
+        "reattached provider session must acknowledge consumed output"
+    );
+    second
+        .close()
+        .expect("reattached provider backend should detach");
+
+    let methods = fs::read_to_string(audit).unwrap();
+    assert_eq!(
+        methods.lines().collect::<Vec<_>>(),
+        ["initialize", "model/list", "model/list"]
+    );
+    drop(client);
+}
+
+#[test]
+fn supervisor_provider_session_reports_child_exit() {
+    let state = DisposableState::new();
+    let workspace = state.0.join("provider-workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    let audit = workspace.join("provider-methods.log");
+    let python = python_executable();
+    let mut supervisor = SupervisorProcess::start(&state, &python);
+    let factory = SupervisorProviderProcessFactory::new(state.identity());
+    let launch = provider_launch(
+        format!(
+            "exit-{}-{}",
+            std::process::id(),
+            state.0.file_name().unwrap().to_string_lossy()
+        ),
+        &python,
+        &workspace,
+        &audit,
+        true,
+    );
+    let mut session = connect_provider_session(&factory, &launch);
+    let mut client = connect_client(&state);
+    let status = client
+        .status(HandleRequest {
+            handle: SupervisorHandle(launch.handle),
+            extra: BTreeMap::new(),
+        })
+        .unwrap();
+    supervisor.own_child(status.pid);
+    assert_eq!(
+        request_provider_model_list(&mut session, &audit),
+        json!({"method": "model/list"})
+    );
+    let closed = session.receive_event();
+    assert!(matches!(
+        closed,
+        Ok(provider_session::ProviderSessionEvent::Closed { generation: 1 })
+            | Err(provider_session::ProviderSessionError::Closed)
+    ));
+    session.close().expect("closed child backend should detach");
 }
 
 fn open_request(handle: &str, command: Vec<String>, cwd: &Path) -> OpenRequest {
