@@ -246,6 +246,13 @@ class UsageResumeMixin:
         cause: Literal['usage_limit', 'rate_limit', 'auth'] = (
             'usage_limit' if error.get('codexErrorInfo') == 'usageLimitExceeded' else
             'rate_limit' if error.get('codexErrorInfo') == 'rateLimitExceeded' else 'auth')
+        from codex_worker_accounts import excluded_accounts
+        if account_key in excluded_accounts(self.agent(agent['rootId'])):
+            reason = f'Automatic resume stopped because account {account_key} is disabled for this chat.'
+            return dict(id=_identity(agent, account_key, turn_id), status='cancelled', accountKey=account_key,
+                        threadId=agent['threadId'], epoch=agent['epoch'], turnId=turn_id,  # type: ignore[typeddict-item]  # typed-suspect: caller may lack a thread id
+                        cause=cause, failedAt=now, authAttempt=auth_attempt if cause == 'auth' else 0,
+                        authRefreshMarker=None, dueAt=None, plannedAt=None, resetAt=None, reason=reason)
         snapshot: RateLimitSnapshotRecord = self.rate_limits_for(account_key) if cause != 'auth' else {}
         error_reset = error.get('resetsAt') if isinstance(error.get('resetsAt'), (int, float)) else None
         reset: int | float | None = max(filter(None, (_reset_at(snapshot.get('data') or {}), error_reset)), default=None)  # type: ignore[assignment,type-var]  # typed-narrowing: filter keeps only numeric reset timestamps
@@ -317,6 +324,10 @@ class UsageResumeMixin:
         resume = self.usage_resume_record(agent, turn['id'], error, auth_attempt=auth_attempt)
         resume['taskClaims'] = self.continuation_work_claims(db, agent)
         self.usage_resume_save(db, agent, resume)
+        if resume['status'] == 'cancelled':
+            agent.update(status='failed', inFlight=False, error=resume.get('reason'))  # type: ignore[call-arg]  # typed-update
+            self.put(db, 'agents', agent)
+            self.permanent_worker_hold(db, agent, resume['id'], 'account-excluded', resume.get('reason') or '')
         if resume.get('cause') == 'auth':
             agent['authResumeAttempt'] = auth_attempt + 1
 
@@ -375,9 +386,19 @@ class UsageResumeMixin:
         if not due:
             return
         by_account: dict[str, list[tuple[str, UsageResumeRecord]]] = {}
-        for row in due:
-            resume: "UsageResumeRecord" = json.loads(row['record'])
-            by_account.setdefault(resume['accountKey'], []).append((row['agent'], resume))
+        with self.lock, self.db() as db:
+            for row in due:
+                resume: "UsageResumeRecord" = json.loads(row['record'])
+                agent = self.agent(row['agent'], db)
+                from codex_worker_accounts import excluded_accounts
+                if resume['accountKey'] in excluded_accounts(self.agent(agent['rootId'], db)):
+                    reason = f"Automatic resume stopped because account {resume['accountKey']} is disabled for this chat."
+                    self.usage_resume_cancel(db, agent, reason)
+                    agent.update(status='failed', inFlight=False, error=reason)  # type: ignore[call-arg]  # typed-update
+                    self.put(db, 'agents', agent)
+                    self.permanent_worker_hold(db, agent, resume['id'], 'account-excluded', reason)
+                    continue
+                by_account.setdefault(resume['accountKey'], []).append((row['agent'], resume))
         results: dict[str, RateLimitSnapshotRecord | None] = {}
         for account_key, candidates in by_account.items():
             try:

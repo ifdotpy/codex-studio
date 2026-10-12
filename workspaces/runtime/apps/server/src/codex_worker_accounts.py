@@ -3,6 +3,10 @@
 from codex_catalog import CatalogPending, CatalogUnavailable
 
 
+class ExcludedAccountError(ValueError):
+    """A chat tried to start new work on one of its disabled accounts."""
+
+
 def account_order(runtime, parent_account, *, excluded=()):
     rows = {row['id']: row for row in runtime.accounts.list()}
     preferred = [parent_account, runtime.accounts.default(), *rows]
@@ -18,7 +22,7 @@ def excluded_accounts(root):
 
 def require_not_excluded(root, account_key):
     if account_key in excluded_accounts(root):
-        raise ValueError(f'Account {account_key} is disabled for this chat')
+        raise ExcludedAccountError(f'Account {account_key} is disabled for this chat')
 
 
 def resolve(runtime, parent, data, *, catalogs=None):

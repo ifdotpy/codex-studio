@@ -191,7 +191,7 @@ def create_router(context: ApiContext) -> APIRouter:
         try:
             result = runtime.conversation_settings(body.id, request)
         except ValueError as error:
-            if any(key in request for key in ("agent_mode", "expected_mode_revision", "subagent_concurrency", "excluded_account_keys")):
+            if any(key in request for key in ("agent_mode", "expected_mode_revision", "subagent_concurrency")):
                 return context.send(http_request, {"error": str(error), "outcome": "not_applied"}, status=400)
             raise
         return context.send(http_request, agent_entity(runtime, body.id))

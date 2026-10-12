@@ -193,8 +193,21 @@ class AgentMoves:
         accounts = self.runtime.accounts.list()
         from codex_worker_accounts import account_order, require_not_excluded
         excluded = payload.get('excludedAccountKeys', [])
-        eligible_keys = set(account_order(self.runtime, payload.get('sourceAccountKey', 'default'), excluded=excluded))
-        eligible = [row for row in accounts if row['id'] in eligible_keys and row.get('provider', 'codex') == payload['provider'] and row.get('status') == 'ready']
+        agent_id = payload.get('agentId')
+        if agent_id:
+            with self.runtime.read_db() as db:
+                row = db.execute('SELECT record FROM runtime_agents WHERE id=?', (agent_id,)).fetchone()
+                if row:
+                    agent = json.loads(row['record'])
+                    root_row = db.execute('SELECT record FROM runtime_agents WHERE id=?',
+                                          (agent['rootId'],)).fetchone()
+                    if root_row:
+                        excluded = json.loads(root_row['record']).get('excludedAccountKeys', [])
+        eligible_keys = account_order(self.runtime, payload.get('sourceAccountKey', 'default'), excluded=excluded)
+        rows = {row['id']: row for row in accounts}
+        eligible = [rows[key] for key in eligible_keys if key in rows
+                    and rows[key].get('provider', 'codex') == payload['provider']
+                    and rows[key].get('status') == 'ready']
         requested = payload.get('account_key')
         source = payload['accountIdentity']
         if requested:
@@ -212,7 +225,7 @@ class AgentMoves:
             if selected is None:
                 default = self.runtime.accounts.data.get('defaultAccountKey', 'default')
                 selected = next((row for row in eligible if row['id'] == default), None)
-            if selected is None and excluded:
+            if selected is None:
                 selected = next(iter(eligible), None)
         if selected is None:
             if excluded:

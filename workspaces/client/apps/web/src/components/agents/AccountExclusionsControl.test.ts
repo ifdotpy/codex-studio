@@ -15,6 +15,7 @@ it("lists chat account exclusions as toggles, leaving new accounts enabled", () 
         lead: {
           id: "lead",
           isLead: true,
+          accountKey: "enabled",
           excludedAccountKeys: ["disabled"],
         } as never,
         accounts: {
@@ -28,9 +29,14 @@ it("lists chat account exclusions as toggles, leaving new accounts enabled", () 
       }),
     ),
   );
-  assert.match(html, /Accounts disabled for this chat/);
+  assert.match(html, /Accounts enabled for this chat/);
   assert.match(html, /Disabled/);
   assert.match(html, /Enabled/);
+  assert.match(html, /Current account/);
   assert.match(html, /New accounts are enabled by default/);
-  assert.match(html, /checked/);
+  const checkboxes = html.match(/<input[^>]*type="checkbox"[^>]*>/g) || [];
+  assert.equal(checkboxes.length, 2);
+  assert.doesNotMatch(checkboxes[0], /checked/);
+  assert.match(checkboxes[1], /checked/);
+  assert.match(checkboxes[1], /disabled/);
 });

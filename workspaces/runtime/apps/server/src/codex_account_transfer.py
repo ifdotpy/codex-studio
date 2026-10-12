@@ -302,6 +302,8 @@ class AccountTransfers:
         return op
 
     def adopt(self, db: "sqlite3.Connection", op: "AccountTransferRecord", agents: list["AgentRecord"], include_later: bool=False) -> None:
+        from codex_worker_accounts import require_not_excluded
+        require_not_excluded(self.rt.agent(op['leadId'], db), op['targetAccountKey'])
         destination_catalog: _ModelCatalog | None = None
         destination_catalog_checked = False
         destination_catalog_error = None
@@ -731,6 +733,14 @@ class AccountTransfers:
             lazy = a.get('lazyAccountTransfer') or {}
             if lazy.get('id') != key:
                 return a
+            from codex_worker_accounts import require_not_excluded
+            try:
+                require_not_excluded(rt.agent(a['rootId'], db), op['targetAccountKey'])
+            except ValueError as error:
+                member.update(phase='blocked', error=str(error))  # type: ignore[call-arg]  # typed-update
+                self.save(db, op)
+                db.commit()
+                raise
             background_receipt = self.futures.get((key, aid))
             if not background and background_receipt and not background_receipt.done():
                 from codex_runtime import PreparationPending
@@ -796,6 +806,8 @@ class AccountTransfers:
                     a = rt.agent(aid, db)
                     if (a.get('lazyAccountTransfer') or {}).get('id') != key:
                         return a
+                    from codex_worker_accounts import require_not_excluded
+                    require_not_excluded(rt.agent(a['rootId'], db), op['targetAccountKey'])
                     member.update(targetSettings=resolved, settings=self.settings_snapshot(a),  # type: ignore[call-arg]  # typed-update
                                   pendingSettings=copy.deepcopy(a.get('pendingSettings')),
                                   pendingSettingsAccountKey=a.get('pendingSettingsAccountKey'))
@@ -912,6 +924,8 @@ class AccountTransfers:
                 if (a.get('lazyAccountTransfer') or {}).get('id') != key:
                     return a
                 self.assert_settings(member, a)
+                from codex_worker_accounts import require_not_excluded
+                require_not_excluded(rt.agent(a['rootId'], db), target)
                 if account_reserved(rt, target):
                     raise RuntimeError('Waiting for the account tool catalog update')
                 member.update(phase='lazy_submitted', nativeMethod=method, nativeParams=copy.deepcopy(params),  # type: ignore[call-arg]  # typed-update
@@ -982,6 +996,14 @@ class AccountTransfers:
             lazy = a.get('lazyAccountTransfer') or {}
             if lazy.get('id') != key:
                 return a
+            from codex_worker_accounts import require_not_excluded
+            try:
+                require_not_excluded(rt.agent(a['rootId'], db), op['targetAccountKey'])
+            except ValueError as error:
+                member.update(phase='blocked', result=result, error=str(error))  # type: ignore[call-arg]  # typed-update
+                self.save(db, op)
+                db.commit()
+                raise
             source_key, source_thread = lazy['sourceAccountKey'], lazy.get('sourceThreadId')
             if member.get('targetConnection') != rt.connection_ids[op['targetAccountKey']]:
                 member.update(phase='unknown', error='Destination connection changed after history move submission; no request was repeated')  # type: ignore[call-arg]  # typed-update
@@ -1606,6 +1628,8 @@ class AccountTransfers:
                 m = op['members'][aid]
                 if rt.closed or self.closing or op['status'] != 'pending' or a.get('accountTransferId') != key:
                     return
+                from codex_worker_accounts import require_not_excluded
+                require_not_excluded(rt.agent(a['rootId'], db), op['targetAccountKey'])
                 # Restart can move an interrupted validation back to waiting.
                 # A saved native result always forbids another fork.
                 reuse_result = bool(m.get('result'))
@@ -1783,6 +1807,8 @@ class AccountTransfers:
                     return
                 self.assert_source(op['members'][aid], current)
                 self.assert_settings(op['members'][aid], current)
+                from codex_worker_accounts import require_not_excluded
+                require_not_excluded(rt.agent(current['rootId'], db), target)
                 if source_empty_proof:
                     refreshed = self.native_empty_transfer_proof(
                         db, current, a['threadId'], self.missing_source_rollout_message(a['threadId']))
@@ -1957,6 +1983,8 @@ class AccountTransfers:
         if not isinstance(m.get('targetSettings'), dict):
             raise TransferSettingsConflict('Destination settings need validation before this saved transfer can finish')
         target = op['targetAccountKey']
+        from codex_worker_accounts import require_not_excluded
+        require_not_excluded(rt.agent(a['rootId'], db), target)
         self.check_destination(a, target, db)
         rt.usage_resume_cancel(db, a, 'The chat moved to another account.')
         result = m['result']

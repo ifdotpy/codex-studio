@@ -7,11 +7,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import json
 import sqlite3
+import threading
 import unittest
 from types import SimpleNamespace
 
 from codex_agent_move import AgentMoves
-from codex_worker_accounts import account_order, resolve
+from codex_worker_accounts import account_order, resolve, selected_account
+from studio_api.agents.models import ConversationRequest
 
 
 class FakeAccounts:
@@ -74,6 +76,8 @@ class ChatAccountExclusions(unittest.TestCase):
         selected, _catalog = resolve(runtime, runtime.parent, {})
         self.assertEqual(selected, "second")
         with self.assertRaisesRegex(ValueError, "disabled for this chat"):
+            selected_account(runtime, {"account_key": "default"}, runtime.root)
+        with self.assertRaisesRegex(ValueError, "disabled for this chat"):
             resolve(runtime, runtime.parent, {"account_key": "default"})
 
     def test_all_excluded_and_project_intersection_have_clear_errors(self):
@@ -92,6 +96,7 @@ class ChatAccountExclusions(unittest.TestCase):
         self.addCleanup(restricted.project_db.close)
         self.addCleanup(unaffected.project_db.close)
         self.assertEqual(resolve(unaffected, unaffected.parent, {})[0], "default")
+        self.assertEqual(account_order(unaffected, "default"), ["default", "second"])
         moves = AgentMoves(SimpleNamespace(runtime=restricted))
         selected, _warning = moves._select_account({
             "provider": "codex", "sourceAccountKey": "default",
@@ -107,6 +112,47 @@ class ChatAccountExclusions(unittest.TestCase):
                 "accountIdentity": {"email": "same@example.test", "accountId": "same"},
                 "accept_cache_loss": True,
             })
+        plain_move, _warning = moves._select_account({
+            "provider": "codex", "sourceAccountKey": "default",
+            "excludedAccountKeys": [],
+            "accountIdentity": {"email": "unmatched@example.test", "accountId": "unmatched"},
+            "accept_cache_loss": True,
+        })
+        self.assertEqual(plain_move["id"], "default")
+
+    def test_transfer_target_is_rejected_and_request_model_rejects_invalid_exclusions(self):
+        class Accounts:
+            def get(self, key):
+                return {"id": key, "status": "ready", "provider": "codex"}
+
+        class TransferRuntime:
+            def __init__(self):
+                self.lock = threading.RLock()
+                self.connection = sqlite3.connect(":memory:")
+                self.lead = {"id": "lead", "isLead": True, "accountKey": "default",
+                             "excludedAccountKeys": ["second"]}
+                self.accounts = Accounts()
+
+            @contextmanager
+            def db(self):
+                yield self.connection
+
+            def records(self, _db, _collection):
+                return []
+
+            def checked_actor(self, _db, _key):
+                return self.lead
+
+        runtime = TransferRuntime()
+        self.addCleanup(runtime.connection.close)
+        from codex_account_transfer import AccountTransfers
+        transfers = AccountTransfers(runtime)
+        with self.assertRaisesRegex(ValueError, "disabled for this chat"):
+            transfers.request("lead", "second", "47c243b6-18d0-49be-a127-72ccfd57a5e8")
+        with self.assertRaisesRegex(ValueError, "unique"):
+            ConversationRequest(id="lead", excluded_account_keys=["second", "second"])
+        with self.assertRaisesRegex(ValueError, "non-empty"):
+            ConversationRequest(id="lead", excluded_account_keys=[""])
 
 
 if __name__ == "__main__":

@@ -150,6 +150,38 @@ class UsageResumeContract(unittest.TestCase):
         self.assertEqual(self.runtime.agent(self.key)['capacityRetry']['acceptedTurnId'],
                          self.runtime.agent(self.key)['turnId'])
 
+    def test_excluded_usage_resume_is_cancelled_before_rate_limit_read(self):
+        self.make_due()
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            agent.update(accountKey='other', excludedAccountKeys=['default'])
+            self.runtime.put(db, 'agents', agent)
+        self.server.calls.clear()
+        self.runtime.usage_resume_tick()
+        agent = self.runtime.agent(self.key)
+        self.assertEqual(agent['usageResume']['status'], 'cancelled')
+        self.assertIn('disabled for this chat', agent['usageResume']['reason'])
+        self.assertEqual(agent['status'], 'failed')
+        self.assertFalse(any(method == 'account/rateLimits/read' for method, _ in self.server.calls))
+
+    def test_excluded_automatic_capacity_retry_is_cancelled_without_turn_start(self):
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            agent.update(accountKey='other', excludedAccountKeys=['default'])
+            retry = dict(id='excluded-capacity-retry', threadId=agent['threadId'],
+                         turnId='failed-capacity-turn', accountKey='default', epoch=agent['epoch'],
+                         cause='server', status='scheduled', dueAt=time.time() - 1,
+                         attempt=1, maxAttempts=3, cwd=agent['cwd'], settings={},
+                         taskClaims=self.runtime.continuation_work_claims(db, agent))
+            self.runtime.capacity_save(db, agent, retry)
+            self.runtime.put(db, 'agents', agent)
+        self.server.calls.clear()
+        retry = self.runtime.capacity_retry(self.key, 'excluded-capacity-retry', 'retry', _automatic=True)
+        self.assertEqual(retry['status'], 'cancelled')
+        self.assertIn('disabled for this chat', retry['reason'])
+        self.assertEqual(self.runtime.agent(self.key)['status'], 'failed')
+        self.assertFalse(any(method == 'turn/start' for method, _ in self.server.calls))
+
     def test_auth_failure_schedules_typed_resume_once_and_waits_for_account_proof(self):
         resume = self.schedule_auth_failure()
         self.assertEqual(resume['cause'], 'auth')

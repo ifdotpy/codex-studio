@@ -1,11 +1,10 @@
-import { Checkbox } from "@mantine/core";
+import { Checkbox, Stack, Text } from "@mantine/core";
 import { useState } from "react";
 import { accountDisplayName } from "../../accountName";
 import { errorText, post } from "../../api";
 import type { Agent } from "../../types";
 import { ProviderMark } from "../AccountTiles";
 import type { AccountsState } from "../Accounts";
-import "./account-exclusions-control.css";
 
 export function AccountExclusionsControl({
   lead,
@@ -22,25 +21,31 @@ export function AccountExclusionsControl({
   const excluded = new Set(lead.excludedAccountKeys || []);
   if (!lead.isLead || !accounts.accounts.length) return null;
   return (
-    <fieldset className="account-exclusions-control" disabled={saving}>
-      <legend>Accounts disabled for this chat</legend>
+    <Stack gap="xs">
+      <Text fw={600} size="sm">
+        Accounts enabled for this chat
+      </Text>
       {accounts.accounts.map((account) => (
         <Checkbox
           key={account.id}
+          disabled={saving || account.id === lead.accountKey}
           label={
-            <span className="account-exclusions-option">
+            <span>
               <ProviderMark provider={account.provider || "codex"} />
-              <span>
+              <span style={{ marginInlineStart: 8 }}>
                 <span>{accountDisplayName(account)}</span>
                 {account.email && <small>{account.email}</small>}
+                {account.id === lead.accountKey && (
+                  <small>Current account</small>
+                )}
               </span>
             </span>
           }
-          checked={excluded.has(account.id)}
+          checked={!excluded.has(account.id)}
           onChange={(event) => {
             const next = new Set(excluded);
-            if (event.currentTarget.checked) next.add(account.id);
-            else next.delete(account.id);
+            if (event.currentTarget.checked) next.delete(account.id);
+            else next.add(account.id);
             setSaving(true);
             void post("/api/conversation", {
               id: lead.id,
@@ -52,7 +57,9 @@ export function AccountExclusionsControl({
           }}
         />
       ))}
-      <small>New accounts are enabled by default.</small>
-    </fieldset>
+      <Text size="xs" c="dimmed">
+        New accounts are enabled by default.
+      </Text>
+    </Stack>
   );
 }

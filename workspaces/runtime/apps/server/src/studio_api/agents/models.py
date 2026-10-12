@@ -315,6 +315,13 @@ class ConversationRequest(ContractModel):
     expected_mode_revision: int | None = Field(default=None, ge=0)
     excluded_account_keys: list[str] | None = Field(default=None, max_length=512)
 
+    @field_validator("excluded_account_keys")
+    @classmethod
+    def excluded_accounts_are_unique_nonempty(cls, value: list[str] | None) -> list[str] | None:
+        if value is not None and (any(not key.strip() for key in value) or len(set(value)) != len(value)):
+            raise ValueError("Chat account exclusions must be unique, non-empty account keys")
+        return value
+
     @field_validator("model", "effort")
     @classmethod
     def execution_name_not_blank(cls, value: str | None) -> str | None:
