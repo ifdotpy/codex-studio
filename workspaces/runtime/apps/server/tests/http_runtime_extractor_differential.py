@@ -699,7 +699,9 @@ def main() -> int:
         python = asyncio.run(python_observations(corpus_path))
         document = json.loads((ROOT / "workspaces/runtime/packages/runtime-http/openapi.json").read_text(encoding="utf-8"))
         totals = classify(cases, rust, python, document)
-    detail_path = Path("/var/tmp/cs-rust-edge/http-runtime-differential-details.json")
+    cache_home = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    detail_path = cache_home / "codex-studio" / "http-runtime-differential-details.json"
+    detail_path.parent.mkdir(parents=True, exist_ok=True)
     detail_path.write_text(json.dumps(totals, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     totals.pop("expected_difference_cases", None)
     print("generated extractor differential: " + json.dumps(totals, sort_keys=True))
