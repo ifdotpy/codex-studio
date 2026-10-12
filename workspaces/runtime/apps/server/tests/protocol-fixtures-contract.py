@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import sys
 import unittest
 from urllib.parse import urlencode
 
@@ -16,6 +17,7 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 from http_backend_harness import HTTP_WAIT_GUARD_SECONDS, start_contract_backend
+from server_test_waits import wait_for_condition
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "provider-replay"
@@ -42,7 +44,7 @@ def assert_frame_matches(actual: object, expected: object, state: Path) -> None:
 
 def substitute(value: object, state: Path) -> object:
     if isinstance(value, str):
-        return {"$state": str(state), "$python": os.path.realpath(os.sys.executable),
+        return {"$state": str(state), "$python": os.path.realpath(sys.executable),
                 "$cwd": str(state.parent / "workspace"), "$path": os.environ.get("PATH", "")}.get(value, value)
     if isinstance(value, list):
         return [substitute(item, state) for item in value]
@@ -51,7 +53,14 @@ def substitute(value: object, state: Path) -> object:
     return value
 
 
-def supervisor_exchange(state: Path, frames: list[dict[str, object]]) -> list[dict[str, object]]:
+def supervisor_exchange(
+    state: Path,
+    handshake: list[dict[str, object]],
+    frames: list[dict[str, object]],
+    *,
+    altered_health_expectation: bool = False,
+) -> list[dict[str, object]]:
+    """Replay handshake and request/event frames over one supervisor connection."""
     if os.name == "nt":
         raise unittest.SkipTest("The named-pipe transport is recorded but this checker currently uses Unix sockets")
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -60,11 +69,10 @@ def supervisor_exchange(state: Path, frames: list[dict[str, object]]) -> list[di
     try:
         with client.makefile("rwb") as stream:
             observed: list[dict[str, object]] = []
-            for item in frames:
-                direction = item["direction"]
-                frame = item["frame"]
+            for item in [*handshake, *frames]:
+                direction = item.get("direction")
                 if direction == "client":
-                    request = substitute(frame, state)
+                    request = substitute(item["frame"], state)
                     stream.write((json.dumps(request, separators=(",", ":")) + "\n").encode())
                     stream.flush()
                 elif direction == "server":
@@ -72,59 +80,60 @@ def supervisor_exchange(state: Path, frames: list[dict[str, object]]) -> list[di
                     if not line:
                         raise AssertionError("supervisor closed before its recorded response frame")
                     response = json.loads(line)
-                    assert_frame_matches(response, frame, state)
+                    assert_frame_matches(response, item["frame"], state)
                     observed.append(response)
+                elif "request" in item and "events" not in item:
+                    request = substitute(item["request"], state)
+                    request_id = request.get("requestId", 1)
+                    request["requestId"] = request_id
+                    expected = copy.deepcopy(item["expected"])
+                    expected["requestId"] = request_id
+                    if altered_health_expectation and request.get("action") == "health":
+                        expected["result"]["protocol"] = 999
+                    stream.write((json.dumps(request, separators=(",", ":")) + "\n").encode())
+                    stream.flush()
+                    response = json.loads(stream.readline())
+                    assert_frame_matches(response, expected, state)
+                    observed.append(response)
+                elif "events" in item:
+                    pending = {frame["eventKind"]: frame for frame in item["events"]}
+                    cursor = 0
+                    next_request = substitute(item["request"], state)
+                    while pending:
+                        response_id = len(observed) + 1
+
+                        def receive_event() -> dict[str, object] | None:
+                            # Supervisor.handle(next) returns event=null without
+                            # waiting; retry this cursor under the shared guard.
+                            nonlocal response_id
+                            current = {**next_request, "cursor": cursor, "requestId": response_id}
+                            stream.write((json.dumps(current, separators=(",", ":")) + "\n").encode())
+                            stream.flush()
+                            response_id += 1
+                            value = json.loads(stream.readline())
+                            if value.get("error"):
+                                raise AssertionError(f"supervisor rejected next frame: {value['error']}")
+                            event = (value.get("result") or {}).get("event")
+                            return value if isinstance(event, dict) else None
+
+                        response = wait_for_condition(
+                            receive_event,
+                            f"supervisor next event for cursor {cursor}",
+                            timeout_exception=TimeoutError,
+                        )
+                        event = response["result"]["event"]
+                        kind = event.get("kind")
+                        recorded = pending.pop(kind, None)
+                        if recorded is None:
+                            raise AssertionError(f"unexpected supervisor event kind: {kind!r}")
+                        expected = copy.deepcopy(recorded["expected"])
+                        expected["requestId"] = response["requestId"]
+                        assert_frame_matches(response, expected, state)
+                        cursor = event["sequence"]
+                        observed.append(response)
                 else:
                     raise AssertionError(f"unknown supervisor frame direction: {direction!r}")
             return observed
-    finally:
-        client.close()
-
-
-def supervisor_scenario(state: Path, frames: list[dict[str, object]]) -> None:
-    """Replay a child lifecycle fixture against the live disposable supervisor."""
-    handshake = [
-        {"direction": "client", "frame": {"protocol": 1, "stateDir": "$state",
-                                                 "backendId": "provider-fixture-backend"}},
-        {"direction": "server", "frame": {"ok": True}},
-    ]
-    if os.name == "nt":
-        raise unittest.SkipTest("The protocol scenario currently uses Unix sockets")
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client.settimeout(HTTP_WAIT_GUARD_SECONDS)
-    client.connect(str(state / "supervisor.sock"))
-    try:
-        with client.makefile("rwb") as stream:
-            for item in handshake:
-                if item["direction"] == "client":
-                    stream.write((json.dumps(substitute(item["frame"], state)) + "\n").encode())
-                    stream.flush()
-                else:
-                    actual = json.loads(stream.readline())
-                    assert_frame_matches(actual, item["frame"], state)
-            request_id = 1
-            for index, step in enumerate(frames):
-                action = substitute(step["request"], state)
-                action["requestId"] = request_id
-                expected = copy.deepcopy(step["expected"])
-                expected["requestId"] = request_id
-                attempts = 30 if action["action"] == "next" else 1
-                for _ in range(attempts):
-                    stream.write((json.dumps(action, separators=(",", ":")) + "\n").encode())
-                    stream.flush()
-                    actual = json.loads(stream.readline())
-                    if actual.get("error"):
-                        raise AssertionError(f"supervisor rejected recorded request: {actual['error']}")
-                    event = (actual.get("result") or {}).get("event") or {}
-                    if action["action"] == "next" and event.get("kind") != step.get("eventKind"):
-                        import time
-                        time.sleep(0.05)
-                        continue
-                    assert_frame_matches(actual, expected, state)
-                    break
-                else:
-                    raise AssertionError(f"no {step.get('eventKind')} event from disposable supervisor")
-                request_id += 1
     finally:
         client.close()
 
@@ -178,9 +187,13 @@ class ProtocolFixturesContract(unittest.TestCase):
             lambda: (backend.state / "supervisor.sock").exists(),
             "supervisor socket created for the provider process",
         )
-        supervisor_exchange(backend.state, self.protocol["supervisorFrames"])
-        supervisor_exchange(backend.state, self.protocol["supervisorFailureFrames"])
-        supervisor_scenario(backend.state, self.protocol["processScenario"])
+        handshake = self.protocol["supervisorFrames"][:2]
+        supervisor_exchange(
+            backend.state,
+            handshake,
+            self.protocol["supervisorFrames"][2:] + self.protocol["processScenario"],
+        )
+        supervisor_exchange(backend.state, self.protocol["supervisorFailureFrames"], [])
         self.assertIn(self.provider["assert"]["expectedOutput"], json.dumps(transcript))
         requests = backend.received_provider_frames()
         observed_methods = [frame.get("method") for frame in requests]
@@ -201,9 +214,13 @@ class ProtocolFixturesContract(unittest.TestCase):
 
     def test_checker_rejects_an_altered_recorded_expectation(self) -> None:
         altered = copy.deepcopy(self.protocol["processScenario"][1:2])
-        altered[0]["expected"]["result"]["protocol"] = 999
         with self.assertRaises(AssertionError):
-            supervisor_scenario(self.backend.state, altered)
+            supervisor_exchange(
+                self.backend.state,
+                self.protocol["supervisorFrames"][:2],
+                altered,
+                altered_health_expectation=True,
+            )
 
 
 if __name__ == "__main__":
