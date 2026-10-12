@@ -159,7 +159,7 @@ class PortableTransfers(unittest.TestCase):
                          claudeOptions={'permissionMode': 'plan'})
         op = self.submit()
         self.finish(op)
-        self.assertEqual(self.agent()['workerDefaults'], {'model': 'old-profile-model', 'effort': 'ultra', 'fastMode': True, 'daybreakEnabled': False, 'accountKey': self.t.other_key})
+        self.assertEqual(self.agent()['workerDefaults'], {'model': 'old-profile-model', 'effort': 'ultra', 'fastMode': True, 'daybreakEnabled': False, 'delegationDepth': 1, 'accountKey': self.t.other_key})
         self.assertEqual(self.agent()['claudeOptions'], {'permissionMode': 'plan'})
 
     def test_same_provider_profile_preserves_inherited_worker_model(self):
@@ -168,7 +168,7 @@ class PortableTransfers(unittest.TestCase):
                          workerDefaults={'model': None, 'effort': 'high', 'fastMode': False})
         op = self.submit()
         self.finish(op)
-        self.assertEqual(self.agent()['workerDefaults'], {'model': None, 'effort': 'high', 'fastMode': False, 'daybreakEnabled': False, 'accountKey': self.t.other_key})
+        self.assertEqual(self.agent()['workerDefaults'], {'model': None, 'effort': 'high', 'fastMode': False, 'daybreakEnabled': False, 'delegationDepth': 1, 'accountKey': self.t.other_key})
 
     def test_provider_roundtrip_clears_old_permission_bypass(self):
         self.providers.update(default='claude', **{self.t.other_key: 'codex'})

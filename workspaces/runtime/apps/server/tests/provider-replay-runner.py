@@ -254,6 +254,7 @@ class ProviderReplay(unittest.TestCase):
                         if fixture.get("provider") == "claude":
                             payload.update(account_key="claude-replay", model="default")
                         child = None
+                        nested_threads = {}
                         try:
                             agent = runtime.create(payload)
                         except Exception as error:
@@ -263,6 +264,26 @@ class ProviderReplay(unittest.TestCase):
                                 f"Claude bridge failed during AppServer startup: {error}; "
                                 f"child stderr:\n{app_server_stderr(root)}"
                             ) from error
+                        nested_ids = []
+                        if fixture.get("nestedDelegation"):
+                            defaults = runtime.agent(agent["id"])["workerDefaults"]
+                            runtime.conversation_settings(agent["id"], {"worker_defaults": {
+                                "model": ("default" if fixture.get("provider") == "claude"
+                                          else defaults["model"]), "effort": defaults["effort"],
+                                "fast_mode": defaults["fastMode"], "delegation_depth": 2,
+                            }})
+                            worker = runtime.spawn_agents(runtime.agent(agent["id"]), {"agents": [{
+                                "name": "Replay level one", "prompt": "Check nested tool exposure",
+                                "role": "implementer",
+                            }]}, "nested-replay-level-one")["agents"][0]
+                            grandchild = runtime.spawn_agents(runtime.agent(worker["id"]), {"agents": [{
+                                "name": "Replay level two", "prompt": "Check depth boundary",
+                                "role": "implementer",
+                            }]}, "nested-replay-level-two")["agents"][0]
+                            nested_ids = [worker["id"], grandchild["id"]]
+                            runtime.dispatch()
+                            eventually(lambda: all(runtime.agent(key).get("threadId") for key in nested_ids))
+                            nested_threads = {key: runtime.agent(key)["threadId"] for key in nested_ids}
                         if fixture.get("parentChildOrder"):
                             runtime.dispatch()
                             def parent_start_sent():
@@ -365,6 +386,24 @@ class ProviderReplay(unittest.TestCase):
                 self.assertTrue(any(row["direction"] == "out" for row in frames))
                 self.assertTrue(any(row["direction"] == "in" for row in frames))
                 self.assertTrue(all(row["provider"] == fixture.get("provider", "codex") for row in frames))
+                if nested_ids:
+                    starts = {str(row["message"]["id"]): row["message"]
+                              for row in frames if row["direction"] == "out"
+                              and row["message"].get("method") == "thread/start"}
+                    thread_by_request = {str(row["message"].get("id")):
+                        (row["message"].get("result", {}).get("thread") or {}).get("id")
+                        for row in frames if row["direction"] == "in"
+                        and row["message"].get("id") is not None}
+                    tools_by_thread = {}
+                    for request_id, thread_id in thread_by_request.items():
+                        start = starts.get(request_id)
+                        if start and thread_id:
+                            tools_by_thread[thread_id] = {
+                                tool.get("name") for tool in start.get("params", {}).get("dynamicTools", [])
+                            }
+                    worker_id, grandchild_id = nested_ids
+                    self.assertIn("orchestration_spawn", tools_by_thread[nested_threads[worker_id]])
+                    self.assertNotIn("orchestration_spawn", tools_by_thread[nested_threads[grandchild_id]])
                 self.assert_replay_rpc_contract(frames, json.loads(replies_path.read_text()), fixture)
                 required_turn_starts = fixture.get("assert", {}).get("turnStarts")
                 if required_turn_starts:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from codex_agent_modes import concurrency
@@ -19,10 +20,11 @@ MAX_DELEGATION_DEPTH = 3
 
 def delegation_depth(root: "AgentRecord") -> int:
     """Read the root setting, treating pre-setting records as lead-only."""
-    defaults: Mapping[str, object] = root.get("workerDefaults") or {}
+    stored = root.get("workerDefaults")
+    defaults: Mapping[str, object] = stored if isinstance(stored, Mapping) else {}
     value = defaults.get("delegationDepth", DEFAULT_DELEGATION_DEPTH)
     if type(value) is not int or not MIN_DELEGATION_DEPTH <= value <= MAX_DELEGATION_DEPTH:
-        return 0
+        return DEFAULT_DELEGATION_DEPTH
     return value
 
 
@@ -41,7 +43,10 @@ def actor_depth(runtime: "Runtime", db: "sqlite3.Connection", actor: "AgentRecor
         parent_id = cursor.get("parentId")
         if not isinstance(parent_id, str) or not parent_id:
             return None
-        cursor = runtime.agent(parent_id, db)
+        try:
+            cursor = runtime.agent(parent_id, db)
+        except ValueError:
+            return None
         if cursor.get("rootId") != root_id:
             return None
         depth += 1
@@ -51,47 +56,54 @@ def actor_depth(runtime: "Runtime", db: "sqlite3.Connection", actor: "AgentRecor
     return depth
 
 
-def can_delegate(
+@dataclass(frozen=True)
+class DelegationDecision:
+    allowed: bool
+    reason: str | None = None
+
+
+def delegation_decision(
     runtime: "Runtime", actor: "AgentRecord", db: "sqlite3.Connection | None" = None
-) -> bool:
-    """Use the root's concurrency and maximum depth to decide spawn exposure."""
-    if actor.get("role") == "reviewer":
-        return False
+) -> DelegationDecision:
+    """Evaluate delegation once, returning a reason when policy denies it."""
     if db is None:
         with runtime.read_db() as connection:
-            return can_delegate(runtime, actor, connection)
+            return delegation_decision(runtime, actor, connection)
     # Spawn receipts and tool fixtures may carry a compact agent projection.
     # Evaluate against the persisted record, which is the authority for ancestry.
     actor = runtime.agent(actor["id"], db)
     if actor.get("role") == "reviewer":
-        return False
+        return DelegationDecision(False, "reviewer")
     root_id = actor.get("rootId") or (actor.get("id") if actor.get("isLead") else None)
     if not isinstance(root_id, str):
-        return False
-    root = runtime.agent(root_id, db)
+        return DelegationDecision(False, "broken ancestry")
+    try:
+        root = runtime.agent(root_id, db)
+    except ValueError:
+        return DelegationDecision(False, "broken ancestry")
     level = actor_depth(runtime, db, actor)
+    if level is None:
+        return DelegationDecision(False, "broken ancestry")
+    if concurrency(root) <= 0:
+        return DelegationDecision(False, "no subagent concurrency")
     depth_limit = delegation_depth(root)
-    return level is not None and concurrency(root) > 0 and level < depth_limit
+    if level >= depth_limit:
+        return DelegationDecision(False, "delegation depth reached")
+    return DelegationDecision(True)
+
+
+def can_delegate(
+    runtime: "Runtime", actor: "AgentRecord", db: "sqlite3.Connection | None" = None
+) -> bool:
+    """Use the root's concurrency and maximum depth to decide spawn exposure."""
+    return delegation_decision(runtime, actor, db).allowed
 
 
 def require_delegation(
     runtime: "Runtime", actor: "AgentRecord", db: "sqlite3.Connection | None" = None
 ) -> None:
     """Reject a spawn that exceeds its lead's current delegation policy."""
-    if can_delegate(runtime, actor, db):
+    decision = delegation_decision(runtime, actor, db)
+    if decision.allowed:
         return
-    if db is None:
-        with runtime.read_db() as connection:
-            return require_delegation(runtime, actor, connection)
-    actor = runtime.agent(actor["id"], db)
-    root_id = actor.get("rootId") or (actor.get("id") if actor.get("isLead") else None)
-    if isinstance(root_id, str):
-        root = runtime.agent(root_id, db)
-        if concurrency(root) == 0:
-            from codex_agent_modes import assert_delegation
-
-            assert_delegation(root)
-    raise ValueError(
-        "This agent cannot delegate at its current level. Check the lead's "
-        "delegation depth and subagent concurrency settings."
-    )
+    raise ValueError(f"This agent cannot delegate: {decision.reason}.")

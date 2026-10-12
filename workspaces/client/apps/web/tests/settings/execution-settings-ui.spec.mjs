@@ -341,6 +341,14 @@ test("execution settings ui", async ({ browser: _browser }) => {
       name: "Delegation depth",
     });
     assert.equal(await delegationDepth.inputValue(), "Lead only (1)");
+    assert.equal(
+      await dialog
+        .getByText(
+          "New worker sessions use this depth. Lowering blocks new delegation immediately; existing descendants keep running.",
+        )
+        .isVisible(),
+      true,
+    );
     const nestedDelegationSaved = settingsResponse(
       lead.id,
       (body) => body.worker_defaults?.delegation_depth === 2,

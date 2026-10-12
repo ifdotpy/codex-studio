@@ -4506,16 +4506,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         return effort, effort if effort is not None else info.get("defaultReasoningEffort")
 
     def validate_worker_defaults(self, value, root_model, catalog):
-        from codex_nested_delegation import (
-            DEFAULT_DELEGATION_DEPTH, MAX_DELEGATION_DEPTH, MIN_DELEGATION_DEPTH,
-        )
+        from codex_nested_delegation import DEFAULT_DELEGATION_DEPTH
         if (not isinstance(value, dict) or not {"model", "effort", "fast_mode"} <= set(value)
                 or set(value) - {"model", "effort", "fast_mode", "daybreak_enabled", "account_key",
                                  "delegation_depth"}):
             raise ValueError("worker_defaults needs model, effort and fast_mode")
         depth = value.get("delegation_depth", DEFAULT_DELEGATION_DEPTH)
-        if type(depth) is not int or not MIN_DELEGATION_DEPTH <= depth <= MAX_DELEGATION_DEPTH:
-            raise ValueError(f"delegation_depth must be an integer from {MIN_DELEGATION_DEPTH} to {MAX_DELEGATION_DEPTH}")
         if value["model"] is not None and (not isinstance(value["model"], str) or not value["model"].strip()):
             raise ValueError("Default model must be a model name or null")
         from codex_worker_accounts import selected_account
@@ -5920,7 +5916,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             frozen = a['frozenNativeParams']
             params.update(baseInstructions=frozen['baseInstructions'],
                           developerInstructions=frozen['developerInstructions'],
-                          model=frozen['model'], dynamicTools=copy.deepcopy(frozen['dynamicTools']))
+                          model=frozen['model'], dynamicTools=self.tool_definitions(a))
             if a.get('provider') != 'claude':
                 if frozen.get('effort') is not None:
                     params['config']['model_reasoning_effort'] = frozen['effort']

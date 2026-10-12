@@ -1022,6 +1022,7 @@ function ScopedExecutionSettings({
           <Select
             aria-label="Delegation depth"
             value={String(current.delegation_depth)}
+            description="New worker sessions use this depth. Lowering blocks new delegation immediately; existing descendants keep running."
             comboboxProps={{ withinPortal: false }}
             data={[
               { value: "1", label: "Lead only (1)" },
