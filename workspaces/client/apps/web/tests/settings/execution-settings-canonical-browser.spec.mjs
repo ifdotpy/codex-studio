@@ -728,6 +728,7 @@ test("execution settings canonical browser", async ({ page }) => {
       assert.equal(ids[1], ids[2], "retry keeps the request id");
       assert.notEqual(ids[0], ids[1]);
       // Automatic saves the defaults without a transfer.
+      await expect.poll(() => account.isEnabled()).toBe(true);
       await page.evaluate(() => {
         window.reply = {
           ...window.agent,
@@ -740,11 +741,14 @@ test("execution settings canonical browser", async ({ page }) => {
         };
       });
       await account.selectOption("");
-      await page.waitForFunction(() => window.calls.length === 2);
-      assert.equal(
-        await page.evaluate(() => window.calls[1].worker_defaults.account_key),
-        null,
+      await page.waitForFunction(() =>
+        window.calls.some((call) => call.worker_defaults?.account_key === null),
       );
+      const automaticSave = await page.evaluate(() =>
+        window.calls.find((call) => call.worker_defaults?.account_key === null),
+      );
+      assert.ok(automaticSave);
+      assert.equal(automaticSave.worker_defaults.account_key, null);
       assert.equal(await page.evaluate(() => window.transfers.length), 3);
       await reset();
       assert.equal(await account.count(), 0);
