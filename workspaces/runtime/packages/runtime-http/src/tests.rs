@@ -1,8 +1,7 @@
 use crate::{
     error::{CSP, error_response, with_api_headers},
     middleware::trusted,
-    router::route_matches,
-    schema::{API_SCHEMA_HASH_HEADER, api_schema_hash},
+    schema::{API_SCHEMA_HASH_HEADER, api_schema_hash, path_matches as route_matches},
 };
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 
@@ -143,4 +142,35 @@ fn api_responses_include_schema_and_security_headers() {
     assert_eq!(response.headers()["x-content-type-options"], "nosniff");
     assert_eq!(response.headers()["referrer-policy"], "no-referrer");
     assert_eq!(response.headers()["content-security-policy"], CSP);
+}
+// The current OpenAPI operation count is owned by the document and can change.
+
+#[test]
+fn workspace_keeps_serde_json_maps_sorted() {
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../");
+    let output = std::process::Command::new("cargo")
+        .args([
+            "tree",
+            "--workspace",
+            "-e",
+            "normal,features",
+            "-i",
+            "serde_json",
+        ])
+        .current_dir(workspace)
+        .output()
+        .expect("cargo tree is available for the workspace feature guard");
+    assert!(
+        output.status.success(),
+        "cargo tree --workspace -e features failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let tree = String::from_utf8_lossy(&output.stdout);
+    // arbitrary_precision changes JSON numbers into a private object representation.
+    // preserve_order changes serde_json::Map from sorted to insertion-ordered keys.
+    assert!(
+        !tree.contains("serde_json feature \"arbitrary_precision\"")
+            && !tree.contains("serde_json feature \"preserve_order\""),
+        "serde_json arbitrary_precision changes number meaning, and preserve_order changes Map order relied upon by canonical output in several crates; code needing insertion order must parse ordered pairs locally"
+    );
 }

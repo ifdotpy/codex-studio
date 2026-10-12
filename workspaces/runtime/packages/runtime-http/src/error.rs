@@ -12,6 +12,8 @@ pub(crate) const CSP: &str = "default-src 'self'; script-src 'self'; style-src '
 pub struct ApiError {
     status: StatusCode,
     message: String,
+    location: Option<serde_json::Value>,
+    content_type: Option<&'static str>,
 }
 
 impl ApiError {
@@ -19,7 +21,28 @@ impl ApiError {
         Self {
             status,
             message: message.into(),
+            location: None,
+            content_type: None,
         }
+    }
+
+    pub(crate) fn validation(location: Vec<serde_json::Value>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: "Invalid request".to_owned(),
+            location: Some(serde_json::Value::Array(location)),
+            content_type: None,
+        }
+    }
+
+    #[allow(
+        dead_code,
+        reason = "reserved for JSON transport rejections from route extractors"
+    )]
+    pub(crate) fn json_transport(status: StatusCode, message: &str) -> Self {
+        let mut error = Self::new(status, message);
+        error.content_type = Some("application/json; charset=utf-8");
+        error
     }
 
     pub fn internal() -> Self {
@@ -29,7 +52,17 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        error_response(self.status, &self.message)
+        let mut body = serde_json::json!({"error": self.message});
+        if let Some(location) = self.location {
+            body["location"] = location;
+        }
+        let mut response = (self.status, Json(body)).into_response();
+        if let Some(content_type) = self.content_type
+            && let Ok(value) = HeaderValue::from_str(content_type)
+        {
+            response.headers_mut().insert(header::CONTENT_TYPE, value);
+        }
+        response
     }
 }
 
@@ -57,5 +90,12 @@ pub(crate) fn with_api_headers(
 }
 
 pub(crate) fn error_response(status: StatusCode, message: &str) -> Response {
-    (status, Json(json!({"error": message}))).into_response()
+    let mut response = (status, Json(json!({"error": message}))).into_response();
+    if message == "Invalid JSON" {
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json; charset=utf-8"),
+        );
+    }
+    response
 }

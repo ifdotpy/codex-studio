@@ -4,10 +4,10 @@
 
 - **Responsibility:** provide the `codex-diagnostics` read-only CLI for the local Studio diagnostics endpoint.
 - **Public interface:** `codex-diagnostics [--port PORT]`; JSON goes to stdout, failures go to stderr.
-- **Boundaries:** this binary performs one HTTP/1.1 GET to loopback. It has no async runtime, TLS, database, or backend dependency. `serde_json` is the only third-party crate, used to parse JSON while preserving arbitrary-size integers; its `arbitrary_precision` feature supports Python-compatible integer output.
-- **Invariants:** the endpoint path and default port are code-owned; successful output matches `json.dumps(..., indent=2, sort_keys=True)` byte for byte, including ASCII escaping and a trailing newline. Requests have a 30-second connect/read/write timeout and do not follow redirects.
+- **Boundaries:** this binary performs one HTTP/1.1 GET to loopback. It has no async runtime, TLS, database, or backend dependency. `serde_json` is the only third-party crate and parses and formats standard JSON. Integer values within `i64`/`u64` remain exact; floating-point values use Rust's shortest round-trip spelling.
+- **Invariants:** the endpoint path and default port are code-owned; successful output is deterministic, pretty-printed JSON with sorted object keys and a trailing newline. Requests have a 30-second connect/read/write timeout and do not follow redirects.
 - **Configuration owner:** `--port` is the only CLI option; the timeout and endpoint are owned by this crate.
-- **Focused check:** `cargo nextest run -p studio-diagnostics -E 'test(~tests::formatter_matches_python_json_dump_golden)'`.
+- **Focused check:** `cargo nextest run -p studio-diagnostics -E 'test(~fixture_output_matches_rust_golden)'`.
 
 ## Run and verify
 
@@ -18,7 +18,7 @@ cargo nextest run -p studio-diagnostics -E 'test(~tests::formatter_matches_pytho
 cargo run --locked -p studio-diagnostics -- --help
 ```
 
-The integration test serves a loopback fixture, checks a committed Python-generated golden output, and compares with Python's `urllib`/`json.dumps` when Python is present. Without Python, it emits a named skip for that comparison and still checks the golden oracle. It never contacts the default live backend.
+The integration test serves a loopback fixture and checks a committed golden output. It never contacts the default live backend.
 
 ## Compatibility differences
 
@@ -27,6 +27,7 @@ The integration test serves a loopback fixture, checks a committed Python-genera
 - CLI argument errors return 2, and request or response errors return 1 in both implementations. Rust emits concise stderr rather than Python traceback frames. For the checked fixtures, both exit 1 on connection refusal, timeout, HTTP 503, and malformed JSON; stderr differs: Rust prints `<urlopen error ...>`, `HTTP Error 503: Service Unavailable`, or `invalid JSON response: ...` after the `codex-diagnostics:` prefix, while Python appends a traceback ending in `URLError`, `TimeoutError`, `HTTPError`, or `JSONDecodeError` respectively. Platform OS wording can vary.
 - Rust reports malformed JSON with `serde_json`'s location text. Python reports `JSONDecodeError` traceback details.
 - The Rust parser follows standard JSON and rejects non-standard `NaN`/`Infinity` tokens that Python's default decoder accepts. The diagnostics API emits standard JSON.
+- **Announced output change:** float text may differ from Python's `json.dumps`; for example, `1e-05` becomes `0.00001` and `1e-07` becomes `1e-7`. Integers within `i64`/`u64` remain exact. Larger integer tokens are printed as floating-point approximations, so their original integer value is not preserved. Floating-point tokens outside finite `f64` range take the invalid-JSON failure path. Non-ASCII text and DEL are emitted directly instead of as `\\u` escapes.
 - On the current Python argparse version, `--help` and unknown-flag output, status, and stderr match byte for byte (0 for help, 2 for an unknown flag). Other argparse versions may format help differently.
 
 ## Installation and packaging
