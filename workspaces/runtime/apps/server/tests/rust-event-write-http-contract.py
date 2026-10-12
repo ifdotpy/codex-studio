@@ -8,6 +8,7 @@ import json
 import os
 import sqlite3
 import sys
+import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
@@ -92,6 +93,27 @@ def seed_agent_with_event_rule(backend) -> str:
         runtime.close()
 
 
+def seed_remote_agent(backend) -> str:
+    backend.stop()
+
+    class QuietRuntime(_fixture.Runtime):
+        def schedule(self):
+            pass
+
+    runtime = QuietRuntime(backend.state, _fixture.FakeServer)
+    try:
+        agent = runtime.create(
+            {"name": "Rust remote event fixture", "cwd": str(backend.cwd),
+             "prompt": "Seed a remote agent.", "autoWake": True}, defer=True
+        )
+        agent.update(autoWake=True, status="idle", remoteWorker={"server": "remote"})
+        with runtime.db() as database:
+            runtime.put(database, "agents", agent)
+        return agent["id"]
+    finally:
+        runtime.close()
+
+
 def state_snapshot(state: Path):
     with closing(sqlite3.connect(state / "canvas.sqlite3")) as database:
         tables = [
@@ -133,13 +155,6 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "version": 0,
             "text": "  Ship the first Rust write path.  ",
         }
-        plan = self.backend.request(
-            "POST", "/api/plan", body=plan_body, headers=self.headers()
-        )
-        self.assertEqual(plan.status, 200, plan.body[:1000])
-        self.assertEqual(plan.json()["version"], 1)
-        self.assertEqual(plan.json()["text"], "Ship the first Rust write path.")
-
         note_body = {
             "agent": self.agent_id,
             "id": "annotation-request-1",
@@ -148,6 +163,14 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "text": "  Keep the write transactional.  ",
             "turnId": "turn-1",
         }
+        python_reference = self._python_write_reference(plan_body, note_body) if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") else None
+        rust_revisions_before = self._sync_revisions(self.backend.state / "canvas.sqlite3") if python_reference else None
+        plan = self.backend.request(
+            "POST", "/api/plan", body=plan_body, headers=self.headers()
+        )
+        self.assertEqual(plan.status, 200, plan.body[:1000])
+        self.assertEqual(plan.json()["version"], 1)
+        self.assertEqual(plan.json()["text"], "Ship the first Rust write path.")
         note = self.backend.request(
             "POST", "/api/annotation", body=note_body, headers=self.headers()
         )
@@ -155,6 +178,8 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(note.json()["id"], note_body["id"])
         self.assertEqual(note.json()["rootId"], self.agent_id)
         self.assertEqual(note.json()["text"], "Keep the write transactional.")
+        if python_reference is not None:
+            self._assert_python_rust_rows_match(python_reference, rust_revisions_before)
         with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
             statuses = database.execute(
                 "SELECT id,status FROM runtime_events WHERE id IN (?,?) ORDER BY id",
@@ -177,6 +202,68 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
         if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             self._assert_rust_replay_and_python_scheduler(plan_body, note_body)
+
+    def _python_write_reference(self, plan_body, note_body):
+        self.backend.stop()
+        directory = tempfile.TemporaryDirectory(prefix="event-write-python-")
+        self.addCleanup(directory.cleanup)
+        state = Path(directory.name) / "state"
+        state.mkdir()
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as source, sqlite3.connect(state / "canvas.sqlite3") as target:
+            source.backup(target)
+
+            class QuietRuntime(_fixture.Runtime):
+                def schedule(self):
+                    pass
+
+            runtime = QuietRuntime(state, _fixture.FakeServer)
+            revisions_before = self._sync_revisions(state / "canvas.sqlite3")
+        try:
+            runtime.plan_action(self.agent_id, {"id": plan_body["id"], "version": plan_body["version"], "text": plan_body["text"]})
+            runtime.annotate(self.agent_id, {key: value for key, value in note_body.items() if key != "agent"})
+        finally:
+            runtime.close()
+        reference = Path(directory.name) / "python.sqlite3"
+        with sqlite3.connect(state / "canvas.sqlite3") as source, sqlite3.connect(reference) as target:
+            source.backup(target)
+        self.backend.start()
+        revisions_after = self._sync_revisions(reference)
+        return reference, revisions_before, revisions_after
+
+    @staticmethod
+    def _sync_revisions(path):
+        with sqlite3.connect(path) as database:
+            return dict(database.execute("SELECT collection || ':' || id,seq FROM sync_entities"))
+
+    def _assert_python_rust_rows_match(self, python_reference, rust_before):
+        python_state, python_before, python_after = python_reference
+        def rows(path, query, parameters=()):
+            with sqlite3.connect(path) as database:
+                return database.execute(query, parameters).fetchall()
+
+        rust_db = self.backend.state / "canvas.sqlite3"
+        event_query = "SELECT id,agent,kind,text,status,epoch,turn_id,error FROM runtime_events WHERE agent=? ORDER BY id"
+        self.assertEqual(rows(rust_db, event_query, (self.agent_id,)), rows(python_state, event_query, (self.agent_id,)))
+        for table, key, timestamp in (("runtime_plans", self.agent_id, "updated"), ("runtime_annotations", "annotation-request-1", "created")):
+            actual = json.loads(rows(rust_db, f"SELECT record FROM {table} WHERE id=?", (key,))[0][0])
+            expected = json.loads(rows(python_state, f"SELECT record FROM {table} WHERE id=?", (key,))[0][0])
+            actual.pop(timestamp, None); expected.pop(timestamp, None)
+            self.assertEqual(actual, expected)
+        actual_receipt = rows(rust_db, "SELECT signature,result FROM runtime_operation_receipts WHERE id=?", ("annotation-request-1",))[0]
+        expected_receipt = rows(python_state, "SELECT signature,result FROM runtime_operation_receipts WHERE id=?", ("annotation-request-1",))[0]
+        self.assertEqual(actual_receipt[0], expected_receipt[0])
+        actual_result, expected_result = json.loads(actual_receipt[1]), json.loads(expected_receipt[1])
+        actual_result.pop("created", None); expected_result.pop("created", None)
+        self.assertEqual(actual_result, expected_result)
+        for path in (rust_db, python_state):
+            record = json.loads(rows(path, "SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,))[0][0])
+            self.assertEqual(record["status"], "queued")
+        rust_after = self._sync_revisions(rust_db)
+        rust_start = max(rust_before.values(), default=0)
+        python_start = max(python_before.values(), default=0)
+        rust_deltas = {key: value-rust_start for key, value in rust_after.items() if value > rust_start}
+        python_deltas = {key: value-python_start for key, value in python_after.items() if value > python_start}
+        self.assertEqual(rust_deltas, python_deltas)
 
     def _assert_rust_replay_and_python_scheduler(self, plan_body, note_body):
         before_replay = state_snapshot(self.backend.state)
@@ -260,6 +347,21 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             )
             self.assertEqual(response.status, 501, response.body[:1000])
             self.assertIn("rule-driver/event-rules", response.body.decode())
+            self.assertEqual(state_snapshot(self.backend.state), before)
+
+    def test_remote_event_writes_refuse_without_changes(self):
+        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.skipTest("Rust remote-event boundary")
+        agent_id = seed_remote_agent(self.backend)
+        self.backend.start()
+        before = state_snapshot(self.backend.state)
+        for path, body in (
+            ("/api/plan", {"agent": agent_id, "version": 0, "text": "blocked"}),
+            ("/api/annotation", {"agent": agent_id, "path": "src/main.rs", "line": 1, "text": "blocked"}),
+        ):
+            response = self.backend.request("POST", path, body=body, headers=self.headers())
+            self.assertEqual(response.status, 501, response.body[:1000])
+            self.assertIn("cross-server/remote-events", response.body.decode())
             self.assertEqual(state_snapshot(self.backend.state), before)
 
     def test_rust_replays_python_annotation_receipt_by_content(self):

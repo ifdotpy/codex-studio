@@ -2,8 +2,8 @@
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
+use super::sync_documents::{hash_payload, next_sequence};
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
 use crate::{QueueEvent, StoreError, StoreResult};
 
@@ -153,6 +153,28 @@ impl EventWriteRepository {
         Ok(inserted != 0)
     }
 
+    pub fn mark_event_enqueued(
+        connection: &Connection,
+        id: &str,
+        monotonic_ns: u128,
+    ) -> StoreResult<()> {
+        let exists: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_event_meta')",
+            [], |row| row.get(0),
+        )?;
+        if !exists {
+            return Ok(());
+        }
+        let value = serde_json::json!({"timing":{"enqueuedAt":monotonic_ns}});
+        connection.execute(
+            "INSERT INTO runtime_event_meta(id,record) VALUES (?1,?2) \
+             ON CONFLICT(id) DO UPDATE SET record=json_set(record,'$.timing.enqueuedAt', \
+             json_extract(excluded.record,'$.timing.enqueuedAt'))",
+            params![id, value.to_string()],
+        )?;
+        Ok(())
+    }
+
     /// Keep the renderer projection in step with the scheduler's queued state.
     pub fn set_agent_sync_status(
         transaction: &Transaction<'_>,
@@ -192,23 +214,16 @@ impl EventWriteRepository {
             return Ok(());
         }
         value.insert("status".to_owned(), Value::String(status.to_owned()));
-        let payload = serde_json::to_string(&payload)?;
-        let digest = Sha256::digest(payload.as_bytes());
-        let mut hash = String::with_capacity(digest.len() * 2);
-        for byte in digest {
-            use std::fmt::Write as _;
-            write!(&mut hash, "{byte:02x}").map_err(|_| {
-                StoreError::SchemaMismatch("cannot encode sync entity hash".to_owned())
-            })?;
+        if status == "queued"
+            && let Some(overview) = value.get_mut("overview").and_then(Value::as_object_mut)
+        {
+            overview.insert("result".into(), Value::String(String::new()));
+            overview.insert("resultTruncated".into(), Value::Bool(false));
+            overview.insert("resultTurnId".into(), Value::Null);
         }
-        let sequence: i64 = transaction.query_row(
-            "SELECT MAX(entity_seq,document_seq,version_seq)+1 FROM ( \
-             SELECT COALESCE(MAX(seq),0) AS entity_seq FROM sync_entities), \
-             (SELECT COALESCE(MAX(seq),0) AS document_seq FROM sync_documents), \
-             (SELECT COALESCE(MAX(seq),0) AS version_seq FROM sync_versions)",
-            [],
-            |row| row.get(0),
-        )?;
+        let payload = serde_json::to_string(&payload)?;
+        let hash = hash_payload(&payload);
+        let sequence = next_sequence(transaction)?;
         transaction.execute(
             "UPDATE sync_entities SET seq=?1,hash=?2,payload=?3 \
              WHERE collection='agent' AND id=?4 AND deleted=0",
@@ -232,7 +247,7 @@ mod tests {
                 "CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
                  CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);
-                 INSERT INTO sync_entities VALUES('agent','a',1,'old', '{\"collection\":\"agent\",\"id\":\"a\",\"value\":{\"id\":\"a\",\"status\":\"idle\"}}',0);",
+                 INSERT INTO sync_entities VALUES('agent','a',1,'old', '{\"collection\":\"agent\",\"id\":\"a\",\"value\":{\"id\":\"a\",\"status\":\"idle\",\"overview\":{\"result\":\"stale\",\"resultTruncated\":true,\"resultTurnId\":\"turn-old\",\"task\":\"keep\"}}}',0);",
             )
             .expect("projection fixture creates");
         let transaction = connection.transaction().expect("transaction begins");
@@ -251,8 +266,31 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&payload)
                 .expect("updated projection remains JSON"),
             json!({
-                "collection":"agent","id":"a","value":{"id":"a","status":"queued"}
+                "collection":"agent","id":"a","value":{"id":"a","status":"queued","overview":{"result":"","resultTruncated":false,"resultTurnId":null,"task":"keep"}}
             })
+        );
+    }
+
+    #[test]
+    fn enqueue_timing_is_written_when_metadata_table_exists() {
+        let connection = Connection::open_in_memory().expect("memory SQLite opens");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);",
+            )
+            .expect("metadata table creates");
+        EventWriteRepository::mark_event_enqueued(&connection, "e", 42).expect("timing writes");
+        let record: String = connection
+            .query_row(
+                "SELECT record FROM runtime_event_meta WHERE id='e'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("metadata exists");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&record).expect("metadata parses")["timing"]
+                ["enqueuedAt"],
+            42
         );
     }
 }
