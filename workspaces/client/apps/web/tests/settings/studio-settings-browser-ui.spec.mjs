@@ -24,6 +24,7 @@ test("studio settings browser ui", async ({
   const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-settings-browser-"));
   let emptyPage;
+  let legacyFixture;
   const fixture = spawn(
     "python3",
     [
@@ -48,7 +49,6 @@ test("studio settings browser ui", async ({
       fixture.once("exit", () => reject(new Error(fixtureLog)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const snapshot = await readTestState(origin);
     browser = runnerBrowser;
 
     const page = runnerPage;
@@ -694,13 +694,37 @@ test("studio settings browser ui", async ({
       viewport: { width: 390, height: 844 },
     });
     emptyPage.on("pageerror", (error) => errors.push(error.message));
+    // The legacy migration assertions need a user with no projected settings.
+    // The primary page has already written several preferences for its user.
+    const legacyRoot = await mkdtemp(join(tmpdir(), "studio-settings-legacy-"));
+    legacyFixture = spawn(
+      "python3",
+      [
+        "-B",
+        join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+        legacyRoot,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    let legacyFixtureLog = "";
+    legacyFixture.stderr.on("data", (chunk) => {
+      legacyFixtureLog += chunk;
+    });
+    const legacyPort = await new Promise((resolve, reject) => {
+      legacyFixture.stdout.once("data", (chunk) =>
+        resolve(Number(String(chunk).trim())),
+      );
+      legacyFixture.once("exit", () => reject(new Error(legacyFixtureLog)));
+    });
+    const legacyOrigin = `http://127.0.0.1:${legacyPort}`;
+    const legacySnapshot = await readTestState(legacyOrigin);
     const emptyState = {
-      ...snapshot,
-      stateDir: `${snapshot.stateDir}/empty-chat-settings`,
+      ...legacySnapshot,
+      stateDir: `${legacySnapshot.stateDir}/empty-chat-settings`,
       threads: [],
       chats: [],
       runtime: {
-        ...snapshot.runtime,
+        ...legacySnapshot.runtime,
         agents: [],
         projects: [],
         rooms: [],
@@ -713,7 +737,7 @@ test("studio settings browser ui", async ({
     await stubEntityState(
       emptyPage,
       emptyState,
-      await readFixtureSyncContract(origin),
+      await readFixtureSyncContract(legacyOrigin),
     );
     await emptyPage.addInitScript((key) => {
       // A valid saved preference object from before the avatar option existed.
@@ -732,7 +756,7 @@ test("studio settings browser ui", async ({
       );
       sessionStorage.setItem(seedKey, "1");
     }, storageKey);
-    await emptyPage.goto(origin);
+    await emptyPage.goto(legacyOrigin);
     await emptyPage
       .getByRole("button", { name: "Studio settings", exact: true })
       .waitFor();
@@ -775,7 +799,7 @@ test("studio settings browser ui", async ({
     assert.equal(
       await legacyAvatarToggle.isChecked(),
       false,
-      "Legacy preferences migrate with avatar display off in an independent browser",
+      "A fresh fixture user defaults to avatars off when the legacy seed omits the option",
     );
     assert.equal(
       await emptyPage
@@ -833,7 +857,7 @@ test("studio settings browser ui", async ({
         .locator("main.workspace")
         .getAttribute("data-show-message-avatars"),
       "true",
-      "Avatar preferences remain independent across browsers",
+      "Changing the fresh fixture user's preference leaves the original user's preference unchanged",
     );
     await emptyPage.keyboard.press("Escape");
     expect(errors).toEqual([]);
