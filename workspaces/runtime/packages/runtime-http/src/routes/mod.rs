@@ -4,6 +4,7 @@ pub(crate) mod manifest;
 
 mod catalog;
 mod desktop;
+mod monitors;
 mod rules;
 mod session;
 mod sync;
@@ -15,6 +16,7 @@ use manifest::RouteGroup;
 pub(crate) fn groups() -> Vec<RouteGroup> {
     vec![
         session::routes(),
+        monitors::routes(),
         rules::routes(),
         sync::routes(),
         sync_documents::routes(),

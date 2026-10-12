@@ -22,6 +22,7 @@ const KNOWN_DEPENDENCIES: &[&str] = &[
     "event-driver/plan-updates",
     "event-driver/annotations",
     "workspace-state/organization-effects",
+    "monitor-driver/active-checks",
 ];
 
 impl Dependency {

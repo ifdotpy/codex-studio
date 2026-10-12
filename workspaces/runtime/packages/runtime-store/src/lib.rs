@@ -21,6 +21,7 @@ pub use records::{
     MessageRepository, QueueEvent, QueueEventId, QueueEventRepository, TaskId, TaskRecord,
     TaskRepository, WorkStatus,
 };
+pub use repositories::monitors::{MonitorsRepository, StoredMonitor};
 pub use repositories::rules::{RulesRepository, StoredAgent, StoredRule};
 pub use repositories::sync_documents::{EntityRow, SyncDocument, SyncDocumentsRepository};
 pub use repositories::work_items::{StoredQueueEvent, StoredRecord, WorkItemsRepository};
