@@ -31,6 +31,7 @@ from codex_layout import REPOSITORY_ROOT, WEB_ROOT
 ROOT = REPOSITORY_ROOT
 OUTPUT = WEB_ROOT / "src" / "generated" / "api.ts"
 SCHEMA_OUTPUT = WEB_ROOT / "src" / "generated" / "apiSchema.ts"
+OPENAPI_AUTHORITY = ROOT / "workspaces/runtime/packages/runtime-http/openapi.json"
 DEFAULT_CACHE_ROOT = Path.home() / ".cache"
 CACHE_ROOT_ENV = "XDG_CACHE_HOME"
 OPENAPI_TEMP_DIRECTORY = "codex-studio-openapi-types"
@@ -138,12 +139,35 @@ def render_schema_identity(schema_hash: str) -> str:
     )
 
 
+def export_openapi_source(document: dict[str, JsonValue]) -> bytes:
+    """Keep the committed authority readable; the hash canonicalizes separately."""
+    return (json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="fail if generated API types are stale")
+    parser.add_argument(
+        "--write-openapi",
+        action="store_true",
+        help="refresh the canonical OpenAPI authority from the current Python models",
+    )
     options = parser.parse_args(argv)
     try:
-        document = openapi_document()
+        exported = openapi_document()
+        exported_source = export_openapi_source(exported)
+        if options.write_openapi:
+            OPENAPI_AUTHORITY.write_bytes(exported_source)
+        else:
+            committed = OPENAPI_AUTHORITY.read_bytes()
+            if committed != exported_source:
+                print(
+                    f"{OPENAPI_AUTHORITY.relative_to(ROOT)} diverges from Python models; "
+                    "review the schema change, then run `pnpm run api:generate`",
+                    file=sys.stderr,
+                )
+                return 1
+        document = json.loads(OPENAPI_AUTHORITY.read_text(encoding="utf-8"))
         schema_hash = api_schema_hash(document)
         expected_files = {
             OUTPUT: render(document),
@@ -161,6 +185,11 @@ def main(argv: list[str] | None = None) -> int:
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(expected, encoding="utf-8")
+    subprocess.run(
+        ["cargo", "check", "--locked", "--package", "studio-runtime-http"],
+        cwd=ROOT,
+        check=True,
+    )
     return 0
 
 

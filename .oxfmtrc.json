@@ -6,6 +6,7 @@
   "trailingComma": "all",
   "ignorePatterns": [
     "workspaces/runtime/apps/layr/",
-    "workspaces/runtime/apps/layr-desk/"
+    "workspaces/runtime/apps/layr-desk/",
+    "workspaces/runtime/packages/runtime-http/openapi.json"
   ]
 }
