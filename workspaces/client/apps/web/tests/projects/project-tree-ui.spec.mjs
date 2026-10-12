@@ -207,7 +207,7 @@ test("project pointer and keyboard order persist, and a click collapses the proj
         ),
       { stateDir, path: folders.assistant },
     );
-    await page.reload();
+    await page.reload({ waitUntil: "domcontentloaded" });
     const group = (name) =>
       page.locator(".sidebar-project").filter({
         has: page.locator(".project-tree-toggle", { hasText: name }),
@@ -437,7 +437,7 @@ test("project pointer and keyboard order persist, and a click collapses the proj
       (await state()).find((a) => a.id === keyboardId).cwd,
       folders.assistant,
     );
-    await page.reload();
+    await page.reload({ waitUntil: "domcontentloaded" });
     await group("assistant").waitFor();
     assert.deepEqual(
       await projectOrder(),
@@ -478,7 +478,7 @@ test("project pointer and keyboard order persist, and a click collapses the proj
       "A second click on a project name shows its chats again",
     );
     await page.locator(`[data-chat="${legal.id}"]`).click();
-    await page.reload();
+    await page.reload({ waitUntil: "domcontentloaded" });
     await group("assistant").waitFor();
     assert.equal(
       await group("assistant")
@@ -550,7 +550,7 @@ test("project pointer and keyboard order persist, and a click collapses the proj
     await group("Empty project")
       .getByText("No chats", { exact: true })
       .waitFor();
-    await page.reload();
+    await page.reload({ waitUntil: "domcontentloaded" });
     await group("Empty project").waitFor();
     const projectOptions = async (name) => {
       await group(name).locator(":scope > .project-tree-heading").hover();
@@ -766,7 +766,7 @@ test("project pointer and keyboard order persist, and a click collapses the proj
           a.isLead && a.id !== sourceChat.id && a.projectFolder === childFolder,
       ),
     );
-    await page.reload();
+    await page.reload({ waitUntil: "domcontentloaded" });
     await group("Client work").waitFor();
     await page
       .locator(
